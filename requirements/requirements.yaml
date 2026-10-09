@@ -2085,148 +2085,148 @@ requirements:
         when: "the sweep decides"
         then: "it keeps that branch and never deletes it"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC2
         given: "a branch whose name starts with release/ (for example release/1.2), merged or closed pull request or none, any age"
         when: "the sweep decides"
         then: "it keeps that branch; a branch merely named like one (release without the slash, or ending in /release/x) is not protected by this rule"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC3
         given: "a branch whose name starts with dependabot/ (Dependabot owns these), merged or closed pull request or none, any age"
         when: "the sweep decides"
         then: "it keeps that branch; a name that only begins with the letters dependabot (for example dependabot-fix) is not protected by this rule"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC4
         given: "a branch that is the head of an open pull request in this repository, including one that also has an older closed or merged pull request from the same head"
         when: "the sweep decides"
         then: "it keeps that branch whatever its age; an open pull request from a fork whose branch has the same name, or whose head repository is gone, does not protect a branch here"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC5
-        given: "a branch that is the base branch of an open pull request (a stacked pull request), including one whose own pull request is merged or closed, or that is idle for more than 14 days (advisor reading of the owner's Oct 8 words "protect good branches from being deleted")"
+        given: "a branch that is the base branch of an open pull request (a stacked pull request), including one whose own pull request is merged or closed, or that is idle for more than 14 days (advisor reading of the owner's Oct 8 words \"protect good branches from being deleted\")"
         when: "the sweep decides"
         then: "it keeps that branch, because deleting it would close that pull request; once no open pull request has it as base, the ordinary rules apply again"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC6
         given: "a branch named, by exact name, in an entry of the keep-file that is valid and not expired"
         when: "the sweep decides"
         then: "it keeps that branch whatever its pull requests and age; a pattern such as feat/* protects nothing by wildcard"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC7
         given: "a branch not in any kept class whose latest pull request from that head in this repository is merged and no other pull request from it is open"
         when: "the sweep applies"
         then: "it deletes that branch with the reason merged-pr"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC8
         given: "a branch not in any kept class whose pull request is closed without merging and no pull request from it is open"
         when: "the sweep applies"
         then: "it deletes that branch with the reason closed-pr"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC9
         given: "a branch not in any kept class with no pull request at all, and the time of its newest commit"
         when: "the sweep applies"
         then: "it deletes the branch with the reason idle-14d when that commit is 14 days old or older (14 days exactly is deleted), keeps it when it is younger (13 days 23 hours is kept), and keeps it when the commit date cannot be read"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC10
         given: "the keep-file entries"
         when: "they are read"
         then: "an entry needs a branch, an expires date written YYYY-MM-DD, and a reason; it keeps its branch from today through the expiry day inclusive (an expiry equal to today is kept); an expiry in the past is expired and keeps nothing; an expiry more than 60 days from today is invalid, reported as an error, and keeps nothing; an entry with a missing or wrongly typed field, or a branch already named by an earlier entry, is reported as an error and keeps nothing, while the other entries still count; a missing keep-file keeps nothing and is not an error"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC11
         given: "a run that starts from any ref, and a keep-file that differs between the default branch and another branch"
         when: "the sweep reads the keep-file"
         then: "it reads it through the contents API at the default branch only, never from the checkout or from a pull request's branch, so a branch cannot protect itself by editing the file"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC12
         given: "a keep-file that is not valid JSON or not the expected shape"
         when: "the sweep runs"
         then: "the file keeps nothing, the summary carries a line starting ERROR keep-file, every never-touched rule is still honoured and the rest of the sweep completes, and the run exits non-zero at the end; a keep-file that cannot be fetched for a reason other than not found (for example a server error) deletes nothing and fails the job"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC13
         given: "a sweep that deletes or would delete a branch"
         when: "it writes its job summary (and standard output)"
         then: "each deletion is one line, DELETE <full commit sha> <reason> <branch> when applied and WOULD-DELETE <full commit sha> <reason> <branch> in a dry run, so any branch can be restored from its sha; a failed deletion is a FAILED line in the same form"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC14
         given: "a manual run or a scheduled run"
         when: "the sweep starts"
         then: "it deletes nothing unless told to apply (--apply); a manual run has an input dry-run whose default is true and a dry run lists WOULD-DELETE lines and says dry-run: nothing deleted; the scheduled run applies"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC15
         given: "a branch chosen for deletion, including names with slashes, spaces, #, ? or % and non-ASCII characters"
         when: "the sweep deletes it"
         then: "it sends exactly DELETE repos/<owner>/<repo>/git/refs/heads/<name> with the name percent-encoded except for slashes, and the only requests it ever makes are reads (GET) and those deletions: no tag, no other ref, no push"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC16
         given: "more than 100 branches and more than 100 pull requests"
         when: "the sweep lists them"
         then: "it reads every page (100 per page, following the next-page link) before deciding anything; if any listing request fails, returns something that is not a list, or is cut short, it deletes nothing, writes an ERROR line, and exits non-zero (fail closed)"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC17
         given: "a deletion the API refuses"
         when: "the sweep runs"
         then: "it logs a FAILED line, goes on to the remaining branches, and exits non-zero at the end; a second run over the repository left by the first deletes nothing"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC18
         given: "the reserved-branch-guard workflow"
         when: "it is read"
         then: "it keeps its push trigger on the reserved branches and adds schedule (daily) and workflow_dispatch with the input dry-run defaulting to true; the guard job runs only on push; the sweep job runs only on schedule or workflow_dispatch and only from the default branch; no job condition mentions the dry-run input"
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC19
         given: "the same workflow"
         when: "it is read"
         then: "the sweep job's permissions are exactly contents: write and pull-requests: read, the guard job and the workflow keep only contents: read, no secret is referenced (the job token only), no run step interpolates an expression, and every action reference is a full commit digest"
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC20
         given: "the required allowlist job in ci.yml"
         when: "it is read"
         then: "it runs bin/branch-sweep-test.sh"
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC21
         given: "the sweeper's files (bin/branch-sweep.py, bin/local-prune.sh, their tests and the keep-file)"
         when: "the layout check runs"
         then: "they are repository hygiene, not the daily scanner's files: they live outside the auditor's tree, their paths do not name it, they do not refer to it, and the layout check stays green"
         verification: { method: ci-workflow, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC22
         given: "a local branch whose upstream is gone (git branch -vv shows [gone])"
         when: "bin/local-prune.sh --apply runs"
         then: "it deletes the branch when all its commits are already in origin/main (reason merged-into-main) or its pull request is merged or closed with none open (reason pr-merged or pr-closed), prints the deleted sha, and runs git worktree prune"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC23
         given: "a local branch with no upstream, or one whose upstream still exists, or the current branch, or one checked out in a live worktree (clean or with uncommitted changes), or a gone branch with unmerged commits and an open or unknown pull request"
         when: "bin/local-prune.sh --apply runs"
         then: "it keeps that branch, and it removes nothing that has uncommitted changes"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC24
         given: "bin/local-prune.sh run without arguments"
         when: "it runs"
         then: "it changes nothing (no branch deleted, no worktree record pruned), prints would-delete lines with the sha and a line saying dry-run, and acts only with --apply"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
       - id: REQ-REPO-001-AC25
         given: "a branch that the branches API marks protected (protected: true), with any pull request history and any age"
         when: "the sweep decides"
         then: "it keeps that branch with the reason protected and makes no delete call for it, so a protected branch never produces a FAILED line"
         verification: { method: unit, release_blocking: false }
-        status: proposed
+        status: approved
