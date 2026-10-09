@@ -56,40 +56,39 @@ TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
 def scan(rel, text):
     def add(t): produced.setdefault(t, set()).add(rel)
-    for line in logical(strip(text)).splitlines():
-        for e in TABLE:
-            if not re.search(e["regex"], line): continue
-            n = e["name"]
-            if n == "witness run":
-                add(COLL)
-                if _cts.is_prov(e, line): add(PROV)
-            elif n == "witness sign":
-                dt = re.search(r"(?:-t|--datatype)[ =]+(\S+)", line)
-                if not dt: add(POLT)
-                elif re.fullmatch(r"https?://[^\s\"'$`]+", dt.group(1).strip("\"'")): add(dt.group(1).strip("\"'"))
-                else: bad.append("%s: witness sign with an unresolved datatype %r (fail closed)" % (rel, dt.group(1)))
-            elif n == "actions/attest":
-                pt = re.search(r"predicate-type:\s*['\"]?([^\s'\"]+)", strip(text).split("actions/attest@", 1)[-1][:400])
-                if pt and re.fullmatch(r"https?://\S+", pt.group(1)): add(pt.group(1))
-                else: bad.append("%s: actions/attest with no literal predicate-type (%s) (fail closed)" % (rel, pt.group(1) if pt else "none"))
-            elif n == "cosign attest":
-                ty = re.search(r"--type[ =]+(\S+)", line)
-                v = ty.group(1).strip("\"'") if ty else None
-                if v and re.fullmatch(r"https?://\S+", v): add(v)
-                elif v and v in SHORT: add(SHORT[v])
-                else: bad.append("%s: cosign attest with an unresolved --type (%s) (fail closed)" % (rel, v or "none"))
-            elif e.get("pseudo"): add(e["pseudo"])
-            else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
-scripts = {}
-for f in files:
-    rel = os.path.relpath(f, base); txt = open(f).read()
-    scan(rel, txt)
-    for sp in _cts.script_refs(txt):
-        scripts.setdefault(sp, set()).add(rel)
+    for e, ctx in _cts.calls(text, TABLE):
+        n = e["name"]
+        if n == "witness run":
+            add(COLL)
+            if _cts.is_prov(e, ctx): add(PROV)
+        elif n == "witness sign":
+            dt = re.search(r"(?:-t|--datatype)[ =]+(\S+)", ctx)
+            if not dt: add(POLT)
+            elif re.fullmatch(r"https?://[^\s\"'$`]+", dt.group(1).strip("\"'")): add(dt.group(1).strip("\"'"))
+            else: bad.append("%s: witness sign with an unresolved datatype %r (fail closed)" % (rel, dt.group(1)))
+        elif n == "actions/attest":
+            ty = _cts.attest_action_type(ctx)                      # per match: the type of THIS step, not the first in the file
+            if ty: add(ty)
+            else: bad.append("%s: actions/attest with no literal predicate-type (fail closed)" % rel)
+        elif n == "cosign attest":
+            tys = _cts.cosign_types(ctx)
+            if not tys: bad.append("%s: cosign attest with no --type (fail closed)" % rel)
+            for v in tys:
+                if re.fullmatch(r"https?://\S+", v): add(v)
+                elif v in SHORT: add(SHORT[v])
+                else: bad.append("%s: cosign attest with an unresolved --type (%s) (fail closed)" % (rel, v))
+        elif n in ("cosign sign-blob", "sigstore python sign"):
+            add(e["pseudo"])
+            if _cts.is_prov(e, ctx): add(PROV)
+        elif e.get("pseudo"): add(e["pseudo"])
+        else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
+texts = {os.path.relpath(f, base): open(f).read() for f in files}
+for rel, txt in texts.items(): scan(rel, txt)
+scripts, serrs = _cts.reachable_scripts(base, texts)
+bad += ["unresolved script reference (fail closed): " + x for x in serrs]
 for sp in sorted(scripts):
-    full = os.path.join(base, sp)
-    if sp == "bin/chain-verify.py" or not os.path.isfile(full): continue
-    scan(sp, open(full).read())
+    if sp == "bin/chain-verify.py": continue
+    scan(sp, open(os.path.join(base, sp), errors="replace").read())
 types = [r.get("type") for r in rows]
 for t in sorted(produced):
     if types.count(t) == 0: bad.append("produced type has no row: %s (in %s)" % (t, ", ".join(sorted(produced[t]))))
@@ -123,6 +122,7 @@ nosign() { rm -f "$1/.github/workflows/stage-sign.yml"; }
 mk() { # mk NAME  -> a known-good tree
   local d="$work/$1"; rm -rf "$d"; mkdir -p "$d/.github/workflows" "$d/.github/policy"
   printf 'jobs:\n  sign:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --digests "$D" --build-record b.json\n' > "$d/.github/workflows/stage-sign.yml"
+  mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\n' > "$d/bin/build.sh"
   printf 'jobs:\n  build:\n    steps:\n      - run: witness run --step build -- ./bin/build.sh\n' > "$d/.github/workflows/stage-build.yml"
   cat > "$d/.github/policy/chain-records.json" <<'J'
 {"records":[
@@ -203,10 +203,55 @@ d=$(mk scriptvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - r
 expect caught "a script a workflow runs attests with an unresolved type: fails closed" "$d"
 d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
+SH40=$(printf 'a%.0s' $(seq 40))
+rmprov() { sed -i.bak '/slsa.dev/d' "$1/.github/policy/chain-records.json"; }
+d=$(mk twoatt); printf 'jobs:\n  c:\n    steps:\n      - uses: actions/attest@%s # v4\n        with:\n          predicate-type: https://slsa.dev/provenance/v1\n      - uses: actions/attest@%s # v4\n        with:\n          predicate-type: https://example.com/second/v1\n' "$SH40" "$SH40" > "$d/.github/workflows/stage-verify.yml"; nosign "$d"
+expect_named "two actions/attest steps in one file: the SECOND step's own unlisted type is seen (round 5, per-match type)" "$d" "https://example.com/second/v1"
+d=$(mk attml); printf 'jobs:\n  c:\n    steps:\n      - uses: actions/attest@%s # v4\n        with:\n          subject-path: dist/x\n          predicate-type: https://slsa.dev/provenance/v1\n' "$SH40" > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "actions/attest with the predicate-type on a later line is read: provenance with its row removed names the file" "$d" "stage-verify.yml"
+d=$(mk wvar); printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c -a "$ATT" -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "witness run -a \"\$ATT\" (a variable attestor list) is unresolved: treated as provenance, fails closed" "$d" "stage-verify.yml"
+d=$(mk wexpr); printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c -a ${{ inputs.att }} -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "witness run -a \${{ expression }} is unresolved: treated as provenance" "$d" "stage-verify.yml"
+d=$(mk wfold); printf 'jobs:\n  c:\n    steps:\n      - run: >-\n          witness run --step c\n          -a slsa -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "witness run -a slsa on the next line of a folded scalar is read" "$d" "stage-verify.yml"
+d=$(mk wnext); printf 'jobs:\n  c:\n    steps:\n      - run: |\n          witness run --step c -a\n          slsa -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "witness run -a with its value on the next line is read" "$d" "stage-verify.yml"
+d=$(mk wcfg2); printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c -a product -c witness.yaml -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "witness run -a product -c cfg.yaml is flagged: the config file can add the slsa attestor" "$d" "stage-verify.yml"
+d=$(mk twotype); printf 'jobs:\n  c:\n    steps:\n      - run: cosign attest --yes --type spdx --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "cosign attest with a repeated --type: the second (slsaprovenance1) is not hidden by the first" "$d" "stage-verify.yml"
+d=$(mk blobprov); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes provenance.intoto.jsonl --bundle b.json\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "cosign sign-blob of a provenance blob is provenance" "$d" "stage-verify.yml"
+d=$(mk blobplain); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes checksums.txt --bundle b.json\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "cosign sign-blob of checksums is a signature that needs a row" "$d" "stage-verify.yml"
+d=$(mk sigpy); printf 'jobs:\n  c:\n    steps:\n      - run: python3 -m sigstore attest --predicate p.json dist/x\n' > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; rmprov "$d"
+expect_named "the python sigstore CLI attest is a provenance signer" "$d" "stage-verify.yml"
+d=$(mk notation); printf 'jobs:\n  c:\n    steps:\n      - run: notation sign "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "notation sign is a known signer that needs a row" "$d" "stage-verify.yml"
+d=$(mk intoto); printf 'jobs:\n  c:\n    steps:\n      - run: in-toto-run --step-name build -- ./x\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify.yml"
+# scripts a workflow reaches: every form resolves, and what cannot be resolved is an error naming the workflow
+d=$(mk ws); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash "$GITHUB_WORKSPACE/bin/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
+expect_named "bash \"\$GITHUB_WORKSPACE/bin/pub.sh\" is resolved and its signing call seen" "$d" "bin/pub.sh"
+d=$(mk ws2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash ${{ github.workspace }}/bin/pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
+expect_named "bash \${{ github.workspace }}/bin/pub.sh is resolved" "$d" "bin/pub.sh"
+d=$(mk cdp); mkdir -p "$d/scripts"; printf 'jobs:\n  c:\n    steps:\n      - run: cd scripts && ./pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/scripts/pub.sh"
+expect_named "cd scripts && ./pub.sh is resolved through the cd prefix" "$d" "scripts/pub.sh"
+d=$(mk noext); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: ./bin/publish\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish"; chmod +x "$d/bin/publish"
+expect_named "an extensionless script that starts with #! is scanned" "$d" "bin/publish"
+d=$(mk pym); mkdir -p "$d/tools"; printf 'jobs:\n  c:\n    steps:\n      - run: python3 -m tools.pub\n' > "$d/.github/workflows/stage-verify.yml"; printf 'import subprocess\nsubprocess.run(["x"])  # cosign sign --yes img\n' > "$d/tools/pub.py"; printf 'cosign sign --yes img\n' >> "$d/tools/pub.py"
+expect_named "python3 -m tools.pub is resolved to tools/pub.py" "$d" "tools/pub.py"
+d=$(mk trans); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$(dirname "$0")/b.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/b.sh"
+expect_named "a script that calls another script is followed (bin/a.sh -> bin/b.sh)" "$d" "bin/b.sh"
+d=$(mk unres); printf 'jobs:\n  c:\n    steps:\n      - run: bash "$SOME_DIR/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "a script path in an unknown variable is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
+d=$(mk missing); printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
+expect_named "a script reference with no such file is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=39
+EXPECT=60
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
