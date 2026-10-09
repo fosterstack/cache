@@ -16,7 +16,14 @@
 #                                          slsaprovenance1 -> .../provenance/v1, spdx/cyclonedx/vuln mapped below)
 #   `cosign sign` / `gitsign`           -> pseudo types urn:cosign:signature / urn:gitsign:tag-signature
 # FAIL CLOSED: a producing call whose type cannot be resolved (an expression, a shell variable, no --type) is an error
-# naming the file. Scanned: .github/workflows/*.yml and *.yaml, .github/actions/**/action.yml|yaml, a root action.yml.
+# naming the file. Scanned: .github/workflows/*.yml and *.yaml, .github/actions/**/action.yml|yaml, a root action.yml, and every
+# script those files run (bash x.sh, ./x.sh, python3 x.py; bin/chain-verify.py itself excepted: only `chain-verify.py sign` in
+# stage-sign.yml reaches its signing calls). Which tools sign is ONE table shared with chain-sign-wiring-test.sh
+# (bin/chain-test-signers.json: cosign sign/attest, witness run/sign with every attestor flag form, attest-build-provenance,
+# actions/attest, actions/attest-sbom, slsa-github-generator, gitsign, sigstore actions, chain-verify.py sign); a tool in
+# the table with no finer resolver needs a row for its pseudo type, so no known signer is invisible. Comments are stripped
+# first (full-line and trailing). Exclusions, stated plainly: a signer that is not in the table is not seen by either
+# test (add it to the table first); signing done by a binary a script downloads at run time is not seen.
 # The judge is proven on a known-good fixture tree and mutated copies, then applied to the real repository.
 # Needs python3 (no PyYAML: the scan is by text, comments stripped).
 set -euo pipefail
@@ -42,31 +49,52 @@ else:
     rows = json.load(open(rf)).get("records") or []
 wf = os.path.join(base, ".github/workflows")
 files = sorted(glob.glob(wf + "/*.yml") + glob.glob(wf + "/*.yaml") + glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml")))
-for f in files:
-    rel = os.path.relpath(f, base)
-    text = "\n".join(l for l in open(f).read().splitlines() if not l.lstrip().startswith("#"))
+TABLE = json.load(open(os.environ["CHAIN_SIGNER_TABLE"]))["signers"]
+def strip(text):
+    out = []
+    for l in text.splitlines():
+        if l.lstrip().startswith("#"): continue
+        out.append(re.sub(r"(?<=\s)#.*$", "", l))
+    return "\n".join(out)
+def logical(text): return re.sub(r"\\\n\s*", " ", text)
+RUNNER = re.compile(r"(?:\b(?:bash|sh|python3?|source)\s+|(?<![\w/.-])\.\s+|(?<![\w/.-]))(\.?/?(?:[\w.-]+/)*[\w.-]+\.(?:sh|py))\b")
+def scan(rel, text):
     def add(t): produced.setdefault(t, set()).add(rel)
-    if re.search(r"\bwitness\s+run\b", text): add(COLL)
-    if re.search(r"\bwitness\s+run\b[^\n]*(-a\s+slsa|--attestors?[ =]\S*slsa)", text): add(PROV)
-    for m in re.finditer(r"\bwitness\s+sign\b[^\n]*", text):
-        dt = re.search(r"(?:-t|--datatype)[ =]+(\S+)", m.group(0))
-        if not dt: add(POLT)
-        elif re.fullmatch(r"https?://[^\s\"'$`]+", dt.group(1).strip("\"'")): add(dt.group(1).strip("\"'"))
-        else: bad.append("%s: witness sign with an unresolved datatype %r (fail closed)" % (rel, dt.group(1)))
-    if re.search(r"actions/attest-build-provenance@|chain-verify\.py\s+sign\b", text): add(PROV)
-    for m in re.finditer(r"actions/attest@[^\n]*", text):
-        seg = re.split(r"\n\s*-\s", text[m.end():], 1)[0]
-        pt = re.search(r"predicate-type:\s*['\"]?([^\s'\"]+)", seg)
-        if pt and re.fullmatch(r"https?://\S+", pt.group(1)): add(pt.group(1))
-        else: bad.append("%s: actions/attest with no literal predicate-type (%s) (fail closed)" % (rel, pt.group(1) if pt else "none"))
-    for m in re.finditer(r"\bcosign\s+attest(?:-blob)?\b[^\n]*", text):
-        ty = re.search(r"--type[ =]+(\S+)", m.group(0))
-        v = ty.group(1).strip("\"'") if ty else None
-        if v and re.fullmatch(r"https?://\S+", v): add(v)
-        elif v and v in SHORT: add(SHORT[v])
-        else: bad.append("%s: cosign attest with an unresolved --type (%s) (fail closed)" % (rel, v or "none"))
-    if re.search(r"\bcosign\s+sign(-blob)?\b", text): add("urn:cosign:signature")
-    if re.search(r"\bgitsign\b", text): add("urn:gitsign:tag-signature")
+    for line in logical(strip(text)).splitlines():
+        for e in TABLE:
+            if not re.search(e["regex"], line): continue
+            n = e["name"]
+            if n == "witness run":
+                add(COLL)
+                if e["prov"].startswith("if:") and re.search(e["prov"][3:], line, re.I): add(PROV)
+            elif n == "witness sign":
+                dt = re.search(r"(?:-t|--datatype)[ =]+(\S+)", line)
+                if not dt: add(POLT)
+                elif re.fullmatch(r"https?://[^\s\"'$`]+", dt.group(1).strip("\"'")): add(dt.group(1).strip("\"'"))
+                else: bad.append("%s: witness sign with an unresolved datatype %r (fail closed)" % (rel, dt.group(1)))
+            elif n == "actions/attest":
+                pt = re.search(r"predicate-type:\s*['\"]?([^\s'\"]+)", strip(text).split("actions/attest@", 1)[-1][:400])
+                if pt and re.fullmatch(r"https?://\S+", pt.group(1)): add(pt.group(1))
+                else: bad.append("%s: actions/attest with no literal predicate-type (%s) (fail closed)" % (rel, pt.group(1) if pt else "none"))
+            elif n == "cosign attest":
+                ty = re.search(r"--type[ =]+(\S+)", line)
+                v = ty.group(1).strip("\"'") if ty else None
+                if v and re.fullmatch(r"https?://\S+", v): add(v)
+                elif v and v in SHORT: add(SHORT[v])
+                else: bad.append("%s: cosign attest with an unresolved --type (%s) (fail closed)" % (rel, v or "none"))
+            elif e.get("pseudo"): add(e["pseudo"])
+            else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
+scripts = {}
+for f in files:
+    rel = os.path.relpath(f, base); txt = open(f).read()
+    scan(rel, txt)
+    for m in RUNNER.finditer(logical(strip(txt))):
+        sp = os.path.normpath(m.group(1))
+        scripts.setdefault(sp, set()).add(rel)
+for sp in sorted(scripts):
+    full = os.path.join(base, sp)
+    if sp == "bin/chain-verify.py" or not os.path.isfile(full): continue
+    scan(sp, open(full).read())
 types = [r.get("type") for r in rows]
 for t in sorted(produced):
     if types.count(t) == 0: bad.append("produced type has no row: %s (in %s)" % (t, ", ".join(sorted(produced[t]))))
@@ -81,6 +109,7 @@ for c in set(claims):
 print("; ".join(dict.fromkeys(bad)) or "ok")
 sys.exit(1 if bad else 0)
 PY
+export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json"
 judge() { python3 "$work/judge.py" "$1"; }
 expect() { # expect ok|caught LABEL DIR
   local out rc=0
@@ -142,10 +171,26 @@ d=$(mk comp); mkdir -p "$d/.github/actions/x"; printf 'runs:\n  using: composite
 expect caught "a composite action that signs with no row fails" "$d"
 d=$(mk wsl); printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c -a slsa -- ./x\n' > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json" 2>/dev/null || true
 expect caught "witness run -a slsa produces provenance; with its row removed it fails" "$d"
+d=$(mk sbom); printf 'jobs:\n  c:\n    steps:\n      - uses: actions/attest-sbom@%s # v3\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"
+expect caught "actions/attest-sbom (a known signer with no finer resolver) with no row fails" "$d"
+d=$(mk gen); printf 'jobs:\n  c:\n    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@%s\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json" 2>/dev/null || true
+expect caught "slsa-github-generator produces provenance; with its row removed it fails" "$d"
+for form in '-a=slsa' '-a product,slsa' '--attestations slsa' '--attestor slsa'; do
+  d=$(mk "wf_$(printf '%s' "$form" | tr -c 'a-z' _)"); printf 'jobs:\n  c:\n    steps:\n      - run: witness run --step c %s -- ./x\n' "$form" > "$d/.github/workflows/stage-verify.yml"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json" 2>/dev/null || true
+  expect caught "witness run $form produces provenance; with its row removed it fails" "$d"
+done
+d=$(mk trailing); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG" # verify only\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "a trailing comment exempts nothing (cosign sign with no row still fails)" "$d"
+d=$(mk script); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/publish.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish.sh"
+expect caught "a script a workflow runs signs an image with no row (bin/publish.sh)" "$d"
+d=$(mk scriptvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: ./bin/publish.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/publish.sh"
+expect caught "a script a workflow runs attests with an unresolved type: fails closed" "$d"
+d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
+expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=19
+EXPECT=29
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
