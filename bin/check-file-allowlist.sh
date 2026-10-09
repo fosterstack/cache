@@ -76,6 +76,7 @@ ALLOW_PATTERNS=(
   '^bin/vex-forms-test\.sh$'
   '^bin/vex-index\.py$'
   '^bin/vex-index-test\.sh$'
+  '^bin/fips-image-posture\.py$'
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
   '^bin/branch-sweep-test\.sh$'
