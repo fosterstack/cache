@@ -26,8 +26,8 @@ treats remote-cache failures as non-fatal by design: the build still succeeds
 (exit code 0) and simply doesn't use the cache. A rejected login is not hidden,
 though: Gradle prints a `401: Unauthorized` line and "The remote build cache was
 disabled during the build due to errors." at the default log level (tested with
-Gradle 9.8.0; see §5). Other kinds of misconfiguration can be quieter, so run
-with `-i` when you want to see what the remote is actually doing.
+Gradle 9.8.0; see §5). Run with `-i` when you want more detail about what the
+remote is doing.
 
 ## 2. Point it at your server
 
@@ -132,9 +132,9 @@ build, so a build started from a shell, IDE or CI job that lacks
 a different terminal. In our tests the Gradle daemon did **not** keep a stale
 copy: with a daemon started without the password, exporting it and running the
 same build again (same daemon) took the entries from the cache, and exporting a
-wrong one made the 401 come back at once. (Tested: Gradle 9.8.0, JDK 21, Linux
-aarch64 in Docker, and Gradle 9.8.0 on macOS arm64; other Gradle versions and
-JDKs were not tested.)
+wrong one made the 401 come back at once. (Tested against FosterStack Cache 0.2.1: Gradle 9.8.0, JDK 21, Linux aarch64 in
+Docker, and Gradle 9.8.0 on macOS arm64. Other Gradle versions and JDKs were not
+tested, and neither was a rejected *push*.)
 
 What you will see when the credentials are wrong or missing: the build succeeds,
 and Gradle prints, at the default log level,
@@ -144,7 +144,7 @@ Could not load entry <key> from remote build cache: Loading entry from 'http://1
 The remote build cache was disabled during the build due to errors.
 ```
 
-Two fixes, in order of durability:
+Two things to do, in order of durability:
 
 1. **Put it in your user `gradle.properties`** — `~/.gradle/gradle.properties`,
    never the one in the repo, and never committed:
@@ -157,7 +157,7 @@ Two fixes, in order of durability:
    password = providers.gradleProperty("fscachePassword").orNull
    ```
 
-2. **Check the variable in the shell you build from** (`echo "${FSCACHE_PASSWORD:+set}"`).
+2. **Check the variable in the shell you build from, as a diagnostic** (`echo "${FSCACHE_PASSWORD:+set}"`).
    If a build still reports a 401 after you fix it, `./gradlew --stop` starts a
    fresh daemon; we did not need it in our tests.
 

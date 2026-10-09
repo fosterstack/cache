@@ -286,7 +286,7 @@ cost.
 
 **Wire the credentials into the runner too.** Configuring the server alone is
 half the plumbing — the build needs the same Secret in its environment, or every
-request 401s silently (see [gradle.md](gradle.md#5-credentials-that-stop-working-on-monday)):
+request is rejected with a 401 and the remote cache is switched off for that build (see [gradle.md](gradle.md#5-credentials-that-stop-working-on-monday)):
 
 ```yaml
 # In your runner pod spec / ARC RunnerScaleSet template
@@ -309,7 +309,7 @@ spec:
 The explicit `secretKeyRef` mapping matters: the Secret's keys are
 `username` and `password`, so an `envFrom` shortcut would inject variables
 with *those* names — not the `FSCACHE_USERNAME` and `FSCACHE_PASSWORD` the
-`settings.gradle.kts` above reads — and every request would 401 silently.
+`settings.gradle.kts` above reads — and every request would be rejected with a 401.
 (An earlier revision of this page made exactly that mistake.)
 
 ## Reaching it from outside the cluster
