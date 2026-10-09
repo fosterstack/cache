@@ -87,15 +87,35 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/release-identity.json
 """.split())
 if len(DECLARED) != 39: errs.append("declared list is not 39 paths: %d" % len(DECLARED))
+# Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
+ALLOWED_MENTIONS = {
+    'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
+    'for pattern in "${ALLOW_PATTERNS[@]}"; do',                         # the allow loop
+    'for pattern in "${SUPPRESSION_PATTERNS[@]}"; do',                   # the unchanged-suppression loop
+    'echo "add a pattern to ALLOW_PATTERNS in bin/check-file-allowlist.sh." >&2',  # the hint text on a blocked path
+}
+# Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
+# be added without touching the test.
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 132, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
-inarr = False; inregion = False; n = 0
+inarr = False; inregion = False; n = 0; cur = None; counts = {'ALLOW': 0, 'SUPPRESSION': 0}
 for i, l in enumerate(lines, 1):
-    if re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l): inarr = True; inregion = False; continue
+    mm = re.match(r'^(ALLOW|SUPPRESSION)_PATTERNS=\($', l)
+    if mm: inarr = True; inregion = False; cur = mm.group(1); continue
     if inarr and l == ')': inarr = False; inregion = False; continue
     if not inarr:
-        if re.search(r'PATTERNS\+=', l) and l.strip() != 'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")':
-            errs.append("line %d: PATTERNS+= outside the arrays: %s" % (i, l))
+        code = l.strip()
+        if code.startswith('#'): continue
+        # Fail closed: outside the two array blocks, EVERY line that mentions PATTERNS (any form: index
+        # assignment, mapfile, read -a, eval, unset, declare/local -n, printf -v, a re-assignment, a nameref)
+        # must be exactly one of the lines in ALLOWED_MENTIONS, which are all the lines that genuinely exist today.
+        if 'PATTERNS' in code and code not in ALLOWED_MENTIONS:
+            errs.append("line %d: unlisted mention of PATTERNS outside the arrays: %s" % (i, l))
+        # Constructs that could mutate an array indirectly are refused anywhere outside comments
+        # (none exists today; `local ref=` / `local mb` are plain locals and stay allowed).
+        if re.search(r'(^|[^A-Za-z0-9_])(eval|declare|typeset|mapfile|readarray|unset|source)([^A-Za-z0-9_]|$)|printf\s+-v|\blocal\s+-[A-Za-z]*n|\bread\s+-[A-Za-z]*a|\$\{!', code):
+            errs.append("line %d: array-mutating construct (eval/declare/mapfile/readarray/unset/source/printf -v/nameref/read -a/indirection) not allowed: %s" % (i, l))
         continue
     if l.strip() == '' : inregion = False; continue
     if l.lstrip().startswith('#'):
@@ -104,8 +124,10 @@ for i, l in enumerate(lines, 1):
     m = re.match(r"^  '([^']*)'( *#.*)?$", l)
     if not m:
         errs.append("line %d: pattern line not in the canonical form  two spaces, one single-quoted pattern: %s" % (i, l)); continue
-    pats.append((i, m.group(1)))
+    pats.append((i, m.group(1))); counts[cur] += 1
     if inregion: region.append((i, m.group(1)))
+if (counts['ALLOW'], counts['SUPPRESSION']) != (EXPECT_ALLOW, EXPECT_SUPPRESSION):
+    errs.append("pattern lines: ALLOW %d (declared %d), SUPPRESSION %d (declared %d); update the test in the same commit" % (counts['ALLOW'], EXPECT_ALLOW, counts['SUPPRESSION'], EXPECT_SUPPRESSION))
 if not str(loaded).isdigit(): errs.append("could not load the arrays in bash: %s" % loaded)
 elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash loads %s" % (len(pats), loaded))
 def toplevel_bar(p):
@@ -171,6 +193,26 @@ mutcheck "tab-indented"                   "s/^  ('\^bin\/vendor-check)/\t\1/"
 mutcheck "two patterns on one line"       "s/^  ('\^bin\/vendor-check\\\\\.sh\\$')/  \1 '^x\$'/"
 mutcheck "top-level bar pattern"          "s/^  '\^bin\/vendor-check\\\\\.sh\\$'/  '^.*|x\$'/"
 mutcheck "extra ALLOW_PATTERNS+= outside" "s/^SUPPRESSION_PATTERNS=\(/ALLOW_PATTERNS+=('^.*\$')\nSUPPRESSION_PATTERNS=(/"
+# Fail-closed mutants for the "any other mention of the arrays" class and the pattern-line counts (built with awk
+# from the real file: insert <text> after the first line matching <regex>, after the SUPPRESSION array's close when
+# <regex> is ^\)$ and the 2nd occurrence is wanted).
+mutins() { # <desc> <nth-occurrence-of-line-")"> <text>
+  awk -v n="$2" -v t="$3" '{print} /^\)$/{c++; if(c==n) print t}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+  if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" "$3"; else gp "struct check kills mutant: $1"; fi
+}
+mutins "index assignment after the arrays"  2 "ALLOW_PATTERNS[\${#ALLOW_PATTERNS[@]}]='^evil/.*\$'"
+mutins "mapfile -t ALLOW_PATTERNS"          2 "mapfile -t ALLOW_PATTERNS < <(echo '^evil/.*\$')"
+mutins "read -a ALLOW_PATTERNS"             2 "read -a ALLOW_PATTERNS <<< '^evil/.*\$'"
+mutins "eval of an append"                  2 "eval 'ALLOW_PATTERNS+=(\"^evil/.*\$\")'"
+mutins "unset an element"                   2 "unset 'ALLOW_PATTERNS[3]'"
+mutins "declare -n alias then append"       2 "declare -n alias=ALLOW_PATTERNS; alias+=('^evil/.*\$')"
+mutins "printf -v element"                  2 "printf -v 'ALLOW_PATTERNS[200]' '%s' '^evil/.*\$'"
+mutins "re-assignment with a new element"   2 "ALLOW_PATTERNS=(\"\${ALLOW_PATTERNS[@]}\" '^evil/.*\$')"
+awk '/^  # v0.3.0 build chain/{r=1} {print} r&&/^$/{print "  \x27^evil/.*$\x27"; r=0}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: wide pattern after the region blank line" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern after the region blank line" ""; else gp "struct check kills mutant: wide pattern after the region blank line"; fi
+# a wide pattern line inside an older block (after the first pattern line of ALLOW_PATTERNS)
+awk '{print} /^ALLOW_PATTERNS=\(/{f=1} f&&/^  \x27/&&!d{print "  \x27^evil/.*$\x27"; d=1}' bin/check-file-allowlist.sh > "$_mut_dir/m.sh"
+if cmp -s bin/check-file-allowlist.sh "$_mut_dir/m.sh"; then gf "mutant did not apply: older block" ""; elif struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: wide pattern in an older block" ""; else gp "struct check kills mutant: wide pattern in an older block"; fi
 rm -rf "$_mut_dir"
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
 run_ref() {
