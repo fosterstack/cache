@@ -2266,12 +2266,12 @@ requirements:
       - id: REQ-CHAIN-001-AC4
         given: "provenance written by the Sign job"
         when: "bin/chain-verify.py checks it"
-        then: "it is a standard SLSA provenance record (v1) signed keyless with a certificate whose identity is exactly stage-sign.yml of this repository at the tag and whose OIDC issuer is GitHub Actions, with the timestamp authority's stamp; provenance signed under any other identity (Build's, Rebuild's, Check's, a sibling file, a file whose name only resembles Sign's, another repository, another tag or a branch) is refused and the refusal names the identity found; provenance presented as any other stage's record is refused"
+        then: "it is a standard SLSA provenance record (v1) signed keyless with a certificate whose identity is exactly stage-sign.yml of this repository at the tag (the certificate's SAN), whose top-level workflow (the Build Config URI extension) is release.yml of this repository at the same tag, and whose OIDC issuer is GitHub Actions, with the timestamp authority's stamp; provenance signed under any other identity (Build's, Rebuild's, Check's, a sibling file, a file whose name only resembles Sign's, another repository, another tag or a branch) is refused, and so is a certificate that has Sign's SAN but was issued to a run of any other top-level workflow (a second workflow that calls stage-sign.yml), one at another tag or on a branch, and one with the issuer or the Build Config URI extension missing and the refusal names the identity found; provenance presented as any other stage's record is refused"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-001-AC5
         given: "a dry run on GitHub in which a deliberately hostile Build step runs (the runtime proof; the static judge alone does not satisfy this AC)"
-        when: "the step tries, as five separate cases each on its own, to mint a certificate in Sign's identity, to read Sign's token, to read Sign's key material, to hand Sign code or a path instead of digests, and to forge provenance that Release would accept"
+        when: "the step tries, as six separate cases each on its own, to mint a certificate in Sign's identity, to read Sign's token, to read Sign's key material, to hand Sign code or a path instead of digests, to forge provenance that Release would accept, and to get provenance accepted from a second workflow that calls stage-sign.yml at the tag (that workflow exists only on a throwaway commit of the pull request branch and is removed before the merge)"
         then: "every attempt fails or is refused by Release's checks, each outcome is the verifier's own result (its exit code), never the hostile step's report of itself, the refusal names the stage and the reason, the test fails if any attempt is accepted, and the GitHub dry run must be green and its run linked in the pull request before the pull request merges"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
@@ -2286,7 +2286,7 @@ requirements:
     origin: v0.3.0 rules 53, 53a, 53b, 57 (verify side) (owner RATIFIED Oct 9 2026; spikes (a) and (b), ops/handoffs/outbox/2026-10-09-harness-witness-spikes-a-c.md and 2026-10-09-pipeline-spike-b-policy.md)
     confidence: implementation-only
     notes: >
-      PR 1 writes the template and the verify side only; Release signing the finished policy (rule 57) is PR 4. Witness's stage records cannot go to Rekor (Witness has no Rekor support); they carry the timestamp authority's stamp and are kept as release evidence (rule 53b).
+      PR 1 writes the template and the verify side only; Release signing the finished policy (rule 57) is PR 4. Witness's stage records cannot go to Rekor (Witness has no Rekor support); they carry the timestamp authority's stamp and are kept as release evidence (rule 53b). Advisor reading, Oct 9 (handoff 0334; the ratified text is unchanged): a stage's identity in rules 52/52a/57 is the certificate whose SAN (Build Signer URI) is the stage file at the tag AND whose Build Config URI extension (OID 1.3.6.1.4.1.57264.1.18, the top-level workflow) is release.yml at the same tag, issued by GitHub's OIDC issuer; the policy pins all three. Witness's own verify can check the issuer but not the Build Config URI (in-toto-witness options/verify.go:80-99), so bin/chain-verify.py checks it. The OIDC issuer is read from OID .1.8; the spike certificate dumps list .1.1 and not .1.8, so the dry run must confirm .1.8 is present on a real certificate.
     acceptance_criteria:
       - id: REQ-CHAIN-002-AC1
         given: "a keyless record whose certificate expired 15 or more minutes ago"
@@ -2297,7 +2297,7 @@ requirements:
       - id: REQ-CHAIN-002-AC2
         given: "the committed policy template and a tag T"
         when: "the policy for T is made and used to check records"
-        then: "it accepts a record signed under the named stage file's identity at T, refuses a record from a sibling stage file at T, refuses the same stage file at any other tag, a tag that only begins like T, a branch, another repository or a certificate from another OIDC issuer, and pins Sigstore's root, the timestamp authority's root and the Rekor key by the hashes in the committed trust file, refusing a bundle whose hash differs"
+        then: "it accepts a record signed under the named stage file's identity at T, refuses a record from a sibling stage file at T, refuses the same stage file at any other tag, a tag that only begins like T, a branch, another repository or a certificate from another OIDC issuer, requires the certificate's Build Config URI extension to be release.yml of this repository at T (so a second workflow that calls a stage file is refused even though its SAN is the stage's), and pins Sigstore's root, the timestamp authority's root and the Rekor key by the hashes in the committed trust file, refusing a bundle whose hash differs"
         verification: { method: unit, release_blocking: true }
         status: proposed
       - id: REQ-CHAIN-002-AC3
@@ -2322,6 +2322,8 @@ requirements:
     introduced: v0.3.0
     origin: v0.3.0 rules 58, 63, 66, 67 (owner RATIFIED Oct 9 2026; pin checker scope per the owner on Oct 3, plain forms only)
     confidence: implementation-only
+    notes: >
+      AC5 is new in round 2 (harness spike (b), case 5; advisor 0334) and needs the advisor's step-5 validation. Pin checker: this repository's bin/check-action-pins.py already treats a local `uses: ./.github/workflows/x.yml` reusable call as a file checked on its own (check-action-pins.py:469-473) and reports 0 findings on release.yml's local calls today, so no checker change is needed here (the ops repo's copy differs). The real tree is red on AC5 until PR 2 stops scan.yml and main-candidate-rescan.yml from calling stage-build.yml and stage-image.yml.
     acceptance_criteria:
       - id: REQ-CHAIN-003-AC1
         given: "a stage that is handed a previous stage's record about other digests, a record signed by the wrong stage, an unsigned record or no record"
@@ -2346,4 +2348,10 @@ requirements:
         when: "bin/chain-verify.py actions reads it against .github/policy/allowed-actions.json"
         then: "it reads step and job-level uses, container images (string or mapping), services images, docker:// references and composite actions, and rejects any reference that is not a full commit or image digest on the list (a tag, a branch, a short or upper-case sha, an expression, an unlisted digest, or anything at all when the list is empty), and accepts a file whose references are all listed; repository-local reusable calls count as pinned only when named by path in the list"
         verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-003-AC5
+        given: "the workflow files of the repository"
+        when: "their job-level and step-level uses are read"
+        then: "no workflow file other than release.yml calls any stage-*.yml reusable workflow, and no stage file calls another stage file, because the certificate's SAN is the file that runs the signing step, so a workflow that calls a stage file inherits that stage's SAN (proven by the nested call in the harness spike); a reference by local path or by repository path and digest counts"
+        verification: { method: ci-workflow, release_blocking: true }
         status: proposed

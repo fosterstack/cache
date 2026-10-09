@@ -5,17 +5,22 @@
 #
 # The shape this test assumes (the implementer matches it; anything else is a change to this header first):
 #   stage-build.yml: a step `run: bash bin/chain-hostile-step.sh`, gated by `if:` mentioning inputs.hostile, in the Build job,
-#       followed by an upload of the artifact `hostile-attempts`. The script makes five attempts as five functions
-#       (rule 52a): attempt_mint_sign_cert, attempt_read_sign_token, attempt_read_sign_key, attempt_hand_sign_code,
-#       attempt_forge_provenance. It writes only the RAW MATERIAL of each attempt (a file) under attempts/, and never
+#       followed by an upload of the artifact `hostile-attempts`. The script makes six attempts as six functions
+#       (the five of rule 52a plus the advisor's 0334 case): attempt_mint_sign_cert, attempt_read_sign_token,
+#       attempt_read_sign_key, attempt_hand_sign_code, attempt_forge_provenance, attempt_call_sign_from_other_workflow
+#       (a second workflow calls stage-sign.yml at the tag: it gets Sign's SAN but its Build Config URI is not release.yml;
+#       harness spike (b)). The runtime half of that last case needs a second caller workflow, which must NOT be merged
+#       (no workflow sprawl; the AC1 test allows only stage-sign.yml as new): it lives in a throwaway commit on the PR branch
+#       (.github/workflows/hostile-caller.yml), its record is uploaded as the artifact the script reads, and the commit is
+#       removed before the merge. The unit half is chain-verify-test.sh (sign_othercaller). It writes only the RAW MATERIAL of each attempt (a file) under attempts/, and never
 #       writes an outcome: the words refused/accepted/outcome do not appear in its code, so it cannot grade itself.
 #   release.yml: job `hostile-verify` (needs the sign job) runs `python3 bin/chain-verify.py verify` on the forged
 #       provenance (a path containing "forged") and records the verifier's own exit code per attempt; job `hostile-verdict`
 #       (needs hostile-verify) runs `python3 bin/chain-verify.py hostile-verdict hostile-results.json`. Neither job holds
 #       a write permission other than id-token (a dry run cannot publish).
-#   hostile-results.json: {"attempts":[{"attempt":<one of the five>,"outcome":"refused"|"accepted","stage":
+#   hostile-results.json: {"attempts":[{"attempt":<one of the six>,"outcome":"refused"|"accepted","stage":
 #       "runner|build|sign|rebuild|check|release","reason":"<at least 8 characters naming the cause>",
-#       "judged_by":"verifier","exit_code":<int>}]}. The verdict exits 0 only when all five are present exactly once,
+#       "judged_by":"verifier","exit_code":<int>}]}. The verdict exits 0 only when all six are present exactly once,
 #       outcome refused, exit_code non-zero, judged_by "verifier" (never the hostile step's own report), a real stage and
 #       a real reason; anything else exits 1 naming the attempt and the cause.
 #   chain-verify.py hostile-verdict RESULTS.json   (the REAL script is run here; there is no inline copy of it)
@@ -29,7 +34,7 @@ pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
 python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
-attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_provenance"
+attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_provenance call_sign_from_other_workflow"
 python3 - "$work" $attempts <<'PY'
 import copy, json, sys
 w, att = sys.argv[1], sys.argv[2:]
@@ -43,6 +48,7 @@ def mut(n, i, **k):
     m = copy.deepcopy(good); m["attempts"][i].update(k); save(n, m)
 mut("accepted_forge", 4, outcome="accepted")
 mut("accepted_mint", 0, outcome="accepted")
+mut("accepted_call", 5, outcome="accepted")
 mut("selfreport", 4, judged_by="hostile-step")
 mut("exit0", 1, exit_code=0)
 mut("noreason", 0, reason="")
@@ -66,9 +72,10 @@ expect() { # ok|refuse LABEL FILE [word]
   fi
 }
 [ -f "$cv" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
-expect ok     "verdict: all five attempts refused by the verifier, each with a stage and a reason" good
+expect ok     "verdict: all six attempts refused by the verifier, each with a stage and a reason" good
 expect refuse "verdict: a forged provenance that was ACCEPTED fails the test" accepted_forge "forge_provenance"
 expect refuse "verdict: an accepted certificate mint fails the test" accepted_mint "mint_sign_cert"
+expect refuse "verdict: a second workflow calling stage-sign.yml that was ACCEPTED fails the test" accepted_call "call_sign_from_other_workflow"
 expect refuse "verdict: an outcome the hostile step graded itself is not evidence" selfreport "verifier"
 expect refuse "verdict: a 'refused' outcome with exit code 0 is a contradiction" exit0 "read_sign_token"
 expect refuse "verdict: a refusal with no reason" noreason "reason"
@@ -77,7 +84,7 @@ expect refuse "verdict: a stage that is not a stage" badstage "stage"
 expect refuse "verdict: an empty stage" nostage "stage"
 expect refuse "verdict: a missing attempt (read_sign_token)" missing "read_sign_token"
 expect refuse "verdict: a duplicated attempt" duplicate "mint_sign_cert"
-expect refuse "verdict: an attempt that is not one of the five" extra "alter_output"
+expect refuse "verdict: an attempt that is not one of the six" extra "alter_output"
 expect refuse "verdict: two rows for one attempt and none for another" renamed "read_sign_key"
 expect refuse "verdict: no attempts at all" empty "attempt"
 expect refuse "verdict: a file that is not JSON" notjson "json"
@@ -128,7 +135,7 @@ sc = os.path.join(root, "bin/chain-hostile-step.sh")
 if not os.path.exists(sc): bad.append("bin/chain-hostile-step.sh missing")
 else:
     code = "\n".join(l for l in open(sc).read().splitlines() if not l.lstrip().startswith("#"))
-    for a in ("mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance"):
+    for a in ("mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance", "call_sign_from_other_workflow"):
         if not re.search(r"^attempt_%s\(\)\s*\{" % a, code, re.M): bad.append("attempt_%s() is not defined" % a)
         if len(re.findall(r"^\s*attempt_%s\s*$" % a, code, re.M)) != 1: bad.append("attempt_%s is not called exactly once" % a)
     if re.search(r"\b(refused|accepted|outcome|judged_by)\b", code): bad.append("the hostile step writes or names an outcome; only the verifier may")
@@ -178,7 +185,7 @@ jobs:
     needs: [sign, hostile-verdict]
     uses: ./.github/workflows/stage-promote.yml
 EOF
-  { echo "# makes five attempts; writes raw material only"; for a in $attempts; do printf 'attempt_%s() { :; }\n' "$a"; done; for a in $attempts; do printf 'attempt_%s\n' "$a"; done; } > "$d/bin/chain-hostile-step.sh"
+  { echo "# makes six attempts; writes raw material only"; for a in $attempts; do printf 'attempt_%s() { :; }\n' "$a"; done; for a in $attempts; do printf 'attempt_%s\n' "$a"; done; } > "$d/bin/chain-hostile-step.sh"
   echo "$d"
 }
 wexpect ok "fixture: the known-good wiring passes the judge" "$(mk w_good)"
@@ -192,11 +199,12 @@ d=$(mk w_noverdict); sed -i.bak 's/hostile-verdict hostile-results.json/true/' "
 d=$(mk w_write); sed -i.bak 's/permissions: {contents: read}/permissions: {contents: read, packages: write}/' "$d/.github/workflows/release.yml"; wexpect caught "wiring: the verdict job may write packages in a dry run" "$d"
 d=$(mk w_nodry); sed -i.bak 's/if: .*!inputs.dry-run.*/if: true/' "$d/.github/workflows/release.yml"; wexpect caught "wiring: the release job still runs in a dry run" "$d"
 d=$(mk w_noscript); rm "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile script is missing" "$d"
-d=$(mk w_missatt); sed -i.bak '/^attempt_read_sign_key$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: one of the five attempts is never called" "$d"
+d=$(mk w_missatt); sed -i.bak '/^attempt_read_sign_key$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: one of the attempts is never called" "$d"
+d=$(mk w_missother); sed -i.bak '/^attempt_call_sign_from_other_workflow$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the second-workflow-calls-Sign attempt is never made" "$d"
 d=$(mk w_selfgrade); echo 'echo "{\"outcome\": \"refused\"}" > results.json' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step grades itself" "$d"
 d=$(mk w_comment); echo '# a refused attempt is written by the verifier, not here' >> "$d/bin/chain-hostile-step.sh"; wexpect ok "wiring: the word refused in a comment is fine (comments are not code)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-EXPECT=31
+EXPECT=33
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

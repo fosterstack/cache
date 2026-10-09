@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-002-AC4
+# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5
 # The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
 # on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
 #   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
@@ -136,9 +136,24 @@ stage-verify.yml supply-chain.yml""".split())
                 bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, tool))
     return bad
 
+def judge_calls(root):
+    """REQ-CHAIN-003-AC5: a certificate's SAN is the file that runs the witness step (harness spike (b), case 5: a stage that
+    calls another stage's file gets that file's SAN). So only release.yml may call a stage-*.yml reusable workflow."""
+    bad = []
+    wd = os.path.join(root, ".github/workflows")
+    for fn in sorted(os.listdir(wd)):
+        if not fn.endswith((".yml", ".yaml")) or fn == "release.yml": continue
+        try: d = yaml.load(open(os.path.join(wd, fn)).read(), Loader=yaml.BaseLoader) or {}
+        except Exception as e: bad.append("AC5: %s does not parse (%s)" % (fn, e)); continue
+        for jn, j in (d.get("jobs") or {}).items():
+            refs = [str(j.get("uses", ""))] + [str(s.get("uses", "")) for s in (j.get("steps") or [])]
+            for r in refs:
+                if re.search(r"\.github/workflows/stage-[^@\s]*\.ya?ml", r): bad.append("AC5: %s job %s calls %s; only release.yml may call a stage file" % (fn, jn, r))
+    return bad
+
 if __name__ == "__main__":
     which, arg = sys.argv[1], sys.argv[2]
-    bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree}[which](arg)
+    bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree, "calls": judge_calls}[which](arg)
     print("; ".join(dict.fromkeys(bad)) or "ok"); sys.exit(1 if bad else 0)
 PY
 judge() { python3 "$work/judge.py" "$@"; }
@@ -271,11 +286,25 @@ d=$(mk t_noreason); sed -i.bak 's/"reason":"CI patch tag (REQ-REL-009-AC5)"/"rea
 expect caught "AC1 a listed signer with no reason" tree "$d"
 d=$(mk t_nolist); rm "$d/.github/policy/chain-signers.json"
 expect caught "AC1 no chain-signers.json" tree "$d"
+# 003-AC5: only release.yml calls a stage file (a stage that calls another stage gets that stage's SAN: spike (b) case 5)
+d=$(mk c_good); printf 'jobs:\n  s:\n    uses: ./.github/workflows/stage-sign.yml\n  b:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/release.yml"
+expect ok "003-AC5 fixture: release.yml calls every stage file" calls "$d"
+d=$(mk c_nested); printf 'jobs:\n  x:\n    uses: ./.github/workflows/stage-sign.yml\n' > "$d/.github/workflows/stage-build.yml"
+expect caught "003-AC5 stage-build.yml calls stage-sign.yml (nested call)" calls "$d"
+d=$(mk c_second); printf 'on: push\njobs:\n  x:\n    uses: ./.github/workflows/stage-sign.yml\n' > "$d/.github/workflows/ci.yml"
+expect caught "003-AC5 a second workflow (ci.yml) calls stage-sign.yml" calls "$d"
+d=$(mk c_remote); printf 'jobs:\n  x:\n    uses: fosterstack/cache/.github/workflows/stage-sign.yml@%s\n' "$sha" > "$d/.github/workflows/auditor.yml"
+expect caught "003-AC5 a second workflow calls stage-sign.yml by repository path and digest" calls "$d"
+d=$(mk c_step); printf 'jobs:\n  x:\n    steps:\n      - uses: ./.github/workflows/stage-verify.yml\n' > "$d/.github/workflows/stage-promote.yml"
+expect caught "003-AC5 a step-level reference to a stage file from another stage" calls "$d"
+d=$(mk c_yaml); printf 'jobs:\n  x:\n    uses: ./.github/workflows/stage-build.yml\n' > "$d/.github/workflows/other.yaml"
+expect caught "003-AC5 a .yaml workflow calling a stage file" calls "$d"
 # the real repository (RED until stage-sign.yml exists and PRs 2-4 remove the old provenance signers)
 expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
 expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
-EXPECT=46
+expect ok "the real tree: only release.yml calls a stage file (003-AC5)" calls "$root"
+EXPECT=53
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

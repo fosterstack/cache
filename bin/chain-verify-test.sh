@@ -12,6 +12,17 @@
 # makes that a failure, and CI sets it). Every refusal case is judged by exit code 1 (0 accepted; anything else, such
 # as a missing script or a Python traceback, is an ERROR and fails the case) AND by words the message must contain.
 #
+# Certificate extensions: Witness's verify checks only the Fulcio extensions it has flags for (issuer, build trigger, source
+# repository digest/ref/identifier, run invocation URI: in-toto-witness options/verify.go:80-99, passed on at cmd/verify.go:215)
+# and its certConstraint matches only commonname/dns/email/org/uri (harness spike (b) line 8). It has NO check for the Build
+# Config URI (Fulcio OID 1.3.6.1.4.1.57264.1.18, the calling top-level workflow). So bin/chain-verify.py must check, itself,
+# on every Sign record: SAN == stage-sign.yml@tag AND 1.18 == release.yml@the same tag AND issuer (1.8) == the policy issuer;
+# a missing extension is a refusal. OID check: Fulcio's oid-info (cited in options/verify.go:81) numbers .1.8 issuer v2,
+# .1.9 Build Signer URI (= the SAN), .1.18 Build Config URI; this agrees with the spike-b dump (.1.9 = SAN, .1.18 = caller).
+# MISMATCH TO CONFIRM IN THE DRY RUN: the spike dumps list the issuer as .1.1 (the deprecated v1 extension) and do not show
+# .1.8; Fulcio docs say both are issued. These fixtures carry .1.8 only; if a real cert lacks it the implementer must decide
+# (read .1.1 as a fallback) and the advisor should rule, since a fallback changes the refusal case "no issuer extension".
+#
 # Real formats this models (Modelled on, read-only clones):
 #   Witness collection: predicateType https://witness.testifysec.com/attestation-collection/v0.1 inside a Statement
 #     _type https://in-toto.io/Statement/v0.1 (in-toto-witness docs/tutorials/artifact-policy.md:60-70; the ops spike
@@ -185,9 +196,13 @@ _n = [0]
 STMT = {"v0.1": "https://in-toto.io/Statement/v0.1", "v1": "https://in-toto.io/Statement/v1"}
 DSSE = "application/vnd.in-toto+json"
 def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, tsa="tsa", signed=True, repo=REPO, issuer=ISSUER,
-           stmt="v1", dsse=DSSE, payload=None):
+           stmt="v1", dsse=DSSE, payload=None, config_wf="release.yml", config_ref=None, no_config=False, no_issuer=False):
     _n[0] += 1; leaf = "leaf%d" % _n[0]
-    ext = "subjectAltName = critical,URI:" + uri(wf, ref, repo) + "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + issuer
+    ext = "subjectAltName = critical,URI:" + uri(wf, ref, repo)
+    if not no_issuer: ext += "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + issuer
+    # Build Config URI (Fulcio 1.3.6.1.4.1.57264.1.18) = the TOP-LEVEL workflow that called the stage (workflow_ref); the SAN
+    # (Build Signer URI, .1.9) is the called file. Harness spike (b): a second workflow that calls stage-sign.yml gets Sign's SAN.
+    if not no_config: ext += "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri(config_wf, config_ref or ref, repo)
     issue(ca, leaf, ext, start or now - dt.timedelta(minutes=5), end or now + dt.timedelta(minutes=10))
     if payload is None:
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {},
@@ -220,7 +235,7 @@ dj("digests-null.json", dict(D, apk=None))
 open(p("digests-dupkey.json"), "w").write('{"image-production":"sha256:%s","image-fips":"sha256:%s","apk":"sha256:%s","apk":"sha256:%s"}' % ("a" * 64, "b" * 64, "d" * 64, "c" * 64))
 dj("digests-codename.json", {"image-production;curl evil": D["image-production"], "image-fips": D["image-fips"], "apk": D["apk"]})
 STAGES = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml", "release": "stage-promote.yml"}
-json.dump({"repository": REPO, "oidc_issuer": ISSUER, "stages": {k: {"workflow": ".github/workflows/" + v} for k, v in STAGES.items()}}, open(p("template.json"), "w"))
+json.dump({"repository": REPO, "oidc_issuer": ISSUER, "caller_workflow": ".github/workflows/release.yml", "stages": {k: {"workflow": ".github/workflows/" + v} for k, v in STAGES.items()}}, open(p("template.json"), "w"))
 sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", p("rekor.key"))
 sh("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", p("rekor2.key"))
 for k in ("rekor", "rekor2"): sh("openssl", "pkey", "-in", p(k + ".key"), "-pubout", "-out", p(k + ".pub"))
@@ -249,6 +264,12 @@ add("sign_othertag", STAGES["sign"], T2, PROV, D)
 add("sign_branch", STAGES["sign"], "refs/heads/main", PROV, D)
 add("sign_wrongrepo", STAGES["sign"], T, PROV, D, repo="attacker/cache")
 add("sign_badissuer", STAGES["sign"], T, PROV, D, issuer="https://accounts.google.com")
+add("sign_noissuer", STAGES["sign"], T, PROV, D, no_issuer=True)
+# advisor reading 1 (0334): Sign's identity = SAN stage-sign.yml@tag + Build Config URI release.yml@same tag + the GitHub issuer
+add("sign_othercaller", STAGES["sign"], T, PROV, D, config_wf="other-caller.yml")        # a second workflow that CALLS stage-sign.yml
+add("sign_callertag", STAGES["sign"], T, PROV, D, config_ref=T2)                          # right SAN, caller at another tag
+add("sign_callerbranch", STAGES["sign"], T, PROV, D, config_ref="refs/heads/main")        # right SAN, caller on a branch
+add("sign_noconfig", STAGES["sign"], T, PROV, D, no_config=True)                          # Build Config URI extension absent
 add("sign_wrongroot", STAGES["sign"], T, PROV, D, ca="otherroot")
 add("sign_otherdigests", STAGES["sign"], T, PROV, dict(D, apk="sha256:" + "d" * 64))
 add("sign_coll", STAGES["sign"], T, COLL, D, stmt="v0.1")
@@ -327,6 +348,7 @@ $O verify -CAfile "$work/root.pem" -untrusted "$work/interm.pem" "$work/leaf1.pe
 $O verify -CAfile "$work/otherroot.pem" -untrusted "$work/interm.pem" "$work/leaf1.pem" > /dev/null 2>&1 && bad "fixture: leaf must NOT chain to the other root" || ok "fixture: other root does not verify the leaf"
 $O x509 -in "$work/leaf1.pem" -noout -ext subjectAltName 2> /dev/null | grep -F -q 'stage-sign.yml@refs/tags/v0.3.0' && ok "fixture: leaf SAN is the Sign file at the tag" || bad "fixture: leaf SAN"
 $O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null | grep -F -q '1.3.6.1.4.1.57264.1.8' && ok "fixture: leaf carries the Fulcio OIDC-issuer extension" || bad "fixture: issuer extension"
+$O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null | grep -F -q '1.3.6.1.4.1.57264.1.18' && ok "fixture: leaf carries the Build Config URI extension (.1.18)" || bad "fixture: Build Config URI extension"
 grep -F -q "fixtures ok" "$work/fx.log" && ok "fixture: the timestamp token verifies against the TSA root (openssl ts -verify)" || bad "fixture: timestamp token"
 python3 - "$work" <<'PY' && ok "fixture: the real envelope shape (base64 PEM certificate, intermediates, Statement v0.1 collection, policy payloadType)" || bad "fixture: envelope shape"
 import base64, json, sys
@@ -370,12 +392,19 @@ expect_refuse "002-AC2 the same file on a branch is refused" "refs/heads/main" v
 expect_refuse "002-AC2 a file whose name merely starts with stage-sign.yml is refused" "stage-sign.yml.evil" verify $(V) --stage sign $(rec evilext_as_sign) $(R)
 expect_refuse "002-AC2 a file whose name merely ends with stage-sign.yml is refused" "xstage-sign.yml" verify $(V) --stage sign $(rec xprefix_as_sign) $(R)
 expect_refuse "002-AC2 the right file in another repository is refused" "attacker/cache" verify $(V) --stage sign $(rec sign_wrongrepo) $(R)
+expect_refuse "001-AC4 provenance whose certificate has Sign's SAN but another calling workflow is refused and the caller is named" "other-caller.yml" verify $(V) --stage sign $(rec sign_othercaller) $(R)
 expect_refuse "002-AC2 a certificate from another OIDC issuer is refused" "issuer" verify $(V) --stage sign $(rec sign_badissuer) $(R)
+expect_refuse "002-AC2 right SAN but the top-level workflow is another file that calls stage-sign.yml is refused" "other-caller.yml" verify $(V) --stage sign $(rec sign_othercaller) $(R)
+expect_refuse "002-AC2 right SAN but the calling release.yml is at another tag is refused" "v0.3.1" verify $(V) --stage sign $(rec sign_callertag) $(R)
+expect_refuse "002-AC2 right SAN but the calling release.yml is on a branch is refused" "refs/heads/main" verify $(V) --stage sign $(rec sign_callerbranch) $(R)
+expect_refuse "002-AC2 a certificate with no Build Config URI extension is refused" "build config" verify $(V) --stage sign $(rec sign_noconfig) $(R)
+expect_refuse "002-AC2 a certificate with no OIDC-issuer extension is refused" "issuer" verify $(V) --stage sign $(rec sign_noissuer) $(R)
 expect_refuse "002-AC2 a certificate from another root is refused" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 python3 - "$root" 2> /dev/null <<'PY' && ok "002-AC2 .github/policy/release-policy.template.json names the five stage files and the issuer" || bad "002-AC2 committed template missing or wrong"
 import json, sys
 t = json.load(open(sys.argv[1] + "/.github/policy/release-policy.template.json"))
 want = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml", "release": "stage-promote.yml"}
+assert t["caller_workflow"] == ".github/workflows/release.yml", t.get("caller_workflow")
 assert t["repository"] == "fosterstack/cache" and t["oidc_issuer"] == "https://token.actions.githubusercontent.com"
 assert {k: v["workflow"].rsplit("/", 1)[-1] for k, v in t["stages"].items()} == want, t["stages"]
 PY
@@ -541,7 +570,7 @@ assert all(re.fullmatch(r"[^@\s]+@[0-9a-f]{40}", x) for x in a["actions"]), a["a
 assert all(re.fullmatch(r"[^@\s]+@sha256:[0-9a-f]{64}", x) for x in a["images"]), a["images"]
 PY
 
-EXPECT=140
+EXPECT=147
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
