@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5 (interface only, see the gap below), REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7
-# RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh do not exist): step 4.
+# proves: REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5 (interface only, see the gap below), REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12
+# RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
+# bin/witnessed.sh do not exist): step 4.
 #
 # The behaviour of the Check scripts (v0.3.0 rules 55, 66, 72, 79; advisor read-back approved Oct 9). Each script is run in a throw-away tree
 # with FAKE tools first on PATH (fake grype / osv-scanner / docker / curl, in the way PR 1's tests put a fake cosign on PATH: no test-only code
@@ -30,6 +31,12 @@
 #         server) cannot be faked here without re-implementing them, so only the interface (unknown kind, missing images) is tested below; that a
 #         failing suite fails the script and that a suite which ran no test fails it (REQ-CHAIN-006-AC5) is proven by the implementation PR's
 #         dry run on GitHub, and by the review brief which asks the reviewers to read those suites.
+#   [P] bin/check-stage.sh PHASE (scanners|acceptance|runtime): verifies Build's record and Sign's provenance FIRST (every phase), then runs only
+#         that phase's checks in the order of bin/chain-check-shape.py PHASES; an unknown phase exits 2 naming it; a failed verify runs no check.
+#   [P] bin/witnessed.sh STEP SCRIPT [ARGS] (PR 2's helper; the rule 68 cap, as amended by the owner Oct 9): fetches the identity token, runs
+#         `witness run --step STEP ... -o witness-records/STEP.json -- timeout 540 bash SCRIPT ARGS`. Fake curl / witness / timeout on PATH below.
+#         WHAT IS NOT FIXED: what real `witness run` does with a command that exits non-zero (here: no record is written; the dry run decides) and
+#         that a real 9-minute overrun is killed by `timeout` (here a fake timeout that reports expiry as GNU timeout does, exit 124).
 # SATISFIABLE: the 40 cases were run against a throw-away reference implementation (not committed) and all pass, so no case is unsatisfiable.
 # Modelled on: in-toto-witness docs/tutorials/artifact-policy.md:58-70 (what a product holds), PR 1's fake-cosign approach, the existing
 # stage-verify.yml (what a scanner leg does today).
@@ -220,7 +227,71 @@ want_fail "AC7 a missing guide file fails" guide "${GUIDE[@]}"
 want_rc "AC5 an unknown suite name is a named refusal (exit 2)" 2 check-acceptance.sh nosuch --digests digests.json --images images --out out
 want_rc "AC5 no suite name is a named refusal (exit 2)" 2 check-acceptance.sh --digests digests.json --images images --out out
 want_rc "AC5 a missing image directory is a named refusal (exit 2)" 2 check-acceptance.sh gradle --digests digests.json --images /nonexistent --out out
-EXPECT=40
+# ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed.sh and its 9-minute cap -------------------------------------------
+hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
+cp "$root/bin/witnessed.sh" "$hw/bin/" 2> /dev/null || true
+printf '#!/usr/bin/env bash\necho "step $*" >> "$HW_LOG"\n[ -z "${STEP_FAIL:-}" ] || exit 1\n' > "$hw/bin/step.sh"
+cat > "$hw/fakebin/curl" <<'EOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do [ "$1" = -o ] && { shift; printf '{"value":"fake-token-value"}' > "$1"; }; shift; done
+EOF
+cat > "$hw/fakebin/timeout" <<'EOF'
+#!/usr/bin/env bash
+echo "timeout $1" >> "$HW_LOG"
+[ -z "${FAKE_OUTLIVE:-}" ] || exit 124
+shift; exec "$@"
+EOF
+cat > "$hw/fakebin/witness" <<'EOF'
+#!/usr/bin/env bash
+echo "witness $*" >> "$HW_ARGV"
+out=""; a=("$@"); for i in "${!a[@]}"; do [ "${a[$i]}" = -o ] && out=${a[$((i + 1))]}; [ "${a[$i]}" = -- ] && { cmd=("${a[@]:$((i + 1))}"); break; }; done
+"${cmd[@]}" || exit $?
+printf '{"fake":"record"}' > "$out"
+EOF
+chmod +x "$hw/fakebin/"*
+hrun() { # hrun [VAR=val...] -- STEP SCRIPT ARGS...  (runs in the helper tree, fakes first on PATH)
+  local env=(); while [ "$1" != -- ]; do env+=("$1"); shift; done; shift; rc=0
+  out=$( (cd "$hw" && env "${env[@]}" PATH="$hw/fakebin:$PATH" HW_LOG="$work/hwlog" HW_ARGV="$work/hwargv" RUNNER_TEMP="$hw/tmp" \
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN=t ACTIONS_ID_TOKEN_REQUEST_URL="http://x/?a=b" bash bin/witnessed.sh "$@") 2>&1) || rc=$?
+}
+reset_h() { rm -rf "$hw/witness-records"; : > "$work/hwlog"; : > "$work/hwargv"; }
+reset_h; hrun X=1 -- scanners bin/step.sh scanners
+h_ok=0; [ "$rc" = 0 ] && [ -f "$hw/witness-records/scanners.json" ] && h_ok=1
+if [ "$rc" = 0 ] && [ -f "$hw/witness-records/scanners.json" ] && grep -q '^step scanners' "$work/hwlog"; then ok "AC11 the helper runs the script with its arguments under Witness and writes witness-records/STEP.json"; else bad "AC11 helper normal run -> rc=$rc ${out:0:140}"; fi
+if [ "$(grep -c '^timeout ' "$work/hwlog")" = 1 ] && grep -qx 'timeout 540' "$work/hwlog"; then ok "AC11 the wrapped command is run through exactly one timeout of 540 seconds (9 minutes)"; else bad "AC11 the helper must run the command through exactly one 'timeout 540': $(tr '\n' ' ' < "$work/hwlog")"; fi
+if grep -q -- '--step scanners' "$work/hwargv" && grep -q -- '-o witness-records/scanners.json' "$work/hwargv" && grep -q -- '-t https://timestamp.sigstore.dev/api/v1/timestamp' "$work/hwargv" \
+   && grep -q -- '--env-filter-sensitive-vars' "$work/hwargv" && ! grep -Eq -- '-a [a-z,-]*(github|slsa)' "$work/hwargv"; then ok "AC9 the helper gives Witness the step name, the record path, the Sigstore timestamp authority and the environment filter, and never the github or slsa attestor"; else bad "AC9 witness argv: $(cat "$work/hwargv" | cut -c1-200)"; fi
+if [ "$h_ok" = 1 ] && ! grep -rq 'fake-token-value' "$work/hwargv" "$work/hwlog" "$hw/witness-records" 2> /dev/null; then ok "AC9 the token value is in no argument, log or record (only its file path is passed)"; else bad "AC9 the token value leaked into the argv, log or record"; fi
+reset_h; hrun FAKE_OUTLIVE=1 -- scanners bin/step.sh scanners
+if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-records/scanners.json" ]; then ok "AC11 a command that outlives the cap makes the helper fail (exit $rc) and leaves no record"; else bad "AC11 an overrun must fail with no record: rc=$rc"; fi
+reset_h; hrun STEP_FAIL=1 -- acceptance bin/step.sh acceptance
+if [ "$h_ok" = 1 ] && [ "$rc" != 0 ] && [ ! -e "$hw/witness-records/acceptance.json" ]; then ok "AC11 a failing script makes the helper fail and leaves no record"; else bad "AC11 a failing script must fail with no record: rc=$rc"; fi
+reset_h; hrun X=1 -- '../x' bin/step.sh a
+if [ "$h_ok" = 1 ] && [ "$rc" = 2 ] && [ ! -s "$work/hwlog" ]; then ok "AC11 a step name that is not a plain lower-case word is refused (exit 2) before anything runs"; else bad "AC11 bad step name -> rc=$rc, log: $(cat "$work/hwlog")"; fi
+reset_h; for s in scanners acceptance runtime; do hrun X=1 -- "$s" bin/step.sh "$s"; done
+if [ "$(ls "$hw/witness-records" 2> /dev/null | tr '\n' ' ')" = "acceptance.json runtime.json scanners.json " ]; then ok "AC12 the three steps leave exactly three records in witness-records/, one per step (the next stage verifies the list)"; else bad "AC12 witness-records/ holds: $(ls "$hw/witness-records" 2> /dev/null | tr '\n' ' ')"; fi
+# ---- REQ-CHAIN-006-AC3 / AC11: bin/check-stage.sh, the fixed dispatcher (verify first, then only the phase's checks) -------------------
+dp="$work/dp"; mkdir -p "$dp/bin"; cp "$root/bin/check-stage.sh" "$dp/bin/" 2> /dev/null || true
+printf '#!/usr/bin/env bash\necho "verify $*" >> "$DP_LOG"\nexit "${VERIFY_RC:-0}"\n' > "$dp/bin/chain-verify.py"
+for s in check-scan check-fips check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n' "$s" > "$dp/bin/$s.sh"; done
+cat > "$dp/bin/python3" <<'EOF'
+#!/usr/bin/env bash
+shift; bash "bin/chain-verify.py" "$@"
+EOF
+chmod +x "$dp/bin/python3"
+drun() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" VERIFY_RC="${VERIFY_RC:-0}" bash bin/check-stage.sh "$@") 2>&1) || rc=$?; }
+drun scanners; d_ok=0; [ "$rc" = 0 ] && grep -q '^check-scan' "$work/dplog" && d_ok=1
+drun nosuch
+if [ "$d_ok" = 1 ] && [ "$rc" = 2 ] && grep -Fq 'unknown phase: nosuch' <<< "$out" && ! grep -q '^check-' "$work/dplog"; then ok "AC3 an unknown phase is refused (exit 2) naming it, and no check runs"; else bad "AC3 unknown phase -> rc=$rc: ${out:0:100}"; fi
+VERIFY_RC=1 drun scanners
+if [ "$d_ok" = 1 ] && [ "$rc" != 0 ] && ! grep -q '^check-' "$work/dplog"; then ok "AC3 when verifying Build's record fails, no check runs (rule 58)"; else bad "AC3 verify failure -> rc=$rc, log: $(tr '\n' ' ' < "$work/dplog")"; fi
+drun scanners
+if [ "$rc" = 0 ] && [ "$(grep -c '^verify' "$work/dplog")" = 2 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1 | tr '\n' ' ')" = "check-scan " ]; then ok "AC3 phase scanners: both verifications first, then only the scan"; else bad "AC3 phase scanners ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+drun acceptance
+if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+drun runtime
+if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-fips --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+EXPECT=53
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

