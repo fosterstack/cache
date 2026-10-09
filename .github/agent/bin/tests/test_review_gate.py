@@ -433,6 +433,19 @@ class Substitute(unittest.TestCase):
         r["rounds"][0]["reviewers"]["opus"]["evidence_sha256"] = "12" * 32
         self.assertEqual(problems(r), [])
 
+    def test_evidence_with_a_trailing_newline_or_65_hex_is_rejected(self):
+        for bad in (EV2 + "\n", EV2 + "a"):
+            self.assertTrue(named(problems(sub_rec(opus(evidence_sha256=bad))), "evidence_sha256"), repr(bad))
+        r = good(); r["rounds"][0]["reviewers"]["sonnet"]["evidence_sha256"] = EV + "\n"
+        self.assertTrue(named(G.record_problems(r, TREE), "evidence_sha256"))
+
+    def test_a_sonnet_or_codex_entry_marked_as_a_substitute_is_rejected_by_that_rule(self):
+        for name, key in (("sonnet", "substitute_for"), ("sonnet", "substitute_id"), ("codex", "substitute_for"), ("codex", "substitute_id")):
+            r = good(); r["rounds"][0]["reviewers"][name][key] = "codex"
+            self.assertTrue(named(G.record_problems(r, TREE), "is marked as a substitute"), (name, key))
+            r = sub_rec(); r["rounds"][0]["reviewers"]["sonnet"][key] = "codex"
+            self.assertTrue(named(problems(r), "sonnet is marked as a substitute"), key)
+
     def test_the_shipped_substitutes_json_is_the_ratified_one(self):
         path = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
         with open(path) as fh:
@@ -564,6 +577,36 @@ class SubstituteCli(unittest.TestCase):
         rec = good(); rec["tree"] = tree
         self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
         self.git("add", "-A"); self.git("commit", "-qm", "record")
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 0, out)
+
+    ENFORCEMENT = (".github/agent/reviews/substitutes.json", ".github/agent/bin/auditor-review-gate.py",
+                   ".github/workflows/agent-review-gate.yml", ".github/agent/bin/check-action-pins.py",
+                   ".github/agent/bin/tests/test_review_gate.py")
+
+    def touch(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as fh:
+            fh.write("# touched\n")
+        self.git("add", "-A"); self.git("commit", "-qm", "touch " + path)
+
+    def test_a_change_to_any_enforcement_file_needs_a_real_codex_entry(self):
+        for path in self.ENFORCEMENT:
+            with self.subTest(path=path):
+                self.git("reset", "-q", "--hard", self.base)
+                self.touch(path)
+                self.propose()
+                rc, out, _ = self.judge()
+                self.assertEqual(rc, 1, (path, out))
+                self.assertIn(path, out)
+                self.assertIn("codex", out)
+
+    def test_the_enforcement_set_in_the_script_is_exactly_the_ratified_one(self):
+        self.assertEqual(sorted(G.ENFORCEMENT), sorted(self.ENFORCEMENT))
+
+    def test_an_ordinary_auditor_change_still_clears_with_a_substitute(self):
+        self.touch(".github/agent/prompts/p.md")
+        self.propose()
         rc, out, _ = self.judge()
         self.assertEqual(rc, 0, out)
 

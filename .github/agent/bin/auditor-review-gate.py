@@ -51,6 +51,10 @@ GUARDED = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh",
 VENDORS = {"codex": "openai", "sonnet": "anthropic"}
 SCHEMA = "auditor-review-record/v1"
 SUBS_PATH = REVIEWS + "substitutes.json"
+# The files that enforce a substitute's limits (its allow-list, the gate, its workflow, the pin checker, the
+# gate's own tests): a change touching any of them is never cleared by a substitute (B4).
+ENFORCEMENT = (SUBS_PATH, AGENT + "bin/auditor-review-gate.py", ".github/workflows/agent-review-gate.yml",
+               AGENT + "bin/check-action-pins.py", AGENT + "bin/tests/test_review_gate.py")
 SUBS_SCHEMA = "review-substitutes/v1"
 _TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 _SCOPE = re.compile(r"all|pr:[1-9][0-9]*")
@@ -195,10 +199,10 @@ def _substitute_problems(final, rnd, stop, subs, pr, now):
     return probs
 
 
-def record_problems(rec, tree, subs=None, pr=None, now=None, edits_allowlist=False):
+def record_problems(rec, tree, subs=None, pr=None, now=None, enforcement_edits=()):
     """Every reason `rec` does not clear the gate for content `tree` (empty = clears).
     subs: the text of reviews/substitutes.json from the trusted revision (None = none); pr: the PR
-    number or None; edits_allowlist: the change edits the substitutes file, so no substitute applies; now: the gate's clock (default: the system UTC clock; tests pass it)."""
+    number or None; enforcement_edits: the ENFORCEMENT files the change touches (any: no substitute applies); now: the gate's clock (default: the system UTC clock; tests pass it)."""
     if not isinstance(rec, dict):
         return ["record is not a JSON object"]
     probs = []
@@ -218,8 +222,8 @@ def record_problems(rec, tree, subs=None, pr=None, now=None, edits_allowlist=Fal
         if not isinstance(r, dict):
             if name in final:      # present but not an object: never the substitute path
                 probs.append("%s review entry is not an object (%r)" % (name, r))
-            elif name == "codex" and edits_allowlist:
-                probs.append("final round has no codex review: this change edits %s, so a substitute never applies (a real codex entry is required)" % SUBS_PATH)
+            elif name == "codex" and enforcement_edits:
+                probs.append("final round has no codex review: this change edits %s, so a substitute never applies (a real codex entry is required)" % ", ".join(sorted(enforcement_edits)))
             elif name == "codex":      # the one seat a recorded owner decision may fill with `opus`
                 probs += _substitute_problems(final, rounds[-1], stop, subs, pr, now)
             else:
@@ -268,7 +272,7 @@ def main(argv):
         subs = _git("show", "%s:%s" % (opt("--subs-rev") or base, SUBS_PATH))
     except RuntimeError:
         subs = None
-    probs = record_problems(rec, tree, subs=subs, pr=pr, edits_allowlist=SUBS_PATH in changed)
+    probs = record_problems(rec, tree, subs=subs, pr=pr, enforcement_edits=[c for c in changed if c in ENFORCEMENT])
     for p in probs:
         print("::error file=%s::review gate: %s (REQ-AUD-18 AC3)" % (path, p))
     if probs:
