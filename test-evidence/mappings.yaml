@@ -228,6 +228,10 @@ mappings:
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: three runtime postures asserted exactly - the validated-module fips build names the certificate, standard is off, and the forced-standard build reports mode-forced and NEVER claims the certificate (the over-claim the reviews flagged)" }
       - { type: go-test, ref: "internal/buildinfo:TestFIPSNoteIsTruthfulPerModeAndModule" }
+  - ac: REQ-FIPS-002-AC2
+    evidence:
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-k8s.yml: the step that pulls each of the production, debug and fips candidates by digest, starts it, reads /statusz and has bin/fips-image-posture.py compare the exact posture strings (fips active with the validated module, production and debug off, anything else or a missing variant fails), and reports REQ-FIPS-002-AC2 in the stage results" }
+      - { type: shell-test, ref: ".github/agent/tests/fips-image-check-test.sh" }
   - ac: REQ-PRIV-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-egress.yml: tcpdump on the candidate netns from before startup through load/idle, in an ordinary and an --internal egress-denied network, asserting no DNS and no connection to any non-allowed address (loopback + the specific bridge gateway only), identical status/bytes across both policies, with negative controls that a real DNS/outbound attempt is observed" }

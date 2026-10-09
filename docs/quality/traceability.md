@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 72 |
-| Acceptance criteria | 168 |
-| Release-blocking ACs | 44 |
-| ACs with mapped evidence | 152 |
-| Release-blocking ACs with mapped evidence | 44 |
+| Acceptance criteria | 169 |
+| Release-blocking ACs | 45 |
+| ACs with mapped evidence | 153 |
+| Release-blocking ACs with mapped evidence | 45 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
 | Confidence: implementation-only | 29 |
@@ -472,6 +472,7 @@ The startup log and /statusz shall report the actual FIPS operating mode and the
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-FIPS-002-AC1 | Given three runtime configurations - a -fips build with defaults, a standard build with defaults, and a standard build with GODEBUG=fips140=on; when each starts and /statusz is read; then the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate | acceptance-release-artifact | yes | approved | 2 item(s) |
+| REQ-FIPS-002-AC2 | Given the three candidate image variants of a release by candidate digest (production, -debug and -fips; linux/amd64 on the hosted runner; linux/arm64 images are not started on the hosted runner, and whether emulation is acceptable is UNVERIFIED); when each is started and /statusz is read; then the -fips image reports 'active (Go validated module v1.0.0, CMVP cert | acceptance-release-artifact | yes | approved | 2 item(s) |
 
 ### REQ-FIPS-003 — Approved-only crypto enforcement in CI
 

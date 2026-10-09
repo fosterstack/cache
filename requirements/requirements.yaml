@@ -977,6 +977,12 @@ requirements:
         then: the -fips build reports active with its module identity; the standard default reports off; and the runtime-enabled standard build reports its true state WITHOUT claiming the validated module or certificate
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: approved
+      - id: REQ-FIPS-002-AC2
+        given: the three candidate image variants of a release by candidate digest (production, -debug and -fips; linux/amd64 on the hosted runner; linux/arm64 images are not started on the hosted runner, and whether emulation is acceptable is UNVERIFIED)
+        when: each is started and /statusz is read
+        then: the -fips image reports 'active (Go validated module v1.0.0, CMVP cert #5247)', the production and -debug images report 'off', and any other report (including the forced-mode line on a standard image) or a missing variant blocks the release
+        verification: { method: acceptance-release-artifact, release_blocking: true }
+        status: approved
 
   - id: REQ-FIPS-003
     title: Approved-only crypto enforcement in CI
