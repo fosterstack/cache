@@ -44,6 +44,12 @@ step, never re-resolved from a registry.
   published VEX statement is the only exception. **Acceptance**: the
   release-artifact scenarios plus the Gradle and Maven acceptance
   suites run against the exact candidate image.
+- **Candidate image posture** (REQ-FIPS-002-AC2): the Kubernetes stage
+  starts the production, `-debug` and `-fips` candidates by digest and
+  reads their `/statusz`. The requirement gates a release through the
+  acceptance predicate only under an approved baseline frozen after it
+  merged; the older frozen baselines (v0.2.0, v0.2.1) do not contain it.
+  The stage failing blocks the release regardless of the baseline.
 - **Release authorization** verifies the entire graph — every predicate,
   signed by the expected stage, naming these digests — and is the only
   stage that can approve promotion. Anything missing fails closed.
