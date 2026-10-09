@@ -1235,6 +1235,10 @@ def deadline_values(src):
 OKMODS = {"sys", "json", "http", "urllib", "socket", "argparse", "signal", "time", "base64", "re", "stat", "errno"}
 BAN_ATTR = {"os", "modules", "environ", "environb", "getenv", "getenvb", "expanduser", "expandvars", "open"}
 BAN_NAME = {"getattr", "setattr", "delattr", "vars", "globals", "locals", "dir", "eval", "exec", "compile", "__import__", "breakpoint", "input"}
+FROM_OK = {"http.client": {"HTTPConnection", "HTTPException", "HTTPResponse"}, "socket": {"socket", "timeout", "error", "create_connection", "gaierror", "AF_INET", "SOCK_STREAM"},
+           "urllib.parse": {"urlparse", "urlsplit", "quote"}, "json": {"loads", "dumps", "JSONDecodeError"}, "base64": {"b64encode"}, "time": {"monotonic", "time", "sleep"},
+           "signal": {"signal", "alarm", "SIGALRM"}, "argparse": {"ArgumentParser"}, "re": {"compile", "fullmatch", "match", "search"}, "stat": {"S_ISREG"},
+           "errno": {"ECONNREFUSED"}, "sys": {"argv", "stderr", "stdout", "exit"}}      # from-imports: only these names of these modules
 def import_problems(src):
     t = ast.parse(src); out = []
     mnames = set()      # names assigned from the --matrix argument
@@ -1246,11 +1250,14 @@ def import_problems(src):
                 if isinstance(tg, ast.Tuple) and isinstance(n.value, ast.Tuple) and len(tg.elts) == len(n.value.elts):
                     mnames |= {a.id for a, b in zip(tg.elts, n.value.elts) if isinstance(a, ast.Name) and has(b)}
     for n in ast.walk(t):
-        if isinstance(n, ast.Import): out += ["import " + a.name for a in n.names if a.name.split(".")[0] not in OKMODS]
+        if isinstance(n, ast.Import):
+            out += ["import " + a.name for a in n.names if a.name.split(".")[0] not in OKMODS]
+            out += ["alias " + a.asname for a in n.names if a.asname and (a.asname in BAN_ATTR or a.asname in BAN_NAME or a.asname in ("os", "subprocess", "sys"))]
         if isinstance(n, ast.ImportFrom):
             m = n.module or ""
-            if n.level or m.split(".")[0] not in OKMODS: out.append("from " + "." * n.level + m)
-            elif m == "sys": out += ["from sys import " + a.name for a in n.names if a.name not in ("argv", "stderr", "stdout", "exit")]
+            if n.level or m not in FROM_OK: out.append("from " + "." * n.level + m + " import ...")
+            else: out += ["from %s import %s" % (m, a.name) for a in n.names if a.name not in FROM_OK[m]]
+            out += ["alias " + a.asname for a in n.names if a.asname and (a.asname in BAN_ATTR or a.asname in BAN_NAME or a.asname in ("os", "subprocess", "sys"))]
         if isinstance(n, ast.Attribute) and (n.attr in BAN_ATTR or (n.attr.startswith("__") and n.attr.endswith("__"))): out.append("." + n.attr)
         if isinstance(n, ast.Name) and n.id in BAN_NAME: out.append(n.id)
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "open":
@@ -1341,11 +1348,15 @@ dv = deadline_values(src) if exists else []
 check("static: every deadline/timeout constant in the program is at most 3 s (the contract; the slow cases are timed against it)", exists and bool(dv) and max(dv) <= 3, dv)
 ip = import_problems(src) if exists else ["program missing"]
 check("static: the program imports only the allowed standard modules and reads neither the environment nor ~/.docker", exists and not ip, ip)
-check("the import guard flags the probes: from os import path as p + p.os.environ, import os, from os import getenv as e, http.client.os, sys.modules, getattr, vars, globals, a dunder attribute, open of another file, open(MATRIX, 'w'), eval, from sys import modules; and accepts urllib.parse and from sys import argv, exit",
+check("the import guard flags the probes: from os import path as p + p.os.environ, import os, from os import getenv as e, http.client.os, sys.modules, getattr, vars, globals, a dunder attribute, open of another file, open(MATRIX, 'w'), eval, from sys import modules, from http.client import os as o, from socket import os as o, from urllib.request import os, from http.client import os + open = os.fdopen, import http.client as hc + hc.os, from json import decoder as d + d.os, aliases named os/eval, from http import client; and accepts urllib.parse, from sys import argv/exit, from http.client import HTTPConnection, from json import loads as jl",
       all(import_problems(REFSRC + x) for x in ("\nfrom os import path as p\nx = p.os.environ.get('A')\n", "\nimport os\n", "\nfrom os import getenv as e\n", "\nimport http.client\nx = http.client.os\n",
                                                 "\nx = sys.modules\n", "\nx = getattr(sys, 'argv')\n", "\nx = vars()\n", "\nx = globals()\n", "\nx = (1).__class__\n",
-                                                "\nx = open('/etc/passwd')\n", "\nx = open(MATRIX, 'w')\n", "\nx = open('other.txt', 'a')\n", "\nx = eval('1')\n", "\nfrom sys import modules\n"))
-      and not any(import_problems(REFSRC + x) for x in ("\nimport urllib.parse\n", "\nfrom sys import argv, exit\n")), [import_problems(REFSRC + x) for x in ("\nimport urllib.parse\n",)])
+                                                "\nx = open('/etc/passwd')\n", "\nx = open(MATRIX, 'w')\n", "\nx = open('other.txt', 'a')\n", "\nx = eval('1')\n", "\nfrom sys import modules\n",
+                                                "\nfrom http.client import os as o\nx = o.system('id')\n", "\nfrom socket import os as o\nx = o.popen('id')\n", "\nfrom urllib.request import os\nx = os.execv\n",
+                                                "\nfrom http.client import os\nopen = os.fdopen\n", "\nimport http.client as hc\nx = hc.os\n", "\nfrom json import decoder as d\nx = d.os\n",
+                                                "\nimport json as os\n", "\nfrom json import loads as eval\n", "\nfrom http import client\n"))
+      and not any(import_problems(REFSRC + x) for x in ("\nimport urllib.parse\n", "\nfrom sys import argv, exit\n", "\nfrom http.client import HTTPConnection, HTTPException\n", "\nfrom json import loads as jl\n")),
+      [import_problems(REFSRC + x) for x in ("\nimport urllib.parse\n", "\nfrom http.client import HTTPConnection\n")])
 check("the static checks accept the reference and flag these programs: a 5 s deadline, subprocess, os.environ, __import__, a ~/.docker path, pathlib",
       deadline_values(REFSRC) == [3.0] and not import_problems(REFSRC) and max(deadline_values(REFSRC.replace("DEADLINE = 3.0", "DEADLINE = 5.0"))) == 5.0
       and all(import_problems(REFSRC + extra) for extra in ("\nimport subprocess\n", "\nimport os\nx = os.environ.get('A')\n", "\nx = __import__('subprocess')\n",
