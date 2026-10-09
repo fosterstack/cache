@@ -24,8 +24,22 @@ git objects only (never checked out, never executed), and reads the record with 
   --base REV       the base to diff against (the merge base of the PR with its base branch)
   --head REV       the reviewed commit (the PR head); default HEAD
   --print-tree     print <tree> for --head and exit (used to name the record)
+  --pr N           the pull request's number; needed only by a substitute whose scope is pr:N
+  --subs-rev REV   the TRUSTED revision whose reviews/substitutes.json is read (default: --base). The
+                   workflow passes the checked-out default branch, so a substitute merged after the PR
+                   branched still counts; the PR's own copy of the file is never read.
+
+REQ-AUD-018 AC4 (recorded second-seat substitute): while the owner has stopped the second vendor, the
+final round may carry an `opus` entry (vendor anthropic, model opus, effort medium, substitute_for
+codex, substitute_id, blockers_open 0, evidence_sha256) in place of `codex`, and the round a
+`completed_at` (YYYY-MM-DDTHH:MM:SSZ). It counts only if substitute_id names an entry of
+.github/agent/reviews/substitutes.json as read from the trusted revision (never the PR's copy: a PR
+cannot add or extend its own substitute; its edit of the file only changes <tree>), the entry is
+unexpired by the gate's own UTC clock (GATE_NOW overrides it, for tests) AND by completed_at, and its
+scope (`all`, or `pr:N` with N equal to --pr) fits. Sonnet is never substitutable. A record with a
+codex entry is judged on codex alone. Anything malformed fails closed with a message naming it.
 """
-import hashlib, json, os, re, subprocess, sys
+import datetime, hashlib, json, os, re, subprocess, sys
 
 AGENT = ".github/agent/"
 REVIEWS = AGENT + "reviews/"
@@ -36,6 +50,10 @@ GUARDED = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh",
            ".github/workflows/agent-review-gate.yml")
 VENDORS = {"codex": "openai", "sonnet": "anthropic"}
 SCHEMA = "auditor-review-record/v1"
+SUBS_PATH = REVIEWS + "substitutes.json"
+SUBS_SCHEMA = "review-substitutes/v1"
+_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
+_SCOPE = re.compile(r"^(all|pr:[1-9][0-9]*)$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -68,8 +86,114 @@ def auditor_changes(base, head):
             if (p.startswith(AGENT) or p in GUARDED) and not _is_record(p)]
 
 
-def record_problems(rec, tree):
-    """Every reason `rec` does not clear the gate for content `tree` (empty = clears)."""
+def _time(v):
+    """A strict UTC instant YYYY-MM-DDTHH:MM:SSZ, or None."""
+    if not isinstance(v, str) or not _TIME.match(v):
+        return None
+    try:
+        return datetime.datetime.strptime(v, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+    except ValueError:
+        return None
+
+
+def _reviewer_problems(name, vendor, r, stop):
+    probs = []
+    if name != "opus" and ("substitute_for" in r or "substitute_id" in r):
+        probs.append("%s is marked as a substitute; only the codex seat can be substituted, and only by opus" % name)
+    if r.get("vendor") != vendor:
+        probs.append("%s vendor is %r, want %r" % (name, r.get("vendor"), vendor))
+    b = r.get("blockers_open")
+    if type(b) is not int or b != 0:      # exactly the integer 0 — not False, not 0.0
+        probs.append("%s has %r open merge blocker(s)" % (name, r.get("blockers_open")))
+    if not _HEX64.match(str(r.get("evidence_sha256", ""))):
+        probs.append("%s evidence_sha256 is not a sha256" % name)
+    if stop.get(name) != "clear":
+        probs.append("%s stop verdict is %r, want 'clear'" % (name, stop.get(name)))
+    return probs
+
+
+def _substitute_entry(subs, sid):
+    """(entry, problems): the substitutes.json entry `sid` names, validated field by field."""
+    if subs is None:
+        return None, ["opus substitute: no readable %s on the trusted revision" % SUBS_PATH]
+    try:
+        doc = json.loads(subs)
+    except ValueError:
+        return None, ["opus substitute: %s is not valid JSON" % SUBS_PATH]
+    if not isinstance(doc, dict) or doc.get("schema") != SUBS_SCHEMA:
+        return None, ["opus substitute: %s schema is not %s" % (SUBS_PATH, SUBS_SCHEMA)]
+    entries = doc.get("substitutes")
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        return None, ["opus substitute: %s substitutes is not a list of objects" % SUBS_PATH]
+    if not isinstance(sid, str) or not sid:
+        return None, ["opus substitute: substitute_id is missing or not a string"]
+    hits = [e for e in entries if e.get("id") == sid]
+    if len(hits) != 1:
+        return None, ["opus substitute: substitute_id %r names %d entries of %s, want exactly 1" % (sid, len(hits), SUBS_PATH)]
+    e = hits[0]
+    probs = []
+    if e.get("for") != "codex":
+        probs.append("opus substitute: entry %s `for` is %r, want 'codex'" % (sid, e.get("for")))
+    if e.get("by") != "opus":
+        probs.append("opus substitute: entry %s `by` is %r, want 'opus'" % (sid, e.get("by")))
+    if e.get("vendor") != "anthropic":
+        probs.append("opus substitute: entry %s vendor is %r, want 'anthropic'" % (sid, e.get("vendor")))
+    q = e.get("owner_quote")
+    if not isinstance(q, str) or not q.strip():
+        probs.append("opus substitute: entry %s owner_quote is empty or not a string" % sid)
+    if _time(e.get("effective_until")) is None:
+        probs.append("opus substitute: entry %s effective_until %r is not YYYY-MM-DDTHH:MM:SSZ" % (sid, e.get("effective_until")))
+    if not isinstance(e.get("scope"), str) or not _SCOPE.match(e["scope"]):
+        probs.append("opus substitute: entry %s scope %r is not 'all' or 'pr:N'" % (sid, e.get("scope")))
+    return (None if probs else e), probs
+
+
+def _substitute_problems(final, rnd, stop, subs, pr, now):
+    """Every reason the final round's `opus` entry cannot stand in for `codex` (empty = it can)."""
+    r = final.get("opus")
+    if not isinstance(r, dict):
+        return ["final round has no codex review"]
+    probs = _reviewer_problems("opus", "anthropic", r, stop)
+    if r.get("substitute_for") != "codex":
+        probs.append("opus substitute_for is %r, want 'codex'" % (r.get("substitute_for"),))
+    if r.get("model") != "opus":
+        probs.append("opus model is %r, want 'opus'" % (r.get("model"),))
+    if r.get("effort") != "medium":
+        probs.append("opus effort is %r, want 'medium'" % (r.get("effort"),))
+    done = _time(rnd.get("completed_at"))
+    if done is None:
+        probs.append("final round completed_at %r is missing or not YYYY-MM-DDTHH:MM:SSZ (required with a substitute)"
+                     % (rnd.get("completed_at"),))
+    if now is None:
+        raw = os.environ.get("GATE_NOW")
+        now = datetime.datetime.now(datetime.timezone.utc) if raw is None else _time(raw)
+        if now is None:
+            probs.append("GATE_NOW %r is not YYYY-MM-DDTHH:MM:SSZ" % raw)
+    entry, bad = _substitute_entry(subs, r.get("substitute_id"))
+    probs += bad
+    if entry is None:
+        return probs
+    sid, until = entry["id"], _time(entry["effective_until"])
+    if now is not None and now >= until:
+        probs.append("opus substitute %s expired at %s (the gate's clock is %s)" % (sid, entry["effective_until"], now.strftime("%Y-%m-%dT%H:%M:%SZ")))
+    if done is not None:
+        if done >= until:
+            probs.append("final round completed_at %s is not before substitute %s expiry %s" % (rnd["completed_at"], sid, entry["effective_until"]))
+        if now is not None and done > now:
+            probs.append("final round completed_at %s is in the future of the gate's clock" % rnd["completed_at"])
+    if entry["scope"] != "all":
+        want = int(entry["scope"][3:])
+        if pr is None:
+            probs.append("opus substitute %s scope %s needs --pr, none given" % (sid, entry["scope"]))
+        elif pr != want:
+            probs.append("opus substitute %s scope %s does not cover PR #%s" % (sid, entry["scope"], pr))
+    return probs
+
+
+def record_problems(rec, tree, subs=None, pr=None, now=None):
+    """Every reason `rec` does not clear the gate for content `tree` (empty = clears).
+    subs: the text of reviews/substitutes.json from the trusted revision (None = none); pr: the PR
+    number or None; now: the gate's clock (default: GATE_NOW, else the real UTC time)."""
     if not isinstance(rec, dict):
         return ["record is not a JSON object"]
     probs = []
@@ -87,17 +211,12 @@ def record_problems(rec, tree):
     for name, vendor in sorted(VENDORS.items()):
         r = final.get(name)
         if not isinstance(r, dict):
-            probs.append("final round has no %s review" % name)
+            if name == "codex":      # the one seat a recorded owner decision may fill with `opus`
+                probs += _substitute_problems(final, rounds[-1], stop, subs, pr, now)
+            else:
+                probs.append("final round has no %s review" % name)
             continue
-        if r.get("vendor") != vendor:
-            probs.append("%s vendor is %r, want %r" % (name, r.get("vendor"), vendor))
-        b = r.get("blockers_open")
-        if type(b) is not int or b != 0:      # exactly the integer 0 — not False, not 0.0
-            probs.append("%s has %r open merge blocker(s)" % (name, r.get("blockers_open")))
-        if not _HEX64.match(str(r.get("evidence_sha256", ""))):
-            probs.append("%s evidence_sha256 is not a sha256" % name)
-        if stop.get(name) != "clear":
-            probs.append("%s stop verdict is %r, want 'clear'" % (name, stop.get(name)))
+        probs += _reviewer_problems(name, vendor, r, stop)
     return probs
 
 
@@ -112,6 +231,13 @@ def main(argv):
     if "--print-tree" in argv:
         print(tree)
         return 0
+    pr = None
+    if "--pr" in argv:
+        raw = opt("--pr")
+        if raw is None or not re.fullmatch(r"[1-9][0-9]*", raw):
+            print("::error::auditor-review-gate: --pr must be a positive integer", file=sys.stderr)
+            return 2
+        pr = int(raw)
     base = opt("--base")
     if not base:
         print("::error::auditor-review-gate: --base is required", file=sys.stderr)
@@ -129,7 +255,11 @@ def main(argv):
               "record at %s (%s). Run the second-vendor review loop on this exact content and "
               "commit its record (REQ-AUD-18 AC3)." % (len(changed), changed[0], path, why))
         return 1
-    probs = record_problems(rec, tree)
+    try:
+        subs = _git("show", "%s:%s" % (opt("--subs-rev") or base, SUBS_PATH))
+    except RuntimeError:
+        subs = None
+    probs = record_problems(rec, tree, subs=subs, pr=pr)
     for p in probs:
         print("::error file=%s::review gate: %s (REQ-AUD-18 AC3)" % (path, p))
     if probs:

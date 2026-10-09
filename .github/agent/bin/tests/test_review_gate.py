@@ -1,6 +1,8 @@
+# proves: REQ-AUD-018-AC4
 """auditor-review-gate.py (REQ-AUD-18 AC3, option C): every reason a review record fails to clear
 the gate, and the CLI's argument and no-change paths, against a real temporary git repository."""
-import contextlib, importlib.util, io, json, os, shutil, subprocess, tempfile, unittest
+import contextlib, datetime, importlib.util, io, json, os, shutil, subprocess, tempfile, unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.dirname(HERE)
@@ -216,6 +218,298 @@ class GuardFiles(Cli):
         t = self.run_main("--print-tree")[1].strip()
         self.write(".github/workflows/ci.yml", "ci3\n"); self.git("commit", "-qam", "ci again")
         self.assertEqual(self.run_main("--print-tree")[1].strip(), t)      # ci.yml is not part of the bound content
+
+
+# ---- REQ-AUD-018-AC4: a recorded second-seat substitute (the opus entry) -------------------------
+Q0317 = "stop all codex no more codex reviews until after 1AM Saturday. replace all codex with opus medium."
+Q210 = "Proceed with opus just for this one that codex is hung up on"
+EXPIRY = "2026-10-10T05:00:00Z"
+BEFORE = "2026-10-09T20:00:00Z"
+AFTER = "2026-10-10T05:00:01Z"
+SUBS = {"schema": "review-substitutes/v1", "substitutes": [
+    {"id": "0317", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": EXPIRY,
+     "owner_quote": Q0317, "scope": "all"},
+    {"id": "pr210", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": EXPIRY,
+     "owner_quote": Q210, "scope": "pr:210"}]}
+
+
+def dt(s):
+    return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+
+
+def opus(**over):
+    e = {"vendor": "anthropic", "substitute_for": "codex", "substitute_id": "0317", "model": "opus",
+         "effort": "medium", "blockers_open": 0, "evidence_sha256": EV}
+    e.update(over)
+    return {k: v for k, v in e.items() if v is not ...}
+
+
+def sub_rec(entry=None, completed=BEFORE, tree=TREE):
+    r = good(); r["tree"] = tree
+    rev = r["rounds"][0]["reviewers"]
+    del rev["codex"]
+    rev["opus"] = opus() if entry is None else entry
+    if completed is not ...:
+        r["rounds"][0]["completed_at"] = completed
+    r["stop"] = {"sonnet": "clear", "opus": "clear"}
+    return r
+
+
+def problems(rec, subs=None, pr=None, now=BEFORE, tree=TREE):
+    return G.record_problems(rec, tree, subs=json.dumps(SUBS) if subs is None else subs, pr=pr, now=dt(now))
+
+
+def named(probs, text):
+    return any(text in p for p in probs)
+
+
+class Substitute(unittest.TestCase):
+    def test_a_valid_0317_substitute_before_expiry_passes(self):
+        self.assertEqual(problems(sub_rec()), [])
+
+    def test_the_same_record_after_the_expiry_fails(self):
+        self.assertTrue(named(problems(sub_rec(), now=AFTER), "expired"))
+
+    def test_the_expiry_instant_itself_is_expired(self):
+        self.assertTrue(named(problems(sub_rec(), now=EXPIRY), "expired"))
+
+    def test_completed_at_after_the_expiry_fails_even_if_the_clock_is_early(self):
+        self.assertTrue(named(problems(sub_rec(completed=AFTER), now=BEFORE), "completed_at"))
+        self.assertTrue(named(problems(sub_rec(completed=EXPIRY), now=BEFORE), "completed_at"))
+
+    def test_completed_at_missing_or_malformed_fails_naming_it(self):
+        for bad in (..., None, "", 5, "2026-10-09", "2026-10-09T20:00:00+00:00", "2026-10-09 20:00:00Z", "2026-13-09T20:00:00Z"):
+            self.assertTrue(named(problems(sub_rec(completed=bad)), "completed_at"), bad)
+
+    def test_completed_at_in_the_future_fails(self):
+        self.assertTrue(named(problems(sub_rec(completed="2026-10-09T21:00:00Z"), now=BEFORE), "completed_at"))
+
+    def test_an_id_not_in_substitutes_json_fails(self):
+        self.assertTrue(named(problems(sub_rec(opus(substitute_id="9999"))), "substitute_id"))
+        self.assertTrue(named(problems(sub_rec(opus(substitute_id=...))), "substitute_id"))
+        self.assertTrue(named(problems(sub_rec(opus(substitute_id=317))), "substitute_id"))
+
+    def test_no_substitutes_json_on_the_base_fails(self):
+        probs = G.record_problems(sub_rec(), TREE, subs=None, pr=None, now=dt(BEFORE))
+        self.assertTrue(named(probs, "substitutes.json"))
+
+    def test_substitutes_json_unreadable_or_malformed_fails_naming_it(self):
+        def with_(mut):
+            o = json.loads(json.dumps(SUBS)); mut(o); return json.dumps(o)
+        cases = ["{not json", "[]", json.dumps({"schema": "v0", "substitutes": []}),
+                 with_(lambda o: o.update(substitutes="x")),
+                 with_(lambda o: o["substitutes"].__setitem__(0, "x")),
+                 with_(lambda o: o["substitutes"][0].update(effective_until="2026-10-10")),
+                 with_(lambda o: o["substitutes"][0].update(effective_until=5)),
+                 with_(lambda o: o["substitutes"][0].update(scope="pr:")),
+                 with_(lambda o: o["substitutes"][0].update(scope="everything")),
+                 with_(lambda o: o["substitutes"][0].update({"for": "sonnet"})),
+                 with_(lambda o: o["substitutes"][0].update(by="gpt")),
+                 with_(lambda o: o["substitutes"][0].update(vendor="openai")),
+                 with_(lambda o: o["substitutes"][0].pop("effective_until")),
+                 with_(lambda o: o["substitutes"].append(dict(o["substitutes"][0])))]     # duplicate id
+        for c in cases:
+            self.assertNotEqual(problems(sub_rec(), subs=c), [], c)
+
+    def test_an_empty_owner_quote_fails(self):
+        for q in ("", "   ", None, 7):
+            o = json.loads(json.dumps(SUBS)); o["substitutes"][0]["owner_quote"] = q
+            self.assertTrue(named(problems(sub_rec(), subs=json.dumps(o)), "owner_quote"), q)
+        o = json.loads(json.dumps(SUBS)); del o["substitutes"][0]["owner_quote"]
+        self.assertTrue(named(problems(sub_rec(), subs=json.dumps(o)), "owner_quote"))
+
+    def test_scope_pr_210_passes_only_for_pr_210(self):
+        rec = sub_rec(opus(substitute_id="pr210"))
+        self.assertEqual(problems(rec, pr=210), [])
+        self.assertTrue(named(problems(rec, pr=211), "scope"))
+        self.assertTrue(named(problems(rec, pr=2100), "scope"))
+        self.assertTrue(named(problems(rec, pr=None), "scope"))
+
+    def test_scope_all_does_not_need_a_pr_number(self):
+        self.assertEqual(problems(sub_rec(), pr=None), [])
+        self.assertEqual(problems(sub_rec(), pr=211), [])
+
+    def test_sonnet_missing_fails(self):
+        r = sub_rec(); del r["rounds"][0]["reviewers"]["sonnet"]
+        self.assertTrue(named(problems(r), "no sonnet review"))
+
+    def test_sonnet_cannot_be_substituted(self):
+        r = sub_rec(); rev = r["rounds"][0]["reviewers"]
+        rev["sonnet"] = opus(substitute_for="sonnet")
+        self.assertNotEqual(problems(r), [])
+        r = sub_rec(); r["rounds"][0]["reviewers"]["sonnet"] = opus()          # a substitute entry under sonnet
+        self.assertNotEqual(problems(r), [])
+        r = sub_rec(); del r["rounds"][0]["reviewers"]["sonnet"]
+        r["rounds"][0]["reviewers"]["opus"] = opus(substitute_for="sonnet")
+        self.assertNotEqual(problems(r), [])
+
+    def test_open_blockers_fail_for_the_substitute_and_for_sonnet(self):
+        for bad in (1, False, None, "0", 0.0):
+            self.assertTrue(named(problems(sub_rec(opus(blockers_open=bad))), "opus has"), bad)
+        r = sub_rec(); r["rounds"][0]["reviewers"]["sonnet"]["blockers_open"] = 1
+        self.assertTrue(named(problems(r), "sonnet has"))
+
+    def test_the_substitute_is_never_openai(self):
+        for v in ("openai", "", None, "anthropic "):
+            self.assertTrue(named(problems(sub_rec(opus(vendor=v))), "opus vendor"), v)
+
+    def test_model_effort_substitute_for_and_evidence_are_exact(self):
+        for k, v, word in (("model", "opus-4", "model"), ("model", "sonnet", "model"), ("effort", "high", "effort"),
+                           ("effort", None, "effort"), ("substitute_for", "sonnet", "substitute_for"),
+                           ("substitute_for", ..., "substitute_for"), ("evidence_sha256", "x", "evidence_sha256"),
+                           ("evidence_sha256", ..., "evidence_sha256")):
+            self.assertTrue(named(problems(sub_rec(opus(**{k: v}))), word), (k, v))
+
+    def test_the_stop_verdict_for_the_substitute_must_be_clear(self):
+        r = sub_rec(); r["stop"]["opus"] = "blocked"
+        self.assertTrue(named(problems(r), "opus stop verdict"))
+        r = sub_rec(); del r["stop"]["opus"]
+        self.assertTrue(named(problems(r), "opus stop verdict"))
+
+    def test_a_wrong_tree_fails(self):
+        self.assertTrue(named(problems(sub_rec(), tree="ef" * 32), "binds tree"))
+
+    def test_a_record_with_codex_and_opus_is_judged_on_codex_alone(self):
+        r = good(); r["rounds"][0]["reviewers"]["opus"] = opus()                 # no completed_at, no substitutes
+        self.assertEqual(G.record_problems(r, TREE, subs=None, pr=None, now=dt(AFTER)), [])
+        r["rounds"][0]["reviewers"]["opus"] = {"garbage": True}
+        self.assertEqual(G.record_problems(r, TREE), [])
+        r["rounds"][0]["reviewers"]["codex"]["blockers_open"] = 1                # a bad codex is not rescued by opus
+        r["rounds"][0]["reviewers"]["opus"] = opus()
+        self.assertTrue(named(G.record_problems(r, TREE, subs=json.dumps(SUBS), now=dt(BEFORE)), "codex has"))
+
+    def test_without_codex_or_opus_the_old_message_stays(self):
+        r = good(); del r["rounds"][0]["reviewers"]["codex"]
+        self.assertEqual(G.record_problems(r, TREE), ["final round has no codex review"])
+
+    def test_a_substitute_without_a_clock_uses_the_real_one_and_the_env_override(self):
+        with mock.patch.dict(os.environ, {"GATE_NOW": AFTER}):
+            self.assertTrue(named(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), "expired"))
+        with mock.patch.dict(os.environ, {"GATE_NOW": BEFORE}):
+            self.assertEqual(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), [])
+        with mock.patch.dict(os.environ, {"GATE_NOW": "tomorrow"}):
+            self.assertTrue(named(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), "GATE_NOW"))
+        with mock.patch.dict(os.environ):
+            os.environ.pop("GATE_NOW", None)
+            # the real clock is long past the 2026-10-10 expiry by the time this runs, or not yet: either way it decides
+            probs = G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS))
+            self.assertEqual("expired" in " ".join(probs), datetime.datetime.now(datetime.timezone.utc) >= dt(EXPIRY))
+
+    def test_the_shipped_substitutes_json_is_the_ratified_one(self):
+        path = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
+        with open(path) as fh:
+            text = fh.read()
+        self.assertEqual(json.loads(text), SUBS)
+        self.assertEqual(problems(sub_rec(), subs=text), [])
+        self.assertEqual(problems(sub_rec(opus(substitute_id="pr210")), subs=text, pr=210), [])
+
+
+class SubstituteCli(unittest.TestCase):
+    git, write, run_main = Cli.git, Cli.write, Cli.run_main
+    SUBPATH = ".github/agent/reviews/substitutes.json"
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d)
+        self.cwd = os.getcwd(); os.chdir(self.d); self.addCleanup(os.chdir, self.cwd)
+        env = mock.patch.dict(os.environ, {"GATE_NOW": BEFORE}); env.start(); self.addCleanup(env.stop)
+        self.git("init", "-q", "-b", "main")
+        os.makedirs(".github/agent/bin"); os.makedirs(".github/agent/reviews")
+        self.write(".github/agent/bin/x.py", "a\n"); self.write(self.SUBPATH, json.dumps(SUBS))
+        self.git("add", "-A"); self.git("commit", "-qm", "base")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def propose(self, entry=None, completed=BEFORE):
+        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "change")
+        tree = self.run_main("--print-tree")[1].strip()
+        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(sub_rec(entry, completed, tree)))
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        return tree
+
+    def judge(self, *extra):
+        return self.run_main("--base", self.base, "--head", "HEAD", *extra)
+
+    def test_a_substitute_record_clears_the_cli(self):
+        self.propose()
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("clears the stop rule", out)
+
+    def test_after_the_expiry_the_cli_fails(self):
+        self.propose()
+        with mock.patch.dict(os.environ, {"GATE_NOW": AFTER}):
+            rc, out, _ = self.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("expired", out)
+
+    def test_a_pr_that_adds_its_own_substitute_does_not_count_for_itself(self):
+        self.write(self.SUBPATH, json.dumps({"schema": "review-substitutes/v1", "substitutes": []}))
+        self.git("commit", "-qam", "base has no substitute"); self.base = self.git("rev-parse", "HEAD").strip()
+        self.write(self.SUBPATH, json.dumps(SUBS)); self.git("commit", "-qam", "the PR adds its own entry")
+        self.propose()
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("substitute_id", out)
+
+    def test_a_pr_that_extends_the_expiry_or_the_scope_does_not_count_for_itself(self):
+        o = json.loads(json.dumps(SUBS)); o["substitutes"][0]["effective_until"] = "2026-10-01T00:00:00Z"
+        self.write(self.SUBPATH, json.dumps(o)); self.git("commit", "-qam", "base entry already expired")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.write(self.SUBPATH, json.dumps(SUBS)); self.git("commit", "-qam", "the PR extends it")
+        self.propose()
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("expired", out)
+
+    def test_no_substitutes_json_on_the_base_fails(self):
+        self.git("rm", "-q", self.SUBPATH); self.git("commit", "-qm", "base without it")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        os.makedirs(".github/agent/reviews", exist_ok=True)
+        self.write(self.SUBPATH, json.dumps(SUBS)); self.git("add", "-A"); self.git("commit", "-qm", "the PR adds the file")
+        self.propose()
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("substitutes.json", out)
+
+    def test_the_trusted_revision_can_be_main_s_tip_rather_than_the_merge_base(self):
+        # the workflow passes the checked-out default branch tip: a substitute merged AFTER the PR branched still counts
+        self.git("checkout", "-q", "-b", "pr")
+        self.git("checkout", "-q", "main")
+        o = json.loads(json.dumps(SUBS)); o["substitutes"] = [dict(SUBS["substitutes"][0], id="0400")]
+        self.write(self.SUBPATH, json.dumps(o)); self.git("commit", "-qam", "main moves on")
+        tip = self.git("rev-parse", "HEAD").strip()
+        self.git("checkout", "-q", "pr")
+        self.propose(opus(substitute_id="0400"))
+        self.assertEqual(self.judge()[0], 1)                                     # the merge base lacks id 0400
+        rc, out, _ = self.judge("--subs-rev", tip)
+        self.assertEqual(rc, 0, out)
+
+    def test_scope_pr_needs_a_matching_pr_argument(self):
+        self.propose(opus(substitute_id="pr210"))
+        self.assertEqual(self.judge("--pr", "210")[0], 0)
+        for argv in (("--pr", "211"), ()):
+            rc, out, _ = self.judge(*argv)
+            self.assertEqual(rc, 1, argv)
+            self.assertIn("scope", out)
+
+    def test_a_bad_pr_argument_is_refused(self):
+        self.propose(opus(substitute_id="pr210"))
+        for argv in (("--pr",), ("--pr", "x"), ("--pr", "-1"), ("--pr", ""), ("--pr", "0210")):
+            rc, _, err = self.judge(*argv)
+            self.assertEqual(rc, 2, argv)
+            self.assertIn("--pr", err)
+
+    def test_a_tampered_tree_fails_the_cli(self):
+        self.propose()
+        self.write(".github/agent/bin/x.py", "tampered\n"); self.git("commit", "-qam", "after the review")
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("no valid review record", out)
+
+    def test_a_missing_completed_at_fails_the_cli(self):
+        self.propose(completed=...)
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("completed_at", out)
 
 
 if __name__ == "__main__":
