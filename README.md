@@ -6,8 +6,8 @@
 [![Latest release](https://img.shields.io/github/v/release/fosterstack/cache?sort=semver)](https://github.com/fosterstack/cache/releases/latest)
 
 A self-hosted, drop-in remote build cache for **Gradle** — and for **Maven**
-through the Apache Maven Build Cache Extension (implemented; acceptance
-coverage in progress). Ships as
+through the Apache Maven Build Cache Extension (acceptance-tested on every
+push and release). Ships as
 a single static binary or a distroless container image, MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
 image is keylessly signed (Sigstore); every binary archive is covered by a
@@ -31,8 +31,11 @@ FosterStack Cache speaks Gradle's documented [`HttpBuildCache`][gradle-http]
 protocol (a plain content-addressed `GET`/`PUT` over HTTP) and the [Apache
 Maven Build Cache Extension][maven-cache]'s remote HTTP mode
 (`GET`/`PUT`/`HEAD`) — same server, same core. The Gradle path is
-acceptance-tested against a real multi-module build in CI; the Maven path is
-implemented and its acceptance coverage is in progress.
+acceptance-tested against a real multi-module build in CI, and so is the Maven
+path: a real multi-module Maven project with the extension (versions 1.2.0 and 1.2.3 <!-- pinned: upstream -->)
+restores its second build from the remote cache with byte-identical jars,
+and wrong or missing credentials fail the documented way. The Maven suite is a
+release-blocking check.
 
 [bcn-eol]: https://docs.develocity.ai/bcn/21.2/
 [gradle-http]: https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote
