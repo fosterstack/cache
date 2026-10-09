@@ -69,8 +69,9 @@ print("scout-root-cause: %d passed, %d failed" % (passed, failed)); sys.exit(1 i
 PY
 # the runner writes only the scratch package: any other target is refused before anything runs, and the workflow names it
 pass=0; fail=0
+scratch=$(mktemp -d); e2e=; e4=; trap 'rm -rf "$scratch" "${e2e:-}" "${e4:-}"' EXIT
 for target in ghcr.io/fosterstack/cache ghcr.io/fosterstack/cache-scout-probe2 docker.io/fosterstack/cache; do
-  if out=$(SCOUT_DIR=/nonexistent PROBE_REPO="$target" RELEASE_TAG=x bash "$here/scout-root-cause.sh" "$(mktemp -d)" 2>&1); then
+  if out=$(SCOUT_DIR=/nonexistent PROBE_REPO="$target" RELEASE_TAG=x bash "$here/scout-root-cause.sh" "$scratch" 2>&1); then
     echo "FAIL: $target accepted"; fail=$((fail+1))
   elif grep -q "refusing to write to $target" <<<"$out"; then echo "ok: $target refused"; pass=$((pass+1))
   else echo "FAIL: $target: $out"; fail=$((fail+1)); fi
