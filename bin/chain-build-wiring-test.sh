@@ -33,6 +33,13 @@
 #   items.json (every comparable item, bin/chain-test-shape.py `items`), both as products of the Witness step.
 # A STATED GAP: the real melange/apko, the real sudo/unshare and the real Witness signing are proven only by the GitHub dry run; the
 # two native-runner architectures meeting in one apko run (rule 33) is an open question for the advisor (see the REQ-CHAIN-004 notes).
+# INTEGRATION BRANCH (advisor 0341): PR 2 targets chain-v030, not main. The old chain stays live on main until the cutover PR (chain-v030 -> main, after a
+# green dry run, with its own final review round); the real-tree cases below (the 'real' behaviour cases, the stage files, release.yml, the removed
+# stage-image.yml / stage-admission.yml, install-scanner.sh) are RED here and become green only on chain-v030 after PR 1 and PR 2 are merged there.
+# TWO-ARCHITECTURE SHAPE (advisor interim reading, Oct 9, put to the owner): one stage = one workflow file = one identity; stage-build.yml has an
+# `apk` matrix job (native ubuntu-24.04 and ubuntu-24.04-arm: bin/build-stage.sh apk) and one `assemble` job on the VM (bin/build-stage.sh assemble);
+# stage-reproducibility.yml has the same two jobs (kinds rebuild-apk and rebuild-assemble). The Witness `github` attestor is not allowed (it embeds
+# the raw OIDC token); run/job identity comes from the Fulcio certificate extensions pinned by PR 1's policy.
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 shape="$root/bin/chain-test-shape.py"
@@ -60,88 +67,74 @@ assert n != t, "mutation did not change the fixture"
 open(sys.argv[2], "w").write(n)
 PY
 }
-D=0000000000000000000000000000000000000000
-# ---- known-good fixtures ------------------------------------------------------------------------------------------
-cat > "$work/build.yml" <<EOF
-name: 'Stage: build'
-on:
-  workflow_call:
-permissions:
-  contents: read
-jobs:
-  build:
-    runs-on: \${{ matrix.runner }}
-    strategy:
-      matrix:
-        runner: [ubuntu-24.04, ubuntu-24.04-arm]
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: install Witness (pinned by checksum)
-        run: ./bin/install-scanner.sh witness
-      - name: build under Witness
+# ---- known-good fixtures: ONE file per stage, TWO jobs (apk matrix + assemble on the VM), advisor reading 0341 ------------
+python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+CHK = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1"
+UPL = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
+DWN = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0"
+def witness(step, out, kind):
+    return f"""      - name: {step} under Witness
         run: |
           set -euo pipefail
-          curl -sSf -H "Authorization: bearer \$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "\${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" -o "\$RUNNER_TEMP/tok.json"
-          jq -r .value "\$RUNNER_TEMP/tok.json" > "\$RUNNER_TEMP/tok"
-          echo "::add-mask::\$(cat "\$RUNNER_TEMP/tok")"
-          witness run --step build \\
+          curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${{ACTIONS_ID_TOKEN_REQUEST_URL}}&audience=sigstore" -o "$RUNNER_TEMP/tok.json"
+          jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"
+          echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"
+          witness run --step {step} \\
             --signer-fulcio-url https://fulcio.sigstore.dev \\
             --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com \\
             --signer-fulcio-oidc-client-id sigstore \\
-            --signer-fulcio-token-path "\$RUNNER_TEMP/tok" \\
+            --signer-fulcio-token-path "$RUNNER_TEMP/tok" \\
             -t https://timestamp.sigstore.dev/api/v1/timestamp \\
-            -a environment,git,github,material,product \\
+            -a environment,git,material,product \\
             --env-filter-sensitive-vars \\
             --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*' --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \\
-            -d out -o witness-build/build-collection.json \\
-            -- ./bin/build-stage.sh build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: witness-build
-          path: witness-build
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: digests
-          path: digests.json
-EOF
-sed -e 's/--step build/--step rebuild/' -e 's#witness-build/build-collection.json#witness-rebuild/rebuild-collection.json#' \
-    -e 's#build-stage.sh build#build-stage.sh rebuild#' -e 's/name: witness-build/name: witness-rebuild/' -e 's/path: witness-build/path: witness-rebuild/' \
-    "$work/build.yml" | python3 -c '
-import sys, re
-t = sys.stdin.read()
-t = re.sub(r"      - uses: actions/upload-artifact@\S+ # v7.0.1\n        with:\n          name: digests\n          path: digests.json\n", "", t)
-sys.stdout.write(t)' > "$work/rebuild.yml"
-cat > "$work/build-stage.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-python3 bin/build-admit.py run
-export SOURCE_DATE_EPOCH="$(./bin/build-apk.sh --print-source-date-epoch --source-dir .)"
-./bin/build-apk.sh --variant standard --arch "$(uname -m)" --version "${GITHUB_REF_NAME#v}" --source-dir . --out out
-./bin/build-apk.sh --variant fips --arch "$(uname -m)" --version "${GITHUB_REF_NAME#v}" --source-dir . --out out
-./bin/assemble-image.sh --variant production --version "${GITHUB_REF_NAME#v}" --out out
-./bin/assemble-image.sh --variant fips --version "${GITHUB_REF_NAME#v}" --out out
-python3 bin/build-version-check.py --binary out/fscache --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
-jq -n --arg p "$(cat out/production.digest)" --arg f "$(cat out/fips.digest)" '{"image-production":$p,"image-fips":$f}' > digests.json
-jq -n --arg p "$(cat out/production.digest)" --arg f "$(cat out/fips.digest)" '{"image-production":$p,"image-fips":$f}' > items.json
-EOF
-cat > "$work/rebuild-stage.sh" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json
-python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json
-export SOURCE_DATE_EPOCH="$(./bin/build-apk.sh --print-source-date-epoch --source-dir .)"
-./bin/build-apk.sh --variant standard --arch "$(uname -m)" --out out
-./bin/build-apk.sh --variant fips --arch "$(uname -m)" --out out
-./bin/assemble-image.sh --variant production --out out
-./bin/assemble-image.sh --variant fips --out out
-jq -n --arg p "$(cat out/production.digest)" '{"image-production":$p}' > items.json
-python3 bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json --expected witness-build/items.json --actual items.json --out verdict.json
-EOF
+            -d out -o {out} \\
+            -- ./bin/build-stage.sh {kind}
+"""
+def up(name, path): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {path}\n"
+def dn(name, path): return f"      - uses: {DWN}\n        with:\n          name: {name}\n          path: {path}\n"
+HEAD = "name: 'Stage: %s'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n"
+PERM = "    permissions:\n      contents: read\n      id-token: write\n"
+BASE = f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n      - name: install Witness (pinned by checksum)\n        run: ./bin/install-scanner.sh witness\n"
+MATRIX = "    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n"
+R = ("ubuntu-24.04", "ubuntu-24.04-arm")
+def stage(fam):
+    if fam == "build":
+        apk = (HEAD % "build") + "  apk:\n    runs-on: ${{ matrix.runner }}\n" + MATRIX + PERM + "    steps:\n" + BASE + witness("apk", "witness-apk/apk-collection.json", "apk") \
+              + up("apk-${{ matrix.runner }}", "out") + up("witness-apk-${{ matrix.runner }}", "witness-apk")
+        asm = "  assemble:\n    needs: apk\n    runs-on: ubuntu-24.04\n" + PERM + "    steps:\n" + BASE \
+              + "".join(dn("apk-" + r, "apk-" + r) + dn("witness-apk-" + r, "witness-apk-" + r) for r in R) \
+              + witness("build", "witness-build/build-collection.json", "assemble") + up("witness-build", "witness-build") + up("digests", "witness-build/digests.json")
+    else:
+        apk = (HEAD % "reproducibility") + "  apk:\n    runs-on: ${{ matrix.runner }}\n" + MATRIX + PERM + "    steps:\n" + BASE + dn("witness-build", "witness-build") \
+              + witness("rebuild-apk", "witness-rapk/rapk-collection.json", "rebuild-apk") + up("rapk-${{ matrix.runner }}", "out") + up("witness-rapk-${{ matrix.runner }}", "witness-rapk")
+        asm = "  assemble:\n    needs: apk\n    runs-on: ubuntu-24.04\n" + PERM + "    steps:\n" + BASE + dn("witness-build", "witness-build") \
+              + "".join(dn("rapk-" + r, "rapk-" + r) + dn("witness-rapk-" + r, "witness-rapk-" + r) for r in R) \
+              + witness("rebuild", "witness-rebuild/rebuild-collection.json", "rebuild-assemble") + up("witness-rebuild", "witness-rebuild")
+    return apk + asm
+open(w + "/build.yml", "w").write(stage("build"))
+open(w + "/rebuild.yml", "w").write(stage("rebuild"))
+SDE = 'export SOURCE_DATE_EPOCH="$(./bin/build-apk.sh --print-source-date-epoch --source-dir .)"\n'
+POL = 'python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json\n'
+APKS = "./bin/build-apk.sh --variant standard --arch \"$(uname -m)\" --version \"${GITHUB_REF_NAME#v}\" --source-dir . --out out\n./bin/build-apk.sh --variant fips --arch \"$(uname -m)\" --version \"${GITHUB_REF_NAME#v}\" --source-dir . --out out\n"
+IMGS = "./bin/assemble-image.sh --variant production --version \"${GITHUB_REF_NAME#v}\" --out out\n./bin/assemble-image.sh --variant fips --version \"${GITHUB_REF_NAME#v}\" --out out\n"
+def vrf(stage_, pfx): return "".join(f"python3 bin/chain-verify.py verify --stage {stage_} --record witness-{pfx}-{r}/{pfx}-collection.json --policy policy.json\n" for r in R)
+START = "python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\n"
+H = "#!/usr/bin/env bash\nset -euo pipefail\n"
+scripts = {
+ "build-stage-apk.sh": H + "python3 bin/build-admit.py run\n" + SDE + APKS + 'python3 bin/build-version-check.py --binary out/fscache --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"\n',
+ "build-stage-assemble.sh": H + POL + vrf("build", "apk") + SDE + IMGS
+     + "jq -n --arg p \"$(cat out/production.digest)\" --arg f \"$(cat out/fips.digest)\" '{\"image-production\":$p,\"image-fips\":$f}' > witness-build/digests.json\n"
+     + "jq -n --arg p \"$(cat out/production.digest)\" --arg f \"$(cat out/fips.digest)\" '{\"image-production\":$p,\"image-fips\":$f}' > witness-build/items.json\n",
+ "build-stage-rebuild-apk.sh": H + POL + START + SDE + APKS,
+ "build-stage-rebuild-assemble.sh": H + POL + vrf("rebuild", "rapk") + START + SDE + IMGS
+     + "jq -n --arg p \"$(cat out/production.digest)\" --arg f \"$(cat out/fips.digest)\" '{\"image-production\":$p,\"image-fips\":$f}' > items.json\n"
+     + "python3 bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json --expected witness-build/items.json --actual items.json --out verdict.json\n",
+}
+for k, v in scripts.items(): open(w + "/" + k, "w").write(v)
+PY
 cat > "$work/release.yml" <<'EOF'
 name: Release
 on:
@@ -163,64 +156,85 @@ jobs:
     needs: [rebuild, check, sign]
     uses: ./.github/workflows/stage-promote.yml
 EOF
+# the old single-script names, used by the behaviour harness below
+cp "$work/build-stage-apk.sh" "$work/build-stage.sh"
 # ---- the stage-file judge (REQ-CHAIN-004-AC1, AC2; REQ-CHAIN-005-AC1, AC4) -----------------------------------------------
-expect ok     "AC1/AC2 fixture: the known-good Build stage file passes" "" stage "$work/build.yml" build
+expect ok     "AC1/AC2 fixture: the known-good Build stage file (apk matrix + assemble) passes" "" stage "$work/build.yml" build
 expect ok     "005-AC1 fixture: the known-good Rebuild stage file passes" "" stage "$work/rebuild.yml" rebuild
 m() { mutate "$work/build.yml" "$work/$1.yml" "$2" "$3"; }
-m s_cont  'runs-on: \$\{\{ matrix.runner \}\}' 'runs-on: ubuntu-24.04\n    container: debian:12' && expect caught "AC1 a container job (rule 62)" container stage "$work/s_cont.yml" build
-m s_self  'ubuntu-24.04-arm\]' 'self-hosted]'                                         && expect caught "AC1 a self-hosted runner" matrix stage "$work/s_self.yml" build
+m s_cont  'runs-on: ubuntu-24.04\n    permissions' 'runs-on: ubuntu-24.04\n    container: debian:12\n    permissions'  && expect caught "AC1 a container on the assemble job (rule 62)" container stage "$work/s_cont.yml" build
+m s_self  'ubuntu-24.04-arm\]' 'self-hosted]'                                         && expect caught "AC1 a self-hosted runner in the matrix" matrix stage "$work/s_self.yml" build
 m s_third 'ubuntu-24.04-arm\]' 'ubuntu-24.04-arm, ubuntu-22.04]'                       && expect caught "AC1 a third runner in the matrix" matrix stage "$work/s_third.yml" build
+m s_one   'runner: \[ubuntu-24.04, ubuntu-24.04-arm\]' 'runner: [ubuntu-24.04]'         && expect caught "AC1 only one native runner (both architectures are required)" matrix stage "$work/s_one.yml" build
+m s_asmr  'assemble:\n    needs: apk\n    runs-on: ubuntu-24.04' 'assemble:\n    needs: apk\n    runs-on: ubuntu-24.04-arm' && expect caught "AC1 the assemble job on the arm runner" "assemble job must run directly on" stage "$work/s_asmr.yml" build
+m s_need  'needs: apk' 'needs: []'                                                      && expect caught "AC1 the assemble job does not need the apk jobs" "must need exactly apk" stage "$work/s_need.yml" build
 m s_env   'permissions:\n      contents: read\n      id-token' 'env:\n      A: b\n    permissions:\n      contents: read\n      id-token' && expect caught "AC1 job-level env" env stage "$work/s_env.yml" build
 m s_pkg   'id-token: write' 'id-token: write\n      packages: write'                     && expect caught "AC1 packages: write" permissions stage "$work/s_pkg.yml" build
 m s_noid  '      id-token: write\n' ''                                                  && expect caught "AC1 no id-token (Witness cannot sign keyless)" permissions stage "$work/s_noid.yml" build
-m s_sec   'name: build under Witness' 'name: build under Witness\n        env:\n          K: ${{ secrets.KEY }}' && expect caught "AC1 a secret in the Witness step" secrets stage "$work/s_sec.yml" build
+m s_sec   'name: apk under Witness' 'name: apk under Witness\n        env:\n          K: ${{ secrets.KEY }}' && expect caught "AC1 a secret in the Witness step" secrets stage "$work/s_sec.yml" build
 m s_push  'workflow_call:' 'push:\n  workflow_call:'                                  && expect caught "AC1 an extra trigger" workflow_call stage "$work/s_push.yml" build
-m s_job2  '    steps:' '    steps: []\n  other:\n    runs-on: ubuntu-24.04\n    steps:'  && expect caught "AC1 a second job" "exactly one job" stage "$work/s_job2.yml" build
+m s_job3  '  assemble:' '  third:\n    runs-on: ubuntu-24.04\n    steps: []\n  assemble:' && expect caught "AC1 a third job (one stage = one file = two jobs)" "exactly two jobs" stage "$work/s_job3.yml" build
 m s_top   'permissions:\n  contents: read\njobs' 'permissions:\n  contents: read\nenv:\n  X: y\njobs' && expect caught "AC1 a top-level env" top-level stage "$work/s_top.yml" build
 m s_unp   'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v7' && expect caught "AC2 checkout not pinned by digest" checkout stage "$work/s_unp.yml" build
 m s_cred  'persist-credentials: false' 'persist-credentials: true'                    && expect caught "AC2 persisted credentials" persist stage "$work/s_cred.yml" build
 m s_inst  'run: ./bin/install-scanner.sh witness' 'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin' && expect caught "AC2 Witness installed by an unpinned download" install stage "$work/s_inst.yml" build
-m s_mid   '      - name: build under Witness' '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: build under Witness' && expect caught "AC2 a third-party action between the install and Witness (rule 68)" "Witness step" stage "$work/s_mid.yml" build
-m s_env2  'name: build under Witness' 'name: build under Witness\n        env:\n          A: b'    && expect caught "AC2 env on the Witness step" "Witness step" stage "$work/s_env2.yml" build
-m s_two   '            -- ./bin/build-stage.sh build' '            -- ./bin/build-stage.sh build\n          witness run --step build -- true' && expect caught "AC2 two witness runs" "exactly one" stage "$work/s_two.yml" build
+m s_mid   '      - name: apk under Witness' '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: apk under Witness' && expect caught "AC2 a third-party action between the install and Witness in the apk job (rule 68)" "Witness step" stage "$work/s_mid.yml" build
+m s_env2  'name: apk under Witness' 'name: apk under Witness\n        env:\n          A: b'    && expect caught "AC2 env on the Witness step" "Witness step" stage "$work/s_env2.yml" build
+m s_two   '            -- ./bin/build-stage.sh apk' '            -- ./bin/build-stage.sh apk\n          witness run --step build -- true' && expect caught "AC2 two witness runs" "exactly one" stage "$work/s_two.yml" build
 m s_pip   'set -euo pipefail\n' 'set -euo pipefail\n          pip install requests\n'      && expect caught "AC2 a command outside the token fetch and witness run" "outside" stage "$work/s_pip.yml" build
 m s_url   'https://fulcio.sigstore.dev' 'http://fulcio.evil.example'                    && expect caught "AC2 another Fulcio address" fulcio stage "$work/s_url.yml" build
 m s_tsa   'https://timestamp.sigstore.dev/api/v1/timestamp' 'https://tsa.example/ts'    && expect caught "AC2 another timestamp authority" "-t" stage "$work/s_tsa.yml" build
 m s_flt   '            --env-filter-sensitive-vars \\\n' ''                              && expect caught "AC8 no environment filter flag (tokens would be recorded, even if obfuscated)" "env-filter" stage "$work/s_flt.yml" build
 m s_key   " --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST\*'" ''                   && expect caught "AC8 no token-variable key pattern" "sensitive-key" stage "$work/s_key.yml" build
-m s_slsa  'environment,git,github,material,product' 'environment,git,github,slsa'      && expect caught "AC2 the slsa attestor (provenance is Sign's alone)" slsa stage "$work/s_slsa.yml" build
-m s_cmd   '-- ./bin/build-stage.sh build' '-- sh -c "make all"'                         && expect caught "AC2 the command under Witness is not the committed script" build-stage stage "$work/s_cmd.yml" build
-m s_out   'witness-build/build-collection.json \\' 'out/x.json \\'                      && expect caught "AC2 Witness's record written elsewhere" "-o must" stage "$work/s_out.yml" build
+m s_slsa  'environment,git,material,product' 'environment,git,material,slsa'            && expect caught "AC2 the slsa attestor (provenance is Sign's alone)" slsa stage "$work/s_slsa.yml" build
+m s_gh    'environment,git,material,product' 'environment,git,github,material,product'  && expect caught "AC8 the github attestor (it embeds the raw OIDC token; advisor 0341)" github stage "$work/s_gh.yml" build
+m s_gh2   'environment,git,material,product' 'github'                                    && expect caught "AC8 the github attestor alone" github stage "$work/s_gh2.yml" build
+m s_cmd   '-- ./bin/build-stage.sh apk' '-- sh -c "make all"'                           && expect caught "AC2 the command under Witness is not the committed script" build-stage stage "$work/s_cmd.yml" build
+m s_kind  '-- ./bin/build-stage.sh apk' '-- ./bin/build-stage.sh assemble'               && expect caught "AC2 the apk job running the assemble script" build-stage stage "$work/s_kind.yml" build
+m s_out   'witness-apk/apk-collection.json \\' 'out/x.json \\'                          && expect caught "AC2 Witness's record written elsewhere" "-o must" stage "$work/s_out.yml" build
 m s_up    'name: digests' 'name: registry-creds'                                         && expect caught "AC2 an upload outside the allowed artifact names" "not an allowed artifact" stage "$work/s_up.yml" build
+m s_dlx   'name: apk-ubuntu-24.04\n' 'name: dist\n'                                         && expect caught "AC2 a download outside the allowed names (the assemble job takes only the apk and record artifacts)" "download of" stage "$work/s_dlx.yml" build
+m s_dlbad 'actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65' 'actions/download-artifact@v5' && expect caught "AC2 a download not pinned by digest" "download step" stage "$work/s_dlbad.yml" build
+m s_dlapk '    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n      - name: install Witness \(pinned by checksum\)\n        run: ./bin/install-scanner.sh witness\n      - name: apk under Witness' '    steps:\n      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n        with:\n          persist-credentials: false\n      - name: install Witness (pinned by checksum)\n        run: ./bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        with:\n          name: witness-build\n          path: x\n      - name: apk under Witness' && expect caught "AC2 the Build apk job downloads something (it takes nothing from outside)" "download of" stage "$work/s_dlapk.yml" build
 m s_act   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: digests' '      - uses: actions/cache@0000000000000000000000000000000000000000 # v4\n        with:\n          name: digests' && expect caught "AC2 a third-party action after Witness" "after the Witness step" stage "$work/s_act.yml" build
-mutate "$work/rebuild.yml" "$work/r_step.yml" '--step rebuild' '--step build'   && expect caught "005-AC1 Rebuild's Witness step is named build" "--step must be rebuild" stage "$work/r_step.yml" rebuild
+mutate "$work/rebuild.yml" "$work/r_step.yml" '--step rebuild \\' '--step build \\'   && expect caught "005-AC1 Rebuild's assemble Witness step is named build" "--step must be rebuild" stage "$work/r_step.yml" rebuild
 mutate "$work/rebuild.yml" "$work/r_up.yml" 'name: witness-rebuild' 'name: dist'    && expect caught "005-AC4 Rebuild uploads anything but its verdict" "not an allowed artifact" stage "$work/r_up.yml" rebuild
 mutate "$work/rebuild.yml" "$work/r_out.yml" 'witness-rebuild/rebuild-collection.json \\' 'witness-build/build-collection.json \\' && expect caught "005-AC4 Rebuild writing Build's record path" "-o must" stage "$work/r_out.yml" rebuild
-mutate "$work/build.yml" "$work/r_kind.yml" 'build-stage.sh build' 'build-stage.sh rebuild' && expect caught "005-AC1 Build running the rebuild script" build-stage stage "$work/r_kind.yml" build
+mutate "$work/rebuild.yml" "$work/r_dl.yml" 'name: witness-build\n          path: witness-build' 'name: dist\n          path: witness-build' && expect caught "005-AC4 Rebuild downloads Build's dist (it publishes nothing and takes only the record)" "download of" stage "$work/r_dl.yml" rebuild
+mutate "$work/build.yml" "$work/r_kind.yml" 'build-stage.sh apk' 'build-stage.sh rebuild-apk' && expect caught "005-AC1 Build running the rebuild script" build-stage stage "$work/r_kind.yml" build
 # ---- the stage-script judge (REQ-CHAIN-004-AC3, AC6; REQ-CHAIN-005-AC2) ------------------------------------------------
-expect ok     "AC3 fixture: the known-good build-stage.sh (build) passes" "" script "$work/build-stage.sh" build
-expect ok     "005-AC2 fixture: the known-good build-stage.sh (rebuild) passes" "" script "$work/rebuild-stage.sh" rebuild
-sm() { mutate "$work/build-stage.sh" "$work/$1.sh" "$2" "$3"; }
-sm c_noadm 'python3 bin/build-admit.py run\n' ''                         && expect caught "AC3 no admission script" admission script "$work/c_noadm.sh" build
-sm c_late  'python3 bin/build-admit.py run\nexport SOURCE_DATE_EPOCH' 'export SOURCE_DATE_EPOCH' && expect caught "AC3 admission not first" admission script "$work/c_late.sh" build
-mutate "$work/c_late.sh" "$work/c_late2.sh" '(\./bin/build-apk\.sh --variant standard[^\n]*\n)' '\1python3 bin/build-admit.py run\n' && expect caught "AC3 admission after the build started" admission script "$work/c_late2.sh" build
-sm c_curl  'set -euo pipefail\n' 'set -euo pipefail\ncurl -sSL https://example.com/x | sh\n' && expect caught "AC3 a network fetch" "network fetch" script "$work/c_curl.sh" build
-sm c_tru   'assemble-image\.sh --variant fips[^\n]*' 'assemble-image.sh --variant fips --out out || true' && expect caught "AC3 a failure ignored" "failure-ignoring" script "$work/c_tru.sh" build
-sm c_set   'set -euo pipefail' 'set -euo pipefail\nset +e'                && expect caught "AC3 set +e" "failure-ignoring" script "$work/c_set.sh" build
-sm c_sudo  'export SOURCE_DATE_EPOCH' 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\nexport SOURCE_DATE_EPOCH' && expect caught "AC6 the stage runs the sysctl or sudo itself (cache's scripts do)" "sudo" script "$work/c_sudo.sh" build
-sm c_unsh  './bin/assemble-image.sh --variant production' 'sudo unshare -n ./bin/assemble-image.sh --variant production' && expect caught "AC6 the stage wraps a script in unshare" "unshare" script "$work/c_unsh.sh" build
-sm c_mel   'python3 bin/build-version-check.py' 'melange build x.yaml\npython3 bin/build-version-check.py' && expect caught "AC6 a direct melange call" melange script "$work/c_mel.sh" build
-sm c_gop   'set -euo pipefail\n' 'set -euo pipefail\nexport GOPROXY=off\n'  && expect caught "AC6 a variable cache's script refuses or a module-fetch setting (GOPROXY)" "refuse" script "$work/c_gop.sh" build
-sm c_key   'set -euo pipefail\n' 'set -euo pipefail\nexport APK_RELEASE_SIGNING_KEY=x\n' && expect caught "AC6 the release signing key variable (rule 23)" "refuse" script "$work/c_key.sh" build
-sm c_sk    '--source-dir . --out out\n./bin/build-apk.sh --variant fips' '--source-dir . --out out --signing-key k\n./bin/build-apk.sh --variant fips' && expect caught "AC6 --signing-key" "refuse" script "$work/c_sk.sh" build
-sm c_swap  '(\./bin/build-apk\.sh --variant standard[^\n]*\n)(\./bin/build-apk\.sh --variant fips[^\n]*\n)' '\2\1' && expect caught "AC3 variants out of order" "out of order" script "$work/c_swap.sh" build
-sm c_asm   '(\./bin/build-apk\.sh --variant fips[^\n]*\n)(\./bin/assemble-image\.sh --variant production[^\n]*\n)' '\2\1' && expect caught "AC3 images assembled before the apks" "out of order" script "$work/c_asm.sh" build
-sm c_ver   'python3 bin/build-version-check.py[^\n]*\n' ''               && expect caught "AC3 no version check (rule 24)" "version-check" script "$work/c_ver.sh" build
-sm c_dig   '[^\n]*> digests.json\n' ''                                   && expect caught "AC3 no digests.json" "digests" script "$work/c_dig.sh" build
-sm c_sde   'export SOURCE_DATE_EPOCH=[^\n]*' 'export SOURCE_DATE_EPOCH="$(date +%s)"' && expect caught "AC6 the build date is the wall clock, not the tagged commit" SOURCE_DATE_EPOCH script "$work/c_sde.sh" build
-mutate "$work/rebuild-stage.sh" "$work/rc_cmp.sh" '[^\n]*rebuild-compare[^\n]*\n' ''  && expect caught "005-AC2 no comparison" "rebuild-compare" script "$work/rc_cmp.sh" rebuild
-mutate "$work/rebuild-stage.sh" "$work/rc_first.sh" '(python3 bin/chain-verify\.py stage-start[^\n]*\n)' '' && expect caught "005-AC1 Build's record not verified first" "stage-start" script "$work/rc_first.sh" rebuild
-mutate "$work/rebuild-stage.sh" "$work/rc_pub.sh" 'set -euo pipefail\n' 'set -euo pipefail\ncp -r out dist\n' && expect ok "005-AC2 fixture control: an extra local copy is not itself a fault of the order judge" "" script "$work/rc_pub.sh" rebuild
+expect ok     "AC3 fixture: the known-good build-stage.sh apk passes" "" script "$work/build-stage-apk.sh" apk
+expect ok     "AC3 fixture: the known-good build-stage.sh assemble passes" "" script "$work/build-stage-assemble.sh" assemble
+expect ok     "005-AC2 fixture: the known-good build-stage.sh rebuild-apk passes" "" script "$work/build-stage-rebuild-apk.sh" rebuild-apk
+expect ok     "005-AC2 fixture: the known-good build-stage.sh rebuild-assemble passes" "" script "$work/build-stage-rebuild-assemble.sh" rebuild-assemble
+sm() { mutate "$work/build-stage-apk.sh" "$work/$1.sh" "$2" "$3"; }
+am() { mutate "$work/build-stage-assemble.sh" "$work/$1.sh" "$2" "$3"; }
+sm c_noadm 'python3 bin/build-admit.py run\n' ''                         && expect caught "AC3 no admission script" admission script "$work/c_noadm.sh" apk
+sm c_late  'python3 bin/build-admit.py run\nexport SOURCE_DATE_EPOCH' 'export SOURCE_DATE_EPOCH' && expect caught "AC3 admission not first" admission script "$work/c_late.sh" apk
+mutate "$work/c_late.sh" "$work/c_late2.sh" '(\./bin/build-apk\.sh --variant standard[^\n]*\n)' '\1python3 bin/build-admit.py run\n' && expect caught "AC3 admission after the build started" admission script "$work/c_late2.sh" apk
+sm c_curl  'set -euo pipefail\n' 'set -euo pipefail\ncurl -sSL https://example.com/x | sh\n' && expect caught "AC3 a network fetch" "network fetch" script "$work/c_curl.sh" apk
+sm c_tru   'build-apk\.sh --variant fips[^\n]*' 'build-apk.sh --variant fips --out out || true' && expect caught "AC3 a failure ignored" "failure-ignoring" script "$work/c_tru.sh" apk
+sm c_set   'set -euo pipefail' 'set -euo pipefail\nset +e'                && expect caught "AC3 set +e" "failure-ignoring" script "$work/c_set.sh" apk
+sm c_sudo  'export SOURCE_DATE_EPOCH' 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0\nexport SOURCE_DATE_EPOCH' && expect caught "AC6 the stage runs the sysctl or sudo itself (cache's scripts do)" "sudo" script "$work/c_sudo.sh" apk
+am c_unsh  './bin/assemble-image.sh --variant production' 'sudo unshare -n ./bin/assemble-image.sh --variant production' && expect caught "AC6 the stage wraps a script in unshare" "unshare" script "$work/c_unsh.sh" assemble
+sm c_mel   'python3 bin/build-version-check.py' 'melange build x.yaml\npython3 bin/build-version-check.py' && expect caught "AC6 a direct melange call" melange script "$work/c_mel.sh" apk
+sm c_gop   'set -euo pipefail\n' 'set -euo pipefail\nexport GOPROXY=off\n'  && expect caught "AC6 a variable cache's script refuses or a module-fetch setting (GOPROXY)" "refuse" script "$work/c_gop.sh" apk
+sm c_key   'set -euo pipefail\n' 'set -euo pipefail\nexport APK_RELEASE_SIGNING_KEY=x\n' && expect caught "AC6 the release signing key variable (rule 23)" "refuse" script "$work/c_key.sh" apk
+sm c_sk    '--source-dir \. --out out\n\./bin/build-apk\.sh --variant fips' '--source-dir . --out out --signing-key k\n./bin/build-apk.sh --variant fips' && expect caught "AC6 --signing-key" "refuse" script "$work/c_sk.sh" apk
+sm c_swap  '(\./bin/build-apk\.sh --variant standard[^\n]*\n)(\./bin/build-apk\.sh --variant fips[^\n]*\n)' '\2\1' && expect caught "AC3 variants out of order" "out of order" script "$work/c_swap.sh" apk
+sm c_ver   'python3 bin/build-version-check.py[^\n]*\n' ''               && expect caught "AC3 no version check (rule 24)" "version-check" script "$work/c_ver.sh" apk
+sm c_sde   'export SOURCE_DATE_EPOCH=[^\n]*' 'export SOURCE_DATE_EPOCH="$(date +%s)"' && expect caught "AC6 the build date is the wall clock, not the tagged commit" SOURCE_DATE_EPOCH script "$work/c_sde.sh" apk
+am a_dig   '[^\n]*> witness-build/digests.json\n' ''                      && expect caught "AC3 the assemble job writes no digests.json" "digests" script "$work/a_dig.sh" assemble
+am a_nov   '(python3 bin/chain-verify\.py verify --stage build --record witness-apk-ubuntu-24\.04/[^\n]*\n)' '' && expect caught "AC3 one architecture's apk record is not verified before the images are assembled (rule 58)" "witness-apk-ubuntu-24.04/" script "$work/a_nov.sh" assemble
+am a_nov2  '(python3 bin/chain-verify\.py verify --stage build --record witness-apk-ubuntu-24\.04-arm/[^\n]*\n)' '' && expect caught "AC3 the arm64 apk record is not verified before the images are assembled" "24.04-arm" script "$work/a_nov2.sh" assemble
+am a_late  '(python3 bin/chain-verify\.py verify[^\n]*\n)(python3 bin/chain-verify\.py verify[^\n]*\n)(export SOURCE_DATE_EPOCH[^\n]*\n)(\./bin/assemble-image\.sh --variant production[^\n]*\n)' '\3\4\1\2' && expect caught "AC3 the records are verified AFTER an image is assembled from the downloaded apks" "out of order" script "$work/a_late.sh" assemble
+am a_nopol '[^\n]*policy make[^\n]*\n' ''                                  && expect caught "AC3 no policy made for the tag before verifying" "policy make" script "$work/a_nopol.sh" assemble
+am a_wrong 'verify --stage build --record witness-apk-ubuntu-24.04/' 'verify --stage rebuild --record witness-apk-ubuntu-24.04/' && expect caught "AC3 verified as the wrong stage" "witness-apk-ubuntu-24.04/" script "$work/a_wrong.sh" assemble
+am a_adm   'set -euo pipefail\n' 'set -euo pipefail\npython3 bin/build-admit.py run\n' && expect ok "AC3 control: admission in the assemble job is not forbidden by the order judge (the apk job's first command is what is pinned)" "" script "$work/a_adm.sh" assemble
+mutate "$work/build-stage-rebuild-apk.sh" "$work/rc_first.sh" '(python3 bin/chain-verify\.py stage-start[^\n]*\n)' '' && expect caught "005-AC1 Build's record not verified first" "stage-start" script "$work/rc_first.sh" rebuild-apk
+mutate "$work/build-stage-rebuild-assemble.sh" "$work/rc_cmp.sh" '[^\n]*rebuild-compare[^\n]*\n' ''  && expect caught "005-AC2 no comparison" "rebuild-compare" script "$work/rc_cmp.sh" rebuild-assemble
+mutate "$work/build-stage-rebuild-assemble.sh" "$work/rc_nov.sh" '(python3 bin/chain-verify\.py verify --stage rebuild --record witness-rapk-ubuntu-24\.04/[^\n]*\n)' '' && expect caught "005-AC2 a Rebuild apk record is not verified before the images are assembled" "witness-rapk-ubuntu-24.04/" script "$work/rc_nov.sh" rebuild-assemble
+mutate "$work/build-stage-rebuild-assemble.sh" "$work/rc_pub.sh" 'set -euo pipefail\n' 'set -euo pipefail\ncp -r out dist\n' && expect ok "005-AC2 fixture control: an extra local copy is not itself a fault of the order judge" "" script "$work/rc_pub.sh" rebuild-assemble
 # ---- the job-graph judge (REQ-CHAIN-005-AC5) ----------------------------------------------------------------------------
 expect ok     "005-AC5 fixture: build -> (rebuild || check) -> release passes" "" graph "$work/release.yml"
 mutate "$work/release.yml" "$work/g1.yml" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' && expect caught "005-AC5 rebuild waits for check" "rebuild must need only build" graph "$work/g1.yml"
@@ -274,81 +288,100 @@ rec_expect refuse "AC8 chain-verify record-env: a compact JWT in a variable valu
 rec_expect refuse "AC8 chain-verify record-env: the github attestor's raw token" JWT "$work/env_other_att.json"
 rc=$(run_cv record-env --record "$work/does-not-exist.json"); [ "$rc" = 2 ] && ok "AC8 a missing record is a usage error (exit 2), not a clean pass" || bad "AC8 a missing record exit $rc, wanted 2"
 # ---- the stage script's behaviour with FAKE cache scripts (REQ-CHAIN-004-AC3, AC6, AC9; REQ-CHAIN-005-AC2) -----------
+# bin/build-stage.sh KIND is run in a throw-away tree: apk (the Build matrix job), assemble (the Build VM job). The fakes log their argv and the
+# SOURCE_DATE_EPOCH they saw; the fake chain-verify.py logs `verify ARGS` and exits FAKE_VERIFY_RC.
 mk_tree() { # mk_tree DIR SCRIPT  -> a throw-away repo layout with fake cache scripts and the script under test
-  local d=$1 s=$2; mkdir -p "$d/bin" "$d/out" "$d/witness-build"
+  local d=$1 s=$2; mkdir -p "$d/bin" "$d/out" "$d/witness-build" "$d/witness-apk-ubuntu-24.04" "$d/witness-apk-ubuntu-24.04-arm"
   cp "$s" "$d/bin/build-stage.sh"; chmod +x "$d/bin/build-stage.sh"
-  cat > "$d/bin/build-admit.py" <<'EOF'
+  : > "$d/witness-apk-ubuntu-24.04/apk-collection.json"; : > "$d/witness-apk-ubuntu-24.04-arm/apk-collection.json"
+  cat > "$d/bin/build-admit.py" <<'FAKE_EOF'
 #!/usr/bin/env python3
 import os, sys
 open("calls.log", "a").write("admit\n")
 sys.exit(int(os.environ.get("FAKE_ADMIT_RC", "0")))
-EOF
-  cat > "$d/bin/build-apk.sh" <<'EOF'
+FAKE_EOF
+  cat > "$d/bin/chain-verify.py" <<'FAKE_EOF'
+#!/usr/bin/env python3
+import os, sys
+open("calls.log", "a").write("verify " + " ".join(sys.argv[1:]) + "\n")
+sys.exit(int(os.environ.get("FAKE_VERIFY_RC", "0")))
+FAKE_EOF
+  cat > "$d/bin/build-apk.sh" <<'FAKE_EOF'
 #!/usr/bin/env bash
 if [ "${1:-}" = --print-source-date-epoch ]; then echo 1700000000; exit 0; fi
 echo "apk $* SDE=${SOURCE_DATE_EPOCH:-unset}" >> calls.log
 env | sort > "env-apk-$(date +%s%N).txt"
 exit "${FAKE_APK_RC:-0}"
-EOF
-  cat > "$d/bin/assemble-image.sh" <<'EOF'
+FAKE_EOF
+  cat > "$d/bin/assemble-image.sh" <<'FAKE_EOF'
 #!/usr/bin/env bash
 echo "image $* SDE=${SOURCE_DATE_EPOCH:-unset}" >> calls.log
 v=production; while [ $# -gt 0 ]; do [ "$1" = --variant ] && v=$2; shift; done
 mkdir -p out; printf 'sha256:%064d\n' "${#v}" > "out/$v.digest"
 exit "${FAKE_IMAGE_RC:-0}"
-EOF
-  cat > "$d/bin/build-version-check.py" <<'EOF'
+FAKE_EOF
+  cat > "$d/bin/build-version-check.py" <<'FAKE_EOF'
 #!/usr/bin/env python3
 open("calls.log", "a").write("version\n")
-EOF
+FAKE_EOF
   chmod +x "$d"/bin/*; : > "$d/out/fscache"
 }
 run_stage() { # run_stage DIR KIND [ENV=VAL...]
   local d=$1 k=$2; shift 2; (cd "$d" && env "$@" GITHUB_REF_NAME=v0.3.0 GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 PATH="$d/bin:$PATH" bash ./bin/build-stage.sh "$k" > stage.out 2> stage.err; echo $?)
 }
 for variant in fixture real; do
-  if [ "$variant" = fixture ]; then s="$work/build-stage.sh"; tag="fixture"; else s="$root/bin/build-stage.sh"; tag="real"; fi
-  if [ ! -f "$s" ]; then bad "AC3 $tag: bin/build-stage.sh does not exist (RED: not implemented yet)"; bad "AC3 $tag: stage stops at the first failing script"; bad "AC3 $tag: nothing after an admission failure"; bad "AC6 $tag: SOURCE_DATE_EPOCH reaches both scripts as the commit time"; bad "AC9 $tag: digests.json passes the digest-list schema"; continue; fi
-  d="$work/tree-$tag"; rm -rf "$d"; mk_tree "$d" "$s"
-  rc=$(run_stage "$d" build); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ "$(sed -n 1p <<< "$calls")" = admit ]; then ok "AC3 $tag: the stage runs, and admission is the first call"; else bad "AC3 $tag: exit $rc, first call '$(sed -n 1p <<< "$calls")'"; fi
-  if ! grep -q 'SDE=unset' <<< "$calls" && [ "$(grep -c 'SDE=1700000000' <<< "$calls")" -ge 4 ]; then ok "AC6 $tag: SOURCE_DATE_EPOCH (the tagged commit's time from cache's script) reaches every build and assemble call"; else bad "AC6 $tag: SOURCE_DATE_EPOCH not exported to every call: $calls"; fi
-  rm -rf "$d"; mk_tree "$d" "$s"; rc=$(run_stage "$d" build FAKE_ADMIT_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" != 0 ] && [ "$calls" = admit ]; then ok "AC3 $tag: a refused admission runs nothing else (no script, no digests.json)"; else bad "AC3 $tag: after a refused admission rc=$rc calls=$calls"; fi
-  [ ! -e "$d/digests.json" ] || bad "AC3 $tag: digests.json written after a refused admission"
+  if [ "$variant" = fixture ]; then sa="$work/build-stage-apk.sh"; ss="$work/build-stage-assemble.sh"; tag="fixture"; else sa="$root/bin/build-stage.sh"; ss="$root/bin/build-stage.sh"; tag="real"; fi
+  if [ ! -f "$sa" ]; then
+    for l in "AC3 $tag: the apk script runs, and admission is the first call" "AC6 $tag: SOURCE_DATE_EPOCH reaches every apk build" "AC3 $tag: a refused admission runs nothing else" \
+             "AC6 $tag: build-apk.sh exit 2 stops the job before the version check" "AC6 $tag: build-apk.sh exit 4 (network attempt) stops the job before the version check" \
+             "AC3 $tag: a refused apk record stops the assemble job before any image" "AC6 $tag: assemble-image.sh failing stops the job before any digests.json" \
+             "AC9 $tag: digests.json passes PR 1's digest-list schema"; do bad "$l (bin/build-stage.sh does not exist: RED until implemented)"; done
+    continue
+  fi
+  d="$work/tree-$tag-a"; rm -rf "$d"; mk_tree "$d" "$sa"
+  rc=$(run_stage "$d" apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && [ "$(sed -n 1p <<< "$calls")" = admit ] && grep -q '^version' <<< "$calls"; then ok "AC3 $tag: the apk script runs, admission is the first call and the version check follows the builds"; else bad "AC3 $tag: exit $rc, first call '$(sed -n 1p <<< "$calls")'"; fi
+  if ! grep -q 'SDE=unset' <<< "$calls" && [ "$(grep -c 'SDE=1700000000' <<< "$calls")" -ge 2 ]; then ok "AC6 $tag: SOURCE_DATE_EPOCH (the tagged commit's time from cache's script) reaches every apk build"; else bad "AC6 $tag: SOURCE_DATE_EPOCH not exported to every call: $calls"; fi
+  rm -rf "$d"; mk_tree "$d" "$sa"; rc=$(run_stage "$d" apk FAKE_ADMIT_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" != 0 ] && [ "$calls" = admit ]; then ok "AC3 $tag: a refused admission runs nothing else (no script is called)"; else bad "AC3 $tag: after a refused admission rc=$rc calls=$calls"; fi
   for rcv in 2 4; do
-    rm -rf "$d"; mk_tree "$d" "$s"; rc=$(run_stage "$d" build FAKE_APK_RC=$rcv); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-    if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/digests.json" ]; then ok "AC6 $tag: build-apk.sh exit $rcv ($( [ $rcv = 4 ] && echo 'a network attempt in the sealed call, FIXED by cache tests' || echo 'a named refusal')) stops the stage, assembles nothing, writes no digests.json"; else bad "AC6 $tag: build-apk.sh exit $rcv -> rc=$rc calls=$calls"; fi
+    rm -rf "$d"; mk_tree "$d" "$sa"; rc=$(run_stage "$d" apk FAKE_APK_RC=$rcv); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+    if [ "$rc" != 0 ] && ! grep -q '^version' <<< "$calls"; then ok "AC6 $tag: build-apk.sh exit $rcv ($( [ $rcv = 4 ] && echo 'a network attempt in the sealed call, FIXED by cache tests' || echo 'a named refusal' )) stops the job before the version check"; else bad "AC6 $tag: apk exit $rcv -> rc=$rc calls=$calls"; fi
   done
-  rm -rf "$d"; mk_tree "$d" "$s"; rc=$(run_stage "$d" build FAKE_IMAGE_RC=4)
-  if [ "$rc" != 0 ] && [ ! -e "$d/digests.json" ]; then ok "AC6 $tag: assemble-image.sh failing stops the stage before any digests.json"; else bad "AC6 $tag: assemble failure -> rc=$rc, digests.json present=$([ -e "$d/digests.json" ] && echo yes || echo no)"; fi
-  rm -rf "$d"; mk_tree "$d" "$s"; rc=$(run_stage "$d" build)
-  if [ "$rc" = 0 ] && python3 - "$d" <<'PY'
+  d="$work/tree-$tag-s"; rm -rf "$d"; mk_tree "$d" "$ss"
+  rc=$(run_stage "$d" assemble FAKE_VERIFY_RC=1); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/witness-build/digests.json" ]; then ok "AC3 $tag: a refused apk record stops the assemble job before any image is assembled (rule 58)"; else bad "AC3 $tag: refused record -> rc=$rc calls=$calls"; fi
+  rm -rf "$d"; mk_tree "$d" "$ss"; rc=$(run_stage "$d" assemble FAKE_IMAGE_RC=4)
+  if [ "$rc" != 0 ] && [ ! -e "$d/witness-build/digests.json" ]; then ok "AC6 $tag: assemble-image.sh failing stops the job before any digests.json"; else bad "AC6 $tag: assemble failure -> rc=$rc, digests.json present=$([ -e "$d/witness-build/digests.json" ] && echo yes || echo no)"; fi
+  rm -rf "$d"; mk_tree "$d" "$ss"; rc=$(run_stage "$d" assemble); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  nv=$(grep -n '^verify' <<< "$calls" | tail -1 | cut -d: -f1); ni=$(grep -n '^image ' <<< "$calls" | head -1 | cut -d: -f1)
+  if [ "$rc" = 0 ] && [ "$(grep -c '^verify .*--stage build' <<< "$calls")" -ge 2 ] && [ -n "$nv" ] && [ -n "$ni" ] && [ "$nv" -lt "$ni" ] && python3 - "$d" <<'PY'
 import json, re, sys
 d = sys.argv[1]
-j = json.load(open(d + "/digests.json"))
+j = json.load(open(d + "/witness-build/digests.json"))
 assert isinstance(j, dict) and j, "empty"
 for k, v in j.items():
     assert re.fullmatch(r"[a-z0-9-]+", k), k
     assert isinstance(v, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", v), v
-items = json.load(open(d + "/items.json"))
+items = json.load(open(d + "/witness-build/items.json"))
 assert isinstance(items, dict) and set(j) <= set(items), "digests.json names are not all items"
 PY
-  then ok "AC9 $tag: digests.json passes PR 1's digest-list schema and every name is also an item in items.json"; else bad "AC9 $tag: digests.json / items.json missing or off-schema (rc=$rc)"; fi
+  then ok "AC9 $tag: both apk records are verified before the first image; digests.json passes PR 1's schema and its names are also items"; else bad "AC9 $tag: assemble rc=$rc verify-before-image=$nv/$ni digests.json missing or off-schema"; fi
 done
 # the harness itself can fail: a script that ignores failures is caught by the behaviour check (a control)
-d="$work/tree-ctl"; rm -rf "$d"; sed -e 's#^\(\./bin/build-apk\.sh --variant .*\)$#\1 || true#' "$work/build-stage.sh" > "$work/ctl-stage.sh"
-mk_tree "$d" "$work/ctl-stage.sh"; rc=$(run_stage "$d" build FAKE_APK_RC=4)
-if [ "$rc" = 0 ] || grep -q '^image ' "$d/calls.log" 2> /dev/null; then ok "control: a script that ignores a failing apk build is visible to the behaviour harness (exit $rc, images assembled)"; else bad "control: the behaviour harness cannot tell a failure-ignoring script (rc=$rc)"; fi
+d="$work/tree-ctl"; rm -rf "$d"; sed -e 's#^\(\./bin/build-apk\.sh --variant .*\)$#\1 || true#' "$work/build-stage-apk.sh" > "$work/ctl-stage.sh"
+mk_tree "$d" "$work/ctl-stage.sh"; rc=$(run_stage "$d" apk FAKE_APK_RC=4)
+if [ "$rc" = 0 ] || grep -q '^version' "$d/calls.log" 2> /dev/null; then ok "control: a script that ignores a failing apk build is visible to the behaviour harness (exit $rc, version check ran)"; else bad "control: the ignoring script was NOT visible to the behaviour harness (exit $rc)"; fi
 # ---- the real repository -------------------------------------------------------------------------------------------------
 expect ok "AC1/AC2 the real stage-build.yml passes the Build allowlist" "" stage "$root/.github/workflows/stage-build.yml" build
 expect ok "005-AC1/AC4 the real stage-reproducibility.yml passes the Rebuild allowlist" "" stage "$root/.github/workflows/stage-reproducibility.yml" rebuild
-expect ok "AC3 the real bin/build-stage.sh (build) passes the order judge" "" script "$root/bin/build-stage.sh" build
-expect ok "005-AC2 the real bin/build-stage.sh (rebuild) passes the order judge" "" script "$root/bin/build-stage.sh" rebuild
+for k in apk assemble rebuild-apk rebuild-assemble; do
+  expect ok "AC3/005-AC2 the real bin/build-stage.sh passes the order judge for kind $k" "" script "$root/bin/build-stage.sh" "$k"
+done
 expect ok "005-AC5 the real release.yml job graph" "" graph "$root/.github/workflows/release.yml"
 [ ! -e "$root/.github/workflows/stage-image.yml" ] && [ ! -e "$root/.github/workflows/stage-admission.yml" ] && ok "AC1 stage-image.yml and stage-admission.yml are gone (rules 50, 61)" || bad "AC1 stage-image.yml / stage-admission.yml still exist (RED until PR 2)"
 grep -q 'witness' "$root/bin/install-scanner.sh" && ok "AC2 bin/install-scanner.sh installs witness pinned by checksum" || bad "AC2 bin/install-scanner.sh has no witness (RED: the implementation adds it)"
-EXPECT=94
+EXPECT=118
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

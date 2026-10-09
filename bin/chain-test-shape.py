@@ -4,28 +4,38 @@ environment record of a Witness collection. Each judge prints `ok` or the list o
 tests first prove every judge on a known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then
 apply it to the real repository (RED until PR 2 is implemented).
 
-  stage FILE build|rebuild     REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4: an ALLOWLIST. The stage file is a reusable workflow
-                               (on: workflow_call only) of ONE job (a matrix over the native runners is one job) directly on a
-                               GitHub-hosted ubuntu VM, with permissions exactly contents read + id-token write, no container,
-                               services, env, defaults, secrets or packages write, whose steps are EXACTLY, in order:
+  stage FILE build|rebuild     REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4: an ALLOWLIST. The stage file is a reusable workflow (on: workflow_call
+                               only) with EXACTLY two jobs and one identity (advisor 0341 reading): `apk` (a matrix over both native runners) and
+                               `assemble` (the ubuntu-24.04 VM, needs apk); each directly on a GitHub-hosted VM, permissions exactly contents read +
+                               id-token write, no container, services, env, defaults, secrets or packages write, whose steps are EXACTLY, in order:
                                  1. actions/checkout (full commit digest, persist-credentials: false)
-                                 2. run: ./bin/install-scanner.sh witness      (Witness, pinned by version and checksum like the other
-                                                                                tools; the implementation adds witness to the script)
-                                 3. ONE run step: the token fetch (curl to $ACTIONS_ID_TOKEN_REQUEST_URL, jq, ::add-mask::) and ONE
-                                    `witness run` with only the allowed flags (fixed Fulcio and Sigstore timestamp addresses, the
-                                    environment filter flag and the token-variable key patterns), ending `-- ./bin/build-stage.sh KIND`
-                                 4. only upload-artifact steps with allowed artifact names (build: witness-build digests dist locks;
-                                    rebuild: witness-rebuild)
-                               in-toto-witness docs/attestors/environment.md ("Filter instead of obfuscate": --env-filter-sensitive-vars,
-                               --env-add-sensitive-key); docs/commands.md (witness run flags); harness spike
+                                 2. run: ./bin/install-scanner.sh witness      (checksum-pinned, like the other tools)
+                                 3. digest-pinned actions/download-artifact steps with names from the per-job allowlist (before Witness starts, rule 68)
+                                 4. ONE run step: the token fetch and ONE `witness run` with only the allowed flags (the github and slsa attestors are
+                                    refused), ending `-- ./bin/build-stage.sh KIND`
+                                 5. only upload-artifact steps with allowed artifact names
+                               in-toto-witness docs/attestors/environment.md ("Filter instead of obfuscate"); docs/commands.md; harness spike
                                2026-10-09-harness-witness-spikes-a-c.md:20-30 (the token fetch and fulcio flags).
-  script FILE build|rebuild    REQ-CHAIN-004-AC3, AC6 / REQ-CHAIN-005-AC2: the commands of bin/build-stage.sh in order.
+  script FILE apk|assemble|rebuild-apk|rebuild-assemble   REQ-CHAIN-004-AC3, AC6 / REQ-CHAIN-005-AC2: the commands of bin/build-stage.sh KIND in order.
   graph FILE                   REQ-CHAIN-005-AC5: release.yml job graph.
   recordenv FILE               REQ-CHAIN-004-AC8: no token variable in a Witness collection (used by the fixtures test of the judge; the
                                product check is chain-verify.py record-env, which the tests assert separately)."""
 import json, re, shlex, sys, yaml
 
-ARTIFACTS = {"build": {"witness-build", "digests", "dist", "locks"}, "rebuild": {"witness-rebuild"}}
+# advisor 0341 (reading, Oct 9; put to the owner): ONE stage = ONE workflow file and ONE identity. Each stage file holds exactly two jobs:
+# `apk` (a matrix over the two native runners: melange per architecture) and `assemble` (ONE job on the VM: apko for both architectures,
+# rule 33). Artifact names that carry the runner use the literal expression ${{ matrix.runner }} in the upload and the two literal
+# runner names in the download, so a download can never name anything outside this list.
+UP = {("build", "apk"): {"apk-${{ matrix.runner }}", "witness-apk-${{ matrix.runner }}"},
+      ("build", "assemble"): {"witness-build", "digests", "dist", "locks"},
+      ("rebuild", "apk"): {"rapk-${{ matrix.runner }}", "witness-rapk-${{ matrix.runner }}"},
+      ("rebuild", "assemble"): {"witness-rebuild"}}
+DOWN = {("build", "apk"): set(),
+        ("build", "assemble"): {"apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "witness-apk-ubuntu-24.04", "witness-apk-ubuntu-24.04-arm"},
+        ("rebuild", "apk"): {"witness-build"},
+        ("rebuild", "assemble"): {"rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm", "witness-rapk-ubuntu-24.04", "witness-rapk-ubuntu-24.04-arm", "witness-build"}}
+KIND = {("build", "apk"): "apk", ("build", "assemble"): "assemble", ("rebuild", "apk"): "rebuild-apk", ("rebuild", "assemble"): "rebuild-assemble"}
+STEP = {("build", "apk"): "apk", ("build", "assemble"): "build", ("rebuild", "apk"): "rebuild-apk", ("rebuild", "assemble"): "rebuild"}
 RUNNERS = {"ubuntu-24.04", "ubuntu-24.04-arm"}
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 FLAGS = {  # flag -> exact value, None = any value (checked separately), False = takes no value
@@ -34,7 +44,9 @@ FLAGS = {  # flag -> exact value, None = any value (checked separately), False =
     "--signer-fulcio-token-path": '"$RUNNER_TEMP/tok"', "-t": "https://timestamp.sigstore.dev/api/v1/timestamp",
     "-a": None, "--env-filter-sensitive-vars": False, "--env-add-sensitive-key": None, "-d": None, "-o": None,
 }
-ATTESTORS = {"environment", "git", "github", "material", "product", "command-run"}
+# the `github` attestor is NOT allowed (advisor 0341): it embeds the raw OIDC token (rules 52a, 68); run and job identity come from the
+# Fulcio certificate extensions that PR 1's policy pins (advisor 0334). `slsa` is not allowed either: provenance is Sign's alone.
+ATTESTORS = {"environment", "git", "material", "product", "command-run"}
 REQUIRED_KEYS = {"ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN"}
 TOKEN_LINES = [
     r'curl -sSf -H "Authorization: bearer \$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "\$\{ACTIONS_ID_TOKEN_REQUEST_URL\}&audience=sigstore" -o "\$RUNNER_TEMP/tok\.json"',
@@ -42,10 +54,11 @@ TOKEN_LINES = [
     r'echo "::add-mask::\$\(cat "\$RUNNER_TEMP/tok"\)"',
     r'set -euo pipefail',
 ]
-OUT = {"build": "witness-build/build-collection.json", "rebuild": "witness-rebuild/rebuild-collection.json"}
+OUT = {("build", "apk"): "witness-apk/apk-collection.json", ("build", "assemble"): "witness-build/build-collection.json",
+       ("rebuild", "apk"): "witness-rapk/rapk-collection.json", ("rebuild", "assemble"): "witness-rebuild/rebuild-collection.json"}
 
 
-def stage(path, kind):
+def stage(path, family):
     bad = []
     d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
     text = open(path).read()
@@ -56,52 +69,77 @@ def stage(path, kind):
         bad.append("on: must be exactly workflow_call, got %s" % on)
     if (on or {}).get("workflow_call", {}) and ((on or {}).get("workflow_call") or {}).get("secrets"):
         bad.append("the workflow declares secrets")
-    jobs = d.get("jobs") or {}
-    if len(jobs) != 1:
-        bad.append("exactly one job required, found %d" % len(jobs)); return bad
-    j = list(jobs.values())[0]
-    if set(j) - {"name", "runs-on", "permissions", "steps", "strategy", "outputs", "timeout-minutes"}:
-        bad.append("job keys outside the allowlist: %s" % sorted(set(j) - {"name", "runs-on", "permissions", "steps", "strategy", "outputs", "timeout-minutes"}))
-    for k in ("container", "services", "env", "defaults", "environment"):
-        if k in j: bad.append("job has %s" % k)
-    ro = j.get("runs-on")
-    if ro in RUNNERS: pass
-    elif isinstance(ro, str) and re.fullmatch(r"\$\{\{\s*matrix\.runner\s*\}\}", ro):
-        mr = (((j.get("strategy") or {}).get("matrix") or {}).get("runner")) or []
-        if not mr or not set(mr) <= RUNNERS or set((j.get("strategy") or {}).keys()) - {"matrix", "fail-fast"} \
-           or set(((j.get("strategy") or {}).get("matrix") or {}).keys()) != {"runner"}:
-            bad.append("matrix must be exactly runner: a subset of %s" % sorted(RUNNERS))
-    else:
-        bad.append("runs-on must be a GitHub-hosted ubuntu-24.04 runner (or the matrix.runner of two), got %r" % ro)
-    perm = j.get("permissions")
-    if perm != {"contents": "read", "id-token": "write"}:
-        bad.append("permissions must be exactly contents: read + id-token: write, got %s" % perm)
     if re.search(r"\bsecrets\s*\.|secrets\[|secrets:\s*inherit|packages:\s*write", text):
         bad.append("a secrets reference or packages: write appears")
+    jobs = d.get("jobs") or {}
+    if set(jobs) != {"apk", "assemble"}:
+        bad.append("exactly two jobs required, apk and assemble (one stage = one file = one identity), found %s" % sorted(jobs)); return bad
+    for name in ("apk", "assemble"):
+        bad += ["%s: %s" % (name, m) for m in job(jobs[name], family, name)]
+    nd = jobs["assemble"].get("needs")
+    if nd not in ("apk", ["apk"]):
+        bad.append("assemble must need exactly apk, got %s" % nd)
+    return bad
+
+
+def job(j, family, name):
+    bad = []
+    allowed = {"name", "runs-on", "permissions", "steps", "timeout-minutes"} | ({"strategy"} if name == "apk" else {"needs"})
+    if set(j) - allowed:
+        bad.append("job keys outside the allowlist: %s" % sorted(set(j) - allowed))
+    for k in ("container", "services", "env", "defaults", "environment", "outputs", "if", "continue-on-error"):
+        if k in j: bad.append("job has %s" % k)
+    ro = j.get("runs-on")
+    if name == "apk":
+        mr = (((j.get("strategy") or {}).get("matrix") or {}).get("runner")) or []
+        if not (isinstance(ro, str) and re.fullmatch(r"\$\{\{\s*matrix\.runner\s*\}\}", ro)):
+            bad.append("the apk job must run on matrix.runner, got %r" % ro)
+        if sorted(mr) != sorted(RUNNERS) or set((j.get("strategy") or {}).keys()) - {"matrix", "fail-fast"} \
+           or set(((j.get("strategy") or {}).get("matrix") or {}).keys()) != {"runner"}:
+            bad.append("matrix must be exactly runner: both of %s (native runners, no emulation)" % sorted(RUNNERS))
+    else:
+        if ro != "ubuntu-24.04":
+            bad.append("the assemble job must run directly on the ubuntu-24.04 VM (rule 62), got %r" % ro)
+        if "strategy" in j: bad.append("the assemble job has a strategy")
+    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
+        bad.append("permissions must be exactly contents: read + id-token: write, got %s" % j.get("permissions"))
     steps = j.get("steps") or []
     if len(steps) < 3:
         bad.append("fewer than three steps"); return bad
-    s0, s1, s2 = steps[:3]
+    s0, s1 = steps[:2]
     if set(s0) - {"uses", "with", "name"} or not PIN.match((s0.get("uses") or "").split(" ")[0]) or not (s0.get("uses") or "").startswith("actions/checkout@") \
        or (s0.get("with") or {}).get("persist-credentials") != "false":
         bad.append("step 1 must be actions/checkout pinned by full digest with persist-credentials: false")
     if set(s1) - {"run", "name"} or (s1.get("run") or "").strip() != "./bin/install-scanner.sh witness":
         bad.append("step 2 must be exactly: run ./bin/install-scanner.sh witness (checksum-pinned Witness install)")
+    i = 2
+    while i < len(steps) and "uses" in steps[i] and (steps[i].get("uses") or "").startswith("actions/download-artifact@"):
+        s = steps[i]; u = s["uses"].split(" ")[0]
+        nm = (s.get("with") or {}).get("name")
+        if set(s) - {"uses", "with", "name"} or not PIN.match(u) or set(s.get("with") or {}) - {"name", "path"}:
+            bad.append("download step %r must be a digest-pinned actions/download-artifact with only name and path" % s.get("name"))
+        if nm not in DOWN[(family, name)]:
+            bad.append("download of %r is not allowed for the %s stage's %s job: %s" % (nm, family, name, sorted(DOWN[(family, name)])))
+        i += 1
+    if i >= len(steps) or "run" not in steps[i]:
+        bad.append("the Witness step (a run step) must follow the checkout, the install and the downloads"); return bad
+    s2 = steps[i]
     if set(s2) - {"run", "name"}:
-        bad.append("step 3 (the Witness step) may carry only run and name (no env, if, shell, working-directory)")
-    bad += witness_step(s2.get("run") or "", kind)
-    for s in steps[3:]:
+        bad.append("the Witness step may carry only run and name (no env, if, shell, working-directory)")
+    bad += witness_step(s2.get("run") or "", family, name)
+    for s in steps[i + 1:]:
         u = s.get("uses") or ""
         if set(s) - {"uses", "with", "name", "if"} or not u.startswith("actions/upload-artifact@") or not PIN.match(u.split(" ")[0]):
             bad.append("step %r after the Witness step must be a digest-pinned actions/upload-artifact and nothing else" % s.get("name"))
             continue
         nm = (s.get("with") or {}).get("name")
-        if nm not in ARTIFACTS[kind]:
-            bad.append("upload of %r is not an allowed artifact for %s: %s" % (nm, kind, sorted(ARTIFACTS[kind])))
+        if nm not in UP[(family, name)]:
+            bad.append("upload of %r is not an allowed artifact for the %s stage's %s job: %s" % (nm, family, name, sorted(UP[(family, name)])))
     return bad
 
 
-def witness_step(run, kind):
+def witness_step(run, family, name):
+    kind = KIND[(family, name)]
     bad = []
     run = re.sub(r"\\\n\s*", " ", run)
     cmds = [l.strip() for l in run.splitlines() if l.strip() and not l.strip().startswith("#")]
@@ -138,10 +176,10 @@ def witness_step(run, kind):
     for f in ("--step", "--signer-fulcio-url", "--signer-fulcio-oidc-issuer", "--signer-fulcio-oidc-client-id", "--signer-fulcio-token-path", "-t",
               "--env-filter-sensitive-vars", "-o", "-a"):
         if f not in seen: bad.append("required flag %s is missing" % f)
-    if seen.get("--step") and seen["--step"] != [kind]:
-        bad.append("--step must be %s" % kind)
-    if seen.get("-o") and seen["-o"] != [OUT[kind]]:
-        bad.append("-o must be %s" % OUT[kind])
+    if seen.get("--step") and seen["--step"] != [STEP[(family, name)]]:
+        bad.append("--step must be %s" % STEP[(family, name)])
+    if seen.get("-o") and seen["-o"] != [OUT[(family, name)]]:
+        bad.append("-o must be %s" % OUT[(family, name)])
     for v in seen.get("-a", []):
         if not set(v.split(",")) <= ATTESTORS:
             bad.append("attestor list %s contains a name outside %s (provenance is Sign's alone)" % (v, sorted(ATTESTORS)))
@@ -168,31 +206,34 @@ def script(path, kind):
     if not lines or lines[0] != "set -euo pipefail":
         bad.append("the first command must be set -euo pipefail")
     cmds = lines[1:]
-    if kind == "build":
-        want = [r'python3 bin/build-admit\.py run',
-                r'export SOURCE_DATE_EPOCH="\$\(\./bin/build-apk\.sh --print-source-date-epoch --source-dir \.\)"',
-                r'\./bin/build-apk\.sh --variant standard .*', r'\./bin/build-apk\.sh --variant fips .*',
-                r'\./bin/assemble-image\.sh --variant production .*', r'\./bin/assemble-image\.sh --variant fips .*',
-                r'python3 bin/build-version-check\.py --binary \S+ --tag "\$GITHUB_REF_NAME" --sha "\$GITHUB_SHA"',
-                r'.*> digests\.json', r'.*> items\.json']
+    SDE = r'export SOURCE_DATE_EPOCH="\$\(\./bin/build-apk\.sh --print-source-date-epoch --source-dir \.\)"'
+    POLICY = r'python3 bin/chain-verify\.py policy make .*--tag "\$GITHUB_REF_NAME".*--out policy\.json'
+    APKS = [r'\./bin/build-apk\.sh --variant standard .*', r'\./bin/build-apk\.sh --variant fips .*']
+    IMGS = [r'\./bin/assemble-image\.sh --variant production .*', r'\./bin/assemble-image\.sh --variant fips .*']
+    def ver(stage, prefix):
+        return [r'python3 bin/chain-verify\.py verify --stage %s --record %s-ubuntu-24\.04/%s-collection\.json --policy policy\.json( .*)?' % (stage, "witness-" + prefix, prefix),
+                r'python3 bin/chain-verify\.py verify --stage %s --record %s-ubuntu-24\.04-arm/%s-collection\.json --policy policy\.json( .*)?' % (stage, "witness-" + prefix, prefix)]
+    START = (r'python3 bin/chain-verify\.py stage-start --stage rebuild --previous build --record witness-build/build-collection\.json '
+             r'--digests witness-build/digests\.json --policy policy\.json')
+    if kind == "apk":
+        want = [r'python3 bin/build-admit\.py run', SDE] + APKS + [r'python3 bin/build-version-check\.py --binary \S+ --tag "\$GITHUB_REF_NAME" --sha "\$GITHUB_SHA"']
+    elif kind == "assemble":
+        # the per-architecture records are verified BEFORE any image is assembled from the downloaded apks (rule 58)
+        want = [POLICY] + ver("build", "apk") + [SDE] + IMGS + [r'.*> witness-build/digests\.json', r'.*> witness-build/items\.json']
+    elif kind == "rebuild-apk":
+        want = [POLICY, START, SDE] + APKS
     else:
-        want = [r'python3 bin/chain-verify\.py policy make .*--tag "\$GITHUB_REF_NAME".*--out policy\.json',
-                r'python3 bin/chain-verify\.py stage-start --stage rebuild --previous build --record witness-build/build-collection\.json '
-                r'--digests witness-build/digests\.json --policy policy\.json',
-                r'export SOURCE_DATE_EPOCH="\$\(\./bin/build-apk\.sh --print-source-date-epoch --source-dir \.\)"',
-                r'\./bin/build-apk\.sh --variant standard .*', r'\./bin/build-apk\.sh --variant fips .*',
-                r'\./bin/assemble-image\.sh --variant production .*', r'\./bin/assemble-image\.sh --variant fips .*',
-                r'.*> items\.json',
+        want = [POLICY] + ver("rebuild", "rapk") + [START, SDE] + IMGS + [r'.*> items\.json',
                 r'python3 bin/chain-verify\.py rebuild-compare --build-record witness-build/build-collection\.json --expected witness-build/items\.json '
                 r'--actual items\.json --out verdict\.json']
     pos = 0
     for w in want:
         hit = next((n for n in range(pos, len(cmds)) if re.fullmatch(w, cmds[n])), None)
         if hit is None:
-            bad.append("command %r is missing or out of order" % w[:70])
+            bad.append("command %r is missing or out of order" % re.sub(r"\\(.)", r"\1", w)[:120])
         else:
             pos = hit + 1
-    if kind == "build" and cmds and not re.fullmatch(want[0], cmds[0]):
+    if kind == "apk" and cmds and not re.fullmatch(want[0], cmds[0]):
         bad.append("the FIRST command after set must be the admission script, got %r" % cmds[0][:60])
     return bad
 
