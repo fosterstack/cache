@@ -38,6 +38,12 @@ cannot add or extend its own substitute; its edit of the file only changes <tree
 unexpired by the gate's own UTC clock (read from the system clock only; no environment variable or option can change it) AND by completed_at, and its
 scope (`all`, or `pr:N` with N equal to --pr) fits. Sonnet is never substitutable. A record with a
 codex entry is judged on codex alone. Anything malformed fails closed with a message naming it.
+
+ENFORCEMENT: a substitute never clears a change to anything the gate itself runs or reads — every path
+under .github/agent/bin/ and .github/agent/fixtures/testlib/ (by prefix, so new files count), the
+review-substitutes allow-list, the gate workflow, bin/check-file-allowlist.sh and
+.github/agent/tests/pin-wiring-test.sh. Such a change needs a real codex entry. The workflow runs this
+script and the pin checker with `python3 -I` (isolated: no script directory on sys.path, no PYTHON* env).
 """
 import datetime, hashlib, json, re, subprocess, sys
 
@@ -51,10 +57,21 @@ GUARDED = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh",
 VENDORS = {"codex": "openai", "sonnet": "anthropic"}
 SCHEMA = "auditor-review-record/v1"
 SUBS_PATH = REVIEWS + "substitutes.json"
-# The files that enforce a substitute's limits (its allow-list, the gate, its workflow, the pin checker, the
-# gate's own tests): a change touching any of them is never cleared by a substitute (B4).
-ENFORCEMENT = (SUBS_PATH, AGENT + "bin/auditor-review-gate.py", ".github/workflows/agent-review-gate.yml",
-               AGENT + "bin/check-action-pins.py", AGENT + "bin/tests/test_review_gate.py")
+# ENFORCEMENT (B4-B6): a substitute never clears a change to anything the review gate itself runs or reads,
+# else a substitute-cleared change could remove the substitute's own time box. By PREFIX (so a NEW file
+# counts: a new .github/agent/bin/datetime.py would shadow the stdlib for a script run by path): every path under
+# bin/ and the test-lib fixtures the judge puts on PYTHONPATH; plus the exact files: the allow-list, the gate
+# workflow, and the two scripts the judge and sweep run. A change touching any needs a real codex entry.
+ENFORCEMENT_PREFIXES = (AGENT + "bin/", AGENT + "fixtures/testlib/")
+ENFORCEMENT = (SUBS_PATH, ".github/workflows/agent-review-gate.yml", "bin/check-file-allowlist.sh",
+               AGENT + "tests/pin-wiring-test.sh")
+
+
+def enforces(path):
+    """True if `path` is part of what the gate runs or reads (a change to it is never cleared by a substitute)."""
+    return path in ENFORCEMENT or path.startswith(ENFORCEMENT_PREFIXES)
+
+
 SUBS_SCHEMA = "review-substitutes/v1"
 _TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
 _SCOPE = re.compile(r"all|pr:[1-9][0-9]*")
@@ -272,7 +289,7 @@ def main(argv):
         subs = _git("show", "%s:%s" % (opt("--subs-rev") or base, SUBS_PATH))
     except RuntimeError:
         subs = None
-    probs = record_problems(rec, tree, subs=subs, pr=pr, enforcement_edits=[c for c in changed if c in ENFORCEMENT])
+    probs = record_problems(rec, tree, subs=subs, pr=pr, enforcement_edits=[c for c in changed if enforces(c)])
     for p in probs:
         print("::error file=%s::review gate: %s (REQ-AUD-18 AC3)" % (path, p))
     if probs:

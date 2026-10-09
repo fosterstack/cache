@@ -464,13 +464,13 @@ class SubstituteCli(unittest.TestCase):
         self.cwd = os.getcwd(); os.chdir(self.d); self.addCleanup(os.chdir, self.cwd)
         self.clock = mock.patch.object(G, "_utcnow", return_value=dt(BEFORE)); self.clock.start(); self.addCleanup(self.clock.stop)
         self.git("init", "-q", "-b", "main")
-        os.makedirs(".github/agent/bin"); os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/bin/x.py", "a\n"); self.write(self.SUBPATH, json.dumps(SUBS))
+        os.makedirs(".github/agent/prompts"); os.makedirs(".github/agent/reviews")
+        self.write(".github/agent/prompts/x.py", "a\n"); self.write(self.SUBPATH, json.dumps(SUBS))
         self.git("add", "-A"); self.git("commit", "-qm", "base")
         self.base = self.git("rev-parse", "HEAD").strip()
 
     def propose(self, entry=None, completed=BEFORE):
-        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "change")
+        self.write(".github/agent/prompts/x.py", "b\n"); self.git("commit", "-qam", "change")
         tree = self.run_main("--print-tree")[1].strip()
         self.write(".github/agent/reviews/%s.json" % tree, json.dumps(sub_rec(entry, completed, tree)))
         self.git("add", "-A"); self.git("commit", "-qm", "record")
@@ -551,7 +551,7 @@ class SubstituteCli(unittest.TestCase):
 
     def test_a_tampered_tree_fails_the_cli(self):
         self.propose()
-        self.write(".github/agent/bin/x.py", "tampered\n"); self.git("commit", "-qam", "after the review")
+        self.write(".github/agent/prompts/x.py", "tampered\n"); self.git("commit", "-qam", "after the review")
         rc, out, _ = self.judge()
         self.assertEqual(rc, 1)
         self.assertIn("no valid review record", out)
@@ -572,7 +572,7 @@ class SubstituteCli(unittest.TestCase):
 
     def test_a_change_that_edits_the_allow_list_passes_with_a_real_codex_entry(self):
         self.edit_allowlist()
-        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "change")
+        self.write(".github/agent/prompts/x.py", "b\n"); self.git("commit", "-qam", "change")
         tree = self.run_main("--print-tree")[1].strip()
         rec = good(); rec["tree"] = tree
         self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
@@ -602,7 +602,23 @@ class SubstituteCli(unittest.TestCase):
                 self.assertIn("codex", out)
 
     def test_the_enforcement_set_in_the_script_is_exactly_the_ratified_one(self):
-        self.assertEqual(sorted(G.ENFORCEMENT), sorted(self.ENFORCEMENT))
+        self.assertEqual(sorted(G.ENFORCEMENT_PREFIXES), [".github/agent/bin/", ".github/agent/fixtures/testlib/"])
+        self.assertEqual(sorted(G.ENFORCEMENT), sorted([
+            ".github/agent/reviews/substitutes.json", ".github/workflows/agent-review-gate.yml",
+            "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh"]))
+
+    def test_new_files_and_the_gate_s_other_inputs_need_a_real_codex_entry(self):
+        for path in (".github/agent/bin/datetime.py", ".github/agent/bin/json.py", ".github/agent/bin/tests/new_test.py",
+                     ".github/agent/fixtures/testlib/pyyaml/yaml/__init__.py", ".github/agent/fixtures/testlib/new.py",
+                     "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh"):
+            with self.subTest(path=path):
+                self.git("reset", "-q", "--hard", self.base)
+                self.touch(path)
+                self.propose()
+                rc, out, _ = self.judge()
+                self.assertEqual(rc, 1, (path, out))
+                self.assertIn(path, out)
+                self.assertIn("codex", out)
 
     def test_an_ordinary_auditor_change_still_clears_with_a_substitute(self):
         self.touch(".github/agent/prompts/p.md")
@@ -677,6 +693,49 @@ class ClockIsSystemOnly(unittest.TestCase):
                 self.assertFalse([k for k in (st.get("env") or {}) if str(k).startswith("GATE_")], (name, st.get("name")))
                 self.assertNotIn("GITHUB_ENV", st.get("run", "") + str(st.get("with", "")), (name, st.get("name")))
 
+    # ---- the gate's own wiring is DERIVED, so a future change cannot fall outside the enforcement set ----
+    WF = os.path.join(ROOT, ".github", "workflows", "agent-review-gate.yml")
+
+    @staticmethod
+    def executed_paths(text):
+        """Every repo path the judge and sweep run: lines of their run: scripts (comments dropped)."""
+        import yaml
+        wf = yaml.safe_load(text)
+        paths, lines = set(), []
+        for job in ("judge", "sweep"):
+            for st in wf["jobs"][job]["steps"]:
+                lines += [l for l in st.get("run", "").splitlines() if not l.lstrip().startswith("#")]
+        for l in lines:
+            for m in re.finditer(r"(?:(?<![\w/.-])|(?<=\$PWD/))((?:\.github|bin)/[\w./-]*\w)", l):
+                paths.add(m.group(1))
+        return paths, lines
+
+    def test_every_path_the_gate_runs_or_reads_is_in_the_enforcement_set(self):
+        with open(self.WF) as fh:
+            paths, _ = self.executed_paths(fh.read())
+        self.assertIn(".github/agent/bin/auditor-review-gate.py", paths)
+        self.assertIn(".github/agent/tests/pin-wiring-test.sh", paths)
+        self.assertIn("bin/check-file-allowlist.sh", paths)
+        self.assertIn(".github/agent/fixtures/testlib/pyyaml", paths)
+        self.assertEqual([p for p in sorted(paths) if not G.enforces(p)], [])
+
+    def test_a_new_executed_script_outside_the_set_is_caught(self):
+        with open(self.WF) as fh:
+            text = fh.read()
+        mutated = text.replace("          echo \"verdict=${verdict}\"", "          bash .github/agent/prompts/extra.sh || verdict=failure\n          echo \"verdict=${verdict}\"", 1)
+        self.assertNotEqual(mutated, text)
+        paths, _ = self.executed_paths(mutated)
+        self.assertEqual([p for p in sorted(paths) if not G.enforces(p)], [".github/agent/prompts/extra.sh"])
+
+    def test_the_gate_and_the_pin_checker_run_in_python_isolated_mode(self):
+        with open(self.WF) as fh:
+            _, lines = self.executed_paths(fh.read())
+        runs = [l for l in lines if re.search(r"\bpython3?\b", l) and ".github/agent/bin/" in l]
+        self.assertEqual(len(runs), 4, runs)      # judge: gate, pins; sweep: gate, pins
+        for l in runs:
+            for m in re.finditer(r"\bpython3?\s+(\S+)", l):
+                self.assertEqual(m.group(1), "-I", l)
+
     def test_an_environment_value_cannot_unexpire_a_substitute(self):
         d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
         def git(*a):
@@ -690,9 +749,9 @@ class ClockIsSystemOnly(unittest.TestCase):
         for e in old["substitutes"]:
             e["effective_until"] = "2020-01-01T00:00:00Z"
         git("init", "-q", "-b", "main")
-        put(".github/agent/bin/x.py", "a\n"); put(".github/agent/reviews/substitutes.json", json.dumps(old))
+        put(".github/agent/prompts/x.py", "a\n"); put(".github/agent/reviews/substitutes.json", json.dumps(old))
         git("add", "-A"); git("commit", "-qm", "base"); base = git("rev-parse", "HEAD").strip()
-        put(".github/agent/bin/x.py", "b\n"); git("commit", "-qam", "change")
+        put(".github/agent/prompts/x.py", "b\n"); git("commit", "-qam", "change")
         run = lambda *a, **env: subprocess.run([sys.executable, self.SCRIPT, *a], cwd=d, capture_output=True, text=True,
                                                env=dict(os.environ, **env))
         tree = run("--print-tree").stdout.strip()
