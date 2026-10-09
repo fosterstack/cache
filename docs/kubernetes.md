@@ -278,8 +278,8 @@ buildCache {
 Replace `fscache-ns` with the namespace you deployed into. The trailing slash
 matters — Gradle appends the cache key directly to the URL.
 
-`isAllowInsecureProtocol = true` is required for **any** non-localhost `http://`
-URL, cluster-internal included. This is the textbook case where it is justified:
+`isAllowInsecureProtocol = true` is required for **any** `http://` URL except the
+loopback address `127.0.0.1` (Gradle refuses the name `localhost` too), cluster-internal included. This is the textbook case where it is justified:
 the traffic never leaves the cluster network, and terminating TLS on a
 service-to-service hop inside the same cluster buys little for the operational
 cost.

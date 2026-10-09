@@ -256,6 +256,9 @@ jobs:
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: bash bin/check-file-allowlist-test.sh
 
+      - name: branch sweep and local prune regressions
+        run: bash bin/branch-sweep-test.sh
+
       - name: govulncheck fixture modules materialize (never indexed by the dependency graph)
         run: bash .github/agent/tests/govulncheck-fixtures-test.sh
 
@@ -287,6 +290,8 @@ jobs:
         run: bash .github/agent/tests/pin-wiring-test.sh
       - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
         run: bash .github/agent/tests/pip-pin-test.sh
+      - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
+        run: bash .github/agent/tests/docs-snippets-test.sh
 
       # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
       # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled

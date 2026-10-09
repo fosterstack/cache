@@ -86,7 +86,8 @@ at a proxy, ingress, or load balancer, and Gradle sends Basic Auth credentials
 preemptively — over plain HTTP they go out in cleartext to whatever answers.
 
 For a throwaway test rig against a bare IP, Gradle needs an explicit opt-out.
-It refuses non-localhost plain HTTP without it:
+It refuses plain HTTP to any host except the loopback address `127.0.0.1`
+without it (it refuses the name `localhost` too; see the local-only quickstart):
 
 > ```kotlin
 > // TEST RIG ONLY — not a deployment configuration.
@@ -203,12 +204,27 @@ suggestion will not affect anything described here.
 ## Local-only quickstart
 
 ```sh
-docker run -d -p 8080:8080 ghcr.io/fosterstack/cache:latest
+docker run -d -p 127.0.0.1:8080:8080 ghcr.io/fosterstack/cache:latest
 ```
 
-Point `buildCache.remote.url` at `http://localhost:8080/` and build. localhost
-is exempt from Gradle's plain-HTTP guard, so no `allowInsecureProtocol` is
-needed here.
+Point `buildCache.remote.url` at `http://127.0.0.1:8080/` and build:
+
+```kotlin
+// FosterStack Cache — local-only test, loopback address.
+buildCache {
+    remote<HttpBuildCache> {
+        url = uri("http://127.0.0.1:8080/")
+        isPush = true
+    }
+}
+```
+
+Use the address `127.0.0.1`, not the name `localhost`: Gradle refuses plain
+`http://localhost` ("Using insecure protocols with remote build cache, without
+explicit opt-in, is unsupported") but accepts the loopback address, so no
+`isAllowInsecureProtocol` is needed here. For any other plain-HTTP host, either
+use `https://` or set `isAllowInsecureProtocol = true` as in section 3 (the CI
+acceptance build sets it for its local server).
 
 ## Migrating from the deprecated Build Cache Node
 
