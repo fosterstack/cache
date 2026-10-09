@@ -2486,3 +2486,78 @@ requirements:
         then: "Rebuild assembles each image variant with the same script, the same arguments, the same lock flow and the same exported SOURCE_DATE_EPOCH as Build, so a digest that differs is a real difference; it never runs apko directly or from another directory or config path (the same rule as REQ-CHAIN-004-AC11)"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed
+
+  # ── The v0.3.0 release chain: Check (pipeline lane, PR 3) ─────────────────
+
+  - id: REQ-CHAIN-006
+    title: Check judges the candidates and signs what it found
+    statement: >
+      The Check stage shall run, in one job beside Rebuild and off Build's output, every scanner the policy lists, the Gradle and Maven acceptance suites, the no-phone-home test, the FIPS start check and every customer-guide command against the exact candidate digests, as plain scripts that know nothing about signing, under Witness, and sign its results as one Witness collection under its own identity; it shall hold no registry or key access, and any failure shall stop the release and name Check.
+    source: [.github/workflows/stage-verify.yml, .github/workflows/release.yml, bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, .github/policy/scanners.json]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 50, 53, 55, 58, 61, 63, 65, 66, 68, 70, 72, 79 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; PR 3 read-back approved by the advisor Oct 9, ops/handoffs/outbox/2026-10-09-pipeline-readback-check.md)
+    confidence: implementation-only
+    notes: >
+      CUTOVER RULE (advisor 0341): PR 3 merges into the integration branch chain-v030 only; the old chain (stage-verify.yml and the acceptance stages as they are today) stays live on main until the one cutover pull request. The real-tree cases of the tests are red until the implementation PR. Existing ACs this must not weaken: REQ-REL-004-AC1 (every scanner reports its package count; zero packages fail) and the REQ-SCAN and REQ-FIPS requirements. The scanner list is .github/policy/scanners.json (today grype and osv-scanner); the daily rescan's other scanners (Inspector, Scout, Google, Snyk) are not part of Check. The images reach Check as files (OCI tarballs from Build's artifacts), not from a registry: Check logs in to no registry and holds no packages permission. Anything in the scripts' command lines that no existing file fixes is PROPOSED/UNVERIFIED in the test headers: the guide file name (the www lane's customer guide, docs/verify-release.md), the acceptance suites' wrapper command lines, and the results file names. CREDENTIALS (coordinator correction, Oct 9): Check needs no cloud scanner federation. The release scanners in scanners.json are grype and osv-scanner, which need no credential; the AWS Inspector and GCP trusts serve only scan.yml and main-candidate-rescan.yml. The SNYK_TOKEN that today's stage-verify.yml takes as a secret is not needed by the listed scanners (scanners.json: Snyk runs in the daily rescan only), so Check holds no secret at all (decided from scanners.json; if the owner adds a scanner that needs a credential, that is a changed rule and a new read-back). id-token: write exists only so Witness can sign Check's own record.
+    acceptance_criteria:
+      - id: REQ-CHAIN-006-AC1
+        given: "stage-verify.yml"
+        when: "it is parsed"
+        then: "it is a reusable workflow with exactly one job, check, on a fresh GitHub-hosted runner, with permissions exactly contents read and id-token write, no container, services, env, defaults, secrets (not even an environment secret), registry login, registry write, packages permission or package-signing key, whose steps are exactly in this order: a digest-pinned checkout without persisted credentials, the checksum-pinned Witness install, digest-pinned downloads of the named Build and Sign artifacts only, ONE run step that fetches the identity token and runs ONE witness run with only the allowed flags and attestors (never the github or slsa attestor) ending in bin/check-stage.sh, and digest-pinned uploads of the named result artifacts only"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC2
+        given: "release.yml"
+        when: "its job graph is read"
+        then: "the check job needs exactly build and sign, the rebuild job does not need check and check does not need rebuild (they run side by side), and the release job needs build, sign, rebuild and check"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC3
+        given: "bin/check-stage.sh"
+        when: "its commands are read"
+        then: "the first command verifies Build's Witness record and Sign's provenance for the digests it was given (bin/chain-verify.py stage-start and verify) and a failure stops the script naming the stage, and after it come, in this order and with nothing else, the scanners, the FIPS check, the Gradle, Maven and no-phone-home acceptance suites and the guide commands, each a listed script run by literal path"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC4
+        given: "the scanner list in .github/policy/scanners.json and the candidate images and archives"
+        when: "bin/check-scan.sh runs"
+        then: "every listed scanner runs against every candidate image (by the digest in the digest list) and the release archives where it is meant to, no unlisted scanner runs, the number of scanners that ran equals the number listed, each reports a package count above zero and a version and database, any scanner that is missing, cannot run, finds a vulnerability not excepted by the published VEX document or reports zero packages fails the script, and the results file names each scanner, its version, the digest of each subject scanned and its verdict"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC5
+        given: "the Gradle and Maven acceptance suites and the no-phone-home test"
+        when: "bin/check-acceptance.sh runs each against the production candidate"
+        then: "each runs the existing suite unchanged against the candidate from Build's artifacts, a failing suite fails the script, a suite that ran no test fails it, and a results file per suite names the candidate digest"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC6
+        given: "the production and the -fips candidate images"
+        when: "bin/check-fips.sh starts each and reads /statusz"
+        then: "the -fips image reports the FIPS mode active with the validated module at version v1.0.0 and the production image reports it off; an image that reports the opposite, active without the validated module, any other module version, or no readable status fails the script naming the image, and the certificate number appears only in the documented mapping, never as something a binary reports"
+        verification: { method: acceptance-container, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC7
+        given: "the customer guide's commands"
+        when: "bin/check-guide.sh runs them against the latest candidate"
+        then: "every command of the guide runs, a command that exits non-zero fails, a silent command is checked by its exit status or by the output the guide states for it, a guide with no extracted command or with more than ten fails, and the results file lists each command with its outcome"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC8
+        given: "the scripts bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh and bin/check-guide.sh"
+        when: "they are read"
+        then: "they are plain scripts that know nothing about signing: no signing tool, attestation, registry login, secret or token appears in them; each is listed in .github/policy/chain-scripts.json with its sha256 and calls only the tools it lists"
+        verification: { method: unit, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC9
+        given: "the Check stage's signed result"
+        when: "the stage file's Witness command is read"
+        then: "it signs one Witness collection under the stage file's own identity with the Sigstore timestamp, whose products are the results files and whose materials are Build's digest list, so the collection is bound to the exact candidate digests and no record type of our own is made"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-006-AC10
+        given: "the repository on the integration branch"
+        when: "the old acceptance stages are looked for"
+        then: "stage-acceptance-artifacts.yml, stage-acceptance-egress.yml, stage-acceptance-k8s.yml, stage-acceptance-predicate.yml and stage-authorize.yml no longer exist and no job of release.yml calls them or acceptance.yml; their useful commands live on as listed plain scripts"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: proposed
