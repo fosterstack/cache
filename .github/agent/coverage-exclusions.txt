@@ -61,3 +61,6 @@
 .github/agent/supply-chain/pin-audit.py  supply-chain CI tool (REQ-SUP-001), not auditor code: proved end to end by .github/agent/tests/pin-audit-test.sh (fixtures, a recording gh, real git repositories; subprocess, so statements are not measured here)
 .github/agent/supply-chain/tag_observer.py  supply-chain CI tool (REQ-SUP-001), shared verbatim with the ops repo, not auditor code: exercised by .github/agent/tests/pin-audit-test.sh
 .github/agent/tests/gh-map-stub.py  test double for gh used by the supply-chain shell tests (test code)
+.github/agent/bin/tests/fs_guard.py  test helper (the audit-hook and os.* tripwire that fails any unit test touching a real system path; test code, not auditor code; exercised by test_fs_guard.py)
+.github/agent/bin/tests/test_fs_guard.py  unit test (test code — the Go gate does not measure _test.go either)
+.github/agent/bin/tests/system_path_allowlist.py  test data (the reviewed allow-list of pure-data path literals read by test_fs_guard.py; no statements of auditor code)

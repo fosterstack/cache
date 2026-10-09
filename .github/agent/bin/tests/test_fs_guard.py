@@ -31,25 +31,56 @@ def load_allow():
     return rows
 
 
+def literal_findings(rel, text, allow):
+    used, bad = set(), []
+    for n, line in enumerate(text.split("\n"), 1):
+        if line.startswith("#!") or not (LITERAL.search(SHEBANG.sub("", line).replace("/dev/null", "")) or HOME_USE.search(line)):
+            continue
+        hit = [a for a in allow if a[0] == rel and a[1] in line]
+        if hit:
+            used.update(hit)
+        else:
+            bad.append("%s:%d: %s" % (rel, n, line.strip()[:110]))
+    return bad, used
+
+
 def scan():
     allow = load_allow()
     used, bad = set(), []
     for rel in test_files():
         with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as f:
-            for n, line in enumerate(f, 1):
-                if line.startswith("#!") or not (LITERAL.search(SHEBANG.sub("", line).replace("/dev/null", "")) or HOME_USE.search(line)):
-                    continue
-                hit = [a for a in allow if a[0] == rel and a[1] in line]
-                if hit:
-                    used.update(hit)
-                else:
-                    bad.append("%s:%d: %s" % (rel, n, line.strip()[:110]))
+            b, u = literal_findings(rel, f.read(), allow)
+        bad += b; used |= u
     return bad, [a for a in allow if a not in used]
 
 
 # --- link creation: no test may create a symlink or hard link whose target is an absolute path (a real system path or any other
 # fixed location). Targets are built from the temp dir, so a literal absolute target is always a finding.
-BASH_LN = re.compile(r"\bln\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*s[A-Za-z]*\s+(?:-[A-Za-z]+\s+)*[\"']?(/[^\s\"']*)")
+SHELL_CMD = re.compile(r"(?<![A-Za-z0-9_./-])(ln|cp)\s+([^;&|)\n]*)")
+CP_LINK_FLAGS = re.compile(r"^-[A-Za-z]*[sl][A-Za-z]*$|^--(symbolic-link|link)$")
+
+
+def shell_link_target(line):
+    """The absolute link target of an `ln` (soft or hard, any flags, `--`, --symbolic) or a link-making `cp` (-s, -l) on a line, or None.
+    Quotes around the target are stripped; $VAR, $(..) and relative targets are not absolute and are not reported."""
+    for m in SHELL_CMD.finditer(line):
+        toks, flags, opts = m.group(2).split(), [], True
+        for tok in toks:
+            if opts and tok == "--":
+                opts = False
+                continue
+            if opts and tok.startswith("-"):
+                flags.append(tok)
+                continue
+            tgt = tok.strip("\"'")
+            if m.group(1) == "cp" and not any(CP_LINK_FLAGS.match(f) for f in flags):
+                break
+            if tgt.startswith("/"):
+                return tgt
+            break
+    return None
+
+
 LINK_FUNCS = {"symlink", "link", "symlink_to", "hardlink_to", "link_to"}
 
 
@@ -83,9 +114,9 @@ def link_findings(rel, text, allow):
                     if bad:
                         add(n.lineno, "%s() with an absolute target %r" % (name, bad[0]), lines[n.lineno - 1])
     for i, line in enumerate(lines, 1):                    # `ln -s <abs>` in shell tests and in command text inside Python tests
-        m = BASH_LN.search(line)
-        if m:
-            add(i, "ln -s with an absolute target %s" % m.group(1), line)
+        tgt = shell_link_target(line)
+        if tgt:
+            add(i, "link made by ln/cp with an absolute target %s" % tgt, line)
     return found, used
 
 
@@ -98,6 +129,49 @@ def link_scan(read=None):
         f, u = link_findings(rel, read(rel), allow)
         bad += f; used |= u
     return bad, [a for a in allow if a not in used]
+
+
+def makes_files_without_temp(text):
+    """True when a shell test creates files (mkdir/touch/cp/mv/ln at the start of a line) but never CALLS mktemp or python's tempfile.
+    Comments and words inside strings do not count."""
+    code = [l for l in text.split("\n") if not l.lstrip().startswith("#")]
+    body = "\n".join(re.sub(r"\s#\s.*$", "", l) for l in code)
+    makes = re.search(r"^\s*(mkdir|touch|cp|mv|ln)\s", body, re.M)
+    calls = re.search(r"\$\(\s*mktemp\b|`\s*mktemp\b|^\s*[A-Za-z_]+=\s*mktemp\b|\btempfile\.(mkdtemp|mkstemp|TemporaryDirectory|NamedTemporaryFile|mktemp)\(", body, re.M)
+    return bool(makes and not calls)
+
+
+# A command at the START of a line (so not inside a quoted `case_ name bad "..."` argument) acting on an absolute system path.
+CMD_START = re.compile(r"^\s*(?:cp|mv|rm|ln|cat|touch|mkdir|chmod|tee|install|tar|curl|wget)\b[^\n]*?(?<![A-Za-z0-9_.$/{}:\-~)])/(?:%s)(?:/|(?![A-Za-z0-9_\-]))" % SYS_DIRS)
+REDIRECT = re.compile(r"(?<![0-9&])>>?\s*/(?:%s)(?:/|(?![A-Za-z0-9_\-]))" % SYS_DIRS)
+OPEN_ABS = re.compile(r"\b(?:open|Path|listdir|scandir|stat|lstat|symlink|rmtree|copy\w*|move)\(\s*[rb]?[\"']/(?:%s)(?:/|[\"'])" % SYS_DIRS)
+
+
+def real_command_on_system_path(line):
+    if line.lstrip().startswith("#"):
+        return False
+    line = line.replace("/dev/null", "")
+    return bool(CMD_START.search(line) or OPEN_ABS.search(line) or (REDIRECT.search(line) and re.match(r"\s*(echo|printf|cat|:)\b", line)))
+
+
+def whole_file_row_commands():
+    """Whole-file allow rows (empty substring) exempt every literal in the file, so the file may contain NO line that is a command
+    acting on a system path. Lines inside a multi-line double-quoted fixture (workflow step text a case wraps in quotes) are skipped,
+    tracked by quote parity; an added command at the start of an unquoted line fails here. (Per-pattern rows were not cheap for
+    the 2000-line pin-checker suite, whose lines are overwhelmingly such text.)"""
+    out = []
+    for rel, sub, _ in load_allow():
+        if sub:
+            continue
+        with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
+            quoted = 0
+            for n, line in enumerate(fh, 1):
+                # track an open multi-line quoted string: an odd number of unescaped double quotes toggles it
+                inside = quoted
+                quoted ^= (len(re.findall(r'(?<!\\)"', line)) % 2)
+                if not inside and real_command_on_system_path(line):
+                    out.append("%s:%d: %s" % (rel, n, line.strip()[:100]))
+    return out
 
 
 class Links(unittest.TestCase):
@@ -121,31 +195,34 @@ class Links(unittest.TestCase):
             if want:
                 self.assertRegex(got[0], r"^bin/tests/test_mutant\.py:2: ")
         for src, want in {"ln -s /etc/hostname x": 1, "ln -sf /usr/local/bin/t x": 1, 'ln -s "/Library/x" y': 1, "ln -s ../x y": 0,
-                          'ln -s "$work/p" y': 0, "ln -sfn $d/t y": 0}.items():
+                          'ln -s "$work/p" y': 0, "ln -sfn $d/t y": 0, "ln -s -- /etc/hostname x": 1, "ln --symbolic /etc/hosts x": 1,
+                          "cp -s /etc/hosts x": 1, "cp -sf /etc/hosts x": 1, "cp --symbolic-link /etc/hosts x": 1, "ln /etc/hosts x": 1,
+                          "cp /etc/hosts x": 0, "cp -r /tmp/a /tmp/b": 0, "ln -s $(which d) x": 0}.items():
             got, _ = link_findings("bin/mutant-test.sh", src + "\n", [])
             self.assertEqual(len(got), want, (src, got))
 
-    def test_the_static_check_is_red_on_the_old_tree(self):
-        """The same scan over origin/main's committed test files (when that ref is present) reports the old link fixtures."""
-        r = subprocess.run(["git", "-C", REPO, "rev-parse", "--verify", "-q", "origin/main:.github/agent/bin/tests/test_signed_commit_cli.py"],
-                           capture_output=True, text=True)
-        if r.returncode:
-            self.skipTest("no origin/main ref")
-        old = subprocess.run(["git", "-C", REPO, "show", "origin/main:.github/agent/bin/tests/test_signed_commit_cli.py"], capture_output=True, text=True).stdout
-        if "os.symlink(\"/etc/hostname\"" not in old:
-            self.skipTest("origin/main already fixed")
+    def test_the_static_check_is_red_on_the_old_fixtures(self):
+        """The old (origin/main) fixture lines, embedded as TEXT (never run): the scan reports each with its file:line."""
+        old = 'x = 1\nos.symlink("/etc/hostname", os.path.join(self.dir.name, "docs", "link.md"))\n'
         got, _ = link_findings(".github/agent/bin/tests/test_signed_commit_cli.py", old, [])
-        self.assertTrue(any("symlink() with an absolute target '/etc/hostname'" in g for g in got), got)
+        self.assertEqual(len(got), 1, got)
+        self.assertTrue(got[0].startswith(".github/agent/bin/tests/test_signed_commit_cli.py:2: symlink() with an absolute target '/etc/hostname'"), got)
+        got, _ = link_findings(".github/agent/tests/check-action-pins-test.sh", 'case_ r24 bad "$(rb \'x\')" "ln -s /tmp/poison.txt reqs.txt"\n', [])
+        self.assertEqual(len(got), 1, got)
 
     def test_the_runtime_guard_refuses_a_link_target_outside_the_roots_before_creating_it(self):
         made = []
         fake = G.wrap_link(lambda s, d, *a, **k: made.append((s, d)), "os.symlink")     # a recorder: nothing is ever created
+        refused = []
         with tempfile.TemporaryDirectory() as d:
             for target in ("/etc/hostname", "/private/etc/hosts", "/Library/x", "/usr/local/bin/t", "../../../../../../etc/x"):
                 with self.assertRaises(G.SystemPathAccess, msg=target):
                     fake(target, os.path.join(d, "l"))
+                refused.append(target)
+                self.assertEqual(made, [], "the recorder must NOT have been called for " + target)
             with self.assertRaises(G.SystemPathAccess):                                  # a link PLACED outside the roots
                 fake(os.path.join(d, "t"), "/usr/local/bin/l")
+            self.assertEqual((made, len(refused)), ([], 5))
             fake(os.path.join(d, "t"), os.path.join(d, "l"))
             fake("t", os.path.join(d, "l2"))                                             # relative, stays beside the link
         self.assertEqual(len(made), 2)
@@ -153,6 +230,18 @@ class Links(unittest.TestCase):
 
 
 class Static(unittest.TestCase):
+    def test_the_literal_scan_bites_on_a_mutant_file(self):
+        bad, _ = literal_findings("bin/tests/test_mutant.py", "import os\nx = 1\nopen('/etc/hostname').read()\n", [])
+        self.assertEqual(len(bad), 1, bad)
+        self.assertTrue(bad[0].startswith("bin/tests/test_mutant.py:3: "), bad)
+        for text in ("p = '/private/etc/hosts'", "ln -s a /Library/x", "echo $HOME/x", "os.path.expanduser('~')", "d = '/var/db/x'"):
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
+        for text in ("p = os.path.join(d, 'etc/hostname')", "u = 'https://e/etc/x'", "#!/usr/bin/env python3", "x = '/dev/null'"):
+            self.assertEqual(literal_findings("f.py", text, [])[0], [], text)
+        allow = [("f.py", "/etc/hostname", "pure data in a string that is only parsed")]
+        self.assertEqual(literal_findings("f.py", "p = '/etc/hostname'", allow)[0], [])
+
+
     def test_no_test_script_names_a_real_system_path_outside_the_reviewed_allowlist(self):
         bad, _ = scan()
         self.assertEqual(bad, [], "system-path literals in tests (use a temp dir, or allow-list pure data with a reason):\n" + "\n".join(bad))
@@ -164,14 +253,32 @@ class Static(unittest.TestCase):
     def test_every_shell_test_that_makes_files_uses_mktemp(self):
         bad = []
         for rel in test_files():
-            if not rel.endswith(".sh"):
-                continue
-            with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
-                s = fh.read()
-            if re.search(r"^\s*(mkdir|touch|cp|mv|ln)\s", s, re.M) and "mktemp" not in s and "tempfile" not in s:
-                bad.append(rel)
-        self.assertEqual(bad, [], "shell tests that write files without mktemp")
+            if rel.endswith(".sh"):
+                with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
+                    if makes_files_without_temp(fh.read()):
+                        bad.append(rel)
+        self.assertEqual(bad, [], "shell tests that write files without a mktemp call")
 
+    def test_the_mktemp_check_wants_a_call_not_a_comment_or_a_word(self):
+        mk = "mkdir -p x\n"
+        self.assertTrue(makes_files_without_temp(mk))
+        self.assertTrue(makes_files_without_temp("# uses mktemp somewhere\n" + mk))
+        self.assertTrue(makes_files_without_temp('echo "no mktemp here"\n' + mk))
+        self.assertFalse(makes_files_without_temp('w="$(mktemp -d)"\n' + mk))
+        self.assertFalse(makes_files_without_temp("w=`mktemp -d`\n" + mk))
+        self.assertFalse(makes_files_without_temp(mk.replace("mkdir", "touch") + "python3 -c 'import tempfile; tempfile.mkdtemp()'\n"))
+        self.assertFalse(makes_files_without_temp("echo hi\n"))
+
+    def test_a_whole_file_allow_row_cannot_hide_a_real_command_on_a_system_path(self):
+        bad = whole_file_row_commands()
+        self.assertEqual(bad, [], "a whole-file allow row covers a file with a command acting on a system path:\n" + "\n".join(bad))
+
+    def test_the_whole_file_row_check_bites(self):
+        cmds = ["cp x /etc/hosts", "rm -rf /tmp/x", "cat /etc/passwd", "mkdir -p /opt/y", "open('/etc/hostname')", "ln -s a /usr/b", "echo hi > /var/log/x", "printf x >> /etc/hosts"]
+        for c in cmds:
+            self.assertTrue(real_command_on_system_path(c), c)
+        for c in ["case_ x bad \"$(r 'cp a /tmp/b')\"", "# cp x /etc/hosts", "  - run: rm -rf /tmp/x", "assert M._outside('/home/runner/work/x')", "echo hi"]:
+            self.assertFalse(real_command_on_system_path(c), c)
 
 class Guard(unittest.TestCase):
     def test_open_of_a_system_file_raises(self):
@@ -193,13 +300,51 @@ class Guard(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(d, "l")))             # inside the allowed roots, so followed freely
 
     def test_the_violation_is_not_swallowed_by_except_exception(self):
+        escaped = []
         try:
             try:
                 open("/etc/hostname")
+                self.fail("the open was not refused")
             except Exception:
-                self.fail("swallowed")
+                self.fail("swallowed by except Exception")
         except G.SystemPathAccess:
-            pass
+            escaped.append(1)
+        self.assertEqual(escaped, [1])
+
+    def test_ancestors_of_an_allowed_root_allow_metadata_only(self):
+        saved = G.ROOTS
+        try:
+            for root in ("/mnt/rev/w", "/opt/zz/w", "/Users/zz/work/w"):
+                G.ROOTS = [root, "/usr/lib/python3.12"]
+                top = "/" + root.split("/")[1]
+                for p in ("/", top, os.path.dirname(root), root, root + "/x/y.py", "/usr", "/usr/lib"):
+                    for fn in (os.stat, os.lstat, os.path.realpath, os.path.exists, os.path.isdir):
+                        try:
+                            fn(p)
+                        except G.SystemPathAccess:
+                            self.fail("%s(%s) refused with root %s" % (fn.__name__, p, root))
+                        except OSError:
+                            pass
+                os.path.realpath("/usr/lib/python3.12/os.py")
+                for p in (os.path.dirname(root) + "-other", "/opt/other", "/usr/local", "/etc"):
+                    with self.assertRaises(G.SystemPathAccess, msg=p):
+                        os.stat(p)
+                for p in (top, os.path.dirname(root)):                     # an ancestor's CONTENTS stay off limits
+                    with self.assertRaises(G.SystemPathAccess, msg=p):
+                        os.listdir(p)
+                    with self.assertRaises(G.SystemPathAccess, msg=p):
+                        open(os.path.join(p, "f"))
+        finally:
+            G.ROOTS = saved
+
+    def test_the_other_metadata_calls_are_wrapped_too(self):
+        for n in ("access", "statvfs", "pathconf"):
+            with self.assertRaises(G.SystemPathAccess, msg=n):
+                getattr(os, n)("/usr/local/bin", *((os.R_OK,) if n == "access" else ("PC_NAME_MAX",) if n == "pathconf" else ()))
+        for n in ("listxattr", "getxattr"):
+            if hasattr(os, n):
+                with self.assertRaises(G.SystemPathAccess, msg=n):
+                    getattr(os, n)("/usr/local/bin", *(("user.x",) if n == "getxattr" else ()))
 
     def test_temp_repo_devnull_and_stdlib_stay_allowed(self):
         with tempfile.TemporaryDirectory() as d:

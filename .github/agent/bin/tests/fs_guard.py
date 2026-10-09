@@ -32,7 +32,7 @@ class SystemPathAccess(BaseException):
     """A test touched a real system path."""
 
 
-def _resolve(p, what, orig, nofollow=False):
+def _resolve(p, what, orig, nofollow=False, meta=False):
     """Resolve symlinks component by component using the unwrapped lstat/readlink, and refuse BEFORE touching any component
     that is lexically outside the allowed roots (so a link to /etc/hostname is refused without ever stat-ing /etc)."""
     todo = [c for c in p.split("/") if c]
@@ -68,8 +68,10 @@ def _resolve(p, what, orig, nofollow=False):
 
 
 def _ancestor(p):
-    """A directory on the way down to an allowed root (for example /var on the way to /var/folders/..): it is never read, only
-    passed through by name, and only when it is not itself a link that escapes (checked by _resolve on the next hop)."""
+    """A directory on the way down to an allowed root (/home and /home/user above a checkout, /var above the temp dir, / itself).
+    Its METADATA (stat, lstat, realpath, exists, isdir) may be read because every path walk starts at the root and the interpreter
+    resolves each module path that way; its CONTENTS (open, listdir, scandir, rename ...) never may. It must not itself be a link
+    that escapes (checked by _resolve on the next hop)."""
     return any(r.startswith(p.rstrip("/") + "/") for r in list(ROOTS) + sorted(EXACT))
 
 
@@ -95,7 +97,7 @@ def _under(p):
     return p in EXACT or any(p == r or p.startswith(r + "/") for r in ROOTS)
 
 
-def check(path, what="", nofollow=False):
+def check(path, what="", nofollow=False, meta=False):
     """Raise unless `path` (lexically and after symlink resolution) is inside an allowed root."""
     if not ROOTS or isinstance(path, int):
         return
@@ -108,16 +110,16 @@ def check(path, what="", nofollow=False):
     if p == "":
         return
     absp = os.path.abspath(p)
-    if not _under(absp):
+    if not _under(absp) and not (meta and _ancestor(absp)):
         raise SystemPathAccess("test touched a real system path (%s): %s" % (what, p))
     if getattr(_busy, "on", False):
         return
     _busy.on = True
     try:
-        res = _resolve(absp, what, p, nofollow)
+        res = _resolve(absp, what, p, nofollow, meta)
     finally:
         _busy.on = False
-    if not _under(res):
+    if not _under(res) and not (meta and _ancestor(res)):
         raise SystemPathAccess("test touched a real system path (%s -> %s): %s" % (what, res, p))
 
 
@@ -142,10 +144,12 @@ def _hook(event, args):
 
 
 def _wrap1(mod, name, nofollow=False):
-    orig = getattr(mod, name)
+    orig = getattr(mod, name, None)
+    if orig is None:
+        return                                    # not on this platform (the xattr calls are Linux only)
 
     def f(path, *a, **k):
-        check(path, name, nofollow)
+        check(path, name, nofollow, True)
         return orig(path, *a, **k)
     f.__name__ = name; f.__wrapped__ = orig
     setattr(mod, name, f)
@@ -177,8 +181,8 @@ def install(extra_roots=()):
     _installed = True
     ROOTS = _roots() + [r for r in extra_roots]
     sys.addaudithook(_hook)
-    for n in ("stat", "lstat", "readlink"):
-        _wrap1(os, n, n != "stat")
+    for n in ("stat", "lstat", "readlink", "access", "statvfs", "pathconf", "listxattr", "getxattr"):
+        _wrap1(os, n, n in ("lstat", "readlink"))
     for n in ("realpath", "exists", "isfile", "isdir", "islink", "lexists", "getsize"):
         _wrap1(os.path, n, n in ("islink", "lexists"))
     for n in ("symlink", "link"):
