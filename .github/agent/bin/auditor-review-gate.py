@@ -35,11 +35,11 @@ codex, substitute_id, blockers_open 0, evidence_sha256) in place of `codex`, and
 `completed_at` (YYYY-MM-DDTHH:MM:SSZ). It counts only if substitute_id names an entry of
 .github/agent/reviews/substitutes.json as read from the trusted revision (never the PR's copy: a PR
 cannot add or extend its own substitute; its edit of the file only changes <tree>), the entry is
-unexpired by the gate's own UTC clock (GATE_NOW overrides it, for tests) AND by completed_at, and its
+unexpired by the gate's own UTC clock (read from the system clock only; no environment variable or option can change it) AND by completed_at, and its
 scope (`all`, or `pr:N` with N equal to --pr) fits. Sonnet is never substitutable. A record with a
 codex entry is judged on codex alone. Anything malformed fails closed with a message naming it.
 """
-import datetime, hashlib, json, os, re, subprocess, sys
+import datetime, hashlib, json, re, subprocess, sys
 
 AGENT = ".github/agent/"
 REVIEWS = AGENT + "reviews/"
@@ -52,9 +52,9 @@ VENDORS = {"codex": "openai", "sonnet": "anthropic"}
 SCHEMA = "auditor-review-record/v1"
 SUBS_PATH = REVIEWS + "substitutes.json"
 SUBS_SCHEMA = "review-substitutes/v1"
-_TIME = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
-_SCOPE = re.compile(r"^(all|pr:[1-9][0-9]*)$")
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
+_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+_SCOPE = re.compile(r"all|pr:[1-9][0-9]*")
+_HEX64 = re.compile(r"[0-9a-f]{64}")
 
 
 def _git(*a):
@@ -64,13 +64,13 @@ def _git(*a):
     return r.stdout
 
 
-_RECORD = re.compile(r"^" + re.escape(REVIEWS) + r"[0-9a-f]{64}\.json$")
+_RECORD = re.compile(re.escape(REVIEWS) + r"[0-9a-f]{64}\.json")
 
 
 def _is_record(path):
     """Only a review record itself is outside the reviewed content — any other file under
     reviews/ is an ordinary auditor change (round-1 review: the directory is not a free zone)."""
-    return bool(_RECORD.match(path))
+    return bool(_RECORD.fullmatch(path))
 
 
 def tree_hash(head):
@@ -88,7 +88,7 @@ def auditor_changes(base, head):
 
 def _time(v):
     """A strict UTC instant YYYY-MM-DDTHH:MM:SSZ, or None."""
-    if not isinstance(v, str) or not _TIME.match(v):
+    if not isinstance(v, str) or not _TIME.fullmatch(v):
         return None
     try:
         return datetime.datetime.strptime(v, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
@@ -105,7 +105,7 @@ def _reviewer_problems(name, vendor, r, stop):
     b = r.get("blockers_open")
     if type(b) is not int or b != 0:      # exactly the integer 0 — not False, not 0.0
         probs.append("%s has %r open merge blocker(s)" % (name, r.get("blockers_open")))
-    if not _HEX64.match(str(r.get("evidence_sha256", ""))):
+    if not _HEX64.fullmatch(str(r.get("evidence_sha256", ""))):
         probs.append("%s evidence_sha256 is not a sha256" % name)
     if stop.get(name) != "clear":
         probs.append("%s stop verdict is %r, want 'clear'" % (name, stop.get(name)))
@@ -143,9 +143,14 @@ def _substitute_entry(subs, sid):
         probs.append("opus substitute: entry %s owner_quote is empty or not a string" % sid)
     if _time(e.get("effective_until")) is None:
         probs.append("opus substitute: entry %s effective_until %r is not YYYY-MM-DDTHH:MM:SSZ" % (sid, e.get("effective_until")))
-    if not isinstance(e.get("scope"), str) or not _SCOPE.match(e["scope"]):
+    if not isinstance(e.get("scope"), str) or not _SCOPE.fullmatch(e["scope"]):
         probs.append("opus substitute: entry %s scope %r is not 'all' or 'pr:N'" % (sid, e.get("scope")))
     return (None if probs else e), probs
+
+
+def _utcnow():
+    """The gate's clock: the system UTC clock, nothing else. Tests patch this name in-process."""
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def _substitute_problems(final, rnd, stop, subs, pr, now):
@@ -165,10 +170,7 @@ def _substitute_problems(final, rnd, stop, subs, pr, now):
         probs.append("final round completed_at %r is missing or not YYYY-MM-DDTHH:MM:SSZ (required with a substitute)"
                      % (rnd.get("completed_at"),))
     if now is None:
-        raw = os.environ.get("GATE_NOW")
-        now = datetime.datetime.now(datetime.timezone.utc) if raw is None else _time(raw)
-        if now is None:
-            probs.append("GATE_NOW %r is not YYYY-MM-DDTHH:MM:SSZ" % raw)
+        now = _utcnow()
     entry, bad = _substitute_entry(subs, r.get("substitute_id"))
     probs += bad
     if entry is None:
@@ -177,7 +179,7 @@ def _substitute_problems(final, rnd, stop, subs, pr, now):
     if now is not None and now >= until:
         probs.append("opus substitute %s expired at %s (the gate's clock is %s)" % (sid, entry["effective_until"], now.strftime("%Y-%m-%dT%H:%M:%SZ")))
     if done is not None:
-        if done >= until:
+        if done >= until:      # implied by the clock and future checks below; kept as defense in depth
             probs.append("final round completed_at %s is not before substitute %s expiry %s" % (rnd["completed_at"], sid, entry["effective_until"]))
         if now is not None and done > now:
             probs.append("final round completed_at %s is in the future of the gate's clock" % rnd["completed_at"])
@@ -190,10 +192,10 @@ def _substitute_problems(final, rnd, stop, subs, pr, now):
     return probs
 
 
-def record_problems(rec, tree, subs=None, pr=None, now=None):
+def record_problems(rec, tree, subs=None, pr=None, now=None, edits_allowlist=False):
     """Every reason `rec` does not clear the gate for content `tree` (empty = clears).
     subs: the text of reviews/substitutes.json from the trusted revision (None = none); pr: the PR
-    number or None; now: the gate's clock (default: GATE_NOW, else the real UTC time)."""
+    number or None; edits_allowlist: the change edits the substitutes file, so no substitute applies; now: the gate's clock (default: the system UTC clock; tests pass it)."""
     if not isinstance(rec, dict):
         return ["record is not a JSON object"]
     probs = []
@@ -211,7 +213,9 @@ def record_problems(rec, tree, subs=None, pr=None, now=None):
     for name, vendor in sorted(VENDORS.items()):
         r = final.get(name)
         if not isinstance(r, dict):
-            if name == "codex":      # the one seat a recorded owner decision may fill with `opus`
+            if name == "codex" and edits_allowlist:
+                probs.append("final round has no codex review: this change edits %s, so a substitute never applies (a real codex entry is required)" % SUBS_PATH)
+            elif name == "codex":      # the one seat a recorded owner decision may fill with `opus`
                 probs += _substitute_problems(final, rounds[-1], stop, subs, pr, now)
             else:
                 probs.append("final round has no %s review" % name)
@@ -259,7 +263,7 @@ def main(argv):
         subs = _git("show", "%s:%s" % (opt("--subs-rev") or base, SUBS_PATH))
     except RuntimeError:
         subs = None
-    probs = record_problems(rec, tree, subs=subs, pr=pr)
+    probs = record_problems(rec, tree, subs=subs, pr=pr, edits_allowlist=SUBS_PATH in changed)
     for p in probs:
         print("::error file=%s::review gate: %s (REQ-AUD-18 AC3)" % (path, p))
     if probs:

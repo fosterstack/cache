@@ -1,7 +1,7 @@
 # proves: REQ-AUD-018-AC4
 """auditor-review-gate.py (REQ-AUD-18 AC3, option C): every reason a review record fails to clear
 the gate, and the CLI's argument and no-change paths, against a real temporary git repository."""
-import contextlib, datetime, importlib.util, io, json, os, shutil, subprocess, tempfile, unittest
+import contextlib, datetime, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -382,18 +382,41 @@ class Substitute(unittest.TestCase):
         r = good(); del r["rounds"][0]["reviewers"]["codex"]
         self.assertEqual(G.record_problems(r, TREE), ["final round has no codex review"])
 
-    def test_a_substitute_without_a_clock_uses_the_real_one_and_the_env_override(self):
-        with mock.patch.dict(os.environ, {"GATE_NOW": AFTER}):
+    def test_a_substitute_without_a_clock_uses_the_system_clock_function(self):
+        with mock.patch.object(G, "_utcnow", return_value=dt(AFTER)):
             self.assertTrue(named(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), "expired"))
-        with mock.patch.dict(os.environ, {"GATE_NOW": BEFORE}):
+        with mock.patch.object(G, "_utcnow", return_value=dt(BEFORE)):
             self.assertEqual(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), [])
-        with mock.patch.dict(os.environ, {"GATE_NOW": "tomorrow"}):
-            self.assertTrue(named(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), "GATE_NOW"))
-        with mock.patch.dict(os.environ):
-            os.environ.pop("GATE_NOW", None)
-            # the real clock is long past the 2026-10-10 expiry by the time this runs, or not yet: either way it decides
-            probs = G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS))
-            self.assertEqual("expired" in " ".join(probs), datetime.datetime.now(datetime.timezone.utc) >= dt(EXPIRY))
+        with mock.patch.dict(os.environ, {"GATE_NOW": BEFORE}), mock.patch.object(G, "_utcnow", return_value=dt(AFTER)):
+            self.assertTrue(named(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), "expired"))   # env is ignored
+        # the real clock is long past the 2026-10-10 expiry by the time this runs, or not yet: either way it decides
+        probs = G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS))
+        self.assertEqual("expired" in " ".join(probs), datetime.datetime.now(datetime.timezone.utc) >= dt(EXPIRY))
+
+    def test_a_substitutes_file_with_the_wrong_schema_fails_naming_the_schema(self):
+        bad = dict(SUBS, schema="v0")
+        self.assertTrue(named(problems(sub_rec(), subs=json.dumps(bad)), "schema"))
+
+    def test_completed_at_is_read_from_the_FINAL_round(self):
+        r = sub_rec(completed=...)
+        r["rounds"][0]["completed_at"] = BEFORE
+        r["rounds"].append({"round": 2, "reviewers": r["rounds"][0]["reviewers"]})       # final round has none
+        self.assertTrue(named(problems(r), "completed_at"))
+        r["rounds"][1]["completed_at"] = BEFORE
+        self.assertEqual(problems(r), [])
+
+    def test_a_scope_with_a_trailing_newline_fails_named_without_a_traceback(self):
+        for scope, pr in (("all\n", None), ("pr:210\n", 210)):
+            subs = json.loads(json.dumps(SUBS)); subs["substitutes"][0]["scope"] = scope
+            self.assertTrue(named(problems(sub_rec(), subs=json.dumps(subs), pr=pr), "scope"), scope)
+
+    def test_a_record_path_with_a_trailing_newline_is_not_a_record(self):
+        self.assertTrue(G._is_record(G.REVIEWS + "a" * 64 + ".json"))
+        self.assertFalse(G._is_record(G.REVIEWS + "a" * 64 + ".json\n"))
+
+    def test_a_time_with_a_trailing_newline_is_not_a_time(self):
+        self.assertIsNone(G._time(BEFORE + "\n"))
+        self.assertTrue(named(problems(sub_rec(completed=BEFORE + "\n")), "completed_at"))
 
     def test_the_shipped_substitutes_json_is_the_ratified_one(self):
         path = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
@@ -411,7 +434,7 @@ class SubstituteCli(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d)
         self.cwd = os.getcwd(); os.chdir(self.d); self.addCleanup(os.chdir, self.cwd)
-        env = mock.patch.dict(os.environ, {"GATE_NOW": BEFORE}); env.start(); self.addCleanup(env.stop)
+        self.clock = mock.patch.object(G, "_utcnow", return_value=dt(BEFORE)); self.clock.start(); self.addCleanup(self.clock.stop)
         self.git("init", "-q", "-b", "main")
         os.makedirs(".github/agent/bin"); os.makedirs(".github/agent/reviews")
         self.write(".github/agent/bin/x.py", "a\n"); self.write(self.SUBPATH, json.dumps(SUBS))
@@ -436,7 +459,7 @@ class SubstituteCli(unittest.TestCase):
 
     def test_after_the_expiry_the_cli_fails(self):
         self.propose()
-        with mock.patch.dict(os.environ, {"GATE_NOW": AFTER}):
+        with mock.patch.object(G, "_utcnow", return_value=dt(AFTER)):
             rc, out, _ = self.judge()
         self.assertEqual(rc, 1)
         self.assertIn("expired", out)
@@ -448,7 +471,7 @@ class SubstituteCli(unittest.TestCase):
         self.propose()
         rc, out, _ = self.judge()
         self.assertEqual(rc, 1)
-        self.assertIn("substitute_id", out)
+        self.assertIn("substitutes.json", out)
 
     def test_a_pr_that_extends_the_expiry_or_the_scope_does_not_count_for_itself(self):
         o = json.loads(json.dumps(SUBS)); o["substitutes"][0]["effective_until"] = "2026-10-01T00:00:00Z"
@@ -458,7 +481,7 @@ class SubstituteCli(unittest.TestCase):
         self.propose()
         rc, out, _ = self.judge()
         self.assertEqual(rc, 1)
-        self.assertIn("expired", out)
+        self.assertIn("substitutes.json", out)      # editing the allow-list now needs a real codex entry
 
     def test_no_substitutes_json_on_the_base_fails(self):
         self.git("rm", "-q", self.SUBPATH); self.git("commit", "-qm", "base without it")
@@ -505,11 +528,101 @@ class SubstituteCli(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("no valid review record", out)
 
+    def edit_allowlist(self):
+        o = json.loads(json.dumps(SUBS))
+        for e in o["substitutes"]:
+            e["effective_until"] = "2027-12-31T00:00:00Z"
+        self.write(self.SUBPATH, json.dumps(o))
+
+    def test_a_change_that_edits_the_allow_list_is_never_cleared_by_a_substitute(self):
+        self.edit_allowlist()
+        self.propose()
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("substitutes.json", out)
+        self.assertIn("codex", out)
+
+    def test_a_change_that_edits_the_allow_list_passes_with_a_real_codex_entry(self):
+        self.edit_allowlist()
+        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "change")
+        tree = self.run_main("--print-tree")[1].strip()
+        rec = good(); rec["tree"] = tree
+        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 0, out)
+
     def test_a_missing_completed_at_fails_the_cli(self):
         self.propose(completed=...)
         rc, out, _ = self.judge()
         self.assertEqual(rc, 1)
         self.assertIn("completed_at", out)
+
+
+class ClockIsSystemOnly(unittest.TestCase):
+    """REQ-AUD-018-AC4: the gate's clock is the system clock; no environment variable or option sets it."""
+    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(BIN)))
+    SCRIPT = os.path.join(BIN, "auditor-review-gate.py")
+
+    def test_the_script_reads_no_environment_and_has_no_clock_option(self):
+        import ast
+        with open(self.SCRIPT) as fh:
+            src = fh.read()
+        bad = []
+        for n in ast.walk(ast.parse(src)):
+            if isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv", "environb", "putenv"):
+                bad.append("line %d: %s" % (n.lineno, n.attr))
+            if isinstance(n, ast.ImportFrom) and n.module == "os" and any(a.name in ("environ", "getenv") for a in n.names):
+                bad.append("line %d: from os import environ/getenv" % n.lineno)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and (
+                    "GATE_NOW" in n.value or n.value in ("--now", "--clock", "--time", "--as-of")):
+                bad.append("line %d: %r" % (n.lineno, n.value[:40]))
+        self.assertEqual(bad, [])
+
+    def test_no_workflow_or_action_file_can_set_the_clock(self):
+        files = []
+        for base, dirs, names in os.walk(self.ROOT):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules")]
+            for n in names:
+                full = os.path.join(base, n)
+                rel = os.path.relpath(full, self.ROOT)
+                if (rel.startswith(os.path.join(".github", "workflows") + os.sep) and n.endswith((".yml", ".yaml"))) \
+                        or n in ("action.yml", "action.yaml"):
+                    files.append(full)
+        self.assertTrue(any(f.endswith("agent-review-gate.yml") for f in files))
+        bad = []
+        for f in files:
+            with open(f) as fh:
+                text = fh.read()
+            if "GATE_NOW" in text or re.search(r"--now\b", text):
+                bad.append(os.path.relpath(f, self.ROOT))
+        self.assertEqual(bad, [])
+
+    def test_an_environment_value_cannot_unexpire_a_substitute(self):
+        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
+        def git(*a):
+            return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
+                                  cwd=d, check=True, capture_output=True, text=True).stdout
+        def put(p, t):
+            os.makedirs(os.path.dirname(os.path.join(d, p)), exist_ok=True)
+            with open(os.path.join(d, p), "w") as fh:
+                fh.write(t)
+        old = json.loads(json.dumps(SUBS))
+        for e in old["substitutes"]:
+            e["effective_until"] = "2020-01-01T00:00:00Z"
+        git("init", "-q", "-b", "main")
+        put(".github/agent/bin/x.py", "a\n"); put(".github/agent/reviews/substitutes.json", json.dumps(old))
+        git("add", "-A"); git("commit", "-qm", "base"); base = git("rev-parse", "HEAD").strip()
+        put(".github/agent/bin/x.py", "b\n"); git("commit", "-qam", "change")
+        run = lambda *a, **env: subprocess.run([sys.executable, self.SCRIPT, *a], cwd=d, capture_output=True, text=True,
+                                               env=dict(os.environ, **env))
+        tree = run("--print-tree").stdout.strip()
+        put(".github/agent/reviews/%s.json" % tree, json.dumps(sub_rec(None, "2019-06-01T00:00:00Z", tree)))
+        git("add", "-A"); git("commit", "-qm", "record")
+        for env in ({}, {"GATE_NOW": "2019-01-01T00:00:00Z"}):
+            r = run("--base", base, "--head", "HEAD", **env)
+            self.assertEqual(r.returncode, 1, (env, r.stdout, r.stderr))
+            self.assertIn("expired", r.stdout)
 
 
 if __name__ == "__main__":
