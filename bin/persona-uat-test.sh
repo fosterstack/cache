@@ -5159,6 +5159,53 @@ assert "AGENT-STDERR-MARKER-77" in tr, tr[:600]
 assert "evid.example" in tr + open(d + "/plain/gradle-platform-engineer.report.md").read()
 PY
 
+# --- RESIDUALS ON THE EXCEPTIONAL PATH (R1) ---------------------------------------------------------------------------------------------------------------
+CASE="capture (exceptional retry, merge): an existing INCOMPLETE capture {A} plus a retry that returns {A,B} is recorded as {A,B}, still incomplete with its reason; an existing COMPLETE capture is left alone and docker stop is not called again; a retry that fails again keeps the contacts and ACCUMULATES the reasons; members are kept"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+def cap(addrs, reason=None, members=()):
+    return {"names": set(), "addrs": set(addrs), "uncorrelated": set(), "members": set(members), "reason": reason}
+calls = []
+def fake(result):
+    def stop(docker, cid, why):
+        calls.append(cid); return result
+    return stop
+# (a) incomplete {A} + clean retry {A,B}: merged, still incomplete
+m.stop_capture = fake(cap({"8.8.8.8", "9.9.9.9"}))
+caps = {"p": cap({"8.8.8.8"}, "the capture sidecar could not be stopped cleanly (docker stop failed)", {"172.18.0.5"})}
+m.recapture(caps, "p", None, "cap-1", None)
+r = caps["p"]
+assert r["addrs"] == {"8.8.8.8", "9.9.9.9"} and r["members"] == {"172.18.0.5"} and r["reason"] and "could not be stopped" in r["reason"], r
+# (b) complete: no retry at all, unchanged
+calls.clear(); m.stop_capture = fake(cap({"1.1.1.1"}))
+caps = {"p": cap({"8.8.8.8"})}
+m.recapture(caps, "p", None, "cap-1", None)
+assert calls == [] and caps["p"]["addrs"] == {"8.8.8.8"} and caps["p"]["reason"] is None, (calls, caps)
+# none yet: the retry is the capture
+m.stop_capture = fake(cap({"7.7.7.7"}))
+caps = {}
+m.recapture(caps, "p", None, "cap-1", None)
+assert caps["p"]["addrs"] == {"7.7.7.7"}
+# (c) incomplete + a retry that fails again: contacts kept, reasons accumulate
+m.stop_capture = fake(cap({"6.6.6.6"}, "the capture output could not be read"))
+caps = {"p": cap({"8.8.8.8"}, "the kernel dropped 3 packets")}
+m.recapture(caps, "p", None, "cap-1", None)
+r = caps["p"]
+assert r["addrs"] == {"8.8.8.8", "6.6.6.6"} and "dropped 3 packets" in r["reason"] and "could not be read" in r["reason"], r
+PY
+CASE="capture (parser): an IPv4-mapped IPv6 destination behind an extension header keeps its whole address (no port is stripped from a line that has none)"
+check python3 - "$driver" <<'PY'
+import importlib.util, sys
+sp = importlib.util.spec_from_file_location("drv", sys.argv[1]); m = importlib.util.module_from_spec(sp); sp.loader.exec_module(m)
+H = "listening on any, link-type EN10MB\n"
+F = "1 packet captured\n1 packet received by filter\n0 packets dropped by kernel\n"
+r = m.parse_capture(H + "1.0 IP6 fd00::2 > ::ffff:10.0.0.1: DSTOPT 40000 > 443: Flags [S], seq 1, win 1, length 0\n" + F, False)
+assert r["reason"] is None and r["addrs"] == {m._norm("::ffff:10.0.0.1")}, r
+r = m.parse_capture(H + "1.0 IP6 fd00::2.40000 > 2606:2800::1.443: Flags [S], seq 1, win 1, length 0\n" + F, False)
+assert r["addrs"] == {"2606:2800::1"}, r
+PY
+
 # EXCEPTION SAFETY (step 8 round 3, B1): a command that cannot be parsed (a fullwidth slash inside a proxy host, an unclosed IPv6 bracket, NULs, unicode separators, enormous arguments)
 # never raises out of the reporting path: the action is marked unparsed in the ENCRYPTED report, the report is still written, and nothing but the pass/fail lines is public
 python3 - >"$work/fuzzplan.json" <<'PY'

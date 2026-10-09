@@ -179,6 +179,12 @@ def _split(tok, no_port):
     """ADDRESS and PORT of a tcpdump -nn endpoint (`10.0.0.2.5000`, `fd00::2.40000`); ICMP endpoints carry no port"""
     if no_port:
         return _norm(tok), None
+    import ipaddress
+    try:
+        ipaddress.ip_address(tok)          # a whole address (an IPv4-mapped `::ffff:10.0.0.1` behind an extension header has no port): nothing to strip
+        return _norm(tok), None
+    except ValueError:
+        pass
     a, _, port = tok.rpartition(".")
     return (_norm(a), port) if port.isdigit() and a else (_norm(tok), None)
 
@@ -348,6 +354,27 @@ def stop_capture(docker, cid, started_reason):
     elif not alive:
         r["reason"] = "the capture sidecar exited before the persona ended (%s)" % r["reason"]
     return r
+
+
+def merge_capture(old, new):
+    """the union of two observations of the same persona: contacted destinations, names and member addresses are united, and EVERY failure reason is kept (incomplete stays incomplete)"""
+    out = {k: set(old.get(k) or ()) | set(new.get(k) or ()) for k in ("names", "addrs", "uncorrelated", "members")}
+    reasons = []
+    for r in (old.get("reason"), new.get("reason")):
+        if r and r not in reasons:
+            reasons.append(r)
+    out["reason"] = "; ".join(reasons) if reasons else None
+    return out
+
+
+def recapture(captures, persona, docker, cid, why):
+    """the exceptional path's stop/read retry: with no capture yet it is the capture; with a COMPLETE one nothing is done (no second docker stop); with an INCOMPLETE one the retry is
+    merged into it, never discarded"""
+    have = captures.get(persona)
+    if have is None:
+        captures[persona] = stop_capture(docker, cid, why)
+    elif have.get("reason"):
+        captures[persona] = merge_capture(have, stop_capture(docker, cid, why))
 
 
 def member_addresses(docker, names):
@@ -1887,7 +1914,7 @@ def _main():
                 # ANY failure of the driver while this persona ran: the window's work is undone like on the normal path (label sweep, sidecar stopped, members read, root-owned sandbox
                 # emptied: all BEFORE anything is written), then the evidence collected so far (the agent's answer and transcript, its collected failure output, the streamed transcript
                 # file, the action journal) is written, encrypted; then the run fails
-                for undo in (lambda: sweep(docker, label), lambda: captures.setdefault(persona, stop_capture(docker, cap_cid, cap_why)), lambda: add_members(persona) if persona in captures and "members" not in captures[persona] else None,
+                for undo in (lambda: sweep(docker, label), lambda: recapture(captures, persona, docker, cap_cid, cap_why), lambda: add_members(persona) if persona in captures and not captures[persona].get("members") else None,
                              lambda: cleanup(docker, label, sandbox, tools["shell"])):
                     try:
                         undo()
