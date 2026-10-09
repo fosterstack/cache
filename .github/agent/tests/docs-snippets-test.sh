@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: (no AC fits; docs drift guard, advisor handoffs 0309 and 0310) the Gradle and Maven snippets documented in docs/ have the
+# Docs drift guard (no requirement covers it, so there is no AC declaration; docs drift guard, advisor handoffs 0309 and 0310) the Gradle and Maven snippets documented in docs/ have the
 # same STRUCTURE as the client configuration the acceptance jobs run (not identical text: ids, URLs, the schema version and how uploads
 # are switched on differ), and the Kubernetes reset runs in the right order. It does not run Gradle or Maven.
 # Gradle: the documented local snippet addresses the cache by the loopback address 127.0.0.1 (Gradle refuses plain http for the NAME
