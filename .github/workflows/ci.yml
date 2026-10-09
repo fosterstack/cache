@@ -79,6 +79,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
       - name: auditor Python coverage — zero uncovered (REQ-AUD-18 AC2)
         run: |
           set -euo pipefail
@@ -107,10 +111,19 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
+      # Go 1.27.2's compiler writes export data version 5; the prebuilt
+      # golangci-lint v2.13.2 binary the action downloads reads up to version
+      # 4 and fails every package at the import phase. v2.14.0 is installed
+      # with `go install` under the CI Go toolchain (pinned, exact version);
+      # .golangci.yml (the checks) is unchanged, and `config verify`
+      # still runs before the lint, as the action did.
+      - name: install golangci-lint (pinned)
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
       - name: golangci-lint (staticcheck, gofmt, goimports, md5/sha1 import ban)
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: v2.13.2
+        run: |
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
+          golangci-lint config verify   # the action ran this before every run (its verify input defaults to true)
+          golangci-lint run ./...
 
   gosec:
     name: gosec
@@ -124,14 +137,27 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
-      # gosec is pinned to v2.29.0 (the latest), but run via `go install`
-      # under the CI Go toolchain — NOT the securego/gosec Docker action,
-      # whose bundled Go cannot type-check a go.mod on the 1.26 line and
-      # fails at the import phase (it never reaches the checks). Same
-      # install pattern as gremlins in go-freshness.yml's mutation job. gosec still exits
-      # non-zero on any finding, so the gate is unchanged.
-      - name: install gosec (pinned)
-        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+      # gosec is pinned to v2.29.0 (the latest) and built from source under
+      # the CI Go toolchain (see the install step below) — NOT the
+      # securego/gosec Docker action, whose bundled Go cannot type-check a
+      # go.mod on the 1.26 line and fails at the import phase (it never
+      # reaches the checks). gosec still exits non-zero on any finding, so
+      # the gate is unchanged.
+      # gosec v2.29.0 (the latest release) requires golang.org/x/tools v0.49.0,
+      # whose export-data reader stops at version 4, while Go 1.27.2 writes
+      # version 5: every package then fails with "type errors". `go install
+      # ...@v2.29.0` cannot override a dependency, so gosec is built in a
+      # scratch module against golang.org/x/tools v0.50.0 (published
+      # 2026-09-08). Exact versions; go.sum comes from the Go checksum
+      # database. Drop this when a gosec release requires x/tools >= v0.50.0.
+      - name: install gosec (pinned, built against x/tools v0.50.0)
+        run: |
+          gobin="$(go env GOPATH)/bin"
+          mkdir "$RUNNER_TEMP/gosec-build"
+          cd "$RUNNER_TEMP/gosec-build"
+          go mod init gosecbuild
+          go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.50.0
+          go build -o "$gobin/gosec" github.com/securego/gosec/v2/cmd/gosec
       - name: run gosec
         run: |
           gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
@@ -230,6 +256,9 @@ jobs:
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: bash bin/check-file-allowlist-test.sh
 
+      - name: branch sweep and local prune regressions
+        run: bash bin/branch-sweep-test.sh
+
       - name: govulncheck fixture modules materialize (never indexed by the dependency graph)
         run: bash .github/agent/tests/govulncheck-fixtures-test.sh
 
@@ -237,6 +266,10 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
       - name: every reusable-workflow caller covers its callees' permissions (R01)
         run: |
           # hash-pinned (row 78 pin pass on #156: no mutable package content in a required check)
@@ -255,6 +288,10 @@ jobs:
         run: python3 .github/agent/bin/check-action-pins.py --verify-tags .
       - name: the pin check's wiring cannot be skipped or weakened (REQ-REL-005-AC1)
         run: bash .github/agent/tests/pin-wiring-test.sh
+      - name: the pip that CI runs is pinned in every job that installs with pip (REQ-SUP-001-AC13)
+        run: bash .github/agent/tests/pip-pin-test.sh
+      - name: the documented Gradle and Maven snippets have the structure acceptance runs, and the Kubernetes reset order
+        run: bash .github/agent/tests/docs-snippets-test.sh
 
       # The hash-pinned auditor requirements must RESOLVE: a lone Dependabot bump of pydantic-core
       # (pydantic pins it exactly) merged green twice (#106, #111) and broke every real/scheduled
@@ -283,6 +320,9 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m venv "$RUNNER_TEMP/panel-sdk"
+          # the venv's own pip is the interpreter's bundled one: pin it first, from the same hash-checked file (REQ-SUP-001 AC13)
+          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip install --quiet --require-hashes --only-binary=:all: -r .github/agent/pip-requirements.txt
+          "$RUNNER_TEMP/panel-sdk/bin/python" -m pip --version
           "$RUNNER_TEMP/panel-sdk/bin/pip" install --quiet --require-hashes --only-binary=:all: -r .github/agent/adjudicator-requirements.txt
           PANEL_SDK_TEST_REQUIRED=1 "$RUNNER_TEMP/panel-sdk/bin/python" .github/agent/bin/tests/test_panel_sdk_probe.py -v
 

@@ -1,0 +1,34 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "14a8e5ecd5661e646c5a9b2241dcc053fed794cdaba386152e139db43f7ba4ea",
+ "change": "Allowlist: the FIPS posture comparison script bin/fips-image-posture.py joins the public-file allowlist (one anchored pattern) -- PR #225",
+ "reviewed_commit": "1d4a67f715669b15835d8635e4195b2c0379d8fa",
+ "closed_commit": "1d4a67f715669b15835d8635e4195b2c0379d8fa",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "first round, both green",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "968c5d4e5bc5ef088b42e2d59ab59d4f783f26f6bafc8ff226263e923c6a2f0f"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "e5c28f87d00bc5dfaca393280909b9c605b20683aaa7cf117f3ed8ba29bdf8a2"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "the allowlist suite could not complete in Codex's read-only sandbox (it passes locally and in CI)",
+  "bin/check-file-allowlist-test.sh has a pre-existing timing flake in the criss-cross pick assertion (about 1 in 8 runs on main as well as on this branch)"
+ ],
+ "row78": "no workflow or action file changes; check-action-pins.py 27 files, zero findings (both reviewers)"
+}
