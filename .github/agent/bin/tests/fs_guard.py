@@ -151,6 +151,25 @@ def _wrap1(mod, name, nofollow=False):
     setattr(mod, name, f)
 
 
+def check_link(target, dst, what):
+    """Creating a link whose TARGET text is outside the allowed roots is refused, though the target is never opened (symlink
+    creation emits no audit event, and a link to a system path is what the OS asked the user to administer). A relative target
+    is judged where it would resolve: next to the link."""
+    t = os.fsdecode(_real["fspath"](target))
+    if not os.path.isabs(t):
+        t = os.path.join(os.path.dirname(os.path.abspath(os.fsdecode(_real["fspath"](dst)))), t)
+    check(os.path.normpath(t), what, True)
+    check(dst, what, True)
+
+
+def wrap_link(orig, name):
+    def f(src, dst, *a, **k):
+        check_link(src, dst, name)
+        return orig(src, dst, *a, **k)
+    f.__name__ = name; f.__wrapped__ = orig
+    return f
+
+
 def install(extra_roots=()):
     global _installed, ROOTS
     if _installed:
@@ -162,3 +181,5 @@ def install(extra_roots=()):
         _wrap1(os, n, n != "stat")
     for n in ("realpath", "exists", "isfile", "isdir", "islink", "lexists", "getsize"):
         _wrap1(os.path, n, n in ("islink", "lexists"))
+    for n in ("symlink", "link"):
+        setattr(os, n, wrap_link(getattr(os, n), "os." + n))

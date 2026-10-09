@@ -64,3 +64,10 @@ ROWS = [
      '/tmp/evil',
      'value injected into an in-memory workflow copy to prove the check rejects a PATH override'),
 ]
+
+# Link creations with an absolute target that are pure data: command text inside a fixture workflow/script that the pin checker
+# judges as text and nothing executes. (file, substring of the line, reason)
+LINK_ROWS = [
+    ('.github/agent/tests/check-action-pins-test.sh', "ln -s /tmp/a /tmp/b",
+     "text of a workflow run: step (case n2-copy-other-file) that the pin checker judges as text; nothing executes it"),
+]

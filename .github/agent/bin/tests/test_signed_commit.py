@@ -325,7 +325,7 @@ class Commit(unittest.TestCase):
             os.symlink(out, os.path.join(root, "docs"))                              # a directory link out of the tree
             os.symlink(os.path.join(root, "real"), os.path.join(root, "inner"))      # a directory link that stays inside the tree
             os.symlink(os.path.join(out, "secret.txt"), os.path.join(root, "link.txt"))   # a file link
-            os.symlink("/nonexistent/x", os.path.join(root, "dangling.txt"))         # a dangling file link
+            os.symlink(os.path.join(out, "nonexistent", "x"), os.path.join(root, "dangling.txt"))         # a dangling file link
             os.symlink(out, os.path.join(root, "real", "deep"))                      # a link below a plain directory
             self.assertEqual(S.read_changes(root, ["real/f.txt", "gone.txt", "real/gone.txt"]), {"real/f.txt": b"ok", "gone.txt": None, "real/gone.txt": None})
             for p in ("docs/secret.txt", "docs/new.txt", "docs", "inner/f.txt", "inner", "link.txt", "dangling.txt", "real/deep/secret.txt", "real/deep"):
