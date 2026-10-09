@@ -2233,15 +2233,34 @@ requirements:
   - id: REQ-AUD-018
     title: The auditor review gate accepts a recorded substitute for the second reviewer
     statement: >
-      The auditor's review gate (bin/auditor-review-gate.py in the auditor directory) shall let the owner's recorded, time-boxed decision replace the second vendor's review in a review record, and nothing else: only for the codex seat, only by an opus entry named in a reviewed allow-list on the default branch, only before that entry's expiry, and never for the Sonnet review.
-    source: [auditor directory bin/auditor-review-gate.py, auditor directory reviews/substitutes.json, .github/workflows/agent-review-gate.yml]
+      The auditor shall keep everything auditor-related in the auditor directory, hold its Python to the same zero-uncovered coverage gate as the Go, and let no change to the auditor merge without a review record cleared by the independent second review; the review gate may accept a recorded, time-boxed substitute for the second reviewer (AC4 onward), and nothing else: only for the codex seat, only by an opus entry named in a reviewed allow-list on the default branch, only before that entry's expiry, and never for the Sonnet review.
+    source: [auditor directory bin/auditor-review-gate.py, auditor directory bin/auditor-layout-check.py, auditor directory tests/coverage-gate.sh, auditor directory reviews/substitutes.json, .github/workflows/agent-review-gate.yml, .github/workflows/ci.yml]
     tier: community
     introduced: v0.3.0
-    origin: second-seat substitute (owner, Oct 9 2026, "stop all codex no more codex reviews until after 1AM Saturday. replace all codex with opus medium." and "Proceed with opus just for this one that codex is hung up on"; advisor 0317). The earlier criteria of this requirement (AC1 to AC3, the auditor layout, the coverage gate and the review gate) are written on the auditor matrix page as REQ-AUD-18 and are not yet in this file; this file starts at AC4.
+    origin: AC1 to AC3 are the matrix page's REQ-AUD-18 rows (the auditor matrix page in the auditor directory, lines 91 to 93), owner-ratified in #113 (commit 731f2d1, Sep 25 2026, matrix: ratify REQ-AUD-14..18); the AC3 mechanism is option C (owner, Sep 27 2026); AC1 carries two owner amendments: the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml (owner, Oct 2 2026) and the patch-release classifier bin/patch-decide.py with its test bin/patch-decide-test.sh (owner, Oct 3 2026, "I ratify b."). AC4 is the second-seat substitute (owner, Oct 9 2026, "stop all codex no more codex reviews until after 1AM Saturday. replace all codex with opus medium." and "Proceed with opus just for this one that codex is hung up on"; advisor 0317).
     confidence: implementation-only
     notes: >
+      Back-fill of AC1 to AC3 (status approved on the matrix page's ratification; the then text of each is the page's English, with the literal auditor path written as "the auditor directory" in AC1 to AC3 only because the layout check forbids the literal path in this file). KNOWN GAP, owner question pending: the coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements; and the gate measures only the auditor bin directory (not tests/ or fixtures/testlib/), code to widen in a follow-up. AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries; not named in the ratified English, pending the advisor), plus the two amendments above (mappings.yaml and unmapped.yaml, owner Oct 2; bin/patch-decide.py and its test, owner Oct 3). The layout checker's docstring still lists only the workflow files and the allowlist entries (stale; follow-up). The AC3 proof test (bin/tests/test_review_gate.py) carries only the AC4 proves header here, because a change to it needs a real codex entry; it is mapped to AC3 in test-evidence/mappings.yaml and its header is a follow-up.
       substitutes.json is read from the trusted revision (the checked-out default branch in the workflow, the merge base when no --subs-rev is given), never from the pull request. A change to it is part of the bound review content (it changes the record's tree) but cannot help the pull request that makes it.
     acceptance_criteria:
+      - id: REQ-AUD-018-AC1
+        given: "any tracked file in the repository"
+        when: "the layout check (auditor-layout-check.py, run by the allowlist job in ci.yml) reads the file list"
+        then: "All auditor code, prompts, fixtures and tests live under the auditor directory and nowhere else; the only auditor-related files outside it are the workflow files (.github/workflows/), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files test-evidence/mappings.yaml and test-evidence/unmapped.yaml, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier bin/patch-decide.py and its test bin/patch-decide-test.sh, which name the auditor directory as data and hold no auditor code."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-AUD-018-AC2
+        given: "the Python in the auditor directory"
+        when: "the required coverage job runs the auditor coverage gate (coverage-gate.sh)"
+        then: "The Python under the auditor directory is held to the 100% coverage gate in CI, the same as the Go."
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-AUD-018-AC3
+        given: "a pull request that changes anything under the auditor directory"
+        when: "the review gate (auditor-review-gate.py, run by agent-review-gate.yml) judges it"
+        then: "Every change under the auditor directory clears the independent second review's stop rule before merge."
+        verification: { method: unit, release_blocking: false }
+        status: approved
       - id: REQ-AUD-018-AC4
         given: "a pull request that changes the auditor, whose review record's final round carries, in place of the codex entry, an opus entry (vendor anthropic, model opus, effort medium, substitute_for codex, a substitute_id, zero open blockers, an evidence sha256) beside a clear sonnet entry, and carries a completed_at time (YYYY-MM-DDTHH:MM:SSZ)"
         when: "the review gate judges it"
