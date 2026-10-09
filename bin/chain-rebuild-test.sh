@@ -124,10 +124,11 @@ fi
 for i in $REQUIRED; do
   refuse "005-AC3 one differing nibble in $i blocks and names exactly it" differs "$i" rec.json exp.json "act-diff-$i.json"
   if [ -f "$W/verdict.json" ]; then
-    jq -e --arg i "$i" '([.items[]|select(.status=="differs")|.name]==[$i])
-        and (.items[]|select(.name==$i)|(.expected|startswith("sha256:")) and (.actual|startswith("sha256:")) and .expected != .actual)' \
+    want_exp=$(jq -r --arg i "$i" '.[$i]' "$W/exp.json"); want_act=$(jq -r --arg i "$i" '.[$i]' "$W/act-diff-$i.json")
+    jq -e --arg i "$i" --arg e "$want_exp" --arg a "$want_act" '([.items[]|select(.status=="differs")|.name]==[$i])
+        and (.items[]|select(.name==$i)|.expected == $e and .actual == $a and $e != $a and ($e|startswith("sha256:")))' \
         "$W/verdict.json" > /dev/null \
-      && ok "005-AC3 the verdict marks only $i as differs, with both digests" \
+      && ok "005-AC3 the verdict marks only $i as differs, with the expected and actual values of the two files" \
       || bad "005-AC3 verdict for $i: $(head -c 160 "$W/verdict.json")"
   else
     bad "005-AC3 no verdict for a difference in $i (RED)"

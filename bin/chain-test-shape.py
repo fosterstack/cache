@@ -298,8 +298,9 @@ def job(j, family, name, allowed):
 # ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
 STEPS = ("apk", "build", "rapk", "rebuild")      # the closed list of step names; the record is witness-STEP/STEP-collection.json
 # The identity token reaches Witness through a one-read process substitution, so no file holds it while the wrapped command runs (Witness loads its
-# signer before it runs the command: in-toto-witness cmd/run.go:51). PROPOSED/UNVERIFIED: a real `witness run` must be shown to read the path exactly
-# once (harness spike or the dry run). DOCUMENTED FALLBACK if it reads twice or needs a regular file: write the token to a file and delete it before
+# signer before it runs the command: in-toto-witness cmd/run.go:51). SOURCE-CHECKED, one read: in-toto-witness cmd/keyloader.go:85 and
+# go-witness signer/fulcio/fulcio.go:295-300 read the path with a single os.ReadFile. DOCUMENTED FALLBACK if that ever changes: write the token to a file
+# and delete it before
 # the command starts, which is not possible with `exec witness run`, so the fallback is the older file form (a token file under $RUNNER_TEMP):
 #   curl ... -o "$RUNNER_TEMP/tok.json"; jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"; echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"
 #   with --signer-fulcio-token-path "$RUNNER_TEMP/tok". Changing to it changes only TOKEN and TOKEN_PATH below.
@@ -318,6 +319,7 @@ def witnessed_lines():
             'case "$step" in apk|build|rapk|rebuild) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
             'mkdir -p "witness-$step"'] + TOKEN + [
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
+            "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
             'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
             "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
             "--signer-fulcio-token-path %s -t https://timestamp.sigstore.dev/api/v1/timestamp "
@@ -395,13 +397,15 @@ CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage
 NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"], "release": ["check", "rebuild", "sign"]}
 
 
-# The ONE `if` a chain job may carry: build starts the chain only on a v* tag (REQ-REL-009; sign, rebuild, check and release are then skipped by
-# their needs). Two exact strings are accepted: the tag gate, and PR 1's dry-run form quoted verbatim from origin/pipeline-chain-sign-boundary
-# (.github/workflows/release.yml), under which build also runs in a manual dry run; the tag gate stays the only non-dry-run path to a release.
-TAG_GATE = "${{ startsWith(github.ref, 'refs/tags/v') }}"
-DRY_RUN_GATE = "${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
-GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate (Build hands it the digests)
-BUILD_IF = (TAG_GATE, DRY_RUN_GATE)
+# The `if` of the chain jobs (REQ-CHAIN-005-AC5). ONE gate G, the same exact text on build and sign: the chain starts on a v* tag PUSH, or in a dry-run
+# dispatch on any branch. (A manual workflow_dispatch on an existing v* tag is therefore NOT a release run: its event is not push and its dry-run is
+# not true.) rebuild and check carry no if: they run after build through needs. release carries exactly !inputs.dry-run (a dry run neither tags
+# nor publishes; on a tag push inputs.dry-run is null, so it runs). No !cancelled(), no needs.admission: admission is gone in PR 2's graph and
+# build needs nothing. PR 1's release.yml has other strings (`!inputs.dry-run && ...` conjuncts on other jobs, `if: ${{ inputs.dry-run }}` on sign):
+# at the merge of PR 1 into chain-v030 they are replaced by these.
+GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
+RELEASE_IF = "${{ !inputs.dry-run }}"
+GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
 # PR 1's stage-sign.yml takes exactly ONE input, digests (Build's record is downloaded by the fixed artifact name witness-build, not passed). PR 1's
 # placeholder needs.build.outputs.checksums (raw checksums.txt text) is replaced at the cutover by Build's digests output, the digests.json text.
@@ -439,10 +443,13 @@ def graph(path):
             bad.append("%s: keys outside {uses, needs, permissions, with} and build's one if: %s (no continue-on-error, secrets, strategy, env)"
                        % (name, sorted(extra)))
         if name in GATED:
-            if job.get("if") not in BUILD_IF:
-                bad.append("%s must carry exactly one if, the tag gate %s (or PR 1's dry-run form), got %r" % (name, TAG_GATE, job.get("if")))
+            if job.get("if") != GATE:
+                bad.append("%s must carry exactly one if, the gate %s, got %r" % (name, GATE, job.get("if")))
+        elif name == "release":
+            if job.get("if") != RELEASE_IF:
+                bad.append("release must carry exactly the if %s (a dry run publishes nothing), got %r" % (RELEASE_IF, job.get("if")))
         elif "if" in job:
-            bad.append("%s may not carry an if (only build and sign are gated; the others are skipped by their needs), got %r" % (name, job["if"]))
+            bad.append("%s may not carry an if (it runs after build through needs), got %r" % (name, job["if"]))
         if name == "sign":
             if job.get("permissions") != SIGN_PERMISSIONS:
                 bad.append("sign must hold exactly the permissions %s, got %s" % (SIGN_PERMISSIONS, job.get("permissions")))

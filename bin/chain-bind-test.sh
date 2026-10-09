@@ -41,7 +41,7 @@
 #     is missing), unexpected (a fragment names an item the committed list does not have).
 # PROPOSED/UNVERIFIED: the items layout (bin/chain-test-harness.py documents the oracle) and the file names of the archives.
 exec python3 - "$(cd "$(dirname "$0")/.." && pwd)" <<'PY'
-import base64, hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
+import atexit, base64, hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
 root = sys.argv[1]
 CV = root + "/bin/chain-verify.py"
@@ -49,6 +49,7 @@ spec = importlib.util.spec_from_file_location("h", root + "/bin/chain-test-harne
 h = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(h)
 work = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, work, ignore_errors=True)      # a failing or aborted run leaves nothing in TMPDIR
 passed = failed = 0
 PRODUCT = "https://witness.dev/attestations/product/v0.1/file:"
 MATERIAL = "https://witness.dev/attestations/material/v0.1/file:"

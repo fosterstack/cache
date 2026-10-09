@@ -160,10 +160,10 @@ permissions:
   contents: read
 jobs:
   build:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
   sign:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     needs: build
     permissions:
       contents: read
@@ -178,6 +178,7 @@ jobs:
     needs: build
     uses: ./.github/workflows/stage-verify.yml
   release:
+    if: ${{ !inputs.dry-run }}
     needs: [rebuild, check, sign]
     uses: ./.github/workflows/stage-promote.yml
   decide:
@@ -369,6 +370,7 @@ hm fcat    "AC2 the token read through a second process substitution" '<(printf 
 hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout 540 bash "$@"' '-- timeout 540 bash "$@" || true'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
+hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -548,18 +550,31 @@ expect caught "AC3 a script that is not a row of chain-scripts.json is refused" 
 # ---- the job graph of release.yml (REQ-CHAIN-005-AC5) -----------------------------------------------------------------------------------------
 expect ok "005-AC5 fixture: build -> (rebuild || check) -> release with sign beside them; other jobs ignored" "" graph "$work/release.yml"
 gr() { replace "$work/release.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" graph "$work/$1.yml"; return 0; }
-SIGN_HEAD="  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build"
+GATE_BODY="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true"
+GATE="\${{ $GATE_BODY }}"
+OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
+TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
+RELIF="\${{ !inputs.dry-run }}"
+SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
+BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
+BUILD_HEAD="    if: $GATE\n$BUILD_USES"
+REL_HEAD="  release:\n    if: $RELIF\n    needs: [rebuild, check, sign]"
 gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' "rebuild must need exactly"
 gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\n    needs: [build, rebuild]' "check must need exactly"
 gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
-gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: check" \
+gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n    needs: check" \
     "sign must need exactly"
-gr g5 "005-AC5 rebuild runs even when build failed (if: always())" '  rebuild:\n    needs: build' '  rebuild:\n    needs: build\n    if: always()' \
-       "may not carry an if"
-gr g6  "005-AC5 release runs when a stage failed (if: always())" '  release:\n    needs: [rebuild, check, sign]' \
-       '  release:\n    if: always()\n    needs: [rebuild, check, sign]' "may not carry an if"
-gr g7  "005-AC5 release runs when a stage failed (!cancelled())" '  release:\n    needs: [rebuild, check, sign]' \
-       '  release:\n    if: ${{ !cancelled() }}\n    needs: [rebuild, check, sign]' "may not carry an if"
+gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: build' \
+       '  rebuild:\n    needs: build\n    if: always()' "rebuild may not carry an if"
+gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: build' "  check:\n    needs: build\n    if: $GATE" "check may not carry an if"
+gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [rebuild, check, sign]' \
+       "release must carry exactly the if"
+gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [rebuild, check, sign]' \
+       "release must carry exactly the if"
+gr g7  "005-AC5 release runs when a stage failed (!cancelled())" "$REL_HEAD" "  release:\n    if: \${{ !cancelled() }}\n    needs: [rebuild, check, sign]" \
+       "release must carry exactly the if"
+gr g7b "005-AC5 release gated by G (a dry-run dispatch would call stage-promote)" "$REL_HEAD" "  release:\n    if: $GATE\n    needs: [rebuild, check, sign]" \
+       "release must carry exactly the if"
 gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: build' \
        '  rebuild:\n    continue-on-error: true\n    needs: build' "keys outside"
 gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-verify.yml' 'uses: ./.github/workflows/stage-promote.yml' \
@@ -585,19 +600,21 @@ gr g18 "005-AC5 decide with no permissions block of its own would inherit conten
        '    permissions:\n      contents: read\n      checks: read\n      id-token: write\n      issues: write\n' '' "exactly the permissions"
 gr g19 "005-AC5 a hostile-* job that can write" '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read' \
        '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write' "exactly the permissions"
-gr g21 "005-AC5 build without the tag gate (it would run on every push and the daily cron)" \
-    "    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    uses: ./.github/workflows/stage-build.yml" \
-       "    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
-gr g22 "005-AC5 build gated by always()" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" "if: always()" "build must carry exactly one if"
-gr g23 "005-AC5 build gated by a tag OR something else" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" \
-       "if: \${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' }}" "build must carry exactly one if"
-gr g24 "005-AC5 the tag gate with an extra conjunct" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" \
-       "if: \${{ startsWith(github.ref, 'refs/tags/v') && github.actor != 'x' }}" "build must carry exactly one if"
-gr g25 "005-AC5 the tag gate moved to another chain job (build ungated)" \
-    "    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    uses: ./.github/workflows/stage-build.yml" \
-       "    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
-gr g26 "005-AC5 the tag gate on rebuild as well as build" "  rebuild:\n    needs: build" \
-    "  rebuild:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build" "rebuild may not carry an if"
+gr g21 "005-AC5 build without the gate G (it would run on every push and the daily cron)" "$BUILD_HEAD" "    uses: ./.github/workflows/stage-build.yml" \
+       "build must carry exactly one if"
+gr g22 "005-AC5 build gated by always()" "$BUILD_HEAD" "    if: always()\n    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
+gr g23 "005-AC5 build gated by the tag gate alone while sign has G (the two differ)" "$BUILD_HEAD" \
+       "    if: $TAGONLY\n    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
+gr g24 "005-AC5 G with an extra conjunct on build" "$BUILD_HEAD" \
+    "    if: \${{ ($GATE_BODY) && github.actor != 'x' }}\n    uses: ./.github/workflows/stage-build.yml" \
+       "build must carry exactly one if"
+gr g25 "005-AC5 G with an or-branch for a schedule on build" "$BUILD_HEAD" \
+       "    if: \${{ ($GATE_BODY) || github.event_name == 'schedule' }}\n    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
+gr g26 "005-AC5 a manual workflow_dispatch on a v* tag cannot satisfy G: the gate widened to dispatch is refused" "$BUILD_HEAD" \
+       "    if: \${{ (github.event_name != 'schedule' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\n$BUILD_USES" \
+       "build must carry exactly one if"
+gr g33 "005-AC5 the old dry-run gate with needs.admission on build (admission is gone; on a tag push everything would be skipped)" "$BUILD_HEAD" \
+       "    if: $OLDDRY\n    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
 gr g27 "005-AC5 hostile-verify with environment: agent" "  hostile-verify:\n    needs: sign" \
     "  hostile-verify:\n    environment: agent\n    needs: sign" "may not name an environment"
 HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:'
@@ -609,16 +626,12 @@ gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  p
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
 gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    runs-on: ubuntu-latest\n    environment: agent" \
        "  patch-notes:\n    needs: decide\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
-replace "$work/release.yml" "$work/g33.yml" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" \
-        "if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}" \
-  && expect ok "005-AC5 PR 1's dry-run form of the build gate (quoted from its branch) is the second accepted string" "" graph "$work/g33.yml"
 gr g34 "005-AC5 sign without the gate (it would run on every push and the daily cron)" "$SIGN_HEAD" "  sign:\n    needs: build" "sign must carry exactly one if"
 gr g35 "005-AC5 sign gated by another condition" "$SIGN_HEAD" "  sign:\n    if: always()\n    needs: build" "sign must carry exactly one if"
-gr g36 "005-AC5 sign gated by the dry-run flag alone (not enough: a tag push must run it)" "$SIGN_HEAD" \
+gr g36 "005-AC5 sign gated by PR 1's dry-run-only gate (a tag push would not run it)" "$SIGN_HEAD" \
        "  sign:\n    if: \${{ inputs.dry-run }}\n    needs: build" "sign must carry exactly one if"
-replace "$work/release.yml" "$work/g37.yml" "$SIGN_HEAD" \
-    "  sign:\n    if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}\n    needs: build" \
-  && expect ok "005-AC5 sign with PR 1's dry-run form is accepted like build" "" graph "$work/g37.yml"
+gr g37 "005-AC5 build has G but sign has the tag gate alone" "$SIGN_HEAD" "  sign:\n    if: $TAGONLY\n    needs: build" "sign must carry exactly one if"
+gr g37b "005-AC5 sign with the old dry-run gate (needs.admission)" "$SIGN_HEAD" "  sign:\n    if: $OLDDRY\n    needs: build" "sign must carry exactly one if"
 gr g38 "005-AC5 sign with write permissions beyond id-token and contents read" "      contents: read\n      id-token: write\n    uses" \
        "      contents: write\n      id-token: write\n    uses" "sign must hold exactly the permissions"
 gr g39 "005-AC5 sign passing an extra input" "      digests: \${{ needs.build.outputs.digests }}" \
@@ -742,6 +755,7 @@ EOF
 helper_run() { # helper_run DIR STEP [ENV=VAL...] -> prints the exit status of `bash bin/witnessed.sh STEP bin/wrapped.sh`
   local dir=$1 step=$2; shift 2
   ( cd "$dir" && if env "$@" PATH="$dir/fake:$PATH" RUNNER_TEMP="$dir/tmp" ACTIONS_ID_TOKEN_REQUEST_TOKEN=SENTINEL-BEARER \
+      ACTIONS_RUNTIME_TOKEN=SENTINEL-RUNTIME ACTIONS_RUNTIME_URL="https://runtime.example/y" \
       ACTIONS_ID_TOKEN_REQUEST_URL="https://pipelines.example/x?a=1" bash bin/witnessed.sh "$step" bin/wrapped.sh > helper.out 2> helper.err
       then echo 0
       else echo $?
@@ -801,8 +815,10 @@ for tag in fixture real; do
         "AC2 $tag helper: a token file or variable is left for the wrapped command, or the signer got no token" \
         "(rc=$rc, files: $(ls "$d/tmp" 2> /dev/null | tr '\n' ' '))"
   fi
-  if [ -f "$d/wrapped-env.txt" ] && ! grep -Eq 'ACTIONS_ID_TOKEN_REQUEST|SENTINEL-BEARER|pipelines.example' "$d/wrapped-env.txt"; then
-    ok "AC2 $tag helper: the wrapped command's environment holds neither identity-token variable nor their values (unset after the token is fetched)"
+  if [ -f "$d/wrapped-env.txt" ] && ! grep -Eq \
+      'ACTIONS_ID_TOKEN_REQUEST|ACTIONS_RUNTIME|SENTINEL-BEARER|SENTINEL-RUNTIME|pipelines.example|runtime.example' "$d/wrapped-env.txt";
+  then
+    ok "AC2 $tag helper: the wrapped command's environment holds neither the identity-token nor the runtime-token variables or values"
   else bad "AC2 $tag helper: the identity-token variables or their values reach the wrapped command"; fi
 done
 # ---- the stage scripts RUN against fake cache scripts (REQ-CHAIN-004-AC3, AC6, AC9; REQ-CHAIN-005-AC2) ---------------------------------------
@@ -1060,7 +1076,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=357
+EXPECT=362
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
