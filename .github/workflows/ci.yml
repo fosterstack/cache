@@ -256,6 +256,9 @@ jobs:
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: bash bin/check-file-allowlist-test.sh
 
+      - name: branch sweep and local prune regressions
+        run: bash bin/branch-sweep-test.sh
+
       - name: govulncheck fixture modules materialize (never indexed by the dependency graph)
         run: bash .github/agent/tests/govulncheck-fixtures-test.sh
 
