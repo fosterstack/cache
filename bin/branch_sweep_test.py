@@ -73,7 +73,7 @@ def kentry(branch, days=10, reason="in flight"):
 class GH:
     def __init__(self, branches=(), prs=(), keep=None, keep_refs=None, default="main", repo="o/r", cap=None,
                  fail=None, fail_delete=(), bad_commit=(), keep_status=None, protected=(), before=None, delete_status=None,
-                 endless=None, bad_date=None):
+                 endless=None, bad_date=None, nolink=False):
         self.repo, self.default, self.cap = repo, default, cap
         self.branches = [{"name": n, "sha": sha_of(n), "age": a} for n, a in branches]
         self.prs, self.keep, self.keep_refs = list(prs), keep, keep_refs
@@ -81,6 +81,7 @@ class GH:
         self.protected = set(protected)
         self.before, self.delete_status, self.endless = before, dict(delete_status or {}), endless
         self.bad_date = dict(bad_date or {})
+        self.nolink = nolink
         self.calls = []
 
     def deletes(self):
@@ -92,7 +93,7 @@ class GH:
             per = min(per, self.cap)
         page = int(q.get("page", ["1"])[0])
         chunk = items[(page - 1) * per: page * per]
-        hdr = {"link": '<https://api.github.com/x?page=%d>; rel="next"' % (page + 1)} if page * per < len(items) else {}
+        hdr = {"link": '<https://api.github.com/x?page=%d>; rel="next"' % (page + 1)} if page * per < len(items) and not self.nolink else {}
         return 200, json.dumps(chunk), hdr
 
     def __call__(self, method, path):
@@ -628,7 +629,24 @@ class MainSweep(unittest.TestCase):
             listing = [p for m, p in gh.calls if m == "GET" and urllib.parse.urlsplit(p).path.endswith("/" + kind)]
             self.assertLessEqual(len(listing), 5, (kind, len(listing)))
 
-    def test_ac16_a_full_last_page_without_a_next_link_ends_the_listing(self):
+    def test_ac16_a_full_page_without_a_next_link_is_followed_by_one_more_request(self):
+        for n, pages in ((100, 2), (30, 1), (99, 1), (0, 1)):
+            names = ["feat/n%03d" % i for i in range(n)]
+            gh = GH([(x, OLD) for x in names], nolink=True)
+            rc, out, _ = run_main(gh)
+            self.assertEqual((rc, deleted_names(gh)), (0, set(names)), (n, out[-200:]))
+            asked = [p for m, p in gh.calls if m == "GET" and urllib.parse.urlsplit(p).path.endswith("/branches")]
+            self.assertEqual(len(asked), pages, n)  # exactly 100: one more request, which is empty; shorter: none
+
+    def test_ac16_a_second_full_page_in_a_row_without_a_next_link_is_an_error(self):
+        for n in (200, 250, 1050):
+            for kind in ("branches", "pulls"):
+                gh = GH([("feat/n%04d" % i, OLD) for i in range(n)] if kind == "branches" else [("feat/a", OLD)],
+                        [] if kind == "branches" else [pr(i + 1, "feat/p%04d" % i, state="closed") for i in range(n)], nolink=True)
+                out, summary = self._fail_closed(gh)
+                self.assertIn("ERROR", out + summary, (n, kind))
+
+    def test_ac16_a_full_200th_page_without_a_next_link_ends_the_listing(self):
         # 200 full pages, the 200th without a next link: the page limit is not an error when nothing follows
         names = ["feat/p%05d" % i for i in range(20000)]
         gh = GH([(n, OLD) for n in names], protected=set(names))
