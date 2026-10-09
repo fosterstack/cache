@@ -167,6 +167,64 @@ runners; develop on Windows via WSL2, which is `linux/amd64`.
 Full install instructions, including which archive to download and a systemd
 unit: **[docs/install.md](docs/install.md)**.
 
+## Debugging a running container
+
+The production and `-fips` images contain only the `fscache` binary, with no
+shell, so you debug them from the outside by attaching a second container that
+carries the tools. Two ways, both tested against this image on Oct 9 2026
+(details of what was and was not tested are at the end of this section).
+
+**Kubernetes: `kubectl debug`.** An ephemeral debug container joins the running
+pod (stable since Kubernetes v1.25):
+
+```sh
+kubectl debug -it <pod> --image=cgr.dev/chainguard/wolfi-base \
+  --target=<container> -- sh
+# inside it, as root:
+apk add curl
+curl -s http://127.0.0.1:8080/healthz
+```
+
+`--target` points the debug container at the `fscache` container so it can see
+its processes (the container runtime has to support that). The pod's network is
+shared, so `127.0.0.1:8080` is the cache. Use any image you like; `wolfi-base`
+is handy because it has `apk` for installing tools. An ephemeral container
+cannot be changed or removed once added; it goes away with the pod. To debug a
+modified copy instead, use `kubectl debug <pod> -it --copy-to=<new-name>
+--image=...`, and for the node itself `kubectl debug node/<node> -it
+--image=...`. Installing packages needs root and network access to the package
+repositories, so a policy that forbids root or egress in the pod will block it;
+bring an image that already has the tools instead.
+
+**Docker: `docker debug`.**
+
+```sh
+docker debug <container>
+```
+
+This opens a shell in a toolbox attached to the container, even though the image
+has no shell. It ships with Docker Desktop and was a paid feature (Pro, Team or
+Business) until Docker Desktop 4.50 (announced 12 Nov 2025), when Docker made it
+free for all users; on an older Docker Desktop it still needs the paid plan. See
+[Docker's announcement](https://www.docker.com/blog/docker-desktop-4-50/) and the
+[command reference](https://docs.docker.com/reference/cli/docker/debug/).
+
+**Docker without `docker debug`** works on any Docker, with no plan or sign-in:
+start a tools container that shares the cache container's network and process
+namespaces.
+
+```sh
+docker run --rm -it --network=container:<name> --pid=container:<name> \
+  cgr.dev/chainguard/wolfi-base sh
+# inside it: apk add curl procps, then curl http://127.0.0.1:8080/healthz
+```
+
+What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47) gave a
+root shell on a running `fscache` container; the plain-Docker command above
+reached `/healthz` (HTTP 200) on `127.0.0.1:8080` and listed `fscache` as PID 1;
+`wolfi-base` runs as root and `apk add curl` works in it. `kubectl debug` was
+checked against the Kubernetes documentation but not run against a cluster here.
+
 ## Build and run from source
 
 ```sh
