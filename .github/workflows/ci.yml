@@ -111,10 +111,19 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
+      # Go 1.27.2's compiler writes export data version 5; the prebuilt
+      # golangci-lint v2.13.2 binary the action downloads reads up to version
+      # 4 and fails every package at the import phase. v2.14.0 is installed
+      # with `go install` under the CI Go toolchain (pinned, exact version);
+      # .golangci.yml (the checks) is unchanged, and `config verify`
+      # still runs before the lint, as the action did.
+      - name: install golangci-lint (pinned)
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
       - name: golangci-lint (staticcheck, gofmt, goimports, md5/sha1 import ban)
-        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
-        with:
-          version: v2.13.2
+        run: |
+          gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
+          golangci-lint config verify   # the action ran this before every run (its verify input defaults to true)
+          golangci-lint run ./...
 
   gosec:
     name: gosec
@@ -128,14 +137,27 @@ jobs:
         with:
           go-version: '1.27'
           check-latest: true
-      # gosec is pinned to v2.29.0 (the latest), but run via `go install`
-      # under the CI Go toolchain — NOT the securego/gosec Docker action,
-      # whose bundled Go cannot type-check a go.mod on the 1.26 line and
-      # fails at the import phase (it never reaches the checks). Same
-      # install pattern as gremlins in go-freshness.yml's mutation job. gosec still exits
-      # non-zero on any finding, so the gate is unchanged.
-      - name: install gosec (pinned)
-        run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
+      # gosec is pinned to v2.29.0 (the latest) and built from source under
+      # the CI Go toolchain (see the install step below) — NOT the
+      # securego/gosec Docker action, whose bundled Go cannot type-check a
+      # go.mod on the 1.26 line and fails at the import phase (it never
+      # reaches the checks). gosec still exits non-zero on any finding, so
+      # the gate is unchanged.
+      # gosec v2.29.0 (the latest release) requires golang.org/x/tools v0.49.0,
+      # whose export-data reader stops at version 4, while Go 1.27.2 writes
+      # version 5: every package then fails with "type errors". `go install
+      # ...@v2.29.0` cannot override a dependency, so gosec is built in a
+      # scratch module against golang.org/x/tools v0.50.0 (published
+      # 2026-09-08). Exact versions; go.sum comes from the Go checksum
+      # database. Drop this when a gosec release requires x/tools >= v0.50.0.
+      - name: install gosec (pinned, built against x/tools v0.50.0)
+        run: |
+          gobin="$(go env GOPATH)/bin"
+          mkdir "$RUNNER_TEMP/gosec-build"
+          cd "$RUNNER_TEMP/gosec-build"
+          go mod init gosecbuild
+          go get github.com/securego/gosec/v2/cmd/gosec@v2.29.0 golang.org/x/tools@v0.50.0
+          go build -o "$gobin/gosec" github.com/securego/gosec/v2/cmd/gosec
       - name: run gosec
         run: |
           gobin="$(go env GOPATH)/bin"; export PATH="$gobin:$PATH"   # the program named literally (pin checker: advisor 0084)
