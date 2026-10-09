@@ -2,7 +2,7 @@
 """auditorlib.signed_commit: the exact REST and GraphQL calls, the base64 file changes, the create-or-reset branch path, and every way the
 delivery must fail closed (an API error, no oid, an unsigned or unverifiable commit, a file over 5 MB, a branch outside auditor/). A recording
 fake `gh`; nothing touches the network."""
-import base64, json, os, subprocess, sys, unittest
+import base64, json, os, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -274,7 +274,7 @@ class Commit(unittest.TestCase):
         bad = [dict(repo="o"), dict(repo="o/r/x"), dict(repo=None), dict(branch="main"), dict(branch="auditor/"), dict(branch="auditor/../main"),
                dict(branch="auditor/x.lock"), dict(branch="refs/heads/auditor/x"), dict(branch=None), dict(base="abc123"), dict(base="A" * 40), dict(base=None),
                dict(message=""), dict(message="  \n"), dict(message=None),
-               dict(changes={}), dict(changes={"/etc/passwd": b"x"}), dict(changes={"../x": b"x"}), dict(changes={"a//b": b"x"}), dict(changes={"./x": b"x"}),
+               dict(changes={}), dict(changes={os.path.join(tempfile.gettempdir(), "etc", "passwd"): b"x"}), dict(changes={"../x": b"x"}), dict(changes={"a//b": b"x"}), dict(changes={"./x": b"x"}),
                dict(changes={"": b"x"}), dict(changes={"a/": b"x"}), dict(changes={"x": "text"}), dict(changes={3: b"x"})]
         for kw in bad:
             gh = Gh()
