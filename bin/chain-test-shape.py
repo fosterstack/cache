@@ -415,11 +415,12 @@ SIGN_WITH = {"digests": "${{ needs.build.outputs.digests }}"}
 # (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
 # patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
+PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' }}"
 DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
-    "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"]},
-    "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False},
+    "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"], "if": PATCH_NOTES_IF},
+    "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False, "needs": sorted(CHAIN)},
 }
 HOSTILE = {"perm": {"contents": "read"}, "agent": False}
 
@@ -434,6 +435,11 @@ def graph(path):
     jobs, bad = d.get("jobs") or {}, []
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow-level permissions must be exactly contents: read (every job asks for what it needs), got %s" % d.get("permissions"))
+    dispatch = ((d.get("on") or {}).get("workflow_dispatch") or {}) if isinstance(d.get("on"), dict) else {}
+    dry = (dispatch.get("inputs") or {}).get("dry-run") if isinstance(dispatch, dict) else None
+    if dry is not None and (dry or {}).get("type") != "boolean":
+        bad.append("on.workflow_dispatch.inputs.dry-run must be type: boolean (a string input makes `inputs.dry-run == true` false and silently skips "
+                   "the dry run), got %s" % (dry or {}).get("type"))
     for name, file in CHAIN.items():
         job = jobs.get(name)
         if job is None:

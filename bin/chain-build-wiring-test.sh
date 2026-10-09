@@ -156,6 +156,11 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -194,6 +199,7 @@ jobs:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-notes:
     needs: decide
+    if: ${{ needs.decide.outputs.tagged == 'true' }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -201,7 +207,7 @@ jobs:
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-failed:
-    needs: [build, release]
+    needs: [build, sign, rebuild, check, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -554,6 +560,7 @@ GATE_BODY="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 GATE="\${{ $GATE_BODY }}"
 OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
+PNIF="\${{ needs.decide.outputs.tagged == 'true' }}"
 RELIF="\${{ !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
@@ -621,11 +628,11 @@ HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissi
 gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
 gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" \
     "patch-notes must need exactly"
-gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, release]" \
-    "  patch-failed:\n    environment: agent\n    needs: [build, release]" "may not name an environment"
+gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, sign, rebuild, check, release]" \
+    "  patch-failed:\n    environment: agent\n    needs: [build, sign, rebuild, check, release]" "may not name an environment"
 gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
-gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    runs-on: ubuntu-latest\n    environment: agent" \
-       "  patch-notes:\n    needs: decide\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
+gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: agent" \
+       "  patch-notes:\n    needs: decide\n    if: $PNIF\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
 gr g34 "005-AC5 sign without the gate (it would run on every push and the daily cron)" "$SIGN_HEAD" "  sign:\n    needs: build" "sign must carry exactly one if"
 gr g35 "005-AC5 sign gated by another condition" "$SIGN_HEAD" "  sign:\n    if: always()\n    needs: build" "sign must carry exactly one if"
 gr g36 "005-AC5 sign gated by PR 1's dry-run-only gate (a tag push would not run it)" "$SIGN_HEAD" \
@@ -639,6 +646,16 @@ gr g39 "005-AC5 sign passing an extra input" "      digests: \${{ needs.build.ou
 gr g40 "005-AC5 sign taking the digests from another job" "needs.build.outputs.digests" "needs.rebuild.outputs.digests" "sign must pass exactly with"
 gr g41 "005-AC5 sign taking PR 1's placeholder (raw checksums.txt text) instead of the digests.json text" "needs.build.outputs.digests" \
        "needs.build.outputs.checksums" "sign must pass exactly with"
+gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
+gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
+gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
+       "    needs: [build, sign, rebuild, check, release]" "    needs: [build]" "patch-failed must need exactly"
+gr g45 "005-AC5 the dry-run dispatch input is a string (inputs.dry-run == true would be false and skip the dry run)" \
+       "      dry-run:\n        type: boolean" "      dry-run:\n        type: string" "must be type: boolean"
+gr g46 "005-AC5 the dry-run dispatch input has no type (the default is string)" "      dry-run:\n        type: boolean\n        default: false" \
+       "      dry-run:\n        default: false" "must be type: boolean"
+replace "$work/release.yml" "$work/g47.yml" "  workflow_dispatch:\n    inputs:\n      dry-run:\n        type: boolean\n        default: false\n" "" \
+  && expect ok "005-AC5 a release.yml with no dispatch input is judged on its jobs alone" "" graph "$work/g47.yml"
 gr g20 "005-AC5 workflow-level permissions that write (every job would inherit them)" 'permissions:\n  contents: read\njobs' \
        'permissions:\n  contents: write\njobs' "workflow-level permissions"
 # ---- the Witness record never holds the token variables (REQ-CHAIN-004-AC8); the consumer is `chain-verify.py verify` of the next stage --------
@@ -1076,7 +1093,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=362
+EXPECT=368
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
