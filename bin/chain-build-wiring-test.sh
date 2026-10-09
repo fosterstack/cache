@@ -532,7 +532,8 @@ SIGN_HEAD="  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    n
 gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' "rebuild must need exactly"
 gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\n    needs: [build, rebuild]' "check must need exactly"
 gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
-gr g4  "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: check" "sign must need exactly"
+gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: check" \
+    "sign must need exactly"
 gr g5 "005-AC5 rebuild runs even when build failed (if: always())" '  rebuild:\n    needs: build' '  rebuild:\n    needs: build\n    if: always()' \
        "may not carry an if"
 gr g6  "005-AC5 release runs when a stage failed (if: always())" '  release:\n    needs: [rebuild, check, sign]' \
@@ -575,7 +576,8 @@ gr g24 "005-AC5 the tag gate with an extra conjunct" "if: \${{ startsWith(github
 gr g25 "005-AC5 the tag gate moved to another chain job (build ungated)" \
     "    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    uses: ./.github/workflows/stage-build.yml" \
        "    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
-gr g26 "005-AC5 the tag gate on rebuild as well as build" "  rebuild:\n    needs: build" "  rebuild:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build" "rebuild may not carry an if"
+gr g26 "005-AC5 the tag gate on rebuild as well as build" "  rebuild:\n    needs: build" \
+    "  rebuild:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build" "rebuild may not carry an if"
 gr g27 "005-AC5 hostile-verify with environment: agent" "  hostile-verify:\n    needs: sign" \
     "  hostile-verify:\n    environment: agent\n    needs: sign" "may not name an environment"
 HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:'
@@ -594,12 +596,15 @@ gr g34 "005-AC5 sign without the gate (it would run on every push and the daily 
 gr g35 "005-AC5 sign gated by another condition" "$SIGN_HEAD" "  sign:\n    if: always()\n    needs: build" "sign must carry exactly one if"
 gr g36 "005-AC5 sign gated by the dry-run flag alone (not enough: a tag push must run it)" "$SIGN_HEAD" \
        "  sign:\n    if: \${{ inputs.dry-run }}\n    needs: build" "sign must carry exactly one if"
-replace "$work/release.yml" "$work/g37.yml" "$SIGN_HEAD" "  sign:\n    if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}\n    needs: build" \
+replace "$work/release.yml" "$work/g37.yml" "$SIGN_HEAD" \
+    "  sign:\n    if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}\n    needs: build" \
   && expect ok "005-AC5 sign with PR 1's dry-run form is accepted like build" "" graph "$work/g37.yml"
 gr g38 "005-AC5 sign with write permissions beyond id-token and contents read" "      contents: read\n      id-token: write\n    uses" \
        "      contents: write\n      id-token: write\n    uses" "sign must hold exactly the permissions"
-gr g39 "005-AC5 sign passing an extra input" "      witness-artifact: witness-build" "      witness-artifact: witness-build\n      token: x" "sign must pass only with"
-gr g40 "005-AC5 sign taking the digests from another job" "digests: \${{ needs.build.outputs.checksums }}" "digests: \${{ needs.rebuild.outputs.checksums }}" "sign must pass only with"
+gr g39 "005-AC5 sign passing an extra input" "      witness-artifact: witness-build" "      witness-artifact: witness-build\n      token: x" \
+    "sign must pass only with"
+gr g40 "005-AC5 sign taking the digests from another job" "digests: \${{ needs.build.outputs.checksums }}" \
+    "digests: \${{ needs.rebuild.outputs.checksums }}" "sign must pass only with"
 gr g20 "005-AC5 workflow-level permissions that write (every job would inherit them)" 'permissions:\n  contents: read\njobs' \
        'permissions:\n  contents: write\njobs' "workflow-level permissions"
 # ---- the Witness record never holds the token variables (REQ-CHAIN-004-AC8); the consumer is `chain-verify.py verify` of the next stage --------
