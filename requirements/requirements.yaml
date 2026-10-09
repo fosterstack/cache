@@ -2317,7 +2317,7 @@ requirements:
     title: Each stage verifies the one before it; only standard record types; every action pinned
     statement: >
       Every stage after Build shall first verify the previous stage's signed record with one shared plain script and stop on failure, naming the stage; only Witness's standard records, SLSA provenance and the signed release policy shall exist as signed record types; every signed record shall have a distinct claim and a named consumer; and every action reference shall be a full commit digest and be on the committed allowed-actions list.
-    source: [bin/chain-verify.py, .github/policy/allowed-actions.json, .github/policy/chain-records.json, .github/policy/chain-scripts.json, .github/agent/bin/check-action-pins.py]
+    source: [bin/chain-verify.py, .github/policy/allowed-actions.json, .github/policy/chain-records.json, .github/policy/chain-scripts.json, auditor directory bin/check-action-pins.py]
     tier: community
     introduced: v0.3.0
     origin: v0.3.0 rules 58, 63, 66, 67 (owner RATIFIED Oct 9 2026; pin checker scope per the owner on Oct 3, plain forms only)
@@ -2440,73 +2440,79 @@ requirements:
       (flagged to the advisor); (t) the helper also unsets ACTIONS_RUNTIME_TOKEN and ACTIONS_RUNTIME_URL; (u) KNOWN LIMIT, advisor's call, pinned lines
       unchanged: the outer step shell still holds ACTIONS_ID_TOKEN_REQUEST_* in /proc/<pid>/environ and the runner user has passwordless sudo, so the
       protection is the network cut plus reviewed scripts; PROPOSED: the Witness step starts with `exec bash bin/witnessed.sh ...`, advisor to decide.
+      STATUS: the 17 ACs of REQ-CHAIN-004 and REQ-CHAIN-005 are `approved` in this pull request, because the requirements validator requires every AC of a
+      requirement introduced under an approved baseline to carry that status; the rules they serve were RATIFIED by the owner Oct 9 2026
+      (ops/docs/ratify/2026-10-09-v030-rules.md, rule 50 shape included) and the advisor validated the ACs at step 5 (handoffs 0338 and 0341). Still marked
+      for the advisor to confirm: digests.json holds ten entries including the four Linux archives (REQ-CHAIN-004-AC9); the release-candidate names (apk
+      files fscache-0.3.0_rc1-r0.apk, --version = the tag minus v); and the single `if` gate G on build and sign with release gated by !inputs.dry-run (REQ-
+      CHAIN-005-AC5).
     acceptance_criteria:
       - id: REQ-CHAIN-004-AC1
         given: "stage-build.yml"
         when: "it is parsed"
         then: "it is a reusable workflow with exactly two jobs and one identity (ratified Oct 9, owner, rule 50 wording: one stage = one workflow file = one identity): apk, a matrix over the two native runners ubuntu-24.04 and ubuntu-24.04-arm that builds the apks per architecture, and assemble, one job on the ubuntu-24.04 VM that needs apk and assembles both architectures' images in one run (rule 33); each job directly on a GitHub-hosted ubuntu runner: no container, no services, no job-level env, defaults or secrets, no if or continue-on-error, no strategy beyond the two-runner matrix; permissions exactly contents read and id-token write for each job except the apk job, which also reads checks, statuses and pull requests for the admission script; no packages write; the steps of each job are exactly the table the test pins (checkout, the Witness install, the downloads each into its own fresh named directory, the one Witness step, the uploads each with a pinned name and path), every action pinned by full digest and on the allowed-actions list; the only artifacts that move between the jobs are the per-architecture apks and Witness records, each verified and bound to the record before use; no other workflow file is added"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC2
         given: "the steps of the Build job"
         when: "they are read"
         then: "the Witness step of each job is exactly one line, bash bin/witnessed.sh STEP bin/build-stage-KIND.sh, with STEP from the closed list apk, build, rapk, rebuild; the committed helper bin/witnessed.sh is the only place that holds the Witness flags: it fetches the job's identity token into a shell variable (masked in the log, never exported, never written to a file), then UNSETS the identity-token request variables and the runtime-token variables (ACTIONS_ID_TOKEN_REQUEST_TOKEN, ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_RUNTIME_TOKEN and ACTIONS_RUNTIME_URL, so the wrapped script's environment holds none of the names or the values), and then runs witness run once, handing the token to --signer-fulcio-token-path through a one-read process substitution so no file holds it while the command runs, with fixed Fulcio and timestamp-authority addresses, the attestors environment, git, material and product only (never github, whose record embeds the raw identity token, and never slsa, which is Sign's alone), the identity-token variables and the GitHub tokens filtered out of the environment record, the record written to witness-STEP/STEP-collection.json, no working-directory flag so the command runs from the repository root, and the command wrapped in timeout 540, because Fulcio's keyless certificate lives ten minutes and Witness verifies it at the timestamp's time (rule 68 as amended by the owner); every other command of the job is the install, the downloads and the uploads, and no stage file and no stage script names witness run; the Build stage file exposes one workflow_call output, digests, read from the assemble job's output, which one pinned step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) fills from the digests.json the Witness step wrote, so Sign receives the digests.json text; the Rebuild stage file has no output"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC3
         given: "bin/build-stage.sh"
         when: "its commands are read in order"
         then: "in each of the four committed scripts bin/build-stage-apk.sh, -assemble.sh, -rebuild-apk.sh and -rebuild-assemble.sh every line is exactly the line the grammar names (no dispatch, no extra command, no suffix, no option the grammar does not spell out, no control character other than tab and newline, so no carriage return either); a long line may be broken after a space with a trailing backslash on a command line (a comment is never continued, and a backslash anywhere else at the end of a line is refused). The apk script's first command is the admission script, followed by unset GH_TOKEN so that cache's scripts never see the token; then SOURCE_DATE_EPOCH is assigned from the digits cache's bin/build-apk.sh --print-source-date-epoch prints for the tagged commit and exported on a second line (so a failing print stops the job); then cache's bin/build-apk.sh runs for each variant with --version the tag minus the leading v, and the version check runs on each variant's apk (it finds the apk itself and extracts its binary); then the items fragment is written to out/items-apk.json. The assemble script makes the tag's policy, verifies the signed Witness record of each architecture's apk job, binds every file of each downloaded apk artifact to the product the record holds under the same name BEFORE it assembles the melange repository, exports SOURCE_DATE_EPOCH, runs bin/assemble-image.sh for each variant, builds the four Linux archives and merges the items, which writes digests.json and items.json at the repository root; no script contains a network fetch, a failure-ignoring step, a sudo, sysctl or unshare of its own, a direct melange or apko call, a proxy or module-fetch setting, or a signing-key variable or flag; and each script is a row of .github/policy/chain-scripts.json with its sha256"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC4
         given: "a tag push, with the policy inputs on protected main and the tagged commit as the thing being admitted"
         when: "bin/build-admit.py runs"
         then: "it makes every check stage-admission.yml makes today and drops none: the ref is a tag and matches the strict version syntax before anything else reads it; the policy files come from origin/main and never from the tagged commit; the tag is annotated and its signature is the owner's SSH key, or for a patch tag the release workflow's keyless identity with the exact issuer, repository, ref and commit, with non-empty signer evidence; the tagged commit is signed by the owner or the pinned web-flow key and is an ancestor of origin/main; every required check is green, pinned to its app, on the tagged commit (push scope) or on the merged pull request's head (pull_request scope), unknown scopes and a count that differs are refused, and commit statuses never satisfy a check; an approved, consistent ACs baseline exists for the version (a CI patch uses its line's owner-approved baseline only when the requirements are unchanged, REQ-REL-009-AC13); and it writes the canonical admission evidence; any failure exits non-zero naming the check and builds nothing"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC5
         given: "the list of checks and steps in stage-admission.yml at main"
         when: "bin/build-admit.py is compared with it"
         then: "every check has a named counterpart in build-admit.py list-checks, and the only steps with no counterpart are the custom source-admission predicate and its upload, replaced by Witness's own signed record because rule 63 allows no FosterStack record type; a check added to the old stage without a counterpart fails the comparison"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC6
         given: "the network cut and the build date"
         when: "the stage and the scripts are read"
         then: "the stage only exports SOURCE_DATE_EPOCH (digits, from cache's --print-source-date-epoch); cache's two scripts set the unprivileged-namespace setting and do the network cut (sudo unshare -n) around the direct melange and apko calls; Build does not wrap them, call melange or apko itself, set a proxy or module-fetch variable, or pass a flag that enables the network; when a script fails (exit 2 refusals, exit 4 for a network attempt in the sealed call, any other non-zero) the stage stops, runs nothing after it, and exits non-zero, and a stage run with a sealed-script failure produces no digests.json"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC7
         given: "a built binary and the tag and commit it was built from"
         when: "bin/build-version-check.py runs"
         then: "it passes only when the binary's embedded module version equals the tag and its VCS revision equals the tagged commit; a version of (devel), a missing, doubled or different revision, a modified-tree marker, a second main-module line, or a version that differs from the tag exits non-zero naming which, and a dependency line that carries the tag does not count; the check runs on the binary of each variant (standard and fips), which it extracts from that variant's apk (the one apk of the variant in the directory; zero or two are refused), for a final tag and for a release candidate tag (PROPOSED/UNVERIFIED, cache-3f: the apk of 0.3.0-rc.1 is fscache-0.3.0_rc1-r0.apk)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC8
         given: "a Witness collection written by the Build step"
         when: "bin/chain-verify.py record-env checks it"
         then: "the environment record holds none of the ACTIONS_ID_TOKEN_REQUEST_* variables, the runtime token, GH_TOKEN, GITHUB_TOKEN or any token value, not even masked and not even inside the base64 payload of the DSSE envelope Witness writes; a collection that names one of them is refused naming the variable; bin/witnessed.sh carries the filter flag and the sensitive-key list that keep them out; and the consumer of this check is bin/chain-verify.py verify, which runs record-env on every build, rebuild and check record, so a record that holds a token variable or a JWT is refused by the next stage (the verify side is a PR 1 follow-up, listed in the notes). The GH_TOKEN that bin/build-admit.py needs reaches only the admission job's Witness step through its env (github.token, job permissions contents, checks, statuses and pull requests read plus id-token write; advisor ruling, Oct 9: confirmed)"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC9
         given: "the digests.json that Build writes and the signed Witness record"
         when: "bin/chain-verify.py sign --check reads them"
         then: "digests.json and items.json are written at the repository root, so Witness records the product subjects file:digests.json (the subject PR 1's sign --check reads, REQ-CHAIN-001-AC2: PR 1 owns the schema) and file:items.json (the subject rebuild-compare reads); digests.json holds exactly ten digests (PROPOSED, advisor to confirm): the two image index digests, the four apk digests as cache's apk-tool.py digest gives them (by name, so the sections it covers are cache's to change; they are not the whole-file sha256 and they ignore the signature, because Release compares package contents and re-signs, rule 22) and the four Linux archives (archive-linux-amd64, archive-linux-arm64, archive-fips-linux-amd64, archive-fips-linux-arm64), so that Sign's provenance covers everything Release publishes (rules 35 and 51); each is exactly what the oracle computes from the scripts' outputs, equal to the same item in items.json, and passes PR 1's schema (names of lower-case letters, digits and hyphens, values sha256 and 64 lower-case hex); a digests.json forged by any other write, or with any other name, extra field or code, is refused"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC10
         given: "the Witness record Build signs"
         when: "bin/chain-verify.py verify checks it as stage build"
         then: "the Witness records Build signs (one per apk matrix job, bound to the files that job produced, and the assemble job's, which Sign reads) are each signed keyless under stage-build.yml at the tag with release.yml as the top-level workflow, carry the Sigstore timestamp, are Witness collections and nothing else (no FosterStack record type), and the assemble job verifies the apk jobs' records and binds every file it uses before it assembles anything"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-004-AC11
         given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
         then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko, passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; the configs are locked and built from the fixed relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips), never from an absolute path or a temporary copy"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
 
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
@@ -2525,37 +2531,37 @@ requirements:
         when: "it is parsed"
         then: "it has the same shape as Build (REQ-CHAIN-004-AC1 and AC2: an apk matrix job and an assemble job, each directly on a GitHub-hosted VM, the one Witness line through bin/witnessed.sh with the steps rapk and rebuild, no secrets, no packages write, no admission token) with its own checkout on a fresh runner, and its first action after the policy is made is chain-verify.py stage-start against Build's record, before any build"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-005-AC2
         given: "bin/build-stage.sh run in Rebuild"
         when: "it rebuilds"
         then: "it builds the same commit with the same two scripts, the same pinned tools and the same SOURCE_DATE_EPOCH as Build (the tagged commit's committer time), and then compares instead of publishing; it fetches nothing Build produced except the signed record and the digest list it compares against"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-005-AC3
         given: "Build's signed item list (items.json, a product in Build's Witness record) and Rebuild's own results for the per-architecture apks, the local package index contents, the full lock file, the OCI image index digest, each per-architecture manifest digest and the binary"
         when: "bin/chain-verify.py rebuild-compare runs"
         then: "it checks Build's items.json against the hash Witness recorded for it (exit non-zero otherwise), requires the full committed item list (29 items: the apks, indexes, binaries, SBOMs, inputs manifests, locks, image index and manifest digests, the archive checksums and the four Linux archives) on both sides, and exits zero only when every item digest is identical; one differing byte in any item exits non-zero, and the verdict names each differing item and both digests; a missing item on either side, an unlisted extra item or a malformed digest is a refusal; items are never skipped, ignored or compared by size or time"
         verification: { method: unit, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-005-AC4
         given: "Rebuild's output"
         when: "the stage's uploads and signed records are listed"
         then: "the only signed record is Rebuild's Witness record, signed keyless under stage-reproducibility.yml at the tag with release.yml as the top-level workflow, whose product is the verdict witness-rebuild/verdict.json; the only upload that leaves the stage is the witness-rebuild directory holding that record and the verdict (the apk matrix job's per-architecture apks and records are intermediate, read only by the assemble job after verification and binding); no artifact Rebuild built can reach Sign or Release, which publish Build's bytes by digest"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-005-AC5
         given: "the job graph of release.yml"
         when: "it is parsed"
         then: "release.yml has exactly the five chain jobs, build, sign, rebuild, check and release, each calling its own stage file with exactly its needs (Rebuild and Check each need only Build, so they run side by side; Release needs Rebuild, Check and Sign), no continue-on-error, secrets, environment or other key on a chain job; the gate G, the same exact text on build and sign, is ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}, so the chain starts on a v* tag push (REQ-REL-009) or in a dry-run dispatch on any branch, and a manual workflow_dispatch on an existing v* tag is NOT a release run (clarification for the advisor to accept: the real release.yml also runs on push to main and a daily cron); rebuild and check carry no if (they run after build through needs); release carries exactly ${{ !inputs.dry-run }} (a dry run neither tags nor publishes); sign needs exactly build, holds exactly contents read and id-token write, and takes exactly one input, digests: ${{ needs.build.outputs.digests }}, the digests.json text, because stage-sign.yml takes that one input and downloads Build's record by the fixed artifact name witness-build, so a failed Rebuild stops Release and the failing job's name is the stage's; every other job is one of an allowed list (decide, patch-notes, patch-failed, and the hostile-* jobs of PR 1's dry run); decide and patch-notes are reviewed code under REQ-REL-009, and this check bounds only the permissions, environment, if and needs of the listed jobs (exact permissions, never a job-level uses, environment: agent and secrets. allowed only on decide, whose if is pinned to the main-ref condition, and patch-notes, which needs exactly decide, never on patch-failed or a hostile-* job) and makes no claim about their steps, so no job outside decide and patch-notes can publish around Rebuild or Check, whether it calls a local or a remote workflow or runs gh itself; patch-notes runs only if ${{ needs.decide.outputs.tagged == 'true' }}, patch-failed needs exactly the five chain jobs, and a dry-run dispatch input, when present, is of type boolean (a string would make inputs.dry-run == true false and silently skip the dry run); and the workflow-level permissions are contents read. The real release.yml fails this check until PRs 3 and 4 remove the old admission, image, scans, acceptance, authorization and promotion calls and the broad workflow permissions (the cutover pull request)"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
       - id: REQ-CHAIN-005-AC6
         given: "the Rebuild stage file and bin/build-stage.sh"
         when: "they are read next to Build's"
         then: "Rebuild assembles each image variant with the same script, the same arguments, the same lock flow and the same exported SOURCE_DATE_EPOCH as Build, so a digest that differs is a real difference; it never runs apko directly or from another directory or config path (the same rule as REQ-CHAIN-004-AC11)"
         verification: { method: ci-workflow, release_blocking: true }
-        status: proposed
+        status: approved
   - id: REQ-AUD-018
     title: The auditor review gate accepts a recorded substitute for the second reviewer
     statement: >
