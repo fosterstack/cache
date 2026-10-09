@@ -58,7 +58,7 @@ copy — to the public registries. The scan verdict attaches to the
 published digests because they are the scanned digests. Each scanner's
 verdict is a signed, digest-bound statement (see
 [docs/verify-images.md](docs/verify-images.md)), and the daily rescan
-re-checks the published digests against newly disclosed CVEs.
+re-checks the current release's published digests against newly disclosed CVEs.
 
 The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
 artifacts. Its partner is chosen for a database that disagrees with Grype's —

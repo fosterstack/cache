@@ -60,7 +60,7 @@ Shipped:
   once, and the scans, the acceptance tests and an independent
   reproducibility rebuild all run on that exact digest; the published
   images are that same digest, promoted without a rebuild. The daily rescan
-  then re-checks what is published. [`RELEASING.md`](RELEASING.md)
+  then re-checks the current release. [`RELEASING.md`](RELEASING.md)
   describes the pipeline stage by stage.
 - Acceptance-tested against a real multi-module Gradle project on every
   push/PR — a from-scratch second build must produce real `FROM-CACHE`
