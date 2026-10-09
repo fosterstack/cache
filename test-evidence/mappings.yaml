@@ -578,3 +578,78 @@ mappings:
   - ac: REQ-SUP-001-AC13
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pip-pin-test.sh" }
+  - ac: REQ-REPO-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC16
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC17
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC18
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC19
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC20
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC21
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC22
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC23
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC24
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  - ac: REQ-REPO-001-AC25
+    evidence:
+      - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
