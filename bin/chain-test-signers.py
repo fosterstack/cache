@@ -1,28 +1,29 @@
-"""Shared by bin/chain-sign-wiring-test.sh and bin/chain-records-test.sh (test infrastructure, not product code): the one
-engine that finds signing calls and the scripts a workflow reaches, so the two judges cannot disagree about what a signer is
-(REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3).
-Table: bin/chain-test-signers.json. `prov` is: never | always | if:<regex on the command context> | unless:<regex> |
-fn:<resolver> (witness_run | actions_attest | cosign_attest | sign_blob: look at the whole command, FAIL CLOSED when the type or
-attestor list cannot be read literally).
-Comments: a full-line comment goes; a trailing `# ...` goes only when the quotes before it are balanced on that line, otherwise
-the line is kept whole (fail closed: `echo "step #1"; cosign sign` keeps its signer).
-Command context (round 5): a signing call is judged on its logical line (backslash continuations joined) PLUS the following lines
-that continue it: a next line that starts with a flag (YAML folded scalar `run: >-`), or when the line so far ends with a flag
-or a comma (`-a` / value on the next line); for a YAML step (`uses: actions/attest@...`) the whole step block up to the next
-`- ` list item, so `with: predicate-type:` on a later line is read.
-Scripts (round 5): every file a workflow or composite action runs is found with `reachable_scripts` (bash/sh/python/node/ruby/
-perl/source/`.` plus a path, ./path with or without an extension if it starts with `#!`, $GITHUB_WORKSPACE and
-${{ github.workspace }} prefixes, `cd dir && ./x.sh`, `python -m pkg.mod`, `make` -> Makefile, and scripts that call other
-scripts, transitively: the scripts they call are judged STRICTLY too, round 6). Round 10: NO variable resolution (a script called through $VAR, ${VAR}, $(cmd) or backticks is an ERROR: call scripts by literal path) and NO heredoc stripping (a heredoc body is scanned as code). A reference that looks like a script path but cannot be resolved is an ERROR naming the workflow (fail
-closed), never skipped. Round 11 (command position, fail closed): the WORD THAT STARTS A COMMAND (line start, after ; && || | ( { $( `
-then do else, after VAR=1 / exec env sudo timeout nohup nice time command builtin and their options) is judged too: (a) it contains
-$, a backtick, ${{ or a glob character -> ERROR (a variable or expression in command position, `bash bin/s*.sh`, `"$S"`);
-(b) it is a path (contains /) -> a REF when it is a file in the tree, whether or not it has ./ or an extension (a shebang file is
-enough), an ERROR when it is not in the tree (a bare ./name with no extension that is not in the tree stays the stated built-binary
-exclusion); (c) make/gmake/xargs/parallel/run-parts/just/task/at/watch/npx/eval, `find ... -exec|-execdir|-ok|-okdir`,
-`npm|yarn|pnpm run|run-script|exec|start|test|x|dlx`, and a pipe into a shell (`cat x | bash`) are ERRORS: call scripts by literal
-path. `sh -c 'STRING'` / `bash -c 'STRING'` analyse STRING the same way. Interpreter arguments with a glob character are ERRORS. Stated exclusion: a bare `./name` with no extension that is not a file in the tree is taken to be a built
-binary and ignored. Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
+"""Shared by bin/chain-sign-wiring-test.sh and bin/chain-records-test.sh (test infrastructure, not product code).
+Two small things, and nothing else:
+ (1) the ONE table of signing tools (bin/chain-test-signers.json) with the direct-signer-call finder, so the two judges cannot
+     disagree about what a signer is (REQ-CHAIN-001-AC1, REQ-CHAIN-003-AC3). A direct call is found in comment-stripped text.
+     `prov` is: never | always | if:<regex on the command context> | unless:<regex> | fn:<resolver> (witness_run |
+     actions_attest | cosign_attest | sign_blob: look at the whole command, FAIL CLOSED when the type or attestor list cannot be
+     read literally). A trailing `# ...` goes only when the quotes before it are balanced on that line (`echo "step #1"; cosign
+     sign` keeps its signer).
+ (2) the stage-file GRAMMAR (advisor decision, Oct 9, replaces the script-reach scan of rounds 4-11): the engine no longer tries to
+     work out what a shell might reach (variables, globs, heredocs, make, xargs: an unbounded class, a new finding almost every
+     review round). Instead a release-chain stage file may only run what a committed allowlist names:
+       .github/policy/chain-scripts.json  {"scripts":[{"path","sha256","tools":[...],"signs":false|"provenance"|"other",
+                                                      "runs":[listed paths it may start],"reason"}]}
+     * every `run:` line of every stage-*.yml is exactly one of: `set -euo pipefail`; `bash PATH ARGS`; `python3 PATH ARGS`;
+       `printf '%s' "$NAME" > FILE` (the one write the Sign job needs); PATH is a plain relative literal that is LISTED, with
+       the sha256 the file has; ARGS are literal words, quoted literals, or a whole "$NAME"/"${NAME}" read of the step's env:.
+       Anything else at command position (a variable, a glob, make, xargs, find, npm, run-parts, a pipe or `;`/`&&`, a direct
+       tool such as cosign or gh, an unlisted or `..` path) is an ERROR naming the file and line.
+     * a LISTED shell script may use only the commands in its `tools` list (plus shell builtins), may start no other script
+       (the interpreters and `source`/`eval`/`exec`/`make`/`xargs`/`find -exec` are errors unless listed as tools, and a script
+       path in it must be in its own `runs` list and itself listed), and its direct signing calls are judged by its `signs` value:
+       `provenance` is allowed only for a script that stage-sign.yml alone runs. Python/JS scripts are scanned for direct signing
+       calls only (stated exclusion: a signer reached through an argv array in script code or a binary downloaded at run time).
+     * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
+       the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
+Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
 import json, os, re
 
 def load_table(path=None):
@@ -134,394 +135,173 @@ def signer_calls(text, table):
     """[(entry, is_provenance, command context)] for every signing call."""
     return [(e, is_prov(e, ctx), ctx.strip()) for e, ctx in calls(text, table)]
 
-# ---- scripts a workflow reaches ----------------------------------------------------------------------------------------
-INTERP = {"bash", "sh", "dash", "zsh", "python", "python3", "node", "ruby", "perl", "source", "."}
-EXTS = (".sh", ".py", ".js", ".mjs", ".cjs", ".rb", ".pl", ".bash")
-WS = re.compile(r"\$\{GITHUB_WORKSPACE\}|\$GITHUB_WORKSPACE|\$\{\{\s*github\.workspace\s*\}\}")
-OWN = re.compile(r"\$\(dirname\s+\"?\$\{?(?:0|BASH_SOURCE(?:\[0\])?)\}?\"?\)|\$\{?SCRIPT_DIR\}?|\$\{?(?:ROOT|REPO_ROOT)\}?")
+# ---- the stage-file grammar ---------------------------------------------------------------------------------------------
+import hashlib
 
-def _tokens(line):
-    return [m.group(0) for m in re.finditer(r"[^\s;&|()<>]+", line)]
+SHELL_EXTS = (".sh", ".bash")
+SCRIPT_EXTS = (".sh", ".bash", ".py", ".js", ".mjs", ".cjs", ".rb", ".pl")
+LITERAL_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
+LIT_WORD = re.compile(r"[A-Za-z0-9_./:=@%+,-]+")
+ENV_OK = re.compile(r"(GITHUB|RUNNER)_[A-Z_]+")
+SIGNS = (False, "provenance", "other")
+INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node", "ruby", "perl", "source", "eval", "exec",
+                "make", "gmake", "xargs", "run-parts", "npm", "yarn", "pnpm", "just", "task", "parallel", "env", "sudo", "nohup",
+                "timeout", "nice", "command", "builtin", "watch", "at"}
+BUILTINS = {"if", "then", "else", "elif", "fi", "for", "while", "until", "do", "done", "case", "esac", "in", "select", "function",
+            "time", "{", "}", "!", "[", "[[", "]", "]]", "test", "echo", "printf", "cd", "set", "export", "unset", "local",
+            "declare", "typeset", "readonly", "shift", "return", "exit", "true", "false", ":", "read", "trap", "wait", "getopts",
+            "let", "umask", "pwd", "break", "continue", "type", "hash", "ulimit", "alias"}
 
-def _cmdstart(line):
-    """The set of token indexes that start a command (line start, or after ; && || | ( $( ` )."""
-    out, k = set(), 0
-    for m in re.finditer(r"[^\s;&|()<>]+", line):
-        before = line[:m.start()].rstrip()
-        if not before or before[-1] in ";&|(`" or before.endswith("$("): out.add(k)
-        k += 1
-    return out
+def load_scripts(base):
+    """(rows by path, [errors]) from .github/policy/chain-scripts.json, every row validated against the tree."""
+    f = os.path.join(base, ".github/policy/chain-scripts.json")
+    if not os.path.exists(f):
+        return {}, ["missing .github/policy/chain-scripts.json (the scripts a release-chain stage file may run, by path and sha256)"]
+    errs, rows = [], {}
+    try:
+        data = json.load(open(f)).get("scripts")
+    except Exception as e:
+        return {}, ["chain-scripts.json does not parse: %s" % e]
+    if not isinstance(data, list):
+        return {}, ["chain-scripts.json has no `scripts` list"]
+    for r in data:
+        p = r.get("path", "") if isinstance(r, dict) else ""
+        if not isinstance(p, str) or not LITERAL_PATH.fullmatch(p) or ".." in p.split("/") or p.startswith("/"):
+            errs.append("chain-scripts.json: bad path %r (a plain relative literal)" % (p,)); continue
+        if p in rows: errs.append("chain-scripts.json: %s listed twice" % p); continue
+        full = os.path.join(base, p)
+        if not os.path.isfile(full): errs.append("chain-scripts.json: %s is not a file in the tree" % p); continue
+        if hashlib.sha256(open(full, "rb").read()).hexdigest() != str(r.get("sha256", "")):
+            errs.append("chain-scripts.json: %s has a different sha256 than the file (a changed script must change its row)" % p)
+        if not isinstance(r.get("tools"), list) or not all(isinstance(t, str) and re.fullmatch(r"[A-Za-z0-9_.+-]+", t) for t in r["tools"]):
+            errs.append("chain-scripts.json: %s `tools` must be a list of plain command names" % p)
+        if r.get("signs", False) not in SIGNS:
+            errs.append("chain-scripts.json: %s `signs` must be false, \"provenance\" or \"other\"" % p)
+        if r.get("signs", False) and not str(r.get("reason") or "").strip():
+            errs.append("chain-scripts.json: %s signs but has no reason" % p)
+        if not isinstance(r.get("runs", []), list):
+            errs.append("chain-scripts.json: %s `runs` must be a list" % p)
+        rows[p] = r
+    for p, r in rows.items():
+        for q in r.get("runs", []) if isinstance(r.get("runs", []), list) else []:
+            if q not in rows: errs.append("chain-scripts.json: %s runs %r, which is not listed" % (p, q))
+    return rows, errs
 
-def _find_by_basename(base, name):
-    hits = []
-    for dp, dn, fn in os.walk(base):
-        dn[:] = [d for d in dn if d not in (".git", "node_modules")]
-        if name in fn: hits.append(os.path.relpath(os.path.join(dp, name), base))
-    return hits
-
-def _is_script_file(base, rel):
-    full = os.path.join(base, rel)
-    if not os.path.isfile(full): return False
-    if rel.endswith(EXTS) or os.path.basename(rel) == "Makefile": return True
-    try: return open(full, "rb").read(2) == b"#!"
-    except OSError: return False
-
-RUNTIME = re.compile(r"^\$\{?(?:RUNNER_TEMP|RUNNER_TOOL_CACHE|HOME|GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|TMPDIR)\}?/|^/(?:tmp|usr|opt|home|var|dev|proc|sys|etc|bin|sbin|lib|lib64|snap|run|mnt|Library|Applications)/")
-
-
-# ---- round 11: command-position words --------------------------------------------------------------------------------------
-WRAPPERS = {"exec", "env", "sudo", "timeout", "nohup", "nice", "time", "command", "builtin", "stdbuf", "setsid", "ionice", "doas", "chronic"}
-OPT_WITH_ARG = {"sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"}, "env": {"-u", "-C", "-S"}, "nice": {"-n"},
-                "timeout": {"-s", "-k"}, "ionice": {"-c", "-n", "-p"}, "stdbuf": set(), "doas": {"-u", "-C"}}
-KEYWORDS = {"then", "do", "else", "elif", "if", "while", "until", "!", "{", "}", "(", "(("}          # a command follows these
-ENDERS = {"case", "esac", "fi", "done", "in", "function", "for", "select"}      # no command word follows these
-RUNNER_CMDS = {"make", "gmake", "xargs", "parallel", "run-parts", "just", "task", "at", "watch", "npx", "eval"}
-NODE_RUNNERS = {"npm", "yarn", "pnpm"}
-NODE_SUB = {"run", "run-script", "exec", "start", "test", "x", "dlx"}
-FIND_EXEC = {"-exec", "-execdir", "-ok", "-okdir"}
-SHELLS = {"bash", "sh", "dash", "zsh"}
-NONCMD = {"[", "[[", "]", "]]", ":", "true", "false"}
-
-_IDX = {}
-def _script_index(base):
-    """basename -> [repo-relative paths] of every script file (extension or #! line) in the tree, built once per tree."""
-    if base not in _IDX:
-        idx = {}
-        for dp, dn, fn in os.walk(base):
-            dn[:] = [d for d in dn if d not in (".git", "node_modules")]
-            for f in fn:
-                rel = os.path.relpath(os.path.join(dp, f), base)
-                if _is_script_file(base, rel): idx.setdefault(f, []).append(rel)
-        _IDX[base] = idx
-    return _IDX[base]
-
-def lex_commands(code):
-    """[(words, sep)] one entry per simple command in a block of shell code: words keep their quotes; sep is the separator that
-    precedes the command ('' at the start, or one of ; & && || | ( $( ` newline). Quote state carries across lines (a quoted awk or
-    python program spanning lines is one word); a ; or | inside quotes starts nothing; `$(( ))` / `(( ))` arithmetic and
-    `NAME=( ... )` arrays are one word; a command substitution `$( ... )` (also inside double quotes) is lexed as its own commands
-    and leaves the placeholder `0` in the word it sits in; `[[ ... ]]` is one command; a case pattern (`a)` with no open paren) is
-    discarded; and the body of a heredoc whose consumer is NOT a shell (cat, python, kubectl, ...) is skipped ONLY when its
-    terminator line exists (an unclosed or unclassifiable `<<` skips nothing: fail closed)."""
-    cmds, words, cur, q, sep = [], [], "", None, ""
-    i, n, frames, pending, dbl = 0, len(code), [], [], False
-    def flush():
-        nonlocal cur, dbl
-        if cur != "":
-            words.append(cur)
-            if dbl and cur == "]]": dbl = False
-            elif not dbl and cur == "[[": dbl = True
-            cur = ""
-    def end(newsep):
-        nonlocal words, sep
-        flush()
-        if words: cmds.append((words, sep))
-        words, sep = [], newsep
-    def heredoc_here(j):
-        if code.startswith("<<<", j): return None
-        k = j + 2
-        if k < n and code[k] == "-": k += 1
-        while k < n and code[k] in " \t": k += 1
-        m = re.match(r"(\"[^\"\n]+\"|'[^'\n]+'|[A-Za-z_][\w.-]*)", code[k:])
-        return (m.group(1).strip("\"'"), k + m.end()) if m else None
-    def open_subst(kind, width):
-        nonlocal words, cur, sep, q, i
-        frames.append((kind, words, cur, sep, q))
-        words, cur, sep, q = [], "", kind, None
-        i += width
+def _words(line):
+    """Tokenise one logical shell line into words; returns ([(raw, parts)], error|None). Anything the grammar does not
+    allow unquoted (; & | < > ( ) { } ` $ * ? [ ~ ! # \\ and a newline) is an error, never guessed."""
+    words, i, n = [], 0, len(line)
     while i < n:
-        ch = code[i]
-        if q:
-            if q == '"' and code.startswith("$(", i) and not code.startswith("$((", i): open_subst("$(", 2); continue
-            cur += ch
-            if ch == "\\" and q == '"' and i + 1 < n: cur += code[i + 1]; i += 1
-            elif ch == q: q = None
-            i += 1; continue
-        if ch in "'\"": q = ch; cur += ch; i += 1; continue
-        if ch == "\\" and i + 1 < n: cur += code[i:i + 2]; i += 2; continue
-        if code.startswith("$((", i) or (code.startswith("((", i) and not cur):
-            d, j = 0, i + (1 if code[i] == "$" else 0)
-            while j < n:
-                if code.startswith("((", j): d += 1; j += 2; continue
-                if code.startswith("))", j):
-                    d -= 1; j += 2
-                    if d == 0: break
-                    continue
-                j += 1
-            cur += "0"; i = j; continue
-        if code.startswith("<<", i):
-            h = heredoc_here(i)
-            if h and not cur.endswith(("<", "(")):
-                flush(); pending.append((h[0], list(words))); i = h[1]; continue
-            if code.startswith("<<<", i): cur += "<<<"; i += 3; continue
-        if ch == "\n":
-            if dbl: flush(); i += 1; continue
-            end("\n"); i += 1
-            while pending:
-                term, wsnap = pending.pop(0)
-                k = command_word(wsnap, "")
-                consumer = _unq(wsnap[k]) if k is not None else ""
-                body_end, j = None, i
-                while j <= n:
-                    e = code.find("\n", j); e = n if e < 0 else e
-                    if code[j:e].strip() == term: body_end = e; break
-                    if e >= n: break
-                    j = e + 1
-                if body_end is not None and os.path.basename(consumer) not in SHELLS | {"source", ".", "eval", "xargs", "ssh", "su", "ksh"}:
-                    i = min(body_end + 1, n)
-            continue
-        if code.startswith("$(", i): open_subst("$(", 2); continue
-        if ch == "`":
-            if frames and frames[-1][0] == "`":
-                end(""); kind, words, cur, sep, q = frames.pop(); cur += "0"
-            else: open_subst("`", 1)
-            i += 0 if False else (1 if False else 0)
-            if frames and frames[-1][0] == "`" and cur == "" and False: pass
-            i += 1 if i < n and code[i] == "`" and False else 0
-            continue
-        if dbl and cur == "]]": flush()                     # `]]` ends the test even when a separator touches it (`]];` / `]])`)
-        if dbl and ch in "();&|": cur += ch; i += 1; continue
-        if code.startswith("&&", i) or code.startswith("||", i): end(code[i:i + 2]); i += 2; continue
-        if ch == "(" and re.search(r"(?:^|[\s;&|])[A-Za-z_]\w*\+?=$", cur):
-            d, j, qq = 1, i + 1, None
-            while j < n and d:
-                c2 = code[j]
-                if qq:
-                    if c2 == "\\" and qq == '"': j += 1
-                    elif c2 == qq: qq = None
-                elif c2 in "'\"": qq = c2
-                elif c2 == "(": d += 1
-                elif c2 == ")": d -= 1
-                j += 1
-            cur += "0"; i = j; continue
-        if ch == "(": frames.append(("(", None, None, None, None)); end("("); i += 1; continue
-        if ch == ")":
-            if frames:
-                kind, w0_, c0_, s0_, q0_ = frames.pop()
-                if kind == "$(":
-                    end(""); words, cur, sep, q = w0_, c0_ + "0", s0_, q0_
-                elif kind == "(": end(")")
-                else: end(")")
-            else:                                                # a case pattern (a) or a|b) ...): not commands
-                s_ = sep
-                while s_ == "|" and cmds: _, s_ = cmds.pop()
-                words, cur, sep = [], "", ")"
-            i += 1; continue
-        if ch in ";&|": end(ch); i += 1; continue
-        if ch.isspace(): flush(); i += 1; continue
-        cur += ch; i += 1
-    end("")
-    return cmds
+        if line[i].isspace(): i += 1; continue
+        parts, raw = [], ""
+        while i < n and not line[i].isspace():
+            c = line[i]
+            if c == "'":
+                j = line.find("'", i + 1)
+                if j < 0: return words, "unterminated single quote"
+                parts.append(("sq", line[i + 1:j])); raw += line[i:j + 1]; i = j + 1
+            elif c == '"':
+                j = i + 1
+                while j < n and line[j] != '"':
+                    if line[j] == "\\": return words, "a backslash inside double quotes"
+                    j += 1
+                if j >= n: return words, "unterminated double quote"
+                parts.append(("dq", line[i + 1:j])); raw += line[i:j + 1]; i = j + 1
+            elif c in ";&|<>(){}`$*?[~!#\\":
+                return words, "the character %r at command position/arguments (only literals and whole \"$NAME\" reads are allowed)" % c
+            else:
+                j = i
+                while j < n and not line[j].isspace() and line[j] not in "'\"" + ";&|<>(){}`$*?[~!#\\":
+                    j += 1
+                parts.append(("lit", line[i:j])); raw += line[i:j]; i = j
+        words.append((raw, parts))
+    return words, None
 
-def _unq(w):
-    return w.strip("\"'")
-
-def command_word(words, sep):
-    """(index of the command word or None, preceded-by-pipe) after skipping keywords, VAR=1 assignments and wrappers."""
-    i, wrap = 0, None
-    while i < len(words):
-        w = _unq(words[i])
-        if w in ENDERS: return None
-        if w in KEYWORDS or re.fullmatch(r"[A-Za-z_]\w*\+?=.*", words[i], re.S) or re.fullmatch(r"[A-Za-z_]\w*\[[^\]]*\]\+?=.*", words[i], re.S): i += 1; continue
-        if w in WRAPPERS:
-            wrap = w; i += 1
-            while i < len(words) and words[i].startswith("-"):
-                a = words[i]; i += 1
-                if a in OPT_WITH_ARG.get(wrap, set()) and i < len(words): i += 1
-            if wrap == "timeout" and i < len(words) and re.fullmatch(r"[\d.]+[smhd]?", _unq(words[i])): i += 1
-            if wrap == "nice" and i < len(words) and re.fullmatch(r"-?\d+", _unq(words[i])): i += 1
-            while wrap == "env" and i < len(words) and re.fullmatch(r"[A-Za-z_]\w*=.*", words[i], re.S): i += 1
-            continue
-        return i
+def _arg_error(parts, envnames):
+    for kind, t in parts:
+        if kind == "lit" and not LIT_WORD.fullmatch(t): return "argument %r is not a plain literal" % t
+        if kind == "sq" and ("$" in t or "`" in t): return "single-quoted argument %r contains $ or a backtick" % t
+        if kind == "dq":
+            m = re.fullmatch(r"\$(\w+)|\$\{(\w+)\}", t)
+            if m:
+                nm = m.group(1) or m.group(2)
+                if nm not in envnames and not ENV_OK.fullmatch(nm):
+                    return "\"$%s\" is not a variable of this step's env: (only a whole read of the step's own env is allowed)" % nm
+            elif "$" in t or "`" in t or "!" in t:
+                return "double-quoted argument %r mixes text with a variable or substitution (use a whole \"$NAME\" from env:)" % t
     return None
 
-def command_checks(base, line, cd, refs, errs, strict, depth=0):
-    """Round 11: judge the word that starts every simple command in a block of shell code (see the module docstring)."""
-    for words, sep in lex_commands(line):
-        k = command_word(words, sep)
-        if k is None: continue
-        raw = words[k]; w = _unq(raw)
-        if w == "cd" and k + 1 < len(words):
-            c = WS.sub("", _unq(words[k + 1]))
-            cd = None if re.search(r"[$`*?\[]|\{\{", c) else c.lstrip("/").lstrip("./") if c not in (".", "") else cd
+def check_run(run, envnames, rows):
+    """Grammar errors (list of 'line N: ...') for one stage-file `run:` text; also returns the listed paths it runs."""
+    errs, ran = [], []
+    lines = logical(strip(run)).splitlines()
+    for n, raw in enumerate(lines, 1):
+        line = raw.strip()
+        if not line: continue
+        if line == "set -euo pipefail": continue
+        words, err = _words(line) if not re.match(r"printf '%s' \"\$\w+\" > ", line) else (None, None)
+        m = re.fullmatch(r"printf '%s' \"\$(\w+)\" > ([A-Za-z0-9_][A-Za-z0-9_./-]*)", line)
+        if m:                                           # the one write: an env var into a literal file
+            if m.group(1) not in envnames: errs.append("line %d: printf of $%s, which is not in this step's env:" % (n, m.group(1)))
+            if ".." in m.group(2).split("/"): errs.append("line %d: the file name has `..`" % n)
             continue
-        piped = sep == "|"
-        if w in NONCMD or w.startswith("((") or w == "" : continue
-        w0 = WS.sub("", w)
-        base_w = os.path.basename(w0)
-        if piped and base_w in SHELLS:
-            args = [x for x in words[k + 1:] if not _unq(x).startswith("-")]
-            if args and "-s" not in words[k + 1:]: continue            # `... | bash script.sh`: the pipe is data, the script is a file
-            if strict: errs.append("a pipe into a shell (`... | %s`) runs text this scan cannot read: call the script by literal path" % w); 
-            continue
-        varcmd = w0.startswith("$") or "$(" in w0 or "`" in w0 or "${{" in w0 or ("/" in w0 and "$" in w0)
-        globcmd = bool(re.search(r"[*?\[]", w0)) and not raw[:1] in "'\"" and ("/" in w0 or w0.endswith(EXTS))
-        if varcmd or globcmd:
-            if RUNTIME.match(w): continue
-            if strict: errs.append("command word %r is a variable, expression, command substitution or glob: call the script by literal path (fail closed)" % raw)
-            continue
-        if w0 in RUNNER_CMDS or base_w in RUNNER_CMDS and "/" not in w0:
-            if strict: errs.append("`%s` runs scripts this scan cannot follow: call the script by literal path (fail closed)" % w0)
-            continue
-        if w0 == "find" and any(_unq(x) in FIND_EXEC for x in words[k + 1:]):
-            if strict: errs.append("`find ... -exec` runs scripts this scan cannot follow: call the script by literal path (fail closed)")
-            continue
-        if w0 in NODE_RUNNERS and k + 1 < len(words) and _unq(words[k + 1]) in NODE_SUB:
-            if strict: errs.append("`%s %s` runs package scripts this scan cannot follow: call the script by literal path (fail closed)" % (w0, _unq(words[k + 1])))
-            continue
-        if w0 in SHELLS | {"dash"} and depth < 3:
-            for a in range(k + 1, len(words) - 1):
-                if _unq(words[a]) == "-c" or re.fullmatch(r"-[a-z]*c", _unq(words[a])):
-                    inner = words[a + 1]
-                    if inner[:1] in "'\"": command_checks(base, inner[1:-1] if inner[-1:] == inner[:1] else inner[1:], cd, refs, errs, strict, depth + 1)
-                    break
-        if "/" not in w0 and not w0.startswith(".") and w0 in _script_index(base):
-            refs.update(_script_index(base)[w0]); continue              # a bare command that names a script in the tree (reached through PATH): a REF
-        if "/" in w0 or w0.startswith("."):
-            if RUNTIME.match(w) or w0 in (".", "..") or w0.startswith(("./-", )): continue
-            c = w0.lstrip("/") if w != w0 else w0
-            c = re.sub(r"^(\./)+", "", c)
-            paths = ([os.path.normpath(os.path.join(cd, c))] if cd else []) + [os.path.normpath(c)]
-            hit = [p for p in paths if _is_script_file(base, p)]
-            if hit: refs.update(hit); continue
-            if any(os.path.isfile(os.path.join(base, p)) for p in paths): continue       # a non-script file (a built or vendored binary)
-            if _find_by_basename(base, os.path.basename(c)) and any(_is_script_file(base, p) for p in _find_by_basename(base, os.path.basename(c))):
-                refs.update(p for p in _find_by_basename(base, os.path.basename(c)) if _is_script_file(base, p)); continue
-            if w.startswith("./") and "." not in os.path.basename(c): continue            # stated exclusion: a built binary
-            if strict: errs.append("command path %r is not a file in the tree (fail closed)" % raw)
+        if err: errs.append("line %d: %s: %s" % (n, line[:90], err)); continue
+        if not words: continue
+        cmd = words[0][0]
+        if cmd not in ("bash", "python3") or len(words) < 2:
+            errs.append("line %d: %s: the command must be `bash PATH ...` or `python3 PATH ...` (found %r): a variable, glob, make, xargs, find, npm, a pipe or a direct tool is an error" % (n, line[:90], cmd)); continue
+        pw = words[1]
+        path = "".join(t for _, t in pw[1])
+        if len(pw[1]) != 1 or pw[1][0][0] != "lit" or not LITERAL_PATH.fullmatch(path) or ".." in path.split("/"):
+            errs.append("line %d: %s: the script path must be a plain relative literal (no variable, glob, quote or `..`)" % (n, line[:90])); continue
+        if path not in rows:
+            errs.append("line %d: %s: %s is not listed in .github/policy/chain-scripts.json" % (n, line[:90], path)); continue
+        for rawa, parts in words[2:]:
+            e = _arg_error(parts, envnames)
+            if e: errs.append("line %d: %s: %s" % (n, line[:90], e))
+        ran.append(path)
+    return errs, ran
 
-SHELL_SHEBANG = re.compile(r"^#!\s*(?:/usr/bin/env\s+)?(?:\S*/)?(?:ba|da|z|k)?sh\b")
-NONSHELL = {"python", "python3", "pwsh", "powershell", "cmd", "node", "ruby", "perl"}
+def stage_grammar(rel, d, rows):
+    """(errors, listed paths run) for a parsed stage workflow file (YAML via the caller)."""
+    errs, ran = [], []
+    for jn, j in ((d.get("jobs") or {}).items()):
+        for s in (j.get("steps") or []):
+            run = s.get("run")
+            if run is None: continue
+            nm = s.get("name") or str(run).strip().splitlines()[0][:40]
+            if str(s.get("shell", "bash")) not in ("bash", "bash -e {0}"): errs.append("%s job %s step %r: `shell: %s` is not bash" % (rel, jn, nm, s.get("shell")))
+            if "working-directory" in s: errs.append("%s job %s step %r: working-directory reroutes every path" % (rel, jn, nm))
+            e, r = check_run(str(run), set((s.get("env") or {}).keys()), rows)
+            errs += ["%s job %s step %r: %s" % (rel, jn, nm, x) for x in e]; ran += r
+    return errs, ran
 
-def shell_blocks(text, kind):
-    """The shell code in one file: for a workflow/action YAML the `run:` values (a step whose `shell:` names another language is
-    skipped; github-script `script:` is JavaScript and not shell); for a script its whole text when it is shell. A YAML file that
-    cannot be parsed yields its whole text (fail closed: noise, never silence)."""
-    if kind == "shell":
-        return [text] if (text.startswith("#!") and SHELL_SHEBANG.match(text)) or not text.startswith("#!") else []
-    try:
-        import yaml
-        doc = yaml.safe_load(text)
-    except Exception:
-        return [text]
-    out = []
-    def walk(x):
-        if isinstance(x, dict):
-            r = x.get("run")
-            if isinstance(r, str) and str(x.get("shell", "bash")).split()[0] not in NONSHELL: out.append(r)
-            for v in x.values(): walk(v)
-        elif isinstance(x, list):
-            for v in x: walk(v)
-    walk(doc)
-    return out
-
-def script_refs_ex(base, text, owndir=None, strict=True, kind=None):
-    """(set of repo-relative script paths, [error strings]) for the scripts one file runs."""
-    refs, errs = set(), []
-    # Round 10: NO variable resolution and NO heredoc stripping. Static resolution of shell is an unbounded class (rounds 4-9 each
-    # found another plain form); a script reached through a variable is an ERROR, never guessed, and a heredoc body is scanned as
-    # code like any other text (a signer word inside heredoc DATA is flagged: list it with a reason in chain-signers.json).
-    for line in logical(strip(text)).splitlines():
-        cd = None
-        for m in re.finditer(r"\bcd\s+(\S+)\s*(?:&&|;)", line):
-            c = m.group(1).strip("\"'")
-            cd = None if UNRESOLVED.search(WS.sub("", c)) else WS.sub("", c).lstrip("/")
-        toks = _tokens(line); starts = _cmdstart(line)
-        for i, t in enumerate(toks):
-            cand, is_interp = None, False
-            if t in INTERP and (t not in ("source", ".") or i in starts):
-                j = i + 1
-                if t.startswith("python") and j + 1 < len(toks) and toks[j] == "-m":
-                    mod = toks[j + 1].strip("\"'")
-                    paths = [mod.replace(".", "/") + ".py", mod.replace(".", "/") + "/__main__.py"]
-                    found = [p for p in paths if os.path.isfile(os.path.join(base, p))]
-                    top = mod.split(".")[0]
-                    if found: refs.update(found)
-                    elif os.path.exists(os.path.join(base, top)) or os.path.exists(os.path.join(base, top + ".py")):
-                        errs.append("unresolved `python -m %s` (the package is in the tree but %s is not)" % (mod, " or ".join(paths)))
-                    # else: an installed module (pip, venv, a third-party tool): stated exclusion
-                    continue
-                while j < len(toks) and toks[j].startswith("-"):
-                    if toks[j] in ("-c", "-e", "-E", "-"): j = len(toks)       # inline code: no script file to find
-                    else: j += 1
-                if j < len(toks): cand, is_interp = toks[j].strip("\"'"), True
-            elif t.startswith(("./", "../")) or t.endswith(EXTS) or t.strip("\"'").endswith(EXTS):
-                cand = t.strip("\"'")
-            if cand is None: continue
-            cand = re.sub(r"^[A-Za-z_]\w*=", "", cand).strip("\"'")
-            if cand in EXTS or cand.startswith("\\") or len(os.path.basename(cand)) <= 3 and cand.endswith(EXTS): continue
-            shaped = ("/" in cand or cand.endswith(EXTS) or bool(UNRESOLVED.search(cand)) or bool(OWN.search(cand))) and not cand.startswith(("<", "-"))
-            shaped = ("/" in cand or cand.endswith(EXTS) or bool(UNRESOLVED.search(cand)) or bool(OWN.search(cand))) and not cand.startswith(("<", "-"))
-            if is_interp and re.search(r"[*?\[]", cand) and not RUNTIME.match(cand) and shaped:
-                if strict: errs.append("script path %r has a glob character: call the script by literal path (fail closed)" % cand)
-                continue
-            if not shaped or re.search(r"[*?\[]", cand) or RUNTIME.match(cand) or os.path.basename(cand) == "chain-verify.py": continue
-            c = cand
-            if OWN.search(c):
-                if owndir is None:
-                    if strict: errs.append("unresolved script path %r (relative to the script's own directory, but a workflow has none)" % cand)
-                    continue
-                c = OWN.sub(owndir, c)
-            c = WS.sub("", c)
-            if UNRESOLVED.search(c):
-                hit = [p for p in _find_by_basename(base, os.path.basename(c)) if _is_script_file(base, p)] if not UNRESOLVED.search(os.path.basename(c)) else []
-                if hit: refs.update(hit)
-                elif strict: errs.append("unresolved script path %r (a variable or expression with no file of that name in the tree: fail closed)" % cand)
-                continue
-            c = c.lstrip("/") if cand.startswith(("$GITHUB_WORKSPACE", "${GITHUB_WORKSPACE", "${{")) else c
-            paths = [os.path.normpath(os.path.join(cd, c))] if cd else []
-            paths.append(os.path.normpath(c))
-            hit = [p for p in paths if _is_script_file(base, p)]
-            if not hit:
-                hit = [p for p in _find_by_basename(base, os.path.basename(c)) if _is_script_file(base, p)]
-            if hit: refs.update(hit)
-            elif strict and (is_interp or c.endswith(EXTS)):
-                errs.append("unresolved script reference %r (no such file in the tree)" % cand)
-            # else: a bare ./name without an extension that is not in the tree is a built binary: stated exclusion
-    kind = kind or ("shell" if owndir is not None else "yaml")
-    for code in shell_blocks(text, kind):
-        command_checks(base, logical(strip(code)), None, refs, errs, strict)
-    return refs, errs
-
-TEST_WORKFLOWS = {".github/workflows/ci.yml"}
-
-def is_test_script(sp):
-    return os.path.basename(sp).endswith("-test.sh") or sp.startswith(".github/agent/tests/")
-
-def reachable_scripts(base, texts):
-    """texts: {relpath of a workflow/action file: its text}. Returns ({script relpath: {who}}, [errors naming the file]).
-    Round 6: scripts called by scripts are judged STRICTLY (an unresolved reference is an error). The one carve-out: a TEST script
-    (`*-test.sh`, `.github/agent/tests/*`) that is reached ONLY from ci.yml (the workflow that runs the tests) may build
-    throw-away scripts at run time ($work/x.py, $sut): its unresolved references are not errors. The same script reached from
-    any other workflow (a stage file, release.yml) is judged strictly, and a non-test script is always judged strictly."""
-    found, errs, queue, serrs, roots = {}, [], [], {}, {}
-    for rel, txt in sorted(texts.items()):
-        refs, e = script_refs_ex(base, txt)
-        errs += ["%s: %s" % (rel, x) for x in e]
-        for r in refs:
-            found.setdefault(r, set()).add(rel); roots.setdefault(r, set()).add(rel); queue.append(r)
-    seen = set()
-    while queue:
-        sp = queue.pop()
-        if sp in seen or sp == "bin/chain-verify.py": continue
-        seen.add(sp)
-        try: txt = open(os.path.join(base, sp), errors="replace").read()
-        except OSError: continue
-        if not (sp.endswith((".sh", ".bash")) or txt.startswith(("#!/bin/sh", "#!/bin/bash", "#!/usr/bin/env bash", "#!/usr/bin/env sh"))):
-            continue                          # python/js/ruby source is scanned for signing calls but not tokenised for further scripts (stated exclusion)
-        refs, e = script_refs_ex(base, txt, owndir=os.path.dirname(sp) or ".", strict=True)
-        serrs[sp] = e
-        for r in refs:
-            found.setdefault(r, set()).add(sp)
-            if r not in seen: queue.append(r)
-    grow = True
-    while grow:                               # which workflows reach each script, transitively
-        grow = False
-        for sp, who in found.items():
-            for w in list(who):
-                for rr in roots.get(w, set()) if w in roots else ([w] if w in texts else []):
-                    if rr not in roots.setdefault(sp, set()): roots[sp].add(rr); grow = True
-    for sp, e in serrs.items():
-        if is_test_script(sp) and roots.get(sp, set()) <= TEST_WORKFLOWS: continue
-        errs += ["%s (run by %s): %s" % (sp, ", ".join(sorted(found.get(sp, []))), x) for x in e]
-    return found, errs
+def check_script(path, text, row, rows):
+    """Errors for one LISTED script: shell scripts may use only their tools + builtins and start only their `runs`."""
+    errs = []
+    if not path.endswith(SHELL_EXTS) and not text.startswith(("#!/bin/sh", "#!/bin/bash", "#!/usr/bin/env bash", "#!/usr/bin/env sh")):
+        return errs                                    # python/js: direct signing calls only (stated exclusion)
+    tools, runs = set(row.get("tools", [])), set(row.get("runs", []))
+    body = logical(strip(text))
+    for n, line in enumerate(body.splitlines(), 1):
+        if not line.strip(): continue
+        # blank out quoted strings so `;` or a word inside them does not split or count as a command
+        flat = re.sub(r"'[^']*'", "''", line)
+        flat = re.sub(r'"((?:[^"\\]|\\.)*)"', lambda m: m.group(0) if ("$(" in m.group(1) or "`" in m.group(1)) else '""', flat)   # a substitution inside "..." still runs a command: keep it visible
+        for seg in re.split(r"[;&|(){}`\n]|\$\(|\bthen\b|\bdo\b|\belse\b", flat):
+            seg = re.sub(r"^\s*[^\s()]*\)\s*", "", seg)                 # a case pattern `a)`
+            seg = re.sub(r"^\s*(?:[A-Za-z_]\w*(?:\[[^\]]*\])?\+?=\S*\s+)*", "", seg)   # VAR=val prefixes
+            w = seg.split()
+            if not w: continue
+            c = w[0]
+            if c in BUILTINS or re.fullmatch(r"[A-Za-z_]\w*\+?=.*", c): continue
+            if re.search(r"[$*?\[~]", c): errs.append("%s line %d: %r at command position is a variable, glob or expression" % (path, n, c)); continue
+            if c in tools: continue
+            errs.append("%s line %d: command %r is not in this script's `tools` list" % (path, n, c))
+        # a script start anywhere in the line: interpreters/`source` as ANY word, or a path to a script
+        for tok in re.findall(r"[^\s;&|(){}<>`\"']+", flat):
+            t = tok.strip()
+            if t in INTERPRETERS and t not in tools: errs.append("%s line %d: `%s` can start another script (not in `tools`)" % (path, n, t))
+            elif t.endswith(SCRIPT_EXTS) or t.startswith("./") or t in rows:
+                if t not in runs: errs.append("%s line %d: starts or names the script %r, which is not in this script's `runs` list" % (path, n, t))
+    return errs

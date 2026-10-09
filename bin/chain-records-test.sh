@@ -16,22 +16,15 @@
 #                                          slsaprovenance1 -> .../provenance/v1, spdx/cyclonedx/vuln mapped below)
 #   `cosign sign` / `gitsign`           -> pseudo types urn:cosign:signature / urn:gitsign:tag-signature
 # FAIL CLOSED: a producing call whose type cannot be resolved (an expression, a shell variable, no --type) is an error
-# naming the file. Scanned: .github/workflows/*.yml and *.yaml, .github/actions/**/action.yml|yaml, a root action.yml, and every
-# script those files run (bash x.sh, ./x.sh, python3 x.py; bin/chain-verify.py itself excepted: only `chain-verify.py sign` in
-# stage-sign.yml reaches its signing calls). Which tools sign is ONE table shared with chain-sign-wiring-test.sh
-# (bin/chain-test-signers.json: cosign sign/attest, witness run/sign with every attestor flag form, attest-build-provenance,
-# actions/attest, actions/attest-sbom, slsa-github-generator, gitsign, sigstore actions, chain-verify.py sign); a tool in
-# the table with no finer resolver needs a row for its pseudo type, so no known signer is invisible. Comments are stripped
-# first (full-line and trailing). Exclusions, stated plainly: a signer that is not in the table is not seen by either
-# test (add it to the table first); signing done by a binary a script downloads at run time is not seen.
+# naming the file. Scanned: .github/workflows/*.yml and *.yaml, .github/actions/**/action.yml|yaml, a root action.yml, and the
+# scripts LISTED in .github/policy/chain-scripts.json (advisor decision, Oct 9: a stage file may run nothing else, so there is no
+# script discovery and no variable/heredoc/glob machinery; bin/chain-verify.py itself is excepted: only `chain-verify.py sign`
+# in stage-sign.yml reaches its signing calls). Which tools sign is ONE table shared with chain-sign-wiring-test.sh
+# (bin/chain-test-signers.json). Comments are stripped first (full-line and trailing). Exclusions, stated plainly: a signer that
+# is not in the table is not seen (add it to the table first); signing done by a binary a script downloads at run time or reached
+# through an argv array in script code is not seen.
 # The judge is proven on a known-good fixture tree and mutated copies, then applied to the real repository.
 # Needs python3 (no PyYAML: the scan is by text, comments stripped).
-# Round 10 (Sonnet R5, Opus R5): the script scan has NO variable resolution and NO heredoc stripping. A script called through $VAR,
-# ${VAR}, $(cmd) or backticks is an ERROR naming the workflow or script (call scripts by literal path); a heredoc body is scanned as
-# code like any other text (a signer word inside heredoc DATA is flagged: list it with a reason in chain-signers.json). Static
-# resolution of shell is an unbounded class (rounds 4-9 each found another plain form), so it is closed by deletion.
-# On the real tree exactly one scan error remains today: bin/analyze-egress-trace-test.sh ($CHK), reached from
-# stage-acceptance-egress.yml as well as ci.yml; that red clears when PR 3 removes that stage file (no unrelated script is edited).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -90,11 +83,14 @@ def scan(rel, text):
         else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
 texts = {os.path.relpath(f, base): open(f).read() for f in files}
 for rel, txt in texts.items(): scan(rel, txt)
-scripts, serrs = _cts.reachable_scripts(base, texts)
-bad += ["unresolved script reference (fail closed): " + x for x in serrs]
-for sp in sorted(scripts):
-    if sp == "bin/chain-verify.py": continue
-    scan(sp, open(os.path.join(base, sp), errors="replace").read())
+# scripts: ONLY those listed in .github/policy/chain-scripts.json (a stage file may run nothing else: chain-sign-wiring-test.sh
+# judges that grammar); a missing chain-scripts.json is that test's finding, not this one's
+if os.path.exists(os.path.join(base, ".github/policy/chain-scripts.json")):
+    srows, serrs = _cts.load_scripts(base)
+    bad += ["chain-scripts.json: " + x for x in serrs]
+    for sp in sorted(srows):
+        if sp == "bin/chain-verify.py": continue
+        scan(sp, open(os.path.join(base, sp), errors="replace").read())
 types = [r.get("type") for r in rows]
 for t in sorted(produced):
     if types.count(t) == 0: bad.append("produced type has no row: %s (in %s)" % (t, ", ".join(sorted(produced[t]))))
@@ -197,16 +193,30 @@ d=$(mk hashq); printf 'jobs:\n  c:\n    steps:\n      - run: echo "step #1"; cos
 expect_named "a '#' inside quotes does not hide a signer on the same line" "$d" "stage-verify.yml"
 d=$(mk wra); printf 'jobs:\n  c:\n    steps:\n      - uses: testifysec/witness-run-action@%s # v1\n' "$(printf 'a%.0s' $(seq 40))" > "$d/.github/workflows/stage-verify.yml"; nosign "$d"; sed -i.bak '/slsa.dev/d' "$d/.github/policy/chain-records.json"
 expect_named "testifysec/witness-run-action is a provenance producer (fail closed) and needs a row" "$d" "stage-verify.yml"
-d=$(mk make); printf 'jobs:\n  c:\n    steps:\n      - run: make publish\n' > "$d/.github/workflows/stage-verify.yml"; printf 'publish:\n\tcosign sign --yes $(IMG)\n' > "$d/Makefile"
-expect_named "round 11: make is an error naming the workflow (a Makefile recipe is not followed: call the script by literal path)" "$d" "stage-verify.yml"
-d=$(mk js); mkdir -p "$d/scripts"; printf 'jobs:\n  c:\n    steps:\n      - run: node scripts/pub.js\n' > "$d/.github/workflows/stage-verify.yml"; printf 'require("child_process").execSync("cosign sign --yes " + process.env.IMG)\n' > "$d/scripts/pub.js"
-expect_named "a node script a workflow runs signs an image with no row" "$d" "scripts/pub.js"
 d=$(mk trailing); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG" # verify only\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "a trailing comment exempts nothing (cosign sign with no row still fails)" "$d"
-d=$(mk script); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/publish.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish.sh"
-expect caught "a script a workflow runs signs an image with no row (bin/publish.sh)" "$d"
-d=$(mk scriptvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: ./bin/publish.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/publish.sh"
-expect caught "a script a workflow runs attests with an unresolved type: fails closed" "$d"
+listed() { # listed DIR PATH TOOL...: write DIR/.github/policy/chain-scripts.json listing PATH with its real sha256 (a script a stage file may run)
+  python3 - "$@" <<'PY'
+import hashlib, json, os, sys
+d, path, tools = sys.argv[1], sys.argv[2], sys.argv[3:]
+f = d + "/.github/policy/chain-scripts.json"
+j = json.load(open(f)) if os.path.exists(f) else {"scripts": []}
+j["scripts"].append({"path": path, "sha256": hashlib.sha256(open(os.path.join(d, path), "rb").read()).hexdigest(), "tools": tools, "signs": "other", "reason": "x", "runs": []})
+json.dump(j, open(f, "w"))
+PY
+}
+d=$(mk lscript); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh cosign
+expect_named "a LISTED script that signs an image has no row: the judge names the script" "$d" "bin/publish.sh"
+d=$(mk lscriptvar); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/publish.sh"; listed "$d" bin/publish.sh cosign
+expect_named "a LISTED script that attests with an unresolved type fails closed, naming the script" "$d" "bin/publish.sh"
+d=$(mk lscriptpy); mkdir -p "$d/bin"; printf 'import subprocess\nsubprocess.run("cosign sign --yes x", shell=True)\n' > "$d/bin/publish.py"; listed "$d" bin/publish.py
+expect_named "a LISTED python script is scanned for direct signing calls too" "$d" "bin/publish.py"
+d=$(mk lscriptok); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho nothing signs here\n' > "$d/bin/ok.sh"; listed "$d" bin/ok.sh echo
+expect ok "a listed script that signs nothing is no producer" "$d"
+d=$(mk unlisted); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/hidden.sh"
+expect ok "an UNLISTED script is not scanned here (a stage file cannot run it: chain-sign-wiring-test.sh refuses the unlisted path)" "$d"
+d=$(mk lbadhash); mkdir -p "$d/bin"; printf '#!/usr/bin/env bash\necho a\n' > "$d/bin/ok.sh"; listed "$d" bin/ok.sh echo; printf '#!/usr/bin/env bash\necho changed\n' > "$d/bin/ok.sh"
+expect_named "a listed script whose sha256 no longer matches is an error naming chain-scripts.json" "$d" "chain-scripts.json"
 d=$(mk cvsign2); printf 'jobs:\n  c:\n    steps:\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests d.json --build-record b.json --policy p.json --out provenance\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "chain-verify.py sign resolves to SLSA provenance v1 (already has a row)" "$d"
 SH40=$(printf 'a%.0s' $(seq 40))
@@ -237,625 +247,10 @@ d=$(mk notation); printf 'jobs:\n  c:\n    steps:\n      - run: notation sign "$
 expect_named "notation sign is a known signer that needs a row" "$d" "stage-verify.yml"
 d=$(mk intoto); printf 'jobs:\n  c:\n    steps:\n      - run: in-toto-run --step-name build -- ./x\n' > "$d/.github/workflows/stage-verify.yml"
 expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify.yml"
-# scripts a workflow reaches: every form resolves, and what cannot be resolved is an error naming the workflow
-d=$(mk ws); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash "$GITHUB_WORKSPACE/bin/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
-expect_named "bash \"\$GITHUB_WORKSPACE/bin/pub.sh\" is resolved and its signing call seen" "$d" "bin/pub.sh"
-d=$(mk ws2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash ${{ github.workspace }}/bin/pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/pub.sh"
-expect_named "bash \${{ github.workspace }}/bin/pub.sh is resolved" "$d" "bin/pub.sh"
-d=$(mk cdp); mkdir -p "$d/scripts"; printf 'jobs:\n  c:\n    steps:\n      - run: cd scripts && ./pub.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/scripts/pub.sh"
-expect_named "cd scripts && ./pub.sh is resolved through the cd prefix" "$d" "scripts/pub.sh"
-d=$(mk noext); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: ./bin/publish\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/publish"; chmod +x "$d/bin/publish"
-expect_named "an extensionless script that starts with #! is scanned" "$d" "bin/publish"
-d=$(mk pym); mkdir -p "$d/tools"; printf 'jobs:\n  c:\n    steps:\n      - run: python3 -m tools.pub\n' > "$d/.github/workflows/stage-verify.yml"; printf 'import subprocess\nsubprocess.run(["x"])  # cosign sign --yes img\n' > "$d/tools/pub.py"; printf 'cosign sign --yes img\n' >> "$d/tools/pub.py"
-expect_named "python3 -m tools.pub is resolved to tools/pub.py" "$d" "tools/pub.py"
-d=$(mk trans); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$(dirname "$0")/b.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/b.sh"
-expect_named "a script that calls another script is followed (bin/a.sh -> bin/b.sh)" "$d" "bin/b.sh"
-d=$(mk unres); printf 'jobs:\n  c:\n    steps:\n      - run: bash "$SOME_DIR/pub.sh"\n' > "$d/.github/workflows/stage-verify.yml"
-expect_named "a script path in an unknown variable is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
-d=$(mk missing); printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/gone.sh\n' > "$d/.github/workflows/stage-verify.yml"
-expect_named "a script reference with no such file is an error naming the workflow (fail closed)" "$d" "stage-verify.yml"
-d=$(mk nvar); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/pub\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\ncosign attest --yes --type "$T" --predicate p.json "$IMG"\n' > "$d/bin/pub.sh"
-expect_named "round 10: a script called through a variable is an error naming the script that uses it, even when the variable holds one literal (S=bin/pub; bash \"\$S.sh\")" "$d" "bin/a.sh"
-d=$(mk nvarclean); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"
-expect_named "round 10: even a single VAR=literal is NOT followed (the shape of bin/analyze-egress-trace-test.sh: CHK=bin/x.py; python3 \"\$CHK\"): an error naming the script" "$d" "bin/a.sh"
-d=$(mk nvaramb); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=bin/clean.sh\nCHK=bin/other.sh\nbash "$CHK"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/other.sh"
-expect_named "a variable assigned two different literals is ambiguous: an error naming the script, not a guess" "$d" "bin/a.sh"
-d=$(mk nvarcmd); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nCHK=$(pwd)/pub.sh\nbash "$CHK"\n' > "$d/bin/a.sh"
-expect_named "a variable assigned from a command substitution is not a literal: still an error naming the script" "$d" "bin/a.sh"
-d=$(mk nvnonlit); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nS=$NEXT\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: a literal followed by an assignment from outside is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk nvappend); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean\nS+=_x\nbash "$S.sh"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: a literal followed by an append is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk nvread); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nread -r S < list\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: a literal followed by a read into the same name is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk nvforin); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nfor S in a b; do bash "$S"; done\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: a literal followed by a for-in loop over the same name is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk nvunset); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nunset S\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: a literal followed by an unset is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk nvlocal); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\nf() { local S; bash "$S"; }\nf\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: a literal and a local declaration with no literal is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk nvdefault); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nS=bin/clean.sh\n: "${S:=bin/other.sh}"\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: a literal and a colon-equals default expansion is ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk nvbranch); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/a.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nif test -n "$X"; then S=bin/clean.sh; else S=bin/other.sh; fi\nbash "$S"\n' > "$d/bin/a.sh"; printf '#!/usr/bin/env bash\necho hi\n' > "$d/bin/clean.sh"; printf '#!/usr/bin/env bash\ncosign sign --yes "$IMG"\n' > "$d/bin/other.sh"
-expect_named "round 8: two literals in if/else branches are ambiguous: an error naming the script, never the earlier literal" "$d" "bin/a.sh"
-d=$(mk ntr1); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/plain.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash bin/x-test.sh\n' > "$d/bin/plain.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
-expect_named "transitive: stage file -> plain.sh -> x-test.sh stays strict (the carve-out is for scripts reached only from ci.yml)" "$d" "bin/x-test.sh"
-d=$(mk ntr2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/y-test.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/y-test.sh"
-expect ok "transitive: ci.yml -> x-test.sh -> y-test.sh, test scripts reached only from ci.yml, may build throw-away scripts" "$d"
-d=$(mk ntr3); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash bin/lib.sh\n' > "$d/bin/x-test.sh"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/lib.sh"
-expect_named "transitive: ci.yml -> x-test.sh -> lib.sh (a non-test script) stays strict" "$d" "bin/lib.sh"
-d=$(mk ntest); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
-expect_named "a *-test.sh with an unresolved reference, reached from a stage file, is judged strictly" "$d" "bin/x-test.sh"
-d=$(mk ntest2); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\nbash "$work/gen.sh"\n' > "$d/bin/x-test.sh"
-expect ok "a *-test.sh that builds throw-away scripts and is reached only from ci.yml is not an error" "$d"
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
-d=$(mk nr9exp); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-export "S=$(pick)"
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: export "S=$(pick)" (a quoted-name write) after a literal makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9dec); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-declare "S=$X"
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: declare "S=$X" after a literal makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9loc); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-f() { local "S=$1"; bash "$S"; }
-f
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: local "S=$1" after a literal makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9eval); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-eval "S=$(pick)"
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: eval "S=$(pick)" resolves nothing in the unit' "$d" bin/a.sh
-d=$(mk nr9idx); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-S[0]=$X
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: S[0]=$X after a literal makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9idxl); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-S[0]=bin/other.sh
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: S[0]=bin/other.sh (an array element write with a literal) makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9nameref); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-declare -n R=S
-R=$(pick)
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: declare -n R=S; R=$(pick) (a nameref write) resolves nothing' "$d" bin/a.sh
-d=$(mk nr9pfv); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-T=S
-printf -v "$T" %s "$X"
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: T=S; printf -v "$T" ... (an indirect write) makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9readi); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-T=S
-read "$T"
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: T=S; read "$T" (an indirect read-into) makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9unseti); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-T=S
-unset "$T"
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: T=S; unset "$T" (an indirect unset) makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9select); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-select S in $LIST; do bash "$S"; done
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: select S in $LIST resolves nothing' "$d" bin/a.sh
-d=$(mk nr9source); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-. bin/conf.sh
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
-S=$NEXT
-' > "$d/bin/conf.sh"
-expect_named 'round 9: `. bin/conf.sh` (which reassigns S) resolves nothing in the caller' "$d" bin/a.sh
-d=$(mk nr9nr2); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-T=$NEXT
-declare -n S=T
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: T=$NEXT; declare -n S=T; bash "$S" resolves nothing' "$d" bin/a.sh
-d=$(mk nr9hs); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-bash bin/clean.sh <<< word
-bash bin/other.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: a here-string does not open a heredoc: the script after it is still scanned' "$d" bin/other.sh
-d=$(mk nr9arith); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-n=$((1 << 3))
-bash bin/other.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: n=$((1 << 3)) does not open a heredoc: the script after it is still scanned' "$d" bin/other.sh
-d=$(mk nr9arith2); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-(( n = 1 << 2 ))
-bash bin/other.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: (( n = 1 << 2 )) does not open a heredoc: the script after it is still scanned' "$d" bin/other.sh
-d=$(mk nr9heresh); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-bash <<EOF
-bash bin/other.sh
-EOF
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: a heredoc INTO a shell is code: its body is scanned and S resolves nothing' "$d" bin/other.sh
-d=$(mk nr9after); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=bin/clean.sh
-bash "$S"
-S=bin/other.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: a write after the use makes S ambiguous' "$d" bin/a.sh
-d=$(mk nr9nonpath); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-S=evil
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: a resolved value that is not path-shaped (S=evil; bash "$S") is an error, not a skip' "$d" bin/a.sh
-d=$(mk nr9dig); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-cat <<3
-bash bin/other.sh
-3
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 10: a `<<3` is not classified or stripped: its body is scanned as code, so the script named there is found and its signer seen' "$d" bin/other.sh
-d=$(mk nr9yenv); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: S=bin/clean.sh; bash "$S"
-      - env:
-          S: bin/other.sh
-        run: bash "$S"
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: an env: key naming S in a later step makes S ambiguous (a variable never crosses steps)' "$d" stage-verify.yml
-d=$(mk nr9yghenv); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: echo "S=$NEXT" >> "$GITHUB_ENV"
-      - run: S=bin/clean.sh; bash "$S"
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: echo "S=$NEXT" >> $GITHUB_ENV in another step makes S ambiguous' "$d" stage-verify.yml
-d=$(mk nr9ycross); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: S=bin/clean.sh
-      - run: bash "$S"
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: S assigned in one step and read in the next is unresolved (never across steps)' "$d" stage-verify.yml
-d=$(mk nr9yjob); mkdir -p "$d/bin"; printf %s 'jobs:
-  a:
-    steps:
-      - run: S=bin/clean.sh
-  b:
-    steps:
-      - run: bash "$S"
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"
-expect_named 'round 9: S assigned in one job and read in another is unresolved (never across jobs)' "$d" stage-verify.yml
-d=$(mk nr9okyaml); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: |
-          S=bin/clean.sh
-          bash "$S"
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect_named 'round 10: S=literal; bash "$S" inside one run block is NOT followed either: an error naming the workflow' "$d" stage-verify.yml
-d=$(mk nr9okhs); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-bash bin/clean.sh <<< word
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect ok 'round 9: a here-string followed by a clean script is fine' "$d"
-d=$(mk nr9okar); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-n=$((1 << 3))
-bash bin/clean.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect ok 'round 9: an arithmetic shift followed by a clean script is fine' "$d"
-d=$(mk nr9okhd); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-cat > x.txt <<EOF
-data lines only
-EOF
-bash bin/clean.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect ok 'round 9: a real heredoc of data (cat > x <<EOF) followed by a clean script is fine' "$d"
-# round 10: no resolver, no heredoc stripping
-d=$(mk r10q1); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo "a << b"
-bash bin/other.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect_named 'round 10: a quoted `<<` (echo "a << b") hides nothing: the script after it is found and its signer seen' "$d" bin/other.sh
-d=$(mk r10q2); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo '\''x<<y'\''
-bash bin/other.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect_named 'round 10: a quoted `<<` (echo '\''x<<y'\'') hides nothing: the script after it is found and its signer seen' "$d" bin/other.sh
-d=$(mk r10q3); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo "see <<EOF docs"
-bash bin/other.sh
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect_named 'round 10: a quoted `<<` (echo "see <<EOF docs") hides nothing: the script after it is found and its signer seen' "$d" bin/other.sh
-d=$(mk r10q4); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: |
-          echo "usage: a << b"
-          bash bin/other.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/other.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"
-expect_named 'round 10: a quoted `<<` inside a run block (echo "usage: a << b") hides nothing: the script after it is found and its signer seen' "$d" bin/other.sh
-d=$(mk r10c1); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    env:
-      S: bin/evil
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-[ -n "$S" ] || S=bin/clean.sh
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/evil"
-expect_named 'round 10: a conditional default ([ -n "$S" ] || S=bin/clean.sh; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' "$d" bin/a.sh
-d=$(mk r10c2); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    env:
-      S: bin/evil
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-test -z "$S" && S=bin/clean.sh
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/evil"
-expect_named 'round 10: a conditional default (test -z "$S" && S=bin/clean.sh; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' "$d" bin/a.sh
-d=$(mk r10c3); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    env:
-      S: bin/evil
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-if [ -z "$S" ]; then S=bin/clean.sh; fi
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/evil"
-expect_named 'round 10: a conditional default (if [ -z "$S" ]; then S=bin/clean.sh; fi; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' "$d" bin/a.sh
-d=$(mk r10c4); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    env:
-      S: bin/evil
-    steps:
-      - run: bash bin/a.sh
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-case "$1" in
-  a) S=bin/clean.sh;;
-esac
-bash "$S"
-' > "$d/bin/a.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/evil"
-expect_named 'round 10: a conditional default (case "$1" in a) S=bin/clean.sh;; esac; bash "$S") with an inherited S from the job env: is a variable script reference: an error, never the literal' "$d" bin/a.sh
-d=$(mk r10c5); mkdir -p "$d/bin"; printf %s 'jobs:
-  b:
-    steps:
-      - run: bash bin/setup.sh
-      - run: |
-          test -z "$S" && S=bin/clean.sh
-          bash "$S"
-' > "$d/.github/workflows/stage-verify.yml"; printf %s '#!/usr/bin/env bash
-echo "S=bin/evil" >> "$GITHUB_ENV"
-' > "$d/bin/setup.sh"; printf %s '#!/usr/bin/env bash
-echo hi
-' > "$d/bin/clean.sh"; printf %s '#!/usr/bin/env bash
-cosign sign --yes "$IMG"
-' > "$d/bin/evil"
-expect_named 'round 10: S inherited from $GITHUB_ENV (bin/setup.sh) and read after `test -z "$S" && S=bin/clean.sh` in the next step is a variable script reference: an error' "$d" stage-verify.yml
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-
-# ---- round 11: command-position words (Sonnet/Opus fix-verification probes; fail closed) ----------------------------------------
-r11_table() { cat <<'TBL'
-cw_var	err	a variable in command position ("$S") after a conditional default with an inherited S (Opus inherited-value repro)	[ -n "$S" ] || S=bin/clean.sh\n"$S"	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-cw_var2	err	a bare $S in command position	S=bin/clean.sh\n$S	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-cw_brace	err	${S} in command position	S=bin/clean.sh\n${S}	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-cw_sudo	err	sudo "$S" in command position	sudo "$S"	
-cw_ws	err	$GITHUB_WORKSPACE/$S in command position	$GITHUB_WORKSPACE/$S	
-cw_expr	err	a ${{ vars.X }} expression in command position	${{ vars.SIGN_SCRIPT }}	
-cw_config	err	a script named by a command substitution result ("$S" from jq) in command position	S=$(jq -r .sign release.json)\n"$S"	
-cw_case	err	case ... S=bin/clean.sh;; esac; "$S"	case "$X" in a) S=bin/clean.sh;; esac\n"$S"	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-glob_bash	err	bash bin/s*.sh (a glob in an interpreter argument)	bash bin/s*.sh	bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
-glob_q	err	./bin/s?sh (a glob in command position)	./bin/s?sh	bin/sxsh=#!/usr/bin/env bash\ncosign sign x\n
-glob_find	err	find bin -name 's*.sh' -exec sh {} +	find bin -name 's*.sh' -exec sh {} +	bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
-ext_bare	found	an extensionless shebang script called as bin/release-sign (no ./)	bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_ws	found	an extensionless shebang script called through $GITHUB_WORKSPACE	"$GITHUB_WORKSPACE/bin/release-sign"	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_dot	found	an extensionless shebang script called as ./bin/release-sign	./bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_env	found	env FOO=1 bin/release-sign	env FOO=1 bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_exec	found	exec bin/release-sign	exec bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_timeout	found	timeout 60 bin/release-sign	timeout 60 bin/release-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_bashc	found	bash -c 'bin/release-sign'	bash -c 'bin/release-sign'	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_path	found	a bare command that names a script in the tree (reached through PATH): release-sign	echo "$GITHUB_WORKSPACE/bin" >> "$GITHUB_PATH"\nrelease-sign	bin/release-sign=#!/usr/bin/env bash\ncosign sign x\n
-ext_missing	err	a path in command position that is not a file in the tree (bin/gone)	bin/gone	
-make_recipe	err	make sign (the Makefile recipe is not followed)	make sign	Makefile=sign:\n\tbash bin/s.sh\n;bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
-make_f	err	make -f build/release.mk	make -f build/release.mk	build/release.mk=sign:\n\tbash bin/s.sh\n
-find_exec	err	find DIR -name '*.sh' -exec bash {} \;	find bin -name '*.sh' -exec bash {} \;	bin/s.sh=#!/usr/bin/env bash\ncosign sign x\n
-xargs_f	err	cat list.txt | xargs -n1 bash	cat list.txt | xargs -n1 bash	list.txt=bin/s.sh\n
-run_parts	err	run-parts bin/release.d	run-parts bin/release.d	
-npm_run	err	npm run sign	npm run sign	package.json={"scripts":{"sign":"bash bin/s.sh"}}\n
-cat_bash	err	cat bin/x | bash (a pipe into a shell)	cat bin/x | bash	bin/x=#!/usr/bin/env bash\ncosign sign x\n
-pipe_script	ok	`... | bash bin/clean.sh` (the pipe is data, the script is a file)	echo x | bash bin/clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-lit_ok	ok	a literal path to a clean script is fine (bash -eu, sudo, env, timeout, cd bin && ./clean.sh)	bash -eu bin/clean.sh\nsudo bin/clean.sh\nenv A=1 bin/clean.sh\ntimeout 5 bin/clean.sh\ncd bin && ./clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-arith_ok	ok	arithmetic and a [[ regex ]] with parentheses open no command: $(( 1 << 3 )), [[ $x =~ ^(a|b)$ ]], case a|b) ... esac	n=$(( $x / 2 ))\n[[ "$x" =~ ^(a|b)$ ]] || echo no\ncase "$x" in a|b) echo ab ;; esac\nbash bin/clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-subst_ok	ok	a command substitution in a word does not make the next word a command: d=$(mktemp -d)/x.java; echo $(date) $HOME/x	d=$(mktemp -d)/x.java\necho $(date) $HOME/x\nbash bin/clean.sh	bin/clean.sh=#!/usr/bin/env bash\necho hi\n
-TBL
-}
-r11_case() { # r11_case NAME EXP LABEL RUN FILES
-  local name=$1 exp=$2 label=$3 run=$4 files=$5 d f path body
-  d=$(mk "r11_$name"); mkdir -p "$d/bin"
-  { printf 'jobs:\n  c:\n    steps:\n      - run: |\n'; printf '%b' "$run" | sed 's/^/          /'; printf '\n'; } > "$d/.github/workflows/stage-verify.yml"
-  if [ -n "$files" ]; then
-    local IFS_SAVE=$IFS; IFS=$'\x01'
-    for f in $(printf '%s' "$files" | sed 's/~~/\x01/g'); do
-      path=${f%%=*}; body=${f#*=}; mkdir -p "$d/$(dirname "$path")"; printf '%b' "$body" > "$d/$path"
-    done
-    IFS=$IFS_SAVE
-  fi
-  chmod +x "$d"/bin/* 2>/dev/null || true
-  case "$exp" in
-    ok)    expect ok "round 11: $label" "$d" ;;
-    err)   expect_named "round 11: $label: an error naming the workflow, never silence" "$d" "stage-verify.yml" ;;
-    found) expect_named "round 11: $label: the script is found and its signer seen" "$d" "bin/" ;;
-  esac
-}
-while IFS=$'\t' read -r n e l r fl; do r11_case "$n" "$e" "$l" "$r" "$fl"; done < <(r11_table)
-
-d=$(mk r11ci); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/ci.yml"; printf '#!/usr/bin/env bash\n"$SUT" --version\nxargs echo < /dev/null\n' > "$d/bin/x-test.sh"; chmod +x "$d/bin/x-test.sh"
-expect ok "round 11: a *-test.sh reached ONLY from ci.yml may run a built binary through a variable and xargs (the carve-out)" "$d"
-d=$(mk r11stage); mkdir -p "$d/bin"; printf 'jobs:\n  c:\n    steps:\n      - run: bash bin/x-test.sh\n' > "$d/.github/workflows/stage-verify.yml"; printf '#!/usr/bin/env bash\n"$SUT" --version\nxargs echo < /dev/null\n' > "$d/bin/x-test.sh"; chmod +x "$d/bin/x-test.sh"
-expect_named "round 11: the same test script reached from a STAGE file is judged strictly: command-word variable and xargs are errors" "$d" "bin/x-test.sh"
-
-EXPECT=147
+EXPECT=54
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
