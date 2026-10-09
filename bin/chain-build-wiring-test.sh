@@ -154,6 +154,7 @@ permissions:
   contents: read
 jobs:
   build:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
     uses: ./.github/workflows/stage-build.yml
   sign:
     needs: build
@@ -168,11 +169,29 @@ jobs:
     needs: [rebuild, check, sign]
     uses: ./.github/workflows/stage-promote.yml
   decide:
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
     runs-on: ubuntu-latest
+    environment: agent
     permissions:
       contents: read
       checks: read
       id-token: write
+      issues: write
+    steps:
+      - run: echo ${{ secrets.AUDITOR_APP_ID }}
+  patch-notes:
+    needs: decide
+    runs-on: ubuntu-latest
+    environment: agent
+    permissions:
+      contents: read
+    steps:
+      - run: echo ${{ secrets.AUDITOR_APP_ID }}
+  patch-failed:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
       issues: write
     steps: []
   hostile-verify:
@@ -313,13 +332,18 @@ hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$st
 hm fout    "AC2 the record written to another path" '"witness-$step/$step-collection.json"' 'out/x.json'
 hm fopen   "AC2 the step list is open" 'apk|build|rapk|rebuild' '*'
 hm fexec   "AC2 witness not exec'd (its exit status could be lost)" 'exec witness run' 'witness run'
-hm ftee "AC2 the token written elsewhere" 'jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"' \
-       'jq -r .value "$RUNNER_TEMP/tok.json" | tee /tmp/leak > "$RUNNER_TEMP/tok"'
+hm ftee "AC2 the token written elsewhere" '| jq -r .value)' '| jq -r .value | tee /tmp/leak)'
+hm ffile "AC2 the token in a file again (the older form): a file under the runner temp folder while the command runs" \
+       '<(printf %s "$tok")' '"$RUNNER_TEMP/tok"'
+hm ffileb "AC2 the token written to a file before the exec" 'echo "::add-mask::$tok"' 'echo "::add-mask::$tok"\nprintf %s "$tok" > "$RUNNER_TEMP/tok"'
+hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
+hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
+hm fcat    "AC2 the token read through a second process substitution" '<(printf %s "$tok")' '<(cat <(printf %s "$tok"))'
 hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout 540 bash "$@"' '-- timeout 540 bash "$@" || true'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
-   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp "$RUNNER_TEMP/tok" out-tok\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
+   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
 expect caught "AC2 a second witness invocation in the helper" "helper command" helper "$work/h_second.sh"
 { echo "# a different comment, which a human may add"; cat "$work/witnessed.sh"; } > "$work/h_comment.sh"
@@ -502,11 +526,11 @@ gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\
 gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
 gr g4  "005-AC5 sign does not need build" '  sign:\n    needs: build' '  sign:\n    needs: check' "sign must need exactly"
 gr g5 "005-AC5 rebuild runs even when build failed (if: always())" '  rebuild:\n    needs: build' '  rebuild:\n    needs: build\n    if: always()' \
-       "keys outside"
+       "may not carry an if"
 gr g6  "005-AC5 release runs when a stage failed (if: always())" '  release:\n    needs: [rebuild, check, sign]' \
-       '  release:\n    if: always()\n    needs: [rebuild, check, sign]' "keys outside"
+       '  release:\n    if: always()\n    needs: [rebuild, check, sign]' "may not carry an if"
 gr g7  "005-AC5 release runs when a stage failed (!cancelled())" '  release:\n    needs: [rebuild, check, sign]' \
-       '  release:\n    if: ${{ !cancelled() }}\n    needs: [rebuild, check, sign]' "keys outside"
+       '  release:\n    if: ${{ !cancelled() }}\n    needs: [rebuild, check, sign]' "may not carry an if"
 gr g8  "005-AC5 a failed rebuild does not fail the run (continue-on-error)" '  rebuild:\n    needs: build' \
        '  rebuild:\n    continue-on-error: true\n    needs: build' "keys outside"
 gr g9 "005-AC5 check calls another stage file" 'uses: ./.github/workflows/stage-verify.yml' 'uses: ./.github/workflows/stage-promote.yml' \
@@ -525,13 +549,40 @@ gr g14 "005-AC5 publish-early: a plain job after Sign that downloads dist and ru
        "$EARLY" "not one of the five chain jobs"
 gr g15 "005-AC5 a job that calls a reusable workflow of another repository" '  decide:' \
        "$REMOTE" "job-level uses"
-gr g16 "005-AC5 an allowed non-chain job (decide) given a job-level uses" '  decide:\n    runs-on: ubuntu-latest' \
-       '  decide:\n    uses: ./.github/workflows/ci.yml' "job-level uses"
+gr g16 "005-AC5 an allowed non-chain job (decide) given a job-level uses" '  decide:\n    if:' \
+       '  decide:\n    uses: ./.github/workflows/ci.yml\n    if:' "job-level uses"
 gr g17 "005-AC5 decide with a write it does not need (packages)" 'issues: write' 'issues: write\n      packages: write' "exactly the permissions"
 gr g18 "005-AC5 decide with no permissions block of its own would inherit contents: read only (less than it needs: refused)" \
        '    permissions:\n      contents: read\n      checks: read\n      id-token: write\n      issues: write\n' '' "exactly the permissions"
 gr g19 "005-AC5 a hostile-* job that can write" '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read' \
-       '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write' "contents: read and nothing else"
+       '  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: write' "exactly the permissions"
+gr g21 "005-AC5 build without the tag gate (it would run on every push and the daily cron)" \
+    "    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    uses: ./.github/workflows/stage-build.yml" \
+       "    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
+gr g22 "005-AC5 build gated by always()" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" "if: always()" "build must carry exactly one if"
+gr g23 "005-AC5 build gated by a tag OR something else" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" \
+       "if: \${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'schedule' }}" "build must carry exactly one if"
+gr g24 "005-AC5 the tag gate with an extra conjunct" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" \
+       "if: \${{ startsWith(github.ref, 'refs/tags/v') && github.actor != 'x' }}" "build must carry exactly one if"
+gr g25 "005-AC5 the tag gate moved to another chain job (build ungated)" \
+    "    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    uses: ./.github/workflows/stage-build.yml" \
+       "    uses: ./.github/workflows/stage-build.yml" "build must carry exactly one if"
+gr g26 "005-AC5 the tag gate on sign as well as build" "  sign:\n    needs: build" \
+    "  sign:\n    if: \${{ startsWith(github.ref, 'refs/tags/v') }}\n    needs: build" "sign may not carry an if"
+gr g27 "005-AC5 hostile-verify with environment: agent" "  hostile-verify:\n    needs: sign" \
+    "  hostile-verify:\n    environment: agent\n    needs: sign" "may not name an environment"
+HV='  hostile-verify:\n    needs: sign\n    runs-on: ubuntu-latest\n    permissions:\n      contents: read\n    steps:'
+gr g28 "005-AC5 hostile-verify with an app-token step" "$HV []" "$HV\n      - run: echo \${{ secrets.AUDITOR_APP_PRIVATE_KEY }}" "may not use secrets."
+gr g29 "005-AC5 patch-notes needing sign as well as decide" "  patch-notes:\n    needs: decide" "  patch-notes:\n    needs: [decide, sign]" \
+    "patch-notes must need exactly"
+gr g30 "005-AC5 patch-failed in the environment that holds the App secrets" "  patch-failed:\n    needs: [build, release]" \
+    "  patch-failed:\n    environment: agent\n    needs: [build, release]" "may not name an environment"
+gr g31 "005-AC5 decide whose if is widened (it would run on a tag)" "github.ref == 'refs/heads/main' && " "" "must carry exactly the if"
+gr g32 "005-AC5 patch-notes in another environment" "  patch-notes:\n    needs: decide\n    runs-on: ubuntu-latest\n    environment: agent" \
+       "  patch-notes:\n    needs: decide\n    runs-on: ubuntu-latest\n    environment: release" "may name only environment: agent"
+replace "$work/release.yml" "$work/g33.yml" "if: \${{ startsWith(github.ref, 'refs/tags/v') }}" \
+        "if: \${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}" \
+  && expect ok "005-AC5 PR 1's dry-run form of the build gate (quoted from its branch) is the second accepted string" "" graph "$work/g33.yml"
 gr g20 "005-AC5 workflow-level permissions that write (every job would inherit them)" 'permissions:\n  contents: read\njobs' \
        'permissions:\n  contents: write\njobs' "workflow-level permissions"
 # ---- the Witness record never holds the token variables (REQ-CHAIN-004-AC8); the consumer is `chain-verify.py verify` of the next stage --------
@@ -609,6 +660,7 @@ helper_tree() { # helper_tree DIR HELPER
 #!/usr/bin/env bash
 echo "wrapped $*" >> calls.log
 env > wrapped-env.txt
+ls "$RUNNER_TEMP"/tok* > tokfiles-while-running.txt 2> /dev/null || true
 [ -z "${SLEEP:-}" ] || sleep "$SLEEP"
 echo "{}" > digests.json
 exit "${WRAPPED_RC:-0}"
@@ -616,20 +668,23 @@ EOF
   cat > "$1/fake/witness" <<'EOF'
 #!/usr/bin/env bash
 echo "witness $*" >> calls.log
-args=("$@"); record=; i=0
+args=("$@"); record=; i=0; tokpath=
 while [ $i -lt ${#args[@]} ]; do
   [ "${args[$i]}" = -o ] && record=${args[$((i + 1))]}
+  [ "${args[$i]}" = --signer-fulcio-token-path ] && tokpath=${args[$((i + 1))]}
   [ "${args[$i]}" = -- ] && break
   i=$((i + 1))
 done
+# Witness loads its signer before the command runs, reading the token path ONCE; then nothing may hold the token as a file
+cat "$tokpath" > signer-token.txt
+ls "$RUNNER_TEMP"/tok* > tokfiles-at-start.txt 2> /dev/null || true
 "${args[@]:$((i + 1))}" || exit $?
 mkdir -p "$(dirname "$record")"; echo '{"record":true}' > "$record"
 EOF
   cat > "$1/fake/curl" <<'EOF'
 #!/usr/bin/env bash
 echo curl >> calls.log
-while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
-printf '{"value":"FAKE-JWT-TOKEN-VALUE"}' > "$out"
+printf '{"value":"FAKE-JWT-TOKEN-VALUE"}\n'
 EOF
   cat > "$1/fake/timeout" <<'EOF'
 #!/usr/bin/env bash
@@ -653,6 +708,7 @@ for tag in fixture real; do
   if [ "$tag" = fixture ]; then helper_script="$work/witnessed.sh"; else helper_script="$root/bin/witnessed.sh"; fi
   if [ ! -f "$helper_script" ]; then
     for l in "the command runs through witness with timeout 540 and the record is written" \
+             "no token file exists while the wrapped command runs and the signer was given the token once" \
              "a command that outlives the (test) timeout fails the job and leaves no record and no digests.json" \
              "a failing command fails the job and leaves no record" "an unknown step name exits 2 before witness is called" \
              "the identity token appears only in the add-mask line" "the wrapped command's environment holds no identity-token variable"; do
@@ -691,6 +747,16 @@ for tag in fixture real; do
     ok "AC2 $tag helper: the identity token appears only in the add-mask line and the bearer value is never printed"
   else
     bad "AC2 $tag helper: the token was printed more than in the add-mask line, or the bearer leaked"
+  fi
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk)
+  if [ "$rc" = 0 ] && [ "$(cat "$d/signer-token.txt" 2> /dev/null)" = FAKE-JWT-TOKEN-VALUE ] && [ -f "$d/tokfiles-while-running.txt" ] \
+     && [ ! -s "$d/tokfiles-at-start.txt" ] && [ ! -s "$d/tokfiles-while-running.txt" ] && [ -z "$(ls "$d/tmp" 2> /dev/null)" ] \
+     && ! grep -q FAKE-JWT-TOKEN-VALUE "$d/wrapped-env.txt"; then
+    ok "AC2 $tag helper: no token file exists while the wrapped command runs, the token is in no variable of its environment, and the signer got it"
+  else
+    bad \
+        "AC2 $tag helper: a token file or variable is left for the wrapped command, or the signer got no token" \
+        "(rc=$rc, files: $(ls "$d/tmp" 2> /dev/null | tr '\n' ' '))"
   fi
   if [ -f "$d/wrapped-env.txt" ] && ! grep -Eq 'ACTIONS_ID_TOKEN_REQUEST|SENTINEL-BEARER|pipelines.example' "$d/wrapped-env.txt"; then
     ok "AC2 $tag helper: the wrapped command's environment holds neither identity-token variable nor their values (unset after the token is fetched)"
@@ -951,7 +1017,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=320
+EXPECT=340
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

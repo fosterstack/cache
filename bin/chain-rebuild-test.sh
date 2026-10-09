@@ -18,7 +18,8 @@
 #     exit 1, first line of stderr `refused at rebuild: <cause>: <items>` (the items, and only they, space separated) with cause one of
 #       digest        sha256(ITEMS.json bytes) != the product hash in REC.json, or REC.json has no / two file:items.json subjects
 #       format        a value is not sha256:<64 lower-case hex> (upper case, sha512:, 63 hex, a number, null), or a duplicate key
-#       missing       an item of the committed list is absent from --expected or --actual (the FIRST line names ONLY the item names, space separated; a later line gives the side)
+#       missing       an item of the committed list is absent from --expected or --actual (the FIRST line names ONLY the item names, space
+#                     separated; a later line gives the side)
 #       unexpected    an item that is not on the list is present on either side (the line names it)
 #       differs       the value differs in --expected and --actual (the line names EVERY differing item)
 #     exit 0 only when every listed item is present on both sides and identical. VERDICT.json is written in EVERY case
@@ -48,7 +49,12 @@ W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
-REQUIRED="apk-standard-x86_64 apk-standard-aarch64 apk-fips-x86_64 apk-fips-aarch64 apkindex-x86_64 apkindex-aarch64 modules-sbom-standard modules-sbom-fips inputs-manifest-standard inputs-manifest-fips lock-production lock-fips image-production image-production-manifest-amd64 image-production-manifest-arm64 image-fips image-fips-manifest-amd64 image-fips-manifest-arm64 sbom-production sbom-fips binary-standard-x86_64 binary-standard-aarch64 binary-fips-x86_64 binary-fips-aarch64 archive-checksums archive-linux-amd64 archive-linux-arm64 archive-fips-linux-amd64 archive-fips-linux-arm64"
+REQUIRED="apk-standard-x86_64 apk-standard-aarch64 apk-fips-x86_64 apk-fips-aarch64 apkindex-x86_64 apkindex-aarch64
+  modules-sbom-standard modules-sbom-fips inputs-manifest-standard inputs-manifest-fips lock-production lock-fips
+  image-production image-production-manifest-amd64 image-production-manifest-arm64
+  image-fips image-fips-manifest-amd64 image-fips-manifest-arm64 sbom-production sbom-fips
+  binary-standard-x86_64 binary-standard-aarch64 binary-fips-x86_64 binary-fips-aarch64
+  archive-checksums archive-linux-amd64 archive-linux-arm64 archive-fips-linux-amd64 archive-fips-linux-arm64"
 python3 - "$W" $REQUIRED <<'PY'
 import base64, hashlib, json, sys
 w, items = sys.argv[1], sys.argv[2:]
@@ -109,39 +115,66 @@ PY
   else bad "$1 -> exit $RC, first line '$first', verdict=$([ -f "$W/verdict.json" ] && echo present || echo absent)"; fi; }
 [ -f "$CV" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
 accept "005-AC3 identical items on both sides are accepted" rec.json exp.json act.json
-if [ -f "$W/verdict.json" ]; then jq -e '.equal == true and (.items|length == 29) and ([.items[].status]|unique == ["same"]) and (.items == (.items|sort_by(.name)))' "$W/verdict.json" > /dev/null && ok "005-AC3 the accepted verdict lists all 29 items as same, sorted by name" || bad "005-AC3 accepted verdict shape: $(head -c 200 "$W/verdict.json")"; else bad "005-AC3 no verdict written on success (RED)"; fi
+if [ -f "$W/verdict.json" ];
+then jq -e '.equal == true and (.items|length == 29) and ([.items[].status]|unique == ["same"]) and (.items == (.items|sort_by(.name)))' \
+    "$W/verdict.json" > /dev/null && ok "005-AC3 the accepted verdict lists all 29 items as same, sorted by name" || bad \
+    "005-AC3 accepted verdict shape: $(head -c 200 "$W/verdict.json")";
+else bad "005-AC3 no verdict written on success (RED)";
+fi
 for i in $REQUIRED; do
   refuse "005-AC3 one differing nibble in $i blocks and names exactly it" differs "$i" rec.json exp.json "act-diff-$i.json"
-  if [ -f "$W/verdict.json" ]; then jq -e --arg i "$i" '([.items[]|select(.status=="differs")|.name]==[$i]) and (.items[]|select(.name==$i)|(.expected|startswith("sha256:")) and (.actual|startswith("sha256:")) and .expected != .actual)' "$W/verdict.json" > /dev/null && ok "005-AC3 the verdict marks only $i as differs, with both digests" || bad "005-AC3 verdict for $i: $(head -c 160 "$W/verdict.json")"; else bad "005-AC3 no verdict for a difference in $i (RED)"; fi
+  if [ -f "$W/verdict.json" ]; then
+    jq -e --arg i "$i" '([.items[]|select(.status=="differs")|.name]==[$i])
+        and (.items[]|select(.name==$i)|(.expected|startswith("sha256:")) and (.actual|startswith("sha256:")) and .expected != .actual)' \
+        "$W/verdict.json" > /dev/null \
+      && ok "005-AC3 the verdict marks only $i as differs, with both digests" \
+      || bad "005-AC3 verdict for $i: $(head -c 160 "$W/verdict.json")"
+  else
+    bad "005-AC3 no verdict for a difference in $i (RED)"
+  fi
 done
 three=$(set -- $REQUIRED; echo "${1}|${8}|${!#}")      # the first, the eighth and the last item: what act-diff3.json changes
 refuse "005-AC3 three differing items are all named, not just the first" differs "$three" rec.json exp.json act-diff3.json
 for i in apk-fips-aarch64 image-production binary-standard-x86_64 archive-checksums; do
   refuse "005-AC3 an item missing on the Rebuild side ($i) is a difference" missing "$i" rec.json exp.json "act-miss-$i.json"
 done
-refuse "005-AC3 an item missing on the Build side is a difference (and is named with its side)" missing "$(echo $REQUIRED | cut -d' ' -f4)" rec-miss.json exp-miss.json act.json
+refuse "005-AC3 an item missing on the Build side is a difference (and is named with its side)" missing "$(echo $REQUIRED | cut -d' ' -f4)" \
+    rec-miss.json exp-miss.json act.json
 refuse "005-AC3 an item that is not on the committed list, on the Rebuild side, is refused" unexpected unlisted-item rec.json exp.json act-extra.json
 refuse "005-AC3 an item that is not on the committed list, on the Build side, is refused" unexpected unlisted-item rec-extra.json exp-extra.json act-extra.json
-for k in upper sha512 short long num null bare ws; do refuse "005-AC3 a malformed digest ($k) is a format refusal, not a quiet difference" format "" rec.json exp.json "act-fmt-$k.json"; done
+for k in upper sha512 short long num null bare ws;
+do refuse "005-AC3 a malformed digest ($k) is a format refusal, not a quiet difference" format "" rec.json exp.json "act-fmt-$k.json";
+done
 refuse "005-AC3 a duplicate key in the actual items (last-wins parsing could hide a difference) is a format refusal" format "" rec.json exp.json act-dupkey.json
 refuse "005-AC3 Build's items.json changed after Witness recorded its hash is refused" digest "" rec.json exp-tampered.json act.json
 refuse "005-AC3 a record with no file:items.json product subject is refused" digest "" rec-none.json exp.json act.json
 refuse "005-AC3 a record with two file:items.json subjects is refused" digest "" rec-two.json exp.json act.json
 refuse "005-AC3 a subject named file:items.json.bak does not count as the product" digest "" rec-wrongname.json exp.json act.json
 refuse "005-AC3 a material subject named file:items.json does not count as the product" digest "" rec-material.json exp.json act.json
-rc=$(rc_of rebuild-compare --build-record "$W/does-not-exist.json" --expected "$W/exp.json" --actual "$W/act.json" --out "$W/v2.json"); [ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 an unreadable record is a usage error (exit 2), never a pass" || bad "005-AC3 unreadable record -> exit $rc, wanted 2"
-rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --out "$W/v3.json"); [ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 a missing --actual is a usage error (exit 2)" || bad "005-AC3 missing --actual -> exit $rc, wanted 2"
+rc=$(rc_of rebuild-compare --build-record "$W/does-not-exist.json" --expected "$W/exp.json" --actual "$W/act.json" --out "$W/v2.json");
+[ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 an unreadable record is a usage error (exit 2), never a pass" || bad \
+    "005-AC3 unreadable record -> exit $rc, wanted 2"
+rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --out "$W/v3.json");
+[ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 a missing --actual is a usage error (exit 2)" || bad \
+    "005-AC3 missing --actual -> exit $rc, wanted 2"
 # the committed list (the implementation adds .github/policy/rebuild-items.json) is exactly the one the CLI contract names
 if [ -f "$root/.github/policy/rebuild-items.json" ]; then
-  python3 - "$root/.github/policy/rebuild-items.json" "$W/required.json" <<'PY' && ok "005-AC3 .github/policy/rebuild-items.json is exactly the 29 items this test requires" || bad "005-AC3 rebuild-items.json differs from the contract list"
+  python3 - "$root/.github/policy/rebuild-items.json" "$W/required.json" <<'PY' \
+    && ok "005-AC3 .github/policy/rebuild-items.json is exactly the 29 items this test requires" \
+    || bad "005-AC3 rebuild-items.json differs from the contract list"
 import json, sys
 a, b = json.load(open(sys.argv[1])), json.load(open(sys.argv[2]))
 sys.exit(0 if sorted(a) == sorted(b) and len(a) == len(set(a)) else 1)
 PY
 else bad "005-AC3 .github/policy/rebuild-items.json does not exist (RED: the implementation commits the list)"; fi
 # nothing published: the only file rebuild-compare writes is the verdict (rule 64: Release publishes Build's bytes)
-rm -rf "$W/clean"; mkdir "$W/clean"; (cd "$W/clean" && python3 "$CV" rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --actual "$W/act.json" --out verdict.json > /dev/null 2>&1 || true)
-[ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
+rm -rf "$W/clean";
+mkdir "$W/clean";
+(cd "$W/clean" && python3 "$CV" rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --actual "$W/act.json" --out verdict.json > \
+    /dev/null 2>&1 || true)
+[ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
+    "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad \
+    "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
 TOTAL=$((pass + failn)); EXPECT=87
 echo "pass=$pass fail=$failn"
 if [ "$TOTAL" != "$EXPECT" ]; then echo "FAIL case count $TOTAL != expected $EXPECT (a case was skipped or added)"; exit 1; fi

@@ -16,7 +16,8 @@ THE ITEMS (PROPOSED/UNVERIFIED layout; cache-3f's note fixes the apk digest, the
   digests.json (Sign's only input, PR 1's schema): image-production, image-fips, apk-<standard|fips>-<amd64|arm64>, and the four Linux archives
       archive-linux-<amd64|arm64>, archive-fips-linux-<amd64|arm64> (the goreleaser names fscache_<ver>_linux_<arch>.tar.gz, fscache-fips_...).
   items.json (Rebuild's comparison, bin/chain-rebuild-test.sh REQUIRED): those archives and the apks (named by x86_64|aarch64), apkindex-<arch>,
-      binary-<variant>-<arch> (sha256 of `apk-tool.py cat APK usr/bin/fscache`), modules-sbom-<variant>, inputs-manifest-<variant>, lock-<image>, image-<image>, image-<image>-manifest-<amd64|arm64>,
+      binary-<variant>-<arch> (sha256 of `apk-tool.py cat APK usr/bin/fscache`), modules-sbom-<variant>, inputs-manifest-<variant>, lock-<image>, image-<image>,
+      image-<image>-manifest-<amd64|arm64>,
       sbom-<image>, archive-checksums.
 """
 import hashlib, json, os, re, shutil, sys
@@ -193,7 +194,8 @@ a = sys.argv[1:]
 open("calls.log", "a").write("image %s SDE=%s\\n" % (" ".join(a), os.environ.get("SOURCE_DATE_EPOCH", "unset")))
 def arg(n): return a[a.index(n) + 1]
 image, out, repo, keys = arg("--variant"), arg("--out"), arg("--melange-repo"), arg("--keyring-dir")
-if not (os.path.isdir(repo + "/x86_64") and os.path.isdir(repo + "/aarch64") and os.path.isfile(keys + "/wolfi-signing.rsa.pub") and os.path.isfile(keys + "/assembly.rsa.pub")):
+if not (os.path.isdir(repo + "/x86_64") and os.path.isdir(repo + "/aarch64")
+        and os.path.isfile(keys + "/wolfi-signing.rsa.pub") and os.path.isfile(keys + "/assembly.rsa.pub")):
     sys.stderr.write("refusal: repo or keyring incomplete\\n"); sys.exit(2)
 if os.environ.get("FAKE_IMAGE_RC", "0") != "0": sys.exit(int(os.environ["FAKE_IMAGE_RC"]))
 pattern = "fscache-fips-*-r0.apk" if image == "fips" else "fscache-[0-9]*-r0.apk"
@@ -202,7 +204,8 @@ sde = os.environ.get("SOURCE_DATE_EPOCH", "unset")
 h = lambda s: hashlib.sha256(s.encode()).hexdigest()
 os.makedirs(out + "/" + image + "-sbom", exist_ok=True)
 open("%s/%s.digest" % (out, image), "w").write("sha256:%s\\n" % h("image|%s|%s|%s" % (image, sde, body)))
-open("%s/%s.manifests" % (out, image), "w").write("amd64 sha256:%s\\narm64 sha256:%s\\n" % (h("m-amd64|%s|%s" % (image, body)), h("m-arm64|%s|%s" % (image, body))))
+open("%s/%s.manifests" % (out, image), "w").write("amd64 sha256:%s\\narm64 sha256:%s\\n"
+        % (h("m-amd64|%s|%s" % (image, body)), h("m-arm64|%s|%s" % (image, body))))
 open("%s/%s.tar" % (out, image), "w").write("tar|" + image)
 open("%s/%s.full.lock.json" % (out, image), "w").write("lock|" + image)
 open("%s/%s-sbom/sbom.json" % (out, image), "w").write("sbom|" + image)
@@ -257,8 +260,13 @@ if cmd == "items-merge":
 if cmd == "rebuild-compare":
     os.makedirs(os.path.dirname(arg("--out")) or ".", exist_ok=True)
     expected, actual = json.load(open(arg("--expected"))), json.load(open(arg("--actual")))
-    differ = sorted(k for k in set(expected) | set(actual) if expected.get(k) != actual.get(k))
-    json.dump({"equal": not differ, "differs": differ}, open(arg("--out"), "w"))
+    def status(k):
+        if k not in expected: return "unexpected"
+        if k not in actual: return "missing-actual"
+        return "same" if expected[k] == actual[k] else "differs"
+    items = [{"name": k, "expected": expected.get(k), "actual": actual.get(k), "status": status(k)} for k in sorted(set(expected) | set(actual))]
+    differ = [i["name"] for i in items if i["status"] != "same"]
+    json.dump({"equal": not differ, "items": items}, open(arg("--out"), "w"))     # the CLI contract of bin/chain-rebuild-test.sh
     if differ: sys.stderr.write("refused at rebuild: differs: %s\\n" % " ".join(differ)); sys.exit(1)
     sys.exit(0)
 sys.exit(2)
@@ -271,7 +279,8 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
                        ("apk-tool.py", FAKE_APKTOOL), ("build-apk.sh", FAKE_BUILD_APK), ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
     shutil.copy(script, d + "/bin/build-stage-%s.sh" % kind); os.chmod(d + "/bin/build-stage-%s.sh" % kind, 0o755)
-    for f, c in (("archive/keys/wolfi-signing.rsa.pub", "w"), ("archive/go/go.tar.gz", "g"), ("archive/x86_64/pkg-1.apk", "p1"), ("archive/aarch64/pkg-1.apk", "p2"),
+    for f, c in (("archive/keys/wolfi-signing.rsa.pub", "w"), ("archive/go/go.tar.gz", "g"),
+                 ("archive/x86_64/pkg-1.apk", "p1"), ("archive/aarch64/pkg-1.apk", "p2"),
                  ("build/keys/assembly.rsa.pub", "a"), ("build/locks/melange.lock", "l"), (".github/policy/release-policy.template.json", "{}")):
         write(d + "/" + f, c)
     pre, rec, step = ("apk", "rec-apk", "apk") if kind == "assemble" else ("rapk", "rec-rapk", "rapk")

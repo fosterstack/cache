@@ -15,7 +15,8 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   lockflow BUILD_ASM REBUILD_ASM STAGE_YML...   REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: Build and Rebuild assemble identically; no stage file names apko
   listed CHAIN_SCRIPTS.json ROOT            the four scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
   graph FILE                                REQ-CHAIN-005-AC5: the chain jobs of release.yml
-  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml, and stage-image.yml / stage-admission.yml are gone
+  workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml,
+                                             and stage-image.yml / stage-admission.yml are gone
   recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
 
 === Rule 68 seam (advisor ruling, Oct 9; owner's amendment of rule 68: every command run under Witness is wrapped in `timeout 540`) ===========
@@ -233,7 +234,8 @@ def job(j, family, name, allowed):
         st = j.get("strategy") or {}
         if j.get("runs-on") != MAT:
             bad.append("the apk job must run on matrix.runner, got %r" % j.get("runs-on"))
-        if set(st) - {"matrix", "fail-fast"} or set(st.get("matrix") or {}) != {"runner"} or sorted((st.get("matrix") or {}).get("runner") or []) != sorted(r for r, a in RUNNERS):
+        runners = sorted(((st.get("matrix") or {}).get("runner")) or [])
+        if set(st) - {"matrix", "fail-fast"} or set(st.get("matrix") or {}) != {"runner"} or runners != sorted(r for r, a in RUNNERS):
             bad.append("strategy must be exactly matrix.runner: both of %s (native runners, no emulation, no include/exclude)" % [r for r, a in RUNNERS])
     else:
         if j.get("runs-on") != "ubuntu-24.04": bad.append("the assemble job must run directly on the ubuntu-24.04 VM (rule 62), got %r" % j.get("runs-on"))
@@ -255,8 +257,10 @@ def job(j, family, name, allowed):
         bad.append("step 2 must be exactly: run ./bin/install-scanner.sh witness (checksum-pinned Witness install)")
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed) or (s.get("with") or {}) != {"name": nm, "path": path_}:
-            bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s (a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
+        if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
+                or (s.get("with") or {}) != {"name": nm, "path": path_}):
+            bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s "
+                       "(a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
     s = steps[i] if i < len(steps) else {}; i += 1
     want_keys = {"run", "name"} | ({"env"} if spec["gh"] else set())
     if set(s) - want_keys: bad.append("the Witness step may carry only %s (no if, shell, working-directory)" % sorted(want_keys))
@@ -266,7 +270,8 @@ def job(j, family, name, allowed):
     bad += witness_seam(s.get("run") or "", spec, family)
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed) or (s.get("with") or {}) != {"name": nm, "path": path_}:
+        if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
+                or (s.get("with") or {}) != {"name": nm, "path": path_}):
             bad.append("step %d must be a pinned actions/upload-artifact with exactly name %s and the ONE path %s "
                        "(the artifact is rooted at its common ancestor, so a second path changes every file name in it)" % (i, nm, path_))
     if i != len(steps):
@@ -276,11 +281,17 @@ def job(j, family, name, allowed):
 
 # ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
 STEPS = ("apk", "build", "rapk", "rebuild")      # the closed list of step names; the record is witness-STEP/STEP-collection.json
+# The identity token reaches Witness through a one-read process substitution, so no file holds it while the wrapped command runs (Witness loads its
+# signer before it runs the command: in-toto-witness cmd/run.go:51). PROPOSED/UNVERIFIED: a real `witness run` must be shown to read the path exactly
+# once (harness spike or the dry run). DOCUMENTED FALLBACK if it reads twice or needs a regular file: write the token to a file and delete it before
+# the command starts, which is not possible with `exec witness run`, so the fallback is the older file form (a token file under $RUNNER_TEMP):
+#   curl ... -o "$RUNNER_TEMP/tok.json"; jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"; echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"
+#   with --signer-fulcio-token-path "$RUNNER_TEMP/tok". Changing to it changes only TOKEN and TOKEN_PATH below.
 TOKEN = [
-    'curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" -o "$RUNNER_TEMP/tok.json"',
-    'jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"',
-    'echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"',
+    'tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)',
+    'echo "::add-mask::$tok"',
 ]
+TOKEN_PATH = '<(printf %s "$tok")'
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # never github (raw OIDC token) or slsa (Sign's alone)
 
 
@@ -293,9 +304,9 @@ def witnessed_lines():
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
             "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
-            '--signer-fulcio-token-path "$RUNNER_TEMP/tok" -t https://timestamp.sigstore.dev/api/v1/timestamp '
+            "--signer-fulcio-token-path %s -t https://timestamp.sigstore.dev/api/v1/timestamp "
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-$step/$step-collection.json" -- timeout 540 bash "$@"' % keys]
+            '-o "witness-$step/$step-collection.json" -- timeout 540 bash "$@"' % (TOKEN_PATH, keys)]
 
 
 def witness_seam(run, spec, family):
@@ -363,15 +374,34 @@ def listed(path, root):
 
 
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
-CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml", "release": "stage-promote.yml"}
+CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml",
+         "release": "stage-promote.yml"}
 NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"], "release": ["check", "rebuild", "sign"]}
 
 
-# The jobs of release.yml that are not chain jobs, with the exact permissions each may hold (a workflow-level permissions block is contents: read).
-# decide, patch-notes and patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof and may hold
-# contents: read and nothing else. Anything else is a fault: a job that is not one of these is a way to publish around Rebuild or Check.
-NON_CHAIN = {"decide": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"},
-             "patch-notes": {"contents": "read"}, "patch-failed": {"contents": "read", "issues": "write"}}
+# The ONE `if` a chain job may carry: build starts the chain only on a v* tag (REQ-REL-009; sign, rebuild, check and release are then skipped by
+# their needs). Two exact strings are accepted: the tag gate, and PR 1's dry-run form quoted verbatim from origin/pipeline-chain-sign-boundary
+# (.github/workflows/release.yml), under which build also runs in a manual dry run; the tag gate stays the only non-dry-run path to a release.
+TAG_GATE = "${{ startsWith(github.ref, 'refs/tags/v') }}"
+DRY_RUN_GATE = "${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
+BUILD_IF = (TAG_GATE, DRY_RUN_GATE)
+
+# The jobs of release.yml that are not chain jobs, each a finite spec: its exact permissions, whether it may name `environment: agent` and `secrets.`
+# (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
+# patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
+# no secrets). Anything else is a way to publish around Rebuild or Check.
+DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
+NON_CHAIN = {
+    "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
+    "patch-notes": {"perm": {"contents": "read"}, "agent": True, "needs": ["decide"]},
+    "patch-failed": {"perm": {"contents": "read", "issues": "write"}, "agent": False},
+}
+HOSTILE = {"perm": {"contents": "read"}, "agent": False}
+
+
+def needs_of(job):
+    needs = job.get("needs")
+    return [] if needs is None else ([needs] if isinstance(needs, str) else list(needs))
 
 
 def graph(path):
@@ -383,13 +413,21 @@ def graph(path):
         job = jobs.get(name)
         if job is None:
             bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % name); continue
-        if set(job) - {"uses", "needs", "permissions", "with"}:
-            bad.append("%s: keys outside {uses, needs, permissions, with}: %s (no if, continue-on-error, secrets, strategy, env)" % (name, sorted(set(job) - {"uses", "needs", "permissions", "with"})))
+        extra = set(job) - {"uses", "needs", "permissions", "with", "if"}
+        if extra:
+            bad.append("%s: keys outside {uses, needs, permissions, with} and build's one if: %s (no continue-on-error, secrets, strategy, env)"
+                       % (name, sorted(extra)))
+        if name == "build":
+            if job.get("if") not in BUILD_IF:
+                bad.append("build must carry exactly one if, the tag gate %s (or PR 1's dry-run form), got %r" % (TAG_GATE, job.get("if")))
+        elif "if" in job:
+            bad.append("%s may not carry an if (only build is gated, by the tag; the others are skipped by their needs), got %r" % (name, job["if"]))
         if job.get("uses") != "./.github/workflows/" + file:
             bad.append("%s must call exactly ./.github/workflows/%s, got %r" % (name, file, job.get("uses")))
-        needs = job.get("needs"); needs = [] if needs is None else ([needs] if isinstance(needs, str) else list(needs))
-        if sorted(needs) != NEEDS[name]:
-            bad.append("%s must need exactly %s, got %s" % (name, NEEDS[name], sorted(needs)))
+        if sorted(needs_of(job)) != NEEDS[name]:
+            bad.append("%s must need exactly %s, got %s" % (name, NEEDS[name], sorted(needs_of(job))))
+        if "secrets." in json.dumps(job) or "environment" in job:
+            bad.append("%s names secrets. or an environment (a chain job calls its stage with nothing of the kind)" % name)
     for name, job in jobs.items():
         if name in CHAIN:
             continue
@@ -397,12 +435,22 @@ def graph(path):
         granted = job.get("permissions", d.get("permissions"))
         if "uses" in job:
             bad.append("job %s has a job-level uses (%s): only the five chain jobs call a workflow" % (name, job["uses"]))
-        if name.startswith("hostile-"):
-            if granted != {"contents": "read"}: bad.append("job %s may hold contents: read and nothing else, got %s" % (name, granted))
-        elif name not in NON_CHAIN:
-            bad.append("job %s is not one of the five chain jobs or the allowed non-chain jobs %s" % (name, sorted(NON_CHAIN)))
-        elif granted != NON_CHAIN[name]:
-            bad.append("job %s must hold exactly the permissions %s, got %s" % (name, NON_CHAIN[name], granted))
+        spec = HOSTILE if name.startswith("hostile-") else NON_CHAIN.get(name)
+        if spec is None:
+            bad.append("job %s is not one of the five chain jobs or the allowed non-chain jobs %s plus hostile-*" % (name, sorted(NON_CHAIN)))
+            continue
+        if granted != spec["perm"]:
+            bad.append("job %s must hold exactly the permissions %s, got %s" % (name, spec["perm"], granted))
+        if spec["agent"]:
+            if job.get("environment", "agent") != "agent":
+                bad.append("job %s may name only environment: agent, got %r" % (name, job["environment"]))
+        else:
+            if "environment" in job: bad.append("job %s may not name an environment (the App secrets live in agent), got %r" % (name, job["environment"]))
+            if "secrets." in json.dumps(job): bad.append("job %s may not use secrets. (only decide and patch-notes hold the App's)" % name)
+        if "if" in spec and job.get("if") != spec["if"]:
+            bad.append("job %s must carry exactly the if %s, got %r" % (name, spec["if"], job.get("if")))
+        if "needs" in spec and sorted(needs_of(job)) != spec["needs"]:
+            bad.append("job %s must need exactly %s, got %s" % (name, spec["needs"], sorted(needs_of(job))))
     return bad
 
 
@@ -416,7 +464,8 @@ stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml sup
 def workflows(directory):
     import os
     have = set(os.listdir(directory))
-    bad = ["workflow file %s was added (the only new file of v0.3.0 is stage-sign.yml, rule 52)" % f for f in sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml"})]
+    added = sorted(have - KNOWN_WORKFLOWS - {"stage-sign.yml"})
+    bad = ["workflow file %s was added (the only new file of v0.3.0 is stage-sign.yml, rule 52)" % f for f in added]
     return bad + ["%s still exists (PR 2 removes it, rules 50 and 61)" % f for f in ("stage-image.yml", "stage-admission.yml") if f in have]
 
 
@@ -452,6 +501,7 @@ if __name__ == "__main__":
         print("missing file: %s" % sys.argv[2]); sys.exit(1)
     bad = {"stage": lambda: stage(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None), "script": lambda: script(sys.argv[2], sys.argv[3]),
            "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2]),
-           "listed": lambda: listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]), "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
+           "listed": lambda: listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
+            "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)
