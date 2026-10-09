@@ -629,15 +629,24 @@ mappings:
   - ac: REQ-REPO-001-AC25
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC1 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths [... page line 91 continues with the owner Oct 3 amendment, 'I ratify b.']
   - ac: REQ-AUD-018-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml job allowlist: step auditor layout runs the layout check over git ls-files on every push/PR. Layout-check exemptions beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries; advisor to confirm). Amendments in the AC text: test-evidence/mappings.yaml and test-evidence/unmapped.yaml (owner, Oct 2 2026); bin/patch-decide.py and bin/patch-decide-test.sh (owner, Oct 3 2026, 'I ratify b.'). The layout check's docstring is stale on these (follow-up)" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC2 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   The Python under `.github/agent/` is held to the **100% coverage gate** in CI, the same as the Go.
   - ac: REQ-AUD-018-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: inspection, ref: ".github/agent/tests/coverage-gate.sh (the gate script itself, run by the ci.yml coverage job; it carries the AC2 proves header but is not test-named, so the matrix cases req18-ac2-python-100pct-coverage-gate and req18-ac2-identity-claims-logging-stubbed are the shell-test evidence) (re-verified 2026-10-09)" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml job coverage: step auditor Python coverage, zero uncovered. KNOWN GAP (owner question pending): the gate honours the exclusion list in .github/agent/coverage-exclusions.txt, which the AC text does not mention, and it measures only the auditor bin directory (code to widen in a follow-up)" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC3 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   Every change under `.github/agent/` clears the **independent second review's stop rule** before merge.
   - ac: REQ-AUD-018-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
