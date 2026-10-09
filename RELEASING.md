@@ -49,7 +49,10 @@ step, never re-resolved from a registry.
   production, `-debug` and `-fips` containers on linux/amd64 and, under
   emulation, on linux/arm64, and `bin/fips-image-posture.py` compares each
   answer with the exact expected string (no redirects, status 200 only,
-  size and time capped). The
+  size and time capped). The image-identity comparison (the container's
+  image against the image it was started from) is UNVERIFIED on runners
+  that use the containerd image store, where a container's `.Image` and
+  the image's `.Id` can differ. The
   requirement gates a release through the acceptance predicate only under
   an approved baseline frozen after it merged; the older frozen baselines
   (v0.2.0, v0.2.1) do not contain it. The stage failing blocks the
