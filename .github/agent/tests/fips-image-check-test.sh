@@ -42,10 +42,16 @@
 #     is bounded (at most 120 attempts or 120 s of sleep).
 #   escapes  No `command`, `env`, `exec`, `eval`, `sh -c`, `xargs`, `builtin`, `enable`, `source`, backslash-escaped tool name or
 #     process wrapper in the container and results steps (they would run a tool around the PATH of the stubs).
-#   deadline Every deadline/timeout constant in the program is at most 3 s; the slow cases must fail within 4.5 s.
+#   deadline Every deadline/timeout constant in the program is at most 3 s; the slow cases must fail within 4.5 s, including a
+#     response whose three phases (status line, headers, body) take 1.2 s each: the budget is for the whole call.
 #   imports  The program imports only the standard modules sys, json, http, urllib, socket, argparse, signal, time, base64, re,
 #     stat, errno and os.path; no subprocess, pathlib, shutil, ctypes or importlib, no os.environ/os.system/..., no eval/exec/
 #     __import__, no path under ~/.docker.
+#   matrix   The amd64 step initialises /tmp/posture-matrix.txt itself (`: > /tmp/posture-matrix.txt`); the arm64 step never
+#     truncates it. The program has no string constant naming a path (the matrix comes only from --matrix); an integration
+#     case runs the REAL program with the argument form of the steps against real servers on their ports.
+#   caller   release.yml calls stage-acceptance-artifacts.yml once, with mode: candidates and the image stage's digests, and the
+#     acceptance predicate needs that job and takes its results as artifacts-results.
 #   (not checked) The pulled image's RepoDigests are not compared with the candidate digest inside the container steps: the
 #     pull step, pinned by hash and executed above, is what ties the local tag to the digest.
 #   caveat   The image-identity comparison is UNVERIFIED where Docker uses the containerd image store (the container's
@@ -171,6 +177,33 @@ got_inv = [(s.get("name"), (s.get("uses") or "").split("@")[0] or None, s.get("i
             hashlib.sha256(s["run"].encode()).hexdigest()[:16] if INV_H.get(s.get("name")) else None) for s in steps]
 check("the step inventory is exactly the pinned one (names, actions, conditions, ids), and the run: text of every step before 'exercise the images' is unchanged",
       got_inv == INV, [g for g, i in zip(got_inv, INV) if g != i] or got_inv)
+REL = yaml.safe_load(rd(".github/workflows/release.yml"))["jobs"]
+def release_problems(jobs):
+    out = []
+    callers = [k for k, j in jobs.items() if j.get("uses") == "./.github/workflows/stage-acceptance-artifacts.yml"]
+    if len(callers) != 1: return ["callers %s" % callers]
+    k = callers[0]; j = jobs[k]; w = j.get("with") or {}
+    if w.get("mode") != "candidates": out.append("mode %r" % (w.get("mode"),))
+    if w.get("digests") != "${{ needs.image.outputs.digests }}" or "image" not in (j.get("needs") or []): out.append("digests")
+    if {"if", "continue-on-error"} & set(j): out.append("conditional")
+    pj = [x for x in jobs.values() if x.get("uses") == "./.github/workflows/stage-acceptance-predicate.yml"]
+    if len(pj) != 1: out.append("predicate jobs %d" % len(pj))
+    else:
+        if k not in (pj[0].get("needs") or []): out.append("the predicate does not need the artifacts job")
+        if (pj[0].get("with") or {}).get("artifacts-results") != "${{ needs.%s.outputs.results }}" % k: out.append("artifacts-results")
+    return out
+check("release.yml: the artifacts stage is called once with mode candidates and the image stage's digests, unconditionally, and the predicate needs it and takes its results", not release_problems(REL), release_problems(REL))
+import copy
+def relmut(f):
+    j = copy.deepcopy(REL); f(j); return release_problems(j)
+k_ = [k for k, j in REL.items() if j.get("uses") == "./.github/workflows/stage-acceptance-artifacts.yml"][0]
+p_ = [k for k, j in REL.items() if j.get("uses") == "./.github/workflows/stage-acceptance-predicate.yml"][0]
+for name, f in (("mode removed", lambda j: j[k_]["with"].pop("mode")), ("mode archives", lambda j: j[k_]["with"].update(mode="archives")),
+                ("digests removed", lambda j: j[k_]["with"].pop("digests")), ("job made conditional", lambda j: j[k_].update({"if": "false"})),
+                ("the predicate no longer needs it", lambda j: j[p_].update(needs=[n for n in j[p_]["needs"] if n != k_])),
+                ("the predicate takes another job's results", lambda j: j[p_]["with"].update({"artifacts-results": "${{ needs.acceptance.outputs.maven-results }}"})),
+                ("a second caller in archives mode", lambda j: j.update({"again": {"uses": "./.github/workflows/stage-acceptance-artifacts.yml", "with": {"mode": "archives"}}}))):
+    check("release.yml pin catches: " + name, bool(relmut(f)), name)
 check("no step has continue-on-error or a shell override", all(not {"continue-on-error", "shell"} & set(s) for s in steps))
 check("the job has timeout-minutes (a positive integer, at most 120)", isinstance(job.get("timeout-minutes"), int) and 0 < job["timeout-minutes"] <= 120, job.get("timeout-minutes"))
 check("the job has no job-level if:, continue-on-error, env, container or services", not {"if", "continue-on-error", "env", "container", "services"} & set(job), sorted(job))
@@ -220,6 +253,9 @@ for form in ("command -p docker tag localhost/fa-fips x || true", "env docker ta
              "sh -c 'docker tag a b'", "echo a | xargs docker tag", "\\docker tag a b", "builtin command -p docker tag a b", "source /tmp/x", ". /tmp/x", "nohup docker tag a b", "timeout 5 docker tag a b",
              "/usr/bin/docker tag a b"):
     check("static scan catches an escape: %s" % form, ex is not None and bool(escapes(ex["run"] + "\n" + form) or ABS.search(form)), form)
+check("the amd64 step initialises the matrix file itself and the arm64 step never truncates it",
+      ex is not None and arm is not None and re.search(r"^\s*:\s*>\s*/tmp/posture-matrix\.txt\s*$", ex["run"], re.M) is not None
+      and not re.search(r"(?<!>)>\s*/tmp/posture-matrix\.txt|truncate[^\n]*posture-matrix|\bcp\b[^\n]*posture-matrix|\bmv\b[^\n]*posture-matrix|\brm\b[^\n]*posture-matrix", arm["run"]))
 check("the posture program is referenced only by the two container steps",
       all(("fips-image-posture" in (s.get("run") or "")) == (s.get("name") in (EX, ARM)) for s in steps))
 g = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "-q", "origin/main"], capture_output=True, text=True)
@@ -497,7 +533,7 @@ def py(a):
     if c["auth"] and (d.get("user"), d.get("password")) != ("acc", "accpw"): no("HTTP status 401")
     if d["arch"] != c["arch"] or d["variant"] != c["variant"]: no("the container behind this port is %s" % key)
     if CFG["notes"].get(key, NOTE[c["variant"]]) != NOTE[d["variant"]]: no("wrong posture")
-    open(d["matrix"], "a").write("linux/%s %s\n" % (d["arch"], d["variant"]))
+    if not CFG.get("nowrite"): open(d["matrix"], "a").write("linux/%s %s\n" % (d["arch"], d["variant"]))
     sys.exit(0)
 def main(kind):
     a = sys.argv[1:]
@@ -690,9 +726,19 @@ def chain():
     try: out = json.loads((r3["output"] or "").strip().split("results=", 1)[1])
     except Exception as e: out = repr(e)
     pairs = {(x["ac"], x["result"]) for x in out} if isinstance(out, list) else set()
-    check("end to end, one /tmp: exercise, then arm64, then the results step in candidates mode earns REQ-FIPS-002-AC2 pass (nothing truncates the matrix)",
+    check("end to end, one /tmp: exercise, then arm64, then the results step in candidates mode earns REQ-FIPS-002-AC2 pass (the amd64 step initialises the matrix, the arm64 step does not truncate it)",
           r1["rc"] == 0 and r2["rc"] == 0 and r3["rc"] == 0 and ("REQ-FIPS-002-AC2", "pass") in pairs and ("REQ-PLAT-002-AC1", "pass") in pairs,
           (r1["rc"], r2["rc"], r3["rc"], r3["err"][-150:], out))
+def stale():
+    if ex is None or arm is None or res is None: check("stale matrix: the three steps exist", False); return
+    T = tempfile.mkdtemp(dir=work)
+    r1 = run_step(ex, base_cfg(nowrite=True), tmp_dir=T, mats={"posture-matrix.txt": "".join(l + "\n" for l in SIX)})
+    r2 = run_step(arm, base_cfg(nowrite=True), tmp_dir=T)
+    r3 = run_step(res, base_cfg(), tmp_dir=T)
+    check("six stale lines in /tmp/posture-matrix.txt and no real check: the results step must not earn REQ-FIPS-002-AC2 (the amd64 step initialises the file)",
+          r3["rc"] not in (0, None) and "REQ-FIPS-002-AC2" not in (r3["output"] or ""), (r1["rc"], r2["rc"], r3["rc"], r3["output"]))
+SIX = ["linux/%s %s" % (a, v) for a in ("amd64", "arm64") for v in VARIANTS]
+TA.append(stale)
 TA.append(chain)
 par(TA)
 lap('part A, container steps')
@@ -893,6 +939,7 @@ for v in VARIANTS:
     case("%s: a reset in the middle of the body" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("Content-Length", 5000), ("Connection", "close")], G[:10]) + ["rst"], auth=au)
     case("%s: 150 headers" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("X-%d" % i, "v") for i in range(150)] + [("Content-Length", len(G))], G), auth=au)
     case("%s: a header line of 70000 bytes" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("X-Long", "a" * 70000), ("Content-Length", len(G))], G), auth=au)
+    case("%s reports the third buildinfo state (validated module linked, mode disabled at runtime)" % v, v, body=jb("off (validated module v1.0.0 linked, mode disabled at runtime)"), auth=au)
     case("%s: a good body followed by 70000 spaces" % v, v, body=jb(NOTE[v]) + b" " * 70000, auth=au)
     case("%s: a good body followed by 70000 spaces, chunked" % v, v, body=jb(NOTE[v]) + b" " * 70000, mode="chunked", auth=au)
     case("%s: a good body followed by 70000 spaces, ended by EOF" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("Connection", "close")], jb(NOTE[v]) + b" " * 70000), auth=au)
@@ -943,6 +990,9 @@ HDR = b"HTTP/1.1 200 OK\r\nContent-Length: 22\r\n"
 case("the server never answers (the program must give up within its deadline)", mode="hang", kind="slow")
 case("the server answers headers then dribbles the body for 30 s (an overall deadline)", mode="dribble", kind="slow")
 case("the status line arrives at one byte per second", mode="raw", raw=[(bytes([x]), 1.0) for x in HDR + b"\r\n"], kind="slow")
+G0 = jb("off")
+case("the response arrives in three phases of 1.2 s each (3.6 s in all): the budget is for the whole call", mode="raw",
+     raw=[(b"HTTP/1.1 200 OK\r\n", 1.2), (b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(G0), 1.2), (G0, 1.2)], kind="slow")
 case("a header arrives at one byte per second", mode="raw", raw=[(b"HTTP/1.1 200 OK\r\n", 0)] + [(bytes([x]), 1.0) for x in b"X-Slow: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\r\n"], kind="slow")
 case("the chunk-size lines arrive at one byte per second", mode="raw", raw=[(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", 0)] + [(bytes([x]), 1.0) for x in b"16\r\n" + b"0" * 30], kind="slow")
 
@@ -986,7 +1036,7 @@ def run_case_on(sp, c, SRV, OTHER, DECOY):
     if c["kind"] in ("http", "refused", "slow") and not p.stderr.startswith("variant %s:" % c["v"]): return False
     if c["kind"] == "http" and SRV.hits and SRV.hits[0][0] != "/statusz" and c["status"] != 200: return False
     return True
-FOCUS = [("5 s", r"never answers|dribbl|per second"), ("followed", r"HTTP 30|redirect"), ("any 2xx", r"HTTP 20|204|205|304"), ("3xx", r"HTTP 30"), ("any status", r"HTTP (40|50)"),
+FOCUS = [("per-phase", r"never answers|dribbl|per second|phases"), ("5 s", r"never answers|dribbl|per second"), ("followed", r"HTTP 30|redirect"), ("any 2xx", r"HTTP 20|204|205|304"), ("3xx", r"HTTP 30"), ("any status", r"HTTP (40|50)"),
          ("size cap", r"oversize|6553|cap"), ("timeout", r"never answers|dribbl|per second"), ("deadline", r"never answers|dribbl|per second"),
          ("NaN", r"NaN|Infinity"), ("truncated", r"truncated|cut short|Content-Length"), ("proxy", r"exact good"), ("nested", r"nested"), ("JSON decoding", r"nested"),
          ("protocol error", r"garbage|150 headers|70000 bytes|empty reply|reset"), ("printed raw", r"newline|carriage|holding|::error::"),
@@ -1118,6 +1168,7 @@ REFMUT = [
  ("matching ignores surrounding whitespace", [("if got != want:", "if got.strip() != want:")]),
  ("matching ignores case", [("if got != want:", "if got.lower() != want.lower():")]),
  ("the deadline is 5 s", [("DEADLINE = 3.0", "DEADLINE = 5.0")]),
+ ("the deadline is a fresh budget per phase", [("signal.alarm(int(DEADLINE))", "pass"), ("        buf = b\"\"\n", "        buf = b\"\"\n        t0 = time.monotonic()\n")]),
  ("the wrong certificate is expected", [("#5247", "#5248")]),
  ("the standard variants expect 'on'", [('"debug": "off"', '"debug": "on"')]),
  ("the production expectation is the fips string", [('"production": "off"', '"production": "active (Go validated module v1.0.0, CMVP cert #5247)"')]),
@@ -1182,15 +1233,76 @@ def import_problems(src):
     out = []
     for n in ast.walk(ast.parse(src)):
         if isinstance(n, ast.Import): out += ["import " + a.name for a in n.names if a.name.split(".")[0] not in OKMODS]
-        if isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] not in OKMODS: out.append("from " + str(n.module))
+        if isinstance(n, ast.ImportFrom):
+            m = n.module or ""
+            if m.split(".")[0] not in OKMODS: out.append("from " + m)
+            elif m == "os": out += ["from os import " + a.name for a in n.names if a.name != "path"]
+            elif m == "sys": out += ["from sys import " + a.name for a in n.names if a.name not in ("argv", "stderr", "stdout", "exit")]
+            elif m == "os.path": out += ["from os.path import " + a.name for a in n.names if a.name in ("expanduser", "expandvars")]
+        if isinstance(n, ast.Attribute) and n.attr in ("expanduser", "expandvars"): out.append(n.attr)
         if isinstance(n, ast.Name) and n.id in ("__import__", "eval", "exec", "compile"): out.append(n.id)
         if isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "os" and n.attr != "path": out.append("os." + n.attr)
         if isinstance(n, ast.Constant) and isinstance(n.value, str) and re.search(r"\.docker|~/|/home/|/etc/", n.value): out.append("path " + n.value)
     return out
+def path_constants(src):
+    return [n.value for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+            and (re.search(r"posture-matrix|\.txt|\.json|/tmp|/home|/var|/etc", n.value) or (n.value.startswith("/") and n.value != "/statusz"))]
+pc = path_constants(src) if exists else ["program missing"]
+check("static: the program has no string constant naming a path or a matrix file (the matrix comes only from --matrix)", exists and not pc, pc)
+check("the path check accepts the reference and flags a program that names posture-matrix.txt or /tmp",
+      not path_constants(REFSRC) and bool(path_constants(REFSRC + '\nX = "/tmp/posture-matrix.txt"\n')) and bool(path_constants(REFSRC + '\nX = "posture-matrix.txt"\n')))
+_calls = []
+def step_calls():
+    if not _calls and ex is not None and arm is not None:
+        for step in (ex, arm):
+            r = run_step(step, base_cfg())
+            _calls.extend(x["args"] for x in r["log"] if x.get("cmd") == "posture-check")
+    return _calls
+def mkp(port):
+    try:
+        s_ = Srv(("127.0.0.1", port), H); s_.name, s_.cfg, s_.hits = "statusz", {}, []
+        threading.Thread(target=s_.serve_forever, daemon=True).start(); return s_
+    except OSError: return None
+def integration(sp):
+    """The REAL program, with the argument form the two steps use (taken from their stub runs), against real servers on the
+    steps' own ports (a free port if one is busy), writing a file called posture-matrix.txt: one request per call, a row only
+    after a real answer, six rows in all, and no row after a wrong answer."""
+    calls = step_calls()
+    if len(calls) != 6: return False, "the steps made %d calls" % len(calls)
+    d = tempfile.mkdtemp(dir=work); m = d + "/posture-matrix.txt"; open(m, "w").close()
+    last = None
+    for a in calls:
+        a = list(a); port0 = int(a[a.index("--port") + 1]); v = a[a.index("--variant") + 1]
+        srv = mkp(port0) or mkp(0)
+        srv.cfg = dict(status=200, headers={}, body=jb(NOTE[v]), mode=None, auth=BASIC if v == "fips" else None, raw=None)
+        a[a.index("--port") + 1] = str(srv.server_address[1]); a[a.index("--matrix") + 1] = m
+        before = open(m).read()
+        try: p = subprocess.run([sys.executable, "-I", sp] + a[2:], capture_output=True, text=True, timeout=15)
+        finally: srv.shutdown(); srv.server_close()
+        row = "linux/%s %s\n" % (a[a.index("--arch") + 1], v)
+        if p.returncode != 0 or len(srv.hits) != 1 or open(m).read() != before + row: return False, "call %s: rc %d, %d requests" % (v, p.returncode, len(srv.hits))
+        last = a
+    if open(m).read().split("\n")[:-1] != SIX: return False, "the six rows are %r" % open(m).read()
+    srv = mkp(0); srv.cfg = dict(status=200, headers={}, body=jb("off"), mode=None, auth=BASIC, raw=None)
+    a = list(last); a[a.index("--port") + 1] = str(srv.server_address[1]); before = open(m).read()
+    try: p = subprocess.run([sys.executable, "-I", sp] + a[2:], capture_output=True, text=True, timeout=15)
+    finally: srv.shutdown(); srv.server_close()
+    if p.returncode == 0 or open(m).read() != before or len(srv.hits) != 1: return False, "a wrong answer was not refused"
+    return True, ""
+ig = integration(script) if exists else (False, "program missing")
+check("integration: the real program, run with the steps' own argument form against real servers on their ports and a file called posture-matrix.txt, makes one request per call, writes six rows only after real answers and none after a wrong one", ig[0], ig[1])
+ig_ref = integration(rp)
+check("integration: the reference passes the integration case", ig_ref[0], ig_ref[1])
+ig_mut = REFSRC.replace('    VARIANT = variant\n', '    VARIANT = variant\n    if MATRIX.endswith("posture-matrix.txt"):\n        open(MATRIX, "a").write("linux/%s %s\\n" % (ARCH, variant)); return 0\n', 1)
+mpi = os.path.join(work, "ig_mut.py"); open(mpi, "w").write(ig_mut)
+check("integration mutant is caught: a program that writes the row for a file called posture-matrix.txt without any request", ig_mut != REFSRC and not integration(mpi)[0] and bool(path_constants(ig_mut)))
 dv = deadline_values(src) if exists else []
 check("static: every deadline/timeout constant in the program is at most 3 s (the contract; the slow cases are timed against it)", exists and bool(dv) and max(dv) <= 3, dv)
 ip = import_problems(src) if exists else ["program missing"]
 check("static: the program imports only the allowed standard modules and reads neither the environment nor ~/.docker", exists and not ip, ip)
+check("the import guard flags from-imports of os/sys names and accepts os.path: from os import environ as e, from os import getenv, import os + os.getenv, from sys import modules, from os.path import expanduser; but not import os.path, from os import path, from sys import argv",
+      all(import_problems(REFSRC + x) for x in ("\nfrom os import environ as e\n", "\nfrom os import getenv\n", "\nimport os\nx = os.getenv('A')\n", "\nfrom sys import modules\n", "\nfrom os.path import expanduser\n"))
+      and not any(import_problems(REFSRC + x) for x in ("\nimport os.path\n", "\nfrom os import path\n", "\nfrom sys import argv, exit\n")))
 check("the static checks accept the reference and flag these programs: a 5 s deadline, subprocess, os.environ, __import__, a ~/.docker path, pathlib",
       deadline_values(REFSRC) == [3.0] and not import_problems(REFSRC) and max(deadline_values(REFSRC.replace("DEADLINE = 3.0", "DEADLINE = 5.0"))) == 5.0
       and all(import_problems(REFSRC + extra) for extra in ("\nimport subprocess\n", "\nimport os\nx = os.environ.get('A')\n", "\nx = __import__('subprocess')\n",
