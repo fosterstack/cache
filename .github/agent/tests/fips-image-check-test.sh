@@ -60,6 +60,12 @@
 #     pull step, pinned by hash and executed above, is what ties the local tag to the digest.
 #   caveat   The image-identity comparison is UNVERIFIED where Docker uses the containerd image store (the container's
 #     .Image and the image's .Id can differ), as arm64 under emulation is UNVERIFIED until the first run.
+#   exit     Exit 0: success. Exit 2 ONLY for 'no complete HTTP response yet': connection refused, reset or closed before a status
+#     line was received, or the deadline expiring before a status line. EVERY failure after a status line was received (a non-200
+#     status, a header, framing or body error, a truncated body, a deadline during the headers or the body, a wrong note, bad JSON)
+#     and every argument error exits 1 and is FINAL. A garbage status line is a response: exit 1. In the steps, posture() retries
+#     ONLY exit 2 (at least 20 attempts or 10 s, at most 120 and 120 s); exit 1, 3 or anything else other than 0 fails the step
+#     at once, after exactly one call. Failure text quotes data with repr() cut to 80 characters and never prints the --password value.
 #   steps    In both container steps, per variant, after that variant's healthz wait and while its container runs (before
 #     the step's docker rm): `python3 -I bin/fips-image-posture.py check --arch A --variant V --port P --matrix /tmp/posture-
 #     matrix.txt` (+ `--user acc --password accpw` for fips), P being the container's published port, retried around the
@@ -114,7 +120,7 @@ NOTE = {"production": "off", "debug": "off", "fips": GOOD_FIPS}
 EXPECT = {
  "given": "in candidates mode, the candidate image variants of a release (production, -debug and -fips) by candidate digest, running as the containers the artifact acceptance already starts on linux/amd64 and, under emulation, on linux/arm64 (the emulated arm64 containers are UNVERIFIED until the first run shows they serve /statusz)",
  "when": "/statusz is read from each running container",
- "then": "the -fips containers report 'active (Go validated module v1.0.0, CMVP cert #5247)', the production and -debug containers report 'off', and any other report (including the forced-mode line on a standard image), a container that does not answer /statusz with HTTP status 200, a container that is not the image pulled by that digest, or a missing variant on either architecture blocks the release",
+ "then": "the -fips containers report 'active (Go validated module v1.0.0, CMVP cert #5247)', the production and -debug containers report 'off', and any other report (including the forced-mode line on a standard image), a container that does not answer /statusz with HTTP status 200, a container that is not the image pulled by that digest, or a missing variant on either architecture blocks the release; a wrong or non-200 answer is final: it is not retried",
 }
 def find(o, i):
     if isinstance(o, dict):
@@ -147,6 +153,13 @@ check("RELEASING.md says AC2 gates only under a baseline frozen after it merged,
       "frozen after it merged" in flat and "v0.2.0" in flat and "v0.2.1" in flat and "blocks the release regardless" in flat, flat)
 check("RELEASING.md describes the artifact acceptance (candidates mode, amd64 and arm64), not the Kubernetes stage",
       "linux/amd64" in flat and "linux/arm64" in flat and "candidates mode" in flat and "Kubernetes" not in flat, flat)
+check("RELEASING.md says a wrong or non-200 answer is final and only 'no response yet' is retried",
+      "not retried" in flat and "no response yet" in flat, flat)
+sec = rd("SECURITY.md")
+check("SECURITY.md describes the CANDIDATE images (not published ones) started by digest, and its startup-log example is the string buildinfo prints (with v1.0.0)",
+      "also starts each candidate image by digest" in sec and "starts each published image" not in sec
+      and '"fips140":"active (Go validated module v1.0.0, CMVP cert #5247)"' in sec and '"fips140":"active (Go validated module, CMVP cert #5247)"' not in sec,
+      [l for l in sec.splitlines() if "image by digest" in l or "fips140" in l])
 check("RELEASING.md says the posture check also runs in archives mode (the PR chain) and can fail those runs",
       "archives mode" in flat and "PR chain" in flat and "can fail" in flat, flat)
 
@@ -523,17 +536,19 @@ def py(a):
         else: ok = False; break
     ok = ok and set(d) in ({"arch", "variant", "port", "matrix"}, {"arch", "variant", "port", "user", "password", "matrix"})
     log(cmd="posture-check", args=a, d=d, wellformed=ok)
-    if not ok: sys.stderr.write("usage\n"); sys.exit(2)
+    if not ok: sys.stderr.write("usage\n"); sys.exit(1)
     c = next((c for c in s["c"].values() if str(c["port"]) == d["port"]), None)
-    def no(why): sys.stderr.write("variant %s: %s\n" % (d["variant"], why)); sys.exit(1)
+    def no(why, code=1): sys.stderr.write("variant %s: %s\n" % (d["variant"], why)); sys.exit(code)
     if not c:
         if "%s:%s" % (d["arch"], d["variant"]) in CFG.get("stale", []):   # a stale service answers the port
             open(d["matrix"], "a").write("linux/%s %s\n" % (d["arch"], d["variant"])); sys.exit(0)
-        no("connection refused")
+        no("connection refused", 2)
     key = "%s:%s" % (c["arch"], c["variant"])
     n = s["pk"].get(key, 0); s["pk"][key] = n + 1; save(s)
-    if CFG["health"].get(c["variant"]) == "never": no("no answer")
-    if n < CFG["check_flaky"].get(key, 0) or key in CFG["check_fail"]: no("scripted failure")
+    if CFG["health"].get(c["variant"]) == "never": no("no answer", 2)
+    if n < CFG["check_flaky"].get(key, 0) or key in CFG["check_fail"]: no("scripted: no response yet", 2)
+    if key in CFG.get("check_once1", []) and n == 0: no("scripted final failure (exit 1)", 1)
+    if key in CFG.get("check_exit3", []): no("scripted other failure (exit 3)", 3)
     if c["auth"] and (d.get("user"), d.get("password")) != ("acc", "accpw"): no("HTTP status 401")
     if d["arch"] != c["arch"] or d["variant"] != c["variant"]: no("the container behind this port is %s" % key)
     if CFG["notes"].get(key, NOTE[c["variant"]]) != NOTE[d["variant"]]: no("wrong posture")
@@ -669,6 +684,11 @@ def base_cfg(**kw):
              inspect="ok", manifest_order="default")
     c.update(kw); return c
 
+def judge_final(label, arch, step, cfg, v):
+    r = run_step(step, cfg)
+    calls = [x for x in r["log"] if x.get("cmd") == "posture-check" and x["d"].get("variant") == v]
+    check("%s: the step fails at once, after exactly one call for that container" % label, r["rc"] not in (0, None) and len(calls) == 1, (r["rc"], len(calls)))
+    check("%s: nothing is claimed for it in the posture matrix" % label, ("linux/%s %s\n" % (arch, v)) not in (r["matrix"] or ""), r["matrix"])
 def judge_bad(label, arch, step, cfg, digests=None, absent=None, flaky=False):
     r = run_step(step, cfg, digests)
     log = r["log"]
@@ -706,8 +726,12 @@ for arch, step in (("amd64", ex), ("arm64", arm)):
         k = "%s:%s" % (arch, v)
         TA.append(lambda arch=arch, step=step, v=v, k=k: judge_bad("%s %s: the posture check fails" % (arch, v), arch, step, base_cfg(check_fail=[k]), absent=v))
         TA.append(lambda arch=arch, step=step, v=v: judge_bad("%s %s container is not the image it was started from" % (arch, v), arch, step, base_cfg(inspect="mismatch:%s:%s" % (arch, v))))
+    for v in VARIANTS:
+        k = "%s:%s" % (arch, v)
+        TA.append(lambda arch=arch, step=step, k=k, v=v: judge_final("%s %s: exit 1 once, then 0 on the next call (a wrong or non-200 answer is final)" % (arch, v), arch, step, base_cfg(check_once1=[k]), v))
+        TA.append(lambda arch=arch, step=step, k=k, v=v: judge_final("%s %s: exit 3 (anything but 0 and 2 is final)" % (arch, v), arch, step, base_cfg(check_exit3=[k]), v))
+        TA.append(lambda arch=arch, step=step, k=k, v=v: judge_final("%s %s reports a wrong posture" % (arch, v), arch, step, base_cfg(notes={k: "WRONG"}), v))
     k = "%s:fips" % arch
-    TA.append(lambda arch=arch, step=step, k=k: judge_bad("%s fips reports a wrong posture" % arch, arch, step, base_cfg(notes={k: "WRONG"}), absent="fips"))
     TA.append(lambda arch=arch, step=step: judge_bad("%s fips never becomes healthy" % arch, arch, step, base_cfg(health={"production": 0, "debug": 0, "fips": "never"})))
     for v in VARIANTS:
         TA.append(lambda arch=arch, step=step, v=v: judge_bad("%s %s: the docker run fails and a stale service answers the port" % (arch, v), arch, step,
@@ -847,6 +871,7 @@ class H(http.server.BaseHTTPRequestHandler):
             if mode == "raw":     # bytes written as given, each after its delay; "rst" resets the connection
                 for it in c["raw"]:
                     if it == "rst":
+                        self.close_connection = True
                         self.connection.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0)); self.connection.close(); return
                     if it[1]: time.sleep(it[1])
                     self.wfile.write(it[0]); self.wfile.flush()
@@ -889,8 +914,8 @@ def jb(note, **extra): return json.dumps(dict({"fips140_note": note, "version": 
 BASIC = "Basic " + base64.b64encode(b"acc:accpw").decode()
 
 CASES = []   # dict(name, variant, body, status, headers, mode, auth, user, args (None = normal), ok, kind)
-def case(name, v="production", body=None, ok=False, status=200, headers=None, mode=None, auth=False, creds=None, args=None, kind="http", arch="amd64", raw=None):
-    CASES.append(dict(raw=raw, name=name, v=v, body=jb(NOTE[v]) if body is None else (body.encode() if isinstance(body, str) else body), ok=ok, status=status,
+def case(name, v="production", body=None, ok=False, status=200, headers=None, mode=None, auth=False, creds=None, args=None, kind="http", arch="amd64", raw=None, exit=1, avoid=()):
+    CASES.append(dict(raw=raw, exit=exit, avoid=list(avoid), name=name, v=v, body=jb(NOTE[v]) if body is None else (body.encode() if isinstance(body, str) else body), ok=ok, status=status,
                       headers=headers or {}, mode=mode, auth=auth, creds=(v == "fips") if creds is None else creds, args=args, kind=kind, arch=arch))
 for v in VARIANTS:
     case("%s: the exact good answer" % v, v, ok=True, auth=(v == "fips"), arch="arm64" if v == "debug" else "amd64")
@@ -939,8 +964,9 @@ for v in VARIANTS:
     for n, t in (("NaN", "NaN"), ("Infinity", "Infinity"), ("-Infinity", "-Infinity"), ("a nested NaN", "[NaN]")):
         case("%s body holds %s" % (v, n), v, body='{"fips140_note":"%s","x":%s}' % (NOTE[v], t), auth=au)
     case("%s: a garbage reply" % v, v, mode="raw", raw=[(b"garbage\r\nnot http\r\n\r\n", 0)], auth=au)
-    case("%s: an empty reply (closed at once)" % v, v, mode="raw", raw=[], auth=au)
-    case("%s: a reset in the middle of the body" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("Content-Length", 5000), ("Connection", "close")], G[:10]) + ["rst"], auth=au)
+    case("%s: an empty reply (accepted, then closed at once)" % v, v, mode="raw", raw=[], auth=au, exit=2)
+    case("%s: a reset before the status line" % v, v, mode="raw", raw=["rst"], auth=au, exit=2)
+    case("%s: a reset in the middle of the body" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("Content-Length", 5000), ("Connection", "close")], G[:10]) + [(b"", 0.4), "rst"], auth=au)
     case("%s: 150 headers" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("X-%d" % i, "v") for i in range(150)] + [("Content-Length", len(G))], G), auth=au)
     case("%s: a header line of 70000 bytes" % v, v, mode="raw", raw=RAW("HTTP/1.1 200 OK", [("X-Long", "a" * 70000), ("Content-Length", len(G))], G), auth=au)
     case("%s reports the third buildinfo state (validated module linked, mode disabled at runtime)" % v, v, body=jb("off (validated module v1.0.0 linked, mode disabled at runtime)"), auth=au)
@@ -969,7 +995,16 @@ for n, b in [("a newline and ::error::", jb("x\n::error::pwned")), ("a carriage 
 for v in ("fips", "debug"):
     case("%s body is not JSON" % v, v, body="<html>", auth=(v == "fips"))
     case("%s body has a duplicate key" % v, v, body='{"fips140_note":"%s","fips140_note":"%s"}' % (NOTE[v], NOTE[v]), auth=(v == "fips"))
-case("connection refused", kind="refused")
+case("connection refused", kind="refused", exit=2)
+for v in ("production", "fips"):
+    au = (v == "fips")
+    case("%s: a note of 'accpw' repeated 100 times is quoted at most 80 characters" % v, v, body=jb("accpw" * 100), auth=au, avoid=["accpw" * 17])
+    case("%s: a note of 3000 'x' is quoted at most 80 characters" % v, v, body=jb("x" * 3000), auth=au, avoid=["x" * 81])
+    PW = ("acc", "S3cr3tPw")
+    for n, b in (("a note that is the password", jb("S3cr3tPw")), ("a note holding the password", jb("pre-S3cr3tPw-post")),
+                 ("an invalid UTF-8 body holding the password", b"S3cr3tPw\xff"), ("a duplicate key named as the password", '{"S3cr3tPw":1,"S3cr3tPw":2}'),
+                 ("a note whose repr is cut inside the password", jb("y" * 74 + "S3cr3tPw"))):
+        case("%s: %s (the password was supplied)" % (v, n), v, body=b, auth=True, creds=PW, avoid=["S3cr3"])
 ARGS = [("no arguments", []), ("only check", ["check"]), ("another command", ["verify", "--arch", "amd64", "--variant", "production", "--port", "@P", "--matrix", "@M"])]
 base = ["--arch", "amd64", "--variant", "production", "--port", "@P", "--matrix", "@M"]
 for i in range(0, len(base), 2):
@@ -991,9 +1026,9 @@ for n, a in ARGS: case("arguments: " + n, args=a, kind="args")
 case("arguments: a matrix file in a directory that does not exist", args=["check"] + base[:-1] + ["@D/no/such/dir/matrix"], kind="nomatrix")
 while len(CASES) % 8: CASES.append(CASES[0])     # the slow cases below fill one whole batch
 HDR = b"HTTP/1.1 200 OK\r\nContent-Length: 22\r\n"
-case("the server never answers (the program must give up within its deadline)", mode="hang", kind="slow")
+case("the server never answers (the program must give up within its deadline: exit 2, no status line)", mode="hang", kind="slow", exit=2)
 case("the server answers headers then dribbles the body for 30 s (an overall deadline)", mode="dribble", kind="slow")
-case("the status line arrives at one byte per second", mode="raw", raw=[(bytes([x]), 1.0) for x in HDR + b"\r\n"], kind="slow")
+case("the status line arrives at one byte per second (the deadline expires before a status line: exit 2)", mode="raw", raw=[(bytes([x]), 1.0) for x in HDR + b"\r\n"], kind="slow", exit=2)
 G0 = jb("off")
 case("the response arrives in three phases of 1.2 s each (3.6 s in all): the budget is for the whole call", mode="raw",
      raw=[(b"HTTP/1.1 200 OK\r\n", 1.2), (b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(G0), 1.2), (G0, 1.2)], kind="slow")
@@ -1001,9 +1036,13 @@ case("a header arrives at one byte per second", mode="raw", raw=[(b"HTTP/1.1 200
 case("the chunk-size lines arrive at one byte per second", mode="raw", raw=[(b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", 0)] + [(bytes([x]), 1.0) for x in b"16\r\n" + b"0" * 30], kind="slow")
 
 PRE = "linux/amd64 pre-existing\n"
+LAST = {}
 def run_case(sp, c):
     SRV, OTHER, DECOY = POOL.get()
-    try: return run_case_on(sp, c, SRV, OTHER, DECOY)
+    try:
+        ok = run_case_on(sp, c, SRV, OTHER, DECOY)
+        if not ok and os.environ.get("FIPS_CHECK_DEBUG"): print("debug: case %r failed; last run %r" % (c["name"], LAST.get(threading.get_ident())))
+        return ok
     finally: POOL.put((SRV, OTHER, DECOY))
 def run_case_on(sp, c, SRV, OTHER, DECOY):
     SRV.cfg = dict(status=c["status"], headers={k: v.replace("@OTHER@", str(OTHER.server_address[1])) for k, v in c["headers"].items()}, body=c["body"],
@@ -1012,9 +1051,11 @@ def run_case_on(sp, c, SRV, OTHER, DECOY):
     if DECOY: DECOY.hits.clear()
     d = tempfile.mkdtemp(dir=work); matrix = d + "/matrix.txt"; open(matrix, "w").write(PRE)
     port = closed_port() if c["kind"] == "refused" else SRV.server_address[1]
+    cu, cp = ("acc", "accpw") if c["creds"] is True else ("acc", "wrong") if c["creds"] == "wrong" else tuple(c["creds"]) if isinstance(c["creds"], tuple) else (None, None)
+    if isinstance(c["creds"], tuple): SRV.cfg["auth"] = "Basic " + base64.b64encode(("%s:%s" % c["creds"]).encode()).decode() if c["auth"] else None
     if c["args"] is None:
         a = ["check", "--arch", c["arch"], "--variant", c["v"], "--port", str(port), "--matrix", matrix]
-        if c["creds"]: a[-2:-2] = ["--user", "acc", "--password", "accpw" if c["creds"] is True else "wrong"]
+        if cu: a[-2:-2] = ["--user", cu, "--password", cp]
     else:
         a = [x.replace("@P", str(port)).replace("@M", matrix).replace("@D", d) for x in c["args"]]
     env = dict(os.environ)       # every proxy variable points at the trap server: the program must not use any
@@ -1027,15 +1068,17 @@ def run_case_on(sp, c, SRV, OTHER, DECOY):
         return False
     elapsed = time.time() - t0
     after = open(matrix).read()
+    LAST[threading.get_ident()] = (p.returncode, p.stderr[:160], len(SRV.hits), len(OTHER.hits), after == PRE, round(elapsed, 1))
     lines = (p.stdout + "\n" + p.stderr).replace("\r", "\n").split("\n")
-    if any(l.lstrip().startswith("::") for l in lines) or len(p.stdout) + len(p.stderr) > 4000: return False
+    if any(l.lstrip().startswith("::") for l in lines) or len(p.stdout) + len(p.stderr) > 700: return False
+    if any(x in p.stdout + p.stderr for x in c["avoid"]): return False
     if "Traceback" in p.stdout or "Traceback" in p.stderr: return False
     if OTHER.hits or (DECOY and DECOY.hits): return False
     if c["kind"] == "slow" and elapsed >= 4.5: return False      # the contract says at most 3 s; the rest is process start-up
     if c["ok"]:
         return (p.returncode == 0 and after == PRE + "linux/%s %s\n" % (c["arch"], c["v"]) and len(SRV.hits) == 1 and SRV.hits[0][0] == "/statusz"
                 and SRV.hits[0][1].get("authorization") == (BASIC if c["creds"] is True else None))
-    if p.returncode == 0 or after != PRE or len(SRV.hits) > 1: return False
+    if p.returncode != c["exit"] or after != PRE or len(SRV.hits) > 1: return False
     if c["kind"] == "args": return not SRV.hits
     if c["kind"] in ("http", "refused", "slow") and not p.stderr.startswith("variant %s:" % c["v"]): return False
     if c["kind"] == "http" and SRV.hits and SRV.hits[0][0] != "/statusz" and c["status"] != 200: return False
@@ -1074,11 +1117,18 @@ DEADLINE = 3.0
 MATRIX = None
 ARCH = None
 VARIANT = "?"
+PASSWORD = None
 def on_alarm(sig, frame): raise TimeoutError("deadline")
 def bad_constant(c): raise ValueError("constant %r" % (c,))
-def fail(variant, why):
+def q(x):
+    r = repr(x)
+    if PASSWORD: r = r.replace(PASSWORD, "***")
+    return r[:80]
+def fail(variant, why, code=1):
+    signal.alarm(0)
+    if PASSWORD: why = why.replace(PASSWORD, "***")
     print("variant %s: %s" % (variant, why[:300]), file=sys.stderr)
-    sys.exit(1)
+    sys.exit(code)
 def pairs(p):
     seen = set()
     for k, _ in p:
@@ -1098,25 +1148,28 @@ def parse(argv):
     if not (d["--port"].isascii() and d["--port"].isdigit() and 1 <= int(d["--port"]) <= 65535): return None
     return d
 def main(argv):
-    global MATRIX, ARCH, VARIANT
+    global MATRIX, ARCH, VARIANT, PASSWORD
     d = parse(argv)
     if d is None:
         print("usage: fips-image-posture.py check --arch A --variant V --port N [--user U --password P] --matrix FILE", file=sys.stderr)
-        return 2
+        return 1
     variant, MATRIX, ARCH = d["--variant"], d["--matrix"], d["--arch"]
     VARIANT = variant
+    PASSWORD = d.get("--password")
     want = NOTES[variant]
     signal.signal(signal.SIGALRM, on_alarm)
     signal.alarm(int(DEADLINE))
     hdrs = {}
     if "--user" in d:
         hdrs["Authorization"] = "Basic " + base64.b64encode(("%s:%s" % (d["--user"], d["--password"])).encode()).decode()
+    seen = []
     t0 = time.monotonic()
     try:
         conn = http.client.HTTPConnection("127.0.0.1", int(d["--port"]), timeout=DEADLINE)
+        conn.response_class = lambda sock, **kw: (seen.append(http.client.HTTPResponse(sock, **kw)), seen[-1])[1]
         conn.request("GET", "/statusz", headers=hdrs)
         resp = conn.getresponse()
-        if resp.status != 200: fail(variant, "HTTP status %r" % (resp.status,))
+        if resp.status != 200: fail(variant, "HTTP status %s" % q(resp.status))
         buf = b""
         while True:
             if time.monotonic() - t0 > DEADLINE: fail(variant, "timeout")
@@ -1126,34 +1179,37 @@ def main(argv):
             if len(buf) > CAP: fail(variant, "body over the size cap")
         if resp.length not in (None, 0) or (resp.chunked and resp.chunk_left not in (None, 0)): fail(variant, "incomplete body")
     except (OSError, http.client.HTTPException) as e:
-        fail(variant, "request failed: %r" % (e,))
+        got_status = bool(seen) and isinstance(seen[0].status, int)
+        garbage = isinstance(e, http.client.BadStatusLine) and not isinstance(e, http.client.RemoteDisconnected)
+        too_long = isinstance(e, http.client.LineTooLong)
+        fail(variant, "request failed: %s" % q(e), 1 if (got_status or garbage or too_long) else 2)
     if buf.startswith(b"\xef\xbb\xbf"): fail(variant, "BOM")
     try:
         doc = json.loads(buf.decode("utf-8"), object_pairs_hook=pairs, parse_constant=bad_constant)
     except Exception as e:
-        fail(variant, "not strict JSON: %r" % (e,))
+        fail(variant, "not strict JSON: %s" % q(e))
     if not isinstance(doc, dict): fail(variant, "not an object")
     got = doc.get("fips140_note")
     if not isinstance(got, str): fail(variant, "no fips140_note string")
-    if got != want: fail(variant, "reports %r, want %r" % (got, want))
+    if got != want: fail(variant, "reports %s, want %s" % (q(got), q(want)))
     try:
         open(MATRIX, "a").write("linux/%s %s\n" % (ARCH, variant))
     except OSError as e:
-        fail(variant, "matrix not writable: %r" % (e,))
+        fail(variant, "matrix not writable: %s" % q(e))
     return 0
 try:
     sys.exit(main(sys.argv[1:]))
 except SystemExit:
     raise
 except BaseException as e:
-    fail(VARIANT, "unexpected error: %r" % (e,))
+    fail(VARIANT, "unexpected error: %s" % q(e))
 '''
 rp = os.path.join(work, "reference.py"); open(rp, "w").write(REFSRC)
 ff = first_failure(rp)
 check("the %d cases are satisfiable: a reference implementation passes every one" % len(CASES), ff is None, ff)
 REFMUT = [
- ("a 3xx with a good body is followed", [('        if resp.status != 200: fail(variant, "HTTP status %r" % (resp.status,))',
-   '        if resp.status in (301, 302, 303, 307, 308) and resp.getheader("Location"):\n            import urllib.request\n            resp = urllib.request.urlopen(resp.getheader("Location"), timeout=3)\n        if resp.status != 200: fail(variant, "HTTP status %r" % (resp.status,))')]),
+ ("a 3xx with a good body is followed", [('        if resp.status != 200: fail(variant, "HTTP status %s" % q(resp.status))',
+   '        if resp.status in (301, 302, 303, 307, 308) and resp.getheader("Location"):\n            import urllib.request\n            resp = urllib.request.urlopen(resp.getheader("Location"), timeout=3)\n        if resp.status != 200: fail(variant, "HTTP status %s" % q(resp.status))')]),
  ("any 2xx is accepted", [("if resp.status != 200:", "if not 200 <= resp.status < 300:")]),
  ("a 3xx is accepted", [("if resp.status != 200:", "if resp.status >= 400:")]),
  ("any status is accepted", [("if resp.status != 200:", "if False:")]),
@@ -1162,11 +1218,11 @@ REFMUT = [
  ("the deadline covers only the body loop", [("signal.alarm(int(DEADLINE))", "pass")]),
  ("NaN and Infinity are accepted", [(", parse_constant=bad_constant", "")]),
  ("a truncated body is accepted", [('        if resp.length not in (None, 0) or (resp.chunked and resp.chunk_left not in (None, 0)): fail(variant, "incomplete body")\n', "")]),
- ("the environment's proxy is used (default urllib handlers)", [('        conn = http.client.HTTPConnection("127.0.0.1", int(d["--port"]), timeout=DEADLINE)\n        conn.request("GET", "/statusz", headers=hdrs)\n        resp = conn.getresponse()\n',
+ ("the environment's proxy is used (default urllib handlers)", [('        conn = http.client.HTTPConnection("127.0.0.1", int(d["--port"]), timeout=DEADLINE)\n        conn.response_class = lambda sock, **kw: (seen.append(http.client.HTTPResponse(sock, **kw)), seen[-1])[1]\n        conn.request("GET", "/statusz", headers=hdrs)\n        resp = conn.getresponse()\n',
    '        import urllib.request\n        resp = urllib.request.urlopen(urllib.request.Request("http://127.0.0.1:%s/statusz" % d["--port"], headers=hdrs), timeout=DEADLINE)\n')]),
  ("the size cap is off by one (>=)", [("if len(buf) > CAP:", "if len(buf) >= CAP:")]),
  ("the size cap is one too large", [("CAP = 64 * 1024", "CAP = 64 * 1024 + 1")]),
- ("an HTTP protocol error escapes as a traceback (not caught, no catch-all)", [("except (OSError, http.client.HTTPException) as e:", "except OSError as e:"), ('except BaseException as e:\n    fail(VARIANT, "unexpected error: %r" % (e,))', "except BaseException as e:\n    raise")]),
+ ("an HTTP protocol error escapes as a traceback (not caught, no catch-all)", [("except (OSError, http.client.HTTPException) as e:", "except OSError as e:"), ('except BaseException as e:\n    fail(VARIANT, "unexpected error: %s" % q(e))', "except BaseException as e:\n    raise")]),
  ("matching is by prefix", [("if got != want:", "if not got.startswith(want):")]),
  ("matching is by containment", [("if got != want:", "if want not in got:")]),
  ("matching ignores surrounding whitespace", [("if got != want:", "if got.strip() != want:")]),
@@ -1176,17 +1232,25 @@ REFMUT = [
  ("the wrong certificate is expected", [("#5247", "#5248")]),
  ("the standard variants expect 'on'", [('"debug": "off"', '"debug": "on"')]),
  ("the production expectation is the fips string", [('"production": "off"', '"production": "active (Go validated module v1.0.0, CMVP cert #5247)"')]),
- ("the matrix is written on failure", [("def fail(variant, why):\n", 'def fail(variant, why):\n    open(MATRIX, "a").write("linux/%s %s\\n" % (ARCH, variant))\n')]),
+ ("the matrix is written on failure", [("def fail(variant, why, code=1):\n", 'def fail(variant, why, code=1):\n    open(MATRIX, "a").write("linux/%s %s\\n" % (ARCH, variant))\n')]),
  ("the matrix is truncated, not appended", [('open(MATRIX, "a")', 'open(MATRIX, "w")')]),
- ("the note is printed raw", [('"reports %r, want %r"', '"reports %s, want %r"')]),
- ("the exception text is printed raw", [('raise ValueError("duplicate key %r" % (k,))', 'raise ValueError("duplicate key " + k)'), ('"not strict JSON: %r" % (e,)', '"not strict JSON: %s" % e')]),
+ ("the note is printed raw", [('% (q(got), q(want))', '% (got, q(want))')]),
+ ("quoted data is not cut to 80 characters", [("    return r[:80]\n", "    return r\n")]),
+ ("the password is not scrubbed", [('    if PASSWORD: r = r.replace(PASSWORD, "***")\n', ""), ('    if PASSWORD: why = why.replace(PASSWORD, "***")\n', "")]),
+ ("the password is printed in a usage-style line", [('    print("variant %s: %s" % (variant, why[:300]), file=sys.stderr)\n', '    print("variant %s: %s [%s]" % (variant, why[:300], PASSWORD), file=sys.stderr)\n')]),
+ ("a wrong answer exits 2", [('"reports %s, want %s" % (q(got), q(want)))', '"reports %s, want %s" % (q(got), q(want)), 2)')]),
+ ("a non-200 status exits 2", [('fail(variant, "HTTP status %s" % q(resp.status))', 'fail(variant, "HTTP status %s" % q(resp.status), 2)')]),
+ ("a refused connection exits 1", [("1 if (got_status or garbage or too_long) else 2", "1")]),
+ ("a failure after the status line (headers, body, deadline) exits 2", [("1 if (got_status or garbage or too_long) else 2", "1 if (garbage or too_long) else 2")]),
+ ("a garbage status line exits 2", [("1 if (got_status or garbage or too_long) else 2", "1 if (got_status or too_long) else 2")]),
+ ("the exception text is printed raw", [('raise ValueError("duplicate key %r" % (k,))', 'raise ValueError("duplicate key " + k)'), ('"not strict JSON: %s" % q(e)', '"not strict JSON: %s" % e')]),
  ("a duplicate key is tolerated", [('raise ValueError("duplicate key %r" % (k,))', "pass")]),
  ("a BOM is tolerated", [('if buf.startswith(b"\\xef\\xbb\\xbf"): fail(variant, "BOM")', 'buf = buf.lstrip(b"\\xef\\xbb\\xbf")')]),
  ("the credentials are not sent", [('if "--user" in d:', "if False:")]),
  ("the wrong path is read", [('"/statusz"', '"/"')]),
- ("a connection error is a success", [('fail(variant, "request failed: %r" % (e,))', "sys.exit(0)")]),
- ("every failure exits 0", [("    sys.exit(1)\ndef pairs", "    sys.exit(0)\ndef pairs")]),
- ("bad arguments exit 0", [("        return 2\n", "        return 0\n")]),
+ ("a connection error is a success", [('fail(variant, "request failed: %s" % q(e), 1 if (got_status or garbage or too_long) else 2)', "sys.exit(0)")]),
+ ("every failure exits 0", [("    sys.exit(code)\ndef pairs", "    sys.exit(0)\ndef pairs")]),
+ ("bad arguments exit 0", [("        return 1\n", "        return 0\n")]),
  ("a user without a password is accepted", [('    if ("--user" in d) != ("--password" in d): return None\n', "")]),
  ("a duplicate flag is accepted", [('or k in d or i + 1', "or i + 1")]),
  ("an unknown variant is accepted", [(' or d["--variant"] not in NOTES: return None', ': pass')]),
@@ -1230,7 +1294,7 @@ def deadline_values(src):
         if isinstance(n, ast.Call):
             vals += [k.value.value for k in n.keywords if k.arg == "timeout" and num(k.value)]
             if getattr(n.func, "attr", "") in ("settimeout", "alarm", "setitimer") or getattr(n.func, "id", "") == "alarm":
-                vals += [y.value for a in n.args for y in ast.walk(a) if num(y)]
+                vals += [y.value for a in n.args for y in ast.walk(a) if num(y) and y.value > 0]      # alarm(0) cancels
     return vals
 OKMODS = {"sys", "json", "http", "urllib", "socket", "argparse", "signal", "time", "base64", "re", "stat", "errno"}
 BAN_ATTR = {"os", "modules", "environ", "environb", "getenv", "getenvb", "expanduser", "expandvars", "open"}
@@ -1339,7 +1403,7 @@ codes = repr([ord(c) for c in (WFPATH or "")])
 IGMUT = [("a program whose early branch writes the exact workflow path (built from character codes) without any request",
           REFSRC.replace('    VARIANT = variant\n', '    VARIANT = variant\n    if MATRIX == "".join(chr(c) for c in ' + codes + '):\n        open(MATRIX, "a").write("linux/" + ARCH + " " + variant + chr(10)); return 0\n', 1)),
          ("a program that also writes the exact workflow path (built from character codes) when given another path",
-          REFSRC.replace('        fail(variant, "matrix not writable: %r" % (e,))\n    return 0\n', '        fail(variant, "matrix not writable: %r" % (e,))\n    open("".join(chr(c) for c in ' + codes + '), "a").write("x" + chr(10))\n    return 0\n', 1))]
+          REFSRC.replace('        fail(variant, "matrix not writable: %s" % q(e))\n    return 0\n', '        fail(variant, "matrix not writable: %s" % q(e))\n    open("".join(chr(c) for c in ' + codes + '), "a").write("x" + chr(10))\n    return 0\n', 1))]
 for i, (name, t) in enumerate(IGMUT):
     mpi = os.path.join(work, "ig_mut%d.py" % i); open(mpi, "w").write(t)
     check("integration mutant is caught: " + name, t != REFSRC and not integration(mpi)[0], integration(mpi)[1])
@@ -1452,11 +1516,15 @@ def ast_mut(t):
     return f
 EXIT = regex_mut([(r"sys\.exit\(\s*1\s*\)", "sys.exit(0)"), (r"raise SystemExit\(\s*1\s*\)", "raise SystemExit(0)"),
                   (r"\bexit\(\s*1\s*\)", "exit(0)"), (r"\breturn 1\b", "return 0"), (r"\bsys\.exit\(\s*(?!0\b)[A-Za-z_]\w*\s*\)", "sys.exit(0)")])
+WRAP = ("import runpy, sys\ntry:\n    runpy.run_path(%r, run_name='__main__')\nexcept SystemExit as e:\n    c = e.code if isinstance(e.code, int) else 1\n    sys.exit(MAP.get(c, c))\n").replace("%r", repr(script), 1).replace("MAP.get", "%s.get")
 MUTANTS = [
  ("the certificate number is changed", lambda s: s.replace("#5247", "#5248")),
  ("the module version is changed", lambda s: s.replace("v1.0.0", "v1.0.1")),
  ("the standard variants expect 'on'", regex_mut([(r"""(["'])off\1""", r"\1on\1")])),
  ("every failing exit becomes a success", EXIT),
+ ("exit codes 1 and 2 are swapped (a wrong answer would be retried, a refusal final)", lambda s: WRAP % ("{1: 2, 2: 1}",)),
+ ("every failure exits 2", lambda s: WRAP % ("{1: 2}",)),
+ ("every failure exits 1", lambda s: WRAP % ("{2: 1}",)),
  ("echoed input is printed raw", regex_mut([(r"%r", "%s"), (r"!r\b", "!s"), (r"\brepr\(", "str("), (r"json\.dumps\(", "str(")])),
  ("equality becomes 'got in want'", ast_mut(EqToIn(False))),
  ("equality becomes 'want in got'", ast_mut(EqToIn(True))),

@@ -981,7 +981,7 @@ requirements:
       - id: REQ-FIPS-002-AC2
         given: "in candidates mode, the candidate image variants of a release (production, -debug and -fips) by candidate digest, running as the containers the artifact acceptance already starts on linux/amd64 and, under emulation, on linux/arm64 (the emulated arm64 containers are UNVERIFIED until the first run shows they serve /statusz)"
         when: "/statusz is read from each running container"
-        then: "the -fips containers report 'active (Go validated module v1.0.0, CMVP cert #5247)', the production and -debug containers report 'off', and any other report (including the forced-mode line on a standard image), a container that does not answer /statusz with HTTP status 200, a container that is not the image pulled by that digest, or a missing variant on either architecture blocks the release"
+        then: "the -fips containers report 'active (Go validated module v1.0.0, CMVP cert #5247)', the production and -debug containers report 'off', and any other report (including the forced-mode line on a standard image), a container that does not answer /statusz with HTTP status 200, a container that is not the image pulled by that digest, or a missing variant on either architecture blocks the release; a wrong or non-200 answer is final: it is not retried"
         verification: { method: acceptance-release-artifact, release_blocking: true }
         status: approved
 

@@ -186,12 +186,17 @@ jobs:
           : > /tmp/posture-matrix.txt
           # REQ-FIPS-002-AC2: ask the running container what /statusz reports, through the one program that judges it.
           # The retry is around the CALL (the program makes exactly one request per call); its failure fails the step.
+          # Only exit code 2 (no HTTP status line yet: refused, reset, closed, silent) is retried;
+          # any other failure is the container's answer and is final.
           posture() {
             for _ in $(seq 1 20); do
-              python3 -I bin/fips-image-posture.py check "$@" --matrix /tmp/posture-matrix.txt && return 0
+              rc=0
+              python3 -I bin/fips-image-posture.py check "$@" --matrix /tmp/posture-matrix.txt || rc=$?
+              [ "$rc" -eq 0 ] && return 0
+              [ "$rc" -eq 2 ] || { echo "::error::the posture check failed (exit ${rc})" >&2; return 1; }
               sleep 1
             done
-            echo "::error::the posture check never passed after 20 attempts" >&2
+            echo "::error::the container never answered the posture check after 20 attempts" >&2
             return 1
           }
           # The container must be the image the step started it from.
@@ -261,12 +266,17 @@ jobs:
           set -euo pipefail
           # REQ-FIPS-002-AC2: ask the running container what /statusz reports, through the one program that judges it.
           # The retry is around the CALL (the program makes exactly one request per call); its failure fails the step.
+          # Only exit code 2 (no HTTP status line yet: refused, reset, closed, silent) is retried;
+          # any other failure is the container's answer and is final.
           posture() {
             for _ in $(seq 1 20); do
-              python3 -I bin/fips-image-posture.py check "$@" --matrix /tmp/posture-matrix.txt && return 0
+              rc=0
+              python3 -I bin/fips-image-posture.py check "$@" --matrix /tmp/posture-matrix.txt || rc=$?
+              [ "$rc" -eq 0 ] && return 0
+              [ "$rc" -eq 2 ] || { echo "::error::the posture check failed (exit ${rc})" >&2; return 1; }
               sleep 1
             done
-            echo "::error::the posture check never passed after 20 attempts" >&2
+            echo "::error::the container never answered the posture check after 20 attempts" >&2
             return 1
           }
           # The container must be the image the step started it from.

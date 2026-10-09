@@ -55,7 +55,9 @@ step, never re-resolved from a registry.
   the image's `.Id` can differ. The posture check also runs in archives
   mode (the PR chain) against the locally assembled images and can fail
   those runs, although REQ-FIPS-002-AC2 only earns the pass in candidates
-  mode. The
+  mode. Only "no response yet" (connection refused, reset or closed before a
+  status line, or the deadline before one) is retried; a wrong or non-200
+  answer is final and is not retried. The
   requirement gates a release through the acceptance predicate only under
   an approved baseline frozen after it merged; the older frozen baselines
   (v0.2.0, v0.2.1) do not contain it. The stage failing blocks the
