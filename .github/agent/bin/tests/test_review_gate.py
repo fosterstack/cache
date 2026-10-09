@@ -11,6 +11,7 @@ G = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(G)
 
 TREE = "ab" * 32
 EV = "cd" * 32
+EV2 = "ef" * 32      # the opus entry's own evidence: never the sonnet entry's
 
 
 def good():
@@ -239,7 +240,7 @@ def dt(s):
 
 def opus(**over):
     e = {"vendor": "anthropic", "substitute_for": "codex", "substitute_id": "0317", "model": "opus",
-         "effort": "medium", "blockers_open": 0, "evidence_sha256": EV}
+         "effort": "medium", "blockers_open": 0, "evidence_sha256": EV2}
     e.update(over)
     return {k: v for k, v in e.items() if v is not ...}
 
@@ -417,6 +418,20 @@ class Substitute(unittest.TestCase):
     def test_a_time_with_a_trailing_newline_is_not_a_time(self):
         self.assertIsNone(G._time(BEFORE + "\n"))
         self.assertTrue(named(problems(sub_rec(completed=BEFORE + "\n")), "completed_at"))
+
+    def test_a_present_but_invalid_codex_entry_never_takes_the_substitute_path(self):
+        for bad in (None, [], "x", 0, {}):
+            r = sub_rec(); r["rounds"][0]["reviewers"]["codex"] = bad
+            ps = problems(r)
+            self.assertNotEqual(ps, [], bad)
+            self.assertTrue(named(ps, "codex"), (bad, ps))
+
+    def test_an_opus_entry_copied_from_sonnet_fails(self):
+        r = sub_rec()
+        r["rounds"][0]["reviewers"]["opus"]["evidence_sha256"] = r["rounds"][0]["reviewers"]["sonnet"]["evidence_sha256"]
+        self.assertTrue(named(problems(r), "evidence_sha256"))
+        r["rounds"][0]["reviewers"]["opus"]["evidence_sha256"] = "12" * 32
+        self.assertEqual(problems(r), [])
 
     def test_the_shipped_substitutes_json_is_the_ratified_one(self):
         path = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
@@ -597,6 +612,27 @@ class ClockIsSystemOnly(unittest.TestCase):
             if "GATE_NOW" in text or re.search(r"--now\b", text):
                 bad.append(os.path.relpath(f, self.ROOT))
         self.assertEqual(bad, [])
+
+    def test_the_gate_workflow_passes_the_trusted_allow_list_and_the_pr_and_sets_no_gate_variable(self):
+        import yaml
+        with open(os.path.join(self.ROOT, ".github", "workflows", "agent-review-gate.yml")) as fh:
+            wf = yaml.safe_load(fh)
+        def runs(job):
+            return [st["run"] for st in wf["jobs"][job]["steps"] if "run" in st]
+        def gate_lines(job):
+            text = "\n".join(runs(job)).replace("\\\n", " ")
+            return [l for l in text.splitlines() if "auditor-review-gate.py" in l and "python3" in l]
+        j, w = gate_lines("judge"), gate_lines("sweep")
+        self.assertEqual(len(j), 1, j); self.assertEqual(len(w), 1, w)
+        for line, pr in ((j[0], '--pr "$PR"'), (w[0], '--pr "$n"')):
+            self.assertIn("--subs-rev HEAD", line)
+            self.assertEqual(line.count("--subs-rev"), 1)
+            self.assertIn(pr, line)
+        for name, job in wf["jobs"].items():
+            self.assertFalse([k for k in (job.get("env") or {}) if str(k).startswith("GATE_")], name)
+            for st in job["steps"]:
+                self.assertFalse([k for k in (st.get("env") or {}) if str(k).startswith("GATE_")], (name, st.get("name")))
+                self.assertNotIn("GITHUB_ENV", st.get("run", "") + str(st.get("with", "")), (name, st.get("name")))
 
     def test_an_environment_value_cannot_unexpire_a_substitute(self):
         d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)

@@ -159,6 +159,9 @@ def _substitute_problems(final, rnd, stop, subs, pr, now):
     if not isinstance(r, dict):
         return ["final round has no codex review"]
     probs = _reviewer_problems("opus", "anthropic", r, stop)
+    son = final.get("sonnet")
+    if isinstance(son, dict) and r.get("evidence_sha256") == son.get("evidence_sha256"):
+        probs.append("opus evidence_sha256 equals sonnet's: a copied entry is not an independent review")
     if r.get("substitute_for") != "codex":
         probs.append("opus substitute_for is %r, want 'codex'" % (r.get("substitute_for"),))
     if r.get("model") != "opus":
@@ -213,7 +216,9 @@ def record_problems(rec, tree, subs=None, pr=None, now=None, edits_allowlist=Fal
     for name, vendor in sorted(VENDORS.items()):
         r = final.get(name)
         if not isinstance(r, dict):
-            if name == "codex" and edits_allowlist:
+            if name in final:      # present but not an object: never the substitute path
+                probs.append("%s review entry is not an object (%r)" % (name, r))
+            elif name == "codex" and edits_allowlist:
                 probs.append("final round has no codex review: this change edits %s, so a substitute never applies (a real codex entry is required)" % SUBS_PATH)
             elif name == "codex":      # the one seat a recorded owner decision may fill with `opus`
                 probs += _substitute_problems(final, rounds[-1], stop, subs, pr, now)
