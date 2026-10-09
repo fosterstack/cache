@@ -15,16 +15,20 @@
 #                (in-toto-witness docs/tutorials/artifact-policy.md:58-70).
 #     ITEMS.json {"<item>":"sha256:<64 lower-case hex>"}: the item names are exactly .github/policy/rebuild-items.json (the committed
 #                list; this test's REQUIRED below is the same list, and the real-repo case compares them).
-#     exit 1, first line of stderr `refused at rebuild: <cause>: <items>` with cause one of
+#     exit 1, first line of stderr `refused at rebuild: <cause>: <items>` (the items, and only they, space separated) with cause one of
 #       digest        sha256(ITEMS.json bytes) != the product hash in REC.json, or REC.json has no / two file:items.json subjects
 #       format        a value is not sha256:<64 lower-case hex> (upper case, sha512:, 63 hex, a number, null), or a duplicate key
-#       missing       an item of the committed list is absent from --expected or --actual (the line names it and the side)
+#       missing       an item of the committed list is absent from --expected or --actual (the FIRST line names ONLY the item names, space separated; a later line gives the side)
 #       unexpected    an item that is not on the list is present on either side (the line names it)
 #       differs       the value differs in --expected and --actual (the line names EVERY differing item)
 #     exit 0 only when every listed item is present on both sides and identical. VERDICT.json is written in EVERY case
 #     {"equal":bool,"items":[{"name","expected","actual","status":"same|differs|missing-expected|missing-actual|unexpected"}]}
 #     (sorted by name) and holds both digests of each differing item. Comparison is of the strings only: no size, time or order.
 #     exit 2 (usage / unreadable file) is NOT a refusal and never a pass.
+# WHERE THE FILES ARE (fix round 1, Opus B4 / Sonnet B1): the Build stage runs its command from the repo root (no witness -d), writes items.json at the
+# repo root, and Witness names a product subject relative to the working directory, so the real subject is file:items.json (and file:digests.json for
+# PR 1's sign --check): exactly what this contract names. Rebuild's verdict is written to witness-rebuild/verdict.json, a product of Rebuild's record
+# (subject file:witness-rebuild/verdict.json) uploaded in the witness-rebuild artifact: that is how the verdict travels (it is the stage's only output).
 # THE ITEMS (cache-3f's interface note and its UPDATE): per-architecture apk by apk-tool.py digest [F L748]; the modules SBOM and the
 # full lock file by sha256 of the bytes [F L744, L894-895]; the IMAGE is the OCI INDEX digest as the registry shows it, which
 # assemble-image.sh writes as OUT/<variant>.digest, plus one item per per-architecture manifest from OUT/<variant>.manifests
@@ -85,14 +89,15 @@ no_crash() { ! grep -q Traceback "$W/err" 2> /dev/null; }
 accept() { # accept LABEL REC EXP ACT
   cmp_run "$2" "$3" "$4"; if ! no_crash; then bad "$1 -> a Python traceback is a crash"; return; fi
   [ -f "$CV" ] && [ "$RC" = 0 ] && ok "$1" || bad "$1 -> exit $RC: $(head -c 200 "$W/err" | tr '\n' ' ')"; }
-refuse() { # refuse LABEL CAUSE ITEMS-REGEX REC EXP ACT  (ITEMS: the items the first line must name, exact set when given as a|b)
+refuse() { # refuse LABEL CAUSE ITEMS REC EXP ACT  (ITEMS: the EXACT set of items the first line names, a|b; empty = no item check)
   cmp_run "$4" "$5" "$6"; if ! no_crash; then bad "$1 -> a Python traceback is a crash, not a refusal"; return; fi
   local first; first=$(head -1 "$W/err" 2> /dev/null || true)
   if [ "$RC" = 1 ] && [[ "$first" == "refused at rebuild: $2: "* ]] && { [ -z "$3" ] || python3 - "$first" "$3" <<'PY'
 import re, sys
-first, want = sys.argv[1], sys.argv[2].split("|")
-named = set(re.findall(r"[a-z0-9-]+", first.split(": ", 2)[2]))
-sys.exit(0 if all(w in named for w in want) else 1)
+first, want = sys.argv[1], set(sys.argv[2].split("|"))
+rest = first.split(": ", 2)[2]
+named = {x for x in re.split(r"[\s,;]+", rest.strip()) if x}
+sys.exit(0 if named == want else 1)       # EXACTLY the wanted items: naming an extra item is a fault too
 PY
   } && [ -f "$W/verdict.json" ] && jq -e '.equal == false' "$W/verdict.json" > /dev/null 2>&1; then ok "$1"
   else bad "$1 -> exit $RC, first line '$first', verdict=$([ -f "$W/verdict.json" ] && echo present || echo absent)"; fi; }
@@ -117,8 +122,8 @@ refuse "005-AC3 a record with no file:items.json product subject is refused" dig
 refuse "005-AC3 a record with two file:items.json subjects is refused" digest "" rec-two.json exp.json act.json
 refuse "005-AC3 a subject named file:items.json.bak does not count as the product" digest "" rec-wrongname.json exp.json act.json
 refuse "005-AC3 a material subject named file:items.json does not count as the product" digest "" rec-material.json exp.json act.json
-rc=$(rc_of rebuild-compare --build-record "$W/does-not-exist.json" --expected "$W/exp.json" --actual "$W/act.json" --out "$W/v2.json"); [ "$rc" = 2 ] && ok "005-AC3 an unreadable record is a usage error (exit 2), never a pass" || bad "005-AC3 unreadable record -> exit $rc, wanted 2"
-rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --out "$W/v3.json"); [ "$rc" = 2 ] && ok "005-AC3 a missing --actual is a usage error (exit 2)" || bad "005-AC3 missing --actual -> exit $rc, wanted 2"
+rc=$(rc_of rebuild-compare --build-record "$W/does-not-exist.json" --expected "$W/exp.json" --actual "$W/act.json" --out "$W/v2.json"); [ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 an unreadable record is a usage error (exit 2), never a pass" || bad "005-AC3 unreadable record -> exit $rc, wanted 2"
+rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --out "$W/v3.json"); [ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 a missing --actual is a usage error (exit 2)" || bad "005-AC3 missing --actual -> exit $rc, wanted 2"
 # the committed list (the implementation adds .github/policy/rebuild-items.json) is exactly the one the CLI contract names
 if [ -f "$root/.github/policy/rebuild-items.json" ]; then
   python3 - "$root/.github/policy/rebuild-items.json" "$W/required.json" <<'PY' && ok "005-AC3 .github/policy/rebuild-items.json is exactly the 25 items this test requires" || bad "005-AC3 rebuild-items.json differs from the contract list"

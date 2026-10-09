@@ -1,354 +1,420 @@
-"""Test infrastructure (not product code), shared by bin/chain-build-wiring-test.sh and bin/chain-rebuild-test.sh: the judges
-for the shape of the Build and Rebuild stage files, the order of bin/build-stage.sh, the job graph of release.yml and the
-environment record of a Witness collection. Each judge prints `ok` or the list of faults and exits 1 on any fault; the two
-tests first prove every judge on a known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then
-apply it to the real repository (RED until PR 2 is implemented).
+"""Test infrastructure (not product code), shared by bin/chain-build-wiring-test.sh and bin/chain-rebuild-test.sh: the judges for
+the shape of the Build and Rebuild stage files, the four stage scripts, the job graph of release.yml and the environment record of
+a Witness collection. Each judge prints `ok` or the list of faults and exits 1 on any fault; the tests first prove every judge on a
+known-good fixture and on mutated copies (a judge that cannot fail proves nothing), then apply it to the real repository (RED until
+PR 2 is implemented).
 
-  stage FILE build|rebuild     REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4: an ALLOWLIST. The stage file is a reusable workflow (on: workflow_call
-                               only) with EXACTLY two jobs and one identity (advisor 0341 reading): `apk` (a matrix over both native runners) and
-                               `assemble` (the ubuntu-24.04 VM, needs apk); each directly on a GitHub-hosted VM, permissions exactly contents read +
-                               id-token write, no container, services, env, defaults, secrets or packages write, whose steps are EXACTLY, in order:
-                                 1. actions/checkout (full commit digest, persist-credentials: false)
-                                 2. run: ./bin/install-scanner.sh witness      (checksum-pinned, like the other tools)
-                                 3. digest-pinned actions/download-artifact steps with names from the per-job allowlist (before Witness starts, rule 68)
-                                 4. ONE run step: the token fetch and ONE `witness run` with only the allowed flags (the github and slsa attestors are
-                                    refused), ending `-- ./bin/build-stage.sh KIND`
-                                 5. only upload-artifact steps with allowed artifact names
-                               in-toto-witness docs/attestors/environment.md ("Filter instead of obfuscate"); docs/commands.md; harness spike
-                               2026-10-09-harness-witness-spikes-a-c.md:20-30 (the token fetch and fulcio flags).
-  script FILE apk|assemble|rebuild-apk|rebuild-assemble   REQ-CHAIN-004-AC3, AC6 / REQ-CHAIN-005-AC2: the commands of bin/build-stage.sh KIND in order.
-  lockflow STAGE_YML... SCRIPT...  REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6 (cache-3f's real apko v1.4.6 run, ~/fosterstack/audits/2026-10-09/real-lock/REPORT.md):
-                               (A) apko runs ONLY through bin/assemble-image.sh, which always passes --lockfile: `apko build --lockfile` and `apko build` give
-                               different image digests, so no stage file or stage script names apko, passes --lockfile/--no-lock/--build-date/--arch/--offline/
-                               --cache-dir/--sbom-path/--ignore-signatures, or builds Rebuild any other way: every assemble-image.sh line of one variant has the SAME
-                               arguments in Build and Rebuild, and SOURCE_DATE_EPOCH is exported the same way. (B) the configs are locked and built from the fixed
-                               relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips) in the repo root: a stage passes either no --config or
-                               exactly that path for its variant, never an absolute path, a temp copy ($RUNNER_TEMP, mktemp, /tmp, cp) or a cd/pushd/working-directory.
-  graph FILE                   REQ-CHAIN-005-AC5: release.yml job graph.
-  recordenv FILE               REQ-CHAIN-004-AC8: no token variable in a Witness collection (used by the fixtures test of the judge; the
-                               product check is chain-verify.py record-env, which the tests assert separately)."""
-import json, re, shlex, sys, yaml
+DESIGN RULE (PR 1's ten lost rounds): NO denylists, NO shell analysis, NO subsequence checks. Every judge below is a FINITE EXACT
+GRAMMAR over an allowlist: a stage file is exactly the steps in JOBS, a stage script is exactly the lines of expected_lines(KIND),
+the job graph is exactly the keys and targets in CHAIN. Anything else is a fault by construction.
 
-# advisor 0341 (reading, Oct 9; put to the owner): ONE stage = ONE workflow file and ONE identity. Each stage file holds exactly two jobs:
-# `apk` (a matrix over the two native runners: melange per architecture) and `assemble` (ONE job on the VM: apko for both architectures,
-# rule 33). Artifact names that carry the runner use the literal expression ${{ matrix.runner }} in the upload and the two literal
-# runner names in the download, so a download can never name anything outside this list.
-UP = {("build", "apk"): {"apk-${{ matrix.runner }}", "witness-apk-${{ matrix.runner }}"},
-      ("build", "assemble"): {"witness-build", "digests", "dist", "locks"},
-      ("rebuild", "apk"): {"rapk-${{ matrix.runner }}", "witness-rapk-${{ matrix.runner }}"},
-      ("rebuild", "assemble"): {"witness-rebuild"}}
-DOWN = {("build", "apk"): set(),
-        ("build", "assemble"): {"apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "witness-apk-ubuntu-24.04", "witness-apk-ubuntu-24.04-arm"},
-        ("rebuild", "apk"): {"witness-build"},
-        ("rebuild", "assemble"): {"rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm", "witness-rapk-ubuntu-24.04", "witness-rapk-ubuntu-24.04-arm", "witness-build"}}
-KIND = {("build", "apk"): "apk", ("build", "assemble"): "assemble", ("rebuild", "apk"): "rebuild-apk", ("rebuild", "assemble"): "rebuild-assemble"}
-STEP = {("build", "apk"): "apk", ("build", "assemble"): "build", ("rebuild", "apk"): "rebuild-apk", ("rebuild", "assemble"): "rebuild"}
-RUNNERS = {"ubuntu-24.04", "ubuntu-24.04-arm"}
-PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-FLAGS = {  # flag -> exact value, None = any value (checked separately), False = takes no value
-    "--step": None, "--signer-fulcio-url": "https://fulcio.sigstore.dev",
-    "--signer-fulcio-oidc-issuer": "https://token.actions.githubusercontent.com", "--signer-fulcio-oidc-client-id": "sigstore",
-    "--signer-fulcio-token-path": '"$RUNNER_TEMP/tok"', "-t": "https://timestamp.sigstore.dev/api/v1/timestamp",
-    "-a": None, "--env-filter-sensitive-vars": False, "--env-add-sensitive-key": None, "-d": None, "-o": None,
-}
-# the `github` attestor is NOT allowed (advisor 0341): it embeds the raw OIDC token (rules 52a, 68); run and job identity come from the
-# Fulcio certificate extensions that PR 1's policy pins (advisor 0334). `slsa` is not allowed either: provenance is Sign's alone.
-ATTESTORS = {"environment", "git", "material", "product", "command-run"}
-REQUIRED_KEYS = {"ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN"}
-TOKEN_LINES = [
-    r'curl -sSf -H "Authorization: bearer \$ACTIONS_ID_TOKEN_REQUEST_TOKEN" "\$\{ACTIONS_ID_TOKEN_REQUEST_URL\}&audience=sigstore" -o "\$RUNNER_TEMP/tok\.json"',
-    r'jq -r \.value "\$RUNNER_TEMP/tok\.json" > "\$RUNNER_TEMP/tok"',
-    r'echo "::add-mask::\$\(cat "\$RUNNER_TEMP/tok"\)"',
-    r'set -euo pipefail',
-]
-OUT = {("build", "apk"): "witness-apk/apk-collection.json", ("build", "assemble"): "witness-build/build-collection.json",
-       ("rebuild", "apk"): "witness-rapk/rapk-collection.json", ("rebuild", "assemble"): "witness-rebuild/rebuild-collection.json"}
+  helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, `timeout 540` included
+  directwitness FILE...                     REQ-CHAIN-004-AC2: no `witness run` in any stage file or stage script (every call goes through the helper)
+  stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
+  script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
+  lockflow BUILD_ASM REBUILD_ASM STAGE_YML...   REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: Build and Rebuild assemble identically; no stage file names apko
+  listed CHAIN_SCRIPTS.json ROOT            the four scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
+  graph FILE                                REQ-CHAIN-005-AC5: the chain jobs of release.yml
+  recordenv FILE                            REQ-CHAIN-004-AC8: no token variable or token in a Witness collection (a DSSE envelope)
+
+=== Rule 68 seam (advisor ruling, Oct 9; owner's amendment of rule 68: every command run under Witness is wrapped in `timeout 540`) ===========
+Fulcio's keyless certificate lives 10 minutes and Witness verifies it at the timestamp's time (harness spike (d)), so no witnessed command may
+outlive it. The wrapping lives in ONE place: the committed helper bin/witnessed.sh `witnessed <step> <script>`, which holds ALL the Witness flags
+(keyless Fulcio, the timestamp authority, the attestors, the output path, `timeout 540`). Every stage calls it; no stage file and no listed script
+names `witness run`. The seam in this file is exactly three functions: witness_seam (the stage's one run line), helper (the helper's exact lines)
+and directwitness (nothing else runs Witness). If harness spike (d) changes the wrapping (witness wraps only short steps; or a second witness run
+signs a record of the first), only those three functions and the fixture generators (witness_block, witnessed_text in
+bin/chain-build-wiring-test.sh) change; the per-kind script grammar (expected_lines) never names Witness.
+READABILITY FOR A HUMAN IS AN EXPLICIT REVIEW ITEM (owner, Oct 9): the judges accept the plain form and reject variants rather than growing clever.
+==============================================================================================================================
+
+PROPOSED/UNVERIFIED layout constants (cache's archive layout and the items layout are not fixed by any cache test; each is ONE
+constant here, so a cache amendment changes one line): ARCHIVE, GO_ARCHIVE, KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB.
+"""
+import hashlib, json, re, shlex, sys, yaml
+
+ARCHIVE, GO_ARCHIVE = "archive", "archive/go"
+KEYRING_WOLFI, MELANGE_LOCK, ASSEMBLY_PUB = "archive/keys/wolfi-signing.rsa.pub", "build/locks/melange.lock", "build/keys/assembly.rsa.pub"
+VER = '"${GITHUB_REF_NAME#v}"'
+RUNNERS = [("ubuntu-24.04", "x86_64"), ("ubuntu-24.04-arm", "aarch64")]
+H = "set -euo pipefail"
+POLICY = 'python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json'
+SDE = ['SOURCE_DATE_EPOCH="$(./bin/build-apk.sh --print-source-date-epoch --source-dir .)"', "export SOURCE_DATE_EPOCH"]
 
 
-def stage(path, family):
-    bad = []
-    d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
-    text = open(path).read()
-    if set(d) - {"name", "on", "permissions", "jobs"}:
-        bad.append("top-level keys beyond name/on/permissions/jobs: %s" % sorted(set(d) - {"name", "on", "permissions", "jobs"}))
-    on = d.get("on")
-    if not isinstance(on, dict) or set(on) != {"workflow_call"}:
-        bad.append("on: must be exactly workflow_call, got %s" % on)
-    if (on or {}).get("workflow_call", {}) and ((on or {}).get("workflow_call") or {}).get("secrets"):
-        bad.append("the workflow declares secrets")
-    if re.search(r"\bsecrets\s*\.|secrets\[|secrets:\s*inherit|packages:\s*write", text):
-        bad.append("a secrets reference or packages: write appears")
-    jobs = d.get("jobs") or {}
-    if set(jobs) != {"apk", "assemble"}:
-        bad.append("exactly two jobs required, apk and assemble (one stage = one file = one identity), found %s" % sorted(jobs)); return bad
-    for name in ("apk", "assemble"):
-        bad += ["%s: %s" % (name, m) for m in job(jobs[name], family, name)]
-    nd = jobs["assemble"].get("needs")
-    if nd not in ("apk", ["apk"]):
-        bad.append("assemble must need exactly apk, got %s" % nd)
-    return bad
+def apk_cmd(v):
+    return ('./bin/build-apk.sh --variant %s --arch "$(uname -m)" --version %s --source-dir . --repo %s --keyring %s --go-archive %s '
+            "--melange-lock %s --out out" % (v, VER, ARCHIVE, KEYRING_WOLFI, GO_ARCHIVE, MELANGE_LOCK))
 
 
-def job(j, family, name):
-    bad = []
-    allowed = {"name", "runs-on", "permissions", "steps", "timeout-minutes"} | ({"strategy"} if name == "apk" else {"needs"})
-    if set(j) - allowed:
-        bad.append("job keys outside the allowlist: %s" % sorted(set(j) - allowed))
-    for k in ("container", "services", "env", "defaults", "environment", "outputs", "if", "continue-on-error"):
-        if k in j: bad.append("job has %s" % k)
-    ro = j.get("runs-on")
-    if name == "apk":
-        mr = (((j.get("strategy") or {}).get("matrix") or {}).get("runner")) or []
-        if not (isinstance(ro, str) and re.fullmatch(r"\$\{\{\s*matrix\.runner\s*\}\}", ro)):
-            bad.append("the apk job must run on matrix.runner, got %r" % ro)
-        if sorted(mr) != sorted(RUNNERS) or set((j.get("strategy") or {}).keys()) - {"matrix", "fail-fast"} \
-           or set(((j.get("strategy") or {}).get("matrix") or {}).keys()) != {"runner"}:
-            bad.append("matrix must be exactly runner: both of %s (native runners, no emulation)" % sorted(RUNNERS))
-    else:
-        if ro != "ubuntu-24.04":
-            bad.append("the assemble job must run directly on the ubuntu-24.04 VM (rule 62), got %r" % ro)
-        if "strategy" in j: bad.append("the assemble job has a strategy")
-    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
-        bad.append("permissions must be exactly contents: read + id-token: write, got %s" % j.get("permissions"))
-    steps = j.get("steps") or []
-    if len(steps) < 3:
-        bad.append("fewer than three steps"); return bad
-    s0, s1 = steps[:2]
-    if set(s0) - {"uses", "with", "name"} or not PIN.match((s0.get("uses") or "").split(" ")[0]) or not (s0.get("uses") or "").startswith("actions/checkout@") \
-       or (s0.get("with") or {}).get("persist-credentials") != "false":
-        bad.append("step 1 must be actions/checkout pinned by full digest with persist-credentials: false")
-    if set(s1) - {"run", "name"} or (s1.get("run") or "").strip() != "./bin/install-scanner.sh witness":
-        bad.append("step 2 must be exactly: run ./bin/install-scanner.sh witness (checksum-pinned Witness install)")
-    i = 2
-    while i < len(steps) and "uses" in steps[i] and (steps[i].get("uses") or "").startswith("actions/download-artifact@"):
-        s = steps[i]; u = s["uses"].split(" ")[0]
-        nm = (s.get("with") or {}).get("name")
-        if set(s) - {"uses", "with", "name"} or not PIN.match(u) or set(s.get("with") or {}) - {"name", "path"}:
-            bad.append("download step %r must be a digest-pinned actions/download-artifact with only name and path" % s.get("name"))
-        if nm not in DOWN[(family, name)]:
-            bad.append("download of %r is not allowed for the %s stage's %s job: %s" % (nm, family, name, sorted(DOWN[(family, name)])))
-        i += 1
-    if i >= len(steps) or "run" not in steps[i]:
-        bad.append("the Witness step (a run step) must follow the checkout, the install and the downloads"); return bad
-    s2 = steps[i]
-    if set(s2) - {"run", "name"}:
-        bad.append("the Witness step may carry only run and name (no env, if, shell, working-directory)")
-    bad += witness_step(s2.get("run") or "", family, name)
-    for s in steps[i + 1:]:
-        u = s.get("uses") or ""
-        if set(s) - {"uses", "with", "name", "if"} or not u.startswith("actions/upload-artifact@") or not PIN.match(u.split(" ")[0]):
-            bad.append("step %r after the Witness step must be a digest-pinned actions/upload-artifact and nothing else" % s.get("name"))
-            continue
-        nm = (s.get("with") or {}).get("name")
-        if nm not in UP[(family, name)]:
-            bad.append("upload of %r is not an allowed artifact for the %s stage's %s job: %s" % (nm, family, name, sorted(UP[(family, name)])))
-    return bad
+def img_cmd(v):
+    return ("./bin/assemble-image.sh --variant %s --version %s --archive %s --melange-repo melange-repo --keyring-dir keyring --out out"
+            % (v, VER, ARCHIVE))
 
 
-def witness_step(run, family, name):
-    kind = KIND[(family, name)]
-    bad = []
-    run = re.sub(r"\\\n\s*", " ", run)
-    cmds = [l.strip() for l in run.splitlines() if l.strip() and not l.strip().startswith("#")]
-    wit = [c for c in cmds if re.match(r"(\./)?witness\s+run\b", c)]
-    if len(wit) != 1:
-        bad.append("the Witness step must contain exactly one `witness run` (found %d)" % len(wit)); return bad
-    for c in cmds:
-        if c in wit: continue
-        if not any(re.fullmatch(p, c) for p in TOKEN_LINES):
-            bad.append("command outside the token fetch and witness run in the Witness step: %r" % c[:80])
-    try:
-        w = shlex.split(wit[0])
-    except ValueError:
-        return bad + ["witness run line does not parse"]
-    if "--" not in w:
-        return bad + ["witness run has no `--` command"]
-    i = w.index("--"); flags, cmd = w[2:i], w[i + 1:]
-    if cmd != ["./bin/build-stage.sh", kind]:
-        bad.append("the command under Witness must be exactly ./bin/build-stage.sh %s, got %s" % (kind, cmd))
-    seen = {}
-    k = 0
-    while k < len(flags):
-        f = flags[k]
-        if f not in FLAGS:
-            bad.append("flag %s is not allowed" % f); k += 1; continue
-        if FLAGS[f] is False:
-            seen.setdefault(f, []).append(True); k += 1; continue
-        if k + 1 >= len(flags):
-            bad.append("flag %s has no value" % f); break
-        v = flags[k + 1]; seen.setdefault(f, []).append(v); k += 2
-        want = FLAGS[f]
-        if want is not None and v != want.strip('"') and v != want:
-            bad.append("flag %s must be %s, got %s" % (f, want, v))
-    for f in ("--step", "--signer-fulcio-url", "--signer-fulcio-oidc-issuer", "--signer-fulcio-oidc-client-id", "--signer-fulcio-token-path", "-t",
-              "--env-filter-sensitive-vars", "-o", "-a"):
-        if f not in seen: bad.append("required flag %s is missing" % f)
-    if seen.get("--step") and seen["--step"] != [STEP[(family, name)]]:
-        bad.append("--step must be %s" % STEP[(family, name)])
-    if seen.get("-o") and seen["-o"] != [OUT[(family, name)]]:
-        bad.append("-o must be %s" % OUT[(family, name)])
-    for v in seen.get("-a", []):
-        if not set(v.split(",")) <= ATTESTORS:
-            bad.append("attestor list %s contains a name outside %s (provenance is Sign's alone)" % (v, sorted(ATTESTORS)))
-    if not REQUIRED_KEYS <= set(seen.get("--env-add-sensitive-key", [])):
-        bad.append("--env-add-sensitive-key must name %s" % sorted(REQUIRED_KEYS))
-    return bad
+def apk_file(v):
+    return "fscache-%s-r0.apk" % VER[1:-1] if v == "standard" else "fscache-fips-%s-r0.apk" % VER[1:-1]
+
+
+def q(s):
+    return '"%s"' % s if "$" in s else s
+
+
+def bind(stage, recdir, recname, indir, runner, arch, fname, as_name):
+    return ("python3 bin/chain-verify.py bind --stage %s --record %s/%s/%s --policy policy.json --file %s --as %s"
+            % (stage, recdir, runner, recname, q("%s/%s/%s/%s" % (indir, runner, arch, fname)), q(as_name)))
+
+
+def bind_frag(stage, recdir, recname, indir, runner):
+    return ("python3 bin/chain-verify.py bind --stage %s --record %s/%s/%s --policy policy.json --file %s/%s/items-apk.json --as items-apk.json"
+            % (stage, recdir, runner, recname, indir, runner))
+
+
+def verify_rec(stage, recdir, recname, runner):
+    return "python3 bin/chain-verify.py verify --stage %s --record %s/%s/%s --policy policy.json" % (stage, recdir, runner, recname)
+
+
+def binds(stage, recdir, recname, indir):
+    out = []
+    for r, a in RUNNERS:
+        for f in (apk_file("standard"), apk_file("fips"), "APKINDEX.tar.gz"):
+            out.append(bind(stage, recdir, recname, indir, r, a, f, "out/%s/%s" % (a, f)))
+        out.append(bind_frag(stage, recdir, recname, indir, r))
+    return out
+
+
+def repo_lines(indir):
+    return ["mkdir -p melange-repo"] + ["cp -R %s/%s/%s melange-repo/%s" % (indir, r, a, a) for r, a in RUNNERS] \
+        + ["mkdir -p keyring", "cp %s keyring/wolfi-signing.rsa.pub" % KEYRING_WOLFI, "cp %s keyring/assembly.rsa.pub" % ASSEMBLY_PUB]
+
+
+def merge_cmd(indir, extra):
+    return ("python3 bin/chain-verify.py items-merge " + " ".join("--fragment %s/%s/items-apk.json" % (indir, r) for r, a in RUNNERS)
+            + " --images out --archive %s %s" % (ARCHIVE, extra))
+
+
+def expected_lines(kind):
+    """The exact lines (shebang, comments and blank lines aside) of bin/build-stage-KIND.sh. Nothing else is allowed in the file."""
+    items_apk = 'python3 bin/chain-verify.py items-apk --out-dir out --arch "$(uname -m)" --version %s --result items-apk.json' % VER
+    if kind == "apk":
+        out = [H, "python3 bin/build-admit.py run"] + SDE + [apk_cmd("standard"), apk_cmd("fips")]
+        for v in ("standard", "fips"):
+            out += ['python3 bin/apk-tool.py cat "out/$(uname -m)/%s" usr/bin/fscache > out/fscache-%s.bin' % (apk_file(v), v),
+                    'python3 bin/build-version-check.py --binary out/fscache-%s.bin --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"' % v]
+        return out + [items_apk]
+    if kind == "assemble":
+        return ([H, POLICY] + [verify_rec("build", "witness-apk-in", "apk-collection.json", r) for r, a in RUNNERS]
+                + binds("build", "witness-apk-in", "apk-collection.json", "apk-in") + repo_lines("apk-in") + SDE
+                + [img_cmd("production"), img_cmd("fips"), merge_cmd("apk-in", "--digests digests.json --items items.json"),
+                   "python3 bin/build-archives.py --melange-repo melange-repo --version %s --out dist" % VER])
+    if kind == "rebuild-apk":
+        start = ("python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record witness-build/build-collection.json "
+                 "--digests build-in/digests.json --policy policy.json")
+        return [H, POLICY, start] + SDE + [apk_cmd("standard"), apk_cmd("fips"), items_apk]
+    if kind == "rebuild-assemble":
+        start = ("python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record witness-build/build-collection.json "
+                 "--digests build-in/digests.json --policy policy.json")
+        return ([H, POLICY] + [verify_rec("rebuild", "witness-rapk-in", "rapk-collection.json", r) for r, a in RUNNERS] + [start]
+                + binds("rebuild", "witness-rapk-in", "rapk-collection.json", "rapk-in") + repo_lines("rapk-in") + SDE
+                + [img_cmd("production"), img_cmd("fips"), merge_cmd("rapk-in", "--items items.json"), "mkdir -p witness-rebuild",
+                   "python3 bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json "
+                   "--expected build-in/items.json --actual items.json --out witness-rebuild/verdict.json"])
+    raise KeyError(kind)
+
+
+SCRIPTS = {"witnessed": "bin/witnessed.sh", "apk": "bin/build-stage-apk.sh", "assemble": "bin/build-stage-assemble.sh",
+           "rebuild-apk": "bin/build-stage-rebuild-apk.sh", "rebuild-assemble": "bin/build-stage-rebuild-assemble.sh"}
 
 
 def script(path, kind):
     bad = []
-    lines = []
-    for l in re.sub(r"\\\n\s*", " ", open(path).read()).splitlines():
-        l = l.strip()
-        if l and not l.startswith("#") and not l.startswith("#!"):
-            lines.append(l)
-    text = "\n".join(lines)
-    for pat, why in ((r"\b(curl|wget|pip3?\s+install|go\s+get|git\s+clone|git\s+fetch|npm\s+install|apt(-get)?\s+install)\b", "a network fetch"),
-                     (r"\bset\s+\+e\b|\|\|\s*(true|:)\b", "a failure-ignoring step"),
-                     (r"\b(sudo|sysctl|unshare|melange|apko)\b", "a sudo/sysctl/unshare of its own or a direct melange/apko call (cache's scripts do those)"),
-                     (r"\b(HTTP_PROXY|HTTPS_PROXY|http_proxy|https_proxy|GOPROXY|GOFLAGS|GOTOOLCHAIN|APK_RELEASE_SIGNING_KEY)\b|--signing-key|--ignore-signatures|--allow-untrusted|--insecure",
-                      "a variable or flag cache's scripts refuse (or a proxy or module-fetch setting)")):
-        if re.search(pat, text):
-            bad.append("%s appears in bin/build-stage.sh" % why)
-    if not lines or lines[0] != "set -euo pipefail":
-        bad.append("the first command must be set -euo pipefail")
-    cmds = lines[1:]
-    SDE = r'export SOURCE_DATE_EPOCH="\$\(\./bin/build-apk\.sh --print-source-date-epoch --source-dir \.\)"'
-    POLICY = r'python3 bin/chain-verify\.py policy make .*--tag "\$GITHUB_REF_NAME".*--out policy\.json'
-    APKS = [r'\./bin/build-apk\.sh --variant standard .*', r'\./bin/build-apk\.sh --variant fips .*']
-    IMGS = [r'\./bin/assemble-image\.sh --variant production .*', r'\./bin/assemble-image\.sh --variant fips .*']
-    def ver(stage, prefix):
-        return [r'python3 bin/chain-verify\.py verify --stage %s --record %s-ubuntu-24\.04/%s-collection\.json --policy policy\.json( .*)?' % (stage, "witness-" + prefix, prefix),
-                r'python3 bin/chain-verify\.py verify --stage %s --record %s-ubuntu-24\.04-arm/%s-collection\.json --policy policy\.json( .*)?' % (stage, "witness-" + prefix, prefix)]
-    START = (r'python3 bin/chain-verify\.py stage-start --stage rebuild --previous build --record witness-build/build-collection\.json '
-             r'--digests witness-build/digests\.json --policy policy\.json')
-    if kind == "apk":
-        want = [r'python3 bin/build-admit\.py run', SDE] + APKS + [r'python3 bin/build-version-check\.py --binary \S+ --tag "\$GITHUB_REF_NAME" --sha "\$GITHUB_SHA"']
-    elif kind == "assemble":
-        # the per-architecture records are verified BEFORE any image is assembled from the downloaded apks (rule 58)
-        want = [POLICY] + ver("build", "apk") + [SDE] + IMGS + [r'.*> witness-build/digests\.json', r'.*> witness-build/items\.json']
-    elif kind == "rebuild-apk":
-        want = [POLICY, START, SDE] + APKS
-    else:
-        want = [POLICY] + ver("rebuild", "rapk") + [START, SDE] + IMGS + [r'.*> items\.json',
-                r'python3 bin/chain-verify\.py rebuild-compare --build-record witness-build/build-collection\.json --expected witness-build/items\.json '
-                r'--actual items\.json --out verdict\.json']
-    pos = 0
-    for w in want:
-        hit = next((n for n in range(pos, len(cmds)) if re.fullmatch(w, cmds[n])), None)
-        if hit is None:
-            bad.append("command %r is missing or out of order" % re.sub(r"\\(.)", r"\1", w)[:120])
-        else:
-            pos = hit + 1
-    if kind == "apk" and cmds and not re.fullmatch(want[0], cmds[0]):
-        bad.append("the FIRST command after set must be the admission script, got %r" % cmds[0][:60])
+    raw = open(path).read()
+    if "\\\n" in raw:
+        bad.append("a line continuation (every command is ONE physical line)")
+    lines = [l.rstrip("\n") for l in raw.splitlines()]
+    cmds = [l for l in lines if l.strip() and not l.lstrip().startswith("#")]
+    for l in cmds:
+        if l != l.strip():
+            bad.append("indented or space-padded line %r (exact lines only)" % l[:60])
+    want = expected_lines(kind)
+    got = [l.strip() for l in cmds]
+    for i in range(max(len(want), len(got))):
+        w = want[i] if i < len(want) else None
+        g = got[i] if i < len(got) else None
+        if w != g:
+            bad.append("command %d: expected %r, found %r" % (i + 1, (w or "<end of file>")[:150], (g or "<end of file>")[:150]))
+            break
+    if len(got) != len(want):
+        bad.append("the script has %d commands, the grammar has %d (no extra command, no missing command)" % (len(got), len(want)))
     return bad
 
 
-def lockflow(files):
-    """files: stage workflow files (*.yml) and stage scripts (anything else)."""
+# ---- the stage files -----------------------------------------------------------------------------------------------------------
+PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
+CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0", "fetch-tags": "true"}
+PERM_PLAIN = {"contents": "read", "id-token": "write"}
+PERM_ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"}
+MAT = "${{ matrix.runner }}"
+JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True,
+        down=[], up=[("apk-" + MAT, ("out", "items-apk.json")), ("witness-apk-" + MAT, ("witness-apk",))]),
+    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False,
+        down=[("apk-" + r, "apk-in/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "witness-apk-in/" + r) for r, a in RUNNERS],
+        up=[("witness-build", ("witness-build",)), ("digests", ("digests.json",)), ("items", ("items.json",)), ("dist", ("dist",)),
+            ("locks", ("out/production.full.lock.json", "out/fips.full.lock.json")), ("images", ("out/production.tar", "out/fips.tar"))]),
+    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True,
+        down=[("witness-build", "witness-build"), ("digests", "build-in")],
+        up=[("rapk-" + MAT, ("out", "items-apk.json")), ("witness-rapk-" + MAT, ("witness-rapk",))]),
+    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False,
+        down=[("witness-build", "witness-build"), ("digests", "build-in"), ("items", "build-in")]
+              + [("rapk-" + r, "rapk-in/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "witness-rapk-in/" + r) for r, a in RUNNERS],
+        up=[("witness-rebuild", ("witness-rebuild",))]),
+}
+
+
+def lines_of(v):
+    return [l.strip() for l in str(v).strip().splitlines() if l.strip()]
+
+
+def stage(path, family, allowed_path=None):
     bad = []
-    CFG = {"production": "build/apko.yaml", "fips": "build/apko-fips.yaml"}
-    FLAGS = {"--variant", "--version", "--out", "--config"}
-    FORBID = ("--lockfile", "--no-lock", "--build-date", "--arch", "--offline", "--cache-dir", "--sbom-path", "--ignore-signatures", "--lock")
-    per_variant = {}
-    sde = set()
+    text = open(path).read()
+    d = yaml.load(text, Loader=yaml.BaseLoader)
+    if not isinstance(d, dict) or set(d) - {"name", "on", "permissions", "jobs"}:
+        return ["top-level keys beyond name/on/permissions/jobs: %s" % (sorted(set(d) - {"name", "on", "permissions", "jobs"}) if isinstance(d, dict) else d)]
+    on = d.get("on")
+    if not isinstance(on, dict) or set(on) != {"workflow_call"} or (on.get("workflow_call") or {}) not in ({}, None, ""):
+        bad.append("on: must be exactly workflow_call with no inputs or secrets, got %s" % on)
+    if d.get("permissions") != {"contents": "read"}:
+        bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
+    if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed.sh)")
+    jobs = d.get("jobs") or {}
+    if set(jobs) != {"apk", "assemble"}:
+        return bad + ["exactly two jobs required, apk and assemble (one stage = one file = one identity), found %s" % sorted(jobs)]
+    allowed = None
+    if allowed_path:
+        try:
+            allowed = set(json.load(open(allowed_path)).get("actions", []))
+        except (OSError, ValueError):
+            bad.append("the allowed-actions list %s is unreadable (fail closed)" % allowed_path)
+    for name in ("apk", "assemble"):
+        bad += ["%s: %s" % (name, m) for m in job(jobs[name], family, name, allowed)]
+    return bad
+
+
+def pinned(uses, prefix, allowed):
+    u = (uses or "").split(" ")[0]
+    if not u.startswith(prefix + "@") or not PIN.match(u):
+        return False
+    return allowed is None or u in allowed
+
+
+def job(j, family, name, allowed):
+    spec = JOBS[(family, name)]
+    bad = []
+    keys = {"runs-on", "permissions", "steps", "timeout-minutes"} | ({"strategy"} if spec["matrix"] else {"needs"})
+    if set(j) - keys:
+        bad.append("job keys outside the allowlist: %s" % sorted(set(j) - keys))
+    if {"runs-on", "permissions", "steps"} - set(j):
+        bad.append("job lacks %s" % sorted({"runs-on", "permissions", "steps"} - set(j)))
+    for k in ("container", "services", "env", "defaults", "environment", "outputs", "if", "continue-on-error", "uses", "secrets"):
+        if k in j: bad.append("job has %s" % k)
+    if spec["matrix"]:
+        st = j.get("strategy") or {}
+        if j.get("runs-on") != MAT:
+            bad.append("the apk job must run on matrix.runner, got %r" % j.get("runs-on"))
+        if set(st) - {"matrix", "fail-fast"} or set(st.get("matrix") or {}) != {"runner"} or sorted((st.get("matrix") or {}).get("runner") or []) != sorted(r for r, a in RUNNERS):
+            bad.append("strategy must be exactly matrix.runner: both of %s (native runners, no emulation, no include/exclude)" % [r for r, a in RUNNERS])
+    else:
+        if j.get("runs-on") != "ubuntu-24.04": bad.append("the assemble job must run directly on the ubuntu-24.04 VM (rule 62), got %r" % j.get("runs-on"))
+        if j.get("needs") not in ("apk", ["apk"]): bad.append("assemble must need exactly apk, got %s" % j.get("needs"))
+    if j.get("permissions") != spec["perm"]:
+        bad.append("permissions must be exactly %s, got %s" % (spec["perm"], j.get("permissions")))
+    steps = j.get("steps") or []
+    if len(steps) < 3: return bad + ["fewer than three steps"]
+    if allowed is not None:
+        for s_ in steps:
+            u_ = (s_.get("uses") or "").split(" ")[0]
+            if PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the allowed-actions list" % u_)
+    i = 0
+    s = steps[i]; i += 1
+    if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout", allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
+        bad.append("step 1 must be a digest-pinned actions/checkout (on the allowed list) with exactly %s" % CHECKOUT_WITH)
+    s = steps[i] if i < len(steps) else {}; i += 1
+    if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != "./bin/install-scanner.sh witness":
+        bad.append("step 2 must be exactly: run ./bin/install-scanner.sh witness (checksum-pinned Witness install)")
+    for nm, path_ in spec["down"]:
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed) or (s.get("with") or {}) != {"name": nm, "path": path_}:
+            bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s (a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
+    s = steps[i] if i < len(steps) else {}; i += 1
+    want_keys = {"run", "name"} | ({"env"} if spec["gh"] else set())
+    if set(s) - want_keys: bad.append("the Witness step may carry only %s (no if, shell, working-directory)" % sorted(want_keys))
+    if spec["gh"] and s.get("env") != {"GH_TOKEN": "${{ github.token }}"}:
+        bad.append("the admission job's Witness step must carry env exactly GH_TOKEN: ${{ github.token }} (PROPOSED, advisor-confirmed default)")
+    if not spec["gh"] and "env" in s: bad.append("the Witness step has env")
+    bad += witness_seam(s.get("run") or "", spec, family)
+    for nm, paths in spec["up"]:
+        s = steps[i] if i < len(steps) else {}; i += 1
+        w = s.get("with") or {}
+        if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed) or w.get("name") != nm \
+           or set(w) - {"name", "path", "if-no-files-found"} or tuple(lines_of(w.get("path"))) != paths or w.get("if-no-files-found", "error") != "error":
+            bad.append("step %d must be a pinned actions/upload-artifact named %s with path exactly %s (and if-no-files-found error)" % (i, nm, list(paths)))
+    if i != len(steps):
+        bad.append("%d steps, the grammar has %d (no extra step)" % (len(steps), i))
+    return bad
+
+
+# ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
+STEPS = ("apk", "build", "rapk", "rebuild")      # the closed list of step names; the record is witness-STEP/STEP-collection.json
+TOKEN = [
+    'curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" -o "$RUNNER_TEMP/tok.json"',
+    'jq -r .value "$RUNNER_TEMP/tok.json" > "$RUNNER_TEMP/tok"',
+    'echo "::add-mask::$(cat "$RUNNER_TEMP/tok")"',
+]
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # never github (raw OIDC token) or slsa (Sign's alone)
+
+
+def witnessed_lines():
+    """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
+    keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
+    return ["set -euo pipefail", 'step="$1"', "shift",
+            'case "$step" in apk|build|rapk|rebuild) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
+            'mkdir -p "witness-$step"'] + TOKEN + [
+            'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
+            "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
+            '--signer-fulcio-token-path "$RUNNER_TEMP/tok" -t https://timestamp.sigstore.dev/api/v1/timestamp '
+            "-a environment,git,material,product --env-filter-sensitive-vars %s "
+            '-o "witness-$step/$step-collection.json" -- timeout 540 bash "$@"' % keys]
+
+
+def witness_seam(run, spec, family):
+    """1/3: the stage's Witness step is exactly ONE line through the helper, with the step name of its job and the committed script of its kind."""
+    want = "bash bin/witnessed.sh %s bin/build-stage-%s.sh" % (spec["step"], spec["kind"])
+    got = str(run).strip()
+    return [] if got == want else ["the Witness step must be exactly the one line `%s`, found %r" % (want, got[:120])]
+
+
+def helper(path):
+    """2/3: bin/witnessed.sh is exactly the canonical helper: the only place the Witness flags and `timeout 540` live."""
+    raw = open(path).read()
+    lines = [re.sub(r"[ \t]+", " ", l.strip()) for l in re.sub(r"\\\n\s*", " ", raw).splitlines() if l.strip() and not l.lstrip().startswith("#")]
+    want = witnessed_lines()
+    bad = []
+    for i in range(max(len(want), len(lines))):
+        w = want[i] if i < len(want) else None
+        g = lines[i] if i < len(lines) else None
+        if w != g:
+            bad.append("helper command %d: expected %r, found %r" % (i + 1, (w or "<end of file>")[:170], (g or "<end of file>")[:170])); break
+    if len(want) != len(lines): bad.append("the helper has %d commands, the canonical form has %d" % (len(lines), len(want)))
+    return bad
+
+
+def directwitness(files):
+    """3/3: nothing but the helper runs Witness: no `witness run` in a stage file or a stage script."""
+    bad = []
     for f in files:
         try:
-            raw = open(f).read()
+            if re.search(r"\bwitness\s+run\b", open(f).read()): bad.append("%s names `witness run` directly (every stage goes through bin/witnessed.sh)" % f)
+        except FileNotFoundError:
+            bad.append("missing file: %s" % f)
+    return bad
+
+
+# ---- Build vs Rebuild --------------------------------------------------------------------------------------------------------------
+def lockflow(files):
+    bad = []
+    if len(files) < 2: return ["lockflow needs the Build and Rebuild assemble scripts"]
+    asm = []
+    for f in files[:2]:
+        try:
+            asm.append([l.strip() for l in open(f).read().splitlines() if l.strip().startswith("./bin/assemble-image.sh")])
+        except FileNotFoundError:
+            bad.append("missing file: %s" % f); asm.append([])
+    if not bad and (not asm[0] or asm[0] != asm[1]):
+        bad.append("Build and Rebuild assemble-image.sh lines are not identical (same script, same arguments, same lock flow): %s vs %s" % (asm[0], asm[1]))
+    for f in files[2:]:
+        try:
+            d = yaml.load(open(f).read(), Loader=yaml.BaseLoader)
         except FileNotFoundError:
             bad.append("missing file: %s" % f); continue
-        if f.endswith((".yml", ".yaml")):
-            d = yaml.load(raw, Loader=yaml.BaseLoader)
-            texts, wd = [], False
-            for jn, j in ((d.get("jobs") or {}).items()):
-                if "working-directory" in json.dumps(j) or "defaults" in j: wd = True
-                for s in j.get("steps") or []:
-                    if "working-directory" in s: wd = True
-                    texts.append(s.get("run") or "")
-            if wd: bad.append("%s: a working-directory or defaults key (the stage must run from the repo root)" % f)
-            if re.search(r"(^|[^\w./-])SOURCE_DATE_EPOCH\s*[:=]", "\n".join(str((j or {}).get("env", "")) for j in (d.get("jobs") or {}).values()) + str(d.get("env", ""))):
-                bad.append("%s: SOURCE_DATE_EPOCH is set in the workflow env (the stage script exports it from the tagged commit)" % f)
-            text = "\n".join(texts)
-        else:
-            text = re.sub(r"\\\n\s*", " ", raw)
-        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")]
-        for l in lines:
-            if re.search(r"\bapko\b(?!(-fips)?\.yaml)", l) and "assemble-image.sh" not in l:
-                bad.append("%s: names apko directly (only bin/assemble-image.sh may run it, always with the lock): %r" % (f, l[:80]))
-            if re.search(r"\b(cd|pushd)\s|\bcp\s|\bmktemp\b|RUNNER_TEMP|/tmp/|\$TMPDIR", l) and not f.endswith((".yml", ".yaml")):
-                bad.append("%s: %r leaves the repo root or copies a config (cd, pushd, cp, mktemp, RUNNER_TEMP, /tmp)" % (f, l[:80]))
-            if re.match(r"export SOURCE_DATE_EPOCH=", l): sde.add(l)
-            if "SOURCE_DATE_EPOCH=" in l and not l.startswith("export ") and "assemble" in l:
-                bad.append("%s: SOURCE_DATE_EPOCH is set per command, not exported once from the tagged commit: %r" % (f, l[:80]))
-            m = re.search(r"\./bin/assemble-image\.sh(.*)$", l)
-            if not m: continue
-            try:
-                toks = shlex.split(m.group(1))
-            except ValueError:
-                bad.append("%s: cannot parse %r" % (f, l[:80])); continue
-            var = None; args = {}
-            i = 0
-            while i < len(toks):
-                if toks[i].startswith("--"):
-                    if any(toks[i].startswith(x) for x in FORBID): bad.append("%s: assemble-image.sh gets %s (the script always passes the lock and the build date itself)" % (f, toks[i]))
-                    elif toks[i] not in FLAGS: bad.append("%s: assemble-image.sh gets an unknown flag %s" % (f, toks[i]))
-                    if i + 1 < len(toks) and not toks[i + 1].startswith("--"): args[toks[i]] = toks[i + 1]; i += 1
-                    else: args[toks[i]] = ""
-                else: bad.append("%s: unexpected argument %r to assemble-image.sh" % (f, toks[i]))
-                i += 1
-            var = args.get("--variant")
-            if var not in CFG: bad.append("%s: assemble-image.sh --variant %r is not production or fips" % (f, var)); continue
-            if "--config" in args:
-                c = args["--config"]
-                if c.startswith("/") or "$" in c or ".." in c or c != CFG[var]:
-                    bad.append("%s: --config %r must be exactly the fixed relative path %s for variant %s (absolute or temp or other config)" % (f, c, CFG[var], var))
-            per_variant.setdefault(var, set()).add(tuple(sorted(args.items())))
-    for v, s in per_variant.items():
-        if len(s) > 1: bad.append("assemble-image.sh --variant %s is called with DIFFERENT arguments in Build and Rebuild: %s" % (v, sorted(s)))
-    if len(sde) > 1: bad.append("SOURCE_DATE_EPOCH is exported differently in different places: %s" % sorted(sde))
+        if re.search(r"\bapko\b", json.dumps(d)):
+            bad.append("%s: names apko (only bin/assemble-image.sh may run it, always with the lock)" % f)
     return bad
+
+
+def listed(path, root):
+    bad = []
+    try:
+        rows = {r.get("path"): r for r in json.load(open(path)).get("scripts", [])}
+    except (OSError, ValueError):
+        return ["%s is unreadable" % path]
+    for k, p in SCRIPTS.items():
+        r = rows.get(p)
+        if r is None: bad.append("%s is not a row of chain-scripts.json" % p); continue
+        try:
+            h = hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest()
+        except OSError:
+            bad.append("%s is listed but missing" % p); continue
+        if r.get("sha256") != h: bad.append("%s: the listed sha256 is not the committed script's" % p)
+    return bad
+
+
+# ---- release.yml --------------------------------------------------------------------------------------------------------------------
+CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml", "release": "stage-promote.yml"}
+NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"], "release": ["check", "rebuild", "sign"]}
 
 
 def graph(path):
     bad = []
     d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
     jobs = d.get("jobs") or {}
-    def needs(n):
-        v = (jobs.get(n) or {}).get("needs")
-        return None if v is None else sorted([v] if isinstance(v, str) else v)
-    for n in ("build", "rebuild", "check"):
-        if n not in jobs: bad.append("job %s is missing" % n)
-    if needs("rebuild") != ["build"]: bad.append("rebuild must need only build, got %s" % needs("rebuild"))
-    if needs("check") != ["build"]: bad.append("check must need only build, got %s" % needs("check"))
-    if needs("sign") is None or "build" not in needs("sign"): bad.append("sign must need build, got %s" % needs("sign"))
-    rel = next((n for n in ("release", "promotion") if n in jobs), None)
-    if rel is None: bad.append("no release job")
-    elif not {"rebuild", "check", "sign"} <= set(needs(rel) or []): bad.append("release must need rebuild, check and sign, got %s" % needs(rel))
-    for n in ("rebuild",):
-        j = jobs.get(n) or {}
-        if "if" in j and "always()" in str(j["if"]): bad.append("%s must not run when build failed (always())" % n)
+    for n, f in CHAIN.items():
+        j = jobs.get(n)
+        if j is None: bad.append("chain job %s is missing (the job id is the stage name, so a failure names it)" % n); continue
+        extra = set(j) - {"uses", "needs", "permissions", "with"}
+        if extra: bad.append("%s: keys outside {uses, needs, permissions, with}: %s (no if, continue-on-error, secrets, strategy, env)" % (n, sorted(extra)))
+        if j.get("uses") != "./.github/workflows/" + f: bad.append("%s must call exactly ./.github/workflows/%s, got %r" % (n, f, j.get("uses")))
+        nd = j.get("needs"); nd = [] if nd is None else ([nd] if isinstance(nd, str) else list(nd))
+        if sorted(nd) != NEEDS[n]: bad.append("%s must need exactly %s, got %s" % (n, NEEDS[n], sorted(nd)))
     return bad
 
 
+# ---- the Witness record -------------------------------------------------------------------------------------------------------------
+NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL", "GH_TOKEN", "GITHUB_TOKEN")
+
+
 def recordenv(path):
+    import base64
     d = json.load(open(path))
-    txt = json.dumps(d)
+    texts = [json.dumps(d)]
+    if isinstance(d, dict) and "payload" in d:
+        try:
+            texts.append(base64.b64decode(d["payload"]).decode("utf-8", "replace"))
+        except Exception:
+            return ["the DSSE payload is not base64"]
+    elif isinstance(d, dict) and "predicate" in d:
+        return ["the record is a bare Statement, not a DSSE envelope (Witness -o writes {payloadType, payload, signatures})"]
+    txt = "\n".join(texts)
     bad = []
-    for v in ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL"):
+    for v in NAMES:
         if v in txt: bad.append("the record names %s" % v)
     if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", txt): bad.append("the record holds a compact JWT")
+    if re.search(r"\bgh[pousr]_[A-Za-z0-9]{20,}", txt): bad.append("the record holds a GitHub token")
     return bad
 
 
 if __name__ == "__main__":
     cmd = sys.argv[1]
+    if cmd == "expected":
+        print("\n".join(expected_lines(sys.argv[2]))); sys.exit(0)
     try:
-        _p = sys.argv[2]
-        open(_p).close()
+        for _p in sys.argv[2:3]:
+            open(_p).close()
     except FileNotFoundError:
         print("missing file: %s" % sys.argv[2]); sys.exit(1)
-    bad = {"stage": lambda: stage(sys.argv[2], sys.argv[3]), "script": lambda: script(sys.argv[2], sys.argv[3]),
-           "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2])}[cmd]()
+    bad = {"stage": lambda: stage(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None), "script": lambda: script(sys.argv[2], sys.argv[3]),
+           "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2]),
+           "listed": lambda: listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)

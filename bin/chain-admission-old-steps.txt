@@ -1,0 +1,12 @@
+name:resolve and validate the tag from the trusted event payload
+uses:actions/checkout
+name:fetch policy from protected main (never from the tagged commit)
+name:verify the annotated tag signature (the owner's SSH key on any tag; the release workflow's keyless identity on a patch tag)
+name:verify the tagged commit signature (owner SSH key or pinned web-flow key)
+name:the tagged commit must be on main
+name:every required check green, app-pinned, per its scope
+name:set up Go for the baseline consistency check
+name:an APPROVED, consistent requirements baseline must exist for this version
+name:write canonical admission.json
+name:sign the source-admission predicate (subject = admission.json)
+uses:actions/upload-artifact

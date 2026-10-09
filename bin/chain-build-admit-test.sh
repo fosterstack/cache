@@ -28,6 +28,10 @@
 #       `build vcs.revision=<sha>` / `build vcs.modified=true` lines (internal/buildinfo/buildinfo.go:21-59 is what the server reports).
 #       Exit 0 only for module version == the tag and vcs.revision == SHA and not modified; otherwise exit 1 naming
 #       `version` / `revision` / `modified` / `devel`.
+# FIX ROUND 1 (step-6 round 1, Opus + Sonnet): the always-true grep -c is gone; duplicate check names, a check-run for another sha, policy-from-main
+# for bin/admission-tag-signer.py and bin/install-scanner.sh, the re-tag race, pagination (--paginate in either argument order) and the CI patch /
+# keyless baseline path with a REAL PKCS7 block (openssl) are cases now; the AC5 comparison reads the committed snapshot
+# bin/chain-admission-old-steps.txt (the step names of the old stage-admission.yml, so the test keeps working after PR 2 deletes that file).
 # THE TEN CHECKS, in order (names are the counterpart of each step of stage-admission.yml):
 CHECKS="tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature ancestor-of-main required-checks baseline admission-evidence"
 set -euo pipefail
@@ -40,9 +44,10 @@ bad() { failn=$((failn + 1)); echo "FAIL $1"; }
 python3 -c 'import yaml' 2> /dev/null || { echo "FAIL PyYAML is required (apt: python3-yaml)"; exit 1; }
 for t in git ssh-keygen gpg jq; do command -v "$t" > /dev/null || { echo "FAIL $t is required"; exit 1; }; done
 # ---- the counterpart judge (REQ-CHAIN-004-AC5): proven on a fixture first -----------------------------------------------------
+# input: the committed snapshot of the OLD stage's step names, one per line: `name:<step name>` or `uses:<action>` (bin/chain-admission-old-steps.txt)
 cat > "$W/judge_counterpart.py" <<'PY'
-import sys, yaml
-# old step name (prefix) -> counterpart check, or "REPLACED:<why>" / "TOOLING:<why>" (the only steps allowed without one)
+import sys
+# old step name (prefix) -> counterpart check(s), or a string = "REPLACED/TOOLING: why" (the only steps allowed without a check)
 MAP = [
  ("resolve and validate the tag", ["tag-ref", "tag-syntax"]),
  ("fetch policy from protected main", ["policy-from-main"]),
@@ -55,67 +60,48 @@ MAP = [
  ("sign the source-admission predicate", "REPLACED: a custom record type; rule 63 allows only Witness's own signed record"),
  ("set up Go", "TOOLING: the Go toolchain is pinned by the archive and cache's scripts (rule 12)"),
 ]
-text, checks = sys.stdin.read(), sys.argv[1].split()
-d = yaml.safe_load(text)
-steps = (d.get("jobs") or {}).get("admit", {}).get("steps") or []
+USES_OK = {"actions/checkout": "TOOLING: the checkout", "actions/upload-artifact": "REPLACED: Witness's record is Build's output"}
+names, checks = [l.rstrip("\n") for l in open(sys.argv[1]) if l.strip()], sys.argv[2].split()
 bad = []
-for s in steps:
-    name = s.get("name") or ""
-    if "uses" in s and not name:
-        if str(s["uses"]).startswith("actions/checkout"): continue          # TOOLING: the checkout
-        if str(s["uses"]).startswith("actions/upload-artifact"): continue   # REPLACED: Witness's record is Build's output
-    hit = next((m for p, m in MAP if name.startswith(p)), None)
+for line in names:
+    kind, _, val = line.partition(":")
+    if kind == "uses":
+        if val not in USES_OK: bad.append("old step uses %r has no counterpart (not tooling, not replaced)" % val)
+        continue
+    hit = next((m for p, m in MAP if val.startswith(p)), None)
     if hit is None:
-        bad.append("old step %r has no counterpart (not mapped, not replaced, not tooling)" % name); continue
+        bad.append("old step %r has no counterpart (not mapped, not replaced, not tooling)" % val); continue
     if isinstance(hit, list):
         for c in hit:
-            if c not in checks: bad.append("old step %r maps to check %r but build-admit.py list-checks does not list it" % (name, c))
+            if c not in checks: bad.append("old step %r maps to check %r but build-admit.py list-checks does not list it" % (val, c))
 for p, m in MAP:
     if isinstance(m, list):
         for c in m:
             if c not in checks: bad.append("check %r (for %r) is not listed" % (c, p))
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
-cat > "$W/old.yml" <<'EOF'
-jobs:
-  admit:
-    steps:
-      - name: resolve and validate the tag from the trusted event payload
-        run: x
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-      - name: fetch policy from protected main (never from the tagged commit)
-        run: x
-      - name: verify the annotated tag signature (the owner's SSH key)
-        run: x
-      - name: verify the tagged commit signature (owner SSH key or pinned web-flow key)
-        run: x
-      - name: the tagged commit must be on main
-        run: x
-      - name: every required check green, app-pinned, per its scope
-        run: x
-      - name: set up Go for the baseline consistency check
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
-      - name: an APPROVED, consistent requirements baseline must exist for this version
-        run: x
-      - name: write canonical admission.json
-        run: x
-      - name: sign the source-admission predicate (subject = admission.json)
-        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-EOF
-cj() { local rc=0 out; out=$(python3 "$W/judge_counterpart.py" "$2" < "$1" 2>&1) || rc=$?; echo "$rc|$out"; }
-r=$(cj "$W/old.yml" "$CHECKS"); [ "${r%%|*}" = 0 ] && ok "AC5 judge fixture: every old step has a counterpart (replaced and tooling steps are named)" || bad "AC5 judge fixture -> $r"
-sed 's/name: the tagged commit must be on main/name: a brand new admission rule/' "$W/old.yml" > "$W/old2.yml"
-r=$(cj "$W/old2.yml" "$CHECKS"); [ "${r%%|*}" = 1 ] && grep -Fq "brand new admission rule" <<< "$r" && ok "AC5 judge: a new old-stage step with no counterpart is caught" || bad "AC5 judge new step -> $r"
-r=$(cj "$W/old.yml" "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature required-checks baseline admission-evidence"); [ "${r%%|*}" = 1 ] && grep -Fq "ancestor-of-main" <<< "$r" && ok "AC5 judge: a check dropped from list-checks is caught" || bad "AC5 judge dropped check -> $r"
-# the real comparison: the old stage at origin/main (or the working file), against build-admit.py list-checks
-old=$(git -C "$root" show origin/main:.github/workflows/stage-admission.yml 2> /dev/null || cat "$root/.github/workflows/stage-admission.yml" 2> /dev/null || true)
-if [ -z "$old" ]; then bad "AC5 the old stage-admission.yml is not readable at origin/main or in the tree (error: fail closed)"
-elif [ ! -f "$BA" ]; then bad "AC5 bin/build-admit.py does not exist (RED: not implemented yet): list-checks"; bad "AC5 bin/build-admit.py does not exist (RED): comparison with the real stage-admission.yml"
+cj() { local rc=0 out; out=$(python3 "$W/judge_counterpart.py" "$1" "$2" 2>&1) || rc=$?; echo "$rc|$out"; }
+r=$(cj "$root/bin/chain-admission-old-steps.txt" "$CHECKS"); [ "${r%%|*}" = 0 ] && ok "AC5 judge fixture: every step of the committed snapshot of the old stage has a counterpart (replaced and tooling steps are named)" || bad "AC5 judge fixture -> $r"
+sed 's/^name:the tagged commit must be on main/name:a brand new admission rule/' "$root/bin/chain-admission-old-steps.txt" > "$W/old2.txt"
+r=$(cj "$W/old2.txt" "$CHECKS"); [ "${r%%|*}" = 1 ] && grep -Fq "brand new admission rule" <<< "$r" && ok "AC5 judge: a new old-stage step with no counterpart is caught" || bad "AC5 judge new step -> $r"
+r=$(cj "$root/bin/chain-admission-old-steps.txt" "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature required-checks baseline admission-evidence"); [ "${r%%|*}" = 1 ] && grep -Fq "ancestor-of-main" <<< "$r" && ok "AC5 judge: a check dropped from list-checks is caught" || bad "AC5 judge dropped check -> $r"
+printf 'uses:actions/setup-go\n' >> "$W/old2.txt"; sed -i.bak 's/^name:a brand new admission rule/name:the tagged commit must be on main/' "$W/old2.txt"; rm -f "$W/old2.txt.bak"; printf 'uses:evil/action\n' >> "$W/old2.txt"
+r=$(cj "$W/old2.txt" "$CHECKS"); [ "${r%%|*}" = 1 ] && grep -Fq "evil/action" <<< "$r" && ok "AC5 judge: a new third-party action in the old stage has no counterpart" || bad "AC5 judge new action -> $r"
+# the snapshot is the old stage as of the cutover: while the old file still exists it must agree with it (a changed old stage is a changed snapshot)
+if [ -f "$root/.github/workflows/stage-admission.yml" ]; then
+  python3 - "$root/.github/workflows/stage-admission.yml" "$root/bin/chain-admission-old-steps.txt" <<'PY' && ok "AC5 the committed snapshot equals the step names of the old stage-admission.yml while it exists" || bad "AC5 the old stage-admission.yml changed: update the snapshot AND the counterpart map"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])); got = []
+for s in d["jobs"]["admit"]["steps"]:
+    got.append("name:" + s["name"] if "name" in s else "uses:" + s["uses"].split("@")[0])
+sys.exit(0 if got == [l.rstrip("\n") for l in open(sys.argv[2]) if l.strip()] else 1)
+PY
+else ok "AC5 the old stage-admission.yml is gone (PR 2 removed it): the committed snapshot is the record"; fi
+if [ ! -f "$BA" ]; then bad "AC5 bin/build-admit.py does not exist (RED: not implemented yet): list-checks"; bad "AC5 bin/build-admit.py does not exist (RED): comparison with the snapshot of the old stage"
 else
   got=$(python3 "$BA" list-checks 2> /dev/null | tr '\n' ' ' | sed 's/ $//' || true)
   [ "$got" = "$CHECKS" ] && ok "AC5 build-admit.py list-checks is exactly the ten checks in order" || bad "AC5 list-checks is '$got', wanted '$CHECKS'"
-  r=$(cj <(printf '%s\n' "$old") "$got"); [ "${r%%|*}" = 0 ] && ok "AC5 every step of the real stage-admission.yml has a counterpart" || bad "AC5 real comparison -> $r"
+  r=$(cj "$root/bin/chain-admission-old-steps.txt" "$got"); [ "${r%%|*}" = 0 ] && ok "AC5 every step of the old stage-admission.yml has a counterpart in list-checks" || bad "AC5 real comparison -> $r"
 fi
 # ---- the version check (REQ-CHAIN-004-AC7): a fake `go version -m` -------------------------------------------------------------
 FB="$W/fakebin"; mkdir -p "$FB"
@@ -147,9 +133,30 @@ vc refuse "AC7 a modified-tree marker is refused" modified v0.3.0 "$SHA" true
 vc refuse "AC7 a pseudo-version is refused" version v0.3.1-0.20261009120000-0123456789ab "$SHA" false
 vc refuse "AC7 the tag with a prefix of the version is refused (v0.3.0-rc.1 vs v0.3.0)" version v0.3.0-rc.1 "$SHA" false
 vc ok     "AC7 a release candidate tag matches its own version" "" v0.3.1-rc.2 "$SHA" false v0.3.1-rc.2
-vc refuse "AC7 an upper-case revision of the same commit is not accepted as equal" revision v0.3.0 "${SHA^^}" false
+vc refuse "AC7 an upper-case revision of the same commit is not accepted as equal" revision v0.3.0 "$(printf '%s' "$SHA" | tr a-f A-F)" false
+# buildinfo shapes `go version -m` really prints (Opus S2/Sonnet S2): a dep line carrying the tag, no vcs lines at all (-buildvcs=false), a second mod line
+vcf() { # vcf ok|refuse LABEL WORD  (buildinfo text on stdin)
+  local want=$1 label=$2 word=$3 rc=0
+  if [ ! -f "$BV" ]; then cat > /dev/null; bad "$label (bin/build-version-check.py does not exist: RED)"; return; fi
+  cat > "$W/buildinfo.txt"; : > "$W/fscache"
+  PATH="$FB:$PATH" FAKE_BUILDINFO="$W/buildinfo.txt" python3 "$BV" --binary "$W/fscache" --tag v0.3.0 --sha "$SHA" > "$W/vc.out" 2> "$W/vc.err" || rc=$?
+  if grep -q Traceback "$W/vc.err"; then bad "$label -> a Python traceback is a crash, not a refusal"; return; fi
+  if [ "$want" = ok ]; then [ "$rc" = 0 ] && ok "$label" || bad "$label -> exit $rc: $(head -c 150 "$W/vc.err")"
+  else [ "$rc" = 1 ] && grep -Fqi -- "$word" "$W/vc.err" && ok "$label" || bad "$label -> exit $rc, wanted 1 naming '$word': $(head -c 150 "$W/vc.err")"; fi
+}
+printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.1	" "	dep	example.com/other	v0.3.0	h1:abc=" "	build	vcs.revision=$SHA" "	build	vcs.modified=false" \
+  | vcf refuse "AC7 a DEP line carrying the tag does not make the module version the tag (only the main module's mod line counts)" version
+printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" "	build	-buildvcs=false" \
+  | vcf refuse "AC7 no vcs lines at all (built with -buildvcs=false) is refused: the revision cannot be proven" revision
+printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" "	mod	github.com/evil/cache	v0.3.0	" "	build	vcs.revision=$SHA" "	build	vcs.modified=false" \
+  | vcf refuse "AC7 a second mod line is ambiguous and refused" mod
+printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" "	build	vcs.revision=$SHA" "	build	vcs.modified=false" "	build	vcs.revision=fedcba9876543210fedcba9876543210fedcba98" \
+  | vcf refuse "AC7 two vcs.revision lines are ambiguous and refused" revision
+printf '%s\n' "out/fscache: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	v0.3.0	" "	build	vcs.revision=$SHA" "	build	vcs.modified=false" "	dep	example.com/other	v0.3.0	h1:abc=" \
+  | vcf ok "AC7 a dep line that also says v0.3.0 is not an obstacle when the main module and the revision are right" ""
 # ---- the admission fixtures ----------------------------------------------------------------------------------------------
 mkkeys() { mkdir -p "$W/keys"; for k in owner attacker; do ssh-keygen -q -t ed25519 -N "" -C "$k@example.com" -f "$W/keys/$k"; done
+  openssl req -x509 -newkey rsa:2048 -nodes -keyout "$W/keys/ci.key" -out "$W/keys/ci.crt" -subj "/CN=release-workflow" -days 2 2> /dev/null
   export GNUPGHOME="$W/gpg-web"; mkdir -m 700 "$GNUPGHOME"
   gpg --batch --quiet --passphrase '' --quick-gen-key "web-flow <noreply@github.com>" ed25519 sign never 2> /dev/null
   gpg --batch --quiet --armor --export "noreply@github.com" > "$W/keys/web.gpg"; WEBID=$(gpg --list-keys --with-colons noreply@github.com | awk -F: '/^pub/{print $5; exit}')
@@ -165,8 +172,16 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
   cp "$W/keys/web.gpg" .github/policy/github-web-flow.gpg
   printf '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}]}\n' > .github/policy/required-checks.json
   cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
-  printf 'requirements: []\n' > requirements/requirements.yaml
-  printf 'version: v0.3.0\napproved: true\napproved_on: "2026-10-09"\nrequirements_sha256: %s\nrelease_blocking_acs: [REQ-X-001-AC1]\n' "$(printf 'a%.0s' $(seq 64))" > requirements/releases/v0.3.0.yaml
+  cat > requirements/requirements.yaml <<'YAML'
+requirements:
+  - id: REQ-REL-004
+    acceptance_criteria:
+      - {id: REQ-REL-004-AC1, given: "g", when: "w", then: "t", status: approved, verification: {method: unit, release_blocking: true}}
+  - id: REQ-PROTO-001
+    acceptance_criteria:
+      - {id: REQ-PROTO-001-AC1, given: "g", when: "w", then: "t", status: approved, verification: {method: unit, release_blocking: false}}
+YAML
+  printf 'version: v0.3.0\napproved: true\napproved_on: "2026-10-09"\nrequirements_sha256: %s\nfixed_at: %s\nrelease_blocking_acs:\n  - {id: REQ-REL-004-AC1, method: unit, phase: candidate}\n' "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 40))" > requirements/releases/v0.3.0.yaml
   printf 'module x\n' > tools/requirements/go.mod
   git add -A; git commit -q -S -m "release prep"; git push -q origin main 2> /dev/null; git fetch -q origin
   git tag -s -m "v0.3.0" v0.3.0; git push -q origin refs/tags/v0.3.0 2> /dev/null
@@ -177,20 +192,30 @@ gh_fixtures() { # gh_fixtures DIR SHA  (all green; the merged PR is #7 with head
   python3 - "$1" "$sha" "$ph" <<'PY'
 import json, sys
 d, sha, ph = sys.argv[1:4]
-def w(path, obj): open(d + "/" + path.replace("/", "_").replace("?", "_").replace("=", "_") + ".json", "w").write(json.dumps(obj))
-w("repos/fosterstack/cache/commits/%s/check-runs?filter=latest" % sha, {"check_runs": [{"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 11, "head_sha": sha}]})
+def w(path, obj): open(d + "/" + path.replace("/", "_") + ".json", "w").write(json.dumps(obj))
+w("repos/fosterstack/cache/commits/%s/check-runs" % sha, {"check_runs": [{"name": "ci", "conclusion": "success", "app": {"id": 15368}, "id": 11, "head_sha": sha}]})
 w("repos/fosterstack/cache/commits/%s/status" % sha, {"statuses": [{"context": "legacy", "state": "success", "id": 5}]})
 w("repos/fosterstack/cache/commits/%s/pulls" % sha, [{"number": 7, "merge_commit_sha": sha, "base": {"ref": "main"}, "merged_at": "2026-10-01T00:00:00Z", "head": {"sha": ph}}])
-w("repos/fosterstack/cache/commits/%s/check-runs?filter=latest" % ph, {"check_runs": [{"name": "review", "conclusion": "success", "app": {"id": 15368}, "id": 12, "head_sha": ph}]})
+w("repos/fosterstack/cache/commits/%s/check-runs" % ph, {"check_runs": [{"name": "review", "conclusion": "success", "app": {"id": 15368}, "id": 12, "head_sha": ph}]})
 PY
 }
 cat > "$FB/gh" <<'EOF'
 #!/usr/bin/env bash
 echo "gh $*" >> "${FAKE_LOG:-/dev/null}"
 [ "${1:-}" = api ] || exit 1
-for a in "$@"; do case "$a" in -X|--method|-f|-F|--input|--field|--raw-field) echo "NON-GET $*" >> "${FAKE_LOG:-/dev/null}";; esac; done
-p="$2"; f="$GH_FIXTURES/$(printf '%s' "$p" | tr '/?=' '___').json"
-[ -f "$f" ] && cat "$f" || { echo "no fixture for $p" >&2; exit 1; }
+shift; pag=0; path=
+for a in "$@"; do case "$a" in
+  -X|--method|-f|-F|--input|--field|--raw-field) echo "NON-GET $*" >> "${FAKE_LOG:-/dev/null}";;
+  --paginate) pag=1;;
+  -*) ;;
+  *) [ -n "$path" ] || path=$a;;
+esac; done
+base=${path%%\?*}
+f="$GH_FIXTURES/$(printf '%s' "$base" | tr '/' '_').json"
+[ -f "$f" ] || { echo "no fixture for $path" >&2; exit 1; }
+cat "$f"
+[ "$pag" = 1 ] && [ -f "$f.page2" ] && cat "$f.page2"
+exit 0
 EOF
 cat > "$FB/gitsign" <<'EOF'
 #!/usr/bin/env bash
@@ -252,7 +277,7 @@ GNUPGHOME="$W/gh-check" G -c gpg.format=openpgp verify-commit HEAD > /dev/null 2
 commit_move other "other"; GNUPGHOME="$W/gh-check" G -c gpg.format=openpgp verify-commit HEAD > /dev/null 2>&1 && bad "fixture: the other-key GPG commit must NOT verify" || ok "fixture: a commit signed by another GPG key does not verify against the pinned key"
 fresh; patch_tag v0.3.1; G cat-file tag v0.3.1 > "$W/c/tagobj"; git -C "$W/c/repo" tag -l 'v*' > "$W/c/released"
 r=$(python3 "$root/bin/admission-tag-signer.py" route --tag v0.3.1 --tag-object "$W/c/tagobj" --tags "$W/c/released" 2>&1 || true); [ "${r%% *}" = gitsign ] && ok "fixture: the patch tag routes to gitsign (next patch of the released v0.3.0)" || bad "fixture: patch route is '$r'"
-r=$(GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api "repos/fosterstack/cache/commits/$SHAC/check-runs?filter=latest" | jq -r '.check_runs[0].name'); [ "$r" = ci ] && ok "fixture: the fake gh serves the check runs of the tagged commit" || bad "fixture: fake gh"
+r=$(GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api "repos/fosterstack/cache/commits/$SHAC/check-runs?filter=latest&per_page=100" | jq -r '.check_runs[0].name'); [ "$r" = ci ] && ok "fixture: the fake gh serves the check runs of the tagged commit" || bad "fixture: fake gh"
 GH_FIXTURES="$W/c/gh" PATH="$FB:$PATH" gh api repos/fosterstack/cache/nope > /dev/null 2>&1 && bad "fixture: the fake gh must fail for an unknown path" || ok "fixture: the fake gh fails for a path it has no fixture for (no silent empty answers)"
 # ---- the happy path and its evidence (REQ-CHAIN-004-AC4: admission-evidence) ----------------------------------------------------
 fresh; run_admit
@@ -265,7 +290,7 @@ if [ -f "$W/c/repo/admission.json" ]; then
   jq -e '[.required_checks[].source]|sort==["check-run-on-merged-pr-head","check-run-on-tagged-sha"]' "$A" > /dev/null && ok "AC4 push-scoped and pull_request-scoped checks are recorded with their evidence source" || bad "AC4 required_checks sources"
   ! grep -rq SENTINEL-GH-TOKEN "$A" "$W/c/out" "$W/c/err" && ok "AC4 the GitHub token appears in no output or evidence" || bad "AC4 the token leaked into output"
   cp "$A" "$W/c/first.json"; rm "$A"; run_admit; cmp -s "$W/c/first.json" "$A" && ok "AC4 admission.json is byte-identical on a second run (deterministic)" || bad "AC4 admission.json differs between runs"
-  ! grep -qE 'NON-GET' "$W/c/calls.log" && grep -c '^gh api repos/fosterstack/cache/commits/' "$W/c/calls.log" | grep -q . && ok "AC4 every GitHub call is a GET of the commits API" || bad "AC4 a non-GET gh call: $(grep NON-GET "$W/c/calls.log" | head -1)"
+  ! grep -qE 'NON-GET' "$W/c/calls.log" && [ "$(grep -c '^gh api .*repos/fosterstack/cache/commits/' "$W/c/calls.log")" -ge 4 ] && ! grep '^gh ' "$W/c/calls.log" | grep -vq '^gh api ' && ok "AC4 every GitHub call is a GET of the commits API (at least the four reads: checks and statuses and pulls of the tagged commit, checks of the PR head)" || bad "AC4 gh calls are not exactly GETs of the commits API (count $(grep -c '^gh api' "$W/c/calls.log")): $(grep NON-GET "$W/c/calls.log" | head -1)"
 else for l in "canonical" "content" "sources" "token" "deterministic" "GET only"; do bad "AC4 admission.json $l (no admission.json: RED)"; done; fi
 if [ -f "$BA" ]; then ! grep -Eq '\b(curl|wget)\b|api\.github\.com' "$BA" && ok "AC4 the script makes no network call of its own (only gh api)" || bad "AC4 build-admit.py calls the network itself"; else bad "AC4 no network of its own (bin/build-admit.py missing: RED)"; fi
 # ---- tag-ref, tag-syntax ---------------------------------------------------------------------------------------------------------
@@ -287,11 +312,8 @@ G add -A; G commit -q -S -m "attacker adds itself to the allowed signers" ; reta
 expect_refuse "AC4 an allowed_signers list changed in the TAGGED commit is not trusted (policy comes from origin/main)" tag-signature
 fresh; G checkout -q main; printf '{"required_checks":[]}\n' > "$W/c/repo/.github/policy/required-checks.json"; G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "weak policy"; G push -q origin main 2> /dev/null
 WEAK=$(G rev-parse HEAD); git -C "$W/c/repo" checkout -q "$SHAC" -- .github/policy/required-checks.json; G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "strong policy again"; G push -q origin main 2> /dev/null; G fetch -q origin
-G checkout -q --detach "$WEAK"; retag owner; python3 - "$W/c/gh" <<'PY'
-import glob, json, sys
-for f in glob.glob(sys.argv[1] + "/*"): pass
-PY
-rm -rf "$W/c/gh"; mkdir -p "$W/c/gh"; echo '{"check_runs":[]}' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_check-runs_filter_latest.json"; echo '{"statuses":[]}' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_status.json"; echo '[]' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_pulls.json"
+G checkout -q --detach "$WEAK"; retag owner
+rm -rf "$W/c/gh"; mkdir -p "$W/c/gh"; echo '{"check_runs":[]}' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_check-runs.json"; echo '{"statuses":[]}' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_status.json"; echo '[]' > "$W/c/gh/repos_fosterstack_cache_commits_${WEAK}_pulls.json"
 run_admit; expect_refuse "AC4 a required-checks list weakened in the TAGGED commit does not weaken the gate (policy comes from origin/main, not the tagged commit)" required-checks
 # ---- tag-annotated, tag-signature ---------------------------------------------------------------------------------------------------
 fresh; retag light; run_admit;   expect_refuse "AC4 a lightweight tag is refused" tag-annotated
@@ -374,11 +396,83 @@ fresh; run_admit; if grep -q 'go -C tools/requirements run . verify-freeze v0.3.
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
 expect_refuse "AC4 a patch tag cannot reach the baseline check with fabricated signer evidence (it stops earlier)" tag-signature
+# ---- required-checks: duplicates, another sha, pagination (Opus S7, Sonnet S6) -----------------------------------------------------------
+ckf() { echo "$W/c/gh/repos_fosterstack_cache_commits_$1_check-runs.json"; }
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f)); j["check_runs"].append({"name": "ci", "conclusion": "failure", "app": {"id": 15368}, "id": 13, "head_sha": sha}); json.dump(j, open(f, "w"))
+PY
+run_admit; expect_refuse "AC4 required-checks: a duplicate check name (one success, one failure) is ambiguous and refused" required-checks ci
+fresh; python3 - "$(ckf "$SHAC")" <<'PY'
+import json, sys
+f = sys.argv[1]; j = json.load(open(f)); j["check_runs"][0]["head_sha"] = "c" * 40; json.dump(j, open(f, "w"))
+PY
+run_admit; expect_refuse "AC4 required-checks: a check-run that belongs to another sha than the tagged commit is refused" required-checks ci
+fresh; python3 - "$(ckf "$SHAC")" "$SHAC" <<'PY'
+import json, sys
+f, sha = sys.argv[1:3]
+j = json.load(open(f)); open(f + ".page2", "w").write(json.dumps(j))
+json.dump({"check_runs": [{"name": "lint", "conclusion": "success", "app": {"id": 15368}, "id": 14, "head_sha": sha}]}, open(f, "w"))
+PY
+run_admit; expect_ok "AC4 required-checks: a required check on page 2 of the check-runs list is found (gh api --paginate, its concatenated JSON pages parsed)"
+if [ -f "$BA" ] && grep -E '^gh api .*check-runs' "$W/c/calls.log" | grep -vq -- '--paginate'; then bad "AC4 a check-runs call without --paginate"; elif [ -f "$BA" ] && grep -Eq '^gh api .*check-runs' "$W/c/calls.log"; then ok "AC4 every check-runs call carries --paginate (in either argument order: the fake gh accepts both)"; else bad "AC4 no check-runs call was made (RED: not implemented)"; fi
+# ---- policy comes from main for the signer-routing script and the gitsign installer too; the re-tag race (Opus S7, Sonnet S6) -----------
+pkcs7_tag() { # pkcs7_tag NAME SHA : an annotated tag object whose signature block is a REAL PKCS7 signature (openssl) over the tag payload, labelled as gitsign labels it
+  local name=$1 sha=$2
+  printf 'object %s\ntype commit\ntag %s\ntagger t <t@example.com> 1700000000 +0000\n\nrelease %s\n' "$sha" "$name" "$name" > "$W/payload.txt"
+  openssl smime -sign -binary -in "$W/payload.txt" -signer "$W/keys/ci.crt" -inkey "$W/keys/ci.key" -outform PEM -out "$W/sig.pem" 2> /dev/null
+  { cat "$W/payload.txt"; sed 's/PKCS7/SIGNED MESSAGE/' "$W/sig.pem"; } | G mktag
+}
+fresh; fpr=$(G cat-file tag "$(pkcs7_tag v0.3.1 "$(G rev-parse HEAD)")" | sed -n '/^-----BEGIN SIGNED MESSAGE-----$/,/^-----END SIGNED MESSAGE-----$/p' | sed 's/SIGNED MESSAGE/PKCS7/' | openssl pkcs7 -print_certs 2> /dev/null | openssl x509 -noout -fingerprint -sha256 2> /dev/null || true)
+[ -n "$fpr" ] && ok "fixture: the patch tag's signature block is a real PKCS7 whose certificate yields a SHA-256 fingerprint (so the signer evidence is extractable)" || bad "fixture: the PKCS7 block does not parse"
+rm -f "$W/pwned-signer" "$W/pwned-install"; fresh
+(cd "$W/c/repo" && G checkout -q -b side && printf '#!/usr/bin/env python3\nopen("%s","w").write("x")\n' "$W/pwned-signer" > bin/admission-tag-signer.py && printf '#!/bin/sh\ntouch %s\n' "$W/pwned-install" > bin/install-scanner.sh \
+  && G add -A && G -c user.signingkey="$W/keys/owner" commit -q -S -m "the tagged commit replaces the policy scripts")
+SIDE=$(G rev-parse HEAD); gh_fixtures "$W/c/gh" "$SIDE"; G tag -d v0.3.0 > /dev/null; G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0 v0.3.0; run_admit
+if [ -f "$BA" ] && [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ]; then ok "AC4 policy from main: the tagged commit's own bin/admission-tag-signer.py and bin/install-scanner.sh are never executed (owner route)"; else bad "AC4 policy from main: a script of the tagged commit ran (or build-admit.py is missing: RED)"; fi
+obj=$(pkcs7_tag v0.3.1 "$SIDE"); G update-ref refs/tags/v0.3.1 "$obj"; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
+if [ -f "$BA" ] && [ ! -e "$W/pwned-signer" ] && [ ! -e "$W/pwned-install" ]; then ok "AC4 policy from main: nor on the patch route (the installer and the router come from origin/main)"; else bad "AC4 policy from main: a script of the tagged commit ran on the patch route (or build-admit.py is missing: RED)"; fi
+fresh; commit_move owner "newer"; retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit GITHUB_SHA="$SHAC"
+expect_refuse "AC4 the re-tag race: a tag that was moved after the event (it no longer points at GITHUB_SHA) is refused" tag-ref sha
+# ---- the CI patch / keyless baseline path with a REAL PKCS7 signature (REQ-REL-009-AC13 through bin/admission-tag-signer.py baseline) ---
+patch_setup() { # patch_setup [SHELL-SNIPPET-run-in-the-repo-before-the-tagged-commit]  -> a signed commit on main and the patch tag v0.3.1 on it
+  fresh; [ "${PATCH_BASE_TAG:-}" != attacker ] || retag attacker
+  if [ -n "${1:-}" ]; then (cd "$W/c/repo" && G checkout -q main && eval "$1"; G add -A); fi
+  G checkout -q main 2> /dev/null; G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "patch"; G push -q origin HEAD:main 2> /dev/null; G fetch -q origin 2> /dev/null
+  local sha obj; sha=$(G rev-parse HEAD); obj=$(pkcs7_tag v0.3.1 "$sha"); G update-ref refs/tags/v0.3.1 "$obj"; gh_fixtures "$W/c/gh" "$sha"; }
+run_patch() { run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0 "$@"; }
+pfix() { # pfix LABEL WANT-PREFIX : the REAL bin/admission-tag-signer.py says WANT about this fixture, so the refusal below is about the claimed cause
+  local out="$W/c/ob" b; rm -rf "$out"
+  (cd "$W/c/repo" && python3 "$root/bin/admission-tag-signer.py" owner-baselines --tag v0.3.1 --allowed-signers "$W/c/repo/.github/policy/allowed_signers" --out "$out" > /dev/null 2>&1) || true
+  git -C "$W/c/repo" show HEAD:requirements/requirements.yaml > "$W/c/tagged-req.yaml"
+  b=$(python3 "$root/bin/admission-tag-signer.py" baseline --tag v0.3.1 --owner-baselines "$out" --requirements "$W/c/tagged-req.yaml" 2>&1 || true)
+  case "$b" in "$2"*) ok "fixture: $1";; *) bad "fixture: $1 -> '$b'";; esac
+}
+patch_setup; run_patch
+pfix "an unchanged patch candidate gets the owner baseline: the rule says 'use v0.3.0'" "use v0.3.0"
+expect_ok "AC4 a CI patch tag (real PKCS7 signature, gitsign verified) with unchanged requirements and the owner-approved baseline of its line is admitted"
+if [ -f "$W/c/repo/admission.json" ]; then
+  jq -e '.tag=="v0.3.1" and .tag_signature.method=="release-workflow-keyless" and (.tag_signature.key_fingerprint|startswith("x509-sha256:")) and (.tag_signature.principal|endswith("release.yml@refs/heads/main")) and .baseline_version=="v0.3.0"' "$W/c/repo/admission.json" > /dev/null \
+    && ok "AC4 the patch admission records the keyless method, an x509 fingerprint, the release workflow as principal and the OWNER baseline v0.3.0 it used" || bad "AC4 patch admission.json content: $(head -c 300 "$W/c/repo/admission.json")"
+else bad "AC4 the patch admission recorded nothing (RED)"; fi
+patch_setup 'printf "# tampered\n" >> requirements/releases/v0.3.0.yaml'; run_patch
+cmp -s <(git -C "$W/c/repo" show v0.3.0:requirements/releases/v0.3.0.yaml) <(git -C "$W/c/repo" show HEAD:requirements/releases/v0.3.0.yaml) && bad "fixture: the tagged commit's baseline must differ from the owner tag's copy" || ok "fixture: the tagged commit's baseline file differs from the owner-signed tag's copy"
+expect_refuse "AC4 baseline (patch): the tagged commit's baseline differs from the copy in the owner-signed v0.3.0 tag (byte compare)" baseline differs
+patch_setup 'printf "      - {id: REQ-REL-004-AC2, given: g, when: w, then: t, status: approved, verification: {method: unit, release_blocking: true}}\n" >> requirements/requirements.yaml'; run_patch
+pfix "the blocking set differs, the real rule says no (release-blocking AC set changed)" "no the release-blocking AC set changed"
+expect_refuse "AC4 baseline (patch): the release-blocking AC set changed since the owner baseline: no automatic patch" baseline blocking
+patch_setup 'sed -i.bak "s/then: \"t\", status: approved, verification: {method: unit, release_blocking: false}/then: \"changed\", status: approved, verification: {method: unit, release_blocking: false}/" requirements/requirements.yaml; rm -f requirements/requirements.yaml.bak'; run_patch
+pfix "a product AC changed, the real rule says no (pipeline-only)" "no REQ-PROTO-001-AC1 (requirement REQ-PROTO-001) changed"
+expect_refuse "AC4 baseline (patch): a product AC changed since the owner baseline (not on the pipeline-only list): no automatic patch" baseline pipeline-only
+PATCH_BASE_TAG=attacker patch_setup; run_patch
+pfix "no owner-signed baseline, the real rule says no" "no no owner-approved"
+expect_refuse "AC4 baseline (patch): the line's only v0.3.0 tag is signed by a key outside main's allowed signers: there is no owner baseline" baseline owner
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=86
+EXPECT_TOTAL=107
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
