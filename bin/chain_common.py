@@ -52,13 +52,16 @@ def no_duplicate_keys(pairs):
 
 
 def strict_json(raw):
-    """JSON in which a repeated key is an error: Python keeps the last one, other readers keep the first."""
+    """JSON in which a repeated key is an error (Python keeps the last one, other readers the first) and bytes are UTF-8 only:
+    json.loads on bytes would also guess UTF-16 or UTF-32 from the first bytes, which another reader would read differently."""
+    if isinstance(raw, (bytes, bytearray)):
+        raw = bytes(raw).decode("utf-8")
     return json.loads(raw, object_pairs_hook=no_duplicate_keys)
 
 
 def load_json(path, what):
     try:
-        with open(path) as f:
-            return json.load(f)
+        with open(path, "rb") as f:
+            return strict_json(f.read())
     except (OSError, ValueError) as ex:
         raise Refuse("policy", "%s %s is missing or not JSON: %s" % (what, path, ex))

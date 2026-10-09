@@ -10,8 +10,8 @@
 #                                                                 cosign to bin/install-scanner.sh)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
 #                 5. run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json
-#                         --build-record witness-build/build-collection.json --policy .github/policy/release-policy.template.json --out provenance
-#                         (the filenames are PINNED: `--policy` names the committed template, from which `sign --check` makes the
+#                         --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+#                         (the filenames are PINNED: `--template` names the committed template, from which `sign --check` makes the
 #                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
 #                          record, compares the digests, THEN signs; the identity token is requested by cosign
 #                          inside its own process and no step ever names it)
@@ -74,7 +74,7 @@ def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABL
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
-R_SIGN = r"python3 bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --policy \.github/policy/release-policy\.template\.json --out provenance"
+R_SIGN = r"python3 bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     d, text = load(path); bad = []
@@ -305,7 +305,7 @@ jobs:
           DIGESTS: \${{ inputs.digests }}
         run: printf '%s' "\$DIGESTS" > digests.json
       - name: check Build's record, compare the digests, then sign the provenance
-        run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --policy .github/policy/release-policy.template.json --out provenance
+        run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: provenance
@@ -324,7 +324,7 @@ PY
 caught() { # LABEL regex replacement
   if mutate "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
 }
-SIGNLINE='run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --policy .github/policy/release-policy.template.json --out provenance'
+SIGNLINE='run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
@@ -349,10 +349,10 @@ caught "AC2 the Sign step reads the digests inline, not from the file" '--digest
 caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witness'
 caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: curl -sL https://example.com/cosign -o cosign'
 caught "AC2 the signing step runs before the tool is installed" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
-caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --policy .github/policy/release-policy.template.json --out provenance"
+caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
 caught "AC2 a permissive policy file instead of the template" 'release-policy.template.json' 'permissive.json'
 caught "AC2 a different Build record file name" 'witness-build/build-collection.json' 'witness-build/other.json'
-caught "AC2 the policy argument points outside .github/policy" '--policy .github/policy/release-policy.template.json' '--policy /tmp/p.json'
+caught "AC2 the policy argument points outside .github/policy" '--template .github/policy/release-policy.template.json' '--template /tmp/p.json'
 caught "AC3 checkout without persist-credentials: false" '        with:\n          persist-credentials: false\n' ''
 caught "AC3 checkout with persist-credentials: true" 'persist-credentials: false' 'persist-credentials: true'
 caught "AC3 secret reference" 'DIGESTS: \$\{\{ inputs.digests \}\}' 'DIGESTS: ${{ inputs.digests }}\n          K: ${{ secrets.KEY }}'

@@ -269,6 +269,16 @@ printf '%s\npubkey-sha256: %s\n' "$KR" "$H1" > "$work/key_nocount.txt"
 printf '%s\nsearched: 42 files\n-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n' "$KR" > "$work/key_text.txt"
 xexpect ok "hostile-material: a token whose job_workflow_ref names stage-sign.yml means the attempt got Sign's identity (exit 0, graded accepted)" - -- hostile-material --kind token --file "$work/tok_yes.txt"
 xexpect refuse "hostile-material: Build's OWN token (job_workflow_ref stage-build.yml) is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_build.txt"
+# the token's job_workflow_ref must be exactly <repo>/.github/workflows/stage-sign.yml@<ref> of THIS repository (GITHUB_REPOSITORY, default fosterstack/cache)
+TX=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/xstage-sign.yml@refs/tags/v0.3.0"}').c2ln
+TO=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"evil/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"}').c2ln
+TD=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-sign.yml.evil@refs/tags/v0.3.0"}').c2ln
+for n in TX:"a file whose name only ends like Sign's (xstage-sign.yml)" TO:"Sign's file name in ANOTHER repository" TD:"stage-sign.yml.evil"; do
+  v=${n%%:*}; printf '%s\nclaims: %s\n' "$TR" "${!v}" > "$work/tok_$v.txt"
+  xexpect refuse "hostile-material: a token whose job_workflow_ref is ${n#*:} is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_$v.txt"
+done
+mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
+if [ "$mrc" = 1 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "refused at runner"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
 xexpect ok "hostile-material: a key found on the runner whose public key IS the key in Sign's certificate means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --sign-record "$work/signrec.json"
@@ -792,7 +802,7 @@ d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ub
 d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-EXPECT=150
+EXPECT=154
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

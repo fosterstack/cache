@@ -17,6 +17,7 @@ options/verify.go:80-99 (the Fulcio extensions Witness itself can pin), docs/tut
 in-toto-attestation spec/v1/statement.md:11,19 (_type, subject, predicateType), spec/predicates/provenance.md:3.
 """
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -26,6 +27,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+
+import yaml
 
 from chain_common import Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json  # noqa: E402  (next to this file)
 import chain_hostile  # noqa: E402
@@ -84,9 +87,24 @@ def pem_blocks(text):
     return re.findall(r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", text, re.S)
 
 
-def pem_to_der(pem):
-    body = re.sub(r"-----(BEGIN|END) CERTIFICATE-----|\s", "", pem)
-    return b64d(body)
+ONE_CERT_PEM = re.compile(r"\s*-----BEGIN CERTIFICATE-----([A-Za-z0-9+/=\s]*)-----END CERTIFICATE-----\s*")
+
+
+def single_cert_der(text):
+    """The DER of a field that holds EXACTLY ONE certificate PEM block with nothing but whitespace around it, else ValueError.
+    The identity is read from this DER and openssl verifies a PEM re-made from this same DER (der_to_pem), so the bytes that are
+    read and the bytes that are verified cannot differ: text before the block, a second block, or bytes after the outer
+    SEQUENCE are refused instead of being skipped by one reader and used by the other."""
+    m = ONE_CERT_PEM.fullmatch(text)
+    if not m:
+        raise ValueError("the certificate field is not exactly one PEM certificate block")
+    der = base64.b64decode(re.sub(r"\s", "", m.group(1)), validate=True)
+    if len(der) < 4 or der[0] != 0x30:
+        raise ValueError("the certificate is not a DER SEQUENCE")
+    _, _, end = _tlv(der, 0)
+    if end != len(der):
+        raise ValueError("bytes after the certificate's outer SEQUENCE")
+    return der
 
 
 def der_to_pem(der):
@@ -95,8 +113,8 @@ def der_to_pem(der):
 
 
 def parse_cert(der):
-    _, s, e = _tlv(der, 0)
-    tbs_t, ts, te = _tlv(der, s)
+    _, s, _e = _tlv(der, 0)
+    _tbs_t, ts, te = _tlv(der, s)
     kids = _children(der, ts, te)
     i = 0
     if kids[0][0] == 0xA0:
@@ -108,7 +126,6 @@ def parse_cert(der):
     for tag, cs, ce in kids[i + 6:]:
         if tag != 0xA3:
             continue
-        _, xs, xe = _tlv(der, cs)
         for _t, es, ee in _children(der, cs, ce)[0:1]:
             for x in _children(der, es, ee):
                 xk = _children(der, x[1], x[2])
@@ -141,7 +158,7 @@ def first_cert_der(pem_text):
     blocks = pem_blocks(pem_text)
     if not blocks:
         raise Refuse("policy", "trust: no certificate in the chain file")
-    return pem_to_der(blocks[0]), blocks
+    return base64.b64decode(re.sub(r"-----(BEGIN|END) CERTIFICATE-----|\s", "", blocks[0])), blocks
 
 
 def policy_make(a):
@@ -376,19 +393,20 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     dsse, payload, ptype = read_record(stage, rec_path)
     entry = dsse["signatures"][0]
     try:
-        cert_pem = b64d(entry["certificate"]).decode()
-        leaf = parse_cert(pem_to_der(cert_pem))
+        leaf_der = single_cert_der(b64d(entry["certificate"]).decode())
+        leaf = parse_cert(leaf_der)
+        cert_pem = der_to_pem(leaf_der)
         intermediates = [b64d(x).decode() for x in entry.get("intermediates", [])]
         sig = b64d(entry["sig"])
     except Exception as ex:
-        refuse(stage, "record certificate or signature is malformed (%s)" % type(ex).__name__)
+        refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
     check_identity(stage, pol, leaf)
     leaf_p = check_chain(stage, pol, cert_pem, intermediates, tmp)
     check_signature(stage, leaf_p, ptype, payload, sig, tmp)
     check_timestamp(stage, pol, entry, sig, leaf, now, tmp)
     stmt, needs_rekor = check_record_type(stage, pol, ptype, payload)
     if needs_rekor:
-        check_rekor(pol, stage, rekor_path, payload, sig, pem_to_der(cert_pem), leaf)
+        check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf)
     return stmt, payload, dsse
 
 
@@ -435,7 +453,7 @@ def rekor_body(e):
     return body if body.get("kind") == "dsse" and body.get("apiVersion") == "0.0.1" else None
 
 
-def check_rekor_entry(pol, e, body, payload, sig, leaf_der, leaf):
+def check_rekor_entry(pol, e, body, sig, leaf_der, leaf):
     """Returns None when the entry is good, else the reason it is not."""
     spec = body["spec"]
     if not set_is_valid(e, pol["rekor_public_key"]):
@@ -446,7 +464,7 @@ def check_rekor_entry(pol, e, body, payload, sig, leaf_der, leaf):
     if len(signatures) != 1 or signatures[0].get("signature") != b64e(sig):
         return "rekor entry body is for another signature than this record's"
     try:
-        verifier_der = pem_to_der(b64d(signatures[0]["verifier"]).decode())
+        verifier_der = single_cert_der(b64d(signatures[0]["verifier"]).decode())
     except Exception:
         return "rekor entry body has no usable certificate (verifier)"
     if verifier_der != leaf_der:
@@ -459,9 +477,9 @@ def check_rekor_entry(pol, e, body, payload, sig, leaf_der, leaf):
 
 def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
     if not rekor_path:
-        refuse(stage, "rekor entry required for this record type but no --rekor-stub was given")
+        refuse(stage, "rekor entry required for this record type but no Rekor entries file (--rekor-stub) was given")
     try:
-        with open(rekor_path) as f:
+        with open(rekor_path, "rb") as f:
             entries = strict_json(f.read())["entries"]
     except (OSError, ValueError, KeyError, TypeError):
         refuse(stage, "rekor entries file is missing or not JSON")
@@ -479,7 +497,7 @@ def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
     first = None
     for e, body in candidates:
         try:
-            why = check_rekor_entry(pol, e, body, payload, sig, leaf_der, leaf)
+            why = check_rekor_entry(pol, e, body, sig, leaf_der, leaf)
         except Exception:
             why = "rekor entry is malformed"
         if why is None:
@@ -510,16 +528,10 @@ def parse_digest_file(path):
             raw = f.read()
     except OSError:
         refuse("sign", "digest file is missing or unreadable (format)")
-
-    def hook(pairs):
-        keys = [k for k, _ in pairs]
-        if len(set(keys)) != len(keys):
-            raise ValueError("duplicate key")
-        return dict(pairs)
     try:
-        obj = json.loads(raw.decode(), object_pairs_hook=hook)
-    except Exception as ex:
-        refuse("sign", "digest file format: not JSON or has a duplicate key (%s)" % ex)
+        obj = strict_json(raw)
+    except ValueError as ex:
+        refuse("sign", "digest file format: not UTF-8 JSON or has a duplicate key (%s)" % ex)
     if not isinstance(obj, dict) or not obj:
         refuse("sign", "digest file format: must be a non-empty JSON object")
     for k, v in obj.items():
@@ -587,9 +599,11 @@ def make_policy_from_template(a, tpl_path):
 def check_build_record(a):
     """What Sign must establish before it signs anything: Build's record is genuine, the digest list is the one Build attested,
     and the list has the right format. Returns (policy, digest-object). Signs nothing and calls no tool."""
-    pol = load_json(a.policy, "policy")
+    # two clearly named inputs: --template makes the per-tag policy here (the production Sign job), --policy is a finished one
+    # (the dry run's own policy.json); exactly one is given
+    pol = make_policy_from_template(a, a.template) if a.template else load_json(a.policy, "policy")
     if "roots" not in pol:
-        pol = make_policy_from_template(a, a.policy)
+        refuse("sign", "--policy must be a finished policy; a template goes to --template")
     now = parse_now(a.now)
     try:
         with open(a.digests, "rb") as f:
@@ -664,7 +678,7 @@ def cmd_sign(a):
         refuse("sign", "the only signer is cosign")
     pol, obj = check_build_record(a)
     dry = bool(pol.get("dry_run"))
-    signing_config = os.path.join(os.path.dirname(os.path.abspath(a.policy)), "cosign-signing-config.json")
+    signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template or a.policy)), "cosign-signing-config.json")
     with tempfile.TemporaryDirectory() as tmpd:
         sp = os.path.join(tmpd, "statement.json")
         with open(sp, "w") as f:
@@ -708,8 +722,8 @@ def follow_local(ref, allowed, root, seen, errs):
     p = ref[2:]
     if p not in set(allowed.get("local", [])):
         errs.append("%s is a local reference that is not on the allowed list" % ref)
-    elif p.startswith(".github/workflows/") or p in seen:
-        return
+    elif p.endswith((".yml", ".yaml")) or p in seen:
+        return  # a reusable workflow file is judged as a workflow of its own; a composite action is a directory, wherever it sits
     elif not root:
         errs.append("%s is a listed local action but no --root was given to read it" % ref)
     else:
@@ -722,7 +736,6 @@ def follow_local(ref, allowed, root, seen, errs):
 
 
 def check_actions(path, allowed, root, seen, errs):
-    import yaml
     try:
         d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
     except Exception as ex:
@@ -784,22 +797,20 @@ def build_parser():
     v.add_argument("--record", required=True)
     v.add_argument("--now")
     v.add_argument("--rekor-stub")
-    s = sub.add_parser("sign")
-    s.add_argument("--check", action="store_true")
-    s.add_argument("--signer", default="")
-    s.add_argument("--digests", required=True)
-    s.add_argument("--build-record", required=True)
-    s.add_argument("--policy", required=True)
-    s.add_argument("--now")
-    s.add_argument("--out", required=True)
-    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
-        s.add_argument("--" + n)
-    cb = sub.add_parser("check-build-record")
-    for n in ("digests", "build-record", "policy"):
-        cb.add_argument("--" + n, required=True)
-    cb.add_argument("--now")
-    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
-        cb.add_argument("--" + n)
+    for name in ("sign", "check-build-record"):
+        s = sub.add_parser(name)
+        if name == "sign":
+            s.add_argument("--check", action="store_true")
+            s.add_argument("--signer", default="")
+            s.add_argument("--out", required=True)
+        s.add_argument("--digests", required=True)
+        s.add_argument("--build-record", required=True)
+        which = s.add_mutually_exclusive_group(required=True)
+        which.add_argument("--template")   # the committed release-policy template: the per-tag policy is made here from GITHUB_REF
+        which.add_argument("--policy")     # a finished policy (the dry run's policy.json)
+        s.add_argument("--now")
+        for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key"):
+            s.add_argument("--" + n)
     st = sub.add_parser("stage-start")
     st.add_argument("--stage", required=True)
     st.add_argument("--previous", required=True)

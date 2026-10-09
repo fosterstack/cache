@@ -145,7 +145,9 @@ def grade_token(rest):
     if not ref:
         print("error: the token has no job_workflow_ref claim, so it cannot be graded", file=sys.stderr)
         sys.exit(2)
-    if "/stage-sign.yml@" in ref:
+    # exactly Sign's workflow file of THIS repository: <repo>/.github/workflows/stage-sign.yml@<ref>, not a file that ends the same way
+    repo = os.environ.get("GITHUB_REPOSITORY", "fosterstack/cache")
+    if re.fullmatch(re.escape(repo) + r"/\.github/workflows/stage-sign\.yml@refs/[A-Za-z0-9._/-]+", ref):
         print("ok")
         return
     refuse("runner", "nothing usable for Sign: the token's job_workflow_ref is %s" % ref)
@@ -169,7 +171,7 @@ def cmd_hostile_verdict(a):
     try:
         d = json.load(open(a.results))
         rows = d["attempts"]
-    except Exception as ex:
+    except Exception:
         print("error: %s is not the JSON results file (json)" % a.results, file=sys.stderr)
         sys.exit(1)
     errs, by = [], {}

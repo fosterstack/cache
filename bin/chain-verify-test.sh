@@ -98,6 +98,11 @@
 #        TIMESTAMPS: a record's signatures[0].timestamps[] entry is {"type":"tsp","data":<bare token>} (Witness) or
 #        {"type":"rfc3161-response","data":<DER TimeStampResponse>} (a Sigstore bundle); an unknown type is "timestamp ... malformed".
 #        EVERY record must be a DSSE envelope with NO duplicate JSON key and EXACTLY ONE signature ("signature").
+#        ONE CERTIFICATE, ONE DER (step-8 round 2, NB-1): the certificate field of a record (and the verifier of a Rekor entry's body) is
+#        EXACTLY ONE certificate PEM block with nothing but whitespace around it, whose base64 is valid and whose DER is exactly its outer
+#        SEQUENCE; anything else ("certificate ... malformed": text or base64 before the block, a second block, bytes after the SEQUENCE) is
+#        refused. The identity is read from that DER and openssl verifies a PEM re-made from that same DER, so the two cannot read different bytes.
+#        JSON READERS are UTF-8 only: a record, a Rekor entries file, a digest file or a policy written in UTF-16/32 is refused, not guessed.
 #        TRUST STORE: the certificate chain is checked against the policy's root ONLY; the system trust store (SSL_CERT_FILE,
 #        SSL_CERT_DIR, the OpenSSL default directory) is never consulted ("root").
 #   DRY-RUN POLICY AND sign --check (round 7, Opus B-NEW b): `sign --check --policy <a made dry_run policy>` is accepted ONLY to
@@ -106,10 +111,11 @@
 #       policies for other stages: sign --check checks Build's record under the dry policy's build identity. N-c: the dry run's own
 #       positive control (Sign's dry output, the dry policy, no --now) is covered here only by the synthetic sign_br record; the end to end
 #       run is the GitHub dry run itself.
-#   chain-verify.py sign --check --signer cosign --digests D.json --build-record REC.json --policy POLICY.json --now ISO8601Z
-#                   --out DIR [--trust TRUST.json --fulcio-chain F.pem --tsa-chain S.pem --rekor-key K.pem]
-#       --policy is EITHER a made POLICY.json OR the committed template (.github/policy/release-policy.template.json, which is what
-#       the Sign job passes: its command line is pinned in bin/chain-sign-wiring-test.sh). Given the template, sign --check makes the
+#   chain-verify.py sign --check --signer cosign --digests D.json --build-record REC.json (--template TEMPLATE.json | --policy POLICY.json)
+#                   --now ISO8601Z --out DIR [--trust TRUST.json --fulcio-chain F.pem --tsa-chain S.pem --rekor-key K.pem]
+#       exactly ONE of --template (the committed template .github/policy/release-policy.template.json, which is what the Sign job passes:
+#       its command line is pinned in bin/chain-sign-wiring-test.sh) and --policy (a finished POLICY.json, the dry run's); both or neither is
+#       a usage error (exit 2) and a template given as --policy is refused ("policy"). Given --template, sign --check makes the
 #       per-tag policy itself (rule 57: from the template, the committed .github/policy/sigstore-trust.json and the PEMs committed next to
 #       it, fulcio-chain.pem / tsa-chain.pem / rekor.pub, each overridable by the four flags) with the tag taken from the env var
 #       GITHUB_REF, which must be refs/tags/vX.Y.Z (a branch ref or an empty value exits 1 "tag"); a trust hash that differs exits 1 "trust".
@@ -137,7 +143,7 @@
 #       The statement Sign signs also names the source and the run (SLSA v1): buildDefinition.resolvedDependencies[0].digest.gitCommit =
 #       $GITHUB_SHA, runDetails.metadata.invocationId = $GITHUB_SERVER_URL/<repository>/actions/runs/$GITHUB_RUN_ID, externalParameters.workflow =
 #       the calling workflow (release.yml at the ref). A pushed refs/tags/vX.Y.Z is the only production ref: a workflow_dispatch on a tag is refused.
-#   chain-verify.py check-build-record --digests D.json --build-record REC.json --policy POLICY.json [--now ..] [--trust ..]
+#   chain-verify.py check-build-record --digests D.json --build-record REC.json (--template T.json | --policy POLICY.json) [--now ..] [--trust ..]
 #       exactly the checks Sign makes BEFORE it signs (Build's record genuine under the build identity, D.json is the file the record attests
 #       by its sha256, D.json passes the format check) and nothing after: it prints ok, calls no tool and writes no file. The dry run's hostile
 #       verify job uses it for the hand-code attempt, so that job holds no signing subcommand at all.
@@ -487,6 +493,37 @@ add("release_policy_issuer", STAGES["release"], T, None, None, dsse=POLT, payloa
 # illustrative: https://in-toto.io/attestation/release/v0.1 is the in-toto *registry release* predicate (in-toto-attestation
 # spec/predicates/release.md:74), used here only as a NEGATIVE fixture: it is not the signed policy and must be refused
 add("release_stmt_policy", STAGES["release"], T, "https://in-toto.io/attestation/release/v0.1", D)
+# step-8 round 2 NB-1 (Opus): the identity must be read from the SAME bytes openssl verifies. A certificate field that holds anything but
+# exactly one PEM block is refused: junk base64 or text before a genuine block, a second appended block, bytes after the outer SEQUENCE.
+# ATTACK shape: the field = a self-made certificate with the RIGHT identity (issued by an attacker root) followed by a GENUINE certificate of
+# ANY identity (chains to the policy root, and its key signed the payload); a reader that takes the first DER for the identity and openssl
+# that skips to the genuine block both say yes. ATK is that self-made certificate; each record below is a genuine record or the attack.
+add("atk_cert", STAGES["check"], T, COLL, None, stmt="v0.1", coll_file="digests.json", ca="otherroot")
+add("check_as_build", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json")   # genuine chain and key, BUILD's identity
+def cert_text(name): return base64.b64decode(json.load(open(p(name + ".json")))["signatures"][0]["certificate"]).decode()
+def pem_der(text): return base64.b64decode("".join(l for l in text.splitlines() if not l.startswith("-----")))
+def to_pem(der): b = base64.b64encode(der).decode(); return "-----BEGIN CERTIFICATE-----\n" + "\n".join(b[i:i + 64] for i in range(0, len(b), 64)) + "\n-----END CERTIFICATE-----\n"
+def reshape(src, name, fn):
+    r = json.load(open(p(src + ".json"))); r["signatures"][0]["certificate"] = b64(fn(cert_text(src)).encode()); json.dump(r, open(p(name + ".json"), "w"))
+ATK = cert_text("atk_cert")
+# the attacker pads his DER with zero bytes to a multiple of 3 so its base64 has no '=' and survives being concatenated with the genuine block
+# (a reader that ignores bytes after the outer SEQUENCE still reads his identity from it)
+_ad = pem_der(ATK); ATK_PAD_DER = _ad + b"\x00" * (-len(_ad) % 3); ATK_PAD_PEM = to_pem(ATK_PAD_DER)
+CERT_VARIANTS = {
+    "junkb64": lambda g: base64.b64encode(ATK_PAD_DER).decode() + "\n" + g,       # base64 of a self-made DER, then the genuine PEM
+    "second": lambda g: g + "\n" + ATK,                                              # a second block appended
+    "trailing": lambda g: to_pem(pem_der(g) + b"\x00\x00"),                          # bytes after the outer SEQUENCE
+    "leadtext": lambda g: "hello\n" + g,                                              # leading garbage text
+    "trailtext": lambda g: g + "junk",                                               # garbage after the block
+    "attack": lambda g: ATK_PAD_PEM + "\n" + g,                                               # the attack itself: right identity first, genuine block second
+}
+for src in ("build_coll", "rebuild_coll", "check_coll", "sign_prov"):
+    for v, fn in CERT_VARIANTS.items(): reshape(src, src + "_c" + v, fn)
+reshape("check_as_build", "check_attack", lambda g: ATK_PAD_PEM + "\n" + g)
+reshape("check_as_build", "check_attack_b64", lambda g: base64.b64encode(ATK_PAD_DER).decode() + "\n" + g)   # the coordinator's exact shape: bare base64 then the genuine PEM   # signed by a genuine key of the WRONG identity, field says check
+# UTF-16 spellings of the same JSON (json.loads on bytes would guess the encoding from the first bytes)
+for src in ("build_coll", "sign_prov"):
+    open(p(src + "_u16.json"), "wb").write(open(p(src + ".json"), "rb").read().decode().encode("utf-16"))
 # ---- Rekor, in the shape a Sigstore bundle carries it (REAL fields; the first dry run replaces this synthetic entry by a genuine one).
 # Modelled on protobuf-specs v0.5.1 sigstore_rekor.proto TransparencyLogEntry (protobuf-JSON: int64 as strings, bytes as base64) and
 # sigstore-go v1.2.2 pkg/tlog/entry.go (VerifySET: the log signs the canonical {body, integratedTime, logID, logIndex}; for a DSSE
@@ -509,6 +546,11 @@ def entry(rec_name, idx, key="rekor", body_from=None, logkey="rekor", cert_from=
     return tlog_entry(dsse_body(rec_name, body_from, cert_from), idx, key, logkey, itime)
 dj("rekor.json", {"entries": [entry("sign_prov", 7), entry("release_policy", 8)]})
 dj("rekor-empty.json", {"entries": []})
+# a Rekor entry whose body names a verifier that is a genuine PEM followed by junk (validly signed by the log): the comparison is by the one DER
+_vb = dsse_body("sign_prov"); _vb["spec"]["signatures"][0]["verifier"] = b64(base64.b64decode(_vb["spec"]["signatures"][0]["verifier"]) + b"junk")
+dj("rekor-verifierjunk.json", {"entries": [tlog_entry(_vb, 7)]})
+open(p("rekor-u16.json"), "wb").write(open(p("rekor.json"), "rb").read().decode().encode("utf-16"))
+open(p("digests-u16.json"), "wb").write(open(p("digests.json"), "rb").read().decode().encode("utf-16"))
 dj("rekor-br.json", {"entries": [entry("sign_br", 11)]})
 dj("rekor-flag.json", {"entries": [entry("sign_flag_tag", 12)]})
 dj("rekor-brtag.json", {"entries": [entry("sign_brtag", 13), entry("sign_brrel", 14), entry("sign_cfg_brtag", 15)]})
@@ -874,17 +916,17 @@ if [ "$rc" = 1 ] && ! crashed && [ -z "$(ls -A "$work/sd/nocheck" 2> /dev/null)"
 
 # the Sign job passes the committed TEMPLATE as --policy: sign --check makes the per-tag policy itself (rule 57) from the template,
 # the committed trust file and PEMs (defaults next to the template, overridable by flags) and the tag from GITHUB_REF
-TP() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/template.json" --trust "$work/trust.json" \
+TP() { echo sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/template.json" --trust "$work/trust.json" \
   --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$1"; }
 GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 --policy the template + GITHUB_REF=refs/tags/v0.3.0: the per-tag policy is made and Build's record verifies" $(TP tpl1)
 GITHUB_REF=refs/heads/main GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode on a branch (GITHUB_REF is not a tag) is refused" "tag|github_ref" $(TP tpl2)
 GITHUB_REF=refs/tags/v0.3.1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode at v0.3.1 refuses a Build record signed at v0.3.0" "v0.3.1|v0.3.0" $(TP tpl3)
 GITHUB_REF= GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with no GITHUB_REF is refused" "tag|github_ref" $(TP tpl4)
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with a trust file whose hash differs is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/template.json" --trust "$work/trust-badroot.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/tpl5"
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 template mode with a trust file whose hash differs is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/template.json" --trust "$work/trust-badroot.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/tpl5"
 
 
 # ---- production vs dry run (round 5): the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
-TPR() { echo sign --check --signer cosign --build-record "$work/$1.json" --policy "$work/template.json" --trust "$work/trust.json" \
+TPR() { echo sign --check --signer cosign --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" \
   --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$2"; }
 GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/v0.3.0-rc1 is not vX.Y.Z and is refused (even with a Build record signed at that ref)" "tag" $(TPR build_coll_rc tagrc)
 GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/x is refused" "tag" $(TPR build_coll_tagx tagx)
@@ -935,15 +977,15 @@ expect_refuse "003-AC1 release <- sign with a dry-run record is refused: names s
 # template mode with the DEFAULT locations (no override flags) in a copy of the policy folder, and a drifted default PEM
 mkdir -p "$work/polcopy"; cp "$work/template.json" "$work/polcopy/release-policy.template.json"; cp "$work/trust.json" "$work/polcopy/sigstore-trust.json"
 cp "$work/fulcio-chain.pem" "$work/polcopy/fulcio-chain.pem"; cp "$work/tsa-chain.pem" "$work/polcopy/tsa-chain.pem"; cp "$work/rekor.pub" "$work/polcopy/rekor.pub"; cp "$work/cosign-signing-config.json" "$work/polcopy/cosign-signing-config.json"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "002-AC2 template mode with NO override flags uses the committed defaults next to the template (the production invocation)" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default1"
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "002-AC2 template mode with NO override flags uses the committed defaults next to the template (the production invocation)" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default1"
 cp "$work/othertsaroot.pem" "$work/polcopy/tsa-chain.pem"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default PEM that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default2"
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default PEM that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default2"
 cp "$work/tsa-chain.pem" "$work/polcopy/tsa-chain.pem"; cp "$work/otherroot.pem" "$work/polcopy/fulcio-chain.pem"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default Fulcio chain that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default3"
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default Fulcio chain that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default3"
 cp "$work/fulcio-chain.pem" "$work/polcopy/fulcio-chain.pem"; cp "$work/rekor2.pub" "$work/polcopy/rekor.pub"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default Rekor key that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default4"
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "002-AC2 a default Rekor key that no longer matches sigstore-trust.json is refused" "trust" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default4"
 cp "$work/rekor.pub" "$work/polcopy/rekor.pub"
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "002-AC2 with all three default PEMs restored the production invocation succeeds again (the refusals were about the drift)" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default5"
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "002-AC2 with all three default PEMs restored the production invocation succeeds again (the refusals were about the drift)" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/polcopy/release-policy.template.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/default5"
 # ---- round 7 (Opus B-NEW a): policy make with NO file flags (the dry run's and Release's pinned lines), defaults next to the template ----
 rc=0; run policy make --template "$work/polcopy/release-policy.template.json" --tag v0.3.0 --out "$work/polcopy-made.json" || rc=$?
 [ "$rc" = 0 ] && cmp -s "$work/policy.json" "$work/polcopy-made.json" && ok "002-AC2 policy make --tag with NO file flags uses the defaults next to the template and equals the policy made with explicit files (Release's pinned line)" || bad "002-AC2 policy make --tag with no file flags (exit $rc)"
@@ -972,7 +1014,7 @@ DSC() { echo sign --check --signer cosign --build-record "$work/$1.json" --polic
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: digests Build did not attest are refused 'digest', not 'dry'" "digest|!dry" $(DSC build_coll_br digests-other dsc1)
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC5 sign --check --policy <dry policy>: malformed digests Build attested are refused 'format', not 'dry'" "format|!dry" $(DSC build_coll_br_badval digests-badval dsc2)
 GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "001-AC5 sign --check --policy <dry policy>: valid digests Build attested are accepted (so the two refusals above are about the digests)" $(DSC build_coll_br digests dsc3)
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 sign --check with no --now (the Sign job passes none) uses the current time" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/template.json" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --digests "$work/digests.json" --out "$work/sd/nonow"
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_ok "001-AC2 sign --check with no --now (the Sign job passes none) uses the current time" sign --check --signer cosign --build-record "$work/build_coll.json" --template "$work/template.json" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --digests "$work/digests.json" --out "$work/sd/nonow"
 python3 - "$root" "$OPENSSL" 2> /dev/null <<'PY' && ok "002-AC2 the committed fulcio-chain.pem, tsa-chain.pem and rekor.pub hash to the values in sigstore-trust.json" || bad "002-AC2 committed PEMs missing, or their sha256(DER) differs from sigstore-trust.json"
 import hashlib, json, re, subprocess, sys
 root, ssl = sys.argv[1], sys.argv[2]
@@ -1101,6 +1143,8 @@ PY
 # SSL_CERT_DIR) must not make a forged record chain: the same record is refused with and without it.
 mkdir -p "$work/certdir"; cp "$work/otherroot.pem" "$work/certdir/attacker.pem"
 ln -sf attacker.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/otherroot.pem").0"
+cp "$work/othertsaroot.pem" "$work/certdir/attacker-tsa.pem"   # the attacker's TIMESTAMP root is trusted by the store too, so the TSA path is exercised
+ln -sf attacker-tsa.pem "$work/certdir/$("$OPENSSL" x509 -hash -noout -in "$work/othertsaroot.pem").0"
 expect_refuse "B-1 a record that chains only to an attacker root is refused (no trust store)" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 SSL_CERT_FILE="$work/otherroot.pem" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_FILE trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 SSL_CERT_DIR="$work/certdir" expect_refuse "B-1 the same record is STILL refused when SSL_CERT_DIR trusts the attacker root" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
@@ -1141,6 +1185,47 @@ expect_refuse "SF-1 a listed local action outside .github/actions is followed to
 expect_refuse "SF-1 a listed local action with no action.yml or action.yaml under --root is refused" "none" actions "$work/w_sf1none.yml" --allowed "$work/allowed-sf1.json" --root "$work/tree"
 expect_refuse "SF-1 a listed local action without --root cannot be read, so it is refused" "root" actions "$work/w_sf1yaml.yml" --allowed "$work/allowed-sf1.json"
 
+# ---- step-8 round 2: NB-1 one certificate, one DER; N-8 UTF-8 only; S-1 composite actions under .github/workflows -------------------
+for v in junkb64 second trailing leadtext trailtext attack; do
+  for s in build rebuild check; do
+    expect_refuse "NB-1 $s record whose certificate field is '$v' (not exactly one PEM block) is refused, whatever its identity" "certificate|!digest|!rekor" verify $(V) --stage $s $(rec ${s}_coll_c$v) $(R)
+  done
+  expect_refuse "NB-1 $v through stage-start (release <- check) is refused" "certificate|!digest" $(ST release check) $(rec check_coll_c$v) --digests "$work/digests.json"
+  expect_refuse "NB-1 $v through check-build-record (the check sign --check runs before cosign) is refused, cosign not called" "certificate|!digest" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll_c$v.json" --policy "$work/policy.json" --now "$NOW"
+  expect_refuse "NB-1 $v on the provenance (stage sign) is refused before any Rekor lookup" "certificate|!rekor" verify $(V) --stage sign $(rec sign_prov_c$v) $(R)
+done
+expect_refuse "NB-1 the ATTACK: a genuine Build-identity record whose field is [self-made check-identity certificate, genuine block] is refused for stage check" "certificate" verify $(V) --stage check $(rec check_attack) $(R)
+expect_refuse "NB-1 the same attack through stage-start (release <- check)" "certificate" $(ST release check) $(rec check_attack) --digests "$work/digests.json"
+expect_refuse "NB-1 the attack in its bare form (base64 of a self-made DER, a newline, then the genuine PEM) is refused for stage check" "certificate" verify $(V) --stage check $(rec check_attack_b64) $(R)
+expect_refuse "NB-1 the bare-form attack through stage-start (release <- check)" "certificate" $(ST release check) $(rec check_attack_b64) --digests "$work/digests.json"
+expect_refuse "NB-1 control: the same genuine key with its true certificate is refused for stage check by IDENTITY (stage-build.yml), so the attack above was the only way past" "stage-build.yml" verify $(V) --stage check $(rec check_as_build) $(R)
+expect_refuse "NB-1 a Rekor entry whose verifier is a genuine PEM plus junk is refused (the log's certificate is compared as one DER)" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-verifierjunk.json)
+expect_ok     "NB-1 control: the genuine records are accepted (one PEM block, whitespace around it allowed)" verify $(V) --stage build $(rec build_coll) $(R)
+# N-8: every JSON reader is UTF-8 only; UTF-16 spellings are refused, not guessed
+expect_refuse "N-8 a record written in UTF-16 is refused" "envelope" verify $(V) --stage build --record "$work/build_coll_u16.json" $(R)
+expect_refuse "N-8 a Rekor entries file in UTF-16 is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) --rekor-stub "$work/rekor-u16.json"
+expect_refuse "N-8 a digest file in UTF-16 is refused by stage-start" "digest" $(ST release check) $(rec check_coll) --digests "$work/digests-u16.json"
+expect_refuse "N-8 a digest file in UTF-16 is refused by check-build-record" "digest" check-build-record --digests "$work/digests-u16.json" --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW"
+iconv -f UTF-8 -t UTF-16 "$work/policy.json" > "$work/policy-u16.json"
+expect_refuse "N-8 a policy file in UTF-16 is refused" "policy" verify --policy "$work/policy-u16.json" --now "$NOW" --stage build $(rec build_coll)
+# N-7: --template (the committed template, the policy is made here) and --policy (a finished policy) are two inputs, exactly one is given
+expect_refuse "N-7 a template given as --policy is refused: it is not a finished policy" "template|policy" check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --policy "$work/template.json" --now "$NOW"
+rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --template "$work/template.json" --policy "$work/policy.json" --now "$NOW" || rc=$?
+if [ "$rc" = 2 ]; then ok "N-7 --template and --policy together are a usage error (exactly one)"; else bad "N-7 --template with --policy must exit 2, got $rc"; fi
+rc=0; run check-build-record --digests "$work/digests.json" --build-record "$work/build_coll.json" --now "$NOW" || rc=$?
+if [ "$rc" = 2 ]; then ok "N-7 neither --template nor --policy is a usage error"; else bad "N-7 neither flag must exit 2, got $rc"; fi
+# S-1: a composite action may be stored under .github/workflows/; only a reference that names a .yml/.yaml FILE (a reusable workflow) is judged as a workflow
+mkdir -p "$work/tree/.github/workflows/acts/thing" "$work/tree/.github/workflows/acts/ok"
+printf 'name: t\nruns:\n  using: composite\n  steps:\n    - uses: evil/act@main\n' > "$work/tree/.github/workflows/acts/thing/action.yml"
+printf 'name: t\nruns:\n  using: composite\n  steps:\n    - uses: actions/checkout@%s\n' "$a40" > "$work/tree/.github/workflows/acts/ok/action.yml"
+echo '{"actions":["actions/checkout@'$a40'"],"images":[],"local":[".github/workflows/acts/thing",".github/workflows/acts/ok",".github/workflows/lib.yml"]}' > "$work/allowed-s1.json"
+w w_s1bad "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: ./.github/workflows/acts/thing\n"
+w w_s1ok "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: ./.github/workflows/acts/ok\n"
+printf 'name: t\non: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/lib.yml\n' > "$work/w_s1wf.yml"
+expect_refuse "S-1 a composite action stored under .github/workflows/ is followed: the unpinned action inside it is rejected" "evil/act" actions "$work/w_s1bad.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
+expect_ok     "S-1 control: a pinned composite action under .github/workflows/ is accepted" actions "$work/w_s1ok.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
+expect_ok     "S-1 control: a listed reusable workflow file (.yml) is not opened as an action directory" actions "$work/w_s1wf.yml" --allowed "$work/allowed-s1.json" --root "$work/tree"
+
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs (never one for a refusal)
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
 if [ "$n" = "$SIGNS_OK" ] && [ "$SIGNS_OK" -ge 1 ] && ! grep -E -v -q "$ARGV_RE" "$work/cosign-all.log"; then ok "001-AC2 cosign was called exactly once per successful sign ($SIGNS_OK) and always with the pinned argv"; else bad "001-AC2 cosign calls ($n) != successful signs ($SIGNS_OK), or an unpinned argv was used"; fi
@@ -1152,7 +1237,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=314
+EXPECT=368
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
