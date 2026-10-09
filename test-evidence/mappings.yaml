@@ -575,3 +575,6 @@ mappings:
   - ac: REQ-SUP-001-AC10
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-test.sh" }
+  - ac: REQ-SUP-001-AC13
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pip-pin-test.sh" }

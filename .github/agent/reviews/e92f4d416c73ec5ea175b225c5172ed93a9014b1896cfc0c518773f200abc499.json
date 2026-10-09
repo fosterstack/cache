@@ -1,0 +1,34 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "e92f4d416c73ec5ea175b225c5172ed93a9014b1896cfc0c518773f200abc499",
+ "change": "Allowlist: the branch sweeper's files and its keep-file join the public-file allowlist (five anchored patterns) -- PR #219",
+ "reviewed_commit": "035216c117877f4a842d1a2fea77fb2a88354feb",
+ "closed_commit": "035216c117877f4a842d1a2fea77fb2a88354feb",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "first round, both green",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "b6649eeafa58d5a25161aff3bbe1f18db45743fdc0f0675c0eba68575b2d38c0"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "a93c40b24092d43628a088c889a1f0d709c1c6529d269285408beb8ce582bcb4"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "line mode treats a trailing newline as a record delimiter (predates this change; NUL mode rejects it)",
+  "the allowlist suite could not run in the reviewer's read-only sandbox (it passes locally and in CI)"
+ ],
+ "row78": "no workflow or action file changes; check-action-pins.py 27 files, 147 pinned actions, zero findings (both reviewers)"
+}

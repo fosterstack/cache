@@ -2061,6 +2061,12 @@ requirements:
         then: "it neither reports clean nor rolls back: with no matching exception it reports a disputed hit, as a public-facts-only issue labelled supply-chain-hit, to the advisor; with a matching exception it passes; an exception is a checked-in entry (the advisory ids, the package, the version, evidence links, its date and each advisory's last-modified time) and applies only while both advisories are unchanged since it was written"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC13
+        given: "a workflow job that runs pip install"
+        when: "the workflows are read"
+        then: "an earlier step of that same job installs pip itself (including a virtual environment's own pip, before anything is installed through that environment) at one pinned version from a hash-checked requirement file (pip-requirements.txt in the auditor tree), with --require-hashes and --only-binary=:all:, before any other pip install of that job, and the job logs the pip version, and a failed pin stops every later install of that job; the requirement file holds exactly one requirement, pip==<version>, with at least one --hash=sha256:, a version public at least 7 days; and that file is under Dependabot's 7-day cooldown"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-UAT-001
     title: Persona UAT
     statement: >

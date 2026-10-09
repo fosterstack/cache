@@ -269,6 +269,118 @@ else
   gf "reserved-branch guard workflow present" "$GUARD missing"
 fi
 
+# --- The local pre-commit hook judges only what THIS commit introduces ------------------------------
+# Normal commit: the staged diff against HEAD. Merge commit (MERGE_HEAD present): only files that differ
+# from HEAD AND from every MERGE_HEAD parent, so content that merely came from the other parent (already
+# on main, already judged) is not re-judged, while anything the merge itself adds or changes still is.
+# These cases run the REAL .githooks/pre-commit and bin/check-file-allowlist.sh from a temp repo.
+HOOKSRC="$(pwd)/.githooks"; ALLOWSRC="$(pwd)/bin/check-file-allowlist.sh"
+HK="$TMPROOT/hk"
+hk() { git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath="$HK/.githooks" "$@"; }
+nohk() { git -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"; }
+mkhk() {  # a repo on branch feature/x with the real hook installed; main has one allowed file
+  rm -rf "$HK"; mkdir -p "$HK/bin" "$HK/.githooks"; cp "$HOOKSRC/pre-commit" "$HK/.githooks/"; cp "$ALLOWSRC" "$HK/bin/"
+  ( cd "$HK" && nohk init -q -b main . && echo 'package x' > internal.go && nohk add -A && nohk commit -q -m base \
+    && nohk update-ref refs/remotes/origin/main HEAD && nohk checkout -q -b feature/x )
+}
+hkexpect() {  # hkexpect <expect> <desc> <command string run in $HK>
+  local expect="$1" desc="$2" out rc
+  out="$(cd "$HK" && eval "$3" 2>&1)"; rc=$?
+  if { [ "$expect" = pass ] && [ "$rc" -eq 0 ]; } || { [ "$expect" = fail ] && [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -q 'blocked'; }; then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (expected $expect with the allowlist's 'blocked' message, rc=$rc)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+}
+# on branch <name> from the base, commit a file with the hook disabled
+hkbranch() { ( cd "$HK" && nohk checkout -q -b "$1" main && mkdir -p "$(dirname "$2")" && echo "$3" > "$2" && nohk add -A && nohk commit -q -m "$1" && nohk checkout -q feature/x ); }
+
+mkhk
+hkexpect pass "hook: normal commit adding an allowed file passes" 'echo "package y" > internal/y.go 2>/dev/null || { mkdir -p internal; echo "package y" > internal/y.go; }; hk add -A && hk commit -q -m ok'
+mkhk
+hkexpect fail "hook: normal commit adding .env is rejected" 'echo S=1 > .env && hk add -f .env && hk commit -q -m bad'
+
+# (c) other parent carries a tracked, unlisted file that is already on main
+mkhk; hkbranch other ops/notes.md main-side
+( cd "$HK" && nohk checkout -q main && nohk merge -q other && nohk update-ref refs/remotes/origin/main HEAD && nohk checkout -q feature/x && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect pass "hook: merge bringing in a file already tracked on the other parent (not allowlisted) passes" 'hk merge -q --no-ff --no-commit main && hk commit -q -m merge'
+# (d) the resolution itself adds a new disallowed file
+mkhk; hkbranch other ops/notes.md main-side
+( cd "$HK" && nohk checkout -q main && nohk merge -q other && nohk checkout -q feature/x && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge whose resolution ADDS a disallowed file is rejected" 'hk merge -q --no-ff --no-commit main && echo S=1 > .env && hk add -f .env && hk commit -q -m merge'
+# (e) the feature branch LACKS the unlisted file; it exists only on the other parent, so the merge adds it
+# to HEAD's side but it is identical to MERGE_HEAD: it came from that parent, passes (old hook rejects)
+mkhk; hkbranch other ops/shared.md same
+( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect pass "hook: merge adding a file present identically in the other parent only passes" 'hk merge -q --no-ff --no-commit other && hk commit -q -m merge'
+# (e2) the resolution modifies a file differently from both parents: introduced by the merge, judged
+mkhk; hkbranch other ops/shared.md theirs
+( cd "$HK" && nohk checkout -q main && nohk merge -q other && nohk checkout -q feature/x && mkdir -p ops && echo mine > ops/shared.md && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge resolution that writes a third version of an unlisted file is rejected" 'hk merge -q --no-ff --no-commit main; echo resolved > ops/shared.md && hk add ops/shared.md && hk commit -q -m merge'
+# stale/leftover MERGE_HEAD: a normal commit with MERGE_HEAD present is a merge commit by git's own logic;
+# the hook must not crash and must still reject a disallowed file staged in it
+mkhk; hkbranch other ops/notes.md x
+( cd "$HK" && git rev-parse other > .git/MERGE_HEAD )
+hkexpect fail "hook: leftover MERGE_HEAD, disallowed file staged: rejected by the allowlist (not a crash)" 'echo S=1 > .env && hk add -f .env && out=$(hk commit -q -m stale 2>&1); rc=$?; echo "$out"; echo "$out" | grep -q "blocked" && exit $rc'
+# type / mode changes: the other parent's diff reports T (or M), which must still count as "differs from
+# that parent". The feature branch lacks ops/x, so against HEAD the path is an addition.
+hkbranch_link() { ( cd "$HK" && nohk checkout -q -b "$1" main && mkdir -p ops && ln -s target ops/x && nohk add -A && nohk commit -q -m "$1" && nohk checkout -q feature/x ); }
+mkhk; hkbranch_link other; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge replacing the other parent's symlink with a regular file is rejected (type change)" 'hk merge -q --no-ff --no-commit other && rm ops/x && echo data > ops/x && hk add ops/x && hk commit -q -m merge'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge replacing the other parent's regular file with a symlink is rejected (type change)" 'hk merge -q --no-ff --no-commit other && rm ops/x && ln -s target ops/x && hk add ops/x && hk commit -q -m merge'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge replacing the other parent's file with a submodule gitlink is rejected" 'hk merge -q --no-ff --no-commit other && hk rm -q --cached ops/x && hk update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",ops/x && hk commit -q -m merge'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: merge changing only the mode (100644 to 100755) of the other parent's file is rejected" 'hk merge -q --no-ff --no-commit other && chmod +x ops/x && hk add ops/x && hk commit -q -m merge'
+# HEAD side: a type change staged in a PLAIN commit is judged too (T in the HEAD-side filter)
+mkhk; ( cd "$HK" && mkdir -p ops && ln -s target ops/x && nohk add -A && nohk commit -q -m link )
+hkexpect fail "hook: plain commit turning a tracked symlink into a regular file (type change) is rejected" 'rm ops/x && echo data > ops/x && hk add ops/x && hk commit -q -m tc'
+mkhk; ( cd "$HK" && mkdir -p ops && echo data > ops/x && nohk add -A && nohk commit -q -m file )
+hkexpect fail "hook: plain commit turning a tracked regular file into a symlink (type change) is rejected" 'rm ops/x && ln -s target ops/x && hk add ops/x && hk commit -q -m tc'
+# diff.ignoreSubmodules=all must not hide gitlink differences
+mkhk; ( cd "$HK" && git config diff.ignoreSubmodules all )
+hkexpect fail "hook: plain commit adding a gitlink at an unlisted path is rejected even with diff.ignoreSubmodules=all" 'hk update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",ops/g && hk commit -q -m gl'
+mkhk; hkbranch other ops/x data; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat && git config diff.ignoreSubmodules all )
+hkexpect fail "hook: merge replacing the other parent's file with a gitlink is rejected even with diff.ignoreSubmodules=all" 'hk merge -q --no-ff --no-commit other && hk rm -q --cached ops/x && hk update-index --add --cacheinfo 160000,"$(git rev-parse HEAD)",ops/x && hk commit -q -m merge'
+# non-ASCII paths, UTF-8 locale, unquoted names: the merge still judges the right paths
+NA=$(printf 'ops/caf\303\251.md')
+mkhk; hkbranch other "$NA" x; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat && git config core.quotePath false )
+hkexpect pass "hook: merge bringing a non-ASCII unlisted path from the other parent passes (UTF-8 locale, quotePath=false)" 'export LC_ALL=en_US.UTF-8; hk merge -q --no-ff --no-commit other && hk commit -q -m merge'
+mkhk; hkbranch other "$NA" x; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat && git config core.quotePath false )
+hkexpect fail "hook: merge resolution adding a non-ASCII unlisted path is rejected (UTF-8 locale, quotePath=false)" 'export LC_ALL=en_US.UTF-8; hk merge -q --no-ff --no-commit other && printf z > "ops/na\303\257ve.md" && hk add -A && hk commit -q -m merge'
+
+# fail closed when the list cannot be produced: a PATH-shadowed tool that fails must make the merge commit
+# fail (non-zero, no merge commit created), never an empty list that accepts everything
+hkfault() {  # hkfault <desc> <tool to shadow with a failing stub>
+  local desc="$1" tool="$2" out rc
+  mkhk; hkbranch other ops/notes.md x; ( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+  mkdir -p "$TMPROOT/stub"; printf '#!/bin/sh\nexit 1\n' > "$TMPROOT/stub/$tool"; chmod +x "$TMPROOT/stub/$tool"
+  out="$(cd "$HK" && hk merge -q --no-ff --no-commit other >/dev/null 2>&1; PATH="$TMPROOT/stub:$PATH" hk commit -q -m merge 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ] && ! ( cd "$HK" && git rev-parse -q --verify HEAD^2 >/dev/null ); then
+    echo "ok:   $desc"; pass=$((pass+1))
+  else
+    echo "FAIL: $desc (rc=$rc, merge commit created or hook accepted)"; echo "$out" | sed 's/^/      /'; fail=$((fail+1))
+  fi
+  rm -rf "$TMPROOT/stub"
+}
+hkfault "hook: merge fails closed when sort fails (list cannot be produced)" sort
+hkfault "hook: merge fails closed when mktemp fails" mktemp
+hkfault "hook: merge fails closed when comm fails" comm
+
+# (f) octopus: two other parents, each carrying an unlisted file
+mkhk; hkbranch m1 ops/one.md 1; hkbranch m2 ops/two.md 2
+( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect pass "hook: octopus merge of two parents carrying unlisted files passes" 'hk merge -q --no-ff --no-commit m1 m2 && hk commit -q -m octo'
+mkhk; hkbranch m1 ops/one.md 1; hkbranch m2 ops/two.md 2
+( cd "$HK" && echo 'package f' > f.go && nohk add -A && nohk commit -q -m feat )
+hkexpect fail "hook: octopus merge whose resolution adds a disallowed file is rejected" 'hk merge -q --no-ff --no-commit m1 m2 && echo S=1 > .env && hk add -f .env && hk commit -q -m octo'
+# no MERGE_HEAD: cherry-pick and squash judge the staged diff against HEAD as before
+mkhk; hkbranch other ops/notes.md x
+hkexpect fail "hook: cherry-pick of a commit adding an unlisted file is rejected (no MERGE_HEAD)" 'hk cherry-pick -n other && hk commit -q -m cp'
+mkhk; hkbranch other ops/notes.md x
+hkexpect fail "hook: squash merge adding an unlisted file is rejected (no MERGE_HEAD)" 'hk merge -q --squash other && hk commit -q -m sq'
+
 echo "----"
 echo "check-file-allowlist: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]
