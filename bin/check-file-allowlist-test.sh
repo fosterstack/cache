@@ -30,6 +30,29 @@ runeach() {
   local expect="$1" ref="$2" desc="$3" p; shift 3
   for p in "$@"; do run "$expect" "$ref" "$desc [$p]" "$p"; done
 }
+# passfam <branch> <desc> <paths...>: each path is admitted ALONE, and each one's mechanical near-misses are
+# refused ALONE: a leading segment (x/P), a trailing segment (P/x), a trailing slash (P/), and P with each '.' (and
+# each '-') replaced by X in turn, the leading dot of .github included. These kill a dropped ^, a dropped $, an
+# unescaped dot, and an unescaped/wildcarded separator in any pattern that admits the path.
+passfam() {
+  local ref="$1" desc="$2" p i c q; shift 2
+  runeach pass "$ref" "$desc" "$@"
+  for p in "$@"; do
+    runeach fail "$ref" "$desc: leading segment" "x/$p"
+    runeach fail "$ref" "$desc: trailing segment" "$p/x"
+    runeach fail "$ref" "$desc: trailing slash" "$p/"
+    for ((i=0; i<${#p}; i++)); do
+      c="${p:i:1}"
+      if [ "$c" = . ] || [ "$c" = - ]; then
+        q="${p:0:i}X${p:i+1}"
+        runeach fail "$ref" "$desc: '$c' at $i replaced" "$q"
+      fi
+    done
+  done
+}
+# every ALLOW_PATTERNS / SUPPRESSION_PATTERNS entry is anchored at both ends (parsed from the script itself)
+anch="$(awk '/^(ALLOW|SUPPRESSION)_PATTERNS=\(/{f=1;next} f&&/^\)/{f=0} f&&/^ *\x27/{n++; if ($0 !~ /^ *\x27\^/ || $0 !~ /\$\x27 *(#.*)?$/) print "UNANCHORED: " $0} END{print "count=" n}' bin/check-file-allowlist.sh)"
+case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anch";; *) gp "every allowlist pattern starts with ^ and ends with \$ ($anch)";; esac
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
 run_ref() {
   local expect="$1"; local ref="$2"; local desc="$3"; shift 3
@@ -396,14 +419,14 @@ hkexpect fail "hook: squash merge adding an unlisted file is rejected (no MERGE_
 # --- v0.3.0 build-chain paths: one exact pattern per path family (PR 1 of the v0.3.0 plan) ----------------
 # Each family: the intended path(s) pass; near-misses (extra segment, other extension, uppercase, traversal,
 # one directory up, a sibling name) are refused. vendor/ is NOT admitted yet.
-run pass "feature/x" "v030: dependency-provenance.json at the repo root" "dependency-provenance.json"
+passfam "feature/x" "v030: dependency-provenance.json at the repo root" "dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json nested is refused"        "tools/dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json uppercase is refused"     "Dependency-Provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.yaml (other extension) refused" "dependency-provenance.yaml"
 runeach fail "feature/x" "v030: dependency-provenance.json.bak refused"              "dependency-provenance.json.bak"
 runeach fail "feature/x" "v030: other root json refused"                             "provenance.json" "dependency-provenanceXjson" "dependency-provenance-json" "dependency-provenance.json "
 
-run pass "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh"
+passfam "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.sh nested refused"        "bin/x/vendor-check.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.py (other extension) refused" "bin/vendor-check.py"
 runeach fail "feature/x" "v030: bin/vendor-provenance.sh (swapped extension) refused" "bin/vendor-provenance.sh"
@@ -413,7 +436,7 @@ runeach fail "feature/x" "v030: bin/../vendor-check.sh traversal refused"  "bin/
 runeach fail "feature/x" "v030: vendor-check.sh one directory up refused"  "vendor-check.sh"
 runeach fail "feature/x" "v030: bin/vendoring-test.py refused"             "bin/vendoring-test.py"
 
-run pass "feature/x" "v030: the four melange and apko configs" "build/melange.yaml" "build/melange-fips.yaml" "build/apko.yaml" "build/apko-fips.yaml"
+passfam "feature/x" "v030: the four melange and apko configs" "build/melange.yaml" "build/melange-fips.yaml" "build/apko.yaml" "build/apko-fips.yaml"
 runeach fail "feature/x" "v030: build/melange.yml (other extension) refused"   "build/melange.yml"
 runeach fail "feature/x" "v030: build/melange-FIPS.yaml uppercase refused"     "build/melange-FIPS.yaml"
 runeach fail "feature/x" "v030: build/apko-other.yaml (unnamed suffix) refused" "build/apko-other.yaml"
@@ -425,7 +448,7 @@ runeach fail "feature/x" "v030: apko.yaml one directory up refused"            "
 runeach fail "feature/x" "v030: build/../apko.yaml traversal refused"          "build/../apko.yaml"
 runeach fail "feature/x" "v030: build/other.yaml refused"                      "build/other.yaml" "build/melange-debug.yaml" "build/melange-fips-fips.yaml" "build/melange-x.yaml" "build/melangeXyaml" "build/apkoXyaml"
 
-run pass "feature/x" "v030: the three lock files" "build/locks/apko.base.lock.json" "build/locks/apko-fips.base.lock.json" "build/locks/melange.lock"
+passfam "feature/x" "v030: the three lock files" "build/locks/apko.base.lock.json" "build/locks/apko-fips.base.lock.json" "build/locks/melange.lock"
 runeach fail "feature/x" "v030: other lock names refused" "build/locks/other.lock" "build/locks/apko-debug.base.lock.json" "build/locks/apko.lock.json" "build/locks/apko.base.lock.yaml" "build/locks/apko-fips.base.lockXjson" "build/locks/melangeXlock" "build/locks/melange.lock.json" "build/locks/apko.lock"
 runeach fail "feature/x" "v030: nested lock refused"      "build/locks/x/melange.lock" "build/locks/sub/apko.base.lock.json"
 runeach fail "feature/x" "v030: uppercase lock refused"   "build/locks/Melange.lock" "build/locks/apko.base.LOCK.json"
@@ -433,7 +456,7 @@ runeach fail "feature/x" "v030: lock one directory up refused" "build/melange.lo
 runeach fail "feature/x" "v030: lock traversal refused"   "build/locks/../melange.lock"
 runeach fail "feature/x" "v030: lock with a suffix refused" "build/locks/melange.lock.bak" "build/locks/apko.base.lock.json.orig"
 
-run pass "feature/x" "v030: the assembly key pair and the release public key" "build/keys/assembly.rsa" "build/keys/assembly.rsa.pub" "build/keys/release.rsa.pub"
+passfam "feature/x" "v030: the assembly key pair and the release public key" "build/keys/assembly.rsa" "build/keys/assembly.rsa.pub" "build/keys/release.rsa.pub"
 runeach fail "feature/x" "v030: other key names refused" "build/keys/other.rsa" "build/keys/other.rsa.pub" "build/keys/release.rsa" "build/keys/Assembly.rsa" "build/keys/assemblyXrsa" "build/keys/release.rsa.pub.pem" "build/keys/assembly.rsa.pubx" "build/keys/assembly.pem"
 runeach fail "feature/x" "v030: nested key refused"      "build/keys/x/assembly.rsa" "build/keys/sub/release.rsa.pub"
 runeach fail "feature/x" "v030: uppercase key refused"   "build/keys/Assembly.rsa" "build/keys/assembly.RSA.pub"
@@ -441,8 +464,8 @@ runeach fail "feature/x" "v030: key one directory up refused" "build/assembly.rs
 runeach fail "feature/x" "v030: key traversal refused"   "build/keys/../assembly.rsa"
 runeach fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.rsa.bak" "build/keys/assembly.rsa.pub.old"
 
-run pass "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh" "bin/melange-apko-test.sh"
-run pass "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/compare-recipes.py" "bin/go-module-sbom.py"
+passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh" "bin/melange-apko-test.sh"
+passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/compare-recipes.py" "bin/go-module-sbom.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
 runeach fail "feature/x" "v030: bin/apk-tool.sh (swapped extension) refused"  "bin/apk-tool.sh"
 runeach fail "feature/x" "v030: bin/Build-apk.sh uppercase refused"           "bin/Build-apk.sh"
@@ -454,10 +477,10 @@ runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "b
 
 # .github/release-identity.json is for REQ-REL-009 AC13-17 (the auto-baseline PR, advisor step-5 acceptance Oct 9);
 # it is NOT part of the v0.3.0 build plan.
-run pass "feature/x" "REQ-REL-009: .github/release-identity.json" ".github/release-identity.json"
+passfam "feature/x" "REQ-REL-009: .github/release-identity.json" ".github/release-identity.json"
 runeach fail "feature/x" "REQ-REL-009: release-identity near-miss refused" ".github/release-identity.json.bak" ".github/Release-Identity.json" ".github/release-identity.yaml" ".github/other.json" ".github/nested/release-identity.json" ".github/x/release-identity.json" "release-identity.json" ".github/release-identity.json " ".github/release-identityXjson" ".github/policy/../release-identity.json"
 
-run pass "feature/x" "v030: the supply-chain harness manifest" ".github/agent/supply-chain/harness-manifest.json"
+passfam "feature/x" "v030: the supply-chain harness manifest" ".github/agent/supply-chain/harness-manifest.json"
 runeach fail "feature/x" "v030: sibling name in supply-chain/ refused"        ".github/agent/supply-chain/harness-manifest2.json" ".github/agent/supply-chain/other.json"
 runeach fail "feature/x" "v030: nested harness-manifest.json refused"         ".github/agent/supply-chain/x/harness-manifest.json"
 runeach fail "feature/x" "v030: harness-manifest other extension refused"     ".github/agent/supply-chain/harness-manifest.yaml" ".github/agent/supply-chain/harness-manifest.json.bak"
