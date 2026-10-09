@@ -2431,6 +2431,12 @@ requirements:
         then: "it is signed keyless under stage-build.yml at the tag with release.yml as the top-level workflow, carries the Sigstore timestamp, is a Witness collection and nothing else (no FosterStack record type), and Build writes no other signed record"
         verification: { method: unit, release_blocking: true }
         status: proposed
+      - id: REQ-CHAIN-004-AC11
+        given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
+        when: "they are read"
+        then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko, passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; the configs are locked and built from the fixed relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips), never from an absolute path or a temporary copy"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
 
   - id: REQ-CHAIN-005
     title: Rebuild repeats the build on a fresh machine and blocks on any difference
@@ -2472,5 +2478,11 @@ requirements:
         given: "the job graph of release.yml"
         when: "it is parsed"
         then: "Rebuild and Check each need only Build, so they run side by side; Release needs Rebuild, Check and Sign; and a failed Rebuild stops Release, naming the stage"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: proposed
+      - id: REQ-CHAIN-005-AC6
+        given: "the Rebuild stage file and bin/build-stage.sh"
+        when: "they are read next to Build's"
+        then: "Rebuild assembles each image variant with the same script, the same arguments, the same lock flow and the same exported SOURCE_DATE_EPOCH as Build, so a digest that differs is a real difference; it never runs apko directly or from another directory or config path (the same rule as REQ-CHAIN-004-AC11)"
         verification: { method: ci-workflow, release_blocking: true }
         status: proposed

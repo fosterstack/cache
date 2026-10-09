@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9,
-#         REQ-CHAIN-004-AC10 (the flags; PR 1's verify cases cover the identity), REQ-CHAIN-005-AC5
+#         REQ-CHAIN-004-AC10 (the flags; PR 1's verify cases cover the identity), REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6
 # RED until PR 2 is implemented (stage-build.yml rewritten, bin/build-stage.sh, bin/chain-verify.py record-env): tests first, step 4.
 #
 # Build, static half and the stage script's behaviour (v0.3.0 rules 24, 38a, 38b, 39, 50, 51, 62, 63, 68, 70; advisor read-back 0338).
@@ -381,7 +381,52 @@ done
 expect ok "005-AC5 the real release.yml job graph" "" graph "$root/.github/workflows/release.yml"
 [ ! -e "$root/.github/workflows/stage-image.yml" ] && [ ! -e "$root/.github/workflows/stage-admission.yml" ] && ok "AC1 stage-image.yml and stage-admission.yml are gone (rules 50, 61)" || bad "AC1 stage-image.yml / stage-admission.yml still exist (RED until PR 2)"
 grep -q 'witness' "$root/bin/install-scanner.sh" && ok "AC2 bin/install-scanner.sh installs witness pinned by checksum" || bad "AC2 bin/install-scanner.sh has no witness (RED: the implementation adds it)"
-EXPECT=118
+# ---- the apko lock flow and the fixed relative config path (REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC6; cache-3f's real apko v1.4.6 run) ---------------
+# (A) apko only through bin/assemble-image.sh (always --lockfile), identical arguments in Build and Rebuild; (B) configs only from build/apko.yaml and
+# build/apko-fips.yaml in the repo root. Source: ~/fosterstack/audits/2026-10-09/real-lock/REPORT.md ("CAVEAT: build WITH --lockfile vs WITHOUT gives
+# DIFFERENT digests"; "config.name is the path as typed, so make the lock with a fixed relative path").
+LA="$work/build-stage-assemble.sh"; LR="$work/build-stage-rebuild-assemble.sh"
+lf() { judge lockflow "$work/build.yml" "$work/rebuild.yml" "$@"; }
+lfx() { # lfx ok|caught LABEL WORD ASSEMBLE_SCRIPT REBUILD_SCRIPT [BUILD_YML REBUILD_YML]
+  local want=$1 label=$2 word=$3 a=$4 r=$5 by=${6:-$work/build.yml} ry=${7:-$work/rebuild.yml}
+  expect "$want" "$label" "$word" lockflow "$by" "$ry" "$a" "$r"
+}
+lfx ok "AC11/005-AC6 fixture: the known-good Build and Rebuild assemble scripts and stage files pass the lock-flow judge" "" "$LA" "$LR"
+# a control: the fixed relative config paths, passed consistently in both, are allowed
+sed -e 's#--variant production#--variant production --config build/apko.yaml#' -e 's#--variant fips#--variant fips --config build/apko-fips.yaml#' "$LA" > "$work/lf_cfg_a.sh"
+sed -e 's#--variant production#--variant production --config build/apko.yaml#' -e 's#--variant fips#--variant fips --config build/apko-fips.yaml#' "$LR" > "$work/lf_cfg_r.sh"
+lfx ok "AC11 control: the fixed relative config paths (build/apko.yaml, build/apko-fips.yaml) are allowed" "" "$work/lf_cfg_a.sh" "$work/lf_cfg_r.sh"
+mutate "$LA" "$work/lf_dir.sh" 'set -euo pipefail\n' 'set -euo pipefail\napko build --lockfile out/production.lock.json build/apko.yaml fscache:x out/production.tar\n' \
+  && lfx caught "AC11 (A) a direct apko call in a stage script" "apko" "$work/lf_dir.sh" "$LR"
+mutate "$LA" "$work/lf_nolock.sh" 'set -euo pipefail\n' 'set -euo pipefail\napko build build/apko.yaml fscache:x out/production.tar\n' \
+  && lfx caught "AC11 (A) apko build WITHOUT the lock (a different image digest, per the real run)" "apko" "$work/lf_nolock.sh" "$LR"
+mutate "$LR" "$work/lf_date.sh" '(assemble-image\.sh --variant production)' '\1 --build-date 2026-10-09T00:00:00Z' \
+  && lfx caught "AC11 (A) Rebuild passes its own --build-date" "--build-date" "$LA" "$work/lf_date.sh"
+mutate "$LA" "$work/lf_lockflag.sh" '(assemble-image\.sh --variant fips)' '\1 --lockfile out/fips.lock.json' \
+  && lfx caught "AC11 (A) the stage passes --lockfile itself (the script owns the lock flow)" "--lockfile" "$work/lf_lockflag.sh" "$LR"
+mutate "$LA" "$work/lf_nolockflag.sh" '(assemble-image\.sh --variant fips)' '\1 --no-lock' \
+  && lfx caught "AC11 (A) --no-lock" "--no-lock" "$work/lf_nolockflag.sh" "$LR"
+mutate "$LR" "$work/lf_ver.sh" '(assemble-image\.sh --variant production --version )"\$\{GITHUB_REF_NAME#v\}"' '\1"9.9.9"' \
+  && lfx caught "AC11 (A) Rebuild's arguments differ from Build's for the same variant" "DIFFERENT" "$LA" "$work/lf_ver.sh"
+mutate "$LR" "$work/lf_sde.sh" 'export SOURCE_DATE_EPOCH=[^\n]*' 'export SOURCE_DATE_EPOCH=1700000000' \
+  && lfx caught "AC11 (A) Rebuild exports a different SOURCE_DATE_EPOCH than Build" "differently" "$LA" "$work/lf_sde.sh"
+mutate "$work/build.yml" "$work/lf_wfapko.yml" '(-- \./bin/build-stage\.sh assemble)' '\1 \&\& apko build build/apko.yaml fscache:x out.tar' \
+  && lfx caught "AC11 (A) a stage workflow names apko in a run step" "apko" "$LA" "$LR" "$work/lf_wfapko.yml"
+mutate "$work/build.yml" "$work/lf_wd.yml" '(run: \./bin/install-scanner\.sh witness)' '\1\n        working-directory: build' \
+  && lfx caught "AC11 (B) a working-directory in a stage step (not the repo root)" "working-directory" "$LA" "$LR" "$work/lf_wd.yml"
+mutate "$LA" "$work/lf_abs.sh" '(assemble-image\.sh --variant production)' '\1 --config /work/archive/apko.yaml' \
+  && lfx caught "AC11 (B) an absolute config path" "fixed relative path" "$work/lf_abs.sh" "$LR"
+mutate "$LA" "$work/lf_cp.sh" 'set -euo pipefail\n' 'set -euo pipefail\ncp build/apko.yaml "$RUNNER_TEMP/apko.yaml"\n' \
+  && lfx caught "AC11 (B) a temp copy of the config" "copies a config" "$work/lf_cp.sh" "$LR"
+mutate "$LA" "$work/lf_cd.sh" 'set -euo pipefail\n' 'set -euo pipefail\ncd build\n' \
+  && lfx caught "AC11 (B) a cd away from the repo root" "repo root" "$work/lf_cd.sh" "$LR"
+mutate "$LA" "$work/lf_name.sh" '(assemble-image\.sh --variant production)' '\1 --config build/apko-prod.yaml' \
+  && lfx caught "AC11 (B) a different config name" "fixed relative path" "$work/lf_name.sh" "$LR"
+mutate "$LA" "$work/lf_var.sh" '(assemble-image\.sh --variant production)' '\1 --config build/apko-fips.yaml' \
+  && lfx caught "AC11 (B) the fips config for the production variant" "fixed relative path" "$work/lf_var.sh" "$LR"
+expect ok "AC11/005-AC6 the real stage files and bin/build-stage.sh keep apko behind assemble-image.sh and the config at its fixed relative path" "" \
+  lockflow "$root/.github/workflows/stage-build.yml" "$root/.github/workflows/stage-reproducibility.yml" "$root/bin/build-stage.sh"
+EXPECT=135
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

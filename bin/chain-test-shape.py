@@ -17,6 +17,13 @@ apply it to the real repository (RED until PR 2 is implemented).
                                in-toto-witness docs/attestors/environment.md ("Filter instead of obfuscate"); docs/commands.md; harness spike
                                2026-10-09-harness-witness-spikes-a-c.md:20-30 (the token fetch and fulcio flags).
   script FILE apk|assemble|rebuild-apk|rebuild-assemble   REQ-CHAIN-004-AC3, AC6 / REQ-CHAIN-005-AC2: the commands of bin/build-stage.sh KIND in order.
+  lockflow STAGE_YML... SCRIPT...  REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6 (cache-3f's real apko v1.4.6 run, ~/fosterstack/audits/2026-10-09/real-lock/REPORT.md):
+                               (A) apko runs ONLY through bin/assemble-image.sh, which always passes --lockfile: `apko build --lockfile` and `apko build` give
+                               different image digests, so no stage file or stage script names apko, passes --lockfile/--no-lock/--build-date/--arch/--offline/
+                               --cache-dir/--sbom-path/--ignore-signatures, or builds Rebuild any other way: every assemble-image.sh line of one variant has the SAME
+                               arguments in Build and Rebuild, and SOURCE_DATE_EPOCH is exported the same way. (B) the configs are locked and built from the fixed
+                               relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips) in the repo root: a stage passes either no --config or
+                               exactly that path for its variant, never an absolute path, a temp copy ($RUNNER_TEMP, mktemp, /tmp, cp) or a cd/pushd/working-directory.
   graph FILE                   REQ-CHAIN-005-AC5: release.yml job graph.
   recordenv FILE               REQ-CHAIN-004-AC8: no token variable in a Witness collection (used by the fixtures test of the judge; the
                                product check is chain-verify.py record-env, which the tests assert separately)."""
@@ -238,6 +245,71 @@ def script(path, kind):
     return bad
 
 
+def lockflow(files):
+    """files: stage workflow files (*.yml) and stage scripts (anything else)."""
+    bad = []
+    CFG = {"production": "build/apko.yaml", "fips": "build/apko-fips.yaml"}
+    FLAGS = {"--variant", "--version", "--out", "--config"}
+    FORBID = ("--lockfile", "--no-lock", "--build-date", "--arch", "--offline", "--cache-dir", "--sbom-path", "--ignore-signatures", "--lock")
+    per_variant = {}
+    sde = set()
+    for f in files:
+        try:
+            raw = open(f).read()
+        except FileNotFoundError:
+            bad.append("missing file: %s" % f); continue
+        if f.endswith((".yml", ".yaml")):
+            d = yaml.load(raw, Loader=yaml.BaseLoader)
+            texts, wd = [], False
+            for jn, j in ((d.get("jobs") or {}).items()):
+                if "working-directory" in json.dumps(j) or "defaults" in j: wd = True
+                for s in j.get("steps") or []:
+                    if "working-directory" in s: wd = True
+                    texts.append(s.get("run") or "")
+            if wd: bad.append("%s: a working-directory or defaults key (the stage must run from the repo root)" % f)
+            if re.search(r"(^|[^\w./-])SOURCE_DATE_EPOCH\s*[:=]", "\n".join(str((j or {}).get("env", "")) for j in (d.get("jobs") or {}).values()) + str(d.get("env", ""))):
+                bad.append("%s: SOURCE_DATE_EPOCH is set in the workflow env (the stage script exports it from the tagged commit)" % f)
+            text = "\n".join(texts)
+        else:
+            text = re.sub(r"\\\n\s*", " ", raw)
+        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.strip().startswith("#")]
+        for l in lines:
+            if re.search(r"\bapko\b(?!(-fips)?\.yaml)", l) and "assemble-image.sh" not in l:
+                bad.append("%s: names apko directly (only bin/assemble-image.sh may run it, always with the lock): %r" % (f, l[:80]))
+            if re.search(r"\b(cd|pushd)\s|\bcp\s|\bmktemp\b|RUNNER_TEMP|/tmp/|\$TMPDIR", l) and not f.endswith((".yml", ".yaml")):
+                bad.append("%s: %r leaves the repo root or copies a config (cd, pushd, cp, mktemp, RUNNER_TEMP, /tmp)" % (f, l[:80]))
+            if re.match(r"export SOURCE_DATE_EPOCH=", l): sde.add(l)
+            if "SOURCE_DATE_EPOCH=" in l and not l.startswith("export ") and "assemble" in l:
+                bad.append("%s: SOURCE_DATE_EPOCH is set per command, not exported once from the tagged commit: %r" % (f, l[:80]))
+            m = re.search(r"\./bin/assemble-image\.sh(.*)$", l)
+            if not m: continue
+            try:
+                toks = shlex.split(m.group(1))
+            except ValueError:
+                bad.append("%s: cannot parse %r" % (f, l[:80])); continue
+            var = None; args = {}
+            i = 0
+            while i < len(toks):
+                if toks[i].startswith("--"):
+                    if any(toks[i].startswith(x) for x in FORBID): bad.append("%s: assemble-image.sh gets %s (the script always passes the lock and the build date itself)" % (f, toks[i]))
+                    elif toks[i] not in FLAGS: bad.append("%s: assemble-image.sh gets an unknown flag %s" % (f, toks[i]))
+                    if i + 1 < len(toks) and not toks[i + 1].startswith("--"): args[toks[i]] = toks[i + 1]; i += 1
+                    else: args[toks[i]] = ""
+                else: bad.append("%s: unexpected argument %r to assemble-image.sh" % (f, toks[i]))
+                i += 1
+            var = args.get("--variant")
+            if var not in CFG: bad.append("%s: assemble-image.sh --variant %r is not production or fips" % (f, var)); continue
+            if "--config" in args:
+                c = args["--config"]
+                if c.startswith("/") or "$" in c or ".." in c or c != CFG[var]:
+                    bad.append("%s: --config %r must be exactly the fixed relative path %s for variant %s (absolute or temp or other config)" % (f, c, CFG[var], var))
+            per_variant.setdefault(var, set()).add(tuple(sorted(args.items())))
+    for v, s in per_variant.items():
+        if len(s) > 1: bad.append("assemble-image.sh --variant %s is called with DIFFERENT arguments in Build and Rebuild: %s" % (v, sorted(s)))
+    if len(sde) > 1: bad.append("SOURCE_DATE_EPOCH is exported differently in different places: %s" % sorted(sde))
+    return bad
+
+
 def graph(path):
     bad = []
     d = yaml.load(open(path).read(), Loader=yaml.BaseLoader)
@@ -277,6 +349,6 @@ if __name__ == "__main__":
     except FileNotFoundError:
         print("missing file: %s" % sys.argv[2]); sys.exit(1)
     bad = {"stage": lambda: stage(sys.argv[2], sys.argv[3]), "script": lambda: script(sys.argv[2], sys.argv[3]),
-           "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2])}[cmd]()
+           "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2])}[cmd]()
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)
