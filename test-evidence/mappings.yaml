@@ -69,6 +69,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetrics" }
       - { type: go-test, ref: "internal/server:TestStatuszReportsCacheStateAsJSON" }
+      - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetricsAfterRestart" }
   - ac: REQ-OBS-003-AC2
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszServesHTMLToBrowsers" }

@@ -329,7 +329,7 @@ GET /statusz shall return the server's state — version, revision, FIPS posture
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-OBS-003-AC1 | Given a server with known traffic counts; when /statusz is fetched as JSON and /metrics is scraped; then hits, misses, entries, and store bytes agree exactly between the two | http-integration |  | approved | 2 item(s) |
+| REQ-OBS-003-AC1 | Given a server with known traffic counts; when /statusz is fetched as JSON and /metrics is scraped; then hits, misses, entries, and store bytes agree exactly between the two | http-integration |  | approved | 3 item(s) |
 | REQ-OBS-003-AC2 | Given a request with an HTML Accept header; when /statusz is fetched; then the response is HTML containing no form, button, or state-changing control | http-integration |  | approved | 1 item(s) |
 
 ### REQ-OBS-004 — Startup announcement
