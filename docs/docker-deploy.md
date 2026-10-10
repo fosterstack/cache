@@ -102,7 +102,7 @@ after each write, and the disk can briefly hold more while uploads are in
 flight. Those in-flight bytes sit outside the cap and outside `/statusz`: up to
 `FSCACHE_MAX_CONCURRENT_UPLOADS` uploads (32 by default; `0` removes the bound)
 at once, each at most the smaller of `FSCACHE_MAX_BODY_BYTES` (1 GiB by
-default) and the cap. The `~20%` headroom below assumes typical entries of tens
+default) and the cap. The ~20% headroom above assumes typical entries of tens
 of megabytes; on a small volume, lower `FSCACHE_MAX_CONCURRENT_UPLOADS` or
 `FSCACHE_MAX_BODY_BYTES` so that product fits in the headroom. Leaving
 `FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small volume is the
