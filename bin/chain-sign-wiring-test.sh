@@ -1194,7 +1194,7 @@ probe scriptsq  "ci.yml job probe-job" "a ci.yml job with id-token: write runnin
 probe otherrepo "ci.yml job probe-job" "a ci.yml job with id-token: write calling other/repo/.github/workflows/sign.yml@<sha>" \
   "printf '  probe-job:\n    permissions:\n      id-token: write\n    uses: other/repo/.github/workflows/sign.yml@0123456789abcdef0123456789abcdef01234567\n' >> .github/workflows/ci.yml"
 # Opus r3 B1: a signer STEP added to a job that is already on the id-token list is seen by the signer table (@actions/attest in-process)
-GHS='      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n        with:\n          script: require("@actions/attest").attestProvenance({subjects: []})\n'
+GHS='      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n        with:\n          script: require(\x27@actions/attest\x27).attestProvenance()\n'
 probe listedjob "scorecard.yml signs provenance" "actions/github-script calling attestProvenance added to scorecard.yml's listed analysis job" \
   "python3 -c 'import sys;p=\".github/workflows/scorecard.yml\";t=open(p).read();i=t.index(\"    steps:\n\")+len(\"    steps:\n\");t=t[:i]+sys.argv[1].encode().decode(\"unicode_escape\")+t[i:];open(p,\"w\").write(t)' '$GHS'"
 # Opus r3 M1: .goreleaser.yaml is a CLOSED key set; each probe re-edits the file's sha256 so only the key rule can catch it
@@ -1206,6 +1206,19 @@ probe gorelub   "universal_binaries" "universal_binaries with hooks in .goreleas
 probe gorelgob  "gobinary" "a build's gobinary set in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    main: ./cmd/fscache\n\",\"    main: ./cmd/fscache\n    gobinary: ./evil-go\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelupx  "upx" "an upx section in .goreleaser.yaml (hash re-edited)" "printf 'upx:\n  - enabled: true\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 probe gorelnfpm "nfpms" "nfpms with scripts in .goreleaser.yaml (hash re-edited)" "printf 'nfpms:\n  - scripts:\n      postinstall: x.sh\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
+# Sonnet r3 G1: the same signer step in another listed job (scan.yml's scanner)
+probe listedjob2 "scan.yml signs provenance" "actions/github-script calling attestProvenance added to scan.yml's listed scanner job" \
+  "python3 -c 'import sys;p=\".github/workflows/scan.yml\";t=open(p).read();i=t.index(\"  scanner:\");i=t.index(\"    steps:\n\",i)+len(\"    steps:\n\");t=t[:i]+sys.argv[1].encode().decode(\"unicode_escape\")+t[i:];open(p,\"w\").write(t)' '$GHS'"
+# Sonnet r3 G3: a YAML merge key inside permissions would hide id-token: write from a reader that does not merge
+probe mergejob  "merge key" "a job whose permissions use a << merge key carrying id-token: write" \
+  "printf '  probe-job:\n    runs-on: ubuntu-24.04\n    permissions:\n      <<: {id-token: write}\n    steps:\n      - run: true\n' >> .github/workflows/ci.yml"
+probe mergewf   "merge key" "workflow-level permissions with a << merge key carrying id-token: write" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"permissions:\n  contents: read\n\",\"permissions:\n  contents: read\n  <<: {id-token: write}\n\",1);open(p,\"w\").write(t)'"
+# Sonnet r3: build flags/env that run a tool, and the dockers / nfpms / includes sections, are outside the closed key set (hash re-edited)
+probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
+probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
+probe goreldock "dockers" "a dockers section in .goreleaser.yaml (hash re-edited)" "printf 'dockers:\n  - image_templates: [x]\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
+probe gorelinc  "includes" "an includes section in .goreleaser.yaml (hash re-edited)" "printf 'includes:\n  - from_file:\n      path: evil.yaml\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
 probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
@@ -1233,7 +1246,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=284
+EXPECT=291
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
