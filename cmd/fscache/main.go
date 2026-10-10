@@ -13,7 +13,9 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -77,6 +79,80 @@ func loadConfig() (config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+// knownEnv is the single source of truth for the FSCACHE_ names the
+// server reads (REQ-CFG-005). A test pins it both ways: against the names
+// loadConfig reads and against the README configuration table, so a new
+// variable cannot be added to one and forgotten in the other.
+var knownEnv = []string{
+	"FSCACHE_ADDR",
+	"FSCACHE_DATA_DIR",
+	"FSCACHE_MAX_BYTES",
+	"FSCACHE_MAX_BODY_BYTES",
+	"FSCACHE_MAX_CONCURRENT_UPLOADS",
+	"FSCACHE_USERNAME",
+	"FSCACHE_PASSWORD",
+	"FSCACHE_RO_USERNAME",
+	"FSCACHE_RO_PASSWORD",
+}
+
+// warnUnknownEnv logs one warning per environment variable that starts
+// with FSCACHE_ (case-sensitive) and is not in knownEnv, sorted by name,
+// and never the value (values can be secrets). A name within Levenshtein
+// distance 2 of a known one carries it as did_you_mean; the suggestion is
+// always a known name, never user text. It never fails startup.
+func warnUnknownEnv(log *slog.Logger, environ []string) {
+	seen := map[string]bool{}
+	var unknown []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strings.HasPrefix(name, "FSCACHE_") || slices.Contains(knownEnv, name) || seen[name] {
+			continue
+		}
+		seen[name] = true
+		unknown = append(unknown, name)
+	}
+	slices.Sort(unknown)
+	for _, name := range unknown {
+		if hint := nearestKnown(name); hint != "" {
+			log.Warn("fscache: unknown environment variable ignored", "name", name, "did_you_mean", hint)
+			continue
+		}
+		log.Warn("fscache: unknown environment variable ignored", "name", name)
+	}
+}
+
+// nearestKnown returns the closest known name within distance 2, ties
+// broken by knownEnv order, or "" when none is that close.
+func nearestKnown(name string) string {
+	best, bestD := "", 3
+	for _, k := range knownEnv {
+		if d := levenshtein(name, k); d < bestD {
+			best, bestD = k, d
+		}
+	}
+	return best
+}
+
+func levenshtein(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
 }
 
 // uncleanMarkerPath is the marker's location inside the data directory —
@@ -193,6 +269,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	if err != nil {
 		return err
 	}
+	warnUnknownEnv(log, os.Environ())
 
 	// Bind the listen address before anything under the data directory is
 	// created, opened or written (REQ-CFG-004): a bad or taken FSCACHE_ADDR

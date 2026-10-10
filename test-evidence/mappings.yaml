@@ -122,6 +122,27 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestTakenPortRefusedAndDataDirUnchanged" }
       - { type: go-test, ref: "cmd/fscache:TestListenerReleasedWhenStoreOpenFails" }
       - { type: go-test, ref: "cmd/fscache:TestServeFailureAfterBindIsReturned" }
+  - ac: REQ-CFG-005-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvOneWarningPerName" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDoesNotStopStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDoesNotMaskInvalidConfig" }
+  - ac: REQ-CFG-005-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDuplicateNameWarnsOnce" }
+  - ac: REQ-CFG-005-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvNeverLogsTheValue" }
+  - ac: REQ-CFG-005-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesREADMETable" }
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesNamesReadInCode" }
+  - ac: REQ-CFG-005-AC5
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvNamesNeverWarned" }
+  - ac: REQ-CFG-005-AC6
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMean" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }

@@ -251,6 +251,9 @@ Configuration is via environment variables (flags are not yet wired):
 | `FSCACHE_USERNAME` / `FSCACHE_PASSWORD` | unset (auth disabled) | HTTP Basic Auth, required together |
 | `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD` | unset | Optional read-only pair: `GET`/`HEAD` only, writes get 403. Requires the read-write pair; usernames must differ |
 | `FSCACHE_MAX_BODY_BYTES` | `1073741824` (1 GiB) | Max accepted blob size per `PUT` |
+| `FSCACHE_MAX_CONCURRENT_UPLOADS` | `32` (`0` disables the bound) | Max `PUT`s in flight; the request past the limit gets `429` with `Retry-After` and stores nothing |
+
+A variable that starts with `FSCACHE_` and is not in this table is ignored with one `WARN` log line naming it (never its value), and, when it is a near miss for a real name, a `did_you_mean` hint. The server still starts.
 
 ## Gradle setup
 
