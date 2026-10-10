@@ -1,0 +1,48 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "4a20265b44f3fa99450bbf5abf81ddf83013b3eb8bddd87cae66763d2bd0549d",
+ "change": "REQ-REL-005-AC2 the action-pin checker accepts a literal runner matrix (runs-on: ${{ matrix.<key> }} over exactly ubuntu-24.04 / ubuntu-24.04-arm), judges its steps as bash, refuses every other runner expression with a finding that names the runner, and refuses a repeated job/strategy/matrix key -- PR #259 (main merged in three times after the reviews, 9e8bc56, bbe08db, then Oct 10 by a plain merge; the reviewed content is unchanged, only main's later auditor changes joined the tree; they were Codex-reviewed on main) [re-bound Oct 10 after a plain merge of main (c352e85, #248); the reviewed content is unchanged, only main's later auditor changes joined the tree]",
+ "reviewed_commit": "46a7790ee9fb99a89bb493a12276656f2f3ec915",
+ "closed_commit": "46a7790ee9fb99a89bb493a12276656f2f3ec915",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "Codex security tier on c67ce85 (Sonnet and Opus medium were green on c67ce85 in step 6 and step 8 rounds before); 1 Medium + 3 Low found, fixed tests-first in d2ff1ee / 46a7790",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 4,
+     "evidence_sha256": "090bdc653abea033764196d1c27c83988fc254fbe7e603d580870fb4f9dd026d"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "verification of the round-1 fixes at 46a7790: Sonnet and Opus medium verify (both green), then Codex security tier round 2 (GREEN: no blockers; 2 should-fix and 2 notes recorded as residuals)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "4f9e61b70d0fb7bf8beed0ca390da2eadf17463baf4de620216aa6365371afec"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "bbf618244246a99c08a47ed7e68fc99d7280a4ab371a5c60fec4d53017ea0512"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "Codex round 2 should-fix: a list or map used as one job key skips runner and script checks for every job of that YAML document (the malformed file is still rejected and its uses references still reported)",
+  "Codex round 2 should-fix: an unresolved runner without windows or an expression in its text (for example runs-on: self-hosted) defaults to bash; the runner itself is refused (pre-existing default)",
+  "Codex round 2 notes: duplicate-key reporting inspects only the last strategy/matrix mapping; the merge key << in a matrix and an include key with a trailing space are not treated as unknown; traceability notes are one paragraph",
+  "Codex could not run the shell and unit suites in its read-only sandbox (mktemp denied): NOT VERIFIED there; run by Sonnet and Opus (shell 980/0, unit 79 OK, pin-wiring 106/0) and by CI",
+  "obfuscated installs and YAML tricks are outside the pin checker's scope (owner Oct 3)"
+ ],
+ "row78": "adversarial pass in every round: the change adds no action reference; python3 .github/agent/bin/check-action-pins.py . reports 27 files / 148 pinned actions / 0 findings before and after; every refused runner form is a finding and no refused form leaves a step judged under a different shell than the one it runs under except the Codex round 2 should-fix recorded above (both reviewers and Codex)"
+}

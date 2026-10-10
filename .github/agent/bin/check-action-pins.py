@@ -72,9 +72,14 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
 
 Scope (advisor 0080): ubuntu runners only. Every job that runs steps must name an ubuntu runner literally
 (ubuntu-latest, ubuntu-<version>, ubuntu-<version>-arm); any other runs-on — Windows, macOS, self-hosted labels, a
-group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal. Inside
-the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options,
-a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
+group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal.
+ONE expression runner is accepted (REQ-REL-005-AC2, advisor-approved read-back Oct 9, pin matrix):
+`runs-on: ${{ matrix.<key> }}` over a strategy that is a matrix of exactly that one key, a literal non-empty list of
+plain-string labels from the closed set {ubuntu-24.04, ubuntu-24.04-arm} (and, beside it, only `fail-fast: true|false`).
+Such a job reads as bash like any ubuntu job; every other form (see literal_matrix_runner) is a runs-on finding, and a
+key given twice in a job, its strategy or its matrix is a finding with the key named.
+Inside the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown
+options, a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
 outside the check today: the repository uses it (ci.yml, go-freshness.yml), so failing it closed is an outbox question.
 
 The boundary: the owner's instruction of Sep 30 (handoff 0023), "no exceptions, anywhere", and "every finding
@@ -2643,7 +2648,7 @@ def run_scripts(doc):
                 inherited = _default_shell(j) or _default_shell(doc)
                 ro = {key_of(kk): vv for kk, vv in j.value}.get("runs-on")
                 ro_text = yaml.serialize(ro) if ro is not None else ""
-                if inherited is None and ("windows" in ro_text.lower() or "${{" in ro_text):
+                if inherited is None and not known_ubuntu_labels(j) and ("windows" in ro_text.lower() or "${{" in ro_text):
                     inherited = "pwsh"   # NEW-10: a Windows (or not statically known) runner's default shell is pwsh
                 inherited_wd = _default_wd(j) or _default_wd(doc)
                 for kk, vv in j.value:
@@ -2659,6 +2664,84 @@ def run_scripts(doc):
 
 UBUNTU_RUNNER = re.compile(r"^ubuntu-(latest|[0-9]+\.[0-9]+)(-arm)?$")
 
+# ---- REQ-REL-005-AC2: the literal-label runner matrix (advisor-approved read-back Oct 9, pin matrix) ----
+# The v0.3.0 Build and Rebuild run their per-architecture jobs as a matrix of the two native GitHub-hosted labels. That one form is
+# accepted, and nothing looser (the owner's pin-checker scope: plain forms only). The label set is closed on purpose: adding a
+# runner is a reviewed edit of this file.
+MATRIX_RUNNER_LABELS = frozenset({"ubuntu-24.04", "ubuntu-24.04-arm"})
+MATRIX_RUNS_ON = re.compile(r"\$\{\{ matrix\.([A-Za-z_][A-Za-z0-9_-]*) \}\}")
+STR_TAG = "tag:yaml.org,2002:str"          # the tag of a plain scalar here (every scalar is read as a string; an explicit tag changes it)
+
+
+def repeated_keys(node):
+    """AC2: the keys a mapping names more than once, in file order (YAML keeps the last copy; GitHub rejects the file)."""
+    seen, repeated = set(), []
+    for k, _ in node.value if isinstance(node, yaml.MappingNode) else []:
+        name = key_of(k)
+        if name is not None and name in seen and name not in repeated:
+            repeated.append(name)
+        seen.add(name)
+    return repeated
+
+
+def plain_str(node):
+    return isinstance(node, yaml.ScalarNode) and node.tag == STR_TAG
+
+
+def exact_map(node):
+    """A mapping's entries by their exact key text, or None if it is not a mapping or a key is not a plain string."""
+    if not isinstance(node, yaml.MappingNode) or not all(plain_str(k) for k, _ in node.value):
+        return None
+    return {k.value: v for k, v in node.value}
+
+
+def plain_literal(node, allowed):
+    """AC2: a scalar written plainly (no quotes, no explicit tag, not a block scalar) whose text is exactly one of `allowed`.
+    The source span must be as long as the value: a quoted or tagged `"true"` / `!!str true` spans more than its text."""
+    return (plain_str(node) and node.style is None and node.value in allowed
+            and node.end_mark.pointer - node.start_mark.pointer == len(node.value))
+
+
+def known_ubuntu_labels(job):
+    """AC2: True when the job's runs-on is exactly one `${{ matrix.<key> }}` (a full match: no text or second expression
+    around it, no index or property) and the matrix lists, under that key, only labels of MATRIX_RUNNER_LABELS, so the steps
+    surely run on an ubuntu runner and are judged as bash EVEN IF the rest of the shape is refused (Codex round 1, M1).
+    Anything that could add another runner or make the reading ambiguous is False: a key given twice in the job, its strategy
+    or its matrix, a key spelled include or exclude in any letter case, an include entry beside the key. False leaves the steps
+    under pwsh, never a silent bash."""
+    entries = exact_map(job)
+    if entries is None or repeated_keys(job):
+        return False
+    runs_on = entries.get("runs-on")
+    named = MATRIX_RUNS_ON.fullmatch(runs_on.value) if plain_str(runs_on) else None
+    strategy = exact_map(entries.get("strategy"))
+    if not named or strategy is None or repeated_keys(entries["strategy"]):
+        return False
+    matrix = exact_map(strategy.get("matrix"))
+    if matrix is None or repeated_keys(strategy["matrix"]):
+        return False
+    key = named.group(1)
+    if key.lower() in ("include", "exclude") or any(name.lower() == "include" for name in matrix):
+        return False
+    labels = matrix.get(key)
+    return (isinstance(labels, yaml.SequenceNode) and bool(labels.value)
+            and all(plain_str(label) and label.value in MATRIX_RUNNER_LABELS for label in labels.value))
+
+
+def literal_matrix_runner(job):
+    """AC2: the ONE accepted expression runner: known_ubuntu_labels, a strategy of only the matrix plus, optionally,
+    `fail-fast` with the plain literal true or false, and a matrix of exactly the runs-on key. Anything else is False, which
+    leaves the job to the ordinary runs-on rule (a finding)."""
+    if not known_ubuntu_labels(job):
+        return False
+    entries = exact_map(job)
+    strategy = exact_map(entries["strategy"])
+    if set(strategy) - {"matrix", "fail-fast"}:
+        return False
+    if "fail-fast" in strategy and not plain_literal(strategy["fail-fast"], ("true", "false")):
+        return False
+    return list(exact_map(strategy["matrix"])) == [MATRIX_RUNS_ON.fullmatch(entries["runs-on"].value).group(1)]
+
 
 def check_runners(where, doc, bad):
     """The checker's scope is ubuntu runners (advisor 0080, closing the open-ended OS classes fail-closed): every job
@@ -2670,13 +2753,31 @@ def check_runners(where, doc, bad):
         return
     for k, j in jobs.value:
         jm = {key_of(kk): vv for kk, vv in j.value} if isinstance(j, yaml.MappingNode) else {}
+        strategy = jm.get("strategy")
+        matrix = {key_of(kk): vv for kk, vv in strategy.value}.get("matrix") if isinstance(strategy, yaml.MappingNode) else None
+        for part, node in ((f"{where}.jobs.{k.value}", j), (f"{where}.jobs.{k.value}.strategy", strategy),
+                           (f"{where}.jobs.{k.value}.strategy.matrix", matrix)):
+            for key in repeated_keys(node):           # AC2: YAML keeps the last copy and GitHub rejects the file
+                bad.append(f"{part}: duplicate key {key!r}; a key is given once")
         if "uses" in jm:
             continue                                  # a reusable-workflow call has no runner of its own
+        if literal_matrix_runner(j):
+            continue                                  # AC2: the one accepted expression runner
         ro = jm.get("runs-on")
         if not (isinstance(ro, yaml.ScalarNode) and UBUNTU_RUNNER.fullmatch(ro.value.strip())):
             shown = ro.value if isinstance(ro, yaml.ScalarNode) else ("missing" if ro is None else "not a plain label")
             bad.append(f"{where}.jobs.{k.value}.runs-on: {shown!r} is not an ubuntu runner; this check covers ubuntu "
                        f"runners only and refuses any other")
+
+
+def job_keys_are_names(rel, doc, bad):
+    """Codex round 1, L3: every key under `jobs` is a scalar name. A list or mapping used as a job key is a finding (not a crash
+    in the job loops, which build paths from the name). Returns False when it made that finding."""
+    jobs = {key_of(k): v for k, v in doc.value}.get("jobs") if isinstance(doc, yaml.MappingNode) else None
+    if isinstance(jobs, yaml.MappingNode) and not all(isinstance(k, yaml.ScalarNode) for k, _ in jobs.value):
+        bad.append(f"{rel}: a job key that is not a plain name")
+        return False
+    return True
 
 
 def check_file(tree, rel, pins, bad):
@@ -2693,6 +2794,8 @@ def check_file(tree, rel, pins, bad):
     for i, d in enumerate(docs):
         if d is not None:
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
+            if not job_keys_are_names(rel, d, bad):
+                continue                              # Codex round 1, L3: a finding was made; the job loops below read names
             if rel.startswith(".github/workflows/"):
                 check_runners(rel, d, bad)
             # every mapping key of the parsed document — quoted, flow-style or block (Codex #164 r3, C13)

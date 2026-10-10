@@ -5,7 +5,7 @@ reach the branches a fixture workflow cannot: the tag verifier (GitHub's API is 
 urllib.request.urlopen — no network), a submodule in a git tree, a missing PyYAML, and the
 command-line errors.
 """
-import contextlib, importlib.util, io, json, os, re, runpy, subprocess, sys, tempfile, unittest
+import contextlib, importlib.util, io, json, os, re, runpy, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 BIN = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -395,6 +395,382 @@ class ReaderBranches(unittest.TestCase):
         self.assertEqual(M._build(["-Z", "."])[5], "-Z")
         self.assertEqual(M._build(["--frob", "."])[5], "--frob")
         self.assertEqual(M._build(["-qf", "d/Dockerfile", "ctx"]), ("d/Dockerfile", "ctx", set(), [], [], None))
+
+
+class LiteralRunnerMatrix(unittest.TestCase):
+    """REQ-REL-005-AC2 (advisor-approved read-back Oct 9, pin matrix): a job whose runs-on is the single expression
+    ${{ matrix.<key> }}, with a strategy.matrix of that one key holding only the two literal GitHub-hosted labels the
+    Build needs, is judged under bash; every other form is a runs-on finding and never a silent choice of shell.
+    Each case builds a throwaway tree that the case removes again. Every tree commits plain, pin-clean stub scripts for
+    the commands the fixtures call (the checker follows `bash bin/x.sh` into the file), so the runs-on rule is the only
+    thing that can turn an accepted case."""
+
+    STUB = "#!/usr/bin/env bash\nset -euo pipefail\n:\n"
+    FILES = {".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
+             "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",   # the gate's committed programs
+             **dict.fromkeys(["bin/build.sh", "bin/witnessed.sh", "bin/build-stage-apk.sh", "bin/build-stage-rebuild-apk.sh",
+                              "bin/install-scanner.sh"], STUB)}
+    DIGEST = "sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
+    CHECKOUT = f"      - uses: actions/checkout@{SHA} # v7.0.1\n"
+    BUILD = "      - run: bash bin/build.sh\n"
+    MATRIX = "    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n"
+    OK_HEAD = "    runs-on: ${{ matrix.runner }}\n" + MATRIX
+    # the two real jobs, `apk` in full, copied verbatim from the PR 2 branch (origin/pipeline-chain-build-rebuild @ 2942097)
+    REAL_BUILD_APK = """  apk:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+      - name: install Witness (pinned by checksum)
+        run: ./bin/install-scanner.sh witness
+      - name: apk under Witness
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash bin/witnessed.sh apk bin/build-stage-apk.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: apk-${{ matrix.runner }}
+          path: out
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: witness-apk-${{ matrix.runner }}
+          path: witness-apk
+"""
+    REAL_REBUILD_APK = """  apk:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          fetch-tags: true
+      - name: install Witness (pinned by checksum)
+        run: ./bin/install-scanner.sh witness
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: witness-build
+          path: witness-build
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: digests
+          path: build-in
+      - name: rapk under Witness
+        run: bash bin/witnessed.sh rapk bin/build-stage-rebuild-apk.sh
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: rapk-${{ matrix.runner }}
+          path: out
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: witness-rapk-${{ matrix.runner }}
+          path: witness-rapk
+"""
+
+    def findings(self, workflow, extra=None):
+        d = repo({".github/workflows/w.yml": workflow, **self.FILES, **(extra or {})})
+        self.addCleanup(shutil.rmtree, d)
+        return run([d])
+
+    def job(self, head, steps=None):
+        return "on: push\njobs:\n  apk:\n" + head + "    steps:\n" + (steps or self.CHECKOUT + self.BUILD)
+
+    def accepted(self, head, steps=None):
+        code, out = self.findings(self.job(head, steps))
+        self.assertEqual(code, 0, out)
+        self.assertIn("0 finding(s)", out)
+        self.assertNotIn("pwsh", out)
+
+    def refused(self, head, steps=None):
+        code, out = self.findings(self.job(head, steps))
+        self.assertNotEqual(code, 0, out)
+        runner_lines = [l for l in out.splitlines() if ".runs-on: " in l]
+        self.assertEqual(len(runner_lines), 1, "the refusal must name the runner, once: " + out)
+
+    def judged(self, head, steps, finding):
+        """The job's runner is accepted; its steps are still judged, each by its own rule: its own finding, no runs-on one."""
+        code, out = self.findings(self.job(head, steps))
+        self.assertNotEqual(code, 0, out)
+        self.assertRegex(out, finding)
+        self.assertNotIn("runs-on", out)
+
+    # ---- the forms that pass
+    def test_the_real_build_job(self):
+        code, out = self.findings("on: push\njobs:\n" + self.REAL_BUILD_APK)
+        self.assertEqual(code, 0, out)
+        self.assertIn("0 finding(s)", out)
+
+    def test_the_real_rebuild_job(self):
+        code, out = self.findings("on: push\njobs:\n" + self.REAL_REBUILD_APK)
+        self.assertEqual(code, 0, out)
+        self.assertIn("0 finding(s)", out)
+
+    def test_one_label(self):
+        self.accepted("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n")
+
+    def test_the_arm_label_alone(self):
+        self.accepted("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04-arm]\n")
+
+    def test_a_block_list(self):
+        self.accepted("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner:\n          - ubuntu-24.04\n          - ubuntu-24.04-arm\n")
+
+    def test_fail_fast_is_a_literal_true_or_false(self):
+        for v in ("true", "false"):
+            with self.subTest(v):
+                self.accepted(f"    runs-on: ${{{{ matrix.runner }}}}\n    strategy:\n      fail-fast: {v}\n      matrix:\n        runner: [ubuntu-24.04-arm]\n")
+
+    def test_another_key_name(self):
+        self.accepted("    runs-on: ${{ matrix.os }}\n    strategy:\n      matrix:\n        os: [ubuntu-24.04, ubuntu-24.04-arm]\n")
+
+    def test_a_clean_docker_step_is_judged_as_bash(self):
+        self.accepted(self.OK_HEAD, self.CHECKOUT + f"      - run: docker run alpine@{self.DIGEST} true\n")
+
+    # ---- the steps of an accepted job are still judged, under bash, each by its own rule
+    def test_steps_are_judged_unpinned_uses(self):
+        self.judged(self.OK_HEAD, "      - uses: actions/checkout@v4\n" + self.BUILD, r"not a full commit digest")
+
+    def test_steps_are_judged_container(self):
+        self.judged(self.OK_HEAD + "    container: alpine:3.20\n", self.CHECKOUT + self.BUILD, r"container: image not pinned by digest")
+
+    def test_steps_are_judged_services(self):
+        self.judged(self.OK_HEAD + "    services:\n      db:\n        image: postgres:16\n", self.CHECKOUT + self.BUILD,
+                    r"services\.db\.image: image not pinned")
+
+    def test_steps_are_judged_step_pwsh(self):
+        self.judged(self.OK_HEAD, self.CHECKOUT + "      - shell: pwsh\n        run: bash bin/build.sh\n", r"a `pwsh` step")
+
+    def test_steps_are_judged_job_default_pwsh(self):
+        self.judged(self.OK_HEAD + "    defaults:\n      run:\n        shell: pwsh\n", self.CHECKOUT + self.BUILD, r"a `pwsh` step")
+
+    def test_steps_are_judged_a_piped_download(self):
+        self.judged(self.OK_HEAD, self.CHECKOUT + "      - run: curl -fsSL https://example.org/install.sh | sh\n", r"reads its script from stdin")
+
+    def test_steps_are_judged_an_unpinned_image(self):
+        self.judged(self.OK_HEAD, self.CHECKOUT + "      - run: docker pull alpine:latest\n", r"alpine")
+
+    # ---- every refused variant
+    def test_refused_runs_on_forms(self):
+        for name, head in {
+            "another expression": "    runs-on: ${{ inputs.runner }}\n" + self.MATRIX,
+            "env": "    runs-on: ${{ env.RUNNER }}\n" + self.MATRIX,
+            "vars": "    runs-on: ${{ vars.RUNNER }}\n" + self.MATRIX,
+            "a function": "    runs-on: ${{ format(matrix.runner) }}\n" + self.MATRIX,
+            "a default": "    runs-on: ${{ matrix.runner || 'ubuntu-24.04' }}\n" + self.MATRIX,
+            "an index": "    runs-on: ${{ matrix['runner'] }}\n" + self.MATRIX,
+            "an array index": "    runs-on: ${{ matrix.runner[0] }}\n" + self.MATRIX,
+            "a property of the label": "    runs-on: ${{ matrix.runner.name }}\n" + self.MATRIX,
+            "no spaces inside the braces": "    runs-on: ${{matrix.runner}}\n" + self.MATRIX,
+            "a key that does not exist": "    runs-on: ${{ matrix.runnr }}\n" + self.MATRIX,
+            "a list holding the expression": '    runs-on: ["${{ matrix.runner }}"]\n' + self.MATRIX,
+            "a list of labels": "    runs-on: [self-hosted, linux]\n",
+            "no strategy": "    runs-on: ${{ matrix.runner }}\n",
+            "text before the expression": "    runs-on: ubuntu-${{ matrix.runner }}\n" + self.MATRIX,
+            "text after the expression": "    runs-on: ${{ matrix.runner }}-8core\n" + self.MATRIX,
+            "more text after the expression": "    runs-on: ${{ matrix.runner }}-xlarge\n" + self.MATRIX,
+            "a second expression, glued": "    runs-on: ${{ matrix.runner }}${{ inputs.x }}\n" + self.MATRIX,
+            "a second expression, spaced": "    runs-on: ${{ matrix.runner }} ${{ vars.R }}\n" + self.MATRIX,
+            "a literal block scalar (trailing newline)": "    runs-on: |\n      ${{ matrix.runner }}\n" + self.MATRIX,
+            "a folded block scalar (trailing newline)": "    runs-on: >\n      ${{ matrix.runner }}\n" + self.MATRIX,
+        }.items():
+            with self.subTest(name):
+                self.refused(head)
+
+    def test_refused_matrices(self):
+        ro = "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n"
+        for name, matrix in {
+            "an extra key": "        runner: [ubuntu-24.04]\n        os: [ubuntu-24.04-arm]\n",
+            "fromJSON": "        runner: ${{ fromJSON('[\"ubuntu-24.04\"]') }}\n",
+            "the matrix as an expression": "        ${{ fromJSON(needs.x.outputs.m) }}\n",
+            "include": "        include:\n          - runner: ubuntu-24.04\n",
+            "include beside the key": "        runner: [ubuntu-24.04]\n        include:\n          - runner: macos-14\n",
+            "exclude": "        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        exclude:\n          - runner: ubuntu-24.04-arm\n",
+            "self-hosted": "        runner: [ubuntu-24.04, self-hosted]\n",
+            "one bad label": "        runner: [macos-14]\n",
+            "a windows label": "        runner: [ubuntu-24.04, windows-2022]\n",
+            "ubuntu-latest": "        runner: [ubuntu-latest]\n",
+            "another ubuntu version": "        runner: [ubuntu-22.04]\n",
+            "a larger runner": "        runner: [ubuntu-24.04-8core]\n",
+            "an arm64 suffix": "        runner: [ubuntu-24.04-arm64]\n",
+            "different case": "        runner: [Ubuntu-24.04]\n",
+            "a trailing space": "        runner: ['ubuntu-24.04 ']\n",
+            "a leading space": "        runner: [' ubuntu-24.04']\n",
+            "a double-quoted trailing newline": '        runner: ["ubuntu-24.04\\n"]\n',
+            "a block-scalar label": "        runner:\n          - |\n            ubuntu-24.04\n",
+            "a Greek upsilon for u": "        runner: [\u03c5buntu-24.04]\n",
+            "an en dash for the hyphen": "        runner: [ubuntu\u201324.04]\n",
+            "a Cyrillic O for the zero": "        runner: [ubuntu-24.\u041e4]\n",
+            "an explicit binary tag": "        runner: [!!binary ubuntu-24.04]\n",
+            "an unknown explicit tag": "        runner: [!x ubuntu-24.04]\n",
+            "a nested list": "        runner: [[ubuntu-24.04]]\n",
+            "a mapping as a label": "        runner: [{name: ubuntu-24.04}]\n",
+            "a number": "        runner: [24.04]\n",
+            "a boolean": "        runner: [true]\n",
+            "null": "        runner: [null]\n",
+            "an expression label": "        runner: [ubuntu-24.04, '${{ inputs.runner }}']\n",
+            "an empty list": "        runner: []\n",
+            "a scalar, not a list": "        runner: ubuntu-24.04\n",
+            "a duplicate key": "        runner: [ubuntu-24.04]\n        runner: [ubuntu-24.04-arm]\n",
+        }.items():
+            with self.subTest(name):
+                self.refused(ro + matrix)
+
+    def test_a_refused_matrix_of_known_ubuntu_labels_is_still_judged_under_bash(self):
+        """Codex round 1, M1: the runner finding AND the step's own finding (the unpinned image) appear when the labels are safely
+        the two ubuntu ones, whatever else is wrong with the shape; labels not safely known stay pwsh (no silent bash)."""
+        ro = "    runs-on: ${{ matrix.runner }}\n    strategy:\n"
+        for name, strategy in {
+            "a second matrix key": "      matrix:\n        runner: [ubuntu-24.04]\n        os: [x]\n",
+            "max-parallel": "      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "exclude beside": "      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        exclude:\n          - runner: ubuntu-24.04-arm\n",
+        }.items():
+            with self.subTest(name):
+                code, out = self.findings(self.job(ro + strategy, self.CHECKOUT + "      - run: docker pull alpine:latest\n"))
+                self.assertNotEqual(code, 0, out)
+                self.assertRegex(out, r"\.runs-on: ")
+                self.assertRegex(out, "alpine")
+
+    def test_labels_not_safely_known_stay_pwsh(self):
+        ro = "    runs-on: ${{ matrix.runner }}\n    strategy:\n"
+        for name, strategy in {
+            "windows": "      matrix:\n        runner: [windows-2022]\n",
+            "include beside ubuntu": "      matrix:\n        runner: [ubuntu-24.04]\n        include:\n          - runner: windows-2022\n",
+            "a repeated key": "      matrix:\n        runner: [windows-2022]\n        runner: [ubuntu-24.04]\n",
+        }.items():
+            with self.subTest(name):
+                code, out = self.findings(self.job(ro + strategy, self.CHECKOUT + "      - run: docker pull alpine:latest\n"))
+                self.assertNotEqual(code, 0, out)
+                self.assertNotIn("alpine", out)
+
+    def test_fail_fast_as_a_string_is_refused(self):
+        """Codex round 1, L2: AC2 says the literal true or false: a quoted or explicitly tagged string is not it."""
+        for form in ('"true"', "'false'", "!!str true"):
+            with self.subTest(form):
+                self.refused("    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: %s\n      matrix:\n        runner: [ubuntu-24.04]\n" % form)
+
+    def test_a_list_used_as_a_job_key_is_a_finding_not_a_crash(self):
+        """Codex round 1, L3."""
+        code, out = self.findings("on: push\njobs:\n  ? [a, b]\n  : runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertRegex(out, "job key")
+        self.assertNotIn("Traceback", out)
+
+    def test_a_matrix_of_only_include_or_exclude_is_refused(self):
+        """include and exclude are not label keys: a matrix of only one of them, read as `${{ matrix.include }}`, is refused."""
+        for key in ("include", "exclude", "Include", "EXCLUDE", "iNcLuDe"):   # in any letter case
+            with self.subTest(key):
+                self.refused("    runs-on: ${{ matrix.%s }}\n    strategy:\n      matrix:\n        %s: [ubuntu-24.04]\n" % (key, key))
+
+    def test_an_explicit_str_tag_is_accepted(self):
+        """!!str resolves to the plain string tag, so it is the same scalar; any other explicit tag is refused (above)."""
+        self.accepted("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [!!str ubuntu-24.04]\n")
+
+    def test_refused_strategy_shapes(self):
+        for name, head in {
+            "strategy as an expression": "    runs-on: ${{ matrix.runner }}\n    strategy: ${{ fromJSON(needs.x.outputs.s) }}\n",
+            "an extra strategy key": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "fail-fast as an expression": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: ${{ inputs.f }}\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "fail-fast as a capital True": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: True\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "fail-fast as yes": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: yes\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "a strategy with no matrix key": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: true\n",
+            "matrix given twice (both valid)": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                               "      matrix:\n        runner: [ubuntu-24.04]\n",
+            "matrix given twice (the last invalid)": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                                     "      matrix:\n        runner: [macos-14]\n",
+            # YAML keeps the last of two `strategy` keys: here the last is the invalid one, so a reader that takes the first is fooled
+            "a second strategy key": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                     "    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n",
+        }.items():
+            with self.subTest(name):
+                self.refused(head)
+
+    def test_a_key_given_twice_is_refused_with_the_key_named(self):
+        """A key repeated in a job, its strategy or its matrix is refused, whatever its last copy holds (YAML keeps the last
+        copy; GitHub rejects the file). Each family runs with a valid last copy and with an invalid one."""
+        ok = "    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+        for name, (key, head) in {
+            "a job key, both valid": ("name", "    name: one\n    name: two\n    runs-on: ${{ matrix.runner }}\n" + ok),
+            "a job key, the last invalid": ("container", f"    container: alpine@{self.DIGEST}\n    container: alpine:3.20\n"
+                                                         "    runs-on: ${{ matrix.runner }}\n" + ok),
+            "runs-on, the last valid": ("runs-on", "    runs-on: self-hosted\n    runs-on: ${{ matrix.runner }}\n" + ok),
+            "runs-on, the last invalid": ("runs-on", "    runs-on: ${{ matrix.runner }}\n    runs-on: macos-14\n" + ok),
+            "strategy, the last valid": ("strategy", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      max-parallel: 1\n"
+                                                     "      matrix:\n        runner: [ubuntu-24.04]\n" + ok),
+            "strategy, the last invalid": ("strategy", "    runs-on: ${{ matrix.runner }}\n" + ok +
+                                                       "    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n"),
+            "matrix, the last valid": ("matrix", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [macos-14]\n"
+                                                 "      matrix:\n        runner: [ubuntu-24.04]\n"),
+            "matrix, the last invalid": ("matrix", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                                   "      matrix:\n        runner: [macos-14]\n"),
+        }.items():
+            with self.subTest(name):
+                code, out = self.findings(self.job(head))
+                self.assertNotEqual(code, 0, out)
+                self.assertRegex(out, rf"duplicate key '{re.escape(key)}'")
+
+    def test_a_key_given_twice_in_a_call_job_is_refused(self):
+        code, out = self.findings("on: push\njobs:\n  c:\n    uses: ./.github/workflows/w.yml\n    uses: ./.github/workflows/w.yml\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertRegex(out, r"duplicate key 'uses'")
+
+    def test_a_matrix_on_another_job_does_not_count(self):
+        code, out = self.findings("on: push\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    strategy:\n      matrix:\n"
+                                  "        runner: [ubuntu-24.04]\n    steps:\n      - run: true\n"
+                                  "  b:\n    runs-on: ${{ matrix.runner }}\n    steps:\n      - run: true\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertRegex(out, r"jobs\.b\.runs-on")
+
+    def test_a_matrix_defined_at_the_workflow_level_does_not_count(self):
+        code, out = self.findings("on: push\nstrategy:\n  matrix:\n    runner: [ubuntu-24.04]\njobs:\n  a:\n"
+                                  "    runs-on: ${{ matrix.runner }}\n    steps:\n      - run: true\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("runs-on", out)
+
+    def test_any_anchor_in_the_file_is_refused(self):
+        code, out = self.findings("on: push\nx-m: &m\n  runner: [ubuntu-24.04]\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n"
+                                  "    strategy:\n      matrix: *m\n    steps:\n      - run: true\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertIn("anchor", out)
+
+    def test_an_unresolved_runs_on_is_a_finding_not_a_shell_guess(self):
+        code, out = self.findings(self.job("    runs-on: ${{ inputs.runner }}\n" + self.MATRIX))
+        self.assertNotEqual(code, 0, out)
+        self.assertRegex(out, r"jobs\.apk\.runs-on: '\$\{\{ inputs\.runner \}\}' is not an ubuntu runner")
+
+    def test_a_reusable_workflow_call_has_no_runner_to_judge(self):
+        code, out = self.findings("on: push\njobs:\n  c:\n    uses: ./.github/workflows/w.yml\n")
+        self.assertEqual(code, 0, out)
+
+    # ---- scope: the runner rule is read in .github/workflows/ files only
+    def test_the_runner_rule_is_read_in_workflow_files_only(self):
+        plain = "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n"
+        other = "on: push\njobs:\n  a:\n    runs-on: %s\n%s    steps:\n      - run: bash bin/build.sh\n"
+        code, out = self.findings(plain, {".github/other.yml": other % ("${{ matrix.runner }}", "    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n")})
+        self.assertEqual(code, 0, out)       # a valid matrix reads as bash there too
+        code, out = self.findings(plain, {".github/other.yml": other % ("${{ inputs.runner }}", "")})
+        self.assertNotEqual(code, 0, out)    # an unresolved runner there only makes its steps read as pwsh
+        self.assertRegex(out, r"other\.yml.*a `pwsh` step")
+        self.assertNotIn("runs-on", out)
+        code, out = self.findings(plain, {".github/other.yml": other % ("${{ matrix.runner }}", "    strategy:\n      matrix:\n        runner: [windows-2022]\n")})
+        self.assertNotEqual(code, 0, out)    # a Windows label there: the steps read as pwsh, still no runs-on finding
+        self.assertRegex(out, r"other\.yml.*a `pwsh` step")
+        self.assertNotIn("runs-on", out)
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
