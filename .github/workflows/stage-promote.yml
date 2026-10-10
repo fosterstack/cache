@@ -298,7 +298,7 @@ jobs:
           done
           # exactly the four lines, in order, each matching the file that will be uploaded
           i=0
-          while IFS= read -r line; do
+          while IFS= read -r line || [ -n "$line" ]; do
             f="${files[$i]:-}"
             [ -n "$f" ] || { echo "::error::release-files.sha256 has an extra line: ${line}" >&2; exit 1; }
             h=$(sha256sum "$f" | cut -d' ' -f1)
@@ -334,6 +334,16 @@ jobs:
           else
             echo "::error::no SBOM files in dist — the build stage should have produced them" >&2; exit 1
           fi
+          # REQ-REL-001-AC3: fetch back what the DRAFT release stores (this step's token; the release is not public
+          # yet), so the anonymous check below runs on the uploaded bytes, not on the local files. Exact names only.
+          mkdir /tmp/release-files-draft
+          gh release download "$ver" --repo "$GITHUB_REPOSITORY" -D /tmp/release-files-draft \
+            -p release-files.sha256 -p release-files.sha256.bundle -p release-manifest.json \
+            -p fosterstack-cache.openvex.json -p "fosterstack-cache-${ver}.csaf.json" -p "fosterstack-cache-${ver}.inspector-filters.json"
+          for f in release-files.sha256 release-files.sha256.bundle release-manifest.json fosterstack-cache.openvex.json \
+                   "fosterstack-cache-${ver}.csaf.json" "fosterstack-cache-${ver}.inspector-filters.json"; do
+            [ -f "/tmp/release-files-draft/$f" ] || { echo "::error::the draft release does not hold ${f}" >&2; exit 1; }
+          done
 
       # R09: the GH-attestation chain check (needs a token) is retained
       # as an internal gate, but the CUSTOMER-facing evidence must be the
@@ -415,22 +425,29 @@ jobs:
           cosign verify-blob dist/checksums.txt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" \
             || { echo "::error::anonymous checksums-bundle verification failed" >&2; exit 1; }
           # NEGATIVE CONTROL: a corrupted checksums file MUST fail the bundle.
-          cp dist/checksums.txt /tmp/checksums.corrupt && printf 'tamper\n' >> /tmp/checksums.corrupt
+          # (on their own lines, and proven to differ, so the control cannot pass on a copy that was never made)
+          cp dist/checksums.txt /tmp/checksums.corrupt
+          printf 'tamper\n' >> /tmp/checksums.corrupt
+          if [ ! -f /tmp/checksums.corrupt ] || cmp -s dist/checksums.txt /tmp/checksums.corrupt; then
+            echo "::error::the corrupted checksums copy was not made - the negative control would test nothing" >&2; exit 1
+          fi
           if cosign verify-blob /tmp/checksums.corrupt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" >/dev/null 2>&1; then
             echo "::error::verify-blob accepted a TAMPERED checksums file - the bundle check is not sound" >&2; exit 1
           fi
           # release-files.sha256 (REQ-REL-001-AC3): the signed list of the four release metadata files, checked as the
-          # docs tell a customer to, on the files as uploaded: the bundle under the same pinned identity (idflags), then
-          # every listed file against the list.
-          rel=$(mktemp -d)
-          cp release-files.sha256 release-files.sha256.bundle /tmp/release-manifest.json /tmp/vex/fosterstack-cache.openvex.json \
-            "/tmp/vex/fosterstack-cache-${GITHUB_REF_NAME}.csaf.json" "/tmp/vex/fosterstack-cache-${GITHUB_REF_NAME}.inspector-filters.json" "$rel/"
+          # docs tell a customer to, on the assets the draft release stores (downloaded by the upload step): the bundle
+          # under the same pinned identity (idflags), then every listed file against the list.
+          rel=/tmp/release-files-draft
           cosign verify-blob "$rel/release-files.sha256" --bundle "$rel/release-files.sha256.bundle" "${idflags[@]}" \
             || { echo "::error::anonymous release-files.sha256 bundle verification failed" >&2; exit 1; }
           (cd "$rel" && sha256sum -c release-files.sha256 --strict) \
             || { echo "::error::a release metadata file does not match release-files.sha256" >&2; exit 1; }
           # NEGATIVE CONTROL: a corrupted release-files.sha256 MUST fail the bundle.
-          cp "$rel/release-files.sha256" /tmp/release-files.corrupt && printf 'tamper\n' >> /tmp/release-files.corrupt
+          cp "$rel/release-files.sha256" /tmp/release-files.corrupt
+          printf 'tamper\n' >> /tmp/release-files.corrupt
+          if [ ! -f /tmp/release-files.corrupt ] || cmp -s "$rel/release-files.sha256" /tmp/release-files.corrupt; then
+            echo "::error::the corrupted release-files.sha256 copy was not made - the negative control would test nothing" >&2; exit 1
+          fi
           if cosign verify-blob /tmp/release-files.corrupt --bundle "$rel/release-files.sha256.bundle" "${idflags[@]}" >/dev/null 2>&1; then
             echo "::error::verify-blob accepted a TAMPERED release-files.sha256 - the bundle check is not sound" >&2; exit 1
           fi

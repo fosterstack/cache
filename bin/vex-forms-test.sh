@@ -299,22 +299,27 @@ check("SEC-165-01 a Go module product stays out of image scope",
       V._scopes(scoped("CVE-GO", "affected", [{"@id": "pkg:golang/github.com/fosterstack/cache"}]), [D("1")]) == [])
 # --- REQ-REL-001-AC2, AC3 (advisor 0362, Oct 10): a signed release-files.sha256 covers the manifest and the three VEX
 #     files. Pinned twice: the steps' shape and order in the parsed workflow (judge), and the steps' own run text executed
-#     against fixture files with a stub cosign whose "bundle" binds the blob's sha256 to the signer identity (behaviour).
-#     Every mutant below must be caught by one of the two.
+#     in order (sign, the real upload step against a stub gh that stores and serves the draft's assets, the anonymous
+#     check) against fixture files with a stub cosign whose "bundle" binds the blob's sha256 to the signer identity
+#     (behaviour). Every mutant below must be caught by one of the two.
 import copy, hashlib, re, shutil
 WF = os.path.join(root, ".github/workflows/stage-promote.yml")
 REL_FILES = ["/tmp/release-manifest.json", "/tmp/vex/fosterstack-cache.openvex.json",
              '"/tmp/vex/fosterstack-cache-${ver}.csaf.json"', '"/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json"']
 REL_NAMES = ["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-v9.9.9.csaf.json",
              "fosterstack-cache-v9.9.9.inspector-filters.json"]
+DRAFT = "/tmp/release-files-draft"
+DL_PATTERNS = ["release-files.sha256", "release-files.sha256.bundle", "release-manifest.json", "fosterstack-cache.openvex.json",
+               '"fosterstack-cache-${ver}.csaf.json"', '"fosterstack-cache-${ver}.inspector-filters.json"']
 GOOD_ID = "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v9.9.9"
 STUB_COSIGN = r'''#!/usr/bin/env bash
 # test stub: a "bundle" binds the blob's sha256 to the signer identity; verify-blob checks both and the issuer
 printf '%s\n' "$*" >> "$STUB_CALLS"
-op=$1; shift; blob= bundle= re= iss=
+op=$1; shift; blob= bundle= re= id= iss=
 while [ $# -gt 0 ]; do case "$1" in
   --bundle) bundle=$2; shift 2;;
   --certificate-identity-regexp) re=$2; shift 2;; --certificate-identity-regexp=*) re=${1#*=}; shift;;
+  --certificate-identity) id=$2; shift 2;; --certificate-identity=*) id=${1#*=}; shift;;
   --certificate-oidc-issuer) iss=$2; shift 2;; --certificate-oidc-issuer=*) iss=${1#*=}; shift;;
   --yes) shift;;
   -*) echo "stub cosign: unknown flag $1" >&2; exit 2;;
@@ -325,7 +330,8 @@ case "$op" in
   sign-blob) printf '%s %s\n' "$h" "$STUB_IDENTITY" > "$bundle";;
   verify-blob) [ "${STUB_VERIFY_ALWAYS:-}" = 1 ] && exit 0
     read -r bh bid < "$bundle"
-    [ "$bh" = "$h" ] && [ -n "$re" ] && [[ "$bid" =~ $re ]] && [ "$iss" = https://token.actions.githubusercontent.com ];;
+    [ "$bh" = "$h" ] && [ "$iss" = https://token.actions.githubusercontent.com ] || exit 1
+    if [ -n "$id" ]; then [ -z "$re" ] && [ "$bid" = "$id" ]; else [ -n "$re" ] && [[ "$bid" =~ $re ]]; fi;;
   *) exit 2;;
 esac
 '''
@@ -336,22 +342,42 @@ printf '%s\n' "$url" >> "$STUB_URLS"
 f=${url##*/}; [ -f "$STUB_PUB/$f" ] || exit 22
 cp "$STUB_PUB/$f" "./$f"
 '''
+STUB_GH = r'''#!/usr/bin/env bash
+# test stub: the draft release is $STUB_PUB. upload stores each file by its base name (STUB_UPLOAD_SKIP drops one,
+# STUB_UPLOAD_FLIP stores one with a byte appended); download copies the assets whose names match a -p glob into -D.
+printf 'gh %s\n' "$*" >> "$STUB_CALLS.gh"
+[ "$1" = release ] || exit 2
+op=$2; shift 3
+case "$op" in
+  create) exit 0;;
+  upload) for f in "$@"; do b=${f##*/}; [ "$b" = "${STUB_UPLOAD_SKIP:-}" ] && continue
+            cp "$f" "$STUB_PUB/$b"; [ "$b" = "${STUB_UPLOAD_FLIP:-}" ] && printf x >> "$STUB_PUB/$b"; done; exit 0;;
+  download) dir= pats=()
+    while [ $# -gt 0 ]; do case "$1" in -D) dir=$2; shift 2;; -p) pats+=("$2"); shift 2;;
+      --repo) [ "$2" = "$GITHUB_REPOSITORY" ] || exit 3; shift 2;; *) exit 2;; esac; done
+    n=0; for p in "${pats[@]}"; do for f in "$STUB_PUB"/$p; do [ -f "$f" ] && cp "$f" "$dir/" && n=$((n+1)); done; done
+    [ "$n" -gt 0 ];;
+  *) exit 2;;
+esac
+'''
 def rel_src(c, n):
     return os.path.join(c, "tmp" if n == "release-manifest.json" else "tmp/vex", n)
 def rel_case(missing=(), extra=True, identity=GOOD_ID):
     c = tempfile.mkdtemp()
-    for d in ("tmp/vex", "work", "bin"):
+    for d in ("tmp/vex", "work/dist", "bin", "pub"):
         os.makedirs(os.path.join(c, d))
-    for n, body in (("cosign", STUB_COSIGN), ("curl", STUB_CURL)):
+    for n, body in (("cosign", STUB_COSIGN), ("curl", STUB_CURL), ("gh", STUB_GH), ("git", "#!/bin/sh\nexit 0\n")):
         p = os.path.join(c, "bin", n); open(p, "w").write(body); os.chmod(p, 0o755)
     for n in REL_NAMES:
         if n not in missing:
             open(rel_src(c, n), "w").write('{"f": "%s"}\n' % n)
     if extra:                       # a file beside the four that must NOT be listed
         open(os.path.join(c, "tmp/vex", "fosterstack-cache-v9.9.9.extra.json"), "w").write("{}\n")
+    for p in ("work/dist/fscache.tar.gz", "work/dist/checksums.txt", "work/dist/fscache.sbom.json", "tmp/checksums.txt.bundle"):
+        open(os.path.join(c, p), "w").write("x\n")
     env = dict(os.environ, PATH=os.path.join(c, "bin") + ":" + os.environ["PATH"], STUB_CALLS=os.path.join(c, "calls"),
-               STUB_IDENTITY=identity, STUB_URLS=os.path.join(c, "urls"), GITHUB_REF_NAME="v9.9.9",
-               GITHUB_REF="refs/tags/v9.9.9", GITHUB_REPOSITORY="fosterstack/cache")
+               STUB_IDENTITY=identity, STUB_URLS=os.path.join(c, "urls"), STUB_PUB=os.path.join(c, "pub"),
+               GITHUB_REF_NAME="v9.9.9", GITHUB_REF="refs/tags/v9.9.9", GITHUB_REPOSITORY="fosterstack/cache")
     return c, env
 def rel_run(c, env, script, **extra):
     script = script.replace("/tmp/", c + "/tmp/")
@@ -376,39 +402,73 @@ flat = lambda s: re.sub(r"\\\n\s*", "", s or "")
 def rel_judge(steps):
     bad = []
     at, sg = rel_steps(steps)
-    gen, man, up, anon = (at("generate the VEX in three forms"), at("assemble release-manifest.json"),
-                          at("create the draft release"), at("documented ANONYMOUS customer verification"))
+    gen, man, up, anon, undraft = (at("generate the VEX in three forms"), at("assemble release-manifest.json"),
+                                   at("create the draft release"), at("documented ANONYMOUS customer verification"), at("undraft"))
     if len(sg) != 1:
         return ["not exactly one step signs release-files.sha256: %s" % sg]
     s = sg[0]
-    if None in (gen, man, up, anon) or not gen < man < s < up < anon:
-        bad.append("the signing step is not after the VEX and manifest generation and before the release is created: %s" % ((gen, man, s, up, anon),))
+    if None in (gen, man, up, anon, undraft) or not gen < man < s < up < anon < undraft:
+        bad.append("the signing step is not after the VEX and manifest generation and before the release is created: %s" % ((gen, man, s, up, anon, undraft),))
     run = steps[s]["run"]
+    if not run.startswith("set -euo pipefail\n"):
+        bad.append("the signing step does not run under set -euo pipefail")
     m = re.search(r"\bfiles=\(\s*(.*?)\s*\)", run, re.S)
     if (m.group(1).split() if m else None) != REL_FILES:
         bad.append("the list does not name exactly the four files, in order: %s" % (m and m.group(1).split()))
     if len(re.findall(r"^\s*cosign sign-blob --yes release-files\.sha256 --bundle release-files\.sha256\.bundle\s*$", flat(run), re.M)) != 1:
         bad.append("release-files.sha256 is not signed by cosign sign-blob --yes ... --bundle release-files.sha256.bundle")
-    ups = [l.split() for l in flat(steps[up]["run"] if up is not None else "").splitlines() if l.strip().startswith('gh release upload "$ver"')]
+    if 'while IFS= read -r line || [ -n "$line" ]; do' not in run:
+        bad.append("the line check skips an unterminated last line")
+    urun = flat(steps[up]["run"] if up is not None else "")
+    ul = [l.strip() for l in urun.splitlines()]
+    ups = [l.split() for l in ul if l.startswith('gh release upload "$ver"')]
     if not ups or not {"release-files.sha256", "release-files.sha256.bundle"} <= set(ups[0]):
         bad.append("the release upload list does not carry release-files.sha256 and its bundle")
+    dls = [i for i, l in enumerate(ul) if l.startswith("gh release download")]
+    want_dl = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -D %s %s' % (DRAFT, " ".join("-p " + p for p in DL_PATTERNS))
+    lastup = max([i for i, l in enumerate(ul) if l.startswith("gh release upload")] or [10 ** 6])
+    if len(dls) != 1 or ul[dls[0]] != want_dl or dls[0] < lastup:
+        bad.append("the draft's six assets are not downloaded by exact name after every upload: %s" % [ul[i] for i in dls])
+    if ("mkdir %s" % DRAFT) not in ul:
+        bad.append("the draft download directory is not created fresh (mkdir without -p)")
     try:
         seg = flat(anon_segment(steps[anon]["run"]))
     except (StopIteration, TypeError, KeyError):
         return bad + ["the anonymous verification has no release-files.sha256 block"]
     code = [l.strip() for l in seg.splitlines() if l.strip() and not l.strip().startswith("#")]
+    if "rel=%s" % DRAFT not in code or any(l.startswith("cp ") and "$rel" in l and "release-files.corrupt" not in l for l in code):
+        bad.append("the anonymous check does not run on the downloaded draft assets")
     vb = [l for l in code if "verify-blob" in l]
     pos = [l for l in vb if l.startswith('cosign verify-blob "$rel/release-files.sha256" --bundle "$rel/release-files.sha256.bundle" "${idflags[@]}" ||')]
     neg = [l for l in vb if l.startswith('if cosign verify-blob /tmp/release-files.corrupt --bundle "$rel/release-files.sha256.bundle" "${idflags[@]}"') and l.endswith("then")]
     if len(pos) != 1:
         bad.append("no anonymous verify-blob of release-files.sha256 with the pinned identity (idflags)")
-    if len(neg) != 1 or "printf 'tamper\\n' >> /tmp/release-files.corrupt" not in seg:
-        bad.append("no negative control: a corrupted release-files.sha256 must fail the bundle")
+    if len(neg) != 1 or 'cp "$rel/release-files.sha256" /tmp/release-files.corrupt' not in code \
+            or "printf 'tamper\\n' >> /tmp/release-files.corrupt" not in code \
+            or not 'if [ ! -f /tmp/release-files.corrupt ] || cmp -s "$rel/release-files.sha256" /tmp/release-files.corrupt; then' in code:
+        bad.append("no negative control on a corrupted copy that is made on its own lines and proven to differ")
     if any("--certificate-identity" in l for l in vb):
         bad.append("a release-files verify-blob names its own identity instead of idflags")
     if not any(l.startswith('(cd "$rel" && sha256sum -c release-files.sha256 --strict)') for l in code):
         bad.append("no sha256sum -c --strict of the downloaded files against release-files.sha256")
     return bad
+def rel_pipeline(steps, identity=GOOD_ID, after_upload=None, **extra):
+    """sign, upload (the real step, stub gh), anonymous check; returns the first stage that failed, or ok"""
+    at, sg = rel_steps(steps)
+    c, env = rel_case(identity=identity)
+    env.update(extra)
+    if rel_run(c, env, steps[sg[0]]["run"]).returncode:
+        return "sign"
+    if rel_run(c, env, steps[at("create the draft release")]["run"]).returncode:
+        return "upload"
+    if after_upload:
+        try:
+            after_upload(c)
+        except OSError:
+            return "nothing downloaded to alter"
+    if rel_run(c, env, anon_segment(steps[at("documented ANONYMOUS customer verification")]["run"])).returncode:
+        return "verify"
+    return "ok"
 def rel_behaviour(steps):
     bad = []
     at, sg = rel_steps(steps)
@@ -436,32 +496,41 @@ def rel_behaviour(steps):
     os.symlink(os.path.join(c3, "tmp/vex", "fosterstack-cache-v9.9.9.extra.json"), rel_src(c3, "fosterstack-cache.openvex.json"))
     if rel_run(c3, env3, srun).returncode == 0 or rel_calls(c3):
         bad.append("a symbolic link in place of a listed file does not stop the step before signing")
-    # the post-publish anonymous block, on what was signed and uploaded
+    # an extra fifth line WITHOUT a trailing newline (sha256sum -c --strict would accept it) is refused before signing
+    marker = "# exactly the four lines"
+    if marker in srun:
+        c4, env4 = rel_case()
+        r4 = rel_run(c4, env4, srun.replace(marker, "printf '%s  x' \"$(printf 0%.0s {1..64})\" >> release-files.sha256\n" + marker, 1))
+        if r4.returncode == 0 or rel_calls(c4):
+            bad.append("an unterminated fifth line is not refused before signing")
+    else:
+        bad.append("the line check is not where the test expects it")
+    # sign -> upload (what the draft stores) -> the anonymous check on the downloaded draft assets
     try:
-        seg = anon_segment(steps[at("documented ANONYMOUS customer verification")]["run"])
+        anon_segment(steps[at("documented ANONYMOUS customer verification")]["run"])
     except (StopIteration, TypeError, KeyError):
         return bad + ["no anonymous release-files block to run"]
-    def verify(mutate=None, identity=GOOD_ID, **extra):
-        cv, envv = rel_case(identity=identity)
-        if rel_run(cv, envv, srun).returncode != 0:
-            return None
-        if mutate:
-            mutate(cv)
-        return rel_run(cv, envv, seg, **extra).returncode
-    if verify() != 0:
-        bad.append("the anonymous block fails on the release as signed")
-    app = lambda p: (lambda cv: open(os.path.join(cv, p), "a").write("x\n"))
-    if verify(app("tmp/vex/fosterstack-cache.openvex.json")) in (0, None):
-        bad.append("a file changed after signing passes sha256sum -c")
-    if verify(app("work/release-files.sha256")) in (0, None):
-        bad.append("a corrupted release-files.sha256 passes the bundle")
-    if verify(STUB_VERIFY_ALWAYS="1") in (0, None):
-        bad.append("an unsound verifier (accepts anything) is not caught by the negative control")
+    def edit(p, how="a"):
+        return lambda cv: open(os.path.join(cv, p), how).write("x\n")
+    def dangling(cv):               # the corrupted copy cannot be made: its path is a link into a directory that is absent
+        os.symlink(os.path.join(cv, "absent", "x"), os.path.join(cv, "tmp", "release-files.corrupt"))
+    cases = [("the release as signed and uploaded", {}, "ok"),
+             ("the draft stores different bytes of the manifest", {"STUB_UPLOAD_FLIP": "release-manifest.json"}, "verify"),
+             ("the draft stores different bytes of the list", {"STUB_UPLOAD_FLIP": "release-files.sha256"}, "verify"),
+             ("the draft lacks the CSAF file", {"STUB_UPLOAD_SKIP": "fosterstack-cache-v9.9.9.csaf.json"}, "upload"),
+             ("the draft lacks the bundle", {"STUB_UPLOAD_SKIP": "release-files.sha256.bundle"}, "upload"),
+             ("a downloaded file differs from the list", {"after_upload": edit("tmp/release-files-draft/fosterstack-cache.openvex.json")}, "verify"),
+             ("a corrupted downloaded list", {"after_upload": edit("tmp/release-files-draft/release-files.sha256")}, "verify"),
+             ("an unsound verifier (accepts anything)", {"STUB_VERIFY_ALWAYS": "1"}, "verify"),
+             ("the corrupted copy cannot be made", {"after_upload": dangling}, "verify")]
     for wrong in ("https://github.com/attacker/cache/.github/workflows/stage-promote.yml@refs/tags/v9.9.9",
                   "https://github.com/fosterstack/cache/.github/workflows/stage-image.yml@refs/tags/v9.9.9",
                   "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/heads/main"):
-        if verify(identity=wrong) in (0, None):
-            bad.append("a bundle signed as %s passes" % wrong)
+        cases.append(("a bundle signed as " + wrong, {"identity": wrong}, "verify"))
+    for name, kw, want_stage in cases:
+        got_stage = rel_pipeline(steps, **kw)
+        if got_stage != want_stage:
+            bad.append("%s: stops at %s, want %s" % (name, got_stage, want_stage))
     return bad
 real_steps = yaml.load(open(WF), Loader=yaml.BaseLoader)["jobs"]["promote"]["steps"]
 jb, bb = rel_judge(real_steps), rel_behaviour(real_steps)
@@ -485,6 +554,10 @@ def m_drop_neg(st):
     x = next(y for y in st if is_anon(y.get("run") or ""))
     L = x["run"].splitlines(True); a = next(i for i, l in enumerate(L) if "if cosign verify-blob /tmp/release-files.corrupt" in l)
     x["run"] = "".join(L[:a] + L[a + 3:])
+def m_old_neg(st):                  # the first form: cp && printf on one line, no proof the copy exists and differs
+    x = next(y for y in st if is_anon(y.get("run") or ""))
+    L = x["run"].splitlines(True); a = next(i for i, l in enumerate(L) if l.startswith('cp "$rel/release-files.sha256" /tmp/release-files.corrupt'))
+    x["run"] = "".join(L[:a] + ['cp "$rel/release-files.sha256" /tmp/release-files.corrupt && printf \'tamper\\n\' >> /tmp/release-files.corrupt\n'] + L[a + 5:])
 MUTANTS = [
     ("drop the signing step", m_drop),
     ("sign after the release is created", m_after_publish),
@@ -495,10 +568,18 @@ MUTANTS = [
     ("a missing file silently left out", mut_run(is_sign, 'inspector-filters.json" )\n',
         'inspector-filters.json" )\nkept=(); for f in "${files[@]}"; do [ -f "$f" ] && kept+=("$f"); done; files=("${kept[@]}")\n')),
     ("the existence check dropped", mut_run(is_sign, "[ -f \"$f\" ] && [ ! -L \"$f\" ] ||", "true ||")),
+    ("the signing step without set -e", mut_run(is_sign, "set -euo pipefail", "set -uo pipefail")),
+    ("an unterminated last line skipped", mut_run(is_sign, 'while IFS= read -r line || [ -n "$line" ]; do', "while IFS= read -r line; do")),
     ("signed with another bundle name", mut_run(is_sign, "--bundle release-files.sha256.bundle", "--bundle /tmp/release-files.bundle")),
     ("drop the bundle from the upload list", mut_run(is_up, " release-files.sha256.bundle", "")),
     ("drop the list from the upload list", mut_run(is_up, " release-files.sha256 ", " ")),
+    ("a file modified between signing and upload", mut_run(is_up, "set -euo pipefail\n", "set -euo pipefail\nprintf x >> /tmp/release-manifest.json\n")),
+    ("drop the draft download", mut_run(is_up, 'gh release download "$ver"', 'true "$ver"')),
+    ("a loose download pattern", mut_run(is_up, "-p release-manifest.json", "-p '*.json'")),
+    ("verify the local files instead of the downloaded draft", mut_run(is_anon, "rel=/tmp/release-files-draft",
+        'rel=$(mktemp -d)\ncp release-files.sha256 release-files.sha256.bundle /tmp/release-manifest.json /tmp/vex/*.json "$rel/"')),
     ("drop the negative control", m_drop_neg),
+    ("the negative control as cp && printf without the copy check", m_old_neg),
     ("verify with a different identity", mut_run(is_anon, 'cosign verify-blob "$rel/release-files.sha256" --bundle "$rel/release-files.sha256.bundle" "${idflags[@]}"',
         'cosign verify-blob "$rel/release-files.sha256" --bundle "$rel/release-files.sha256.bundle" --certificate-identity-regexp \'^https://github\\.com/\' --certificate-oidc-issuer \'https://token.actions.githubusercontent.com\'')),
     ("skip sha256sum -c", mut_run(is_anon, '(cd "$rel" && sha256sum -c release-files.sha256 --strict)', "true")),
@@ -512,33 +593,35 @@ for name, fn in MUTANTS:
         applied = e
     caught = rel_judge(st) + (rel_behaviour(st) if applied is True else [])
     check("REQ-REL-001-AC2/AC3 mutant caught: " + name, applied is True and bool(caught), applied if applied is not True else caught)
+print("REQ-REL-001-AC2/AC3: %d mutants" % len(MUTANTS))
 # --- REQ-REL-001-AC3: the documented commands, run as written against the published files (stub curl and cosign)
 doc = open(os.path.join(root, "docs/verify-images.md")).read()
 blocks = [b for b in re.findall(r"```sh\n(.*?)```", doc, re.S) if "release-files.sha256" in b]
 check("REQ-REL-001-AC3 the docs carry one command block for release-files.sha256", len(blocks) == 1, len(blocks))
 dblock = blocks[0] if blocks else "false"
 dflat = flat(dblock)
-check("REQ-REL-001-AC3 the docs verify-blob pins stage-promote.yml at the release tag and the GitHub issuer, like checksums.txt",
+check("REQ-REL-001-AC3 the docs verify-blob names the exact identity (stage-promote.yml at the release tag) and the GitHub issuer",
       re.search(r"cosign verify-blob --bundle release-files\.sha256\.bundle "
-                r"--certificate-identity-regexp=\"\^https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v\$\{VER\}\$\" "
+                r"--certificate-identity \"https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v\$\{VER\}\" "
                 r"--certificate-oidc-issuer='https://token\.actions\.githubusercontent\.com' release-files\.sha256", dflat) is not None, dflat)
 check("REQ-REL-001-AC3 the docs check every listed file with sha256sum -c release-files.sha256",
       re.search(r"^sha256sum -c release-files\.sha256\b", dflat, re.M) is not None, dflat)
-check("REQ-REL-001-AC3 the docs say the list applies from the release after v0.2.2 and how earlier releases are covered",
-      re.search(r"applies from the release after v0\.2\.2.*signed manifest", doc) is not None)
+sent = re.search(r"applies from the release after v0\.2\.2.*signed manifest", doc)
+check("REQ-REL-001-AC3 the docs say, before the commands, that the list applies from the release after v0.2.2 and how earlier releases are covered",
+      sent is not None and blocks and sent.start() < doc.index(dblock))
 def docs_run(mutate=None, identity=GOOD_ID):
     c, env = rel_case(identity=identity)
     sg = rel_steps(real_steps)[1]
     if len(sg) != 1 or rel_run(c, env, real_steps[sg[0]]["run"]).returncode != 0:
         return None, []
-    pub = os.path.join(c, "pub"); os.makedirs(pub); dl = os.path.join(c, "dl"); os.makedirs(dl)
+    pub = os.path.join(c, "pub"); dl = os.path.join(c, "dl"); os.makedirs(dl)
     for n in REL_NAMES:
         shutil.copy(rel_src(c, n), pub)
     for n in ("release-files.sha256", "release-files.sha256.bundle"):
         shutil.copy(os.path.join(c, "work", n), pub)
     if mutate:
         mutate(pub)
-    r = subprocess.run(["bash", "-eo", "pipefail", "-c", dblock], cwd=dl, env=dict(env, VER="9.9.9", STUB_PUB=pub),
+    r = subprocess.run(["bash", "-eo", "pipefail", "-c", dblock], cwd=dl, env=dict(env, VER="9.9.9"),
                        capture_output=True, text=True, stdin=subprocess.DEVNULL)
     urls = open(os.path.join(c, "urls")).read().splitlines() if os.path.exists(os.path.join(c, "urls")) else []
     return r.returncode, urls
@@ -551,8 +634,10 @@ rc, _ = docs_run(lambda p: open(os.path.join(p, "fosterstack-cache-v9.9.9.csaf.j
 check("REQ-REL-001-AC3 the documented commands fail on a changed file", rc not in (0, None), rc)
 rc, _ = docs_run(lambda p: open(os.path.join(p, "release-files.sha256"), "a").write("tamper\n"))
 check("REQ-REL-001-AC3 the documented commands fail on a corrupted release-files.sha256", rc not in (0, None), rc)
-rc, _ = docs_run(identity="https://github.com/fosterstack/cache/.github/workflows/stage-image.yml@refs/tags/v9.9.9")
-check("REQ-REL-001-AC3 the documented commands fail on a bundle from another workflow", rc not in (0, None), rc)
+for wrong in ("https://github.com/fosterstack/cache/.github/workflows/stage-image.yml@refs/tags/v9.9.9",
+              "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v9.9.9x"):
+    rc, _ = docs_run(identity=wrong)
+    check("REQ-REL-001-AC3 the documented commands fail on a bundle signed as " + wrong, rc not in (0, None), rc)
 print("vex-forms: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY
