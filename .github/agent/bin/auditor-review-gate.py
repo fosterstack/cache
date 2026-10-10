@@ -53,7 +53,7 @@ REVIEWS = AGENT + "reviews/"
 # guard decides what a public-repo PR may contain, so changing it needs the same independent review.
 # (ci.yml is NOT listed: its allowlist job is judged by this gate's workflow from main's copies.)
 GUARDED = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh",
-           ".github/workflows/agent-review-gate.yml")
+           ".github/workflows/agent-review-gate.yml", "bin/scan-no-workflow-call-test.sh")  # last: REQ-SCAN-015-AC2
 VENDORS = {"codex": "openai", "sonnet": "anthropic"}
 SCHEMA = "auditor-review-record/v1"
 SUBS_PATH = REVIEWS + "substitutes.json"
