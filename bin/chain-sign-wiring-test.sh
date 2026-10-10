@@ -304,9 +304,9 @@ def id_token_jobs(base, files, bad):
     for r in rows:
         if not str(r.get("reason") or "").strip(): bad.append("AC1: id-token-jobs.json row without a reason: %s" % r)
         listed.add((r.get("workflow"), r.get("job")))
-    def holds(perm):
-        if isinstance(perm, str): return perm.strip() == "write-all"
-        return isinstance(perm, dict) and str(perm.get("id-token", "")).strip() == "write"
+    def holds(perm):                    # case-insensitive (Sonnet r5): Write and Write-All count as holding the token here
+        if isinstance(perm, str): return perm.strip().lower() == "write-all"
+        return isinstance(perm, dict) and any(str(k).strip().lower() == "id-token" and str(v).strip().lower() == "write" for k, v in perm.items())
     held = set()
     for f in files:
         try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
