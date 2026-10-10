@@ -39,6 +39,7 @@ case "$1 $2" in
   "release download")
     tag=$3; out=""; while [ $# -gt 0 ]; do [ "$1" = "-O" ] && out=$2; shift; done
     [ ! -e "$FIX/dl-fails" ] || { echo "HTTP 502" >&2; exit 1; }
+    [ ! -e "$FIX/dl-fails-after-write" ] || { cp "$FIX/m-$tag.json" "$out"; echo "HTTP 502" >&2; exit 1; }
     [ -e "$FIX/m-$tag.json" ] || exit 1
     cp "$FIX/m-$tag.json" "$out" ;;
   *) echo "unexpected gh call: $*" >&2; exit 9 ;;
@@ -212,6 +213,11 @@ setup "$CURL" v0.2.2; touch "$FIX/view-fails"; run
 chk "a failed gh release view" 'could not read the assets of release v0.2.2'
 setup "$CURL" v0.2.2; touch "$FIX/dl-fails"; run
 chk "a failed manifest download" 'could not be downloaded'
+setup "$CURL" v0.2.2; touch "$FIX/dl-fails-after-write"; run   # gh writes a VALID manifest, then exits non-zero
+chk "a download that fails AFTER writing a valid manifest" 'could not be downloaded'
+setup "$CURL" v0.2.2; touch "$FIX/dl-fails"; cp "$FIX/m-v0.2.2.json" /tmp/m-v0.2.2.json; run   # a stale valid file is already at the path
+rm -f /tmp/m-v0.2.2.json
+chk "a failed download with a stale valid manifest already at the path" 'could not be downloaded'
 setup "$CURL" v0.2.2; printf 'not json {' > "$FIX/m-v0.2.2.json"; run
 chk "an invalid manifest (not JSON)" 'is not valid JSON'
 setup "$CURL" v0.2.2; : > "$FIX/m-v0.2.2.json"; run
