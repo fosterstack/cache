@@ -777,11 +777,12 @@ assert seen and all(t for t in seen), seen
 import ast
 for path in (sys.argv[1], os.path.dirname(sys.argv[1]) + "/pin-age-check.py"):
     tree = ast.parse(open(path).read())
-    wrapped = [(f.lineno, f.end_lineno) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name in ("_run", "_gh_run")]   # add the timeout themselves
+    # _run and _gh_run add the timeout themselves
+    wrapped = [(f.lineno, f.end_lineno) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name in ("_run", "_gh_run")]
     for call in [c for c in ast.walk(tree) if isinstance(c, ast.Call) and ast.unparse(c.func) == "subprocess.run"]:
         assert any(a <= call.lineno <= b for a, b in wrapped) or any(k.arg == "timeout" for k in call.keywords), (path, call.lineno, "no timeout")
 PY
-py "B18: OSV events: limit is refused in SEMVER ranges (a HIT); the evaluator (below ANY limit, introduced 0 the minimum) agrees with an" \\
+py "B18: OSV events: limit is refused in SEMVER ranges (a HIT); the evaluator (below ANY limit, introduced 0 the minimum) agrees with an" \
    " independent interval oracle on a generated grid of records, orders and versions" <<'PY'
 import itertools, random
 A, V = "github.com/sigstore/cosign/v3", None
@@ -818,7 +819,7 @@ for k in (1, 2, 3):
                             checked += 1
 assert checked > 20000, checked
 PY
-py "B19: required fields: a record without modified, an ignored entry without package.ecosystem, a non-string repo, a range with both fixed and" \\
+py "B19: required fields: a record without modified, an ignored entry without package.ecosystem, a non-string repo, a range with both fixed and" \
    " last_affected are unreadable: a HIT, never a clean beside a clean exact entry" <<'PY'
 n = BARE + "/v3"
 honest = ent(n, fixed("3.0.4"))
@@ -841,7 +842,7 @@ clean("3.1.3", [rec("GO-X-85", ent(n, ev(("fixed", "3.0.4"), ("introduced", "0")
 hit("3.1.3", [rec("GO-X-86", ent(n, ev(("fixed", "3.2.0"), ("introduced", "3.1.0"))))], sups=(True,))
 hit("3.1.3", [rec("GO-X-87", ent(n, ev(("fixed", "3.0.4"))))], sups=(True,))      # no introduced at all: unreadable
 PY
-py "B21: versions compare as semver: Go pseudo-versions and numeric pre-releases are valid, identifiers compare numeric < alphanumeric, build is ignored," \\
+py "B21: versions compare as semver: Go pseudo-versions and numeric pre-releases are valid, identifiers compare numeric < alphanumeric, build is ignored," \
    " r1/p1/post1/rev1 are pre-release suffixes" <<'PY'
 c = pa._semver_cmp
 pseudo = "0.0.0-20230101000000-abcdef123456"
