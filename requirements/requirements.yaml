@@ -1221,7 +1221,7 @@ requirements:
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-REL-005-AC3
-        given: "a workflow file under .github/workflows/ or an action file named action.yml or action.yaml under .github/, in which one mapping gives two keys that are equal once trimmed and lower-cased"
+        given: "a workflow file under .github/workflows/ or an action file named action.yml or action.yaml (in any letter case) under .github/, in which one mapping gives two keys that are equal once trimmed and lower-cased"
         when: "the action-pin check reads the file"
         then: "it reports a finding that names each spelling once and the path of the mapping (AC2's job, strategy and matrix levels keep AC2's own message), whatever the second value is; two keys are compared as YAML reads them, whatever their quoting or escapes; the notes of this requirement give the path form and the accepted controls"
         verification: { method: ci-workflow, release_blocking: false }

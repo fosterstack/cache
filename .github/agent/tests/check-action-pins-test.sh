@@ -1426,6 +1426,13 @@ case_out rk-kelvin-sign        bad "$(rk '    steps:
       - run: true
         working-directory: a
         "WORKING-DIRECTORY": b')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'working-directory', 'WOR.ING-DIRECTORY'"
+# AC2's levels keep AC2's own finding, reported once: never a second finding in the AC3 form that names both spellings
+case_out rk-ac2-level-once     bad "$(rk '    strategy:
+      fail-fast: true
+      Fail-Fast: true
+      matrix:
+        arch: [a]
+'"$STEPS")" "jobs\\.j\\.strategy: duplicate key 'fail-fast'; a key is given once" "'Fail-Fast'"
 case_out rk-case-job-key       bad "$(rk '    name: one
     Name: two
 '"$STEPS")" "jobs\\.j: duplicate key 'name'"
@@ -1500,6 +1507,10 @@ case_out rk-numeric-spellings ok "$(rk '    outputs:
       01: two
 '"$STEPS")" '0 finding' 'duplicate key'
 # lower-cased, never case-folded: STRASSE and STRAßE stay two keys (case folding would make both strasse)
+# a full-width ｒｕｎ is not run: keys are lower-cased, never normalized first
+case_out rk-full-width       ok  "$(rk '    steps:
+      - run: true
+        "ｒｕｎ": "true"')" '0 finding' 'duplicate key'
 case_out rk-sharp-s          ok  "$(rk '    env:
       STRASSE: one
       "STRAßE": two
@@ -1525,7 +1536,7 @@ case_out rk-scope-other-file ok  "$(rk "$STEPS")" '0 finding' 'duplicate key' \
   "printf 'name: one\\nname: two\\nenv:\\n  A: one\\n  a: two\\n' > .github/other.yml"
 case_out rk-scope-agent-fixture ok "$(rk "$STEPS")" '0 finding' 'duplicate key' \
   "mkdir -p .github/agent/fixtures && printf 'name: one\\nname: two\\n' > .github/agent/fixtures/x.yml"
-RK_EXPECT=53
+RK_EXPECT=55
 if [ $((pm_run - rk_start)) = "$RK_EXPECT" ]; then pass=$((pass+1)); echo "PASS rk-case-count → $RK_EXPECT"
 else failn=$((failn+1)); echo "FAIL rk-case-count → $((pm_run - rk_start)) cases ran, want $RK_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed

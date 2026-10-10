@@ -895,6 +895,8 @@ class RepeatedKeys(unittest.TestCase):
             # keys of genuinely different text
             "run and runs": self.job("    outputs:\n      run: one\n      runs: two\n" + self.STEPS),
             # lower-cased, never case-folded: case folding would make both strasse
+            # keys are lower-cased, never normalized first: a full-width ｒｕｎ is not run
+            "a full-width run": self.job('    steps:\n      - run: true\n        "\\uff52\\uff55\\uff4e": "true"\n'),
             "STRASSE and STRAßE": self.job('    env:\n      STRASSE: one\n      "STRA\\u00dfE": two\n' + self.STEPS),
             "keys inside a block scalar": self.job("    steps:\n      - run: |\n          a: 1\n          a: 2\n"),
             "1 and 01": self.job("    outputs:\n      1: one\n      01: two\n" + self.STEPS),
