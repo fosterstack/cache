@@ -599,5 +599,88 @@ for i in $(seq 0 $((n-1))); do
   expect "the published VEX statement $i ($name, $pname@$pver) removes its finding from the cache image" clean false 0 1
 done
 
+# ---- round 3 of the review of #268 --------------------------------------------------------------------------------------------------------------------------------
+# Snyk: the WHOLE report shape is validated, the `applications` container included. A container of an unexpected type is an operational error (verdict error), never
+# skipped; the findings that ARE readable still count and the outputs are written. The top-level CVE-2025-0001 is covered by the VEX, CVE-2025-0002 is not.
+vexdoc "$D/v/snyk-r3.json" "[$(st CVE-2025-0001 '[]' not_affected "[$PROD_REPO]")]"
+SNYK_TOP='{"id":"SNYK-DEBIAN12-X-1","identifiers":{"CVE":["CVE-2025-0001"]},"severity":"low","packageName":"zlib","version":"1.0"}'
+SNYK_UNSUP='{"id":"SNYK-JS-Y-2","identifiers":{"CVE":["CVE-2025-0002"]},"severity":"low","packageName":"left-pad","version":"1.0"}'
+vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":{\"app\":{\"vulnerabilities\":[$SNYK_UNSUP]}}}" "$D/v/snyk-r3.json"
+expect "snyk: an applications MAPPING (not a list) is an operational error, never skipped (its finding would be lost)" error false 0 1
+vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[5,\"x\"]}" "$D/v/snyk-r3.json"
+expect "snyk: applications entries that are not objects are malformed (error)" error false 0 1
+vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"/srv/app/package.json\"}]}" "$D/v/snyk-r3.json"
+expect "snyk: a project without a vulnerabilities list is malformed (error)" error false 0 1
+vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"/srv/app/package.json\",\"vulnerabilities\":{\"a\":$SNYK_UNSUP}}]}" "$D/v/snyk-r3.json"
+expect "snyk: a project whose vulnerabilities is a mapping is malformed (error)" error false 0 1
+vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":\"x\"}" "$D/v/snyk-r3.json"
+expect "snyk: an applications string is malformed (error)" error false 0 1
+vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"a\",\"vulnerabilities\":[$SNYK_UNSUP]},7]}" "$D/v/snyk-r3.json"
+expect "snyk: one malformed project next to a valid one: error, and the valid project's finding still counts" error true 1 1
+vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":{\"CVE\":[\"CVE-2025-0003\",5]},\"packageName\":\"zlib\"},$SNYK_UNSUP]}" "$D/v/snyk-r3.json"
+expect "snyk: a non-string CVE identifier is a malformed entry (error), the valid finding still counts" error true 1 0
+vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":{\"CVE\":[],\"ALTERNATIVE\":[\"SNYK-ALT-1\",{}]},\"packageName\":\"zlib\"},$SNYK_UNSUP]}" "$D/v/snyk-r3.json"
+expect "snyk: a non-string ALTERNATIVE identifier is a malformed entry (error)" error true 1 0
+vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":{\"CVE\":\"CVE-2025-0001\"},\"packageName\":\"zlib\",\"version\":\"1.0\"}]}" "$D/v/snyk-r3.json"
+expect "snyk: a CVE identifier list that is a string is malformed (never read character by character)" error false 0 0
+vrun snyk 1 "{\"vulnerabilities\":[{\"id\":\"SNYK-Z-3\",\"identifiers\":[\"CVE-2025-0001\"],\"packageName\":\"zlib\"}]}" "$D/v/snyk-r3.json"
+expect "snyk: identifiers that are not an object are malformed (error)" error false 0 0
+vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":[{\"targetFile\":\"a\",\"vulnerabilities\":[$SNYK_UNSUP]}]}" "$D/v/snyk-r3.json"
+expect "snyk: a well-formed applications list still works (one suppressed, the application finding counts)" findings true 1 1
+# namespace-preserving package match against the PUBLISHED VEX (pkg:generic/busybox@1.37.0 covers busybox 1.37.0 only, not another namespace's busybox)
+osvrep() { jq -nc --arg n "$1" --arg p "$2" --arg v "$3" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}'; }
+PUBVEX=.vex/fosterstack-cache.openvex.json
+vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; expect "published VEX: evil/busybox 1.37.0 is NOT busybox (namespace kept, finding counts)" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX"; expect "published VEX: busybox 1.37.0 is suppressed in the cache image" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.37.0)" "$PUBVEX" debug linux/arm64 "$CAND_REPO@$AMD"; expect "published VEX: busybox 1.37.0 is suppressed in the candidates image" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2025-60876 busybox 1.36.1)" "$PUBVEX"; expect "published VEX: busybox of another version still counts" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.5.0)" "$PUBVEX" production linux/amd64 "$CAND_REPO@$AMD"; expect "published VEX: the repository-wide Go statement still suppresses in the candidates image" clean false 0 1
+vexdoc "$D/v/sub-alpine.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:apk/alpine/busybox@1.37.0"}]}]')]"
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 busybox 1.37.0)" "$D/v/sub-alpine.json"; expect "a namespaced subcomponent (alpine/busybox) does not cover a finding without a namespace (busybox)" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 alpine/busybox 1.37.0)" "$D/v/sub-alpine.json"; expect "...but covers the same namespace (alpine/busybox)" clean false 0 1
+vexdoc "$D/v/sub-npm.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:npm/pkg@1.0.0"}]}]')]"
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 @scope/pkg 1.0.0)" "$D/v/sub-npm.json"; expect "an npm @scope/pkg finding is NOT covered by a scope-less pkg:npm/pkg subcomponent" findings true 1 0
+vexdoc "$D/v/sub-npm-scoped.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:npm/%40scope/pkg@1.0.0"}]}]')]"
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 @scope/pkg 1.0.0)" "$D/v/sub-npm-scoped.json"; expect "...but is covered by pkg:npm/%40scope/pkg@1.0.0" clean false 0 1
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 pkg 1.0.0)" "$D/v/sub-npm-scoped.json"; expect "...and a scope-less pkg finding is not covered by the scoped subcomponent" findings true 1 0
+vrun osv-scanner 1 "$(osvrep CVE-2025-60876 BusyBox 1.37.0)" "$PUBVEX"; expect "names compare case-sensitively (BusyBox is not busybox): kept" findings true 1 0
+# a subcomponent @id must be pkg:<lowercase type>/<name>[@version]: anything else makes the VEX unreadable
+for sub in '[{"@id":"pkg:/busybox@1.37.0"}]' '[{"@id":"pkg:Generic/x@1"}]' '[{"@id":"pkg:1abc/x@1"}]' '[{"@id":"pkg:generic/a//b@1"}]' '[{"@id":"pkg:generic/x@"}]' '[{"@id":"pkg:generic/x/@1"}]' '[{"@id":"pkg:busybox@1.37.0"}]' '[{"@id":"pkg://generic/busybox@1.37.0"}]'; do
+  badvex "subcomponent-purl-$(printf '%s' "$sub" | tr -c 'A-Za-z0-9' '_')" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",$(printf "$PR" "$sub")}"
+done
+# an empty image tag identifies no image of ours; the Go product applies only to an image of ours (unreadable or foreign reference: nothing applies)
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "ghcr.io/fosterstack/cache:"; expect "an empty image tag is not the cache repository (no OCI statement applies)" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "ghcr.io/fosterstack/cache:@$AMD"; expect "...nor an empty tag with a digest" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "ghcr.io/fosterstack/cache:v0.3.0"; expect "a well-formed tag is still the cache repository" clean false 0 1
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/go-only.json" production linux/amd64 "not-an-image-reference"; expect "the Go product does not apply when the image reference cannot be read" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/go-only.json" production linux/amd64 "ghcr.io/evil/cache@$AMD"; expect "the Go product does not apply to a foreign image" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/go-only.json" production linux/amd64 "$REPO@$AMD"; expect "the Go product applies to the cache image" clean false 0 1
+# mutants: the round-3 checks are each load-bearing (a copy of the script with one check reverted must fail the matching case)
+mutant() { # desc python-old python-new   then the case to run and its want-verdict
+  local md; md=$(mktemp -d "$D/mut.XXXXXX"); cp bin/inspector-gate.py "$md/"
+  python3 - "$SCRIPT" "$md/rescan-statement.py" "$2" "$3" <<'P'
+import sys
+src = open(sys.argv[1]).read()
+assert src.count(sys.argv[3]) == 1, "mutant anchor not found exactly once: %r" % sys.argv[3]
+open(sys.argv[2], "w").write(src.replace(sys.argv[3], sys.argv[4]))
+P
+  echo "$md/rescan-statement.py"
+}
+M=$(mutant pkg 'return name == sub_name and version == sub_version' 'return _gate.same_pkg((name.lower(), version), (sub_name.lower(), sub_version))')
+SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun osv-scanner 1 "$(osvrep CVE-2025-60876 evil/busybox 1.37.0)" "$PUBVEX"; SCRIPT=$SCRIPT_SAVE
+[ "$V" = clean ] && ok || bad "mutant (last-segment package match) was not caught by the evil/busybox case (got $V)"
+M=$(mutant apps 'apps = _bad(bad) or []' 'apps = []')
+SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun snyk 1 "{\"vulnerabilities\":[$SNYK_TOP],\"applications\":{\"app\":{\"vulnerabilities\":[$SNYK_UNSUP]}}}" "$D/v/snyk-r3.json"; SCRIPT=$SCRIPT_SAVE
+[ "$V" = clean ] && ok || bad "mutant (applications container check removed) was not caught by the applications-mapping case (got $V)"
+M=$(mutant purl '_PURL_TYPE = re.compile(r"[a-z][a-z0-9.+-]*")' '_PURL_TYPE = re.compile(r".*")')
+SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vexdoc "$D/v/m-type.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:/busybox@1.37.0"}]}]')]"; vrun osv-scanner 1 "$(osvrep CVE-2024-9999 busybox 1.37.0)" "$D/v/m-type.json"; SCRIPT=$SCRIPT_SAVE
+[ "$V" = clean ] && ok || bad "mutant (purl type check removed) was not caught by the pkg:/busybox case (got $V)"
+M=$(mutant tag '_OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")' '_OCI_TAG = re.compile(r".*")')
+SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "ghcr.io/fosterstack/cache:"; SCRIPT=$SCRIPT_SAVE
+[ "$V" = clean ] && ok || bad "mutant (tag check removed) was not caught by the empty-tag case (got $V)"
+M=$(mutant go 'if pp[0] == "go" and image_repo is None:' 'if False:')
+SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun osv-scanner 1 "$OSV_FIND" "$D/v/go-only.json" production linux/amd64 "ghcr.io/evil/cache@$AMD"; SCRIPT=$SCRIPT_SAVE
+[ "$V" = clean ] && ok || bad "mutant (Go product image check removed) was not caught by the foreign-image case (got $V)"
+
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

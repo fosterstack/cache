@@ -143,6 +143,32 @@ def cmd_find_issue(args):
 OUR_OCI_REPOS = ("ghcr.io/fosterstack/cache", "ghcr.io/fosterstack/cache-candidates")
 VEX_VARIANTS = ("production", "debug", "fips")
 VEX_ARCHS = ("amd64", "arm64")
+_PURL_TYPE = re.compile(r"[a-z][a-z0-9.+-]*")
+_OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+
+
+def _sub_purl(sid):
+    """(name, version) of a subcomponent package URL pkg:<type>/[<namespace>/...]<name>[@<version>][?qualifiers][#subpath]. The type must be lower-case
+    [a-z][a-z0-9.+-]*, every path segment non-blank (and free of an encoded '/'), and a version given with '@' non-empty; anything else is ValueError (the VEX
+    is unreadable). The name keeps its namespace and its case (percent-decoded: pkg:npm/%40scope/pkg is @scope/pkg); the type is not compared (a generator may
+    call busybox pkg:generic or pkg:apk)."""
+    if not isinstance(sid, str) or not sid.startswith("pkg:"):
+        raise ValueError("a subcomponent that is not a package URL (%r)" % (sid,))
+    typ, slash, path = sid[4:].split("#", 1)[0].split("?", 1)[0].partition("/")
+    if not slash or not _PURL_TYPE.fullmatch(typ):
+        raise ValueError("a subcomponent package URL without a lower-case type (%r)" % sid)
+    head, _, last = path.rpartition("/")
+    last, at, ver = last.partition("@")
+    segs = [urllib.parse.unquote(x) for x in (head.split("/") if head else []) + [last]]
+    if any(not x.strip() or "/" in x for x in segs) or (at and not ver):
+        raise ValueError("a subcomponent package URL without a usable package name or version (%r)" % sid)
+    return "/".join(segs), urllib.parse.unquote(ver)
+
+
+def _same_package(name, version, sub_name, sub_version):
+    """namespace-preserving: the finding's full package name (namespace included) equals the subcomponent's, case-sensitively, and the versions are equal.
+    busybox is not alpine/busybox or evil/busybox, and @scope/pkg is not pkg."""
+    return name == sub_name and version == sub_version
 
 
 def _parse_product(pid):
@@ -207,8 +233,7 @@ def _vex_validate(doc):
             if not isinstance(subs, list) or not all(isinstance(x, dict) and isinstance(x.get("@id"), str) for x in subs):
                 raise ValueError("subcomponents that are not a list of objects with a string @id")
             for x in subs:
-                if not x["@id"].startswith("pkg:") or not _gate.name_version(urllib.parse.unquote(x["@id"]))[0].strip():
-                    raise ValueError("a subcomponent that is not a package URL with a usable package name (%r)" % x["@id"])
+                _sub_purl(x["@id"])
 
 
 def _vex_load(path):
@@ -226,6 +251,8 @@ def _image_repo(image_ref):
         return None
     head, sep, tail = r.rpartition(":")
     if sep and "/" not in tail:
+        if not _OCI_TAG.fullmatch(tail):
+            return None   # an empty or malformed tag identifies no image
         r = head
     return r if r in OUR_OCI_REPOS else None
 
@@ -233,9 +260,10 @@ def _image_repo(image_ref):
 def _vex_match(doc, finding, variant, image_repo):
     """the first statement that removes this finding, or None: status not_affected or fixed, the vulnerability name or an alias equal to one of the finding's
     ids, a product that is EXACTLY this image's repository (cache or cache-candidates, never the other) scoped to nothing or to this variant and platform, or the
-    repository-wide Go product, and (when the product names subcomponents) the finding's package name@version among them. The document was validated first."""
+    repository-wide Go product (only when the image is one of our two repositories), and (when the product names subcomponents) the finding's package
+    name@version among them, namespace and case preserved (_same_package). The document was validated first."""
     ids = {i for i in (finding.get("ids") or [finding.get("id")]) if i}
-    pkg = ((finding.get("package") or "").lower(), finding.get("version") or "")
+    pkg = (finding.get("package") or "", finding.get("version") or "")
     arch = (finding.get("platform") or "").rpartition("/")[2]
     if not isinstance(finding.get("package") or "", str):
         raise ValueError("a package name that is not a string")
@@ -250,12 +278,14 @@ def _vex_match(doc, finding, variant, image_repo):
             pp = _parse_product(p.get("@id") if "@id" in p else idf.get("purl"))
             if pp is None or pp[0] == "go-versioned":
                 continue
+            if pp[0] == "go" and image_repo is None:
+                continue   # the repository-wide Go product covers our two image repositories only, never an unreadable or foreign image
             if pp[0] == "oci" and not (image_repo is not None and pp[1] == image_repo and pp[2] in (None, variant) and pp[3] in (None, arch)):
                 continue
-            subs = [_gate.name_version(urllib.parse.unquote(x["@id"])) for x in p.get("subcomponents", [])]
+            subs = [_sub_purl(x["@id"]) for x in p.get("subcomponents", [])]
             if subs and not pkg[0]:
                 continue   # a finding with no package identity never matches a statement that names packages
-            if not subs or any(_gate.same_pkg(pkg, sub) for sub in subs):
+            if not subs or any(_same_package(pkg[0], pkg[1], *sub) for sub in subs):
                 return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v["name"], "status": st["status"], "product": p.get("@id")}
     return None
 
@@ -433,13 +463,19 @@ def _normalize(scanner, report, platform, bad=None):
             _guard(out, bad, lambda: _snyk_finding(v, platform, target=None, pkg_mgr=None))
         # Application-dependency findings live under applications[]; each app
         # entry carries its own project context (targetFile / packageManager)
-        # — B04d: these were previously dropped entirely.
-        for app in report.get("applications") or []:
-            if not isinstance(app, dict):
+        # — B04d: these were previously dropped entirely. The container is a
+        # LIST of project objects, each with a vulnerabilities LIST: any other
+        # shape is a malformed entry (operational error), never skipped.
+        apps = report.get("applications", [])
+        if not isinstance(apps, list):
+            apps = _bad(bad) or []
+        for app in apps:
+            if not isinstance(app, dict) or not isinstance(app.get("vulnerabilities"), list):
+                _bad(bad)
                 continue
             target = app.get("targetFile") or app.get("path")
             pkg_mgr = app.get("packageManager")
-            for v in app.get("vulnerabilities") or []:
+            for v in app["vulnerabilities"]:
                 _guard(out, bad, lambda: _snyk_finding(v, platform, target, pkg_mgr))
     elif scanner == "osv-scanner":
         # OSV.dev JSON: results[] -> source.path, packages[] ->
@@ -510,11 +546,16 @@ def _osv_severity(v):
 
 
 def _snyk_finding(v, platform, target, pkg_mgr):
-    cve = (v.get("identifiers") or {}).get("CVE") or []
-    ident = cve[0] if cve else v.get("id")
+    idf = v.get("identifiers", {})
+    if not isinstance(idf, dict) or not isinstance(v.get("id"), str):
+        raise ValueError("an entry whose id is not a string or whose identifiers are not an object")
+    cve, alt = idf.get("CVE", []), idf.get("ALTERNATIVE", [])
+    if not all(isinstance(x, list) and all(isinstance(i, str) for i in x) for x in (cve, alt)):
+        raise ValueError("CVE or ALTERNATIVE identifiers that are not a list of strings")
+    ident = cve[0] if cve else v["id"]
     f = {
         "id": ident,
-        "ids": [x for x in list(cve) + list((v.get("identifiers") or {}).get("ALTERNATIVE") or []) + [v.get("id")] if isinstance(x, str)],
+        "ids": list(cve) + list(alt) + [v["id"]],
         "version": v.get("version"),
         "severity": (v.get("severity") or "").lower(),
         "package": v.get("packageName"),
@@ -545,7 +586,8 @@ def _merge_raw(scanner, valid_reports):
         vulns, apps = [], []
         for r in valid_reports:
             vulns.extend(r.get("vulnerabilities") or [])
-            apps.extend(r.get("applications") or [])
+            a = r.get("applications")
+            apps.extend(a if isinstance(a, list) else [] if a is None else [a])
         return {"vulnerabilities": vulns, "applications": apps}
     return {}
 
