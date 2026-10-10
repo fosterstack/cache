@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=48
+pass=0 failn=0 EXPECT=53
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -364,17 +364,25 @@ PY
 cat >>"$work/pre.py" <<'PY'
 import contextlib, io, subprocess, tempfile
 def cosign_rulings(): return [e for e in json.load(open(CHECKED_IN))["exceptions"] if e["package"] == "cosign"]
-def main_out(recs, ghsas, rulings=None, cosign_ver="3.1.3"):
+def main_out(recs, ghsas, rulings=None, cosign_ver="3.1.3", history=None, pr_fail=False):
     """Run pin-audit's main() on a one-file repository that pins cosign, with a LiveNet whose OSV and GitHub answers are the given ones. The repository's
-    default exceptions file holds `rulings` (default: the checked-in rulings for cosign, the only package this repository pins)."""
+    default exceptions file holds `rulings` (default: the checked-in rulings for cosign, the only package this repository pins). history: [(date, version
+    or None)] commits before the last one, oldest first (the pin as it was on main at that date)."""
     repo = tempfile.mkdtemp(prefix="pa-go-major-")
-    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
-    os.makedirs(repo + "/bin"); open(repo + "/bin/install-scanner.sh", "w").write("COSIGN_VER=%s\n" % cosign_ver if cosign_ver else "# no tool pinned\n")
-    for c in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "pin"]):
-        subprocess.run(["git", "-C", repo, *c], env=env, check=True, capture_output=True)
+    def commit(ver, date="2026-10-09T11:00:00Z"):
+        env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x",
+                   GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
+        os.makedirs(repo + "/bin", exist_ok=True)
+        open(repo + "/bin/install-scanner.sh", "w").write("COSIGN_VER=%s\n" % ver if ver else "# no tool pinned (%s)\n" % date)
+        for c in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "pin " + date]):
+            subprocess.run(["git", "-C", repo, *c], env=env, check=True, capture_output=True)
+    for date, ver in (history or []): commit(ver, date)
+    commit(cosign_ver)
     os.makedirs(repo + "/.github")
     json.dump({"_format": "t", "exceptions": cosign_rulings() if rulings is None else rulings}, open(repo + "/.github/supply-chain-exceptions.json", "w"))
-    net = mknet(recs, ghsas, True); net.open_pr_items = lambda: []
+    def no_prs():
+        raise pa.Fail("simulated: the open pull requests cannot be listed")
+    net = mknet(recs, ghsas, True); net.open_pr_items = no_prs if pr_fail else (lambda: [])
     pa.GO_TOOLS["cosign"] = BARE + "/v3"
     pa.LiveNet = lambda gh, r: net
     buf = io.StringIO()
@@ -415,7 +423,8 @@ dead = {"ids": ["GHSA-dead-0000-xxxx", "GO-DEAD-1"], "package": "cosign",
 rc, out = main_out([G4309], GG, [dead])
 assert rc != 0, (rc, out[-500:])
 line = [l for l in out.splitlines() if "dead exception" in l.lower()]
-assert line and "GO-DEAD-1" in line[0] and "GHSA-dead-0000-xxxx" in line[0] and "cosign" in line[0] and "3.1.3" in line[0], out[-600:]
+assert line and "remove it" in line[0], out[-600:]
+assert all(x in line[0] for x in ("GO-DEAD-1", "GHSA-dead-0000-xxxx", "cosign", "3.1.3")), line
 PY
 py "AC15: a ruling matched by a real dispute is alive: exit 0, no dead exception" <<'PY'
 aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])
@@ -456,14 +465,48 @@ rc, out = main_out(recs, ghs)
 assert rc == 0 and "dead exception" not in out.lower() and "dormant" not in out.lower(), (rc, out[-700:])
 assert "(3 disputed hit(s) covered by a checked-in exception)" in out, out[-500:]
 PY
-py "AC15: a ruling whose copied ranges fail the live check while its pin is held is DEAD, and the dispute shows as DISPUTED too" <<'PY'
+py "AC15: a ruling that matches a dispute but fails the live range check is LAPSED (write a fresh ruling), not dead; the dispute shows as DISPUTED too" <<'PY'
 aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])
 ruling = {"ids": ["GHSA-syn-0001-xxxx", "GO-SYN-1"], "package": "cosign",
           "authoritative": {"source": "GitHub", "id": "GHSA-syn-0001-xxxx", "ranges": ["< 3.0.1"]},     # GitHub's live range is < 3.0.0
           "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
           "modified": {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2026-02-02T00:00:00Z"}}
 rc, out = main_out([aff], {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", "< 3.0.0")}, [ruling])
-assert rc == 1 and "DISPUTED" in out and "DEAD EXCEPTION" in out and "dormant" not in out.lower(), (rc, out[-700:])
+lap = [l for l in out.splitlines() if "LAPSED EXCEPTION" in l]
+assert rc == 1 and "DISPUTED" in out and lap and "write a fresh ruling" in lap[0] and "remove it" not in lap[0], (rc, out[-700:])
+assert "DEAD EXCEPTION" not in out and "dormant" not in out.lower(), out[-700:]
+PY
+
+py "AC15: a ruling with the right package and ids but the wrong version, or an advisory changed since it was written, is LAPSED too (exit 1)" <<'PY'
+aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])
+base = {"ids": ["GHSA-syn-0001-xxxx", "GO-SYN-1"], "package": "cosign",
+        "authoritative": {"source": "GitHub", "id": "GHSA-syn-0001-xxxx", "ranges": ["< 3.0.0"]},
+        "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
+        "modified": {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2026-02-02T00:00:00Z"}}
+older = {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2025-01-01T00:00:00Z"}
+for what, change in (("version", {"version": "3.1.4"}), ("modified", {"modified": older})):
+    rc, out = main_out([aff], {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", "< 3.0.0")}, [dict(base, **change)])
+    assert rc == 1 and "LAPSED EXCEPTION" in out and "DEAD EXCEPTION" not in out, (what, rc, out[-600:])
+PY
+py "AC15: the daily run counts HISTORY pins (90-day lookback): a ruling is dormant, then alive while main held the pin in the window, dormant again after" \
+   " the window (the three cosign rulings: alive until about 2026-12-14 unless cosign 3.1.3 is pinned again)" <<'PY'
+recs = []; ghs = []
+for go, gh in (("GO-2024-2718", "GHSA-88jx-383q-w4qc"), ("GO-2024-2719", "GHSA-95pr-fxf5-86gv"), ("GO-2023-2181", "GHSA-vfp6-jrw2-99g9")):
+    r = load("osv-%s.json" % go); r["aliases"] = sorted(set(r.get("aliases", [])) | {gh}); recs.append(r); ghs.append(gh)
+inside = [("2026-07-01T00:00:00Z", "3.1.3"), ("2026-09-01T00:00:00Z", None)]       # pinned until 2026-09-01: the window of 2026-10-09 still sees it
+outside = [("2026-05-01T00:00:00Z", "3.1.3"), ("2026-06-01T00:00:00Z", None)]      # unpinned before the window opened (2026-07-11)
+rc, out = main_out(recs, ghs, None, None, inside)
+assert rc == 0 and "dormant" not in out.lower() and "dead exception" not in out.lower() and "(3 disputed hit(s) covered" in out, (rc, out[-600:])
+rc, out = main_out(recs, ghs, None, None, outside)
+assert rc == 0 and "3 dormant" in out and "dead exception" not in out.lower(), (rc, out[-600:])
+PY
+py "AC15: DEAD and INCOMPLETE are both printed (a dead ruling never hides that pull requests could not be checked)" <<'PY'
+dead = {"ids": ["GHSA-dead-0000-xxxx", "GO-DEAD-1"], "package": "cosign",
+        "authoritative": {"source": "GitHub", "id": "GHSA-dead-0000-xxxx", "ranges": ["< 3.0.0"]},
+        "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
+        "modified": {"GO-DEAD-1": "2026-01-01T00:00:00Z", "GHSA-dead-0000-xxxx": "2026-02-02T00:00:00Z"}}
+rc, out = main_out([G4309], GG, [dead], pr_fail=True)
+assert rc == 1 and "DEAD EXCEPTION" in out and "INCOMPLETE" in out, (rc, out[-600:])
 PY
 
 # --- F3 (step 8): the exact path with an ecosystem the rule cannot read, a malformed range ------------------------------------------------------------------
@@ -481,6 +524,24 @@ net = mknet([r], (), True); finds, _ = run(cosign("3.1.3"), net)
 assert finds == [], finds
 why = {e["reason"] for e in ignored(net, True)}
 assert len(why) == 2 and sum(bool(re.search(r"\bmajor 3\b", w)) for w in why) == 1 and sum("npm" in w for w in why) == 1, why
+PY
+py "B2: an exact-path entry whose ranges cannot be read is unsettled: a HIT (events [], no events key, fixed only, a covering GIT range" \
+   " beside a SEMVER one)" <<'PY'
+n = BARE + "/v3"
+bad = {"empty events": [{"type": "SEMVER", "events": []}], "no events key": [{"type": "SEMVER"}],
+       "fixed only": [{"type": "SEMVER", "events": ev(("fixed", "3.0.4"))}],
+       "git beside semver": [{"type": "SEMVER", "events": fixed("3.0.4")}, {"type": "GIT", "events": INTRO0}]}
+for what, rgs in bad.items():
+    try: hit("3.1.3", [rec("GO-X-43", ent(n, ranges=rgs))], none_ignored=True)
+    except AssertionError as e: raise AssertionError((what,) + e.args)
+PY
+py "I1: two copies of one OSV id returned by different query paths are OR-ed: a copy with no exact entry makes it a hit even when another copy is clean" <<'PY'
+clean_copy = record("GO-X-44", [(BARE + "/v3", fixed("3.0.4"))])
+bare_copy = record("GO-X-44", [(BARE, INTRO0)])
+net = mknet([], (), True)
+net._osv_post = lambda q: [copy.deepcopy(clean_copy)] if q["package"]["name"] == BARE + "/v3" else [copy.deepcopy(bare_copy)]
+finds, _ = run(cosign("3.1.3"), net)
+assert finds, "the bare-query copy has no exact entry: fail closed"
 PY
 py "F3: an exact-path Go entry with a malformed event list (no introduced event) is unsettled: a HIT" <<'PY'
 hit("3.1.3", [rec("GO-X-42", ent(BARE + "/v3", ranges=[{"type": "SEMVER", "events": [{}]}]))], none_ignored=True)
