@@ -1535,7 +1535,8 @@ expect caught "AC14 an empty jobs key is refused" "jobs must be a non-empty mapp
 printf 'on:\n  pull_request:\njobs:\n  build: nonsense\n' > "$work/jobscalar.yml"
 expect caught "AC14 a job that is not a mapping is refused" "is not a mapping" callers "$work/jobscalar.yml"
 ACC="  artifact-acceptance:\n    needs: build\n    permissions:\n      contents: read\n      packages: read\n"
-ACC="$ACC    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n"
+ACC="$ACC    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist\n"
+ACC="$ACC      expected-checksums: \${{ needs.build.outputs.digests }}\n"
 replace "$work/caller.yml" "$work/a13.yml" "  scanners:" "${ACC}  scanners:" \
   && expect ok "AC14 allowlist: artifact-acceptance (what scan.yml calls today that is not Release; PR 3 moves it) is accepted" "" callers "$work/a13.yml"
 mkdir -p "$work/a14"; cp "$work/a13.yml" "$work/a14/main-candidate-rescan.yml"
@@ -1547,11 +1548,18 @@ cla b2 "AC14 artifact-acceptance with contents: write" "      contents: read\n  
        "      contents: write\n      packages: read\n    uses: ./.github/workflows/stage-acceptance" "static ceiling"
 cla b3 "AC14 artifact-acceptance with an extra read grant (not exactly contents and packages read)" "      packages: read\n" \
        "      packages: read\n      issues: read\n" "exactly the permissions"
-cla b4 "AC14 artifact-acceptance with secrets: inherit" "stage-acceptance-artifacts.yml\n" \
-       "stage-acceptance-artifacts.yml\n    secrets: inherit\n" "keys outside"
-cla b5 "AC14 artifact-acceptance with a with: block (the inputs of the old Build do not exist)" "stage-acceptance-artifacts.yml\n" \
-       "stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist-snapshot\n" "keys outside"
-cla b6 "AC14 artifact-acceptance with an if" "stage-acceptance-artifacts.yml\n" "stage-acceptance-artifacts.yml\n    if: always()\n" "keys outside"
+cla b4 "AC14 artifact-acceptance with secrets: inherit" "    with:\n      dist-artifact: dist\n" \
+       "    secrets: inherit\n    with:\n      dist-artifact: dist\n" "keys outside"
+cla b5 "AC14 artifact-acceptance with the OLD artifact name (dist-snapshot)" "      dist-artifact: dist\n" \
+       "      dist-artifact: dist-snapshot\n" \
+       "must pass exactly"
+cla b5b "AC14 artifact-acceptance whose expected-checksums is the old checksums output" "needs.build.outputs.digests" \
+        "needs.build.outputs.checksums" "must pass exactly"
+cla b5c "AC14 artifact-acceptance with a third input" "      dist-artifact: dist\n" "      dist-artifact: dist\n      mode: snapshot\n" "must pass exactly"
+cla b5d "AC14 artifact-acceptance with one input only" "      dist-artifact: dist\n" "" "must pass exactly"
+cla b5e "AC14 artifact-acceptance with no with block" \
+        "    with:\n      dist-artifact: dist\n      expected-checksums: \${{ needs.build.outputs.digests }}\n" "" "must pass exactly"
+cla b6 "AC14 artifact-acceptance with an if" "    with:\n      dist-artifact: dist\n" "    if: always()\n    with:\n      dist-artifact: dist\n" "keys outside"
 cla b7 "AC14 artifact-acceptance that needs nothing" "  artifact-acceptance:\n    needs: build\n" "  artifact-acceptance:\n" "must need exactly build"
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
@@ -1604,7 +1612,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=546
+EXPECT=550
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

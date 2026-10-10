@@ -56,7 +56,8 @@ SNAPSHOT_TAG = "v" + SNAPSHOT_VERSION
 # (a pseudo-version) is refused. The snapshot apk script therefore makes a LOCAL lightweight tag at HEAD in the job's own checkout and never pushes it.
 # ADVISOR RULING (Oct 9): a v* tag that HEAD already carries in snapshot mode (scan.yml also runs on a push of a v* tag) is ACCEPTED: nothing is refused. But
 # Go stamps the HIGHEST semver tag at HEAD (probe: with v0.3.0 at HEAD, `git tag --force v0.0.0-rc.1 HEAD` still gives the stamp v0.3.0, and cache's
-# driver reads the buildinfo `mod` line and would refuse). So the script first DELETES every other local v* tag that points at HEAD (git tag -d in the job's own checkout;
+# driver reads the buildinfo `mod` line and would refuse). So the script first DELETES every other local v* tag that points at HEAD (git tag -d in the
+# job's own checkout;
 # nothing is pushed, fetched or restored, and no ref of the remote is touched), then makes v0.0.0-rc.1, then refuses, naming the tag, if HEAD still carries any
 # tag other than v0.0.0-rc.1 (a non-v* tag is not ours to delete). The real-Go proof is in bin/chain-snapshot-test.sh.
 SNAPSHOT_TAG_DELETE = ("for t in $(git tag --list 'v*' --points-at HEAD); do [ \"$t\" = %s ] || git tag -d \"$t\" > /dev/null; done" % SNAPSHOT_TAG)
@@ -596,6 +597,10 @@ NOT_IN_FILE = {"main-candidate-rescan.yml": ("rebuild", "artifact-acceptance")}
 # scan.yml (the PR gate keeps rule 31's two-assembly reproducibility check) also calls Rebuild in snapshot mode after Build; main-candidate-rescan.yml does not
 SNAPSHOT_REBUILD_PERMISSIONS = dict(PERM_PLAIN)
 ACCEPTANCE_PERMISSIONS = {"contents": "read", "packages": "read"}       # scan.yml's artifact-acceptance grants at origin/chain-v030
+# its two required inputs keep their names with NEW values (cache-3f, option b, approved by the advisor): the artifact is Build's `dist`, and the
+# checksums input becomes the one-line digests JSON (it was the raw checksums.txt text). stage-acceptance-artifacts.yml's handling of that form is
+# PR 3's change (Check absorbs it).
+ACCEPTANCE_WITH = {"dist-artifact": "dist", "expected-checksums": "${{ needs.build.outputs.digests }}"}
 
 
 def ceiling(job_name, perm):
@@ -665,9 +670,11 @@ def callers(path):
         bad += ceiling("artifact-acceptance", acceptance.get("permissions"))
         if needs_of(acceptance) != ["build"]:
             bad.append("job artifact-acceptance must need exactly build, got %s" % needs_of(acceptance))
-        if set(acceptance) - {"uses", "permissions", "needs"}:
-            extra = sorted(set(acceptance) - {"uses", "permissions", "needs"})
-            bad.append("job artifact-acceptance: keys outside {uses, permissions, needs} (no secrets, with, if): %s" % extra)
+        if acceptance.get("with") != ACCEPTANCE_WITH:
+            bad.append("job artifact-acceptance must pass exactly with: %s, got %s" % (ACCEPTANCE_WITH, acceptance.get("with")))
+        if set(acceptance) - {"uses", "permissions", "needs", "with"}:
+            extra = sorted(set(acceptance) - {"uses", "permissions", "needs", "with"})
+            bad.append("job artifact-acceptance: keys outside {uses, permissions, needs, with} (no secrets, no if): %s" % extra)
     return bad
 
 

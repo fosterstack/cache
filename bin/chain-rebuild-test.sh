@@ -96,7 +96,7 @@ for i in (items[0], items[7], items[-1]): two[i] = two[i][:-1] + ("0" if two[i][
 dump("act-diff3.json", two)
 x = dict(exp); x["unlisted-item"] = val("x"); dump("act-extra.json", x)
 dump("exp-extra.json", x); hx = hashlib.sha256(open(w + "/exp-extra.json", "rb").read()).hexdigest(); record("rec-extra.json", [subj(hx)])
-m = dict(exp); del m[items[3]]; hm = dump("exp-miss.json", m); record("rec-miss.json", [subj(hm)])
+m = dict(exp); del m[items[3]]; hm = dump("exp-miss.json", m); record("rec-miss.json", [subj(hm)]); record("rec-snap-miss.json", [subj(hm)], "snapshot-build")
 for k, v in {"upper": exp[items[0]].upper().replace("SHA256:", "sha256:"), "sha512": "sha512:" + "a" * 128, "short": "sha256:" + "a" * 63,
              "long": "sha256:" + "a" * 65, "num": 7, "null": None, "bare": "a" * 64, "ws": "sha256:" + "a" * 64 + "\n"}.items():
     a = dict(exp); a[items[0]] = v; dump("act-fmt-%s.json" % k, a)
@@ -213,6 +213,29 @@ if [ "$RC" = 0 ] && jq -e '.verdict == "identical"' "$W/verdict.json" > /dev/nul
 else
   bad "005-AC7 --snapshot with a record naming 0.0.0 products -> exit $RC: $(head -c 160 "$W/err" | tr '\n' ' ')"
 fi
+# a MISSING or UNEXPECTED item (agreed shape, Oct 9): the item stays in items_differing, the verdict is differs, the exit is 1; a missing image digest is null
+snap_run --snapshot rec-snap.json exp.json "act-miss-image-fips.json"
+if [ "$RC" = 1 ] && jq -e --arg ef "$(jq -r '."image-fips"' "$W/exp.json")" '.verdict == "differs" and .items_differing == ["image-fips"]
+      and .images[1] == {"image": "fips", "build_digest": $ef, "rebuild_digest": null, "equal": false} and .images[0].equal == true' \
+      "$W/verdict.json" > /dev/null 2>&1; then
+  ok "005-AC7 an image index missing on the Rebuild side: verdict differs, the fips row has rebuild_digest null and equal false, in items_differing, exit 1"
+else
+  bad "005-AC7 image-fips missing on the Rebuild side -> exit $RC: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
+fi
+snap_run --snapshot rec-snap.json exp.json "act-extra.json"
+if [ "$RC" = 1 ] && jq -e '.verdict == "differs" and .items_differing == ["unlisted-item"] and (.images | map(.equal) == [true, true])' \
+      "$W/verdict.json" > /dev/null 2>&1; then
+  ok "005-AC7 an item that is not on the committed list (Rebuild side): verdict differs, it is in items_differing, the image rows stay equal, exit 1"
+else
+  bad "005-AC7 an unexpected item -> exit $RC: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
+fi
+snap_run --snapshot rec-snap-miss.json exp-miss.json act.json
+if [ "$RC" = 1 ] && jq -e --arg i "$(echo $REQUIRED | cut -d' ' -f4)" '.verdict == "differs" and .items_differing == [$i]' \
+      "$W/verdict.json" > /dev/null 2>&1; then
+  ok "005-AC7 an item missing on the Build side: verdict differs, the item is in items_differing, exit 1"
+else
+  bad "005-AC7 an item missing on the Build side -> exit $RC: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
+fi
 snap_run --snapshot rec.json exp.json act.json
 if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: step: build$'; then
   ok "005-AC7 --snapshot refuses a release record named build (a snapshot compare never trusts a release record)"
@@ -249,7 +272,7 @@ mkdir "$W/clean";
 [ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
     "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad \
     "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
-TOTAL=$((pass + failn)); EXPECT=99
+TOTAL=$((pass + failn)); EXPECT=102
 echo "pass=$pass fail=$failn"
 if [ "$TOTAL" != "$EXPECT" ]; then echo "FAIL case count $TOTAL != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

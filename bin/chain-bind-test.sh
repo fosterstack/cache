@@ -290,6 +290,9 @@ check("items-apk: one changed byte outside the signature changes the apk and the
 rc, frag4, err = fragment_of(apk_tree("apk4", tag="v0.3.0-rc.1"))
 check("items-apk: a release candidate's apk (fscache-0.3.0_rc1-r0.apk, PROPOSED) is found by its variant",
       rc == 0 and frag4 == h.fragment("x86_64", "v0.3.0-rc.1"), "exit %s %s" % (rc, err[:120]))
+rc, frag4b, err = fragment_of(apk_tree("apk4b", tag="v0.0.0-rc.1"))
+check("items-apk: a SNAPSHOT build's apks (fscache-0.0.0_rc1-r0.apk and the fips one) are found and itemized (the 0.0.0 refusal is the verifiers')",
+      rc == 0 and frag4b == h.fragment("x86_64", "v0.0.0-rc.1"), "exit %s %s" % (rc, err[:120]))
 rc, frag5, err = fragment_of(apk_tree("apk5", edit=add_second_apk))
 check("items-apk: two standard apks in one directory are refused (exactly one per variant)",
       rc == 1 and err.startswith("refused at build"), "exit %s %s" % (rc, err[:100]))
@@ -367,6 +370,11 @@ refused("items-merge: the same architecture twice (aarch64 missing) is refused a
         do_merge(d, ["apk/ubuntu-24.04/items-apk.json"] * 2), "arch", "aarch64")
 d = merge_tree("m6b")
 refused("items-merge: one architecture only (aarch64 missing) is refused and named", d, do_merge(d, ["apk/ubuntu-24.04/items-apk.json"]), "arch", "aarch64")
+d = merge_tree("m8", "v0.0.0-rc.1")
+rc, out, err = do_merge(d, tag="v0.0.0-rc.1")
+check("items-merge: a snapshot build's files (version 0.0.0-rc.1, archives fscache_0.0.0-rc.1_linux_*) merge to the oracle's items",
+      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.0.0-rc.1"),
+      "exit %s %s" % (rc, err[:100]))
 d = merge_tree("m7", "v0.3.0-rc.1")
 rc, out, err = do_merge(d, tag="v0.3.0-rc.1")
 check("items-merge: a release candidate's files merge to the oracle's items (PROPOSED names)",
@@ -374,7 +382,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 49
+EXPECT = 51
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
