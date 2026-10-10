@@ -9,7 +9,8 @@ Design (installed once, on import, by test_0000_arm_fs_guard.py, the first modul
     chmod/chown/utime and shutil.* events whose path resolves outside the allowed roots.
   * CPython emits no audit event for stat/realpath/readlink, so os.stat, os.lstat, os.readlink, os.path.realpath,
     os.path.exists/isfile/isdir/islink/lexists/getsize are wrapped with the same check.
-  * Allowed roots, read/metadata/write (ROOTS): the temp dir, the repo, this directory, /dev/null and /dev/urandom.
+  * Allowed roots, read/metadata/write (ROOTS): the temp dir and the repo (this directory is inside it). Devices: /dev/null may be opened (also for
+    writing), /dev/urandom may be opened for reading; nothing else may be done to either.
   * META: the directories the interpreter names in every sysconfig scheme and its user base (coverage realpaths them at start-up):
     metadata of the directory itself only, never its contents. Also `<ancestor>/pyvenv.cfg` for every ancestor of an allowed root
     (coverage asks "is this module in a virtualenv?" at each level): metadata only, never open.
@@ -35,7 +36,8 @@ META = []    # directories the interpreter names (every sysconfig scheme, user b
 ENV = []     # the interpreter environment (venv, prefix, stdlib, site-packages): read and metadata only
 _busy = __import__('threading').local()
 _busy.on = False
-EXACT = {"/dev/null", "/dev/urandom"}          # the only device files a test may open (nothing needs /dev/zero or /dev/tty)
+EXACT = {"/dev/null", "/dev/urandom"}          # the only device files a test may open: /dev/null (also for writing) and /dev/urandom (reading only);
+                                               # nothing needs /dev/zero or /dev/tty, and no other operation (remove, rename, chmod, utime, truncate ...) on either
 
 
 THREAD_VIOLATIONS = []      # SystemPathAccess raised in a worker thread: threading.excepthook only prints it, so it is recorded and fails the run at exit
@@ -177,12 +179,22 @@ def _under_standard_temp(v):
 def _roots():
     own = {REPO, HERE}
     named = {tempfile.gettempdir()} | {os.environ.get(k, "") for k in ("COVERAGE_RCFILE", "TMPDIR")}
-    return sorted(_canon_set(own) | {v for v in _canon_set(named) if _under_standard_temp(v)})
+    # a root named by the environment must be under a standard temp parent AND must not be the home directory, `/` or a broad directory: the
+    # home check is independent of the parent check (HOME == TMPDIR == /tmp/h must not make the home directory writable)
+    return sorted(_canon_set(own) | {v for v in _canon_set(named, drop_broad=True) if _under_standard_temp(v)})
 
 
 def _env_roots():
     """The interpreter environment, read-only: sys.prefix and its siblings (a venv root holds pyvenv.cfg, bin/, lib/), the directory
-    two levels above sys.executable (where pyvenv.cfg lives), the stdlib and site-packages paths, and sys.path."""
+    two levels above sys.executable (where pyvenv.cfg lives), the stdlib and site-packages paths (all in _interpreter_dirs), and the sys.path
+    entries (and so PYTHONPATH) that are inside those or a standard temp parent; any other entry is at most METADATA (see _meta_roots)."""
+    base = _interpreter_dirs()
+    paths = {v for v in _canon_set({p for p in sys.path if p}, drop_broad=True) if _trusted_path(v, base)}
+    return sorted(base | paths)
+
+
+def _interpreter_dirs(with_user_site=True):
+    """The interpreter's own directories, computed from sys.prefix / sysconfig / site (not from the environment): the base of _env_roots()."""
     _busy.bypass = True
     try:
         real_exe = os.path.realpath(sys.executable)
@@ -193,40 +205,44 @@ def _env_roots():
     broad_ok = _canon_set(cand, drop_broad=True)
     precise = set(sysconfig.get_paths()[k] for k in ("stdlib", "platstdlib", "purelib", "platlib"))
     precise.update(site.getsitepackages())
-    try:
-        precise.add(site.getusersitepackages())
-    except Exception:
-        pass
-    base = broad_ok | _canon_set(precise, drop_broad=True)
-    # sys.path (and so PYTHONPATH) is environment-supplied: an entry is a root only when it is inside the interpreter's own
-    # prefix / stdlib / site directories (computed above from sysconfig, not from the environment) or a standard temp parent.
-    trusted = base                                   # (the checkout is already a root, read AND write)
-    paths = {v for v in _canon_set({p for p in sys.path if p}, drop_broad=True)
-             if any(v == r or v.startswith(r + "/") for r in trusted) or _under_standard_temp(v)}
-    return sorted(base | paths)
+    if with_user_site:
+        try:
+            precise.add(site.getusersitepackages())
+        except Exception:
+            pass
+    return broad_ok | _canon_set(precise, drop_broad=True)
+
+
+def _trusted_path(v, interp):
+    return any(v == r or v.startswith(r + "/") for r in interp) or _under_standard_temp(v)
 
 
 def _meta_roots():
     """Directories the interpreter itself names, which coverage (TreeMatcher/abs_file) realpaths at startup: every path of every
-    sysconfig scheme (scripts, include, data, ... for posix_prefix, posix_user ...) and the user base. Metadata of the directory only."""
+    sysconfig scheme (scripts, include, data, ... for posix_prefix, posix_user ...) and the stdlib zip beside the stdlib directory. Metadata
+    of the directory only. The user base / user site and every sys.path entry (coverage stats those too) count only when they are under the
+    interpreter's own directories or a standard temp parent, like the environment roots."""
     cand = set()
     for scheme in sysconfig.get_scheme_names():
         try:
             cand.update(sysconfig.get_paths(scheme).values())
         except Exception:
             pass
+    cand.add(os.path.join(os.path.dirname(sysconfig.get_paths()["stdlib"]), "python%d%d.zip" % sys.version_info[:2]))
+    out = _canon_set(cand)
+    interp = _interpreter_dirs(with_user_site=False)          # the user site is named by HOME, so it cannot vouch for itself
+    extra = set()
     for f in (site.getuserbase, site.getusersitepackages):
         try:
-            cand.add(f())
+            extra.add(f())
         except Exception:
             pass
-    # coverage stats EVERY sys.path entry (python312.zip, a PYTHONPATH directory ...) to describe it: metadata of the entry, never its contents
-    cand.update(p for p in sys.path if p and os.path.isabs(p))
-    return sorted(_canon_set(cand))                # metadata of a named directory is harmless, so nothing is dropped for breadth here
+    extra.update(p for p in sys.path if p and os.path.isabs(p))
+    return sorted(out | {v for v in _canon_set(extra) if _trusted_path(v, interp)})
 
 
 def _under(p, write=False):
-    if p in EXACT or any(p == r or p.startswith(r + "/") for r in ROOTS):
+    if (p in EXACT and not write) or any(p == r or p.startswith(r + "/") for r in ROOTS):
         return True
     return not write and any(p == r or p.startswith(r + "/") for r in ENV)
 
@@ -263,9 +279,19 @@ def _bytecode_cache(res):
 _PREEXISTING = set()        # (st_dev, st_ino) of every regular file / directory that was already open when install() ran
 
 
+def _open_fds():
+    """Every fd this process holds: /dev/fd (macOS, BSD) or /proc/self/fd (Linux) is enumerated; if neither can be listed, 0..4095 is probed."""
+    for d in ("/dev/fd", "/proc/self/fd"):
+        try:
+            return sorted(int(n) for n in os.listdir(d) if n.isdigit())
+        except OSError:
+            continue
+    return list(range(4096))
+
+
 def _snapshot_fds():
     import stat as _st
-    for fd in range(0, 64):
+    for fd in _open_fds():
         try:
             st = _real["fstat"](fd)
         except OSError:
@@ -325,6 +351,8 @@ def check(path, what="", nofollow=False, meta=False, write=False):
         _busy.on = False
     if write and ((_bytecode_cache(res) and what in _PYC_EVENTS) or (what == "os.mkdir" and os.path.basename(res) == "__pycache__")):
         write = False                      # the import system caches bytecode beside the module it just read
+    if res == "/dev/null" and what in ("open", "os.open"):
+        return                             # the only device a test may WRITE, and only by opening it; no other operation on either device
     if not _under(res, write) and not (meta and _ancestor(res)):
         raise SystemPathAccess("test touched a real system path (%s -> %s): %s" % (what, res, p))
 

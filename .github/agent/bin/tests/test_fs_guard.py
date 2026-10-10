@@ -2,7 +2,7 @@
 """REQ-AUD-019: tests must not touch real system paths. Importing this module (unittest discovery does, before any test runs) arms fs_guard
 for the whole run (the runtime guard covers whatever discovery actually runs, Go and Java included); the static scan is scoped: Python tests in
 full, every other (shell) test only for an absolute-target `ln -s` / `cp -s` and for creating files without a mktemp call."""
-import ast, contextlib, hashlib, os, re, shutil, subprocess, sys, tempfile, unittest
+import ast, contextlib, hashlib, os, re, shutil, site, subprocess, sys, sysconfig, tempfile, unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -328,7 +328,11 @@ def _strip_heredocs(text):
     while i < len(lines):
         line = lines[i]
         out.append(line)
-        m = _HEREDOC.search(re.sub(r"<<<", "", line))
+        code = re.sub(r"<<<", "", line)
+        code = re.sub(r"\$\(\([^)]*\)\)", "", code)                    # $(( 1 << x )) is arithmetic
+        code = re.sub(r"'[^']*'|\"[^\"]*\"", lambda q: q.group(0) if re.search(r"<<-?\s*$", code[:q.start()]) else "Q", code)     # quoted text, except a quoted delimiter
+        code = re.sub(r"(^|\s)#.*$", r"\1", code)                        # a comment
+        m = _HEREDOC.search(code)
         i += 1
         if m:
             while i < len(lines) and lines[i].strip() != m.group(2):
@@ -422,9 +426,9 @@ def _shell_segments(text):
                 i += 1; continue                                                 # `>|`
             flush(); i += 1; continue
         if c == ">":
-            m = re.match(r">{1,2}\|?\s*(&\S*|\(|/dev/null(?![\w/.-])|)", text[i:])
-            if m and (m.group(1).startswith("&") or m.group(1) == "(" or m.group(1).startswith("/dev/null")):
-                i += m.end(); continue                                           # >&2, >&1, >(proc subst), >/dev/null
+            m = re.match(r">{1,2}\|?\s*(&(?:\d+-?|-)(?![\w/.-])|\(|/dev/null(?![\w/.-]))", text[i:])
+            if m:
+                i += m.end(); continue                                           # >&2, >&1-, >&-, >(proc subst), >/dev/null; `>&word` is a file
             if text[i - 1:i] in ("<", "=") or nxt == "=":
                 i += 1; continue                                                  # `<>`, `=>`, `>=`: not a redirect
             redirect = True
@@ -469,7 +473,8 @@ def shell_file_creation(text):
             mk = True
         elif made:
             creators.append(ln)
-    tf = any(re.search(r"\btempfile\.(mkdtemp|mkstemp|TemporaryDirectory|NamedTemporaryFile|mktemp)\(", l) for l in lines if not l.lstrip().startswith("#"))
+    tf = any(re.search(r"\btempfile\.(mkdtemp|mkstemp|TemporaryDirectory|NamedTemporaryFile|mktemp)\(", re.sub(r"(^|\s)#.*$", "", l))
+             for l in lines if not l.lstrip().startswith("#"))                       # an inline comment does not credit
     return creators, mk, tf
 
 
@@ -739,6 +744,43 @@ class Rules(unittest.TestCase):
                 self.refused(G._hook, "os.rename", (T.p1("f"), T.p2(*p)))
             self.refused(G._hook, "os.rename", (T.p2("__pycache__", "m.pyc"), T.p2("__pycache__", "..", "evil.pth")))
             G.check(T.p2("__pycache__", "..", "f"), "open")                       # reading through it is still fine
+
+    def test_home_is_excluded_independently_of_the_temp_parent_and_sys_path_meta_roots_are_filtered(self):
+        with tempfile.TemporaryDirectory() as d:
+            real = os.path.realpath(d)
+            for env in ({"HOME": real, "TMPDIR": real}, {"HOME": real, "TMPDIR": real + "/"}, {"HOME": real, "TMPDIR": os.path.join(real, "..", os.path.basename(real))}):
+                with mock.patch.dict(os.environ, env), mock.patch.object(tempfile, "gettempdir", lambda: real):
+                    self.assertNotIn(real, G._roots(), env)                    # a HOME that is also the temp dir does not become writable
+            with mock.patch.dict(os.environ, {"HOME": "/nonexistent-home", "TMPDIR": real}):
+                self.assertIn(real, G._roots())
+            sub = os.path.join(real, "sub"); os.mkdir(sub)
+            with mock.patch.dict(os.environ, {"HOME": real, "TMPDIR": sub}), mock.patch.object(tempfile, "gettempdir", lambda: sub):
+                self.assertIn(sub, G._roots())                                  # a directory UNDER the home directory is fine
+        with mock.patch.object(sys, "path", ["/etc", "/usr/local/lib/evil", "/srv/pp", "/tmp/zz-meta"]):
+            meta = G._meta_roots()
+        for bad in ("/etc", "/usr/local/lib/evil", "/srv/pp"):
+            self.assertNotIn(bad, meta, bad)                                    # a sys.path entry that is not under the interpreter dirs or a temp parent
+        self.assertIn("/tmp/zz-meta", meta)
+        zipf = os.path.join(os.path.dirname(sysconfig.get_paths()["stdlib"]), "python%d%d.zip" % sys.version_info[:2])
+        self.assertIn(os.path.normpath(zipf), G._meta_roots())                  # the stdlib zip beside the stdlib directory (coverage stats it)
+        for scheme in sysconfig.get_scheme_names():                             # every sysconfig scheme path stays (coverage realpaths them)
+            for p in sysconfig.get_paths(scheme).values():
+                self.assertIn(os.path.normpath(p), G._meta_roots(), p)
+        with mock.patch.object(site, "getuserbase", lambda: "/srv/userbase"), mock.patch.object(site, "getusersitepackages", lambda: "/srv/userbase/lib/site"):
+            meta = G._meta_roots()
+        self.assertNotIn("/srv/userbase", meta); self.assertNotIn("/srv/userbase/lib/site", meta)
+
+    def test_every_fd_open_before_the_guard_is_exempt_not_just_the_first_64(self):
+        code = ("import os, sys\n"
+                "import resource\nsoft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)\nresource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 4096) if hard > 0 else 4096, hard))\n"
+                "fd = os.open(%r, os.O_RDONLY)\nfor n in (20, 100, 300, 1500): os.dup2(fd, n)\nos.close(fd)\n"
+                "sys.path.insert(0, %r); import fs_guard as G; G.install()\nnew = os.open(%r, os.O_RDONLY)\n"
+                "G.ROOTS = ['/nonexistent-root']; G.ENV = []; G.META = []\n"
+                "for n in (20, 100, 300, 1500): os.fstat(n)\nprint('pre-armed ok')\n"
+                "try:\n    os.fstat(new); print('NOT REFUSED')\nexcept G.SystemPathAccess:\n    print('new refused')\n"
+                % (os.path.join(G.HERE, "fs_guard.py"), G.HERE, os.path.join(G.HERE, "test_fs_guard.py")))
+        out = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual((out.returncode, out.stdout.split("\n")[:2]), (0, ["pre-armed ok", "new refused"]), out.stderr[-400:])
 
     def test_neither_the_root_nor_a_broad_directory_becomes_a_root(self):
         self.assertNotIn("/", G._canon_set(["/", "/usr"]))
@@ -1097,7 +1139,20 @@ class AuditRows(unittest.TestCase):
         open(os.devnull).close(); open("/dev/urandom", "rb").read(1)
         with open("/dev/null", "w") as fh:
             fh.write("x")
-
+        # /dev/urandom is READ-ONLY and neither device can be removed, renamed, chmod-ed, utime-d or truncated
+        for mode in ("w", "wb", "a", "r+", "x"):
+            self.refused(open, "/dev/urandom", mode)
+        for ev, args in (("os.remove", ("/dev/null", -1)), ("os.remove", ("/dev/urandom", -1)), ("os.rename", ("/dev/null", "/dev/nullx", -1, -1)),
+                         ("os.rename", ("/dev/urandom", "/dev/u", -1, -1)), ("os.chmod", ("/dev/null", 0o600, -1)), ("os.chmod", ("/dev/urandom", 0o600, -1)),
+                         ("os.utime", ("/dev/null", None, None, -1)), ("os.utime", ("/dev/urandom", None, None, -1)), ("os.truncate", ("/dev/null", 0)),
+                         ("os.truncate", ("/dev/urandom", 0)), ("os.chown", ("/dev/null", -1, -1, -1)), ("os.rmdir", ("/dev/null", -1)), ("os.mkdir", ("/dev/null", 0o777, -1)),
+                         ("os.symlink", ("t", "/dev/null", -1)), ("os.link", ("/dev/null", "/dev/x", -1, -1)), ("shutil.copyfile", ("/dev/null", "/dev/urandom")),
+                         ("shutil.move", ("/dev/null", "/dev/x")), ("os.chflags", ("/dev/null", 0)), ("shutil.rmtree", ("/dev/urandom",))):
+            self.refused(G._hook, ev, args)
+        G._hook("open", ("/dev/null", "w", 0)); G._hook("open", ("/dev/null", "rb", 0)); G._hook("open", ("/dev/urandom", "rb", 0)); G._hook("open", ("/dev/null", None, os.O_WRONLY))
+        self.refused(G._hook, "open", ("/dev/urandom", "wb", 0)); self.refused(G._hook, "open", ("/dev/urandom", None, os.O_RDWR))
+        os.stat("/dev/null"); os.stat("/dev/urandom"); os.path.exists("/dev/null")
+        self.refused(os.stat, "/dev/null/x"); self.refused(open, "/dev/null/x", "w"); self.refused(open, "/dev/nullx")
     def test_unix_sockets_and_sqlite_extensions_are_judged_and_unknown_events_fail_closed(self):
         import pathlib, socket, sqlite3
         T = Tables(self)
@@ -1385,16 +1440,18 @@ class AuditRows(unittest.TestCase):
             got = G._env_roots()
         for bad in ("/usr/local/bin", "/etc", "/usr/local/lib/evil", "/private/etc"):
             self.assertNotIn(bad, got, bad)
-        with mock.patch.object(sys, "path", ["/usr/local/bin", "/etc", "/usr/lib/python312.zip"]):
+        with mock.patch.object(sys, "path", ["/usr/local/evil-bin", "/etc", "/tmp/zz-syspath", os.path.dirname(sysconfig.get_paths()["stdlib"]) + "/lib-extra"]):
             meta = G._meta_roots()
-        for p in ("/usr/local/bin", "/etc", "/usr/lib/python312.zip"):
-            self.assertIn(p, meta)                                    # coverage stats each sys.path entry: METADATA only (never ENV or ROOTS)
+        for p in ("/usr/local/evil-bin", "/etc"):
+            self.assertNotIn(p, meta)                                 # a sys.path entry outside the interpreter's dirs and the temp parents is not even METADATA
+        self.assertIn("/tmp/zz-syspath", meta)                        # one under a standard temp parent is (coverage stats every sys.path entry)
+        for p in ("/usr/local/bin", "/etc"):
             self.assertNotIn(p, got)
         # PYTHONPATH reaches the guard only through sys.path: a real interpreter started with PYTHONPATH=/etc does not make /etc a root
         out = subprocess.run([sys.executable, "-W", "ignore", "-c", "import sys; sys.path.insert(0, %r); import fs_guard as G; G.install(); "
                               "print('/etc' in G.ENV, '/etc' in G.ROOTS, '/etc' in G.META)" % G.HERE], env=dict(os.environ, PYTHONPATH="/etc", RUNNER_TEMP="/etc"),
                              capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        self.assertEqual(out.stdout.strip(), "False False True", out.stderr[-300:])     # /etc is only METADATA (coverage stats each sys.path entry)
+        self.assertEqual(out.stdout.strip(), "False False False", out.stderr[-300:])    # /etc is nothing at all: PYTHONPATH cannot name a root or even a metadata entry
 
     def test_a_pyc_named_link_to_a_module_is_judged_on_the_resolved_path(self):
         T = Tables(self)
@@ -1524,13 +1581,20 @@ class Scope(unittest.TestCase):
                     "echo '$(mktemp -d)'\ntouch f", "cat <<'EOF'\n$(mktemp -d)\nEOF\ntouch f", "d=mktemp\ntouch $d/f", "touch f #$(mktemp -d)", "touch f # mktemp -d",
                     "echo \"mktemp\"; touch f", "x='mktemp'; touch f", "touch f\ncat <<EOF\nmktemp -d\nEOF",
                     "echo mktemp\ntouch f", "echo a mktemp b; mkdir d", "# tempfile.mkdtemp()\ntouch f", "cat <<< word\ntouch f", "echo a#b; touch f", "echo ${#a}; touch f",
-                    "/bin/mkdir d", "/usr/bin/touch f", "command /bin/cp a b", "sudo -E /bin/mv a b"]
+                    "/bin/mkdir d", "/usr/bin/touch f", "command /bin/cp a b", "sudo -E /bin/mv a b",
+                    # the heredoc opener is not recognised inside a comment, double quotes, single quotes or $(( )): the commands after it are code
+                    "# cat <<EOF\ntouch f", "echo \"<<EOF\"\ntouch f", "echo '<<EOF'\ntouch f", "echo $((1<<EOF))\ntouch f", "x=1 # <<EOF\nmkdir d",
+                    # `>&word` is a file redirect; only >&N / >&- are descriptors
+                    "echo hi >&out", "echo hi >&out.txt", "echo hi 2>&logfile", "echo hi >>&out",
+                    # an inline comment does not credit tempfile
+                    "touch f # tempfile.mkdtemp(", "touch f  # python -c 'tempfile.mkdtemp()'", "x = 1  # tempfile.mkstemp(\ntouch f"]
         for text in creators:
             self.assertTrue(makes_files_without_temp(text + "\n"), text)
         clean = ["w=$(mktemp -d)\nmkdir -p \"$w/out\"", "w=`mktemp -d`\ntouch \"$w/f\"", "w=$(mktemp)\necho hi > \"$w\"", "w=\"$(mktemp -d)\"; mkdir \"$w/x\"", "mktemp -d >/dev/null\ntouch f",
                  "echo hi >&2\ncmd >/dev/null 2>&1\n[ $a -gt 3 ]\nif [ $a -gt 3 ]; then echo ok; fi", "echo hi\n", "python3 -c 'import tempfile; tempfile.mkdtemp()'\ntouch f",
                  "x=$((a>b))\necho $x", "cat <<'EOF'\ntouch f > out\nEOF\necho done", "echo \"touch f\"; echo 'mkdir d'", "# touch f\n# mkdir d", "echo hi | grep x", "cmd 2>&1 | head",
-                 "cmd > /dev/null", "cmd &>/dev/null", "diff <(echo a) <(echo b)", "a=$(echo hi)", "[[ $a == b ]] && echo yes", "git status", "sed s/a/b/ f", "dd if=a of=/dev/null"]
+                 "cmd > /dev/null", "cmd &>/dev/null", "echo hi >&2", "echo hi >&-", "echo hi 2>&1", "echo hi >&10", "echo hi 2>&-", "diff <(echo a) <(echo b)",
+                 "cat <<EOF\ntouch f\nEOF\necho done", "cat <<-EOF\n\ttouch f\n\tEOF\necho done", "x=$(cat <<'EOF'\nmkdir d\nEOF\n)", "touch f\nx = 1  # tempfile.mkdtemp(\nw=$(mktemp -d)", "a=$(echo hi)", "[[ $a == b ]] && echo yes", "git status", "sed s/a/b/ f", "dd if=a of=/dev/null"]
         for text in clean:
             self.assertFalse(makes_files_without_temp(text + "\n"), text)
         # the failure names the first offending line (AC3: "naming the file and line")
