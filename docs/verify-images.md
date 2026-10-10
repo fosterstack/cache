@@ -318,7 +318,7 @@ The release metadata — `release-manifest.json` and the three VEX files
 (OpenVEX, CSAF, Inspector filters) — is covered the same way by its own
 list, `release-files.sha256`, signed by the same promotion workflow.
 
-`release-files.sha256` applies from the release after v0.2.2; the files of earlier releases are covered through the signed manifest's hashes (the manifest is signed as an attestation on each image digest and records the sha256 of each VEX file). <!-- pinned: historical -->
+`release-files.sha256` applies from the release after v0.2.2; for earlier releases, check the files against the signed manifest's hashes (see "Verifying the release manifest" in section 2b). <!-- pinned: historical -->
 
 ```sh
 base="https://github.com/fosterstack/cache/releases/download/v${VER}"
