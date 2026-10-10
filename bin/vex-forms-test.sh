@@ -311,6 +311,7 @@ REL_NAMES = ["release-manifest.json", "fosterstack-cache.openvex.json", "fosters
 DRAFT = "/tmp/release-files-draft"
 DL_PATTERNS = ["release-files.sha256", "release-files.sha256.bundle", "release-manifest.json", "fosterstack-cache.openvex.json",
                '"fosterstack-cache-${ver}.csaf.json"', '"fosterstack-cache-${ver}.inspector-filters.json"']
+TAG_CHECK = r'''[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::unexpected release tag" >&2; exit 1; }'''
 GOOD_ID = "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v9.9.9"
 STUB_COSIGN = r'''#!/usr/bin/env bash
 # test stub: a "bundle" binds the blob's sha256 to the signer identity; verify-blob checks both and the issuer
@@ -439,6 +440,11 @@ def rel_judge(steps):
         bad.append("the draft's six assets are not downloaded by exact name after every upload: %s" % [ul[i] for i in dls])
     if ("mkdir %s" % DRAFT) not in ul:
         bad.append("the draft download directory is not created fresh (mkdir without -p)")
+    raw = [l.strip() for l in (steps[up]["run"] if up is not None else "").splitlines()]
+    if want_dl not in raw:
+        bad.append("the draft download is not one physical line")
+    elif TAG_CHECK not in raw or raw.index(TAG_CHECK) != raw.index(want_dl) - 1 or ("mkdir %s" % DRAFT) not in raw[:raw.index(TAG_CHECK)]:
+        bad.append("the release-tag check is not the line just before the draft download (after its mkdir)")
     ps = at(PUBLISHED)
     if ps is None or undraft is None or ps < undraft:
         bad.append("no anonymous check of the PUBLISHED release-files after the undraft step: %s" % ((undraft, ps),))
@@ -586,6 +592,19 @@ def rel_behaviour(steps):
         got_stage = rel_pipeline(steps, **kw)
         if got_stage != want_stage:
             bad.append("%s: stops at %s, want %s" % (name, got_stage, want_stage))
+    # an unexpected tag stops the upload step at the tag check: the draft is never downloaded
+    for tag in ("v1.2", "main", "v1.2.3-beta", "v1.2.3\n"):
+        c6, env6 = rel_case()
+        r6 = rel_run(c6, env6, steps[at("create the draft release")]["run"], GITHUB_REF_NAME=tag)
+        g6 = open(env6["STUB_CALLS"] + ".gh").read().splitlines() if os.path.exists(env6["STUB_CALLS"] + ".gh") else []
+        if r6.returncode == 0 or any(l.split()[2:3] == ["download"] for l in g6):
+            bad.append("an unexpected tag %r does not stop the step before the draft is downloaded" % tag)
+    for tag in ("v1.2.3", "v10.20.30-rc.4"):
+        c7, env7 = rel_case()
+        g7 = env7["STUB_CALLS"] + ".gh"
+        rel_run(c7, env7, steps[at("create the draft release")]["run"], GITHUB_REF_NAME=tag)
+        if not os.path.exists(g7) or not any(l.split()[2:3] == ["download"] for l in open(g7).read().splitlines()):
+            bad.append("a release tag %r does not reach the draft download" % tag)
     # a missing public asset is retried a bounded number of times (6), then the step fails
     c5, env5 = rel_case()
     urls5 = env5["STUB_URLS"]
@@ -686,6 +705,7 @@ MUTANTS = [
     ("the published check verifies the draft copies", mut_run(is_pub, "\ncosign verify-blob", "\npub=/tmp/release-files-draft\ncosign verify-blob")),
     ("the published check retries without bound", mut_run(is_pub, "for _ in 1 2 3 4 5 6; do", "while :; do")),
     ("the published download takes its host from a variable", m_pub_host_var),
+    ("tag check dropped", mut_run(is_up, TAG_CHECK + "\n", "")),
     ("the published download without a time bound", mut_run(is_pub, " --connect-timeout 20 --max-time 120", "")),
     ("the published check with a token", m_pub_token),
     ("the published check verifies a loose identity", mut_run(is_pub, '--certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"',

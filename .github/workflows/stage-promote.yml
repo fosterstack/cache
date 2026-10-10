@@ -337,9 +337,8 @@ jobs:
           # REQ-REL-001-AC3: fetch back what the DRAFT release stores (this step's token; the release is not public
           # yet), so the anonymous check below runs on the uploaded bytes, not on the local files. Exact names only.
           mkdir /tmp/release-files-draft
-          gh release download "$ver" --repo "$GITHUB_REPOSITORY" -D /tmp/release-files-draft \
-            -p release-files.sha256 -p release-files.sha256.bundle -p release-manifest.json \
-            -p fosterstack-cache.openvex.json -p "fosterstack-cache-${ver}.csaf.json" -p "fosterstack-cache-${ver}.inspector-filters.json"
+          [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::unexpected release tag" >&2; exit 1; }
+          gh release download "$ver" --repo "$GITHUB_REPOSITORY" -D /tmp/release-files-draft -p release-files.sha256 -p release-files.sha256.bundle -p release-manifest.json -p fosterstack-cache.openvex.json -p "fosterstack-cache-${ver}.csaf.json" -p "fosterstack-cache-${ver}.inspector-filters.json"
           for f in release-files.sha256 release-files.sha256.bundle release-manifest.json fosterstack-cache.openvex.json \
                    "fosterstack-cache-${ver}.csaf.json" "fosterstack-cache-${ver}.inspector-filters.json"; do
             [ -f "/tmp/release-files-draft/$f" ] || { echo "::error::the draft release does not hold ${f}" >&2; exit 1; }
