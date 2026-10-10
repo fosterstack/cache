@@ -10,9 +10,7 @@ import (
 
 func clearEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"FSCACHE_ADDR", "FSCACHE_DATA_DIR", "FSCACHE_MAX_BYTES",
-		"FSCACHE_MAX_BODY_BYTES", "FSCACHE_USERNAME", "FSCACHE_PASSWORD",
-		"FSCACHE_RO_USERNAME", "FSCACHE_RO_PASSWORD"} {
+	for _, k := range knownEnv {
 		t.Setenv(k, "")
 	}
 }
