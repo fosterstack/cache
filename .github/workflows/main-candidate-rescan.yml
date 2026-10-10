@@ -559,7 +559,8 @@ jobs:
               # Enumerate ASSETS first, so an absent manifest is told from a FAILED read of one that is present (F13).
               # The current release without a manifest is an ERROR: the one release we cover must never silently drop out.
               has_manifest=$(gh release view "$current" --json assets \
-                --jq '[.assets[] | select(.name == "release-manifest.json")] | length')
+                --jq '[.assets[] | select(.name == "release-manifest.json")] | length') \
+                || { echo "::error::could not read the assets of release ${current} (gh release view failed) - refusing to rescan nothing" >&2; exit 1; }
               if [ "$has_manifest" -eq 0 ]; then
                 echo "::error::the current release ${current} has no release-manifest.json asset and is not in the legacy inventory - refusing to rescan nothing" >&2
                 exit 1
@@ -569,7 +570,7 @@ jobs:
                 echo "::error::release-manifest.json is present on ${current} but could not be downloaded - refusing to drop it from the rescan" >&2
                 exit 1
               fi
-              jq empty "/tmp/m-${tag}.json" 2>/dev/null \
+              jq -e 'type == "object"' "/tmp/m-${tag}.json" >/dev/null 2>&1 \
                 || { echo "::error::release-manifest.json on ${current} is not valid JSON" >&2; exit 1; }
               imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
               [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${current} lists no images" >&2; exit 1; }
@@ -586,7 +587,6 @@ jobs:
           TARGET_SHAPE='all(.[]; (.release | test("^v[0-9]+[.][0-9]+[.][0-9]+(-rc[.][0-9]+)?$")) and (.variant | test("^[a-z0-9][a-z0-9-]{0,31}$")) and (.digest | test("^sha256:[0-9a-f]{64}$")) and (.scanner | test("^[a-z0-9][a-z0-9-]{0,31}$")))'
           jq -e "$TARGET_SHAPE" <<<"$targets" > /dev/null \
             || { echo "::error::a rescan target has a malformed release, variant, digest or scanner - refusing to emit the matrix" >&2; exit 1; }
-          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           n=$(jq 'length' <<<"$targets")
           # No published release is a quiet day, not a failed one: an empty matrix and any=false skip the rescan job.
           # A current release with no targets (empty legacy images, no scanners, no manifest images) is NOT a quiet day: fail closed.
@@ -595,10 +595,12 @@ jobs:
               echo "::error::current release ${current} produced no rescan targets" >&2
               exit 1
             fi
+            echo "targets=${targets}" >> "$GITHUB_OUTPUT"
             echo "any=false" >> "$GITHUB_OUTPUT"
             echo "no published release: the rescan matrix is empty"
             exit 0
           fi
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           echo "any=true" >> "$GITHUB_OUTPUT"
           echo "rescanning ${n} (release, variant, scanner) targets"
 

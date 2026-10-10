@@ -29,13 +29,16 @@ echo "$*" >> "$FIX/calls.log"
 case "$1 $2" in
   "release list")
     [ ! -e "$FIX/list-fails" ] || { echo "HTTP 502" >&2; exit 1; }
+    [ ! -e "$FIX/list-raw" ] || { cat "$FIX/list-raw"; exit 0; }
     lim=100000; a=("$@"); for i in "${!a[@]}"; do [ "${a[$i]}" = "--limit" ] && lim=${a[$((i+1))]}; done
     jq -c ".[:$lim]" "$FIX/list.json" ;;
   "release view")
+    [ ! -e "$FIX/view-fails" ] || { echo "HTTP 502" >&2; exit 1; }
     tag=$3; [ -e "$FIX/view-$tag.json" ] || { echo "release not found" >&2; exit 1; }
     jq -r "$(printf '%s\n' "$@" | sed -n '/^--jq$/{n;p;}')" "$FIX/view-$tag.json" ;;
   "release download")
     tag=$3; out=""; while [ $# -gt 0 ]; do [ "$1" = "-O" ] && out=$2; shift; done
+    [ ! -e "$FIX/dl-fails" ] || { echo "HTTP 502" >&2; exit 1; }
     [ -e "$FIX/m-$tag.json" ] || exit 1
     cp "$FIX/m-$tag.json" "$out" ;;
   *) echo "unexpected gh call: $*" >&2; exit 9 ;;
@@ -195,6 +198,30 @@ for how in 'a missing digest|del(.images[0].digest)' 'a newline in the variant|.
   if [ "$rc" -ne 0 ] && ! grep -q 'targets=' "$work/out" && ! grep -q 'any=' "$work/out" && grep -q 'malformed' <<<"$msg"; then ok "shape guard: ${how%%|*} fails before any output is written"
   else bad "shape guard: ${how%%|*}" "rc=$rc out=$(head -c 120 "$work/out") msg=${msg:0:200}"; fi
 done
+
+# 17. every operational failure on the current release fails closed: exit 1, a NAMED error, and NOTHING written to GITHUB_OUTPUT
+nothing_out() { ! grep -qE '^(targets|any)=' "$work/out"; }
+CURL='[{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false}]'
+chk() { # <name> <expected message fragment>
+  if [ "$rc" -eq 1 ] && nothing_out && grep -qF "$2" <<<"$msg"; then ok "fail closed: $1"
+  else bad "fail closed: $1" "rc=$rc out=$(head -c 100 "$work/out") msg=${msg:0:200}"; fi
+}
+setup "$CURL" v0.2.2; echo '{"message":"API rate limit exceeded"}' > "$FIX/list-raw"; run
+chk "a non-array release list response" 'did not return a JSON array'
+setup "$CURL" v0.2.2; touch "$FIX/view-fails"; run
+chk "a failed gh release view" 'could not read the assets of release v0.2.2'
+setup "$CURL" v0.2.2; touch "$FIX/dl-fails"; run
+chk "a failed manifest download" 'could not be downloaded'
+setup "$CURL" v0.2.2; printf 'not json {' > "$FIX/m-v0.2.2.json"; run
+chk "an invalid manifest (not JSON)" 'is not valid JSON'
+setup "$CURL" v0.2.2; : > "$FIX/m-v0.2.2.json"; run
+chk "an empty (unreadable) manifest" 'is not valid JSON'
+setup "$CURL" v0.2.2; echo '{"images":[]}' > "$FIX/m-v0.2.2.json"; run
+chk "a manifest with no images" 'lists no images'
+setup "$CURL"; jq '.releases += [{"version":"v0.2.2","images":[]}]' "$root/.github/policy/legacy-releases.json" > "$work/repo/.github/policy/legacy-releases.json"; run
+chk "zero targets for the current release (legacy images:[])" 'produced no rescan targets'
+setup "$CURL" v0.2.2; echo '{"scanners":[]}' > "$work/repo/.github/policy/scanners.json"; run
+chk "zero targets for the current release (scanners=[])" 'produced no rescan targets'
 
 echo "passed: $pass failed: $failn"
 [ "$failn" -eq 0 ]

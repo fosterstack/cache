@@ -71,10 +71,11 @@ and published as a release asset. VEX is the single source of truth: any
 tool-specific ignore must cite the statement that governs it and may never
 stand alone. No statement, no exception, no push.
 
-The current release's images are also rescanned daily — currently at CRITICAL and
-HIGH severity, which is softer than the release gate — so a CVE disclosed
-against bytes we already shipped raises a tracked issue rather than waiting
-for someone to look.
+The current release's images are also rescanned daily at every severity the
+scanners report (critical through low, and unknown), with the published VEX
+statements as the only exception, so a CVE disclosed against bytes we already
+shipped raises a tracked issue (or a new comment on the open one for that image
+and scanner) rather than waiting for someone to look.
 
 ## Approved-only cryptography
 
