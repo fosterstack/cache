@@ -690,8 +690,20 @@ class Substitute0350(unittest.TestCase):
         for clock in (X0350, "2026-10-17T05:00:01Z", "2026-10-18T00:00:00Z"):
             ps = problems(rec0350(), subs=text, now=clock)
             self.assertTrue(named(ps, "opus substitute 0350 expired at 2026-10-17T05:00:00Z"), (clock, ps))
-        ps = problems(rec0350(completed=X0350), subs=text, now=ONE_BEFORE_X0350)     # completed_at at the expiry
-        self.assertTrue(named(ps, "completed_at"), ps)
+
+    def test_0350_each_time_rule_is_judged_on_its_own(self):
+        text = real_subs_text()
+        after = "2026-10-17T05:00:01Z"
+        # completed_at AT the expiry, the clock AFTER both: the "future" rule cannot fire
+        self.assertEqual(problems(rec0350(completed=X0350), subs=text, now=after), [
+            "opus substitute 0350 expired at 2026-10-17T05:00:00Z (the gate's clock is 2026-10-17T05:00:01Z)",
+            "final round completed_at 2026-10-17T05:00:00Z is not before substitute 0350 expiry 2026-10-17T05:00:00Z"])
+        # completed_at one second BEFORE the expiry, the clock AT the expiry: only the clock rule fires
+        self.assertEqual(problems(rec0350(completed=ONE_BEFORE_X0350), subs=text, now=X0350), [
+            "opus substitute 0350 expired at 2026-10-17T05:00:00Z (the gate's clock is 2026-10-17T05:00:00Z)"])
+        # both before the expiry, completed_at one second after the clock: only the "future" rule fires
+        self.assertEqual(problems(rec0350(completed=ONE_BEFORE_X0350), subs=text, now="2026-10-17T04:59:58Z"), [
+            "final round completed_at 2026-10-17T04:59:59Z is in the future of the gate's clock"])
 
     def test_0350_after_expiry_rejected_by_the_system_clock_function(self):
         text = real_subs_text()
