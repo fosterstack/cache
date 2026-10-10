@@ -1016,7 +1016,8 @@ jobs:
 # runs-on finding and never a silent choice of shell. case_out also asserts WHICH finding was printed, and every tree commits
 # plain stub scripts for the commands the fixtures call, so the runs-on rule is the only thing that can turn an accepted case.
 # case_out <name> <ok|bad> <workflow text> <regex the output must match, or ''> [regex it must NOT match] [setup commands]
-# For a bad case that expects a runs-on finding, exactly ONE runs-on line may be printed (the rule reports a job once).
+# IMPLICIT RULE: a bad case whose <must match> regex mentions runs-on is also held to exactly ONE finding line with `.runs-on: ` in it
+# (the rule reports a job once); a case that must NOT print a runs-on finding says so in its <must NOT match> regex instead.
 pm_run=0
 case_out() {
   local name=$1 expect=$2 d="$work/$1" out got n
@@ -1171,6 +1172,8 @@ case_out pm-block-scalar-label   bad "$(mx "$M" "$(printf '    strategy:\n      
 case_out pm-greek-upsilon-label  bad "$(mx "$M" "$(st '[υbuntu-24.04]')")" 'runs-on'
 case_out pm-en-dash-label        bad "$(mx "$M" "$(st '[ubuntu–24.04]')")" 'runs-on'
 case_out pm-cyrillic-o-label     bad "$(mx "$M" "$(st '[ubuntu-24.О4]')")" 'runs-on'
+case_out pm-tag-binary-label     bad "$(mx "$M" "$(st '[!!binary ubuntu-24.04]')")" 'runs-on'
+case_out pm-tag-unknown-label    bad "$(mx "$M" "$(st '[!x ubuntu-24.04]')")" 'runs-on'
 case_out pm-nested-list          bad "$(mx "$M" "$(st '[[ubuntu-24.04]]')")" 'runs-on'
 case_out pm-non-string-label     bad "$(mx "$M" "$(st '[24.04]')")" 'runs-on'
 case_out pm-empty-list           bad "$(mx "$M" "$(st '[]')")" 'runs-on'
@@ -1186,10 +1189,15 @@ case_out pm-second-expression    bad "$(mx '${{ matrix.runner }}${{ inputs.x }}'
 case_out pm-second-expr-spaced   bad "$(mx '${{ matrix.runner }} ${{ vars.R }}' "$(st "$BOTH")")" 'runs-on'
 case_out pm-block-scalar-runs-on bad "$(mx "$(printf '|\n      ${{ matrix.runner }}')" "$(st "$BOTH")")" 'runs-on'
 case_out pm-folded-runs-on       bad "$(mx "$(printf '>\n      ${{ matrix.runner }}')" "$(st "$BOTH")")" 'runs-on'
+case_out pm-matrix-index         bad "$(mx '${{ matrix.runner[0] }}' "$(st "$BOTH")")" 'runs-on'
+case_out pm-matrix-property      bad "$(mx '${{ matrix.runner.name }}' "$(st "$BOTH")")" 'runs-on'
 case_out pm-no-spaces            bad "$(mx '${{matrix.runner}}' "$(st "$BOTH")")" 'runs-on'
 # the strategy block: only matrix (and a literal true/false fail-fast) beside it
 case_out pm-fail-fast-capital    bad "$(mx "$M" "$(printf '    strategy:\n      fail-fast: True\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
 case_out pm-fail-fast-expression bad "$(mx "$M" "$(printf '    strategy:\n      fail-fast: ${{ inputs.f }}\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
+case_out pm-strategy-no-matrix   bad "$(mx "$M" "$(printf '    strategy:\n      fail-fast: true\n')")" 'runs-on'
+case_out pm-matrix-given-twice   bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
+case_out pm-matrix-twice-last-bad bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n      matrix:\n        runner: [macos-14]\n')")" 'runs-on'
 case_out pm-extra-strategy-key   bad "$(mx "$M" "$(printf '    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
 # a second `strategy` key (YAML keeps the last): here the LAST one is the invalid one, so a reader that takes the first is fooled
 case_out pm-second-strategy-key  bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
@@ -1205,7 +1213,7 @@ jobs:
   b:
     runs-on: \${{ matrix.runner }}
     steps:
-      - run: true" 'jobs.b.runs-on'
+      - run: true" 'jobs\.b\.runs-on'
 case_out pm-workflow-level       bad "on: push
 strategy:
   matrix:
@@ -1240,7 +1248,9 @@ jobs:
       - run: true'
 case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on' "printf '$OTHER_OK' > .github/other.yml"
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
-PM_EXPECT=61
+OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
+case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
+PM_EXPECT=69
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
