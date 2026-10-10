@@ -574,6 +574,8 @@ class LiteralRunnerMatrix(unittest.TestCase):
             "a function": "    runs-on: ${{ format(matrix.runner) }}\n" + self.MATRIX,
             "a default": "    runs-on: ${{ matrix.runner || 'ubuntu-24.04' }}\n" + self.MATRIX,
             "an index": "    runs-on: ${{ matrix['runner'] }}\n" + self.MATRIX,
+            "an array index": "    runs-on: ${{ matrix.runner[0] }}\n" + self.MATRIX,
+            "a property of the label": "    runs-on: ${{ matrix.runner.name }}\n" + self.MATRIX,
             "no spaces inside the braces": "    runs-on: ${{matrix.runner}}\n" + self.MATRIX,
             "a key that does not exist": "    runs-on: ${{ matrix.runnr }}\n" + self.MATRIX,
             "a list holding the expression": '    runs-on: ["${{ matrix.runner }}"]\n' + self.MATRIX,
@@ -614,6 +616,8 @@ class LiteralRunnerMatrix(unittest.TestCase):
             "a Greek upsilon for u": "        runner: [\u03c5buntu-24.04]\n",
             "an en dash for the hyphen": "        runner: [ubuntu\u201324.04]\n",
             "a Cyrillic O for the zero": "        runner: [ubuntu-24.\u041e4]\n",
+            "an explicit binary tag": "        runner: [!!binary ubuntu-24.04]\n",
+            "an unknown explicit tag": "        runner: [!x ubuntu-24.04]\n",
             "a nested list": "        runner: [[ubuntu-24.04]]\n",
             "a mapping as a label": "        runner: [{name: ubuntu-24.04}]\n",
             "a number": "        runner: [24.04]\n",
@@ -634,6 +638,11 @@ class LiteralRunnerMatrix(unittest.TestCase):
             "fail-fast as an expression": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: ${{ inputs.f }}\n      matrix:\n        runner: [ubuntu-24.04]\n",
             "fail-fast as a capital True": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: True\n      matrix:\n        runner: [ubuntu-24.04]\n",
             "fail-fast as yes": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: yes\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "a strategy with no matrix key": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: true\n",
+            "matrix given twice (both valid)": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                               "      matrix:\n        runner: [ubuntu-24.04]\n",
+            "matrix given twice (the last invalid)": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                                     "      matrix:\n        runner: [macos-14]\n",
             # YAML keeps the last of two `strategy` keys: here the last is the invalid one, so a reader that takes the first is fooled
             "a second strategy key": "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
                                      "    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n",
@@ -646,7 +655,7 @@ class LiteralRunnerMatrix(unittest.TestCase):
                                   "        runner: [ubuntu-24.04]\n    steps:\n      - run: true\n"
                                   "  b:\n    runs-on: ${{ matrix.runner }}\n    steps:\n      - run: true\n")
         self.assertNotEqual(code, 0, out)
-        self.assertIn("jobs.b.runs-on", out)
+        self.assertRegex(out, r"jobs\.b\.runs-on")
 
     def test_a_matrix_defined_at_the_workflow_level_does_not_count(self):
         code, out = self.findings("on: push\nstrategy:\n  matrix:\n    runner: [ubuntu-24.04]\njobs:\n  a:\n"
@@ -677,6 +686,10 @@ class LiteralRunnerMatrix(unittest.TestCase):
         self.assertEqual(code, 0, out)       # a valid matrix reads as bash there too
         code, out = self.findings(plain, {".github/other.yml": other % ("${{ inputs.runner }}", "")})
         self.assertNotEqual(code, 0, out)    # an unresolved runner there only makes its steps read as pwsh
+        self.assertRegex(out, r"other\.yml.*a `pwsh` step")
+        self.assertNotIn("runs-on", out)
+        code, out = self.findings(plain, {".github/other.yml": other % ("${{ matrix.runner }}", "    strategy:\n      matrix:\n        runner: [windows-2022]\n")})
+        self.assertNotEqual(code, 0, out)    # a Windows label there: the steps read as pwsh, still no runs-on finding
         self.assertRegex(out, r"other\.yml.*a `pwsh` step")
         self.assertNotIn("runs-on", out)
 
