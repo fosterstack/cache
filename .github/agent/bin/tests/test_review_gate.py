@@ -656,7 +656,7 @@ def rec0350(completed=D0350, tree=TREE, **over):
 class Substitute0350(unittest.TestCase):
     """REQ-AUD-018-AC4: entry 0350 of the REAL reviews/substitutes.json, judged by the gate as shipped."""
 
-    def test_the_real_file_pins_entry_0350_field_by_field(self):
+    def test_the_real_file_pins_0350_field_by_field_and_holds_exactly_three_unique_ids(self):
         text = real_subs_text()
         doc = json.loads(text)
         self.assertEqual(doc["schema"], "review-substitutes/v1")
@@ -679,12 +679,12 @@ class Substitute0350(unittest.TestCase):
         self.assertIn('"owner_quote": %s' % json.dumps(Q0350), text)      # byte for byte in the raw file too
         self.assertEqual(text, json.dumps(doc, indent=2) + "\n")         # the file keeps its formatting
 
-    def test_0350_accepted_before_expiry_for_a_change_outside_the_enforcement_set(self):
+    def test_0350_accepted_before_expiry_when_no_enforcement_file_is_edited(self):
         text = real_subs_text()
         self.assertEqual(problems(rec0350(), subs=text, now="2026-10-16T13:00:00Z"), [])
         self.assertEqual(problems(rec0350(), subs=text, now="2026-10-16T13:00:00Z", pr=999), [])   # scope all: any PR
 
-    def test_0350_one_second_before_expiry_accepted_and_at_expiry_rejected_naming_it(self):
+    def test_0350_accepted_one_second_before_expiry_and_rejected_at_and_after_it_naming_it(self):
         text = real_subs_text()
         self.assertEqual(problems(rec0350(completed="2026-10-17T04:59:58Z"), subs=text, now=ONE_BEFORE_X0350), [])
         for clock in (X0350, "2026-10-17T05:00:01Z", "2026-10-18T00:00:00Z"):
@@ -705,14 +705,14 @@ class Substitute0350(unittest.TestCase):
         self.assertEqual(problems(rec0350(completed=ONE_BEFORE_X0350), subs=text, now="2026-10-17T04:59:58Z"), [
             "final round completed_at 2026-10-17T04:59:59Z is in the future of the gate's clock"])
 
-    def test_0350_after_expiry_rejected_by_the_system_clock_function(self):
+    def test_0350_with_no_now_argument_is_judged_by_the_system_clock_function(self):
         text = real_subs_text()
         with mock.patch.object(G, "_utcnow", return_value=dt(ONE_BEFORE_X0350)):
             self.assertEqual(G.record_problems(rec0350(), TREE, subs=text), [])
         with mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
             self.assertTrue(named(G.record_problems(rec0350(), TREE, subs=text), "expired at 2026-10-17T05:00:00Z"))
 
-    def test_a_scope_other_than_all_or_pr_n_without_pr_fails(self):
+    def test_a_pr_n_scope_without_pr_and_an_invalid_scope_both_fail_naming_it(self):
         for scope in ("pr:1", "pr:350"):
             o = json.loads(real_subs_text()); o["substitutes"][2]["scope"] = scope
             self.assertTrue(named(problems(rec0350(), subs=json.dumps(o), now=D0350), "needs --pr"), scope)
@@ -720,7 +720,7 @@ class Substitute0350(unittest.TestCase):
             o = json.loads(real_subs_text()); o["substitutes"][2]["scope"] = scope
             self.assertTrue(named(problems(rec0350(), subs=json.dumps(o), now=D0350), "scope"), scope)
 
-    def test_a_copy_without_an_owner_quote_is_rejected_naming_it(self):
+    def test_a_copy_with_an_empty_blank_null_or_missing_owner_quote_is_rejected_naming_it(self):
         for q in ("", "   ", None, ...):
             o = json.loads(real_subs_text()); e = o["substitutes"][2]
             if q is ...:
@@ -743,7 +743,7 @@ class Substitute0350(unittest.TestCase):
         self.assertIn("final round has no sonnet review", ps)
         self.assertIn("opus substitute_for is 'sonnet', want 'codex'", ps)
 
-    def test_the_gate_clock_ignores_environment_and_options(self):
+    def test_gate_now_tz_and_faketime_do_not_move_the_in_process_gate_clock(self):
         text = real_subs_text()
         with mock.patch.dict(os.environ, {"GATE_NOW": D0350, "TZ": "Pacific/Kiritimati", "FAKETIME": "@2026-10-16 00:00:00"}), \
                 mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
@@ -751,7 +751,8 @@ class Substitute0350(unittest.TestCase):
 
 
 class Substitute0350Cli(unittest.TestCase):
-    """The gate's CLI on a temporary repository whose TRUSTED (base) revision carries the REAL substitutes.json."""
+    """The gate's CLI on a temporary repository whose first commit carries the REAL substitutes.json bytes; some tests
+    then move the base or main's tip (passed as --subs-rev) to show which revision supplies the allow-list."""
     git, write, run_main = Cli.git, Cli.write, Cli.run_main
     SUBPATH = SubstituteCli.SUBPATH
     touch = SubstituteCli.touch
@@ -786,7 +787,7 @@ class Substitute0350Cli(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertIn("clears the stop rule", out)
 
-    def test_one_second_before_clears_and_the_expiry_instant_fails_naming_it(self):
+    def test_one_second_before_clears_and_the_expiry_instant_and_after_fail_naming_it(self):
         self.propose(completed="2026-10-17T04:59:58Z")
         with mock.patch.object(G, "_utcnow", return_value=dt(ONE_BEFORE_X0350)):
             self.assertEqual(self.judge()[0], 0)
@@ -796,7 +797,7 @@ class Substitute0350Cli(unittest.TestCase):
             self.assertEqual(rc, 1, clock)
             self.assertIn("0350 expired at 2026-10-17T05:00:00Z", out)
 
-    def test_no_option_moves_the_clock(self):
+    def test_the_now_clock_time_and_as_of_options_do_not_move_the_clock(self):
         self.propose()
         with mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
             for opt in (("--now", D0350), ("--clock", D0350), ("--time", D0350), ("--as-of", D0350)):
@@ -826,7 +827,7 @@ class Substitute0350Cli(unittest.TestCase):
         rc, out, _ = self.judge()
         self.assertEqual(rc, 0, out)
 
-    def test_any_enforcement_file_edit_is_never_cleared_by_0350(self):
+    def test_each_listed_enforcement_file_edit_is_not_cleared_by_0350(self):
         for path in SubstituteCli.ENFORCEMENT + ("bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
                                                  ".github/agent/fixtures/testlib/new.py"):
             with self.subTest(path=path):
@@ -856,7 +857,7 @@ class Substitute0350Cli(unittest.TestCase):
         self.assertEqual(self.git("diff", "--name-only", self.base, "HEAD", "--", self.SUBPATH), "")
         return tip
 
-    def test_the_pr_s_own_copy_is_never_trusted(self):
+    def test_with_subs_rev_the_head_s_copy_adding_0350_is_not_trusted(self):
         # the head's copy HAS 0350, the trusted copy (main's tip) does not: rejected, naming the missing entry
         tip = self.split_trusted_from_head(self.real, self.without_0350())
         rc, out, _ = self.judge("--subs-rev", tip)
@@ -864,13 +865,13 @@ class Substitute0350Cli(unittest.TestCase):
         self.assertIn("substitute_id '0350' names 0 entries of .github/agent/reviews/substitutes.json", out)
         self.assertNotIn("a substitute never applies", out)
 
-    def test_the_trusted_copy_decides_even_when_the_head_s_copy_lacks_the_entry(self):
+    def test_with_subs_rev_the_trusted_copy_with_0350_is_used_although_the_head_s_copy_lacks_it(self):
         # the converse: the head's copy LACKS 0350, the trusted copy has it: accepted
         tip = self.split_trusted_from_head(self.without_0350(), self.real)
         rc, out, _ = self.judge("--subs-rev", tip)
         self.assertEqual(rc, 0, out)
 
-    def test_the_environment_cannot_move_the_subprocess_gate_s_clock(self):
+    def test_gate_now_tz_and_faketime_do_not_move_the_subprocess_gate_s_clock(self):
         # a real subprocess on the system clock: the verdict follows the real UTC time, whatever the environment says
         self.clock.stop(); self.addCleanup(self.clock.start)
         now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
