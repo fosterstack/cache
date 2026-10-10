@@ -963,7 +963,7 @@ check bash "$here/pin-audit-test.sh"
 py "the fixtures record when they were read and from where" <<'PY'
 import glob
 d = root + "/.github/agent/fixtures/pin-audit-go-major"
-assert len(glob.glob(d + "/osv-*.json")) == 6 and len(glob.glob(d + "/ghsa-*.json")) == 6 and "2026-10-09" in open(d + "/README").read()
+assert len(glob.glob(d + "/osv-*.json")) == 6 and len(glob.glob(d + "/ghsa-*.json")) == 6 and "Read 2026-10-09" in open(root + "/.github/agent/tests/pin-audit-go-major-test.sh").read()
 PY
 
 echo "pass=$pass fail=$failn"
