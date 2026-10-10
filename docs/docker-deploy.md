@@ -96,9 +96,11 @@ It must be smaller than the volume. A value that looks like 20 GiB but is
 actually 20 MiB (`20971520`) produces constant eviction and a hit rate that
 never climbs — which reads like "the cache isn't helping" rather than a typo.
 `/statusz` shows the parsed cap next to current usage, which is the fastest way
-to catch it. The server evicts least-recently-used entries once it
-reaches the cap and never grows past it, so the headroom absorbs
-filesystem overhead and in-flight uploads rather than runaway growth.
+to catch it. The server stores an entry first and then evicts
+least-recently-used entries, so the store is kept at or under the cap after
+each store, and can briefly exceed it while a store is in flight. Leave
+headroom above the cap for filesystem overhead and for one in-flight store
+(at most `FSCACHE_MAX_BODY_BYTES`, 1 GiB by default, per concurrent upload).
 Leaving `FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small
 volume is the one configuration that will fill your disk.
 
