@@ -684,6 +684,8 @@ badcase g_subst 'bash bin/build-stage.sh $(echo x)' 'a command substitution argu
 badcase g_btick 'bash bin/build-stage.sh `echo x`' 'a backtick argument'
 badcase g_expr 'bash bin/build-stage.sh "${{ inputs.x }}"' 'an expression in the run text (args reach a script only through env:)'
 badcase g_noenv 'bash bin/build-stage.sh "$X"' 'a "$NAME" read of something that is not in the step env:'
+badcase g_ghref 'bash bin/build-stage.sh "$GITHUB_REF"' 'a "$GITHUB_REF" read the step does not declare in its env: (AC1: whole reads of the step'"'"'s OWN env only; Codex #249 r4 B3b)'
+badcase g_runtmp 'bash bin/build-stage.sh "${RUNNER_TEMP}"' 'a "${RUNNER_TEMP}" read the step does not declare in its env: (Codex #249 r4 B3b)'
 badcase g_cosign 'cosign sign --yes "$IMG"' 'a direct signing tool in a stage file'
 badcase g_gh 'gh release create v1' 'a direct gh call'
 badcase g_echo 'echo "a << b"' 'a quoted << string is just an unlisted command (nothing is swallowed)'
@@ -1495,7 +1497,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=337
+EXPECT=339
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
