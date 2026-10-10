@@ -30,8 +30,26 @@ import sys
 import tempfile
 
 # PyYAML is imported by the `actions` subcommand only (load_yaml): the Sign job installs cosign and nothing else (Codex security r1 S4)
-from chain_common import Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json  # noqa: E402  (next to this file)
-import chain_hostile  # noqa: E402
+import importlib.util
+
+
+def load_sibling(name):
+    """Load the helper module <name> from this directory by its path, never through sys.path (Opus #249 r4): the Sign job runs the
+    interpreter isolated (-I), so this directory is not on sys.path and no file here can stand in for a standard-library module. The
+    module is registered under its name, so the other helper's `from chain_common import` gets this same copy."""
+    if name in sys.modules:
+        return sys.modules[name]
+    spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + os.extsep + "py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_common = load_sibling("chain_common")
+Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json = (_common.Refuse, _common.b64d, _common.b64e, _common.load_json,
+                                                                      _common.parse_now, _common.refuse, _common.ssl, _common.strict_json)
+chain_hostile = load_sibling("chain_hostile")
 
 PROV = "https://slsa.dev/provenance/v1"
 COLL = "https://witness.testifysec.com/attestation-collection/v0.1"

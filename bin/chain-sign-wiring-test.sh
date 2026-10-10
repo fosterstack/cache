@@ -32,7 +32,9 @@
 #               id-token: write, which keyless signing needs; a << merge key in permissions or an unparsable workflow fails closed),
 #               build_config (.github/policy/build-config-files.json: the build configuration outside bin/ and .github/ pinned by sha256,
 #               and .goreleaser.yaml held to a closed key set), frozen_files (.github/policy/legacy-stage-files.json: the eleven legacy
-#               stage files PRs 2-4 rewrite, pinned by sha256; their own findings are left out, what they run is still followed).
+#               stage files PRs 2-4 rewrite, pinned by sha256; their own findings are left out; the LISTED scripts they run are still
+#               followed, an UNLISTED file they run is never scanned). stdlib_shadows refuses a file or directory under bin/ or .github/
+#               named after a standard-library module; the Sign step and every python3 line of a stage file run isolated (python3 -I).
 #               The real tree is an ordinary `expect ok`. STATED EXCLUSIONS: a command built at run time inside a listed script; a signer
 #               step added to a job already on the id-token list but missing from the signer table (review and the pin checker see it);
 #               keyed signing (outside the keyless model: Release accepts only a Fulcio certificate whose SAN is stage-sign.yml at the tag).
@@ -66,7 +68,7 @@ def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABL
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
-R_SIGN = r"python3 bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
+R_SIGN = r"python3 -I bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     d, text = load(path); bad = []
@@ -200,8 +202,9 @@ GORELEASER_KEYS = {"": {"version", "project_name", "before", "builds", "archives
                    "archives": {"formats", "id", "ids", "name_template"}, "checksum": {"name_template"}, "sboms": {"artifacts"},
                    "release": {"draft", "github"}, "changelog": {"filters", "sort"}}
 GORELEASER_HOOKS = ["go mod verify", "git diff --exit-code go.mod go.sum"]      # the only before.hooks
-GORELEASER_ENV = {"CGO_ENABLED=0", "GOFIPS140=v1.0.0"}                          # a build's env values (GOFLAGS=-toolexec=... would run a tool)
-GORELEASER_FLAGS = {"-trimpath"}                                                 # a build's flags (-toolexec would run a tool)
+# each build's env, flags and ldflags EXACTLY as today (GOFLAGS=-toolexec, -toolexec, or -linkmode=external -extld=... would run a tool)
+GORELEASER_BUILDS = {"fscache": {"env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "ldflags": ["-s -w"]},
+                     "fscache-fips": {"env": ["CGO_ENABLED=0", "GOFIPS140=v1.0.0"], "flags": ["-trimpath"], "ldflags": ["-s -w"]}}
 
 def build_config(base, bad):
     """Every build configuration file is listed with its sha256 in .github/policy/build-config-files.json; a changed, missing or unlisted
@@ -215,6 +218,20 @@ def build_config(base, bad):
         elif sha256_of(os.path.join(base, x)) != listed[x]: bad.append("AC1: build config file changed: %s: update build-config-files.json or delete it" % x)
     for x in sorted(set(listed) - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
     goreleaser_keys(base, bad)
+
+def stdlib_shadows(base, bad):
+    """No file or directory under bin/ or .github/ is named after a standard-library module (Opus #249 r4): Python puts a script's own
+    directory first on sys.path, so bin/json.py, bin/hashlib.pyc, bin/__pycache__/argparse.*.pyc or a bin/base64/ package would replace
+    that module for any script run from there without -I. The Sign job runs isolated (python3 -I); this is the second belt."""
+    names = set(sys.stdlib_module_names)
+    for top in ("bin", ".github"):
+        for dp, dirs, fs in os.walk(os.path.join(base, top)):
+            for x in sorted(dirs):
+                if x in names: bad.append("AC1: %s is a directory named after the standard-library module %s" % (os.path.relpath(os.path.join(dp, x), base), x))
+            for x in sorted(fs):
+                stem = x.split(".")[0]
+                if x.endswith((".py", ".pyc")) and stem in names:
+                    bad.append("AC1: %s is named after the standard-library module %s (it would shadow it)" % (os.path.relpath(os.path.join(dp, x), base), stem))
 
 def goreleaser_keys(base, bad):
     """.goreleaser.yaml (run with id-token: write by stage-build.yml's build job) holds only GORELEASER_KEYS, the two hooks, and build
@@ -234,8 +251,10 @@ def goreleaser_keys(base, bad):
             if not isinstance(e, dict): bad.append("AC1: .goreleaser.yaml %s entry is not a mapping" % sec); continue
             for k in sorted(set(e) - GORELEASER_KEYS[sec]): bad.append("AC1: .goreleaser.yaml %s has key `%s`, outside its closed key set" % (sec, k))
             if sec == "builds":
-                if not set(e.get("env") or []) <= GORELEASER_ENV: bad.append("AC1: .goreleaser.yaml build %s env %s is outside %s" % (e.get("id"), e.get("env"), sorted(GORELEASER_ENV)))
-                if not set(e.get("flags") or []) <= GORELEASER_FLAGS: bad.append("AC1: .goreleaser.yaml build %s flags %s are outside %s" % (e.get("id"), e.get("flags"), sorted(GORELEASER_FLAGS)))
+                want = GORELEASER_BUILDS.get(e.get("id"))
+                if want is None: bad.append("AC1: .goreleaser.yaml build id %r is not one of %s" % (e.get("id"), sorted(GORELEASER_BUILDS))); continue
+                for k in ("env", "flags", "ldflags"):
+                    if e.get(k) != want[k]: bad.append("AC1: .goreleaser.yaml build %s %s is %s, not exactly %s" % (e.get("id"), k, e.get(k), want[k]))
     if (d.get("before") or {}).get("hooks") != GORELEASER_HOOKS: bad.append("AC1: .goreleaser.yaml before.hooks are not exactly %s" % GORELEASER_HOOKS)
 
 def id_token_jobs(base, files, bad):
@@ -292,7 +311,7 @@ def listed_signers(base, bad):
     return allowed
 
 def direct_signers(base, files, frozen, allowed, bad):
-    """001-AC1: "no other workflow, composite action or .yaml file signs provenance" (each signing call matched by the signer table)."""
+    """001-AC1: "no other workflow, composite action ... signs provenance" (each workflow and composite action matched by the signer table)."""
     wfdir = os.path.join(base, ".github/workflows")
     acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
     for f in files + sorted(acts):
@@ -312,7 +331,7 @@ def stage_grammars(base, files, frozen, rows, envn, bad):
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
         e, r = _cts.stage_grammar(rel, d, rows, envn)
         if os.path.relpath(f, base) not in frozen: bad += ["AC1 grammar: " + x for x in e]
-        ran[rel] = set(r)                      # what a frozen file runs is still followed
+        ran[rel] = set(r)                      # the LISTED scripts a frozen file runs are still followed (unlisted ones are never scanned)
     return ran
 
 def listed_scripts(base, rows, ran, bad):
@@ -345,10 +364,11 @@ def judge_tree(base):
     bad = []
     wfdir = os.path.join(base, ".github/workflows")
     files = sorted(glob.glob(wfdir + "/*.yml") + glob.glob(wfdir + "/*.yaml"))
-    frozen = frozen_files(base, bad)          # their OWN findings are left out; what they run is still followed
+    frozen = frozen_files(base, bad)          # their OWN findings are left out; the listed scripts they run are still followed
     only_new_workflow(files, bad)
     direct_signers(base, files, frozen, listed_signers(base, bad), bad)
     build_config(base, bad)
+    stdlib_shadows(base, bad)
     id_token_jobs(base, files, bad)           # every workflow, frozen ones included (their jobs are listed)
     rows, errs, envn = _cts.load_scripts(base)
     bad += ["AC1: " + e for e in errs]
@@ -564,7 +584,9 @@ okcase() { d=$(mk "$1"); stage "$d" "$2"; expect ok "AC1 grammar: $3" tree "$d";
 badcase() { d=$(mk "$1"); stage "$d" "$2"; expect caught "AC1 grammar: $3" tree "$d"; }
 okcase g_ok1 $'set -euo pipefail\nbash bin/build-stage.sh apk' "set -euo pipefail then a listed script"
 okcase g_ok2 $'bash bin/build-stage.sh \\\n  --flag=1 \\\n  two' "a continued line with literal arguments"
-okcase g_ok3 $'python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its sign subcommand is a signer)"
+okcase g_ok3 $'python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its sign subcommand is a signer)"
+# Opus r4 B1: every python3 line of a stage file runs isolated (-I): stage jobs hold id-token: write
+badcase g_noI $'python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "python3 without -I in a stage file (a bin/<stdlib name>.py would shadow the standard library)"
 badcase g_var1 'bash "$S"' 'a variable as the script path (bash "$S")'
 badcase g_var2 '"$S"' 'a variable at command position ("$S")'
 badcase g_var3 '$S' 'a bare variable at command position ($S)'
@@ -1173,8 +1195,7 @@ probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
 probe comment  "legacy file changed" "a harmless comment added to a legacy file (it is then judged in full)" "printf '# a comment\n' >> .github/workflows/stage-verify.yml"
-# Opus r-frozen probes: a LISTED script that a frozen file runs turned into a provenance signer (its row and sha256 updated), and unlisted
-# scripts that frozen files run (only listed scripts were scanned before)
+# a LISTED script that a frozen file runs, turned into a provenance signer with its row and sha256 updated
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
 # Opus r4 B1 (second belt): a file in bin/ named after a standard-library module would shadow it for any script run from bin/ without -I
@@ -1183,9 +1204,6 @@ probe stdfrac   "bin/fractions.py" "a new bin/fractions.py that signs on import"
 probe stdpyc    "bin/hashlib.pyc" "a sourceless bin/hashlib.pyc" "printf '\\0\\0\\0\\0' > bin/hashlib.pyc"
 probe stdpkg    "bin/base64" "a package directory bin/base64/" "mkdir -p bin/base64; printf 'import os\n' > bin/base64/__init__.py"
 probe stdcache  "bin/__pycache__/argparse" "a cached bin/__pycache__/argparse.cpython-312.pyc" "mkdir -p bin/__pycache__; printf '\\0' > bin/__pycache__/argparse.cpython-312.pyc"
-# Opus r4 B1: any python3 run in a job that holds id-token: write runs isolated (-I)
-probe noisolate "without -I" "a python3 step without -I added to scorecard.yml's listed analysis job" \
-  "python3 -c 'p=\".github/workflows/scorecard.yml\";t=open(p).read();i=t.index(\"    steps:\n\")+len(\"    steps:\n\");t=t[:i]+\"      - run: python3 bin/check-workflow-permissions.py\n\"+t[i:];open(p,\"w\").write(t)'"
 probe extra    "not list exactly the eleven" "a twelfth path in the legacy list" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
 probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \

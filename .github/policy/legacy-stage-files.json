@@ -35,7 +35,7 @@
   },
   {
    "path": ".github/workflows/stage-promote.yml",
-   "sha256": "c20e7e35cd5800cc16a3ddfe27171eabf0490b9cf826a53142b0c90c4f4a940c"
+   "sha256": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393"
   },
   {
    "path": ".github/workflows/stage-reproducibility.yml",
