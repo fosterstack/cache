@@ -2053,7 +2053,10 @@ d=$(mk t_yaml); printf 'jobs:\n  b:\n    steps:\n      - run: cosign attest --pr
 expect caught "AC1 a .yaml workflow file is scanned too" tree "$d"
 d=$(mk t_comp); printf 'runs:\n  using: composite\n  steps:\n    - run: cosign sign "$IMG"\n      shell: bash\n' > "$d/.github/actions/x/action.yml"
 expect caught "AC1 a composite action is scanned too" tree "$d"
-expect caught "AC1 a global flag before the subcommand does not hide the signer (witness --log-level debug run -a slsa)" tree "$d"
+d=$(mk t_glob); printf 'jobs:\n  b:\n    steps:\n      - run: witness --log-level debug run -a slsa -- ./bin/build.sh\n' > "$d/.github/workflows/scan.yml"
+rc=0; out=$(judge tree "$d") || rc=$?          # caught for ITS reason: scan.yml's witness run signs provenance (Sonnet r7 R6: it had no fixture of its own)
+if [ "$rc" != 0 ] && grep -F -q "scan.yml signs provenance (witness run" <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1 a global flag before the subcommand does not hide the signer (witness --log-level debug run -a slsa) (caught: ${out:0:140})"
+else failn=$((failn + 1)); echo "FAIL AC1 a global flag before the subcommand: not caught for scan.yml's witness run: rc=$rc ${out:0:300}"; fi
 d=$(mk t_cflag); printf 'jobs:\n  b:\n    steps:\n      - run: cosign --verbose attest --yes --type slsaprovenance1 --predicate p.json "$IMG"\n' > "$d/.github/workflows/scan.yml"
 expect caught "AC1 cosign --verbose attest of SLSA provenance" tree "$d"
 d=$(mk t_aslsa); printf 'jobs:\n  b:\n    steps:\n      - run: witness run --step build -aslsa -- ./bin/build.sh\n' > "$d/.github/workflows/scan.yml"
@@ -2177,6 +2180,31 @@ probe extra    "not list exactly the eleven" "a twelfth path in the legacy list"
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
 probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"path\"]=\"bin/chain-verify.py\";json.dump(d,open(p,\"w\"))'"
+# a listed script names another program or script only exactly (Codex #249 r7 B3, the class closed): a script token must be the exact
+# listed path (a leading ./ aside), a command named by any path or through a launcher prefix is refused even when its row allows the name
+scriptcase s8_ok_exact ok "${S0}bash bin/install-scanner.sh x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'control: the exact listed path of a script in runs'
+scriptcase s8_ok_dot ok "${S0}bash ./bin/install-scanner.sh x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'control: the exact listed path with a leading ./'
+scriptcase s8_other caught "${S0}bash other/install-scanner.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'a script with the basename of a listed one in another directory (Codex #249 r7 B3a)'
+scriptcase s8_otherbin caught "${S0}bash ./other/bin/install-scanner.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'a script under another directory ending in bin/ with a listed basename'
+scriptcase s8_dotdot caught "${S0}bash bin/../bin/install-scanner.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'a listed path spelled with ..'
+scriptcase s8_sub caught "${S0}bash bin/sub/install-scanner.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'a listed basename in a subdirectory of bin/'
+scriptcase s8_bare caught "${S0}bash install-scanner.sh\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'a listed basename with no directory (bash resolves it in the working directory)'
+scriptcase s8_absbash caught "${S0}/bin/bash -c true\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'an absolute path to bash (Codex #249 r7 B3b)'
+scriptcase s8_abspy caught "${S0}/usr/bin/python3 -c pass\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'an absolute path to python3 (B3b)'
+scriptcase s8_relbash caught "${S0}x/bash -c true\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'a relative path to bash'
+scriptcase s8_envabs caught "${S0}/usr/bin/env python3 x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' '/usr/bin/env launching another program'
+scriptcase s8_env caught "${S0}env bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'env launching another program (env in tools)'
+scriptcase s8_exec caught "${S0}exec bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'exec launching another program (exec in tools)'
+scriptcase s8_command caught "${S0}command python3 x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'command launching another program (command in tools)'
+scriptcase s8_builtin caught "${S0}builtin exec bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'builtin launching another program'
+scriptcase s8_nohup caught "${S0}nohup bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'nohup launching another program'
+scriptcase s8_timeout caught "${S0}timeout 5 bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'timeout launching another program'
+scriptcase s8_xargs caught "${S0}printf x | xargs bash\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'xargs launching another program'
+scriptcase s8_sudo caught "${S0}sudo bash x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'sudo launching another program'
+probe othersc "other/install-scanner.sh" "the real bin/chain-hostile-step.sh with bash other/install-scanner.sh appended and its sha256 updated (Codex #249 r7 B3a)" \
+  "printf 'bash other/install-scanner.sh\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
+probe absbash  "/bin/bash" "the real bin/chain-hostile-step.sh with /bin/bash -c true appended and its sha256 updated (B3b)" \
+  "printf '/bin/bash -c true\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 probe missing  "legacy file missing: .github/workflows/stage-image.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-image.yml"
 # the legacy list can only SHRINK (advisor ruling, Oct 10): the suite pins each path AND its sha256, so a legacy file edited together with
 # its list hash, or a list entry given a new hash, is refused; a row is removed only together with its pinned entry here
@@ -2400,7 +2428,7 @@ open(sys.argv[1], "w").write(t)
 PY
 tg caught "$work/rel-noadm.yml" "R8 mutation: with admission removed from every needs list, the build-to-promotion jobs no longer reach admission and are caught"
 
-EXPECT=511
+EXPECT=532
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

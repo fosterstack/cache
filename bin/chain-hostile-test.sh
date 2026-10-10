@@ -303,6 +303,28 @@ printf 'error: cannot read attempts/read_sign_token.txt\n' > "$work/e_err.txt"; 
 xexpect refuse "hostile-row: exit 2 with an 'error:' first line writes no row (an attempt that never ran is not isolation)" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_err.txt" --out "$work/rows/x9.json"
 xexpect refuse "hostile-row: exit 2 with a 'usage:' message (argparse) writes no row" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_usage.txt" --out "$work/rows/x10.json"
 [ ! -e "$work/rows/x9.json" ] && [ ! -e "$work/rows/x10.json" ] && ok "hostile-row: neither failed call left a row file behind" || bad "hostile-row: a row file exists for an error"
+# (Codex #249 r7 B5, REQ-CHAIN-001-AC5) a refusal because the material was missing or unreadable never counts: hostile-row exits non-zero and
+# writes NO row, by the same word list the verdict uses (chain_hostile.MISSING / UNREAD, one list)
+n=0
+for reason in "record missing or unreadable: nonexistent" "cannot read attempts/x.json" "no such file or directory: attempts/x.json" "unreadable record" "attempts/x.json does not exist" "the record was not found" "permission denied: attempts/x.json" "Record MISSING"; do
+  n=$((n + 1)); printf 'refused at sign: %s\n' "$reason" > "$work/e_m$n.txt"; rm -f "$work/rows/m$n.json"
+  xexpect refuse "hostile-row: a refusal for missing or unreadable material ($reason) is an error" "missing" -- hostile-row --attempt mint_sign_cert --exit-code 1 --stderr "$work/e_m$n.txt" --out "$work/rows/m$n.json"
+  [ ! -e "$work/rows/m$n.json" ] && ok "hostile-row: no row file for ($reason)" || bad "hostile-row: a row file was written for ($reason)"
+done
+rm -f "$work/rows/m_nofile.json"; xexpect refuse "hostile-row: a missing stderr file is an error (exit 1)" "stderr" -- hostile-row --attempt mint_sign_cert --exit-code 1 --stderr "$work/no-such-stderr.txt" --out "$work/rows/m_nofile.json"
+[ ! -e "$work/rows/m_nofile.json" ] && ok "hostile-row: no row file for a missing stderr file (exit 1)" || bad "hostile-row: a row file was written for a missing stderr file"
+rm -f "$work/rows/m_nofile0.json"; xexpect refuse "hostile-row: a missing stderr file is an error even with exit 0" "stderr" -- hostile-row --attempt positive_control --exit-code 0 --stderr "$work/no-such-stderr.txt" --out "$work/rows/m_nofile0.json"
+[ ! -e "$work/rows/m_nofile0.json" ] && ok "hostile-row: no row file for a missing stderr file (exit 0)" || bad "hostile-row: a row file was written for a missing stderr file (exit 0)"
+: > "$work/e_m_empty.txt"; rm -f "$work/rows/m_empty.json"
+xexpect refuse "hostile-row: an empty stderr with exit 1 is an error" "stage" -- hostile-row --attempt mint_sign_cert --exit-code 1 --stderr "$work/e_m_empty.txt" --out "$work/rows/m_empty.json"
+[ ! -e "$work/rows/m_empty.json" ] && ok "hostile-row: no row file for an empty stderr" || bad "hostile-row: a row file was written for an empty stderr"
+printf 'refused at sign: identity \xff\xfe is not stage-sign.yml\n' > "$work/e_m_bin.txt"; rm -f "$work/rows/m_bin.json"
+xexpect refuse "hostile-row: a stderr that is not UTF-8 is an error" "utf-8" -- hostile-row --attempt mint_sign_cert --exit-code 1 --stderr "$work/e_m_bin.txt" --out "$work/rows/m_bin.json"
+[ ! -e "$work/rows/m_bin.json" ] && ok "hostile-row: no row file for a non-UTF-8 stderr" || bad "hostile-row: a row file was written for a non-UTF-8 stderr"
+printf 'refused at sign: identity stage-build.yml is not stage-sign.yml\n' > "$work/e_m_good.txt"; rm -f "$work/rows/m_good.json"
+xexpect ok "hostile-row: control: a genuine refusal still writes its row" - -- hostile-row --attempt mint_sign_cert --exit-code 1 --stderr "$work/e_m_good.txt" --out "$work/rows/m_good.json"
+[ -s "$work/rows/m_good.json" ] && ok "hostile-row: control: the genuine refusal's row file exists" || bad "hostile-row: control: no row for a genuine refusal"
+rm -f "$work"/rows/m*.json
 # ---- the wiring, by parsing the YAML and the script (not by grepping for substrings) ---------------------------------
 cat > "$work/wiring.py" <<'PY'
 import glob, os, re, sys, yaml
@@ -567,30 +589,30 @@ EOF
       cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py verify --stage sign --record attempts/$a.json --policy policy.json 2> err-$a.txt || rc=\$?
-          python3 bin/chain-verify.py hostile-row --attempt $a --exit-code "\$rc" --stderr err-$a.txt --out results/$a.json
+          python3 bin/chain-verify.py verify --stage sign --record attempts/$a.json --policy policy.json 2> /tmp/$a.err || rc=\$?
+          python3 bin/chain-verify.py hostile-row --attempt $a --exit-code "\$rc" --stderr /tmp/$a.err --out results/$a.json
 EOF
     done
     cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json 2> err-hand_sign_code.txt || rc=\$?
-          python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "\$rc" --stderr err-hand_sign_code.txt --out results/hand_sign_code.json
+          python3 bin/chain-verify.py check-build-record --digests attempts/hand_sign_code.json --build-record witness-build/build-collection.json --policy policy.json 2> /tmp/hand_sign_code.err || rc=\$?
+          python3 bin/chain-verify.py hostile-row --attempt hand_sign_code --exit-code "\$rc" --stderr /tmp/hand_sign_code.err --out results/hand_sign_code.json
 EOF
     for a in read_sign_token read_sign_key; do
       kind=token; extra=; [ "$a" = read_sign_key ] && { kind=key; extra=" --sign-record provenance/provenance.json"; }
       cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py hostile-material --kind $kind --file attempts/$a.txt$extra 2> err-$a.txt || rc=\$?
-          python3 bin/chain-verify.py hostile-row --attempt $a --exit-code "\$rc" --stderr err-$a.txt --out results/$a.json
+          python3 bin/chain-verify.py hostile-material --kind $kind --file attempts/$a.txt$extra 2> /tmp/$a.err || rc=\$?
+          python3 bin/chain-verify.py hostile-row --attempt $a --exit-code "\$rc" --stderr /tmp/$a.err --out results/$a.json
 EOF
     done
     cat <<EOF
       - run: |
           rc=0
-          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> err-positive_control.txt || rc=\$?
-          python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "\$rc" --stderr err-positive_control.txt --out results/positive_control.json
+          python3 bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json 2> /tmp/positive_control.err || rc=\$?
+          python3 bin/chain-verify.py hostile-row --attempt positive_control --exit-code "\$rc" --stderr /tmp/positive_control.err --out results/positive_control.json
       - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json
       - uses: actions/upload-artifact@$sha # v7
         with: {name: hostile-results, path: hostile-results.json}
@@ -600,6 +622,8 @@ EOF
     runs-on: ubuntu-24.04
     permissions: {contents: read}
     steps:
+      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
       - uses: actions/download-artifact@$sha # v8
         with: {name: hostile-results, path: hostile-results}
       - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
@@ -625,6 +649,38 @@ d=$(mk w_dupon); printf 'on: push\n' | cat - "$d/.github/workflows/stage-build.y
 d=$(mk w_nbsp); pymut "$d/.github/workflows/stage-build.yml" "run: bash bin/chain-hostile-step.sh" "run: bash bin/chain-hostile-step.sh"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the hostile step (str.strip() would drop it; bash keeps it in the path)" "$d"
 d=$(mk w_collectnbsp); pymut "$(rel "$d")" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"$'\u00a0'; wexpect caught "wiring: run line: a trailing NBSP after the collect step" "$d"
 d=$(mk w_collectcont); pymut "$(rel "$d")" "run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" 'run: "python3 bin/chain-verify.py hostile-collect results --out hostile-results.json\\\n"'; wexpect caught "wiring: run line: a trailing backslash-newline after the collect step" "$d"
+# (Codex #249 r7 B4, the class closed) every pinned line is matched EXACTLY: the stderr file is /tmp/<attempt>.err, and both hostile jobs are
+# closed step sequences (an extra step, or an action whose name merely contains checkout/download-artifact/upload-artifact, is refused)
+allmut() { python3 - "$1" "$2" "$3" <<'PY'
+import sys
+t = open(sys.argv[1]).read(); assert sys.argv[2] in t, "mutation target not found: " + sys.argv[2]
+open(sys.argv[1], "w").write(t.replace(sys.argv[2], sys.argv[3]))
+PY
+}
+for v in 'subst:/tmp/$(true)mint_sign_cert.err' 'backtick:/tmp/`true`mint_sign_cert.err' 'backslash:/tmp/mint\sign_cert.err' 'semicolon:/tmp/x;true;mint_sign_cert.err' 'var:/tmp/$X.err' 'other:/tmp/other.err' 'relative:mint_sign_cert.err' 'dotdot:/tmp/../tmp/mint_sign_cert.err'; do
+  d=$(mk "w_err_${v%%:*}"); allmut "$(rel "$d")" "/tmp/mint_sign_cert.err" "${v#*:}"
+  wexpect caught "wiring: the stderr file of mint_sign_cert is ${v#*:}, not exactly /tmp/mint_sign_cert.err (${v%%:*})" "$d"
+done
+d=$(mk w_err_space); allmut "$(rel "$d")" "/tmp/mint_sign_cert.err" "/tmp/a b.err"; wexpect caught "wiring: the stderr file of mint_sign_cert holds a space" "$d"
+d=$(mk w_verdict_extra); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json" "      - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
+      - run: echo after"; wexpect caught "wiring: an extra run step in the hostile-verdict job" "$d"
+d=$(mk w_verdict_pre); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json" "      - run: touch hostile-results/x
+      - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json"; wexpect caught "wiring: an extra run step before the verdict line" "$d"
+d=$(mk w_verdict_nocheckout); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-results, path: hostile-results}" "      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-results, path: hostile-results}"; wexpect caught "wiring: the hostile-verdict job has no checkout (its verifier is not the repository's)" "$d"
+d=$(mk w_verdict_twice); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json" "      - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
+      - run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json"; wexpect caught "wiring: the verdict line twice in the hostile-verdict job" "$d"
+d=$(mk w_verify_extrarun); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "      - run: echo extra
+      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"; wexpect caught "wiring: an extra run step in the hostile-verify job" "$d"
+d=$(mk w_verify_fakeco); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "      - uses: evil/actions/checkout-x@$sha
+        with: {persist-credentials: false}
+      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"; wexpect caught "wiring: an action whose name merely contains actions/checkout in the hostile-verify job" "$d"
+d=$(mk w_verify_upload2); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: other, path: attempts}
+      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"; wexpect caught "wiring: a second upload (another artifact) in the hostile-verify job" "$d"
 d=$(mk w_nogate); sed -i.bak 's/if: .*inputs.hostile.*/if: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step is not gated by inputs.hostile" "$d"
 d=$(mk w_noup); sed -i.bak 's/hostile-attempts/other/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
 d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
@@ -691,7 +747,7 @@ d=$(mk w_pinstage); pymut "$(rel "$d")" "--stage sign --record attempts/forge_pr
 d=$(mk w_pinrec); pymut "$(rel "$d")" "--record attempts/call_sign_from_other_workflow.json --policy" "--record attempts/forge_provenance.json --policy"; wexpect caught "wiring: the sixth case verifies another attempt's material (pinned --record)" "$d"
 d=$(mk w_pinpol); pymut "$(rel "$d")" "--stage sign --record attempts/mint_sign_cert.json --policy policy.json" "--stage sign --record attempts/mint_sign_cert.json --policy /dev/null"; wexpect caught "wiring: an attempt is verified against a different policy than the tag's" "$d"
 d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json" "--kind token --file attempts/read_sign_key.txt"; wexpect caught "wiring: the key attempt is judged with the token kind (pinned hostile-material)" "$d"
-d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr err-mint_sign_cert.txt" "--stderr other.txt"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
+d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr /tmp/mint_sign_cert.err" "--stderr /tmp/other.err"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
 d=$(mk w_other); python3 - "$(rel "$d")" <<'PY'
 import sys
 t = open(sys.argv[1]).read() + "  patch-notes:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: gh pr create\n"
@@ -839,7 +895,7 @@ for words in ("PR 2 (Build) lands on the integration branch chain-v030", "before
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
 PY
-EXPECT=159
+EXPECT=201
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

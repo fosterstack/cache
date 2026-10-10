@@ -744,6 +744,30 @@ for _k, _v in (("str", "x"), ("dict", {}), ("item_str", ["x"]), ("item_num", [5]
 for _k, _v in (("null", None), ("bool", True), ("str", "x"), ("num", 5)):
     SLSA_BAD["slsa_pred_" + _k] = _v
 # the smallest valid SLSA v1 record (control): buildType, externalParameters {}, builder.id, nothing else
+# (Codex #249 r7 B6, 001-AC4) every signed statement's subject list is checked at record-type time, provenance AND collection: a non-empty
+# list of objects, each with a non-empty string name and a non-empty digest object of lowercase algorithm names and string values; sha1, sha256
+# and sha512 values are lowercase hex of their length. Signed and logged, so only the subject check can refuse them.
+_G = {"name": "apk", "digest": {"sha256": "a" * 64}}
+SUBJ_BAD = {"absent": None, "null": "NULL", "num": 17, "dict": {}, "strlist": ["x"], "nodigest": [{"name": "x"}], "empty": [],
+            "noname": [{"digest": {"sha256": "a" * 64}}], "emptyname": [dict(_G, name="")], "numname": [dict(_G, name=5)],
+            "digestempty": [dict(_G, digest={})], "digestlist": [dict(_G, digest=["x"])], "digestnum": [dict(_G, digest={"sha256": 5})],
+            "digestnull": [dict(_G, digest={"sha256": None})], "short": [dict(_G, digest={"sha256": "a" * 63})], "long": [dict(_G, digest={"sha256": "a" * 65})],
+            "upper": [dict(_G, digest={"sha256": "A" * 64})], "nothex": [dict(_G, digest={"sha256": "g" * 64})], "sha1len": [dict(_G, digest={"sha1": "a" * 64})],
+            "sha512len": [dict(_G, digest={"sha512": "a" * 64})], "algupper": [dict(_G, digest={"SHA256": "a" * 64})], "algempty": [dict(_G, digest={"": "a" * 64})],
+            "second": [_G, {"name": "x"}]}
+def _subj_payload(pt, subj, st="v1", pred=None):
+    o = {"_type": STMT[st], "predicateType": pt, "predicate": pred if pred is not None else prov_predicate(pt, None)}
+    if subj is not None: o["subject"] = None if subj == "NULL" else subj
+    return json.dumps(o).encode()
+for _k, _v in SUBJ_BAD.items():
+    add("sign_subj_" + _k, STAGES["sign"], T, PROV, None, payload=_subj_payload(PROV, _v))
+    add("build_subj_" + _k, STAGES["build"], T, COLL, None, stmt="v0.1", payload=_subj_payload(COLL, _v, "v0.1", {"name": "build", "attestations": []}))
+add("sign_subj_ok", STAGES["sign"], T, PROV, None, payload=_subj_payload(PROV, [_G, {"name": "b", "digest": {"sha512": "b" * 128, "sha1": "c" * 40}}]))
+add("build_subj_ok", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_subj_payload(COLL, [{"name": "f", "digest": {"sha256": "a" * 64, "gitoid:sha1": "gitoid:blob:sha1:" + "b" * 40}}], "v0.1", {"name": "build", "attestations": []}))
+add("sign_type_v02", STAGES["sign"], T, PROV, None, payload=json.dumps({"_type": "https://in-toto.io/Statement/v0.2", "predicateType": PROV, "predicate": SLSA_OK, "subject": [_G]}).encode())
+add("sign_ptype_num", STAGES["sign"], T, PROV, None, payload=json.dumps({"_type": STMT["v1"], "predicateType": 5, "predicate": SLSA_OK, "subject": [_G]}).encode())
+dj("rekor-subj.json", {"entries": [entry(n, 400 + i) for i, n in enumerate(["sign_subj_" + k for k in sorted(SUBJ_BAD)] + ["sign_subj_ok", "sign_type_v02", "sign_ptype_num"])]})
+open(p("subj-bad.txt"), "w").write(" ".join(sorted(SUBJ_BAD)))
 add("sign_slsa_min", STAGES["sign"], T, PROV, D, predicate={"buildDefinition": {"buildType": "https://example.com/bt/v1", "externalParameters": {}},
                                                            "runDetails": {"builder": {"id": "https://example.com/builder"}}}, raw_predicate=True)
 for _i, (_nm, _pr) in enumerate(sorted(SLSA_BAD.items())):
@@ -1061,6 +1085,14 @@ expect_refuse "001-AC4 a Witness collection signed by Sign is refused (Sign sign
 expect_refuse "001-AC4 SLSA provenance v0.2 is not the allowed type" "predicate" verify $(V) --stage sign $(rec sign_prov_v0.2) $(R)
 # (Codex #249 r4 B4) the provenance must be a standard SLSA v1 record: a signed, logged statement of the right type whose predicate is {},
 # a list, or lacks buildDefinition (+ buildType, externalParameters) or runDetails.builder.id (a non-empty string) is refused at sign
+for _c in $(cat "$work/subj-bad.txt"); do
+  expect_refuse "001-AC4 a signed, logged provenance whose subject is malformed ($_c) is refused at sign, naming subject" "sign|subject" verify $(V) --stage sign $(rec sign_subj_$_c) $(R rekor-subj.json)
+  expect_refuse "001-AC4 a signed Witness collection whose subject is malformed ($_c) is refused at build, naming subject" "build|subject" verify $(V) --stage build $(rec build_subj_$_c)
+done
+expect_ok "001-AC4 control: a provenance with well-formed subjects (sha256, sha512, sha1) is accepted" verify $(V) --stage sign $(rec sign_subj_ok) $(R rekor-subj.json)
+expect_ok "001-AC4 control: a collection whose subject carries a gitoid digest beside sha256 is accepted" verify $(V) --stage build $(rec build_subj_ok)
+expect_refuse "001-AC4 a statement _type other than in-toto Statement v0.1 or v1 is refused (pinned)" "predicate|statement type" verify $(V) --stage sign $(rec sign_type_v02) $(R rekor-subj.json)
+expect_refuse "001-AC4 a predicateType that is not a string is refused (pinned)" "predicate" verify $(V) --stage sign $(rec sign_ptype_num) $(R rekor-subj.json)
 expect_ok "001-AC4 control: the smallest valid SLSA v1 record (buildType, externalParameters {}, builder.id) is accepted" verify $(V) --stage sign $(rec sign_slsa_min) $(R rekor-slsa.json)
 expect_ok "001-AC4 control: the genuine provenance fixture is accepted" verify $(V) --stage sign $(rec sign_prov) $(R)
 for _c in $(cat "$work/slsa-bad.txt"); do
@@ -1763,7 +1795,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=590
+EXPECT=640
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

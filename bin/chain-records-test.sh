@@ -187,8 +187,41 @@ d=$(mk cosshort); printf 'jobs:\n  c:\n    steps:\n      - run: cosign attest --
 expect ok "cosign attest --type slsaprovenance1 resolves to SLSA provenance v1 (already has a row)" "$d"
 d=$(mk cossign); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "cosign sign (an image signature) with no row fails" "$d"
+# (Codex #249 r7 B7, the class closed) a signing call whose type cannot be resolved fails closed BY NAME, even when the rows it would
+# need exist: an unresolved attestor list, type, datatype or argument is an explicit error, never an assumption
+uncase() { # uncase NAME 'run line' LABEL WORD [ok]: stage-verify.yml with that run line; caught and naming WORD (or ok)
+  local d; d=$(mk "$1"); printf 'jobs:\n  c:\n    steps:\n      - run: |\n          ATT=slsa\n          %s\n' "$2" > "$d/.github/workflows/stage-verify.yml"
+  if [ "${5:-}" = ok ]; then expect ok "$3" "$d"; else expect_named "$3" "$d" "$4"; fi; }
+uncase u_w_var 'witness run -a "$ATTESTOR" -- bin/task.sh' 'witness run -a "$ATTESTOR" with the ordinary rows present is refused (Codex #249 r7 B7)' 'unresolved attestor list'
+uncase u_w_bare 'witness run -a $ATT -- bin/task.sh' 'witness run -a $ATT (built on an earlier line) is refused' 'unresolved attestor list'
+uncase u_w_subst 'witness run -a $(cat f) -- bin/task.sh' 'witness run -a $(cat f) is refused' 'unresolved attestor list'
+uncase u_w_bt 'witness run -a `cat f` -- bin/task.sh' 'witness run -a `cat f` is refused' 'unresolved attestor list'
+uncase u_w_config 'witness run --config witness.yaml -- bin/task.sh' 'witness run --config FILE is refused' 'unresolved attestor list'
+uncase u_w_c 'witness run -c witness.yaml -- bin/task.sh' 'witness run -c FILE is refused' 'unresolved attestor list'
+uncase u_w_env 'WITNESS_ATTESTATIONS=slsa witness run -- bin/task.sh' 'witness run with its attestors in a WITNESS_ environment variable is refused' 'unresolved attestor list'
+uncase u_w_trail 'witness run -a product, -- bin/task.sh' 'witness run with a list that ends in a comma is refused' 'unresolved attestor list'
+uncase u_w_ok 'witness run -a product,material -- bin/task.sh' 'control: witness run with a literal non-provenance attestor list' '' ok
+uncase u_w_ok2 'witness run -a slsa -- bin/task.sh' 'control: witness run with a literal slsa attestor (the provenance row exists)' '' ok
+uncase u_c_url 'cosign attest --type https://x.example/$(cat t) --predicate p img' 'cosign attest --type URL with a substitution inside is refused' 'unresolved --type'
+uncase u_c_var 'cosign attest --type "$T" --predicate p img' 'cosign attest --type "$T" is refused' 'unresolved --type'
+uncase u_ws_var 'witness sign -t "$DT" -f p.json -o s.json' 'witness sign -t "$DT" is refused (already)' 'unresolved datatype'
+uncase u_ws_url 'witness sign -t https://x.example/$(cat t) -f p.json -o s.json' 'witness sign -t URL with a substitution inside is refused' 'unresolved datatype'
+uncase u_sb_var 'cosign sign-blob --yes "$F" --bundle b.json' 'cosign sign-blob of a variable blob is refused (its type cannot be known)' 'unresolved argument'
+uncase u_sb_subst 'cosign sign-blob --yes $(ls *.json) --bundle b.json' 'cosign sign-blob of a substitution is refused' 'unresolved argument'
+uncase u_sp_var 'sigstore sign "$F"' 'sigstore (python) sign of a variable blob is refused' 'unresolved argument'
+uncase u_aa_expr 'true' 'control-shaped: a plain run line' '' ok
 d=$(mk cossplit); printf 'jobs:\n  c:\n    steps:\n      - run: |\n          cos\\\n          ign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "cos<backslash-newline>ign sign (bash joins the lines with no space: cosign sign) is seen as cosign sign and has no row" "$d"
+# (Codex #249 r7 B8) composite actions and workflows ANYWHERE in the tree are scanned (one discovery routine shared with the wiring judge)
+for c in 'b8_binreview:bin/review/action.yaml' 'b8_upper:Sub/ACTION.YML' 'b8_root:action.yml' 'b8_actq:.github/actions/q/action.yml'; do
+  d=$(mk "${c%%:*}"); f="${c#*:}"; mkdir -p "$d/$(dirname "$f")"
+  printf 'runs:\n  using: composite\n  steps:\n    - run: cosign attest --type https://example.invalid/unlisted --predicate p img\n      shell: bash\n' > "$d/$f"
+  expect_named "a composite action at $f signing an unlisted type is caught by name (Codex #249 r7 B8)" "$d" "$f"
+done
+d=$(mk b8_wfout); mkdir -p "$d/tools/ci"; printf 'on: push\njobs:\n  x:\n    steps:\n      - run: cosign attest --type https://example.invalid/unlisted --predicate p img\n' > "$d/tools/ci/extra.yml"
+expect_named "a .yml with top-level jobs: outside .github/workflows signing an unlisted type is caught by name (B8)" "$d" "tools/ci/extra.yml"
+d=$(mk b8_plainyml); mkdir -p "$d/docs"; printf 'title: not a workflow\nsteps:\n  - cosign attest --type https://example.invalid/unlisted\n' > "$d/docs/notes.yml"
+expect ok "control: a .yml with neither jobs: nor runs: at the top is not a workflow (not scanned)" "$d"
 d=$(mk yaml); printf 'jobs:\n  c:\n    steps:\n      - run: witness sign -f policy.json -o policy.signed.json\n' > "$d/.github/workflows/other.yaml"
 expect caught "a .yaml workflow signing the policy with no row fails" "$d"
 d=$(mk comp); mkdir -p "$d/.github/actions/x"; printf 'runs:\n  using: composite\n  steps:\n    - run: cosign sign "$IMG"\n      shell: bash\n' > "$d/.github/actions/x/action.yml"
@@ -289,7 +322,7 @@ d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: acti
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
 expect_named "with legacy-stage-files.json deleted the whole tree is judged (red today on stage-verify.yml)" "$d" "stage-verify.yml: actions/attest with no literal predicate-type"
-EXPECT=61
+EXPECT=85
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
