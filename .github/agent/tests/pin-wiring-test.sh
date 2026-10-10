@@ -162,6 +162,22 @@ if idx["fetch"] != [1] or idx["check"] != [2]:
     bad.append("the allowlist job's first three steps are not exactly: checkout, base-ref fetch, check (nothing before or between)")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
+# the release chain's four suites (REQ-CHAIN-001..003, Codex #249 r2 blocker; the #251 lesson): each is ONE step of the allowlist job with
+# exactly this name and this run line and nothing else (no if, continue-on-error, env, shell, working-directory, timeout-minutes), so a
+# pull request cannot remove, skip, rename, weaken or move them
+CHAIN_STEPS = {
+    "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)": "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh",
+    "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
+    "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
+    "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
+}
+for name, run in CHAIN_STEPS.items():
+    hits = [st for st in steps_ if (st.get("run") or "").strip(" \t\n") == run]
+    if len(hits) != 1:
+        bad.append(f"the allowlist job does not have exactly one step running `{run}`")
+        continue
+    if hits[0] != {"name": name, "run": hits[0].get("run")} or "\n" in hits[0]["run"].strip("\n"):
+        bad.append(f"the step running `{run}` is not exactly name {name!r} and that one run line (keys: {sorted(hits[0])})")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -178,7 +194,8 @@ fi
 case_() {  # case_ <name> <expect ok|bad> <python edit of the parsed copy, or empty>
   local f="$work/$1.yml"
   cp "$here/.github/workflows/ci.yml" "$f"
-  if [ -n "$3" ]; then python3 - "$f" "$3" <<'PY'
+  # an edit that cannot apply (its step is missing) is a failed case, not an aborted run
+  if [ -n "$3" ]; then python3 - "$f" "$3" 2> /dev/null <<'PY' || { failn=$((failn+1)); echo "FAIL $1 → the edit did not apply"; return 0; }
 import sys, yaml
 p, edit = sys.argv[1], sys.argv[2]
 d = yaml.load(open(p), Loader=yaml.BaseLoader)
@@ -264,6 +281,23 @@ case_ job-strategy              bad "d['jobs']['allowlist']['strategy'] = {'matr
 case_ job-defaults-run          bad "d['jobs']['allowlist']['defaults'] = {'run': {'working-directory': 'bin'}}"
 case_ ps4-ifs-prompt            bad "d['jobs']['allowlist']['env'] = {'IFS': 'x'}"
 case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
+
+# the release chain's four required steps (REQ-CHAIN-001..003): each mutation of each step is caught
+for r in "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh"; do
+  n=$(basename "${r##* }" .sh); cs="[s for s in $steps if (s.get('run') or '').strip() == '$r'][0]"
+  case_ "$n-removed"     bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != '$r']"
+  case_ "$n-if-false"    bad "$cs['if'] = 'false'"
+  case_ "$n-continue"    bad "$cs['continue-on-error'] = 'true'"
+  case_ "$n-or-true"     bad "$cs['run'] = '$r || true'"
+  case_ "$n-renamed"     bad "$cs['name'] = 'chain tests'"
+  case_ "$n-env"         bad "$cs['env'] = {'CHAIN_X': '1'}"
+  case_ "$n-shell"       bad "$cs['shell'] = \"bash -c 'true' {0}\""
+  case_ "$n-workdir"     bad "$cs['working-directory'] = 'bin'"
+  case_ "$n-timeout"     bad "$cs['timeout-minutes'] = '1'"
+  case_ "$n-other-job"   bad "x = $cs; $steps.remove(x); d['jobs']['test']['steps'].append(x)"
+  case_ "$n-twice"       bad "$steps.append(dict($cs))"
+done
+case_ chain-verify-no-netcut bad "[s for s in $steps if 'chain-verify-test.sh' in (s.get('run') or '')][0]['run'] = 'bash bin/chain-verify-test.sh'"
 
 # judge mode (the trusted gate, .github/workflows/agent-review-gate.yml): PIN_WIRING_JUDGE_GIT=<commit> judges THAT
 # commit's .github/workflows/ci.yml, read as a git object from the current repo (nothing checked out or run), and

@@ -108,6 +108,12 @@
 #        ONE SPELLING (Codex security r1 S3): every base64 field is CANONICAL standard base64 (re-encoding the bytes gives the same text, so
 #        YR== for YQ== is refused) and every JSON reader refuses NaN, Infinity and -Infinity, which are not JSON.
 #        REKOR FILE SHAPE (S2): `entries` must be a list of objects; anything else is "refused at <stage>: rekor ... list", never a traceback.
+#        CODEX ROUND 2: (1) both chains are checked AT the stamp's authenticated genTime (openssl -attime, never -no_check_time): an
+#        intermediate or a TSA signer expired or not yet valid then is refused ("validity" for the Fulcio chain, "timestamp" for the TSA);
+#        (2) genTime keeps its fraction (12:00:00.5 is after a certificate ending 12:00:00); (3) a Rekor entry's logIndex and integratedTime
+#        are canonical decimal strings (^(0|[1-9][0-9]*)$), never a JSON number, float, sign, space or leading zero; (4) stage-start checks
+#        the digest list's format exactly like Sign ("format"); (5) a subject whose name is not a string or whose digest is not an object of
+#        strings is "refused ... subject", never a traceback; (6) sign with no cosign on PATH is "refused at sign: cosign not found".
 #   PyYAML (S4): only the `actions` subcommand needs it (imported there; missing, it is `error: ... PyYAML` exit 2); every other
 #       subcommand, `--help` included, runs on the bare standard library (the Sign job installs only cosign).
 #   DRY-RUN POLICY AND sign --check (round 7, Opus B-NEW b): `sign --check --policy <a made dry_run policy>` is accepted ONLY to
@@ -259,9 +265,14 @@ def issue(ca, name, ext, start, end):
 mkca("root"); mkca("otherroot"); mkca("tsaroot"); mkca("othertsaroot")
 issue("root", "interm", "basicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign", now - dt.timedelta(hours=1), now + dt.timedelta(hours=20))
 cfg("interm")
-for t in ("tsa", "othertsa"):
-    ca = "tsaroot" if t == "tsa" else "othertsaroot"
-    issue(ca, t, "extendedKeyUsage = critical,timeStamping", now - dt.timedelta(hours=1), now + dt.timedelta(hours=20))
+# Codex security r2 (002-AC1): intermediates and TSA signers that are expired, or not yet valid, at the stamp time
+issue("root", "intold", "basicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign", now - dt.timedelta(hours=3), now - dt.timedelta(hours=2))
+issue("root", "intnew", "basicConstraints = critical,CA:TRUE\nkeyUsage = critical,keyCertSign,cRLSign", now + dt.timedelta(hours=1), now + dt.timedelta(hours=2))
+cfg("intold"); cfg("intnew")
+TSA_WINDOW = {"tsa": (-1, 20), "othertsa": (-1, 20), "tsaold": (-3, -2), "tsanew": (1, 2)}   # hours from now
+for t in TSA_WINDOW:
+    ca = "othertsaroot" if t == "othertsa" else "tsaroot"
+    issue(ca, t, "extendedKeyUsage = critical,timeStamping", now + dt.timedelta(hours=TSA_WINDOW[t][0]), now + dt.timedelta(hours=TSA_WINDOW[t][1]))
     open(p(t + ".cnf"), "w").write(textwrap.dedent("""\
         [tsa]
         default_tsa = t
@@ -284,7 +295,7 @@ def stamp(sigbytes, tsa, response=False, frac=False):
     # TimeStampResponse (protobuf-specs sigstore_common.proto RFC3161SignedTimestamp): response=True makes the second form
     q = sh("openssl", "ts", "-query", "-digest", hashlib.sha256(sigbytes).hexdigest(), "-sha256", "-cert", "-no_nonce")
     open(p("q.tsq"), "wb").write(q)
-    ca = "tsaroot" if tsa == "tsa" else "othertsaroot"
+    ca = "othertsaroot" if tsa == "othertsa" else "tsaroot"
     sh("openssl", "ts", "-reply", "-queryfile", p("q.tsq"), "-signer", p(tsa + ".pem"), "-inkey", p(tsa + ".key"),
        "-chain", p(ca + ".pem"), "-config", p(tsa + (".frac.cnf" if frac else ".cnf")), "-section", "t", *([] if response else ["-token_out"]), "-out", p("r.tst"))
     return b64(open(p("r.tst"), "rb").read())
@@ -682,6 +693,53 @@ open(p("rekor-neginf.json"), "w").write(open(p("rekor.json")).read().replace('"e
 # a number too large for a float parses to inf in Python: a non-finite value is refused like Infinity (Sonnet r1 info)
 open(p("rekor-big.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": 1e400, "entries"', 1))
 open(p("rekor-negbig.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -1e400, "entries"', 1))
+# ---- Codex security round 2 ----
+# (R2-1, 002-AC1) every certificate of both chains is checked at the stamp time, not only the leaf
+add("sign_intold", STAGES["sign"], T, PROV, D, ca="intold")          # the leaf's intermediate had expired when the stamp was taken
+add("sign_intnew", STAGES["sign"], T, PROV, D, ca="intnew")          # ... was not yet valid
+add("sign_tsaold", STAGES["sign"], T, PROV, D, tsa="tsaold")         # the TSA's signing certificate had expired
+add("sign_tsanew", STAGES["sign"], T, PROV, D, tsa="tsanew")         # ... was not yet valid
+dj("rekor-r2chain.json", {"entries": [entry(n, 30 + i) for i, n in enumerate(("sign_intold", "sign_intnew", "sign_tsaold", "sign_tsanew"))]})
+# (R2-note, 002-AC1) a genTime with a fraction is compared WITH its fraction: genTime T.fff against a certificate that ends at T
+def gentime(resp_b64):
+    open(p("gt.tsr"), "wb").write(base64.b64decode(resp_b64))
+    txt = sh("openssl", "ts", "-reply", "-in", p("gt.tsr"), "-text").decode()
+    import re as _re
+    m = _re.search(r"^Time stamp: (\w{3}\s+\d+ \d\d:\d\d:\d\d)(\.\d+)? (\d{4}) GMT$", txt, _re.M)
+    whole = dt.datetime.strptime(m.group(1) + " " + m.group(3), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
+    return whole, (m.group(2) or "").strip(".")
+sh("openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", p("fracedge.key"), "-out", p("fracedge.csr"), "-subj", "/CN=fracedge")
+_fp = json.dumps({"_type": STMT["v1"], "predicateType": PROV, "predicate": {}, "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1]}} for k, v in D.items()]}).encode()
+open(p("pae.bin"), "wb").write(pae(DSSE, _fp)); sh("openssl", "dgst", "-sha256", "-sign", p("fracedge.key"), "-out", p("sig.bin"), p("pae.bin"))
+_fsig = open(p("sig.bin"), "rb").read()
+for _try in range(40):
+    _fstamp = stamp(_fsig, "tsa", response=True, frac=True); _fwhole, _ffrac = gentime(_fstamp)
+    if _ffrac.strip("0"): break
+else: raise SystemExit("no stamp with a non-zero fraction in 40 tries: regenerate")
+open(p("fracedge.ext"), "w").write("subjectAltName = critical,URI:" + uri("stage-sign.yml", T) + "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + ISSUER
+                                    + "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri("release.yml", T) + "\n")
+for _nm, _extra in (("sign_fracedge", 0), ("sign_fracok", 1)):   # the certificate ends AT the whole second of genTime, or one second later
+    sh("openssl", "ca", "-batch", "-config", p("interm.cnf"), "-cert", p("interm.pem"), "-keyfile", p("interm.key"), "-in", p("fracedge.csr"),
+       "-out", p(_nm + ".pem"), "-notext", "-startdate", fmt(now - dt.timedelta(minutes=5)), "-enddate", fmt(_fwhole + dt.timedelta(seconds=_extra)), "-extfile", p("fracedge.ext"))
+    json.dump({"payloadType": DSSE, "payload": b64(_fp), "signatures": [{"keyid": "", "sig": b64(_fsig), "certificate": b64(open(p(_nm + ".pem"), "rb").read()),
+               "intermediates": [b64(open(p(c + ".pem"), "rb").read()) for c in ("interm", "root")], "timestamps": [{"type": "rfc3161-response", "data": _fstamp}]}]}, open(p(_nm + ".json"), "w"))
+    PAY[_nm] = hashlib.sha256(_fp).hexdigest()
+dj("rekor-frac.json", {"entries": [entry("sign_fracedge", 40, itime=int(_fwhole.timestamp()) - 60), entry("sign_fracok", 41, itime=int(_fwhole.timestamp()) - 60)]})
+open(p("fracedge.txt"), "w").write("%s.%s" % (_fwhole.strftime("%H:%M:%S"), _ffrac))
+# (R2-2, 002-AC3) logIndex and integratedTime are canonical protobuf-JSON decimal STRINGS; any other spelling of the same number is refused
+_base = entry("sign_prov", 7); _it = int(_base["integratedTime"])
+for _nm, _field, _val in (("idxnum", "logIndex", 7), ("idxplus", "logIndex", "+7"), ("idxspace", "logIndex", " 7"), ("idxzero", "logIndex", "07"),
+                          ("itnum", "integratedTime", _it), ("itfloat", "integratedTime", _it + 0.9), ("itplus", "integratedTime", "+%d" % _it), ("itzero", "integratedTime", "0%d" % _it)):
+    _e = json.loads(json.dumps(_base)); _e[_field] = _val; dj("rekor-%s.json" % _nm, {"entries": [_e]})
+# (R2-3, 003-AC1) stage-start applies Sign's digest-list format check: a Witness collection that attests a file that is not a digest list
+dj("digests-foobar.json", {"foo": "bar"})
+add("build_coll_foobar", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-foobar.json")
+# (R2-4, 003-AC1) subjects with the wrong field types are refusals, never tracebacks
+def _stmt(pt, subj, st="v1"): return json.dumps({"_type": STMT[st], "predicateType": pt, "predicate": {}, "subject": subj}).encode()
+add("sign_badname", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": [], "digest": {"sha256": "a" * 64}}]))
+add("sign_baddigest", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
+dj("rekor-badsubj.json", {"entries": [entry("sign_badname", 50), entry("sign_baddigest", 51)]})
+add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_stmt(COLL, [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}], "v0.1"))
 # the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
 open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
 open(p("now-in.txt"), "w").write(fmt(now + dt.timedelta(minutes=2)))
@@ -1541,6 +1599,32 @@ for c in w_dup2pin:uses w_dupunpin:uses w_duppinun:uses w_duprun:run w_dupquote:
   expect_refuse "S5 ${c%%:*}: a repeated key is refused and named (duplicate '${c#*:}')" "duplicate|${c#*:}|${c%%:*}" $(A "${c%%:*}")
 done
 
+# ---- Codex security round 2 ------------------------------------------------------------------------------------------------------
+# R2-1 (002-AC1): both chains are valid AT the stamp time: an intermediate or a TSA signer that had expired, or was not yet valid, is refused
+expect_refuse "R2-1 a leaf whose intermediate had expired at the stamp time is refused" "validity|!rekor" verify $(V) --stage sign $(rec sign_intold) $(R rekor-r2chain.json)
+expect_refuse "R2-1 a leaf whose intermediate was not yet valid at the stamp time is refused" "validity|!rekor" verify $(V) --stage sign $(rec sign_intnew) $(R rekor-r2chain.json)
+expect_refuse "R2-1 a stamp by a TSA certificate that had expired at its genTime is refused" "timestamp|!rekor" verify $(V) --stage sign $(rec sign_tsaold) $(R rekor-r2chain.json)
+expect_refuse "R2-1 a stamp by a TSA certificate that was not yet valid at its genTime is refused" "timestamp|!rekor" verify $(V) --stage sign $(rec sign_tsanew) $(R rekor-r2chain.json)
+# R2-note (002-AC1): genTime keeps its fraction: T.fff is AFTER a certificate that ends at T
+expect_refuse "R2 genTime $(cat "$work/fracedge.txt") is after a certificate that ends at the whole second: refused" "validity" verify $(V) --stage sign $(rec sign_fracedge) $(R rekor-frac.json)
+expect_ok     "R2 control: the same stamp under a certificate that ends one second later is accepted" verify $(V) --stage sign $(rec sign_fracok) $(R rekor-frac.json)
+# R2-2 (002-AC3): logIndex and integratedTime must be canonical decimal strings ("7"), never a number, a float, a sign, a space or a leading zero
+for k in idxnum idxplus idxspace idxzero itnum itfloat itplus itzero; do
+  expect_refuse "R2-2 a Rekor entry spelled $k (the log's signature still verifies over the number) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-$k.json)
+done
+# R2-3 (003-AC1): stage-start checks the digest list's format like Sign does, before comparing
+expect_refuse "R2-3 stage-start: a Witness collection attesting {\"foo\":\"bar\"} is refused for its format" "build|format" $(ST rebuild build) $(rec build_coll_foobar) --digests "$work/digests-foobar.json"
+expect_refuse "R2-3 stage-start: an attested digest list with upper-case hex is refused for its format" "build|format" $(ST check build) $(rec build_coll_upper) --digests "$work/digests-upper.json"
+# R2-4 (003-AC1, 001-AC2): subject fields of the wrong type are refusals naming the subject, never a traceback
+expect_refuse "R2-4 release <- sign: a subject whose name is a list is refused" "sign|subject" $(ST release sign) $(rec sign_badname) $(R rekor-badsubj.json) --digests "$work/digests.json"
+expect_refuse "R2-4 release <- sign: a subject whose digest is a list is refused" "sign|subject" $(ST release sign) $(rec sign_baddigest) $(R rekor-badsubj.json) --digests "$work/digests.json"
+expect_refuse "R2-4 rebuild <- build: a product subject whose digest is a list is refused" "build|subject" $(ST rebuild build) $(rec build_baddigest) --digests "$work/digests.json"
+expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused" "sign|subject" check-build-record --policy "$work/policy.json" --now "$NOW" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
+# missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
+mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
+rc=0; env PATH="$work/nocosign" OPENSSL="$work/nocosign/openssl" "$PY3" "$cv" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
+[ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs plus the S1 cases (where
 # cosign returned a bad bundle and Sign refused it); never one for a refusal of the check itself
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
@@ -1553,7 +1637,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=455
+EXPECT=476
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

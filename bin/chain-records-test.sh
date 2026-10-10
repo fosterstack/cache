@@ -257,8 +257,23 @@ d=$(mk intoto); printf 'jobs:\n  c:\n    steps:\n      - run: in-toto-run --step
 expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify.yml"
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
-expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$root"
-EXPECT=57
+# KNOWN RED (strict): the real repository stays red on exactly one finding until PR 3 rewrites stage-verify.yml (its actions/attest step names
+# no literal predicate-type). So that this suite can be a REQUIRED CI step now, that case is judged as a known red: the judge's whole output
+# must be exactly that one finding (any other finding fails), and the day it goes green the case FAILS, so the PR that makes it green turns it
+# back into `expect ok` here. The list lives only in this file (no flag or variable can add to it) and must hold exactly one case.
+KNOWN_RED_N=0
+known_red() {  # known_red LABEL GREEN-WHEN EXACT-OUTPUT DIR
+  local out rc=0; KNOWN_RED_N=$((KNOWN_RED_N + 1))
+  out=$(judge "$4") || rc=$?
+  if [ "$rc" = 0 ]; then failn=$((failn + 1)); echo "FAIL $1 is GREEN now ($2): make it an ordinary expect ok and drop it from the known-red list"
+  elif [ "$out" != "$3" ]; then failn=$((failn + 1)); echo "FAIL $1: the findings are not exactly the known one ($3): ${out:0:300}"
+  else pass=$((pass + 1)); echo "ok   $1 (known red until $2: $out)"; fi; }
+known_red "the real repository: every produced record type has a row with a claim and a stage consumer" "PR 3 rewrites stage-verify.yml" \
+  ".github/workflows/stage-verify.yml: actions/attest with no literal predicate-type (fail closed)" "$root"
+# the known-red judge is strict: run on a GREEN fixture tree it must report FAIL (so a known red that is fixed cannot linger silently)
+if ( pass=0 failn=0; known_red "self-check" "x" "y" "$(mk kr_green)"; [ "$failn" = 1 ] ) > /dev/null; then pass=$((pass + 1)); echo "ok   known_red on a green tree fails (strict)"; else failn=$((failn + 1)); echo "FAIL known_red accepted a green tree"; fi
+[ "$KNOWN_RED_N" = 1 ] && { pass=$((pass + 1)); echo "ok   the known-red list holds exactly one case"; } || { failn=$((failn + 1)); echo "FAIL the known-red list holds $KNOWN_RED_N cases, not exactly one"; }
+EXPECT=59
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

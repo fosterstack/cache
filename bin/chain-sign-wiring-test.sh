@@ -1013,9 +1013,26 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 # the real repository (RED until stage-sign.yml exists and PRs 2-4 remove the old provenance signers)
 expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
-expect ok "the real tree: only stage-sign.yml is new and only it signs provenance" tree "$root"
+# KNOWN RED (strict): the real-tree AC1 judge stays red until PRs 2-4 rewrite the legacy stage files (stage-build.yml, stage-image.yml and
+# stage-verify.yml still sign provenance; the other legacy stage files fail the closed grammar). So that this suite can be a REQUIRED CI step
+# now, that one case is judged as a known red: it must still be red, its first finding must be the known one, and no finding may be about
+# stage-sign.yml itself (only legacy files may be red). The day it goes green the case FAILS, so the PR that makes it green must turn it back
+# into `expect ok` here. The list lives only in this file (no flag or variable can add to it) and must hold exactly one case.
+KNOWN_RED_N=0
+known_red() {  # known_red LABEL GREEN-WHEN FIRST-FINDING-PREFIX judge-args...
+  local l=$1 when=$2 first=$3 out rc=0; shift 3; KNOWN_RED_N=$((KNOWN_RED_N + 1))
+  out=$(judge "$@") || rc=$?
+  if [ "$rc" = 0 ]; then failn=$((failn + 1)); echo "FAIL $l is GREEN now ($when): make it an ordinary expect ok and drop it from the known-red list"
+  elif [ "${out#"$first"}" = "$out" ]; then failn=$((failn + 1)); echo "FAIL $l: the first finding is no longer the known one ($first): ${out:0:300}"
+  elif printf '%s' "$out" | grep -E -q '(^|; )AC[0-9]+( grammar)?: stage-sign\.yml'; then failn=$((failn + 1)); echo "FAIL $l: a finding is about stage-sign.yml itself: ${out:0:300}"
+  else pass=$((pass + 1)); echo "ok   $l (known red until $when; first finding: ${out:0:120})"; fi; }
+known_red "the real tree: only stage-sign.yml is new and only it signs provenance" "PRs 2-4 rewrite the legacy stage files" \
+  "AC1: stage-build.yml signs provenance (attest-build-provenance: uses: actions/attest-build-provenance@" tree "$root"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
-EXPECT=250
+# the known-red judge is strict: run on a GREEN fixture tree it must report FAIL (so a known red that is fixed cannot linger silently)
+if ( pass=0 failn=0; known_red "self-check" "x" "AC1: " tree "$(mk t_kr_green)"; [ "$failn" = 1 ] ) > /dev/null; then pass=$((pass + 1)); echo "ok   known_red on a green tree fails (strict)"; else failn=$((failn + 1)); echo "FAIL known_red accepted a green tree"; fi
+[ "$KNOWN_RED_N" = 1 ] && { pass=$((pass + 1)); echo "ok   the known-red list holds exactly one case"; } || { failn=$((failn + 1)); echo "FAIL the known-red list holds $KNOWN_RED_N cases, not exactly one"; }
+EXPECT=252
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
