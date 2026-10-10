@@ -298,7 +298,7 @@ MERGE_TAG = "tag:yaml.org,2002:merge"
 def merge_keys(base, files, bad):
     """No YAML merge key anywhere in any workflow or composite action (Opus #249 r5; one structural rule for an open class): a `<<` key or a
     node tagged !!merge, at any depth, would supply keys that a reader which does not merge (BaseLoader) never sees."""
-    for f in files + action_files(base):
+    for f in signing_files(base):
         try: root = yaml.compose(open(f).read(), Loader=yaml.BaseLoader)
         except Exception as ex:             # fail closed: a file that cannot be read as ONE YAML document cannot be judged
             bad.append("AC1: %s does not parse as one YAML document (%s)" % (os.path.relpath(f, base), type(ex).__name__)); continue
@@ -348,12 +348,7 @@ def id_token_jobs(base, files, bad):
     for wf, jn in sorted(held - listed): bad.append("AC1: %s job %s holds id-token: write but is not listed in id-token-jobs.json" % (wf, jn))
     for wf, jn in sorted(listed - held): bad.append("AC1: id-token-jobs.json lists %s job %s, which does not hold id-token: write (stale)" % (wf, jn))
 
-def action_files(base):
-    """Every composite action file (action.yml / action.yaml, any case) anywhere in the tree (Opus #249 r6), not only under .github/actions/."""
-    out = []
-    for dp, _dirs, fs in os.walk(base):
-        out += [os.path.join(dp, x) for x in fs if x.lower() in ("action.yml", "action.yaml")]
-    return sorted(out)
+action_files, signing_files = _cts.action_files, _cts.signing_files   # ONE discovery routine, shared with the records judge (B8)
 
 V022_WORKFLOWS = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
@@ -408,8 +403,7 @@ def decoded_signer_calls(f, rel, bad):
 def direct_signers(base, files, frozen, allowed, bad):
     """001-AC1: "no other workflow, composite action ... signs provenance" (each workflow and composite action matched by the signer table)."""
     wfdir = os.path.join(base, ".github/workflows")
-    acts = action_files(base)
-    for f in files + acts:
+    for f in signing_files(base):              # workflows, composite actions and any other jobs:/runs: YAML anywhere (Codex #249 r7 B8)
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
         for e, pv, line in signer_calls(open(f).read()) + decoded_signer_calls(f, rel, bad):

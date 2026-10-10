@@ -199,6 +199,47 @@ MATRIX_READ = re.compile(r"\$\{\{ ?matrix\.([A-Za-z_][\w-]*) ?\}\}")  # the one 
 MATRIX_LIT = re.compile(r"[A-Za-z0-9_.-]+")
 USES_OK = re.compile(r"actions/(checkout|download-artifact|upload-artifact)@([0-9a-f]{40})")
 
+def action_files(base):
+    """Every composite action file (action.yml / action.yaml, any case) anywhere in the tree (Opus #249 r6)."""
+    out = []
+    for dp, dirs, fs in os.walk(base):
+        dirs[:] = [x for x in dirs if x != ".git"]
+        out += [os.path.join(dp, x) for x in fs if x.lower() in ("action.yml", "action.yaml")]
+    return sorted(out)
+
+def signing_files(base):
+    """The ONE discovery routine of the chain judges (Codex #249 r7 B8; the wiring and records judges both use it, so they cannot drift):
+    every .yml/.yaml under .github/workflows/ (any depth), every composite action file anywhere (any case), and every other .yml/.yaml
+    file anywhere whose text has a top-level `jobs:` or `runs:` key (a workflow or action kept somewhere else is still read)."""
+    wf = os.path.join(base, ".github", "workflows")
+    out = set(action_files(base))
+    for dp, dirs, fs in os.walk(base):
+        dirs[:] = [x for x in dirs if x != ".git"]
+        for x in fs:
+            if not x.lower().endswith((".yml", ".yaml")): continue
+            f = os.path.join(dp, x)
+            if os.path.commonpath([f, wf]) == wf: out.add(f); continue
+            try: text = open(f, errors="replace").read()
+            except OSError: continue
+            if re.search(r"^(?:jobs|runs|\"jobs\"|\"runs\"|'jobs'|'runs')\s*:", text, re.M): out.add(f)
+    return sorted(out)
+
+def unresolved_signing(e, ctx):
+    """Why a signing call's record type cannot be resolved from its text, or None (Codex #249 r7 B7: an explicit error, never an
+    assumption). witness run: a config file (-c/--config), a WITNESS_* environment setting, or any attestor value that is not a literal.
+    cosign sign-blob and sigstore (python) sign: an argument that is a variable, substitution or glob (the blob, and so its type,
+    is unknown). The type-bearing calls (cosign attest --type, witness sign -t, actions/attest predicate-type) are resolved by the
+    records judge itself and refused there when not literal."""
+    n = e["name"]
+    if n == "witness run":
+        if re.search(r"(?:^|\s)(?:-c[ =]?|--config[ =])", ctx) or re.search(r"(?:^|[\s;])WITNESS_[A-Z_]*=", ctx):
+            return "witness run with an unresolved attestor list (a config file or WITNESS_ setting) (fail closed)"
+        if any(not lit for _v, lit in witness_attestors(ctx)):
+            return "witness run with an unresolved attestor list (fail closed)"
+    if n in ("cosign sign-blob", "sigstore python sign") and (UNRESOLVED.search(ctx) or re.search(r"[*?]", ctx)):
+        return "%s with an unresolved argument (its blob, and so its type, cannot be known) (fail closed)" % n
+    return None
+
 def load_scripts(base):
     """(rows by path, [errors], env_names) from .github/policy/chain-scripts.json, every row validated against the tree.
     env_names is the closed set of names a stage step may put in env: (never BASH_ENV, PATH, LD_*, PYTHON*, ...)."""
@@ -445,6 +486,11 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
 
 ENV_SET = re.compile(r"(?<![\w$])(?:(?:export|local|readonly|typeset)\s+|declare\s+(?:-\w+\s+)?)?(PATH|BASH_ENV|ENV|LD_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|NODE_OPTIONS|IFS|CDPATH|PROMPT_COMMAND|PS4|SHELLOPTS|BASHOPTS)\+?=")
 LAUNCHER = re.compile(r"\bwitness\b[^\n]*?\brun\b(?P<rest>[^\n]*)")
+LAUNCHERS = ("env", "command", "exec", "builtin", "nohup", "sudo", "doas", "timeout", "nice", "ionice", "xargs", "setsid", "stdbuf",
+             "chroot", "unshare", "nsenter", "flock", "time", "strace", "chrt", "taskset")
+# a launcher at command position (line start, or after ; & | ( ` $( or `then/do/else`), optionally by path, then a program word
+LAUNCH_PREFIX = re.compile(r"(?:^|[;&|(`]|\$\(|\b(?:then|do|else)\b)[ \t]*(?:[\w./-]*/)?(?:%s)\b(?:[ \t]+-[\w-]+(?:[ \t]+\d+)?)*[ \t]+(?:\d+[ \t]+)?[A-Za-z_./][\w./-]*"
+                           % "|".join(LAUNCHERS), re.M)
 
 def scan_script(path, text, row, rows, base):
     """Errors for one LISTED script. Not a shell parser: a conservative TEXT scan over the raw file whatever its extension or shebang
@@ -457,19 +503,29 @@ def scan_script(path, text, row, rows, base):
     TIME inside a listed script is not detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78)."""
     errs = []
     tools, runs = set(row.get("tools", [])), set(row.get("runs", []))
-    runbase = {os.path.basename(r) for r in runs}
     selfbase = os.path.basename(path)
+    listed_base = {os.path.basename(r) for r in rows}
     body = text.split("\n", 1)[1] if text.startswith("#!") and "\n" in text else ("" if text.startswith("#!") else text)   # the shebang names the file's OWN interpreter
+    # Codex #249 r7 B3 (the class closed): a script token is compared to the manifest EXACTLY (only a leading ./ is normalised; no
+    # basename match), a command named by ANY path is refused even when its bare name is in `tools` (the row governs the bare name only),
+    # and a launcher prefix (env, command, exec, builtin, nohup, sudo, timeout, nice, xargs, ...) followed by another program is refused.
     for t in dict.fromkeys(re.findall(r"[^\s;&|(){}<>`\"'=,]+", body)):
-        if t in DENY and t not in tools:
+        n = t[2:] if t.startswith("./") else t
+        name = n.rsplit("/", 1)[-1]
+        pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
+        if pathlike and name in DENY:
+            errs.append("%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
+        elif n in DENY and n not in tools:
             errs.append("%s: names the command %r, which is not in this script's `tools` list" % (path, t))
-        is_script = t.endswith(SCRIPT_EXTS) or t in rows
-        if not is_script and "/" in t and not t.startswith(("-", "$")):
-            full = os.path.join(base, t)
+        is_script = n.endswith(SCRIPT_EXTS) or n in rows or name in listed_base
+        if not is_script and pathlike:
+            full = os.path.join(base, n)
             if os.path.isfile(full):
                 with open(full, "rb") as fh: is_script = fh.read(2) == b"#!"
-        if is_script and t != path and os.path.basename(t) != selfbase and t not in runs and os.path.basename(t) not in runbase:
-            errs.append("%s: names the script %r, which is not in this script's `runs` list" % (path, t))
+        if is_script and n != path and n not in runs and not (n == selfbase):
+            errs.append("%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
+    for m in LAUNCH_PREFIX.finditer(body):
+        errs.append("%s: %r launches another program (a launcher prefix hides what runs from the `tools` list)" % (path, m.group(0).strip()))
     for m in ENV_SET.finditer(text):
         errs.append("%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for ln in logical(text).splitlines():

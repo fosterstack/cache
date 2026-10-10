@@ -28,15 +28,34 @@ MISSING = ("no such file", "does not exist", "missing", "not found")
 UNREAD = ("cannot read", "unreadable", "permission denied")
 
 
+def material_problem(reason):
+    """'unreadable' / 'missing' when a refusal's reason says the material could not be read or was not there, else None. ONE list for
+    hostile-row (which then writes no row) and hostile-verdict (which then rejects the row) (REQ-CHAIN-001-AC5, Codex #249 r7 B5)."""
+    low = reason.lower()
+    if any(w in low for w in UNREAD):
+        return "unreadable"
+    if any(w in low for w in MISSING):
+        return "missing"
+    return None
+
+
 def cmd_hostile_row(a):
     if a.attempt not in ALL_ROWS:
         print("error: attempt %r is not one of %s" % (a.attempt, ", ".join(ALL_ROWS)), file=sys.stderr)
         sys.exit(1)
+    # REQ-CHAIN-001-AC5 (Codex #249 r7 B5): a missing, unreadable or non-UTF-8 stderr, and a refusal for missing or unreadable material,
+    # are errors: exit 1 and NO row file is created (the output is opened only after every check)
     try:
-        with open(a.stderr, errors="replace") as f:
-            err = f.read()
-    except OSError:
-        err = ""
+        with open(a.stderr, "rb") as f:
+            raw = f.read()
+    except OSError as ex:
+        print("error: cannot read the verifier's stderr file %s (%s): no row" % (a.stderr, type(ex).__name__), file=sys.stderr)
+        sys.exit(1)
+    try:
+        err = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        print("error: the verifier's stderr is not valid UTF-8: no row", file=sys.stderr)
+        sys.exit(1)
     if "Traceback" in err:
         print("error: the verifier crashed (traceback); a crash is not a refusal", file=sys.stderr)
         sys.exit(1)
@@ -47,6 +66,10 @@ def cmd_hostile_row(a):
         m = re.fullmatch(r"refused at (runner|build|sign|rebuild|check|release): (.+)", first)
         if a.exit_code != 1 or not m:
             print("error: the verifier's first line is not 'refused at <stage>: <reason>' (stage), so it is not a refusal (not a 'refused at' line)", file=sys.stderr)
+            sys.exit(1)
+        cause = material_problem(m.group(2))
+        if cause:
+            print("error: the refusal is for %s material (missing or unreadable material never counts): no row: %s" % (cause, m.group(2)), file=sys.stderr)
             sys.exit(1)
         row = {"attempt": a.attempt, "outcome": "refused", "stage": m.group(1), "reason": m.group(2), "judged_by": "verifier", "exit_code": a.exit_code}
     with open(a.out, "w") as f:
@@ -215,11 +238,9 @@ def cmd_hostile_verdict(a):
             errs.append("error: %s: the refusal has no reason" % n)
             continue
         low = reason.lower()
-        if any(w in low for w in UNREAD):
-            errs.append("error: %s: its material was unreadable: the refusal does not count (cause: unreadable)" % n)
-            continue
-        if any(w in low for w in MISSING):
-            errs.append("error: %s: its material was missing: the refusal does not count (cause: missing)" % n)
+        cause = material_problem(reason)
+        if cause:
+            errs.append("error: %s: its material was %s: the refusal does not count (cause: %s)" % (n, cause, cause))
             continue
         stages, words = FITS[n]
         if stage not in stages:

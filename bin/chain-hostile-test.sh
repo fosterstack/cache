@@ -423,15 +423,18 @@ else:
         kinds = []
         for s in hs:
             u, run = str(s.get("uses", "")), (s.get("run") or "").strip()
-            if "actions/checkout" in u:
+            act = re.fullmatch(r"actions/(checkout|download-artifact|upload-artifact)@[0-9a-f]{40}", u)
+            if u and not act:
+                kinds.append("other"); bad.append("hostile-verify uses %r; only actions/checkout, download-artifact and upload-artifact at a 40-hex commit" % u); continue
+            if act and act.group(1) == "checkout":
                 kinds.append("checkout")
                 if WITH(s).get("persist-credentials") != "false": bad.append("hostile-verify must check the repo out with persist-credentials: false (it runs the repo's verifier)")
-            elif "download-artifact" in u:
+            elif act and act.group(1) == "download-artifact":
                 nm, pth = WITH(s).get("name"), WITH(s).get("path")
                 want = {"hostile-attempts": "attempts", "witness-build": "witness-build", "provenance": "provenance"}
                 if want.get(nm) != pth or set(WITH(s)) - {"name", "path"}: bad.append("hostile-verify downloads %s into %s; only hostile-attempts->attempts, witness-build->witness-build, provenance->provenance" % (nm, pth)); kinds.append("download?")
                 else: kinds.append("download:" + nm)
-            elif "upload-artifact" in u:
+            elif act and act.group(1) == "upload-artifact":
                 kinds.append("upload")
             elif re.fullmatch(POLICY_MAKE, run): kinds.append("policy")
             elif re.search(r"--attempt (\w+)", run): kinds.append("attempt:" + re.search(r"--attempt (\w+)", run).group(1))
@@ -456,12 +459,13 @@ else:
             m = re.search(r"--attempt (\w+)", run)
             if not m: continue
             a = m.group(1); seen[a] = seen.get(a, 0) + 1
+            # Codex #249 r7 B4: every part of the pinned lines is EXACT; the stderr file is /tmp/<attempt>.err, built from the attempt name
+            errf = "/tmp/%s.err" % a
             ok = (len(lines) == 3 and lines[0] == "rc=0"
-                  and a in PIN and re.fullmatch(PIN[a] + r" 2> \S+ \|\| rc=\$\?", lines[1])
-                  and re.fullmatch(r"python3 bin/chain-verify\.py hostile-row --attempt %s --exit-code \"\$rc\" --stderr \S+ --out results/%s\.json" % (a, a), lines[2]))
+                  and a in PIN and re.fullmatch(PIN[a] + re.escape(" 2> %s || rc=$?" % errf), lines[1])
+                  and lines[2] == "python3 bin/chain-verify.py hostile-row --attempt %s --exit-code \"$rc\" --stderr %s --out results/%s.json" % (a, errf, a))
             if not ok: bad.append("hostile-verify step for %s is not the pinned three-line shape (rc=0; the pinned verifier invocation for this attempt 2> FILE || rc=$?; hostile-row ... --exit-code \"$rc\")" % a)
-            e1, e2 = re.search(r"2> (\S+) \|\|", run), re.search(r"--stderr (\S+)", run)
-            if not e1 or not e2 or e1.group(1) != e2.group(1): bad.append("hostile-verify step for %s: hostile-row must read the stderr file the verifier wrote" % a)
+            if run.count(errf) != 2: bad.append("hostile-verify step for %s: the verifier must write, and hostile-row read, exactly %s" % (a, errf))
             if re.search(r"\|\|\s*(true|:|echo|exit\s+0)\b|\becho\b|\bprintf\b|\bcat\b|\btee\b|>\s*results|set \+e", run): bad.append("hostile-verify step for %s swallows or writes the outcome by hand" % a)
         for a in ATT + ["positive_control"]:
             if seen.get(a, 0) != 1: bad.append("hostile-verify has %d steps for %s (need exactly one)" % (seen.get(a, 0), a))
@@ -469,11 +473,20 @@ else:
         if "python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" not in runs: bad.append("hostile-verify does not run hostile-collect")
         if kinds and kinds[-2:] != ["collect", "upload"]: bad.append("hostile-verify must end with collect then upload")
         ups = [s for s in hv.get("steps") or [] if "upload-artifact" in str(s.get("uses", "")) and (s.get("with") or {}).get("name") == "hostile-results"]
-        if len(ups) != 1: bad.append("hostile-verify must upload the artifact hostile-results exactly once")
+        if len(ups) != 1 or kinds.count("upload") != 1: bad.append("hostile-verify must upload exactly one artifact, hostile-results")
         dls = [s for s in hd.get("steps") or [] if "download-artifact" in str(s.get("uses", "")) and (s.get("with") or {}).get("name") == "hostile-results"]
         if len(dls) != 1: bad.append("hostile-verdict must download the artifact hostile-results (the verdict reads the run's rows, not a checked-out file)")
         if not any((s.get("run") or "").strip() == "python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json" for s in hd.get("steps") or []):
             bad.append("hostile-verdict does not run `python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json`")
+        # Codex #249 r7 B4: the verdict job is a CLOSED sequence: checkout (persist-credentials false), the one download, the verdict line
+        def _shape(st):
+            u = str(st.get("uses", "")); w = WITH(st)
+            if re.fullmatch(r"actions/checkout@[0-9a-f]{40}", u) and w == {"persist-credentials": "false"}: return "checkout"
+            if re.fullmatch(r"actions/download-artifact@[0-9a-f]{40}", u) and w == {"name": "hostile-results", "path": "hostile-results"}: return "download"
+            if not u and set(st) <= {"name", "run"} and st.get("run") == "python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json": return "verdict"
+            return "other"
+        vseq = [_shape(st) for st in hd.get("steps") or []]
+        if vseq != ["checkout", "download", "verdict"]: bad.append("hostile-verdict must be exactly checkout (persist-credentials: false), download hostile-results, the verdict line: %s" % vseq)
         after_sign, grow = set(), True
         while grow:
             grow = False

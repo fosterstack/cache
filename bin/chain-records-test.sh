@@ -60,11 +60,10 @@ if not os.path.exists(rf):
     rows = []
 else:
     rows = json.load(open(rf)).get("records") or []
-wf = os.path.join(base, ".github/workflows")
-files = sorted(glob.glob(wf + "/*.yml") + glob.glob(wf + "/*.yaml") + glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml")))
 import importlib.util
 _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
 _cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
+files = _cts.signing_files(base)          # the ONE discovery routine, shared with chain-sign-wiring-test.sh (Codex #249 r7 B8)
 TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
 def scan(rel, text, raw=False):
@@ -72,6 +71,8 @@ def scan(rel, text, raw=False):
     bad = BAD if rel not in FROZEN else []          # a frozen legacy file's own findings are left out (its products still count)
     for e, ctx in _cts.calls(text, TABLE, not raw):      # a LISTED script is scanned raw: a signer name in a comment, quote or heredoc counts
         n = e["name"]
+        why = _cts.unresolved_signing(e, ctx)               # Codex #249 r7 B7: an unresolved call is an explicit error, never an assumption
+        if why: bad.append("%s: %s" % (rel, why)); continue
         if n == "witness run":
             add(COLL)
             if _cts.is_prov(e, ctx): add(PROV)
@@ -88,7 +89,7 @@ def scan(rel, text, raw=False):
             tys = _cts.cosign_types(ctx)
             if not tys: bad.append("%s: cosign attest with no --type (fail closed)" % rel)
             for v in tys:
-                if re.fullmatch(r"https?://\S+", v): add(v)
+                if re.fullmatch(r"https?://[^\s\"'$`\\]+", v): add(v)
                 elif v in SHORT: add(SHORT[v])
                 else: bad.append("%s: cosign attest with an unresolved --type (%s) (fail closed)" % (rel, v))
         elif n in ("cosign sign-blob", "sigstore python sign"):

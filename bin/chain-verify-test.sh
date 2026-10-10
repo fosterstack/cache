@@ -1756,7 +1756,7 @@ expect_refuse "R2-3 stage-start: an attested digest list with upper-case hex is 
 expect_refuse "R2-4 release <- sign: a subject whose name is a list is refused" "sign|subject" $(ST release sign) $(rec sign_badname) $(R rekor-badsubj.json) --digests "$work/digests.json"
 expect_refuse "R2-4 release <- sign: a subject whose digest is a list is refused" "sign|subject" $(ST release sign) $(rec sign_baddigest) $(R rekor-badsubj.json) --digests "$work/digests.json"
 expect_refuse "R2-4 rebuild <- build: a product subject whose digest is a list is refused" "build|subject" $(ST rebuild build) $(rec build_baddigest) --digests "$work/digests.json"
-expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused" "sign|subject" check-build-record --policy "$work/policy.json" --now "$NOW" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
+expect_refuse "R2-4 check-build-record: Build's product subject whose digest is a list is refused (at build since r7 B6: the record's own stage, as for its identity)" "build|subject" check-build-record --policy "$work/policy.json" --now "$NOW" --build-record "$work/build_baddigest.json" --digests "$work/digests.json"
 # missing cosign (Codex r1/r2 low): a refusal, not a traceback, and the fresh --out Sign made is removed
 mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/openssl"
 rc=0; env PATH="$work/nocosign" OPENSSL="$work/nocosign/openssl" "$PY3" "$cv" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?

@@ -510,6 +510,31 @@ def _type_uri(v):
             and not any(unicodedata.category(c)[0] in "ZC" for c in v))
 
 
+HEX_LEN = {"sha1": 40, "sha256": 64, "sha384": 96, "sha512": 128}
+
+
+def check_subjects(stage, stmt):
+    """REQ-CHAIN-001-AC4 (Codex #249 r7 B6): every signed in-toto statement, provenance or Witness collection, has a subject list that is a
+    non-empty list of objects, each with a non-empty string name and a non-empty digest object whose algorithm names are non-empty
+    lowercase strings and whose values are strings; a sha1/sha256/sha384/sha512 value is lowercase hex of its length. Checked when the
+    record type is judged, before anything reads a subject."""
+    subs = stmt.get("subject")
+    if not isinstance(subs, list) or not subs:
+        refuse(stage, "the record's subjects are malformed (the subject list is missing, empty or not a list)")
+    for sub in subs:
+        shown = json.dumps(sub)[:120]
+        if not isinstance(sub, dict) or not isinstance(sub.get("name"), str) or not sub["name"].strip():
+            refuse(stage, "the record's subjects are malformed (a subject has no non-empty string name): %s" % shown)
+        dg = sub.get("digest")
+        if not isinstance(dg, dict) or not dg:
+            refuse(stage, "the record's subjects are malformed (a subject's digest is not a non-empty object): %s" % shown)
+        for alg, val in dg.items():
+            if not isinstance(alg, str) or not alg or alg != alg.lower() or not isinstance(val, str) or not val:
+                refuse(stage, "the record's subjects are malformed (a digest entry is not a lowercase algorithm with a string value): %s" % shown)
+            if alg in HEX_LEN and not re.fullmatch(r"[0-9a-f]{%d}" % HEX_LEN[alg], val):
+                refuse(stage, "the record's subjects are malformed (a %s digest is not %d lowercase hex characters): %s" % (alg, HEX_LEN[alg], shown))
+
+
 def check_slsa_v1(stage, predicate):
     """REQ-CHAIN-001-AC4 (Codex #249 r4 B4, r5 B5 + Sonnet: the class closed): the provenance is a standard SLSA v1 record
     (https://slsa.dev/spec/v1.0/provenance) and every field of it has its type. Required: buildDefinition {buildType: TypeURI,
@@ -580,6 +605,9 @@ def check_record_type(stage, pol, ptype, payload):
         refuse(stage, "predicate: the payload is not an in-toto statement")
     if st_type not in STMT_TYPES:
         refuse(stage, "predicate: statement type %s is not allowed" % st_type)
+    if not isinstance(pt, str):
+        refuse(stage, "predicate: the predicateType is not a string")
+    check_subjects(stage, stmt)
     if pt == PROV:
         if stage != "sign":
             refuse(stage, "predicate type provenance is the sign stage's record type, not %s's" % stage)
