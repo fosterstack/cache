@@ -19,6 +19,8 @@ Design (installed once, on import, by test_fs_guard.py, which unittest discovery
     Writes there are refused except bytecode under __pycache__. A path is checked both lexically and after resolving symlinks, so a symlink
     inside the temp dir that points at /etc/hostname is refused when it is followed.
   * The violation is a BaseException, so a code path under test that does `except Exception` cannot swallow it.
+  * CPython emits no audit event for os.mkfifo, os.mknod or os.chroot: those are wrapped. sqlite3.connect judges a plain path as a write and refuses `file:` URIs
+    (the connection denies ATTACH / VACUUM INTO). os.scandir returns entries that judge stat/is_dir/is_file on a symlink.
 Subprocesses (bash, git, a spawned python3) are not covered here; the static scan in test_fs_guard.py covers the shell tests.
 """
 import errno, os, re, shutil, site, sys, sysconfig, tempfile
@@ -122,12 +124,27 @@ def _canon_inner(cands, drop_broad):
     return out
 
 
+# Where a temp dir named by the environment may live. TMPDIR, tempfile.gettempdir() and COVERAGE_RCFILE are accepted as roots only under one
+# of these parents ($RUNNER_TEMP too); anything else (TMPDIR=/etc, =$HOME, =/Users/x/Documents) is ignored, which fails closed.
+STANDARD_TEMP = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders", "/dev/shm")
+
+
+def _standard_temp_parents():
+    out = set(STANDARD_TEMP)
+    rt = os.environ.get("RUNNER_TEMP", "")
+    if rt and os.path.isabs(rt):
+        out.add(rt.rstrip("/"))
+    return out | _canon_set(out)
+
+
+def _under_standard_temp(v):
+    return any(v == p or v.startswith(p + "/") for p in _standard_temp_parents())
+
+
 def _roots():
     own = {REPO, HERE}
-    # what the environment says (TMPDIR and so tempfile.gettempdir(), COVERAGE_RCFILE) must not widen the roots to a system directory,
-    # `/` or the home directory
     named = {tempfile.gettempdir()} | {os.environ.get(k, "") for k in ("COVERAGE_RCFILE", "TMPDIR")}
-    return sorted(_canon_set(own) | _canon_set(named, drop_broad=True))
+    return sorted(_canon_set(own) | {v for v in _canon_set(named) if _under_standard_temp(v)})
 
 
 def _env_roots():
@@ -235,9 +252,8 @@ def check(path, what="", nofollow=False, meta=False, write=False):
 _AUDIT_PATH = {  # event -> indexes of the path arguments
     "open": (0,), "os.listdir": (0,), "os.scandir": (0,), "os.rename": (0, 1), "os.remove": (0,), "os.rmdir": (0,),
     "os.mkdir": (0,), "os.chdir": (0,), "os.symlink": (0, 1), "os.link": (0, 1), "os.truncate": (0,), "os.chmod": (0,),
-    "os.chown": (0,), "os.utime": (0,), "os.mkfifo": (0,), "os.mknod": (0,), "os.setxattr": (0,), "os.removexattr": (0,),
-    "os.getxattr": (0,), "os.listxattr": (0,), "os.chflags": (0,), "os.lchflags": (0,), "os.chroot": (0,), "os.lchown": (0,),
-    "os.lchmod": (0,), "os.walk": (0,), "os.fwalk": (0,), "sqlite3.connect": (0,), "tempfile.mkstemp": (0,), "tempfile.mkdtemp": (0,),
+    "os.chown": (0,), "os.utime": (0,), "os.setxattr": (0,), "os.removexattr": (0,),
+    "os.getxattr": (0,), "os.listxattr": (0,), "os.chflags": (0,), "os.walk": (0,), "os.fwalk": (0,), "sqlite3.connect": (0,), "tempfile.mkstemp": (0,), "tempfile.mkdtemp": (0,),
     "ctypes.dlopen": (0,), "os.add_dll_directory": (0,),
 }
 _NOT_PATHS = {"os.putenv", "os.unsetenv", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "os.forkpty", "os.kill",
@@ -254,11 +270,13 @@ def _open_writes(args):
 
 # audit event -> {path index: index of the dir_fd that path is relative to}; -1 or None means "no dir_fd"
 _DIRFD = {"os.mkdir": {0: 2}, "os.rmdir": {0: 1}, "os.remove": {0: 1}, "os.rename": {0: 2, 1: 3}, "os.chmod": {0: 2}, "os.utime": {0: 3},
-          "os.symlink": {1: 2}, "os.link": {0: 2, 1: 3}, "os.mkfifo": {0: 2}, "os.mknod": {0: 3}, "os.chown": {0: 3}}
+          "os.symlink": {1: 2}, "os.link": {0: 2, 1: 3}, "os.chown": {0: 3}}
+# CPython (3.12 and 3.14) emits NO audit event for os.mkfifo, os.mknod or os.chroot (nor for lchown/lchmod/lchflags, which report as
+# os.chown/os.chmod/os.chflags): those three are wrapped in install() instead, and test_fs_guard.AuditRows fails any row that is dead.
 
 
 # these act on the directory entry itself (they never follow a final symlink): unlink/rename/mkdir of a link do not touch its target
-_NOFOLLOW = {"os.remove", "os.rmdir", "os.rename", "os.mkdir", "os.mkfifo", "os.mknod", "os.link"}
+_NOFOLLOW = {"os.remove", "os.rmdir", "os.rename", "os.mkdir", "os.link"}
 
 
 def _judged_path(event, args, i):
@@ -271,9 +289,17 @@ def _judged_path(event, args, i):
 
 
 def _hook(event, args):
-    if event == "sqlite3.connect" and args and isinstance(args[0], (str, bytes)) and os.fsdecode(args[0]).startswith("file:"):
-        # fail closed: "file:/abs/db?mode=ro" and "file:../x/db" name a path the audit argument does not show as one
-        raise SystemPathAccess("test touched a real system path (sqlite3.connect): the file: URI form is refused (the guard does not parse it): %s" % (args[0],))
+    if event == "sqlite3.connect" and args:
+        # coverage keeps its data file in sqlite, so a plain path is judged like any other write. Refused (fail closed): a `file:` URI in
+        # any form (str, bytes, PathLike: "file:/abs/db?mode=ro", "file:../x/db" name a path the argument does not show as one) and "". The
+        # connection itself denies ATTACH and VACUUM INTO (no audit event exists for them), so a database can write nowhere else.
+        name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else None
+        if name is None or name == "" or name.startswith("file:"):
+            raise SystemPathAccess("test touched a real system path (sqlite3.connect): a file: URI or empty name is refused: %r" % (args[:1],))
+        if name == ":memory:":
+            return
+        check(name, event, write=True)
+        return
     if event in _AUDIT_PATH:
         write = _open_writes(args) if event == "open" else event not in _READ_EVENTS
         for i in _AUDIT_PATH[event]:
@@ -281,7 +307,7 @@ def _hook(event, args):
                 continue
             if event == "os.symlink" and i == 0:
                 continue           # a symlink's target text is data; wrap_link judges it where it would resolve
-            check(_judged_path(event, args, i), event, event in _NOFOLLOW or (event == "os.symlink" and i == 1), write=write)        # listdir()/scandir() with no argument = the cwd
+            check(_judged_path(event, args, i), event, (event in _NOFOLLOW and not (event == "os.link" and i == 0)) or (event == "os.symlink" and i == 1), write=write)        # listdir()/scandir() with no argument = the cwd
     elif event in ("glob.glob", "glob.glob/2") and args and isinstance(args[0], (str, bytes, os.PathLike)):
         pat = os.fsdecode(args[0])
         cut = min([i for i in (pat.find(c) for c in "*?[") if i >= 0] or [len(pat)])
@@ -333,6 +359,122 @@ def _wrap1(mod, name, nofollow=False):
         return orig(path, *a, **k)
     f.__name__ = name; f.__wrapped__ = orig
     setattr(mod, name, f)
+
+
+def _deny_attach(action, *rest):
+    import sqlite3
+    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_ATTACH else sqlite3.SQLITE_OK      # VACUUM INTO is authorised as an ATTACH
+
+
+def _wrap_sqlite():
+    try:
+        import sqlite3
+    except ImportError:
+        return
+    orig = sqlite3.connect
+
+    def connect(*a, **k):
+        c = orig(*a, **k)
+        c.set_authorizer(_deny_attach)
+        return c
+    connect.__name__ = "connect"; connect.__wrapped__ = orig
+    sqlite3.connect = connect
+
+
+def _wrap_write_path(name):
+    """os.mkfifo / os.mknod / os.chroot create or redirect a directory entry but emit no audit event: judge the path (and its dir_fd) here."""
+    orig = getattr(os, name, None)
+    if orig is None:
+        return
+
+    def f(path, *a, dir_fd=None, **k):
+        p = _with_dir_fd(path, dir_fd, "os." + name) if dir_fd is not None else path
+        check(p, "os." + name, name != "chroot", False, True)
+        return orig(path, *a, dir_fd=dir_fd, **k) if dir_fd is not None else orig(path, *a, **k)
+    f.__name__ = name; f.__wrapped__ = orig
+    setattr(os, name, f)
+
+
+def _wrap_xattr_write(name):
+    orig = getattr(os, name, None)
+    if orig is None:
+        return
+
+    def f(path, *a, **k):
+        check(path, "os." + name, k.get("follow_symlinks", True) is False, True, True)
+        return orig(path, *a, **k)
+    f.__name__ = name; f.__wrapped__ = orig
+    setattr(os, name, f)
+
+
+class _Entry:
+    """An os.DirEntry whose stat/is_dir/is_file are judged when the entry is a symlink (they follow it, with no audit event)."""
+    __slots__ = ("_e",)
+
+    def __init__(self, e):
+        self._e = e
+
+    name = property(lambda self: self._e.name)
+    path = property(lambda self: self._e.path)
+
+    def inode(self):
+        return self._e.inode()
+
+    def is_symlink(self):
+        return self._e.is_symlink()
+
+    def _follow(self, follow):
+        if follow and self._e.is_symlink():
+            check(self._e.path, "DirEntry", False, True)
+
+    def is_dir(self, *, follow_symlinks=True):
+        self._follow(follow_symlinks)
+        return self._e.is_dir(follow_symlinks=follow_symlinks)
+
+    def is_file(self, *, follow_symlinks=True):
+        self._follow(follow_symlinks)
+        return self._e.is_file(follow_symlinks=follow_symlinks)
+
+    def stat(self, *, follow_symlinks=True):
+        self._follow(follow_symlinks)
+        return self._e.stat(follow_symlinks=follow_symlinks)
+
+    def __fspath__(self):
+        return self._e.path
+
+    def __repr__(self):
+        return "<guarded %r>" % (self._e,)
+
+
+class _Scan:
+    def __init__(self, it):
+        self._it = it
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return _Entry(next(self._it))
+
+    def close(self):
+        self._it.close()
+
+    def __enter__(self):
+        self._it.__enter__()
+        return self
+
+    def __exit__(self, *a):
+        return self._it.__exit__(*a)
+
+
+def _wrap_scandir():
+    orig = os.scandir
+
+    def scandir(path=None):
+        it = orig(path) if path is not None else orig()
+        return it if isinstance(path, int) else _Scan(it)
+    scandir.__name__ = "scandir"; scandir.__wrapped__ = orig
+    os.scandir = scandir
 
 
 def _wrap_os_open():
@@ -395,3 +537,9 @@ def install(extra_roots=()):
     for n in ("symlink", "link"):
         setattr(os, n, wrap_link(getattr(os, n), "os." + n))
     _wrap_os_open()
+    _wrap_sqlite()
+    _wrap_scandir()
+    for n in ("mkfifo", "mknod", "chroot"):
+        _wrap_write_path(n)
+    for n in ("setxattr", "removexattr"):
+        _wrap_xattr_write(n)

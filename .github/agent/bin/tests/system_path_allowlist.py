@@ -3,6 +3,14 @@
 Row: (file, substring of the line - empty means the whole file, reason). A row that matches nothing fails the test.
 Real file access on a system path is never allow-listed: build the same shape under a temp dir instead."""
 ROWS = [
+    (".github/agent/tests/auditor-matrix-test.sh", '=="/.github/agent"',
+     "the dependabot.yml `directory` value being compared (a repo-relative setting, not a filesystem path)"),
+    (".github/agent/tests/pin-age-check-test.sh", "sudo apt-get install -y skopeo",
+     "workflow run: text the pin-age inventory parses; nothing executes it (sudo appears in the fixture on purpose)"),
+    (".github/agent/tests/pin-age-check-test.sh", "curl -fsSL \\\\\\n",
+     "workflow run: text (a line-continued curl with sudo) the pin-age inventory parses; nothing executes it"),
+    (".github/agent/tests/pin-age-check-test.sh", "url=/URL=/*_BASE_URL",
+     "prose in a case description naming the shell variable forms the inventory recognises; not a path"),
     ('.github/agent/bin/tests/test_check_action_pins.py',
      '',
      "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time)"),
@@ -73,8 +81,8 @@ LINK_ROWS = [
 ]
 
 # A WHOLE-FILE row exempts every system-path literal in its file, and the scan cannot tell a quoted fixture line from a command, so
-# the WHOLE FILE is pinned: (sha256 of the file, the literal-bearing lines it may contain, reason). Any edit to one of these files needs
-# a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
+# the WHOLE FILE is pinned: (sha256 of the file's raw bytes, the literal-bearing lines it may contain, reason). Any edit to one of these files
+# needs a reviewed update here (`python3 test_fs_guard.py --print-pins`); a new literal line must be added with a reason.
 PINS = {
     '.github/agent/bin/tests/test_check_action_pins.py': ('eb2d5bdb6b18a541d2c8e179e77dfa5d6e470165dd8316c36f0e512350a89ea8',
         [        'self.assertEqual(M.script_installs("python3 -m venv /tmp/v && python3 -m json.tool f"), [])',
@@ -317,13 +325,17 @@ PINS = {
                  '--version).',
                  'if d.endswith("/bin"):',
                  'if base in ("source", ".") and rest and norm(rest[0]).endswith("/bin/activate"):',
-                 'return ("activate", norm(rest[0])[: -len("/bin/activate")], None)'],
+                 'return ("activate", norm(rest[0])[: -len("/bin/activate")], None)',
+                 'pips = [u for u in ups if u.get("package-ecosystem") == "pip" and u.get("directory") == "/.github/agent"]',
+                 'r.append(("C4", "dependabot.yml has no pip entry for directory /.github/agent"))'],
         "venv-relative suffixes (/bin, /bin/activate) inside the checker's own string rules under test"),
     '.github/agent/tests/supply-chain-wiring-test.sh': ('e14085714fd02e3c9555436e0d9695a8227ed31053ce01f566ac6e04a3e868cf',
         [        'mut_wf("a step writes BASH_ENV", "writes the job\'s environment", lambda d: J(d, "pin-age")["steps"].insert(0, {"run": '
                  '\'echo "BASH_ENV=/tmp/x" >> "$GITHUB_ENV"\'}))',
                  'mut_wf("the PR job writes observations", "only daily-audit may write the tag observations", lambda d: '
-                 '[x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "pin-age")["steps"] if "run" in x])'],
+                 '[x.update(run=x["run"] + " --observations-out /tmp/x") for x in J(d, "pin-age")["steps"] if "run" in x])',
+                 'mut_db("docker\'s directory changes", "docker entry is not unchanged", lambda d: eco(d, '
+                 '"docker").update(directory="/"))'],
         'run-step text injected into an in-memory workflow copy to prove the wiring check rejects it'),
     'bin/admission-tag-signer-test.sh': ('1f6b11ee3c249eac940d3a2783311fb8fd357233527b523524bab40e4fa842a4',
         [        'if "/tmp/policy/admission-tag-signer.py" not in run or "/tmp/policy/install-scanner.sh gitsign" not in run:',

@@ -14,7 +14,9 @@ REPO = G.REPO
 # fragments and regexes), so the scan stays narrow and a first component outside this list (`/scratch/x`, `/afs/x`) is a documented residual.
 SYS_NAMES = ["etc", "usr", "var", "private", "Library", "System", "opt", "bin", "sbin", "dev", "home", "root", "proc", "sys", "Users",
              "tmp", "Applications", "Volumes", "run", "srv", "lib", "lib64", "boot", "mnt", "nix", "cores", "Network", "snap",
-             "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost\\+found", "vol"]
+             "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost\\+found", "vol", "pkg",
+             "swapfile", "imagegeneration", "datadisk", "cdrom", "lib32", "libx32", "init", "__w", "_work", "docker-entrypoint\\.d", "entrypoint\\.sh",
+             "bin\\.usr-is-merged", "lib\\.usr-is-merged", "sbin\\.usr-is-merged"]
 SYS_DIRS = "|".join(SYS_NAMES)
 SHEBANG = re.compile(r"#!\s*/(?:usr/)?bin/(?:env\s+)?[a-z0-9]+")     # a script's first line written into a fixture file: file content, not a path used
 # The boundary before the slash excludes only word characters, `.`/`$`/`/`/braces/`~`/`)` (a relative or variable-based path, a URL host, a
@@ -34,8 +36,37 @@ ROOT_ONLY = re.compile(r"""\b(?:open|listdir|scandir|stat|lstat|walk|fwalk|chdir
                        r"""|(?:^|\s)(?:-C|-w|--directory|--chdir|--work-tree|--git-dir|--workdir|--root|--prefix)(?:\s+|=)/""" + _END +
                        r"""|\b(?:cp|mv|rsync|install|ln|scp|tar|zip|unzip|cpio)\b[^;&|\n]*\s/(?=\s*(?:$|[;&|)'"]))"""
                        r"""|\s(?:-v|--volume)(?:\s+|=)/:|--mount[ =]\S*src=/(?=[,\s])""")
+# Generic rules that close the "first component outside the list" class without an allow row per name:
+#   - a first component starting with a dot (/.vol /.file /.nofollow /.resolve /.dockerenv /.fseventsd /.Spotlight-V100 /.DS_Store, `find /.`)
+#   - any glob metacharacter in the first component (/* /U*/x /e*/hosts /[e]tc /e??/hosts)
+#   - ~user (`~root/x`), `../` chains of two or more with or without a trailing slash (`..//..//x`, `cd ../../..`)
+#   - a bare-root assignment (`d=/`, `r='/'`), an absolute value of any `--option=/abs`, an attached `-C/`, a redirect into `/`,
+#     `cd "/"`, os.sep as a path, `source=/` mounts
+_OPEN = r"""(?:^|(?<=[\s=(,:{\[]))["']?"""          # the slash starts a token: line start, or after a separator (optionally behind ONE opening quote)
+EXTRA = re.compile(_OPEN + r"""/(?:\.[A-Za-z]|\.(?=\s|$|['"])|[A-Za-z0-9_.\-]*(?:[*\[]|\?(?=[A-Za-z0-9_/?*\[])))"""
+                   r"""|(?:^|[\s=:'"(,])~[A-Za-z_]"""
+                   r"""|(?<![\w./)}\]-])\.\.(?:/+\.\.){1,}"""
+                   r"""|[A-Za-z_]\w*\s*=\s*['"]?/['"]?(?=\s|;|$|\))"""
+                   r"""|--[A-Za-z][A-Za-z-]*=/(?!/)"""
+                   r"""|\s-[A-Za-z]/(?=\s|$|['"])"""
+                   r"""|>>?\s*/""" + _END +
+                   r"""|\b(?:cd|ls|cat|rm|find|pushd)\s+['"]/['"]"""
+                   r"""|\b(?:listdir|scandir|walk|chdir|stat|rmtree|Path|join|glob)\(\s*os\.sep\b"""
+                   r"""|\b(?:src|source)=/(?=[,\s'"]|$)""")
+_SUFFIX = re.compile(r"""(\+\s*[rb]?["'])/""")           # `var + "/x"` appends to a prefix the code controls: not an absolute path by itself
+SUDO = re.compile(r"\bsudo\b")
 HOME_USE = re.compile(r"~/|\$HOME|\$\{HOME|expanduser|Path\.home|(?:^|[\s=:'\"(,])~(?=$|[;)])|\b(?:cd|ls|cat|cp|mv|rm|source|find|tar)\s+(?:-[A-Za-z-]+\s+)*~(?=\s|$|;)|\bcd\s*(?:$|;|&&|\|\|)|(?:\.\./){3,}|\bfile:/+(?:[A-Za-z]|\.\.?/)")
 SELF = "bin/tests/test_fs_guard.py"
+
+
+def read_raw(rel):
+    """The file's exact bytes: no newline translation (a CR or CRLF edit must be visible), no decoding."""
+    with open(os.path.join(REPO, rel), "rb") as fh:
+        return fh.read()
+
+
+def decode(raw):
+    return raw.decode("utf-8", "replace")                 # str.split("\n") on this text sees CR as an ordinary character, as bash does
 
 
 def test_files():
@@ -53,11 +84,20 @@ def load_allow():
     return rows
 
 
+def flagged(line, rel=""):
+    """True when the line names a system path in any form the scan knows (rules above); `sudo` also counts in a shell test."""
+    clean = SHEBANG.sub("", line).replace("/dev/null", "")
+    anchored = _SUFFIX.sub(r"\1", clean)
+    if re.search(r"/\*.*\*/", anchored):
+        anchored = re.sub(r"/\*.*\*/", "", anchored)               # a /* comment */
+    return not line.startswith("#!") and bool(LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line) or EXTRA.search(anchored)
+                                              or (rel.endswith(".sh") and SUDO.search(line)))
+
+
 def literal_findings(rel, text, allow):
     used, bad = set(), []
     for n, line in enumerate(text.split("\n"), 1):
-        clean = SHEBANG.sub("", line).replace("/dev/null", "")
-        if line.startswith("#!") or not (LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line)):
+        if not flagged(line, rel):
             continue
         hit = [a for a in allow if a[0] == rel and a[1] in line]
         if hit:
@@ -71,8 +111,7 @@ def scan():
     allow = load_allow()
     used, bad = set(), []
     for rel in test_files():
-        with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as f:
-            b, u = literal_findings(rel, f.read(), allow)
+        b, u = literal_findings(rel, decode(read_raw(rel)), allow)
         bad += b; used |= u
     return bad, [a for a in allow if a not in used]
 
@@ -148,7 +187,7 @@ def link_findings(rel, text, allow):
 def link_scan(read=None):
     from system_path_allowlist import LINK_ROWS
     allow = [tuple(p.strip() for p in r) for r in LINK_ROWS]
-    read = read or (lambda rel: open(os.path.join(REPO, rel), encoding="utf-8", errors="replace").read())
+    read = read or (lambda rel: decode(read_raw(rel)))
     bad, used = [], set()
     for rel in test_files():
         f, u = link_findings(rel, read(rel), allow)
@@ -171,21 +210,19 @@ def makes_files_without_temp(text):
     return bool(makes and not calls)
 
 
-def literal_lines(text):
-    """The lines of a file that the literal scan would report (system-path literal, bare root, $HOME use), stripped."""
-    out = []
-    for line in text.split("\n"):
-        clean = SHEBANG.sub("", line).replace("/dev/null", "")
-        if not line.startswith("#!") and (LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line)):
-            out.append(line.strip())
-    return out
+def literal_lines(text, rel=""):
+    """The lines of a file that the literal scan would report, stripped."""
+    return [line.strip() for line in text.split("\n") if flagged(line, rel)]
 
 
-def row_pin(text):
-    """(sha256 of the WHOLE file, the system-path-literal lines). A whole-file allow row exempts every literal in its file, and a hash of
-    only the literal lines is blind to context (moving a closing quote makes a quoted fixture line a real command), so ANY edit to such a
-    file changes the pin and needs a reviewed PINS update; the stored lines show a reviewer what the file is allowed to contain."""
-    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), tuple(literal_lines(text))
+def row_pin(raw, rel=""):
+    """(sha256 of the file's RAW BYTES, the system-path-literal lines). A whole-file allow row exempts every literal in its file, and a hash of
+    only the literal lines is blind to context (moving a closing quote makes a quoted fixture line a real command); hashing translated text
+    would be blind to CR / CRLF edits (a lone CR after a comment line changes what bash executes). So ANY byte edit to such a file changes the
+    pin and needs a reviewed PINS update; the stored lines show a reviewer what the file is allowed to contain."""
+    if isinstance(raw, str):
+        raw = raw.encode("utf-8", "replace")
+    return hashlib.sha256(raw).hexdigest(), tuple(literal_lines(decode(raw), rel))
 
 
 def whole_file_rows():
@@ -361,8 +398,7 @@ class Rules(unittest.TestCase):
                     evs = [("os.mkdir", (name, 0o777, fd_in)), ("os.rmdir", (name, fd_in)), ("os.remove", (name, fd_in)),
                            ("os.rename", (name, "ok", fd_in, -1)), ("os.rename", ("ok", name, -1, fd_in)), ("os.chmod", (name, 0o600, fd_in)),
                            ("os.utime", (name, None, None, fd_in)), ("os.symlink", ("t", name, fd_in)), ("os.link", (name, "ok", fd_in, -1)),
-                           ("os.link", ("ok", name, -1, fd_in)), ("os.mkfifo", (name, 0o600, fd_in)), ("os.mknod", (name, 0o600, 0, fd_in)),
-                           ("os.chown", (name, -1, -1, fd_in))]
+                           ("os.link", ("ok", name, -1, fd_in)), ("os.chown", (name, -1, -1, fd_in))]
                     for ev, args in evs:
                         self.refused(G._hook, ev, args)
                     # the same names relative to an fd INSIDE the root, and calls without a dir_fd (-1 / None), are judged as before
@@ -409,7 +445,7 @@ class Rules(unittest.TestCase):
         with T.active():
             for name in ("file:" + T.p1("db") + "?mode=ro", "file:../x/db", "file:" + T.p2("db"), b"file:/x"):
                 self.refused(G._hook, "sqlite3.connect", (name,))
-            G._hook("sqlite3.connect", (T.p1("db"),)); self.refused(G._hook, "sqlite3.connect", (T.p2("db"),))
+            G._hook("sqlite3.connect", (T.p1("db"),)); self.refused(G._hook, "sqlite3.connect", (T.p2("db"),))      # a plain name is judged
 
     def test_bytecode_writes_are_allowed_only_for_a_resolved_pyc_directly_in_pycache(self):
         T = self.T
@@ -516,6 +552,214 @@ class Rules(unittest.TestCase):
         self.assertEqual(len(made), 1)
 
 
+_EVENTS = []
+_RECORD = [False]
+sys.addaudithook(lambda event, args: _EVENTS.append(event) if _RECORD[0] else None)
+
+
+class AuditRows(unittest.TestCase):
+    """Every row of the audit tables must be a call that really emits its event: CPython 3.12/3.14 emit NOTHING for os.mkfifo, os.mknod and
+    os.chroot (a row for them guarded nothing and a test calling G._hook directly hid it). A dead row fails here; the call must be wrapped."""
+    def exercisers(self, d):
+        f, sub = os.path.join(d, "f"), os.path.join(d, "sub")
+        open(f, "w").close(); os.mkdir(sub)
+        fd = os.open(d, os.O_RDONLY)
+        self.addCleanup(os.close, fd)
+        import tempfile as tf
+        return {
+            "open": lambda: open(f).close(), "os.listdir": lambda: os.listdir(d), "os.scandir": lambda: os.scandir(d).close(),
+            "os.rename": lambda: (os.rename(f, f + "2"), os.rename(f + "2", f)), "os.remove": lambda: os.remove(os.path.join(sub, "x")) if open(os.path.join(sub, "x"), "w").close() is None else None,
+            "os.rmdir": lambda: (os.mkdir(os.path.join(d, "e")), os.rmdir(os.path.join(d, "e"))), "os.mkdir": lambda: os.mkdir(os.path.join(d, "m")),
+            "os.chdir": lambda: (lambda cwd: (os.chdir(d), os.chdir(cwd)))(os.getcwd()), "os.symlink": lambda: os.symlink("f", os.path.join(d, "s")),
+            "os.link": lambda: os.link(f, os.path.join(d, "h")), "os.truncate": lambda: os.truncate(f, 0), "os.chmod": lambda: os.chmod(f, 0o600),
+            "os.chown": lambda: os.chown(f, -1, -1), "os.utime": lambda: os.utime(f, None), "os.setxattr": lambda: os.setxattr(f, "user.x", b"1"),
+            "os.removexattr": lambda: os.removexattr(f, "user.x"), "os.getxattr": lambda: os.getxattr(f, "user.x"), "os.listxattr": lambda: os.listxattr(f),
+            "os.chflags": lambda: os.chflags(f, 0), "os.walk": lambda: list(os.walk(d)), "os.fwalk": lambda: list(os.fwalk(d)),
+            "sqlite3.connect": lambda: __import__("sqlite3").connect(":memory:").close(), "tempfile.mkstemp": lambda: os.close(tf.mkstemp(dir=d)[0]),
+            "tempfile.mkdtemp": lambda: tf.mkdtemp(dir=d), "ctypes.dlopen": lambda: __import__("ctypes").CDLL(os.path.join(d, "nolib.so")),
+            "os.add_dll_directory": lambda: os.add_dll_directory(d), "os.mkdir@fd": lambda: os.mkdir("z", dir_fd=fd),
+        }
+
+    def test_every_audit_row_is_a_call_that_really_emits_its_event(self):
+        import errno
+        rows = set(G._AUDIT_PATH) | set(G._DIRFD)
+        with tempfile.TemporaryDirectory() as d:
+            ex = self.exercisers(d)
+            dead, unexercised = [], sorted(r for r in rows if r not in ex)
+            for ev in sorted(rows & set(ex)):
+                _EVENTS.clear(); _RECORD[0] = True
+                try:
+                    ex[ev]()
+                except (AttributeError, NotImplementedError):
+                    continue                                           # not on this platform (xattr is Linux, chflags is BSD, dll directory is Windows)
+                except OSError as e:
+                    if e.errno in (errno.ENOTSUP, errno.ENOSYS, errno.EPERM, errno.EOPNOTSUPP, errno.ENODATA, errno.ENOENT) and ev.startswith("os.") and "xattr" in ev:
+                        continue
+                    if ev != "ctypes.dlopen":
+                        raise
+                finally:
+                    _RECORD[0] = False
+                if ev not in _EVENTS:
+                    dead.append(ev)
+        self.assertEqual(unexercised, [], "audit rows with no exerciser here (add one, or remove the row)")
+        self.assertEqual(dead, [], "audit rows whose event CPython never emits: remove the row and wrap the call in install()")
+
+    def test_a_dead_row_would_be_caught(self):
+        with tempfile.TemporaryDirectory() as d:
+            _EVENTS.clear(); _RECORD[0] = True
+            try:
+                os.mkfifo(os.path.join(d, "ff"))
+            finally:
+                _RECORD[0] = False
+        self.assertNotIn("os.mkfifo", _EVENTS)                             # still true: that is why mkfifo is wrapped, not a row
+
+    def test_mkfifo_mknod_chroot_are_wrapped_and_refuse_a_path_outside_the_roots(self):
+        T = Tables(self)
+        fd_in, fd_out = os.open(T.t1, os.O_RDONLY), os.open(T.t2, os.O_RDONLY)
+        os.symlink.__wrapped__(T.t2, T.p1("out"))
+        try:
+            for n in ("mkfifo", "mknod", "chroot"):
+                self.assertTrue(hasattr(getattr(os, n), "__wrapped__"), n)
+            with T.active():
+                for fn in (os.mkfifo, os.mknod):
+                    self.refused(fn, T.p2("X")); self.refused(fn, "X", dir_fd=fd_out); self.refused(fn, T.p1("out", "X"))
+                    self.refused(fn, "../" + os.path.basename(T.t2) + "/X", dir_fd=fd_in)
+                    self.refused(fn, T.p1("..", "X"))
+                self.refused(os.chroot, T.t2); self.refused(os.chroot, T.p1("out"))
+                os.mkfifo(T.p1("ff")); os.mkfifo("gg", dir_fd=fd_in)
+                try:
+                    os.mknod(T.p1("nn")); os.mknod("oo", dir_fd=fd_in)
+                except PermissionError:
+                    pass
+                self.assertTrue(os.path.exists(T.p1("ff")) and os.path.exists(T.p1("gg")))
+            self.assertFalse(os.listdir(T.t2) and any(n in ("X", "ff") for n in os.listdir(T.t2)))      # nothing was created outside
+        finally:
+            os.close(fd_in); os.close(fd_out)
+
+    def refused(self, fn, *a, **k):
+        with self.assertRaises(G.SystemPathAccess, msg=repr(a)):
+            fn(*a, **k)
+
+    def test_mkfifo_on_a_link_name_is_the_os_answer_and_env_directories_are_not_writable(self):
+        T = Tables(self)
+        os.symlink.__wrapped__(T.p2("new"), T.p1("dangling"))
+        with T.active():
+            with self.assertRaises(FileExistsError):                  # the entry itself is in the root and mkfifo never follows it
+                os.mkfifo(T.p1("dangling"))
+            G._hook("os.symlink", ("t", T.p1("dangling"), -1))        # nor does the symlink audit event for the link location
+        with T.active(env=[T.t2]):
+            self.refused(os.mkfifo, T.p2("X")); self.refused(os.mknod, T.p2("Y"))     # readable environment, not writable
+            os.stat(T.p2("f"))
+        self.assertFalse(os.path.exists(T.p2("X")))
+
+    def test_the_standard_temp_parents_and_the_scandir_fd_form(self):
+        self.assertGreaterEqual(set(G.STANDARD_TEMP), {"/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders", "/dev/shm"})
+        T = Tables(self)
+        fd = os.open(T.t1, os.O_RDONLY)
+        try:
+            it = os.scandir(fd)
+            self.assertNotIsInstance(it, G._Scan)                      # an fd scan is passed through (its entries have no judgeable path)
+            it.close()
+        finally:
+            os.close(fd)
+
+    def test_xattr_writers_are_wrapped_where_the_platform_has_them(self):
+        T = Tables(self)
+        os.symlink.__wrapped__(T.p2("f"), T.p1("ln"))
+        for n in ("setxattr", "removexattr"):
+            if not hasattr(os, n):
+                continue
+            self.assertTrue(hasattr(getattr(os, n), "__wrapped__"), n)
+            with T.active():
+                self.refused(getattr(os, n), T.p2("f"), *(("user.x", b"1") if n == "setxattr" else ("user.x",)))
+                self.refused(getattr(os, n), T.p1("ln"), *(("user.x", b"1") if n == "setxattr" else ("user.x",)))
+
+    def test_sqlite_judges_a_plain_path_refuses_file_uris_and_the_connection_denies_attach(self):
+        import sqlite3, pathlib
+        T = Tables(self)
+        with T.active():
+            for name in (T.p2("db"), os.fsencode(T.p2("db")), pathlib.Path(T.p2("db")), "x/../../db", ":memory:x", " :memory:",
+                         "file:" + T.p1("db"), os.fsencode("file:" + T.p1("db")), pathlib.Path("file:" + T.p1("db")),
+                         "file:" + T.p2("db") + "?mode=ro", "file:../x/db", "file::memory:", ""):
+                self.refused(sqlite3.connect, name)
+                self.refused(G._hook, "sqlite3.connect", (name,))
+            for name in (T.p1("db"), os.fsencode(T.p1("db")), pathlib.Path(T.p1("db")), ":memory:", b":memory:"):
+                G._hook("sqlite3.connect", (name,))
+            with mock.patch.dict(G._real, {"getcwd": lambda: T.t1}):          # cwd inside the root: "file:/abs/db" would be a harmless relative name
+                for name in ("file:" + T.p2("db"), "file:../x/db", os.fsencode("file:/x"), pathlib.Path("file:" + T.p2("db")), ""):
+                    self.refused(G._hook, "sqlite3.connect", (name,))
+            self.refused(G._hook, "sqlite3.connect", (5,))
+        with tempfile.TemporaryDirectory() as d:                                # what coverage does: a real database file in a temp dir
+            c = sqlite3.connect(os.path.join(d, ".coverage.1"))
+            c.execute("create table t(x)"); c.execute("insert into t values (1)"); c.commit(); c.close()
+            c = sqlite3.connect(":memory:")
+            c.execute("create table t(x)")
+            for q in ("ATTACH '%s/a.db' AS x" % d, "VACUUM INTO '%s/b.db'" % d, "VACUUM main INTO '%s/c.db'" % d):
+                with self.assertRaises(sqlite3.DatabaseError, msg=q):
+                    c.execute(q)
+            c.close()
+            self.assertEqual(sorted(os.listdir(d)), [".coverage.1"])
+
+    def test_a_hard_link_source_is_followed(self):
+        T = Tables(self)
+        os.symlink.__wrapped__(T.p2("f"), T.p1("ln"))
+        made = []
+        link = G.wrap_link(lambda *a, **k: made.append(1), "os.link")
+        with T.active():
+            self.refused(link, T.p1("ln"), T.p1("new"))
+            self.refused(G._hook, "os.link", (T.p1("ln"), T.p1("new"), -1, -1))
+            G._hook("os.link", (T.p1("f"), T.p1("ln2"), -1, -1))
+        self.assertEqual(made, [])
+
+    def test_scandir_entries_judge_a_followed_symlink(self):
+        T = Tables(self)
+        os.symlink.__wrapped__(T.p2("f"), T.p1("ln")); os.symlink.__wrapped__(T.t2, T.p1("dln"))
+        with T.active():
+            with os.scandir(T.t1) as it:
+                es = {e.name: e for e in it}
+            for n in ("ln", "dln"):
+                e = es[n]
+                self.assertTrue(e.is_symlink())
+                self.refused(e.is_dir); self.refused(e.is_file); self.refused(e.stat)
+                e.stat(follow_symlinks=False); e.is_dir(follow_symlinks=False); e.is_file(follow_symlinks=False)
+                self.assertEqual(os.fspath(e), T.p1(n)); self.assertEqual(e.path, T.p1(n))
+            self.assertTrue(es["sub"].is_dir()); self.assertTrue(es["f"].is_file()); es["f"].stat(); es["f"].inode()
+            it2 = os.scandir(T.t1); next(it2); it2.close()
+            self.assertEqual(sorted(os.walk(T.p1("sub")))[0][1], ["deep"])
+            fd = os.open(T.t1, os.O_RDONLY)
+            try:
+                list(os.scandir(fd))
+            finally:
+                os.close(fd)
+
+    def test_env_named_temp_roots_are_ignored_unless_under_a_standard_temp_parent(self):
+        for bad in ("/etc", "/opt/fakehome", "/Users/x/Documents", "/home/x/work", "/var/log", "/srv/tmp-like", "/tmpx", "/private/etc"):
+            with mock.patch.dict(os.environ, {"TMPDIR": bad, "COVERAGE_RCFILE": bad + "/rc", "RUNNER_TEMP": ""}), \
+                    mock.patch.object(tempfile, "gettempdir", lambda bad=bad: bad):
+                got = G._roots()
+                self.assertNotIn(bad, got, bad); self.assertNotIn(bad + "/rc", got, bad)
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"TMPDIR": d, "COVERAGE_RCFILE": os.path.join(d, "rc")}):
+                self.assertIn(os.path.realpath(d), G._roots()); self.assertIn(os.path.realpath(os.path.join(d, "rc")), G._roots())
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": "/home/runner/work/_temp", "TMPDIR": "/home/runner/work/_temp/x"}), \
+                mock.patch.object(tempfile, "gettempdir", lambda: "/home/runner/work/_temp/x"):
+            self.assertIn("/home/runner/work/_temp/x", G._roots())
+
+    def test_a_pyc_named_link_to_a_module_is_judged_on_the_resolved_path(self):
+        T = Tables(self)
+        os.makedirs(T.p2("__pycache__"))
+        open(T.p2("site.py"), "w").close()
+        os.symlink.__wrapped__(T.p2("site.py"), T.p2("__pycache__", "evil.cpython-314.pyc"))
+        os.symlink.__wrapped__(T.p2("site.py"), T.p2("__pycache__", "evil.cpython-314.pyc.77"))
+        with T.active(env=[T.t2]):
+            for n in ("evil.cpython-314.pyc", "evil.cpython-314.pyc.77"):
+                self.refused(G.check, T.p2("__pycache__", n), "open", write=True)
+                self.refused(G._hook, "open", (T.p2("__pycache__", n), "w", 0))
+                G._hook("os.rename", (T.p2("__pycache__", n), T.p2("__pycache__", "ok.pyc")))        # renaming the LINK entry never follows it
+            G.check(T.p2("__pycache__", "evil.cpython-314.pyc"), "open")                  # reading it is the env's own business
+
+
+
 class Links(unittest.TestCase):
     def test_no_test_creates_a_link_to_an_absolute_target(self):
         bad, _ = link_scan()
@@ -599,8 +843,7 @@ class Static(unittest.TestCase):
         bad = []
         for rel in test_files():
             if rel.endswith(".sh"):
-                with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
-                    if makes_files_without_temp(fh.read()):
+                if makes_files_without_temp(decode(read_raw(rel))):
                         bad.append(rel)
         self.assertEqual(bad, [], "shell tests that write files without a mktemp call")
 
@@ -627,8 +870,7 @@ class Static(unittest.TestCase):
         rows = whole_file_rows()
         self.assertEqual(sorted(A.PINS), rows, "every whole-file row needs a pin and every pin a whole-file row")
         for rel in rows:
-            with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
-                sha, lines = row_pin(fh.read())
+            sha, lines = row_pin(read_raw(rel))
             want_sha, want_lines, reason = A.PINS[rel]
             self.assertGreaterEqual(len(reason.strip()), 12)
             self.assertEqual(sorted(set(lines) - set(want_lines)), [], "%s: new system-path literal lines (add them to PINS with a reason)" % rel)
@@ -639,9 +881,8 @@ class Static(unittest.TestCase):
     def test_the_whole_file_pin_bites_on_every_form_of_added_command(self):
         import system_path_allowlist as A
         rel = sorted(A.PINS)[0]
-        with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
-            base = fh.read()
-        self.assertEqual(row_pin(base)[0], A.PINS[rel][0])
+        base = decode(read_raw(rel))
+        self.assertEqual(row_pin(read_raw(rel))[0], A.PINS[rel][0])
         forms = ["grep -q root /etc/passwd", "ls /usr/local/bin", "source /etc/os-release", ". /etc/os-release", "head -1 /etc/hostname",
                  "[ -x /usr/local/bin/grype ]", "test -f /etc/hosts", "x=$(cat /etc/hosts)", "if cat /etc/hosts; then", "cp a ${X:-/etc/y}",
                  "</etc/hosts", "x | tee -a /etc/x", "find /usr/local -name x", "cmd >/tmp/out", "echo 'a\"b'; cat /etc/hosts",
@@ -649,6 +890,20 @@ class Static(unittest.TestCase):
         for f in forms:
             self.assertNotEqual(row_pin(base + "\n" + f + "\n")[0], A.PINS[rel][0], f)       # ANY edit changes the whole-file hash
         self.assertNotEqual(row_pin(base + "\ncp /tmp/y /usr/bin/y\n")[1], tuple(A.PINS[rel][1]))     # and a new literal shows in the lines
+        raw = read_raw(rel)
+        self.assertNotEqual(row_pin(raw + b"\xff")[0], row_pin(raw + b"\xfe")[0])          # bytes that decode to the same replacement character
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "f.sh")
+            with open(p, "wb") as fh:
+                fh.write(b"a\r\nb\rc\n")
+            self.assertEqual(read_raw(p), b"a\r\nb\rc\n")                                # no newline translation on the way in
+        crlf, cr = raw.replace(b"\n", b"\r\n"), raw.replace(b"\n", b"\r")
+        demo = b'# a comment\rcase_ x ok "\necho FIXTURE-LINE-EXECUTED\n"\n'
+        one = raw.replace(b"\n", b"\r", 1)
+        for name, edited in (("CRLF copy", crlf), ("every LF to CR", cr), ("one LF to CR", one), ("a CR-after-comment demo appended", raw + demo),
+                             ("a trailing CR", raw + b"\r")):
+            self.assertNotEqual(row_pin(edited)[0], A.PINS[rel][0], name)
+        self.assertEqual(row_pin(raw)[0], A.PINS[rel][0])
         # the context attack: moving a closing quote turns a quoted fixture line into a top-level command; the literal lines are the same
         unmoved = 'case_ x bad "$(r \'echo hi\')" "\ncp /tmp/y /usr/bin/y\n"\n'          # the cp line is INSIDE a quoted fixture
         moved = 'case_ x bad "$(r \'echo hi\')" ""\ncp /tmp/y /usr/bin/y\n'              # the closing quote moved up: a real command
@@ -657,7 +912,9 @@ class Static(unittest.TestCase):
 
     EXPECTED_NAMES = ["etc", "usr", "var", "private", "Library", "System", "opt", "bin", "sbin", "dev", "home", "root", "proc", "sys", "Users",
                       "tmp", "Applications", "Volumes", "run", "srv", "lib", "lib64", "boot", "mnt", "nix", "cores", "Network", "snap",
-                      "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost+found", "vol"]
+                      "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost+found", "vol", "pkg",
+                      "swapfile", "imagegeneration", "datadisk", "cdrom", "lib32", "libx32", "init", "__w", "_work", "docker-entrypoint.d", "entrypoint.sh",
+                      "bin.usr-is-merged", "lib.usr-is-merged", "sbin.usr-is-merged"]
 
     def test_every_top_level_name_is_found_in_every_position(self):
         self.assertEqual([x.replace("\\", "") for x in SYS_NAMES], self.EXPECTED_NAMES)      # an independent copy: dropping a name fails here
@@ -665,10 +922,37 @@ class Static(unittest.TestCase):
             for text in ("ls /%s/x" % n, "d=/%s" % n, "open('/%s/f')" % n, "cc -o/%s/f" % n, "p=${V:-/%s}/f" % n, "ls /%s" % n.upper(),
                          "ls //%s/x" % n, "ls /./%s/x" % n, "ls /../%s/x" % n, "ls /{%s,x}/f" % n, "x=/%s2/f" % n, "x=/%s_dir/f" % n):
                 self.assertTrue(literal_findings("f.sh", text, [])[0], text)
-            for text in ("x=/q%s/f" % n, "u=https://h/%s/x" % n, "r=a/%s/b" % n, "./%s/x" % n, "d=$work/%s" % n) + (("echo /%s-x" % n,) if n != "lib64" else ()):
+            for text in ("x=/q%s/f" % n, "u=https://h/%s/x" % n, "r=a/%s/b" % n, "./%s/x" % n, "d=$work/%s" % n) + (("echo /%s-x" % n,) if not n[-1].isdigit() and "." not in n else ()):
                 self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
         for text in ("ls /e?c/hosts", "ls /?tc", "ls /us?/bin", "ls /{etc,usr}/x", "ls /{usr,x}", "cat /et?"):
             self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+
+    def test_every_entry_of_the_real_root_of_this_machine_is_found_as_a_first_component(self):
+        """Closes "a first component outside the list" for every path that exists on the machine running the suite (the dev Mac, CI)."""
+        G._busy.bypass = True                                                    # a read of / by NAME, bypassing the guard (names only)
+        try:
+            entries = os.listdir("/")
+        finally:
+            G._busy.bypass = False
+        self.assertTrue(entries)
+        missing = [e for e in entries if not literal_findings("f.sh", "ls /%s/x" % e, [])[0] or not literal_findings("f.sh", "ls /%s" % e, [])[0]]
+        self.assertEqual(missing, [], "top-level entries of / that the scan does not know: add them to SYS_NAMES")
+
+    def test_first_component_classes_are_found_without_a_name_list(self):
+        for text in ["ls /.vol/x", "ls /.file", "cat /.nofollow/etc/hosts", "cat /.resolve/x", "ls /.dockerenv", "ls /.fseventsd/x", "ls /.Spotlight-V100",
+                     "ls /.DS_Store", "cat /.VolumeIcon.icns", "find /.", "find /. -name x", "x='/.hidden'",
+                     "ls /*", "ls /U*/x", "cat /e*/hosts", "cat /[e]tc/hosts", "cat /e??/hosts", "glob.glob('/*')", "ls /?tc",
+                     "cat ~root/x", "ls ~nobody", "cat ../../etc/hosts", "cd ../../..", "cd ..//..//x", "cat ../../../../etc/hosts", "x=../../y",
+                     "d=/", "r='/'", "r=/ ", "r=\"/\"; ls", "git --git-dir=/x/.git status", "tar --directory=/ -x", "tar -C/ -x", "echo hi > /", "echo x >> /",
+                     "cd \"/\"", "ls '/'", "os.listdir(os.sep)", "shutil.rmtree(os.sep)", "docker run --mount source=/,target=/h", "docker run --mount type=bind,src=/,dst=/h"]:
+            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+        for text in ["cd \"$(dirname \"$0\")/../../..\"", "root=\"$here/../..\"", "cp ../x y", "a = '../x'", "u.get('d') == 'x'", "s + \"/.vex/a.json\"",
+                     "open(root + \"/.github/x\")", "glob.glob(a + \"/*.json\")", "ls \"$SRC\"/*/go.mod", "x = /* a comment */ 5", "re.sub(r\"</?p>\", \"\", s)",
+                     "cron: '*/10 * * * *'", ":(glob)**/*.sh", "ls ./.hidden", "cat a/.b", "x = '/branches?'", "echo hi > out.txt", "name = 'a=b'", "a == '/'"][:-1]:
+            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+        self.assertTrue(literal_findings("x-test.sh", "sudo apt-get install x", [])[0])
+        self.assertTrue(literal_findings("x-test.sh", "FOO=1 sudo docker pull", [])[0])
+        self.assertEqual(literal_findings("test_x.py", "# sudo is not a command here", [])[0], [])
 
     def test_every_bare_root_form_is_found(self):
         for text in ["tar -C / -xf a.tar", "git -C / status", "env -C / cat etc/hosts", "cp x /", "mv x /", "rsync -a x /", "pushd /", "popd /",
@@ -686,7 +970,7 @@ class Static(unittest.TestCase):
         for text in ["cat ~/x", "x=~/y", "cd ~", "cd", "cd; ls", "cd && ls", "ls ~", "cat ~;", "x=~", "cp -r ~ y", "../../../../etc/hosts", "cat ../../../x", "file:///etc/hosts",
                      "file:/etc/hosts", "file://localhost/x", "echo $HOME", "os.path.expanduser('~')"]:
             self.assertTrue(literal_findings("f.sh", text, [])[0], text)
-        for text in ["cd ..", "cd $d", "x ~ y", "'~' suffix", "cat ../../x", "file://$work/rel", "file://.", "cd dir"]:
+        for text in ["cd ..", "cd $d", "x ~ y", "'~' suffix", "cat ../x", "file://$work/rel", "file://.", "cd dir"]:
             self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
 
     def test_the_literal_scan_finds_every_plain_form(self):
@@ -879,8 +1163,7 @@ if __name__ == "__main__":
         import pprint, system_path_allowlist as A
         reasons = {r[0]: r[2] for r in A.ROWS if r[1] == ""}
         for rel in whole_file_rows():
-            with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
-                sha, lines = row_pin(fh.read())
+            sha, lines = row_pin(read_raw(rel))
             print("    %r: (%r,\n        %s,\n        %r)," % (rel, sha, pprint.pformat(list(lines), width=130, indent=9).replace("\n", "\n        "),
                                                           A.PINS.get(rel, (0, 0, reasons[rel]))[2]))
     else:
