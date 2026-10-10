@@ -58,7 +58,8 @@ scheduled. The smallest practical node on managed Kubernetes is 2 GB. If you
 size a node pool from the 1 GB machine minimum, the pod will not schedule.
 
 Disk is the variable that matters: size the PVC from `FSCACHE_MAX_BYTES` plus
-about 20% headroom, not the other way round.
+about 20% headroom, not the other way round (see [Sizing](docker-deploy.md#sizing)
+for the in-flight upload caveat).
 
 ## Secret (credentials)
 
