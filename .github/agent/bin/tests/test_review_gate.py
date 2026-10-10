@@ -221,6 +221,29 @@ class GuardFiles(Cli):
         self.assertEqual(self.run_main("--print-tree")[1].strip(), t)      # ci.yml is not part of the bound content
 
 
+class ScanGuardFile(GuardFiles):
+    """REQ-SCAN-015-AC2 (the scanner guard step unweakened; proposed AC3 names the script itself): the scanner guard
+    script is review-gated like the allowlist guard's files, so a PR cannot gut it without a review record."""
+    SCAN = "bin/scan-no-workflow-call-test.sh"
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.SCAN, "#!/usr/bin/env bash\necho real guard\n")
+        self.git("add", "-A"); self.git("commit", "-qm", "scan guard")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def test_gutting_the_scan_guard_needs_a_record_and_a_record_clears_it(self):
+        self.write(self.SCAN, "#!/usr/bin/env bash\nexit 0\n"); self.git("commit", "-qam", "gut the guard")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no valid review record", out)
+        self.assertIn(self.SCAN, out)
+        self.record()                                                      # control: the same PR with a valid record
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("clears the stop rule", out)
+
+
 # ---- REQ-AUD-018-AC4: a recorded second-seat substitute (the opus entry) -------------------------
 Q0317 = "stop all codex no more codex reviews until after 1AM Saturday. replace all codex with opus medium."
 Q210 = "Proceed with opus just for this one that codex is hung up on"
