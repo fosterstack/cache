@@ -13,6 +13,7 @@ Fixtures (offline tests): {"now": ISO, "times": {ITEM: {"time": ISO, "source": S
 """
 import argparse
 import base64
+import hashlib
 import datetime as dt
 import importlib.util
 import json
@@ -457,26 +458,42 @@ def main(argv=None):
         return 2
 
 
+def _line_hash(flat):
+    return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16]
+
+
 def _unmeasured_counts(root, base, head):
+    """(base counts, head counts, {head key: {whole-line hash: occurrences}}): the line hashes bind a ruled-text row to the whole line (REQ-SUP-001-AC16)."""
     b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})   # a read error propagates: the check cannot run (exit 2), never "nothing found"
-    h = inv.unmeasured({**inv.tree_files(root, head), **inv.tree_scripts(root, head)})
-    return b, h
+    lines = {}
+    for k, flat in inv.unmeasured_occurrences({**inv.tree_files(root, head), **inv.tree_scripts(root, head)}):
+        per = lines.setdefault(k, {})
+        per[_line_hash(flat)] = per.get(_line_hash(flat), 0) + 1
+    h = {k: sum(per.values()) for k, per in lines.items()}
+    return b, h, lines
 
 
 def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command line): an in-place swap of one line for another is an ADDITION
     """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
-    b, h = _unmeasured_counts(root, base, head)
+    b, h, _ = _unmeasured_counts(root, base, head)
     return sorted(k for k, n in h.items() if n > b.get(k, 0))
 
 
 # REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub written as data). They are read from
 # the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
-_RULED_FIELDS = ("file", "form", "key", "ruling")
+_RULED_FIELDS = ("file", "form", "key", "line", "ruling")
+
+
+def _no_duplicate_keys(pairs):
+    keys = [k for k, _ in pairs]
+    if len(set(keys)) != len(keys):
+        raise ValueError(f"a JSON object repeats a key ({sorted(k for k in set(keys) if keys.count(k) > 1)})")
+    return dict(pairs)
 
 
 def load_ruled_text(path, required=False):
-    """{(file, form, 16-hex line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
+    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
@@ -484,7 +501,7 @@ def load_ruled_text(path, required=False):
         return {}
     try:
         with open(path) as f:
-            d = json.load(f)
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys)   # a repeated key would let a later copy silently win
     except (OSError, ValueError) as e:
         raise RuntimeError(f"the exceptions file {path} (unmeasured_text) is unreadable: {e}")
     rows = d.get("unmeasured_text", []) if isinstance(d, dict) else None
@@ -494,29 +511,33 @@ def load_ruled_text(path, required=False):
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
         if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count"} or not set(_RULED_FIELDS) <= set(r):
-            raise bad("must be an object with exactly file, form, key, ruling (and an optional count)")
+            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
-            raise bad("has an empty or non-text file, form, key or ruling")
+            raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{16}", r["key"]):
-            raise bad("key is not the scan's 16 lowercase hex line hash")
+            raise bad("key is not the scan's 16 lowercase hex hash")
+        if not re.fullmatch(r"[0-9a-f]{16}", r["line"]):
+            raise bad("line is not the 16 lowercase hex hash of the whole flattened line")
         count = r.get("count", 1)
         if type(count) is not int or count < 1:
             raise bad("count is not a whole number of at least 1")
-        k = (r["file"], r["form"], r["key"])
+        k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
-            raise bad("repeats an earlier row (file, form and key)")
+            raise bad("repeats an earlier row (file, form, key and line)")
         out[k] = (r["ruling"].strip(), count)
     return out
 
 
 def _run(a, moved, fx, now):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
-    b, h = _unmeasured_counts(a.root, a.base, a.head)
+    b, h, lines = _unmeasured_counts(a.root, a.base, a.head)
     added, ruled = [], []
     for k in sorted(k for k, n in h.items() if n > b.get(k, 0)):
-        r = rulings.get((k[0], k[1], k[2].split(":", 1)[0]))
-        if r and h[k] <= r[1]:     # every occurrence of the line in the head is covered by the row's count (1 unless it says more)
-            ruled.append((k, r[0]))
+        # ruled only when EVERY occurrence in the head sits in a whole line that a row names, within that row's count (1 unless it says more): the
+        # same segment inside any other line, or one copy too many, leaves the item refused
+        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
+        if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
+            ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
             added.append(k)
     if not moved and not added:

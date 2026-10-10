@@ -536,6 +536,14 @@ def unmeasured(files):
     """{(file, form, command line): occurrences} for every install form in the workflows and scripts that this inventory does not measure, read after
     joining backslash continuations. Reported as information; a pull request that ADDS an entry (a new command line, even in place of another) is refused."""
     out = {}
+    for key, _flat in unmeasured_occurrences(files):
+        out[key] = out.get(key, 0) + 1
+    return out
+
+
+def unmeasured_occurrences(files):
+    """Each unmeasured occurrence as (key, the WHOLE flattened line it was found in): the line binds a ruled-text row (REQ-SUP-001-AC16) to the line, not
+    to the one downloader segment the key hashes."""
     for path, text in sorted(files.items()):
         if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
             continue  # .github/agent/ is covered by the review-record gate (and its tests quote such commands as fixtures)
@@ -547,10 +555,7 @@ def unmeasured(files):
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
                 if re.search(r"\b(?:curl|wget)\b", seg) and not plain:
-                    key = (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100])
-                    out[key] = out.get(key, 0) + 1
+                    yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100]), flat
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
-                    key = (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100])  # the WHOLE line decides identity (its hash), never a truncation
-                    out[key] = out.get(key, 0) + 1
-    return out
+                    yield (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100]), flat  # the WHOLE line decides identity (its hash), never a truncation
