@@ -82,6 +82,9 @@ record("rec-material.json", [subj(h, "https://witness.dev/attestations/material/
 for i in items:
     a = dict(exp); v = a[i]; a[i] = v[:-1] + ("0" if v[-1] != "0" else "1"); dump("act-diff-%s.json" % i, a)
     m = dict(exp); del m[i]; dump("act-miss-%s.json" % i, m)
+snap3 = dict(exp)
+for i in ("image-fips", "sbom-fips", "apkindex-x86_64"): snap3[i] = snap3[i][:-1] + ("0" if snap3[i][-1] != "0" else "1")
+dump("act-diff-snap3.json", snap3)
 two = dict(exp)
 for i in (items[0], items[7], items[-1]): two[i] = two[i][:-1] + ("0" if two[i][-1] != "0" else "1")
 dump("act-diff3.json", two)
@@ -163,18 +166,41 @@ rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json"
 # REQ-CHAIN-005-AC7: a snapshot Rebuild compares against Build's SNAPSHOT record, and only with --snapshot
 snap_run() { # snap_run FLAG REC EXPECTED ACTUAL -> RC; FLAG is --snapshot or empty
   rm -f "$W/verdict.json"; RC=$(rc_of rebuild-compare $1 --build-record "$W/$2" --expected "$W/$3" --actual "$W/$4" --out "$W/verdict.json"); }
-snap_run --snapshot rec-snap.json exp.json act.json
-if [ -f "$CV" ] && [ "$RC" = 0 ] && jq -e '.equal == true' "$W/verdict.json" > /dev/null 2>&1; then
-  ok "005-AC7 --snapshot accepts Build's snapshot-build record and equal items"
-else
-  bad "005-AC7 --snapshot with snapshot-build and equal items -> exit $RC: $(head -c 160 "$W/err" | tr '\n' ' ')"
-fi
-snap_run --snapshot rec-snap.json exp.json "act-diff-image-fips.json"
-if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: differs: image-fips$'; then
-  ok "005-AC7 --snapshot still names a differing item (rule 31 is not weakened)"
-else
-  bad "005-AC7 --snapshot with a differing item -> exit $RC: $(head -1 "$W/err")"
-fi
+# The snapshot verdict (witness-rebuild/snapshot-verdict.json; advisor and cache-3f agreed the shape, Oct 9), written in every case:
+#   {"verdict":"identical"|"differs",
+#    "images":[{"image":"production","build_digest":"sha256:...","rebuild_digest":"sha256:...","equal":true},{"image":"fips",...}],
+#    "items_differing":[item names, sorted]}
+# `images` holds the two image INDEX digests (items image-production and image-fips); the per-architecture manifests, apks, binaries, SBOMs and everything else
+# appear in items_differing only. The verdict is `differs` if ANY item differs, not only an image, and the command then exits 1 (the job fails).
+snap_verdict() { # snap_verdict LABEL ACTUAL-FILE EXPECTED-VERDICT EXPECTED-RC IMAGE-FIPS-EQUAL IMAGE-PRODUCTION-EQUAL DIFFERING-ITEMS(json) -> judged with jq
+  local label=$1 act=$2 want=$3 wantrc=$4 fips_eq=$5 prod_eq=$6 differing=$7 exp_fips exp_prod act_fips act_prod
+  snap_run --snapshot rec-snap.json exp.json "$act"
+  exp_fips=$(jq -r '."image-fips"' "$W/exp.json"); exp_prod=$(jq -r '."image-production"' "$W/exp.json")
+  act_fips=$(jq -r '."image-fips"' "$W/$act"); act_prod=$(jq -r '."image-production"' "$W/$act")
+  if [ -f "$W/verdict.json" ] && [ "$RC" = "$wantrc" ] \
+     && jq -e --arg v "$want" --arg ef "$exp_fips" --arg ep "$exp_prod" --arg af "$act_fips" --arg ap "$act_prod" \
+        --argjson fe "$fips_eq" --argjson pe "$prod_eq" --argjson d "$differing" \
+        '.verdict == $v and (keys | sort) == ["images", "items_differing", "verdict"] and .items_differing == $d
+         and .images == [{"image": "production", "build_digest": $ep, "rebuild_digest": $ap, "equal": $pe},
+                         {"image": "fips", "build_digest": $ef, "rebuild_digest": $af, "equal": $fe}]' "$W/verdict.json" > /dev/null 2>&1; then
+    ok "$label"
+  else
+    bad "$label -> exit $RC (want $wantrc), verdict: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
+  fi
+}
+snap_verdict "005-AC7 identical items: verdict identical, both images equal with both digests, nothing differing, exit 0" act.json identical 0 true true '[]'
+snap_verdict "005-AC7 one image differs (fips): verdict differs, the fips row is not equal and shows both digests, items_differing names it, exit 1" \
+  "act-diff-image-fips.json" differs 1 false true '["image-fips"]'
+snap_verdict "005-AC7 the production image differs: its row is not equal, the fips row is" \
+  "act-diff-image-production.json" differs 1 true false '["image-production"]'
+snap_verdict "005-AC7 ONLY an SBOM differs: verdict differs, both images equal, items_differing names the SBOM, exit 1 (not only images count)" \
+  "act-diff-sbom-production.json" differs 1 true true '["sbom-production"]'
+snap_verdict "005-AC7 only a per-architecture manifest differs: the image rows stay equal, items_differing names the manifest, exit 1" \
+  "act-diff-image-fips-manifest-arm64.json" differs 1 true true '["image-fips-manifest-arm64"]'
+snap_verdict "005-AC7 only a binary differs: verdict differs, exit 1" "act-diff-binary-standard-x86_64.json" differs 1 true true '["binary-standard-x86_64"]'
+snap_verdict "005-AC7 only an apk differs: verdict differs, exit 1" "act-diff-apk-fips-aarch64.json" differs 1 true true '["apk-fips-aarch64"]'
+snap_verdict "005-AC7 three items differ (image-fips, sbom-fips, apkindex-x86_64): all are named, sorted, exit 1" "act-diff-snap3.json" differs 1 false true \
+  '["apkindex-x86_64","image-fips","sbom-fips"]'
 snap_run --snapshot rec.json exp.json act.json
 if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: step: build$'; then
   ok "005-AC7 --snapshot refuses a release record named build (a snapshot compare never trusts a release record)"
@@ -211,7 +237,7 @@ mkdir "$W/clean";
 [ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
     "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad \
     "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
-TOTAL=$((pass + failn)); EXPECT=92
+TOTAL=$((pass + failn)); EXPECT=98
 echo "pass=$pass fail=$failn"
 if [ "$TOTAL" != "$EXPECT" ]; then echo "FAIL case count $TOTAL != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

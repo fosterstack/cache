@@ -281,7 +281,13 @@ if cmd == "rebuild-compare":
         return "same" if expected[k] == actual[k] else "differs"
     items = [{"name": k, "expected": expected.get(k), "actual": actual.get(k), "status": status(k)} for k in sorted(set(expected) | set(actual))]
     differ = [i["name"] for i in items if i["status"] != "same"]
-    json.dump({"equal": not differ, "items": items}, open(arg("--out"), "w"))     # the CLI contract of bin/chain-rebuild-test.sh
+    if "--snapshot" in a:         # the agreed snapshot verdict: verdict, the two image index digests, every differing item
+        row = {i["name"]: i for i in items}
+        images = [{"image": n, "build_digest": row["image-" + n]["expected"], "rebuild_digest": row["image-" + n]["actual"],
+                   "equal": row["image-" + n]["status"] == "same"} for n in ("production", "fips")]
+        json.dump({"verdict": "differs" if differ else "identical", "images": images, "items_differing": differ}, open(arg("--out"), "w"))
+    else:
+        json.dump({"equal": not differ, "items": items}, open(arg("--out"), "w"))     # the CLI contract of bin/chain-rebuild-test.sh
     if differ: sys.stderr.write("refused at rebuild: differs: %s\\n" % " ".join(differ)); sys.exit(1)
     sys.exit(0)
 sys.exit(2)

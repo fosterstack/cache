@@ -1323,7 +1323,8 @@ beh_snapshot_rebuild_assemble() { # beh_snapshot_rebuild_assemble TAGNAME SCRIPT
   else
     bad "005-AC7 $t snapshot-rebuild-assemble: exit $rc, order $n1 $n2 $n3 $n4, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
-  if [ "$rc" = 0 ] && jq -e '.equal == true' "$d/witness-rebuild/snapshot-verdict.json" > /dev/null 2>&1 && [ ! -e "$d/witness-rebuild/verdict.json" ]; then
+  if [ "$rc" = 0 ] && jq -e '.verdict == "identical" and .items_differing == []' "$d/witness-rebuild/snapshot-verdict.json" > /dev/null 2>&1 \
+     && [ ! -e "$d/witness-rebuild/verdict.json" ]; then
     ok "005-AC7 $t snapshot-rebuild-assemble: an identical rebuild writes witness-rebuild/snapshot-verdict.json (equal) and never a release verdict.json"
   else
     bad "005-AC7 $t snapshot-rebuild-assemble: rc=$rc files: $(ls "$d/witness-rebuild" 2> /dev/null | tr '\n' ' ')"
@@ -1335,7 +1336,9 @@ import json, sys
 p = sys.argv[1]; items = json.load(open(p)); k = "image-fips"; items[k] = items[k][:-1] + ("0" if items[k][-1] != "0" else "1"); json.dump(items, open(p, "w"))
 PY
   rc=$(run_stage "$d" snapshot-rebuild-assemble "$mode" "$SNAP_TAG")
-  if [ "$rc" != 0 ] && jq -e '.equal == false' "$d/witness-rebuild/snapshot-verdict.json" > /dev/null 2>&1 && grep -q 'image-fips' "$d/stage.err"; then
+  if [ "$rc" != 0 ] && jq -e '.verdict == "differs" and .images[1].equal == false and .items_differing == ["image-fips"]' \
+        "$d/witness-rebuild/snapshot-verdict.json" > /dev/null 2>&1 \
+     && grep -q 'image-fips' "$d/stage.err"; then
     ok "005-AC7 $t snapshot-rebuild-assemble: a differing Build item blocks the job and the snapshot verdict names it (rule 31 is not weakened)"
   else
     bad "005-AC7 $t snapshot-rebuild-assemble: differing item -> rc=$rc"
