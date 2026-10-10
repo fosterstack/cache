@@ -23,7 +23,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -729,11 +728,44 @@ def bundle_to_outputs(bun, out_dir, pol):
         json.dump({"entries": tlog}, f)
 
 
+# the files Sign writes into its output folder: on a refusal exactly these, and the folder Sign made, are removed
+OWN_FILES = ("provenance.bundle.json", "provenance.json", "provenance.rekor.json", "DRY-RUN")
+
+
+def require_fresh_out(out):
+    """--out must not exist yet, as a file, a folder or a symlink (REQ-CHAIN-001-AC2, Opus r1-verify H1): Sign creates it and removes
+    only what it created, so a refusal can never delete `.`, an existing folder, or a symlink's target. A usage error, before anything runs."""
+    if os.path.lexists(out):
+        print("error: --out %s already exists; sign writes into a folder it creates itself" % out, file=sys.stderr)
+        sys.exit(2)
+
+
+def make_out(out):
+    try:
+        os.mkdir(out)
+    except OSError as ex:
+        refuse("sign", "cannot create the output folder %s (%s)" % (out, type(ex).__name__))
+
+
+def remove_own_out(out):
+    """Remove the files Sign wrote and the folder it made; anything else found there (and the folder holding it) is left alone."""
+    for name in OWN_FILES:
+        try:
+            os.unlink(os.path.join(out, name))
+        except FileNotFoundError:
+            pass
+    try:
+        os.rmdir(out)
+    except OSError:
+        pass
+
+
 def cmd_sign(a):
     if not a.check:
         refuse("sign", "sign requires --check: the check comes before the signature")
     if a.signer != "cosign":
         refuse("sign", "the only signer is cosign")
+    require_fresh_out(a.out)
     pol, obj = check_build_record(a)
     dry = bool(pol.get("dry_run"))
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template or a.policy)), "cosign-signing-config.json")
@@ -742,25 +774,37 @@ def cmd_sign(a):
         statement = provenance_statement(pol, obj, dry)
         with open(sp, "w") as f:
             json.dump(statement, f, sort_keys=True)
-        os.makedirs(a.out, exist_ok=True)
+        make_out(a.out)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
         r = subprocess.run(["cosign", "attest-blob", "--yes", "--signing-config", signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
         if r.returncode != 0:
-            shutil.rmtree(a.out, ignore_errors=True)
+            remove_own_out(a.out)
             refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
         try:
             convert_and_verify(bundle, a.out, pol, statement, parse_now(a.now), tmpd)
         except Refuse as bad:
-            shutil.rmtree(a.out, ignore_errors=True)   # a failed sign leaves no provenance behind (001-AC2)
+            remove_own_out(a.out)   # a failed sign leaves no provenance behind (001-AC2)
             refuse("sign", bad.reason)
         except Exception as ex:
             # anything else in the self-check (openssl failing, a file that cannot be written) is a refusal too, never a traceback
-            shutil.rmtree(a.out, ignore_errors=True)
+            remove_own_out(a.out)
             refuse("sign", "the check of the provenance Sign wrote could not run: %s" % str(ex)[:200])
         if dry:
             with open(os.path.join(a.out, "DRY-RUN"), "w") as f:
                 f.write("dry run: Release can never accept this record\n")
     print("ok")
+
+
+def same_json(a, b):
+    """Equal JSON values of the SAME types (Opus r1-verify H2): Python's == says true == 1 == 1.0, which would let a signed
+    `"dryRun": 1` pass for the `true` Sign built; here bool, int and float are three types and each container is compared item by item."""
+    if type(a) is not type(b):
+        return False
+    if isinstance(a, dict):
+        return a.keys() == b.keys() and all(same_json(a[k], b[k]) for k in a)
+    if isinstance(a, list):
+        return len(a) == len(b) and all(same_json(x, y) for x, y in zip(a, b))
+    return a == b
 
 
 def convert_and_verify(bundle, out_dir, pol, statement, now, tmpd):
@@ -778,7 +822,7 @@ def convert_and_verify(bundle, out_dir, pol, statement, now, tmpd):
     signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), os.path.join(out_dir, "provenance.rekor.json"), now, vdir)
     # compared as parsed JSON, not as bytes: what matters is what the statement says, and cosign may re-serialise the statement file
     # it was given (key order, spacing) without changing a single subject or field; the parse is strict (no duplicate key, no NaN)
-    if signed != statement:
+    if not same_json(signed, statement):
         refuse("sign", "the statement cosign signed is not the statement Sign built (subjects or predicate differ)")
 
 

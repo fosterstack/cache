@@ -2302,7 +2302,7 @@ requirements:
       - `actions` follows a listed local composite action wherever it is stored, including under .github/workflows/, and skips following only a reference that names a .yml/.yaml file (a reusable workflow, judged as a workflow of its own).
       - The token of the key and token attempts must name exactly <repo>/.github/workflows/stage-sign.yml@<ref> of this repository (GITHUB_REPOSITORY).
       - Codex security round 1 (Oct 10):
-      - (S1) after cosign, `sign` refuses a bundle with no or an empty timestamp list or Rekor entry list, naming each, verifies the two files it wrote as stage sign and requires the payload cosign signed to be, as parsed JSON, the statement Sign built (Opus round-1 verify F1) before it prints ok; any refusal, or any failure of that self-check, removes the output folder;
+      - (S1) after cosign, `sign` refuses a bundle with no or an empty timestamp list or Rekor entry list, naming each, verifies the two files it wrote as stage sign and requires the payload cosign signed to be, as parsed JSON with exact types (true is not 1, 1 is not 1.0), the statement Sign built (Opus round-1 verify F1, H2) before it prints ok; --out must not exist yet (., a folder, a file or a symlink is a usage error before anything runs) and any refusal, or any failure of that self-check, removes only the files Sign wrote and the folder it made (H1);
       - (S2) a Rekor entries file whose `entries` is not a list of objects is a refusal, never a traceback;
       - (S3) base64 must be canonical (re-encoding gives the same text) and JSON readers refuse NaN, Infinity, -Infinity and numbers that overflow to infinity (1e400);
       - (S4) only `actions` imports PyYAML; the Sign path runs on the standard library.
