@@ -5,6 +5,7 @@
 # per image, VEX filtering for Inspector and Google, the merge into one finding "seen by N of M", reporting
 # only at two or more scanners, and that unique findings are only listed for the auditor (rule 9, Oct 3).
 set -euo pipefail
+TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd)
 python3 - "$here/panel.py" "$here/../.vex/fosterstack-cache.openvex.json" <<'PY'
 import importlib.util, json, os, shutil, sys, tempfile

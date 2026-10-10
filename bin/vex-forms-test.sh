@@ -5,6 +5,7 @@
 # OpenVEX statement; the Inspector file carries one rule per suppressible statement (not_affected, fixed) and none for
 # affected or under_investigation. Offline: no network, no cloud call.
 set -euo pipefail
+TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
 python3 - "$here/vex-forms.py" "$root" <<'PY'
 import importlib.util, json, os, sys, tempfile
