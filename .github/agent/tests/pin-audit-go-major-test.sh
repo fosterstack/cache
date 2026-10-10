@@ -12,7 +12,8 @@
 #   * It applies only to a tool in pin-audit.py's committed table GO_TOOLS whose version is a plain MAJOR.MINOR.PATCH (a leading lowercase v allowed).
 #     Cases the rule cannot settle FAIL CLOSED, they are a HIT: a table path that is bare while the pinned major is 2 or more or
 #     that ends in a different /vN (the audit then queries bare and /vMAJOR and hits if any entry covers the version), a record with no exact entry, a
-#     path-less entry next to an exact entry, and a lookalike path (host case, trailing slash). Only these keep the OLD verdict, nothing ignored: an unparsable version, a tool
+#     path-less entry next to an exact entry, and a lookalike path (host case, trailing slash). Only these keep the OLD verdict, nothing ignored:
+#     an unparsable version, a tool
 #     not in the table, other item kinds (gotool, owner/repo), and a /v0 or /v1 entry in a record for a major 0/1 pin (the one exception: a Go major
 #     0/1 path has no suffix, so /v0 and /v1 entries are not the exact path and are left to the old filter).
 #   * The entry whose path is EXACTLY <bare>/vN (N >= 2) or EXACTLY <bare> (N <= 1) decides; every other entry is ignored and LOGGED. With no exact entry,
@@ -201,7 +202,8 @@ for v in ("3.1.3-rc.1", "3", "v3.1", "latest", "3.1.3.4", "03.1.3", "3.1.x"):
     except pa.Fail: finds = ["stopped"]
     assert bool(finds) == base(v) and ignored(net) == [], (v, finds, ignored(net))
 PY
-py "version parse holes keep the old verdict and ignore nothing, with the right /v3 table: build metadata, +incompatible (a Go major-3 +incompatible version belongs" \
+py "version parse holes keep the old verdict and ignore nothing, with the right /v3 table: build metadata, +incompatible (a Go major-3" \
+   " +incompatible version belongs
    " to the BARE path), newline, space, V, vv, Arabic-Indic, fullwidth" <<'PY'
 for v in ("3.1.3+build.1", "3.1.3+incompatible", "3.1.3\n", " 3.1.3", "V3.1.3", "vv3.1.3", "\u0663.\u0661.\u0663", "\uff13.1.3"):
     net = mknet([G4309], GG, True)
