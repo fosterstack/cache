@@ -917,19 +917,32 @@ done
 echo "curl $*" >>"$CALLS"
 out= url=
 while [ $# -gt 0 ]; do case $1 in -o|--output|-[a-zA-Z]*o) out=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac; done
-curl -fsSL "$url" -o "$out"
-wget "$url"
-if [ -n "${STUB_CURL_BOGUS:-}" ]; then [ -n "$out" ] && printf bogus >"$out" || printf bogus; exit 0
+b=${url##*/}; rest=${url%/*}; a=${rest##*/}
+if [ "$b" = wolfi-signing.rsa.pub ] && [ -n "${STUB_LIVE_KEY:-}" ]; then src=$STUB_LIVE_KEY
+elif [ -n "${STUB_CURL_BOGUS:-}" ]; then [ -n "$out" ] && printf bogus >"$out" || printf bogus; exit 0
 else echo "stub curl: 22 $url" >&2; exit 22; fi
+if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 EOF
 chmod +x "$stubs/curl"
 for g in git gh; do cat >"$stubs2/$g" <<EOF
 #!/bin/bash
 echo "$g \$*" >>"\$CALLS"
-gh release download v1
+[ "$g" = gh ] && case "\$*" in "pr list"*) echo '[]';; esac
+exit 0
 EOF
 done
 """,
+ "dependabot-reviewer-stub-and-chmod": """# `bash -e`, with: a recording `gh` (per-scenario failures), a stub token endpoint (`curl`), the
+cat > "$w/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+echo '{"value":"header.eyJzdWIiOiJ4In0.sig"}'
+EOF
+chmod +x "$w/bin/gh" "$w/bin/curl"
+""",
+ "harness-runs-its-positional-arguments": 't() { local rule=$1 what=$2; shift 2; if "$@" >/dev/null 2>&1; then echo "ok $what"; fi; }\nt "rule 1" "lists" ls /tmp\n',
+ "command-word-from-a-script-variable": 'GRX="env FSCACHE_TEST_MODE=1"\n$GRX python3 "$GR" --check\n',
+ "array-assignment-of-an-element": 'blocked=()\nfor f in a b; do blocked+=("$f"); done\n',
+ "python-data-heredoc-with-apostrophes": "cat >\"$work/x.py\" <<'PY'\n# it's the stub's own list: (\"wget\", \"curl\")\nNEED = [\"wget\", \"curl\"]\nPY\n",
  "python-assert-forbidden-strings": "cat >\"$work/chk.py\" <<'PY'\n    for x in (\"-mod=mod\", \"-mod=readonly\", \"go mod download\", \"go get \", \"curl \", \"GOPROXY=http\", \"GOSUMDB=off\"): assert x not in b, x\nPY\n",
  "python-assert-wget-package": "cat >\"$work/chk.py\" <<'PY'\n    assert \"wget\" in names(d[\"environment\"]), \"fetch needs wget in the environment (pipelines/fetch.yaml:4-6)\"\nPY\n",
  "python-package-list": "cat >\"$work/lib.py\" <<'PY'\nENVPK = [(\"busybox\", \"1.37.0-r5\"), (\"git\", \"2.50.1-r0\"), (\"wget\", \"1.25.0-r0\"), (\"ca-certificates-bundle\", \"20260102-r0\")]\nPY\n",
@@ -991,6 +1004,19 @@ MF = {   # must be flagged (AC17): (text, the form named)
  "echo-piped-to-sh": ('echo "curl -O https://example.org/a" | sh\n', "a download"),
  "printf-piped-through-tee-to-bash": ("printf 'curl -O https://example.org/a\\n' | tee log | bash\n", "a download"),
  "echo-into-process-substitution": ('echo "curl -O https://example.org/a" > >(sh)\n', "a download"),
+ "real-curl-in-a-data-heredoc-body": ("cat >./payload <<'EOF'\necho start\ncurl -O https://example.org/a\nEOF\n", "a download"),
+ "codex-data-heredoc-then-sh": ("cat >./payload <<'EOF'\ncurl -O https://example.org/a\nEOF\nsh ./payload\n", "a download"),
+ "codex-data-heredoc-then-cat-pipe-sh": ("cat >./payload <<'EOF'\ncurl -O https://example.org/a\nEOF\ncat ./payload | sh\n", "a download"),
+ "codex-persistent-descriptor-into-sh": ('exec 3> >(sh)\necho "curl -O https://example.org/a" >&3\n', None),
+ "codex-expanded-command-name": ('C=curl\n"$C" -O https://example.org/a\n', None),
+ "codex-here-string-to-sh": ("CMD='curl -O https://example.org/a'; sh <<< \"$CMD\"\n", None),
+ "codex-env-sh-c": ("CMD='curl -O https://example.org/a'\nenv sh -c \"$CMD\"\n", None),
+ "env-sh-c-of-an-unknown-variable": ('env sh -c "$CMD"\n', None),
+ "here-string-of-an-unknown-variable-to-sh": ('sh <<< "$CMD"\n', None),
+ "command-word-of-an-unknown-variable": ('"$TOOL" -O https://example.org/a\n', None),
+ "codex-computed-alias": ('shopt -s expand_aliases; e=echo; alias "$e=bash -c"; echo "curl -O https://example.org/a"\n', None),
+ "codex-quote-joined-command-word": ("'cu''rl' -O https://example.org/a\n", "a download"),
+ "codex-escaped-command-word": ("c\\url -O https://example.org/a\n", "a download"),
  "after-data-heredoc": ("cat >x <<'EOF'\ncurl is text here\nEOF\ncurl -O https://example.org/a\n", "a download"),
 }
 FC = {   # cannot be classified with certainty: flagged (fail closed, AC17)
@@ -1015,7 +1041,7 @@ if group == "nf":
 elif group == "mf":
     text, form = MF[name]
     got = inv.unmeasured({path: text})
-    assert form in {k[1] for k in got}, got
+    assert (form in {k[1] for k in got}) if form else got, got     # form None: any refusal (a download, or a command built from an expansion)
 else:
     got = inv.unmeasured({path: FC[name]})
     assert got, "not flagged"
@@ -1039,6 +1065,15 @@ check python3 "$work/cmdpos.py" "$inv_py" mf unquoted-curl bin/foo-test.sh
 for n in $(python3 "$work/cmdpos.py" "$inv_py" list fc); do
   CASE="AC17: text the scan cannot classify with certainty counts as executed: flagged ($n)"; check python3 "$work/cmdpos.py" "$inv_py" fc "$n"
 done
+CASE="AC16: a command word from a variable that a SOURCED script assigns is read (no refusal); the same word with no assignment anywhere is refused (AC17)"
+check python3 - "$inv_py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+lib = 'LK="$root/bin/apko-lock.sh"\n'
+user = '. "$(cd "$(dirname "$0")" && pwd)/lib.sh"\n"$LK" evidence --out x\n'
+assert not inv.unmeasured({"bin/lib.sh": lib, "bin/user-test.sh": user})
+assert inv.unmeasured({"bin/user-test.sh": user})
+PY
 CASE="AC17: go install pkg@latest in a script stays an item that can never pass the age check"
 check python3 - "$inv_py" <<'PY'
 import importlib.util, sys

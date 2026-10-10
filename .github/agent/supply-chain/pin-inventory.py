@@ -534,24 +534,35 @@ def tree_scripts(root, rev):
 
 # --- where a script EXECUTES text (REQ-SUP-001-AC16, AC17) -------------------------------------------------------------------------------------------------------------
 # A download counts only where the shell would run it. A small, conservative reader of shell syntax finds the text that is NOT executed: comments, the
-# arguments of commands that never run their arguments (echo, printf, cat, ...), and heredoc bodies fed as data (to cat, tee, ...) or not at all. Everything
-# else counts as executed: the whole text of any other command (its arguments too: `xargs curl`, `docker exec c curl`, a test harness that runs its
-# arguments), every $( ), ` `, <( ) and $(( )) (whatever their command), a heredoc fed to a shell (read again as shell) or to anything else (python,
-# an unknown command: read as before, every word counts). A script this reader cannot read with certainty (an unterminated quote, heredoc or
-# substitution, too deep a nesting) is read as before, every line executed. eval of an expansion, and sh -c of nothing but an expansion, are refused
-# as commands nobody can read. Workflow files are read as before (every line).
+# arguments of commands that never run their arguments (echo, printf, cat, ...) while their output is not piped into something that may run it, and the
+# words of a heredoc body fed as data (to cat, tee, ...) that are not at a command position of the body read as shell (a body written to a file may be run
+# later: a real `curl ...` line in it counts; a stub that only mentions curl in echo, strings or comments does not). Everything else counts as executed:
+# the whole text of any other command (its arguments too: `xargs curl`, `docker exec c curl`, a test harness that runs its arguments), every $( ), ` `,
+# <( ) and $(( )), a heredoc fed to a shell (read again as shell) or to anything else (python, an unknown command: every word counts), and an assignment
+# whose value names a download. A command word is matched as written AND as the shell reads it ('cu''rl', c\url). A script this reader cannot read with
+# certainty (an unterminated quote, heredoc or substitution, too deep a nesting, an alias whose definition is computed) is read as before, every line
+# executed. A command built from an expansion nobody can read is refused under its own form: eval of an expansion, sh -c of an expansion that supplies a
+# command, a command word (or a here-string or heredoc fed to a shell or interpreter) from a variable this script never assigns, a descriptor or coprocess
+# that feeds a shell (exec 3> >(sh), coproc). Workflow files are read as before (every line).
 _SH_SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "ash", "mksh"}
+_SH_INTERP = _SH_SHELLS | {"python", "python2", "python3", "perl", "ruby", "node", "php", "lua", "source", "."}
+_SH_WRAPPERS = {"env", "sudo", "command", "exec", "nohup", "time", "nice", "timeout", "xargs", "stdbuf", "doas", "setsid", "builtin", "chroot", "ionice", "unbuffer"}
 _SH_TEXT = {"echo", "printf", ":", "true", "false", "test", "[", "[[", "cat", "tee", "grep", "egrep", "fgrep", "chmod", "chown", "mkdir", "rm", "rmdir", "cp",
             "mv", "ln", "touch", "read", "local", "export", "declare", "readonly", "typeset", "cd", "basename", "dirname", "wc", "sort", "uniq", "head", "tail",
             "cut", "tr", "for", "select", "case", "mktemp", "ls", "sha256sum", "shasum"}     # commands that never execute their arguments
 _SH_DATA = {"cat", "tee", ":", "true", "read", "grep", "egrep", "fgrep", "wc", "sort", "uniq", "head", "tail", "cut", "tr", "diff", "cmp", "base64",
             "sha256sum", "shasum", "jq", "echo", "printf"}      # a heredoc fed to one of these (and piped only into these) is data
+_SH_DECLARE = {"local", "export", "declare", "readonly", "typeset"}
 _SH_SKIP = {"if", "then", "else", "elif", "do", "while", "until", "!", "time", "fi", "done", "esac"}   # reserved words before a command
 _SH_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]*\])?\+?=")
 _SH_DEFINED = re.compile(r"(?:^|[\s;&|(){}])(?:function\s+([^\s(){};&|<>]+)|([^\s(){};&|<>'\"=$`]+)\s*\(\s*\))|\balias\s+([^\s=]+)=")
+_SH_SPECIAL = set("0123456789@*#?$!-")       # positional and special parameters: what a caller passes is counted at the call
+_SH_DOWNLOADER = {"curl", "wget"}
 _SH_MAX_DEPTH = 40
 _SH_DQ_RUN = re.compile(r'[^"\\$`]+')
 _SH_WORD_RUN = re.compile(r"[^ \t\r\n;&|()<>\\'\"$`]+")
+_SH_VAR = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]")
+_SH_BRACE_VAR = re.compile(r"[!#]?([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?$!-])")
 
 
 class _ShellUnreadable(Exception):
@@ -559,29 +570,48 @@ class _ShellUnreadable(Exception):
 
 
 class _Word:
-    __slots__ = ("start", "end", "value", "expanded", "quoted", "procsub")
+    __slots__ = ("start", "end", "value", "shape", "expanded", "quoted", "procsub", "vars", "subst")
 
     def __init__(self, start):
-        self.start, self.end, self.value, self.expanded, self.quoted, self.procsub = start, start, "", False, False, False
+        self.start, self.end, self.value, self.shape, self.expanded, self.quoted, self.procsub = start, start, "", "", False, False, False
+        self.vars, self.subst = [], False      # the variables it expands; whether it holds a command substitution
+
+    def lit(self, text):
+        self.value += text; self.shape += text
 
 
 class _Cmd:
     def __init__(self, start):
         self.start, self.end, self.words, self.name, self.piped_to, self.procsub = start, start, [], None, None, False
+        self.assigns, self.herestrings = [], []
+
+
+def _base(word):
+    return word.value.rsplit("/", 1)[-1] if word is not None and not word.expanded else None
 
 
 class _ShellScan:
-    """The executed spans of a shell text: spans [(start, end)] whose words count, and the offsets of eval / sh -c of an expansion."""
+    """What a shell text executes: spans [(start, end)] whose words count, hits (offsets of a command word the shell reads as curl or wget), norms
+    ((offset, the command as the shell reads its words)) and the offsets of commands built from an expansion nobody can read. data=True reads a heredoc
+    body written as data: only its command positions count, and nothing in it is refused as dynamic (it is not run here)."""
 
-    def __init__(self, s, depth=0, untrusted=frozenset()):
-        self.s, self.n, self.i, self.depth = s, len(s), 0, depth
-        self.spans, self.dynamic, self.cmds, self.pending, self.heredocs = [], [], [], [], []
+    def __init__(self, s, depth=0, untrusted=frozenset(), known=frozenset(), data=False):
+        self.s, self.n, self.i, self.depth, self.data = s, len(s), 0, depth, data
+        self.spans, self.dynamic, self.cmds, self.pending, self.heredocs, self.hits, self.norms = [], [], [], [], [], [], []
         self.untrusted = set(untrusted) | {m.group(1) or m.group(2) or m.group(3) for m in _SH_DEFINED.finditer(s)}  # a function or alias may shadow echo or cat
+        self.known = set(known) | _SH_SPECIAL
+        self.sources = []      # the base names of the files this text sources (. lib.sh): the variables they assign are known here
 
     def run(self):
         self.parse_list(None)
         if self.pending:
             raise _ShellUnreadable("a heredoc with no body")
+        for cmd in self.cmds:     # every variable this text assigns plainly (NAME=value, local/export/declare NAME=value)
+            self.known.update(w.value.split("=", 1)[0].split("[", 1)[0].rstrip("+") for w in cmd.assigns)
+            if _base(cmd.name) in _SH_DECLARE:
+                self.known.update(re.match(r"[A-Za-z_][A-Za-z0-9_]*", w.value).group(0) for w in cmd.words if re.match(r"[A-Za-z_]", w.value))
+            if _base(cmd.name) in (".", "source") and cmd.words:
+                self.sources.append(cmd.words[0].shape.replace('"', "").replace("'", "").rsplit("/", 1)[-1])
         self.classify()
         return self
 
@@ -660,6 +690,8 @@ class _ShellScan:
                 cmd.end = w.end
                 if redir in ("<<", "<<-"):
                     self.pending.append((cmd, w, redir == "<<-"))
+                elif redir == "<<<":
+                    cmd.herestrings.append(w)
                 if w.procsub:
                     cmd.procsub = True
                 last_op = None
@@ -682,6 +714,7 @@ class _ShellScan:
                         case -= 1
                     continue
                 if _SH_ASSIGN.match(s, w.start):
+                    cmd.assigns.append(w)
                     continue
                 cmd.name = w
                 if plain and w.value == "case":
@@ -716,9 +749,8 @@ class _ShellScan:
                 self.i = e + 1 if j >= 0 else n
                 if j < 0:
                     raise _ShellUnreadable("an unterminated heredoc")
-            if not w.quoted:
-                self.expansions(start, body_end)     # $( ) and ` ` in an unquoted body are executed whatever reads the body
-            self.heredocs.append((cmd, start, body_end))
+            ew = self.expansions(start, body_end) if not w.quoted else None    # $( ) and ` ` in an unquoted body are executed whatever reads the body
+            self.heredocs.append((cmd, start, body_end, ew))
 
     def expansions(self, a, b):
         save = self.i
@@ -737,6 +769,7 @@ class _ShellScan:
         if self.i > b:
             raise _ShellUnreadable("a substitution runs out of its heredoc")
         self.i = save
+        return w
 
     # ---- words ----
     def parse_word(self):
@@ -748,19 +781,21 @@ class _ShellScan:
                 a = self.i
                 self.i += 2
                 self.parse_list(")")
-                self.spans.append((a, self.i)); w.expanded = w.procsub = True
+                self.spans.append((a, self.i)); w.expanded = w.procsub = w.subst = True; w.shape += s[a:self.i]
                 continue
+            if c == "(" and not w.quoted and not w.expanded and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\n]*\])?\+?=", w.value):
+                self.array(w); continue      # name=( ... ): an array assignment, its elements are words
             if c in " \t\r\n;&|()<>":
                 break
             if c == "\\":
                 if s.startswith("\n", self.i + 1):
                     self.i += 2; continue
-                w.value += s[self.i + 1:self.i + 2]; w.quoted = True; self.i += 2; continue
+                w.lit(s[self.i + 1:self.i + 2]); w.quoted = True; self.i += 2; continue
             if c == "'":
                 j = s.find("'", self.i + 1)
                 if j < 0:
                     raise _ShellUnreadable("an unterminated quote")
-                w.value += s[self.i + 1:j]; w.quoted = True; self.i = j + 1; continue
+                w.lit(s[self.i + 1:j]); w.quoted = True; self.i = j + 1; continue
             if c == '"':
                 self.i += 1; self.dquote(w); w.quoted = True; continue
             if c == "$":
@@ -768,9 +803,33 @@ class _ShellScan:
             if c == "`":
                 self.backtick(w); continue
             m = _SH_WORD_RUN.match(s, self.i)
-            w.value += m.group(0); self.i = m.end()
+            w.lit(m.group(0)); self.i = m.end()
         w.end = self.i
         return w
+
+    def array(self, w):
+        s, n = self.s, self.n
+        self.i += 1
+        while True:
+            if self.i >= n:
+                raise _ShellUnreadable("an unterminated array")
+            c = s[self.i]
+            if c in " \t\r\n":
+                self.i += 1
+            elif c == "\\" and s.startswith("\n", self.i + 1):
+                self.i += 2
+            elif c == "#":
+                j = s.find("\n", self.i)
+                self.i = n if j < 0 else j
+            elif c == ")":
+                self.i += 1
+                return
+            elif c in ";&|(<>":
+                raise _ShellUnreadable("an array element that is not a word")
+            else:
+                e = self.parse_word()
+                w.value += " " + e.value; w.shape += " " + e.shape
+                w.vars += e.vars; w.expanded |= e.expanded; w.subst |= e.subst; w.procsub |= e.procsub
 
     def dquote(self, w):
         s, n = self.s, self.n
@@ -781,14 +840,14 @@ class _ShellScan:
             if c == '"':
                 self.i += 1; return
             if c == "\\":
-                w.value += s[self.i + 1:self.i + 2]; self.i += 2
+                w.lit(s[self.i + 1:self.i + 2]); self.i += 2
             elif c == "$":
                 self.dollar(w)
             elif c == "`":
                 self.backtick(w)
             else:
                 m = _SH_DQ_RUN.match(s, self.i)
-                w.value += m.group(0); self.i = m.end()
+                w.lit(m.group(0)); self.i = m.end()
 
     def backtick(self, w):
         s, n = self.s, self.n
@@ -802,7 +861,7 @@ class _ShellScan:
             if s[self.i] == "`":
                 self.i += 1; break
             self.i += 1
-        self.spans.append((a, self.i)); w.expanded = True
+        self.spans.append((a, self.i)); w.expanded = w.subst = True; w.shape += s[a:self.i]
 
     def dollar(self, w):
         s, n = self.s, self.n
@@ -825,13 +884,15 @@ class _ShellScan:
                         raise _ShellUnreadable("an unterminated quote")
                     self.i = j
                 self.i += 1
-            self.spans.append((a, self.i)); w.expanded = True
+            self.spans.append((a, self.i)); w.expanded = w.subst = True
         elif nxt == "(":
             self.i += 2
             self.parse_list(")")
-            self.spans.append((a, self.i)); w.expanded = True
+            self.spans.append((a, self.i)); w.expanded = w.subst = True
         elif nxt == "{":
             self.i += 2
+            m = _SH_BRACE_VAR.match(s, self.i)
+            w.vars.append(m.group(1) if m else "")       # "" is never known: an unreadable parameter name fails closed
             self._deeper()
             depth = 1
             inner = _Word(self.i)
@@ -857,6 +918,8 @@ class _ShellScan:
                     self.i += 1
             self.depth -= 1
             w.expanded = True
+            w.subst = w.subst or inner.subst
+            w.vars += inner.vars
         elif nxt == "'":
             j = self.i + 2
             while True:
@@ -867,16 +930,20 @@ class _ShellScan:
                 if s[j] == "'":
                     break
                 j += 1
-            w.value += s[self.i + 2:j]; w.quoted = True; self.i = j + 1
+            w.lit(s[self.i + 2:j]); w.quoted = True; self.i = j + 1
+            return
         elif nxt == '"':
             self.i += 2; self.dquote(w); w.quoted = True
+            return
         elif nxt and (nxt.isalnum() or nxt == "_"):
-            m = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9]").match(s, self.i + 1)
-            self.i = m.end(); w.expanded = True
+            m = _SH_VAR.match(s, self.i + 1)
+            self.i = m.end(); w.expanded = True; w.vars.append(m.group(0))
         elif nxt and nxt in "@*#?$!-":
-            self.i += 2; w.expanded = True
+            self.i += 2; w.expanded = True; w.vars.append(nxt)
         else:
-            w.value += "$"; self.i += 1
+            w.lit("$"); self.i += 1
+            return
+        w.shape += s[a:self.i]
 
     # ---- what is executed ----
     def _name(self, cmd):
@@ -885,12 +952,18 @@ class _ShellScan:
             return None
         return w.value
 
+    def _sub(self, text, data=False):
+        return _ShellScan(text, self.depth + 1, self.untrusted, self.known, data).run()
+
     def _dynamic_in(self, text):
-        """Whether a literal string that a shell runs again (eval, sh -c) holds an eval or sh -c of an expansion itself (its downloads count anyway: the command's whole text is executed)."""
+        """Whether a string that a shell runs again (eval, sh -c, a here-string) holds a command built from an expansion nobody can read."""
         try:
-            return bool(_ShellScan(text, self.depth + 1, self.untrusted).run().dynamic)
+            return bool(self._sub(text).dynamic)
         except (_ShellUnreadable, RecursionError):
             return False
+
+    def _unknown(self, w):
+        return w.expanded and (not w.vars or any(v not in self.known for v in w.vars)) and not (w.subst and not w.vars)
 
     def _data_chain(self, cmd):
         """Whether a command and everything its output is piped into only read data (cat, tee, grep, ...: nothing that runs what it reads)."""
@@ -900,43 +973,107 @@ class _ShellScan:
             cmd = cmd.piped_to
         return True
 
+    def _runner(self, cmd):
+        """(index into [name] + words, base name) of the shell or interpreter a command runs, itself or through a wrapper (env sh -c ...), or None."""
+        ws = [cmd.name] + cmd.words
+        if _base(cmd.name) in _SH_INTERP or re.fullmatch(r"python[0-9.]*", _base(cmd.name) or ""):
+            return 0, _base(cmd.name)
+        if _base(cmd.name) in _SH_WRAPPERS:
+            for k, w in enumerate(ws[1:], 1):
+                b = _base(w)
+                if b in _SH_INTERP or re.fullmatch(r"python[0-9.]*", b or ""):
+                    return k, b
+        return None
+
+    def _dyn(self, offset):
+        if not self.data:
+            self.dynamic.append(offset)
+
     def classify(self):
         for cmd in self.cmds:
+            if any(w.expanded for w in cmd.words + [cmd.name] if w is not None) and "alias" in {_base(w) for w in [cmd.name] + cmd.words if w is not None}:
+                raise _ShellUnreadable("an alias whose definition is computed")    # it can turn any word into a command: no text exemption holds
+            for w in cmd.assigns + ([x for x in cmd.words if _SH_ASSIGN.match(self.s, x.start) or _SH_ASSIGN.match(x.value)] if _base(cmd.name) in _SH_DECLARE else []):
+                if re.search(r"\b(?:curl|wget)\b", w.value) or any(rx.search(w.value) for rx, _ in _UNMEASURED):
+                    self.spans.append((w.start, w.end)); self.hits.append(w.start) if re.search(r"\b(?:curl|wget)\b", w.value) else None
+                    self.norms.append((w.start, w.value.split("=", 1)[-1]))    # C=curl, CMD='curl ...': a download held for later is counted where it is named
             if cmd.name is None:
                 continue
             name = self._name(cmd)
             if name in _SH_TEXT and not cmd.procsub and self._data_chain(cmd.piped_to):
                 continue      # its arguments are text, unless its output is piped into something that may run it (echo "curl x" | sh)
-            self.spans.append((cmd.start, cmd.end))
+            ws = [cmd.name] + cmd.words
+            if self.data:      # a body written as data: a command word the shell reads as a download counts (a wrapper's words too), never the text around it
+                counted = ws if name in _SH_WRAPPERS else [cmd.name]
+            else:
+                self.spans.append((cmd.start, cmd.end))
+                counted = ws
+            self.hits += [w.start for w in counted if _base(w) in _SH_DOWNLOADER]
+            self.norms.append((cmd.name.start, " ".join(w.value for w in ws)))
+            if self._unknown(cmd.name):
+                self._dyn(cmd.name.start)      # "$TOOL" ...: a command word from a variable this script never assigns
+            if name in _SH_WRAPPERS:
+                rest = [w for w in cmd.words if not w.value.startswith("-") and not _SH_ASSIGN.match(w.value)]
+                if rest and self._unknown(rest[0]):
+                    self._dyn(cmd.name.start)
             if name == "eval":
                 if any(w.expanded for w in cmd.words) or self._dynamic_in(" ".join(w.value for w in cmd.words)):
-                    self.dynamic.append(cmd.name.start)
-            if name is not None and name.rsplit("/", 1)[-1] in _SH_SHELLS:
-                for k, w in enumerate(cmd.words):
-                    if not w.expanded and re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", w.value):
-                        rest = [x for x in cmd.words[k + 1:] if not x.value.startswith("-") or x.expanded]
-                        if rest and ((rest[0].expanded and not rest[0].value.strip()) or (not rest[0].expanded and self._dynamic_in(rest[0].value))):
-                            self.dynamic.append(cmd.name.start)    # sh -c "$x" is eval $x; a literal string is read again for one
+                    self._dyn(cmd.name.start)
+            if name in ("exec", "coproc") and (cmd.procsub or name == "coproc"):
+                self._dyn(cmd.name.start)      # exec 3> >(sh): what is written to the descriptor later is run
+            run = self._runner(cmd)
+            if run is not None:
+                k, base = run
+                shell = base in _SH_SHELLS
+                for j, w in enumerate(ws[k + 1:], k + 1):
+                    if not w.expanded and re.fullmatch(r"-[A-Za-z]*[ce][A-Za-z]*", w.value):
+                        cs = next((x for x in ws[j + 1:] if not x.value.startswith("-") or x.expanded), None)
+                        if cs is not None and cs.expanded and (not cs.value.strip() or (self._dynamic_in(cs.shape) if shell else self._unknown(cs))):
+                            self._dyn(cmd.name.start)    # sh -c "$x" is eval $x
+                        elif cs is not None and not cs.expanded and shell and self._dynamic_in(cs.value):
+                            self._dyn(cmd.name.start)
                         break
-        for cmd, a, b in self.heredocs:
+                for hs in cmd.herestrings:      # sh <<< "$CMD"
+                    if hs.expanded and (not hs.value.strip() or (self._dynamic_in(hs.shape) if shell else self._unknown(hs))):
+                        self._dyn(cmd.name.start)
+        for cmd, a, b, ew in self.heredocs:
             name = self._name(cmd) if cmd.name is not None else ":"
-            if self._data_chain(cmd):
+            if self.data or self._data_chain(cmd):
+                try:      # written as data: its command positions still count (it may be run later)
+                    sub = self._sub(self.s[a:b], data=True)
+                except (_ShellUnreadable, RecursionError):
+                    for m in re.finditer(r"(?m)^[ \t]*([^\s;&|()<>]+)", self.s[a:b]):    # not shell: the first word of each line counts
+                        tok = re.sub(r"[\\'\"]", "", m.group(1)).rsplit("/", 1)[-1]
+                        if tok in _SH_DOWNLOADER or any(rx.match(self.s, a + m.start(1)) for rx, _ in _UNMEASURED):
+                            self.spans.append((a + m.start(1), a + m.end(1))); self.hits.append(a + m.start(1))
+                    continue
+                self._take(sub, a, dynamic=False)
                 continue
-            if name is not None and name.rsplit("/", 1)[-1] in _SH_SHELLS and all(w.value.startswith("-") and not w.expanded and "c" not in w.value for w in cmd.words):
+            run = self._runner(cmd)
+            if run is not None and ew is not None and any(v not in self.known for v in ew.vars):
+                self._dyn(cmd.name.start)     # an unquoted heredoc fed to a shell or interpreter, built from a variable nobody can read
+            if run is not None and run[1] in _SH_SHELLS and all(w.value.startswith("-") and not w.expanded and "c" not in w.value for w in cmd.words):
                 try:
-                    sub = _ShellScan(self.s[a:b], self.depth + 1, self.untrusted).run()
+                    sub = self._sub(self.s[a:b])
                 except (_ShellUnreadable, RecursionError):
                     self.spans.append((a, b)); continue
-                self.spans += [(x + a, y + a) for x, y in sub.spans]
-                self.dynamic += [x + a for x in sub.dynamic]
+                self._take(sub, a, dynamic=True)
                 continue
             self.spans.append((a, b))      # fed to python or an unknown command: every word counts
 
+    def _take(self, sub, a, dynamic):
+        self.spans += [(x + a, y + a) for x, y in sub.spans]
+        self.hits += [x + a for x in sub.hits]
+        self.norms += [(x + a, t) for x, t in sub.norms]
+        if dynamic:
+            for x in sub.dynamic:
+                self._dyn(x + a)
 
-def _executed(text):
-    """(merged executed spans, dynamic offsets) of a script, or None when it cannot be read with certainty (then every line counts, as before)."""
+
+def _executed(text, known=frozenset()):
+    """(merged executed spans, dynamic offsets, hits, norms) of a script, or None when it cannot be read with certainty (then every line counts, as before)."""
     try:
-        sc = _ShellScan(text).run()
+        sc = _ShellScan(text, known=known).run()
     except (_ShellUnreadable, RecursionError):
         return None
     merged = []
@@ -945,10 +1082,28 @@ def _executed(text):
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    return merged, sorted(sc.dynamic)
+    return merged, sorted(sc.dynamic), sorted(set(sc.hits)), sc.norms
 
 
-def _script_forms(path, text, out):
+def _sourced_known(path, files):
+    """The variables assigned by the scripts that a script sources (transitively), matched by base name, nearest directory first."""
+    known, seen, todo = set(), {path}, [path]
+    while todo:
+        p = todo.pop()
+        try:
+            sc = _ShellScan(files[p]).run()
+        except (_ShellUnreadable, RecursionError):
+            continue
+        if p != path:
+            known |= sc.known
+        for base in sc.sources:
+            cands = sorted((q for q in files if q.endswith(".sh") and q.rsplit("/", 1)[-1] == base), key=lambda q: (q.rsplit("/", 1)[0] != p.rsplit("/", 1)[0], q))
+            if cands and cands[0] not in seen:
+                seen.add(cands[0]); todo.append(cands[0])
+    return known
+
+
+def _script_forms(path, text, out, known=frozenset()):
     """unmeasured() for one script: the same keys as before, counted only where the text is executed."""
     import bisect
     conts = list(re.finditer(r"\\\n\s*", text))
@@ -962,13 +1117,17 @@ def _script_forms(path, text, out):
         if k >= 0 and p < conts[k].end():
             return conts[k].start() - removed[k]
         return p - removed[k + 1]
-    ex = _executed(text)
+    ex = _executed(text, known)
     joined = re.sub(r"\\\n\s*", " ", text)
     if ex is None:
-        spans, dyn = [(0, len(joined) + 1)], []
+        spans, dyn, hits, norms = [(0, len(joined) + 1)], [], [], []
     else:
-        spans, dyn = [(joined_at(a), joined_at(b - 1) + 1 if b > a else joined_at(a)) for a, b in ex[0]], [joined_at(p) for p in ex[1]]
+        spans = [(joined_at(a), joined_at(b - 1) + 1 if b > a else joined_at(a)) for a, b in ex[0]]
+        dyn, hits, norms = [joined_at(p) for p in ex[1]], [joined_at(p) for p in ex[2]], [(joined_at(p), t) for p, t in ex[3]]
     sstarts = [a for a, _ in spans]
+    hits.sort()
+    norms.sort(key=lambda x: x[0])
+    nstarts = [p for p, _ in norms]
 
     def executed(p):
         k = bisect.bisect_right(sstarts, p) - 1
@@ -984,14 +1143,17 @@ def _script_forms(path, text, out):
         cuts.append(len(line))
         for x in range(0, len(cuts), 2):
             seg = line[cuts[x]:cuts[x + 1]]
-            if not any(executed(lo + cuts[x] + m.start()) for m in re.finditer(r"\b(?:curl|wget)\b", seg)):
-                continue
+            a, b = lo + cuts[x], lo + cuts[x + 1]
+            k = bisect.bisect_left(hits, a)
+            if not (k < len(hits) and hits[k] <= b) and not any(executed(a + m.start()) for m in re.finditer(r"\b(?:curl|wget)\b", seg)):
+                continue      # neither written as curl/wget where it is executed, nor read by the shell as curl/wget ('cu''rl')
             seg = " ".join(seg.split())
             urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
             plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
             if not plain:
                 key = (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100])
                 out[key] = out.get(key, 0) + 1
+        read = [t for p, t in norms[bisect.bisect_left(nstarts, lo):bisect.bisect_right(nstarts, hi)]]
         for rx, what in _UNMEASURED:
             pos = 0
             while True:
@@ -999,7 +1161,7 @@ def _script_forms(path, text, out):
                 if m is None or executed(lo + m.start()):
                     break
                 pos = m.start() + 1
-            if m is not None:
+            if m is not None or any(rx.search(t) for t in read):
                 key = (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100])
                 out[key] = out.get(key, 0) + 1
         for p in dyn:
@@ -1020,7 +1182,7 @@ def unmeasured(files):
             for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
                 if len(" ".join(line.split())) > MAX_LINE:
                     raise RuntimeError(f"{path}: a command line of {len(' '.join(line.split()))} characters is longer than the {MAX_LINE} this check reads: refusing to read it partially")
-            _script_forms(path, text, out)
+            _script_forms(path, text, out, _sourced_known(path, files))
             continue
         for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
             flat = " ".join(line.split())
