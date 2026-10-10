@@ -704,6 +704,37 @@ badcase g_cond4 $'case "$1" in a) S=bin/clean.sh;; esac\nbash "$S"' 'a condition
 badcase g_ghenv 'echo "S=bin/evil.sh" >> "$GITHUB_ENV"' 'a GITHUB_ENV write'
 badcase g_heredoc $'bash bin/build-stage.sh <<EOF\nx\nEOF' 'a heredoc into a script'
 badcase g_herestr 'bash bin/build-stage.sh <<< word' 'a here-string'
+# argument words (Codex #249 r5 B4, the class closed): a word that reads a variable is exactly ONE part, the whole "$NAME"
+argcase() { # argcase NAME 'run' ok|caught LABEL [env names, default V; "-" for none]
+  local d e="" n; d=$(mk "$1")
+  for n in ${5:-V}; do [ "$n" = - ] || e="$e          $n: x\n"; done
+  if [ -n "$e" ]; then printf "jobs:\n  j:\n    steps:\n      - env:\n${e}        run: %s\n" "$2"; else printf 'jobs:\n  j:\n    steps:\n      - run: %s\n' "$2"; fi > "$d/.github/workflows/stage-verify.yml"
+  expect "$3" "AC1 grammar: $4" tree "$d"; }
+argcase a_ok_whole 'bash bin/build-stage.sh "$V"' ok 'control: a whole "$V" read of the step env'
+argcase a_ok_brace 'bash bin/build-stage.sh "${V}"' ok 'control: a whole "${V}" read of the step env'
+argcase a_ok_lit 'bash bin/build-stage.sh plain '"'"'single quoted'"'"' --flag=1' ok 'control: plain and single-quoted literals' -
+argcase a_prefix 'bash bin/build-stage.sh prefix"$V"' caught 'a literal prefix glued to a whole read, prefix"$V" (Codex #249 r5 B4)'
+argcase a_suffix 'bash bin/build-stage.sh "$V"suffix' caught 'a whole read with a literal suffix, "$V"suffix (B4 sibling)'
+argcase a_two 'bash bin/build-stage.sh "$V""$X1"' caught 'two whole reads glued into one word, "$V""$X1" (B4 sibling)' 'V X1'
+argcase a_sqglue 'bash bin/build-stage.sh "$V"'"'"'lit'"'"'' caught 'a whole read glued to a single-quoted literal, "$V"'"'"'lit'"'"' (B4 sibling)'
+argcase a_dqglue 'bash bin/build-stage.sh "$V""lit"' caught 'a whole read glued to a double-quoted literal, "$V""lit" (B4 sibling)'
+argcase a_sqpre 'bash bin/build-stage.sh '"'"'lit'"'"'"$V"' caught 'a single-quoted literal glued before a whole read, '"'"'lit'"'"'"$V" (B4 sibling)'
+argcase a_bare 'bash bin/build-stage.sh $V' caught 'an unquoted $V (B4 sibling)'
+argcase a_bracesuf 'bash bin/build-stage.sh ${V}suffix' caught 'an unquoted ${V}suffix (B4 sibling)'
+argcase a_default 'bash bin/build-stage.sh "${V:-default}"' caught 'a parameter expansion with a default, "${V:-default}" (B4 sibling)'
+argcase a_strip 'bash bin/build-stage.sh "${V#x}"' caught 'a parameter expansion that strips, "${V#x}" (B4 sibling)'
+argcase a_len 'bash bin/build-stage.sh "${#V}"' caught 'a length expansion, "${#V}" (B4 sibling)'
+argcase a_indirect 'bash bin/build-stage.sh "${!V}"' caught 'an indirect expansion, "${!V}" (B4 sibling)'
+argcase a_subst 'bash bin/build-stage.sh "$(cat x)"' caught 'a quoted command substitution, "$(cat x)" (B4 sibling)' -
+argcase a_backtick 'bash bin/build-stage.sh "`cat x`"' caught 'a quoted backtick substitution (B4 sibling)' -
+argcase a_arith 'bash bin/build-stage.sh $((1+1))' caught 'an arithmetic expansion, $((1+1)) (B4 sibling)' -
+argcase a_arithq 'bash bin/build-stage.sh "$((1+1))"' caught 'a quoted arithmetic expansion (B4 sibling)' -
+argcase a_tilde 'bash bin/build-stage.sh ~/x' caught 'a tilde word at argument position, ~/x (B4 sibling)' -
+argcase a_glob 'bash bin/build-stage.sh bin/*.sh' caught 'a glob word at argument position, bin/*.sh (B4 sibling)' -
+argcase a_qmark 'bash bin/build-stage.sh bin/x?.sh' caught 'a ? glob at argument position (B4 sibling)' -
+argcase a_bracket 'bash bin/build-stage.sh bin/[ab].sh' caught 'a [..] glob at argument position (B4 sibling)' -
+argcase a_brace 'bash bin/build-stage.sh a{b,c}' caught 'a brace expansion at argument position, a{b,c} (B4 sibling)' -
+argcase a_notinenv 'bash bin/build-stage.sh "$DIGESTS"' caught 'a whole read of DIGESTS, listed in env_names but not declared in this step env (B4 control for the env rule)' -
 d=$(mk g_envok); printf 'jobs:\n  j:\n    steps:\n      - env:\n          V: ${{ inputs.v }}\n        run: bash bin/build-stage.sh "$V"\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "AC1 grammar: a whole \"\$NAME\" read of the step's own env:" tree "$d"
 d=$(mk g_shell); printf 'jobs:\n  j:\n    steps:\n      - shell: python\n        run: bash bin/build-stage.sh a\n' > "$d/.github/workflows/stage-verify.yml"
@@ -1140,6 +1171,270 @@ jobs:
     steps:
       - run: bash bin/build-stage.sh a
 EOF
+# runs-on and the matrix (Codex #249 r5 B3, the class closed): a matrix read in runs-on may only read a matrix key whose
+# every value is a GitHub-hosted ubuntu label; include/exclude, non-list values and nested leaves are refused
+ycase y_ro_ok_direct 'control: runs-on ubuntu-24.04 directly' ok <<'EOF'
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_ok_matrix1 'control: runs-on a matrix read of ["ubuntu-24.04"]' ok <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_selfhosted 'runs-on a matrix read whose runner list is [self-hosted] (Codex #249 r5 B3)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [self-hosted]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_mixed 'a matrix runner list holding ubuntu-24.04 and self-hosted (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, self-hosted]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_windows 'a matrix runner list holding a non-ubuntu hosted label, windows-latest (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [windows-latest]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_case 'a matrix runner label in another case, Ubuntu-24.04 (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [Ubuntu-24.04]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_include 'a matrix include entry that adds a self-hosted runner (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04]
+        include:
+          - runner: self-hosted
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_include_benign 'a matrix include entry even with a benign value (B3 sibling: include/exclude are refused)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04]
+        include:
+          - variant: x
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_exclude 'a matrix exclude entry (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        exclude:
+          - runner: ubuntu-24.04
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_string 'a matrix given as a plain string (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix: ubuntu-24.04
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_exprall 'a matrix given as an expression (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix: ${{ fromJSON(inputs.m) }}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_keymiss 'runs-on reads matrix.runner but the matrix has only os (B3 sibling: key differs)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_keycase 'runs-on reads matrix.Runner while the matrix key is runner (B3 sibling: key differs by case)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.Runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_nostrategy 'runs-on is a matrix read with no strategy at all (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_nomatrix 'runs-on is a matrix read with a strategy that has no matrix (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_nested 'a matrix runner list holding a nested list (B3 sibling: a non-string leaf)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [[ubuntu-24.04]]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_dictleaf 'a matrix runner list holding a mapping (B3 sibling: a dict leaf)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner:
+          - {label: ubuntu-24.04}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_scalar 'a matrix runner value that is a scalar, not a list (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ubuntu-24.04
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_emptylist 'a matrix runner list that is empty (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: []
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_m_otherdict 'another matrix key holding a mapping (B3 sibling: nested leaves anywhere in the matrix)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04]
+        cfg:
+          - {a: b}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_list 'runs-on as a label list [self-hosted, linux] (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_list_ok 'runs-on as a one-element list [ubuntu-24.04] (B3 sibling: only a plain string)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: [ubuntu-24.04]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_group 'runs-on as a group: mapping (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: {group: big}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_labels 'runs-on as a group:/labels: mapping (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: {group: big, labels: [ubuntu-24.04]}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_input 'runs-on as an input expression (B3 sibling: only the matrix read form)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_format 'runs-on as a format() of the matrix value (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ format('{0}', matrix.runner) }}
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_concat 'runs-on with text around a matrix read, ubuntu-${{ matrix.v }} (B3 sibling)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: ubuntu-${{ matrix.v }}
+    strategy:
+      matrix:
+        v: ['24.04']
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_ro_selfhosted_direct 'runs-on self-hosted directly (B3 sibling, control for the direct form)' caught <<'EOF'
+jobs:
+  j:
+    runs-on: self-hosted
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
 # listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
 S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
 scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
@@ -1497,7 +1792,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=339
+EXPECT=392
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
