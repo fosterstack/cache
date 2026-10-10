@@ -31,6 +31,13 @@
 # (3) the log of ignored entries, (4) the OSV /vMAJOR query.
 # The recorded live data (read 2026-10-09T23:51Z from https://api.osv.dev/v1/vulns/<id> and `gh api advisories/<ghsa>`) is in
 # .github/agent/fixtures/pin-audit-go-major/ (six cosign advisories: GO-2026-4309 and the five already ruled on in .github/supply-chain-exceptions.json).
+# Provenance of the recorded data (this was the fixtures directory's README; a plain-text file is not on the public-repo allowlist):
+#   Recorded live data for .github/agent/tests/pin-audit-go-major-test.sh (REQ-SUP-001-AC14). Read 2026-10-09T23:51Z.
+#   osv-<GO id>.json  : https://api.osv.dev/v1/vulns/<GO id>   (the Go vulnerability database record as OSV serves it)
+#   ghsa-<GHSA id>.json: `gh api advisories/<GHSA id>`          (GitHub's advisory record)
+#   Six cosign advisories: GO-2026-4309 / GHSA-whqx-f9j3-ch6m (the case this rule exists for) and the five already ruled on in
+#   .github/supply-chain-exceptions.json (GO-2024-2718, GO-2024-2719, GO-2023-2181, GO-2026-5694, GO-2026-4529). Their `modified` / `updated_at` times equal
+#   the times recorded in those rulings. Nothing is edited by hand.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
