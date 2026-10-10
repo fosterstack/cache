@@ -52,6 +52,7 @@ work, root = sys.argv[2], sys.argv[3]
 FIX = root + "/.github/agent/fixtures/pin-audit-go-major"
 BARE = "github.com/sigstore/cosign"
 ADV = "ignored advisory entry"
+CHECKED_IN = root + "/.github/supply-chain-exceptions.json"
 def load(name): return json.load(open(FIX + "/" + name))
 def ent(path, events=(), eco="Go", **more):
     """One OSV `affected` entry: a module path (None: no package at all) and SEMVER events; more: versions=, purl=, ranges=."""
@@ -341,14 +342,14 @@ rng = ">= 3.0.0, < 3.2.0"
 finds, _ = run(cosign("3.1.3"), mknet([clr], gh(rng), True), [exc(rng)])
 assert finds and not any(f.disputed for f in finds) and finds[0].kind == "advisory", [(f.kind, f.disputed) for f in finds]
 PY
-py "the five existing cosign 3.1.3 rulings keep working with the live records, with the table as it is today AND corrected to /v3" <<'PY'
-exc = pa.load_exceptions(root + "/.github/supply-chain-exceptions.json", True)
-pairs = [("GO-2024-2718", "GHSA-88jx-383q-w4qc"), ("GO-2024-2719", "GHSA-95pr-fxf5-86gv"), ("GO-2023-2181", "GHSA-vfp6-jrw2-99g9"),
-         ("GO-2026-5694", "GHSA-w6c6-c85g-mmv6"), ("GO-2026-4529", "GHSA-wfqv-66vq-46rm")]
-for go, gh in pairs:
+py "the three remaining cosign 3.1.3 rulings keep working with the live records, table bare or /v3; the two removed ones (GO-2026-4529, -5694) need no ruling" \
+   " with the /v3 table" <<'PY'
+exc = pa.load_exceptions(CHECKED_IN, True)
+for go, gh, ruled in (("GO-2024-2718", "GHSA-88jx-383q-w4qc", 1), ("GO-2024-2719", "GHSA-95pr-fxf5-86gv", 1), ("GO-2023-2181", "GHSA-vfp6-jrw2-99g9", 1),
+                      ("GO-2026-5694", "GHSA-w6c6-c85g-mmv6", 0), ("GO-2026-4529", "GHSA-wfqv-66vq-46rm", 0)):
     r = load("osv-%s.json" % go); r["aliases"] = sorted(set(r.get("aliases", [])) | {gh})
     for sup in (True, False):
-        for table in (BARE, BARE + "/v3"):
+        for table in ((BARE, BARE + "/v3") if ruled else (BARE + "/v3",)):
             finds, notes = run(cosign("3.1.3", table), mknet([r], [gh], sup), exc)
             assert finds == [], (go, sup, table, [(f.kind, f.ids) for f in finds])
 PY
@@ -360,7 +361,6 @@ PY
 # --- the printed output: the summary line counts exceptions only; paths are printed sanitised -----------------------------------------------------------------
 cat >>"$work/pre.py" <<'PY'
 import contextlib, io, subprocess, tempfile
-CHECKED_IN = root + "/.github/supply-chain-exceptions.json"
 def cosign_rulings(): return [e for e in json.load(open(CHECKED_IN))["exceptions"] if e["package"] == "cosign"]
 def main_out(recs, ghsas, rulings=None, cosign_ver="3.1.3"):
     """Run pin-audit's main() on a one-file repository that pins cosign, with a LiveNet whose OSV and GitHub answers are the given ones. The repository's

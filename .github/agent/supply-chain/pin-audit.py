@@ -180,10 +180,36 @@ class FixtureNet:
 
 
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
-            "osv": "github.com/google/osv-scanner", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint",
-            "goreleaser": "github.com/goreleaser/goreleaser", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign",
+            "osv": "github.com/google/osv-scanner/v2", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint/v2",
+            "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign/v3",
             "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3"}
 NPM_TOOLS = {"snyk": "snyk"}
+
+# REQ-SUP-001-AC14: Go gives a module of major N >= 2 the path ending in /vN, and majors 0 and 1 the bare path. The table above holds the path of the
+# major we pin; a pin that moves to another major must move its table entry in the same change (the audit fails closed, a hit, until it does).
+_PLAIN_VERSION = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+IGNORED_NOTE = "ignored advisory entry"
+
+
+class GoRule:
+    """AC14: the module paths of one pinned tool. major and right are None for a non-empty version that is not plain MAJOR.MINOR.PATCH."""
+
+    def __init__(self, item, version):
+        self.table = GO_TOOLS[item.name]
+        self.bare = re.sub(r"/v[0-9]+$", "", self.table)
+        m = _PLAIN_VERSION.fullmatch(version)
+        self.major = int(m.group(1)) if m else None
+        self.right = None if m is None else self.bare if self.major <= 1 else f"{self.bare}/v{self.major}"
+
+    @property
+    def paths(self):
+        """Every path OSV and GitHub are asked for: the table path, the path of the pinned major and the bare path (AC14: queried by /vMAJOR as well)."""
+        return list(dict.fromkeys([self.table, self.right, self.bare] if self.right else [self.table, self.bare]))
+
+
+def _go_rule(item, version):
+    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table, other kinds of item, an empty version."""
+    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and version else None
 
 
 class LiveNet:
@@ -191,6 +217,7 @@ class LiveNet:
         self.gh, self.root = gh, root
         self._memo, self._lock = {}, threading.Lock()
         self.incomplete_prs = []
+        self.ignored_entries, self._reported = [], 0   # AC14: every OSV entry the rule did not use, {"id", "path", "reason"}, each once
 
     def _gh_json(self, path, strict=False):
         """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent')."""
@@ -301,6 +328,8 @@ class LiveNet:
         adv = self._gh_json(f"advisories/{advisory_id}", strict=True)
         q = self._query(item, self._version_of(item) or "")
         names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
+        rule = _go_rule(item, self._version_of(item) or "")
+        names |= {_norm_name(p) for p in (rule.paths if rule else [])}   # AC14: GitHub files some Go ranges under the bare path
         rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", []) if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
         return rngs or None
 
@@ -327,13 +356,15 @@ class LiveNet:
         if q is None or not version:
             return [], []
         osv, ghs = [], []
-        for v in self._osv_post(q):
-            says = self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
+        rule = _go_rule(item, version)
+        paths = rule.paths if rule else [q["package"]["name"]]
+        for v in self._osv_records(q, paths):
+            says = self._go_says(v, rule, version) if rule else self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
             osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")})
             for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
                 if alias.startswith("GHSA-"):
                     adv = self._gh_json(f"advisories/{alias}", strict=True)
-                    names = {_norm_name(q["package"]["name"]), _norm_name(item.name)}
+                    names = {_norm_name(q["package"]["name"]), _norm_name(item.name)} | {_norm_name(p) for p in paths}
                     rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", [])
                             if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
                     if adv and rngs:
@@ -343,7 +374,7 @@ class LiveNet:
         if eco:
             seen = {g["id"] for g in ghs}
             page = []
-            asked = [pkg]
+            asked = list(dict.fromkeys([pkg, *paths]))
             if q["package"]["ecosystem"] == "PyPI":
                 info = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json") or {}
                 published = (info.get("info") or {}).get("name")
@@ -364,7 +395,7 @@ class LiveNet:
                 if adv.get("ghsa_id") in seen:
                     continue
                 rngs = [x["vulnerable_version_range"] for x in adv.get("vulnerabilities", [])
-                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) == _norm_name(pkg)]
+                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in {_norm_name(a) for a in asked}]
                 if rngs and in_range(version, "|".join(rngs)):
                     ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"), "malicious": adv.get("type") == "malware"})
                     rec = self._osv_get(adv["ghsa_id"])
@@ -372,6 +403,45 @@ class LiveNet:
                         osv.append({"id": rec["id"], "incident": adv["ghsa_id"], "affected": self._osv_says(rec, pkg, version, versioned=False),
                                     "modified": rec.get("modified"), "malicious": rec["id"].startswith("MAL-")})
         return ghs, osv
+
+    def _osv_records(self, q, paths):
+        """The OSV records for the query, asked once per module path (AC14), one record per id."""
+        records = {}
+        for p in paths:
+            for v in self._osv_post(dict(q, package=dict(q["package"], name=p))):
+                records.setdefault(v["id"], v)
+        return records.values()
+
+    def _go_says(self, v, rule, version):
+        """AC14: does this OSV record cover a Go tool's pinned version? Where the rule cannot settle it the answer is yes (fail closed)."""
+        if rule.right is None:                       # AC14: a non-empty version that is not plain MAJOR.MINOR.PATCH is a hit
+            return True
+        if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
+            return self._osv_says(dict(v, affected=[dict(a, package={}) for a in v.get("affected", [])]), "", version, versioned=True)
+        entries = v.get("affected", [])
+        name = lambda a: (a.get("package") or {}).get("name")
+        if rule.major <= 1 and any(name(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries):
+            return self._osv_says(v, rule.right, version, versioned=True)   # AC14: a /v0 or /v1 path is ambiguous: the old verdict
+        exact = [a for a in entries if name(a) == rule.right and a["package"].get("ecosystem") == "Go"]
+        if not exact or not all(name(a) for a in entries):
+            return True                              # AC14: no entry for the exact path, or an entry with no path: a hit
+        for a in entries:
+            if a not in exact:
+                self._log_ignored(v["id"], name(a), f"not the module path of major {rule.major} ({rule.right})")
+        return self._osv_says(dict(v, affected=exact), rule.right, version, versioned=True)
+
+    def _log_ignored(self, advisory_id, path, reason):
+        """AC14: an entry the rule did not use is logged, once per id, path and reason (two queries return the same record)."""
+        entry = {"id": advisory_id, "path": path, "reason": reason}
+        with self._lock:
+            if entry not in self.ignored_entries:
+                self.ignored_entries.append(entry)
+
+    def take_ignored(self):
+        """The entries logged since the last call, for the notes of the item being judged (AC14)."""
+        with self._lock:
+            new, self._reported = self.ignored_entries[self._reported:], len(self.ignored_entries)
+        return new
 
     @staticmethod
     def _osv_says(v, name, version, versioned):
@@ -601,6 +671,11 @@ def load_exceptions(path, required):
     return ex
 
 
+def dead_exceptions(exceptions, applied):
+    """REQ-SUP-001-AC15: the rulings that decided no dispute in this run. Judged here, from what the run applied, never from a list."""
+    return [e for e in exceptions if not any(e is a for a in applied)]
+
+
 def package_of(item):
     return item.name.split("/", 1)[1] if item.kind == "package" else item.name
 
@@ -618,6 +693,11 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
     Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
     an exception never covers a version the authoritative source lists as affected)."""
+    return ruling_for(item, dispute_ids, current, exceptions, net, osv_times)[1]
+
+
+def ruling_for(item, dispute_ids, current, exceptions, net=None, osv_times=None):
+    """excepted() with the ruling that decided: (entry, "pass" | "hit"), or (None, None). REQ-SUP-001-AC15 reads the entry to know a ruling is alive."""
     vers = (net.versions_of(item) if net is not None and hasattr(net, "versions_of") else None) or [net.version_of(item) if net is not None and hasattr(net, "version_of") else version_of(item)]
     vers = [v for v in vers if v]
     ver = vers[0] if vers else None
@@ -634,14 +714,14 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
         if any(t is None or e.get("osv_modified", {}).get(i) != t for i, t in (osv_times or {}).items() if i in e["ids"]):
             continue  # unknown is not unchanged: a missing time refuses
         if not ver:
-            return None  # no version to compare with the ranges: stays disputed
+            return None, None  # no version to compare with the ranges: stays disputed
         # the ruling verifies itself (advisor 0182): its copied ranges must equal the authoritative advisory's LIVE ranges, or a wrong entry could hide a hit
         au = e["authoritative"]
         live = net.live_ranges(item, au["source"], au["id"]) if net is not None else None
         if not live or _norm_ranges(live) != _norm_ranges(au["ranges"]):
-            return None
-        return "hit" if any(in_range(v, "|".join(e["authoritative"]["ranges"])) for v in vers) else "pass"   # ANY tag of the commit inside the ranges: affected
-    return None
+            return None, None
+        return e, "hit" if any(in_range(v, "|".join(e["authoritative"]["ranges"])) for v in vers) else "pass"   # ANY tag of the commit inside the ranges: affected
+    return None, None
 
 
 # ---------- judging ----------
@@ -652,14 +732,16 @@ class Finding:
         self.pr = None   # the open pull request this pin was found in (not merged yet)
 
 
-def judge(item, net, exceptions, notes, current=True):
-    findings = _judge(item, net, exceptions, notes, current)
+def judge(item, net, exceptions, notes, current=True, applied=None):
+    findings = _judge(item, net, exceptions, notes, current, applied)
+    for e in (net.take_ignored() if hasattr(net, "take_ignored") else []):   # AC14: nothing is ignored silently
+        notes.append(f"{IGNORED_NOTE} {e['id']} {e['path']}: {e['reason']}")
     if (item.kind == "action" and inv.SHA40.match(item.version) and hasattr(net, "version_of") and net.version_of(item) is None and isinstance(net, LiveNet)):
         findings.append(Finding(item, "unresolved", ["unresolved"], "no tag of the action's repository points at the pinned commit, so its advisories cannot be matched to a version (the # label is not evidence)"))
     return findings
 
 
-def _judge(item, net, exceptions, notes, current=True):
+def _judge(item, net, exceptions, notes, current=True, applied=None):
     findings = []
     gh_l, osv_l = net.lists(item)
     by_incident = {}
@@ -675,7 +757,9 @@ def _judge(item, net, exceptions, notes, current=True):
                 if x["id"] not in cur or (x["id"].startswith("GHSA-") and x in gh_l):
                     cur[x["id"]] = x.get("modified")
             osv_times = {a2["id"]: a2.get("modified") for a2 in osv_l if any(g["id"] == a2["id"] for g in gh_l)}
-            ruling = excepted(item, set(ids), cur, exceptions, net, osv_times)
+            entry, ruling = ruling_for(item, set(ids), cur, exceptions, net, osv_times)
+            if applied is not None and entry is not None:
+                applied.append(entry)   # AC15: this ruling decided a real dispute in this run
             if ruling == "pass":
                 notes.append(f"exception applied: {package_of(item)} {item.version} ({', '.join(sorted(set(ids)))}) is outside the authoritative source's affected ranges")
                 continue
@@ -957,7 +1041,7 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
-        notes, findings, incomplete = [], [], False
+        notes, findings, incomplete, applied = [], [], False, []
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
                 if not age._tag_for_commit(it.name, it.version):
@@ -969,7 +1053,7 @@ def main(argv=None):
 
         def one(it):
             n2 = []
-            return judge(it, net, exceptions, n2, current=a.base is not None or it.key in head), n2
+            return judge(it, net, exceptions, n2, current=a.base is not None or it.key in head, applied=applied), n2
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             for fs, n2 in pool.map(one, audited):
@@ -995,7 +1079,7 @@ def main(argv=None):
                         continue
                     seen_keys.add(it.key)
                     try:  # one pull request's failure (a rate limit, a bad response) must never hide main's own findings or other PRs'
-                        for f in judge(it, net, exceptions, notes, current=True):
+                        for f in judge(it, net, exceptions, notes, current=True, applied=applied):
                             f.pr = number
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
@@ -1046,7 +1130,7 @@ def main(argv=None):
                     seen.add(child.key)
                     print(f"audit: nested action {clean(child.name)}@{clean(child.version[:12])} inside {clean(outer.name)}")    # listed, clean or not
                     try:
-                        for f in judge(child, net, exceptions, notes, current=True):
+                        for f in judge(child, net, exceptions, notes, current=True, applied=applied):
                             f.via = outer.name
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
@@ -1058,7 +1142,11 @@ def main(argv=None):
                         print(f"information: not looked into (nesting depth limit of 3): what {child.name} calls")
             queue = nxt
         for n in notes:
-            print(f"audit: {n}")
+            print(f"audit: {clean(n)}")
+        dead = [] if (a.base or a.exceptions) else dead_exceptions(exceptions, applied)   # AC15: the daily run over the checked-in file only
+        for e in dead:
+            print(f"audit: DEAD EXCEPTION: the ruling for {clean(', '.join(e['ids']))} ({clean(e['package'])} {clean(e['version'])}) applied to no finding in this run: "
+                  "remove it from the exceptions file")
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}" + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
@@ -1100,11 +1188,14 @@ def main(argv=None):
             if not a.report_only:
                 file_issues(gh, plan, today)
             return 1
+        if dead:
+            return 1
         unchecked = [i for i in audited if not net.covered(i)]
+        excepted_n = len([n for n in notes if not n.startswith(IGNORED_NOTE)])   # AC14: the log lines of ignored entries are not exceptions
         if incomplete:
             print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made today", file=sys.stderr)
             return 1
-        print(f"audit: no known-compromised versions as of {today}" + (f" ({len(notes)} disputed hit(s) covered by a checked-in exception)" if notes else "")
+        print(f"audit: no known-compromised versions as of {today}" + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
