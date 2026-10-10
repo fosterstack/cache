@@ -122,6 +122,8 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestTakenPortRefusedAndDataDirUnchanged" }
       - { type: go-test, ref: "cmd/fscache:TestListenerReleasedWhenStoreOpenFails" }
       - { type: go-test, ref: "cmd/fscache:TestServeFailureAfterBindIsReturned" }
+      - { type: go-test, ref: "cmd/fscache:TestServeWaitsForServingGoroutineOnShutdown" }
+      - { type: go-test, ref: "cmd/fscache:TestServeWaitsForServingGoroutineWhenShutdownFails" }
   - ac: REQ-CFG-005-AC1
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestUnknownEnvOneWarningPerName" }

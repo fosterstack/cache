@@ -155,6 +155,11 @@ func levenshtein(a, b string) int {
 	return prev[len(b)]
 }
 
+// reconcileDuration renders a reconcile's elapsed time as a Go duration
+// string rounded to the millisecond ("1.235s"), the format of the
+// duration attribute on the reconciled line.
+func reconcileDuration(d time.Duration) string { return d.Round(time.Millisecond).String() }
+
 // uncleanMarkerPath is the marker's location inside the data directory —
 // beside the stores it speaks for, so it travels with the volume.
 func uncleanMarkerPath(dataDir string) string {
@@ -346,7 +351,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 			return fmt.Errorf("startup reconciliation: %w", err)
 		}
 		log.Info("fscache: reconciled",
-			"duration", time.Since(began).Round(time.Millisecond).String(),
+			"duration", reconcileDuration(time.Since(began)),
 			"adopted_blobs", stats.AdoptedBlobs,
 			"dropped_records", stats.DroppedRecords,
 			"removed_temp_files", stats.RemovedTempFiles)
@@ -388,10 +393,21 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 
 	errCh := make(chan error, 1)
 	served = true // Serve owns and closes the listener from here on
+	// The serving goroutine gets its own copy of the seam (no later write
+	// to the package variable can race with it) and is always reaped before
+	// serve returns: the deferred Close stops Serve whatever path leaves
+	// this function, then waits for the goroutine to exit.
+	serveFn := httpServe
+	done := make(chan struct{})
 	go func() {
-		if err := httpServe(httpServer, ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		defer close(done)
+		if err := serveFn(httpServer, ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
+	}()
+	defer func() {
+		_ = httpServer.Close()
+		<-done
 	}()
 
 	if ready != nil {

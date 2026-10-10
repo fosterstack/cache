@@ -219,9 +219,13 @@ that can outlast the liveness probe in the manifest above. The manifest sets
 `failureThreshold: 3` are Kubernetes defaults, not manifest settings. The probe
 first fires about 3 seconds after the container starts, then every 10, so three
 failures land at roughly 3, 13 and 23 seconds; the kubelet staggers probe
-starts within a period, so the container is restarted within roughly 25 to 35
-seconds. The unclean marker is still there, so the next start reconciles again
-from the beginning: `CrashLoopBackOff`.
+starts within a period, so the kubelet decides to restart the container at
+roughly 25 to 35 seconds. The server does not act on SIGTERM until a reconcile
+ends, so the container is killed when `terminationGracePeriodSeconds` (default
+30) expires, at about 55 to 65 seconds. A reconcile that runs past that starts
+again from the beginning, because the unclean marker is still there:
+`CrashLoopBackOff`. A reconcile that finishes inside the grace period exits
+cleanly with the marker cleared.
 
 Add a startup probe, which holds the liveness and readiness probes off until it
 first succeeds:
@@ -236,9 +240,9 @@ first succeeds:
 `failureThreshold` 60 times `periodSeconds` 10 is ten minutes. That is a
 starting point, not a measurement. To size it for your store, time a reconcile
 on a copy of the volume: the `duration` on the `fscache: reconciled` log line
-(and the gap between it and `fscache: unclean shutdown detected`) is the
-number. Then make `failureThreshold` x `periodSeconds` at least twice that
-time. An undersized startup probe restarts the container just as the liveness
+is the number. It covers the reconcile only, not opening the stores, so treat
+twice that time as a floor: make `failureThreshold` x `periodSeconds` at least
+that. An undersized startup probe restarts the container just as the liveness
 probe did, and the marker makes the next start reconcile from zero.
 
 Do not use a `tcpSocket` probe or an L4 load-balancer health check for this:

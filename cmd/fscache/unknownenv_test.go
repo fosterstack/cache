@@ -165,9 +165,10 @@ func TestKnownEnvMatchesREADMETable(t *testing.T) {
 //     of os.Getenv, os.LookupEnv, envOr or envSize, so a name that merely
 //     appears in a map or a comment-like literal does not count as read.
 //
-// Only the package-level knownEnv declaration in cmd/fscache/main.go is
-// skipped (it cannot vouch for itself); a knownEnv spec anywhere else is
-// scanned like any other code.
+// Nothing is skipped: the knownEnv declaration's own literals are not call
+// arguments, so they never count as reads, and a name hidden in any
+// initializer (a knownEnv spec in any package included) is scanned like
+// any other code.
 func TestKnownEnvMatchesNamesReadInCode(t *testing.T) {
 	names, reads := scanEnvNames(t, "../../cmd", "../../internal")
 	if len(names) == 0 {
@@ -185,6 +186,10 @@ func TestKnownEnvMatchesNamesReadInCode(t *testing.T) {
 	}
 }
 
+// The reader functions are matched by name, not by type: a crafted fixture
+// that wraps os.Getenv under another name evades the "is read" direction
+// (the other direction, every whole-literal name against knownEnv, still
+// catches it). That is the accepted scope of this check.
 var envReaders = map[string]bool{"os.Getenv": true, "os.LookupEnv": true, "envOr": true, "envSize": true}
 
 // scanEnvNames returns every whole-literal FSCACHE_ name by file, and the
@@ -193,7 +198,6 @@ func scanEnvNames(t *testing.T, roots ...string) (names, reads map[string]string
 	t.Helper()
 	nameRE := regexp.MustCompile(`^FSCACHE_[A-Z0-9_]+$`)
 	names, reads = map[string]string{}, map[string]string{}
-	mainGo := filepath.Clean("../../cmd/fscache/main.go")
 	fset := token.NewFileSet()
 	lit := func(e ast.Expr) (string, bool) {
 		bl, ok := e.(*ast.BasicLit)
@@ -221,22 +225,7 @@ func scanEnvNames(t *testing.T, roots ...string) (names, reads map[string]string
 			if err != nil {
 				return err
 			}
-			skip := map[ast.Node]bool{}
-			if filepath.Clean(p) == mainGo {
-				for _, decl := range f.Decls { // package level only
-					if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.VAR {
-						for _, sp := range gd.Specs {
-							if vs := sp.(*ast.ValueSpec); len(vs.Names) == 1 && vs.Names[0].Name == "knownEnv" {
-								skip[vs] = true
-							}
-						}
-					}
-				}
-			}
 			ast.Inspect(f, func(n ast.Node) bool {
-				if skip[n] {
-					return false
-				}
 				if call, ok := n.(*ast.CallExpr); ok {
 					fn := ""
 					switch f := call.Fun.(type) {
@@ -330,8 +319,8 @@ func TestUnknownEnvDidYouMeanTieAndNearest(t *testing.T) {
 	}
 }
 
-// A throwaway tree to prove the scan's rules: only main.go's package-level
-// knownEnv is skipped, testdata is skipped, and a name counts as read only
+// A throwaway tree to prove the scan's rules: nothing named knownEnv is
+// skipped, testdata, dot and underscore directories are skipped, and a name counts as read only
 // as an argument of an env-reading call.
 func TestScanEnvNamesRules(t *testing.T) {
 	root := t.TempDir()
@@ -347,7 +336,14 @@ func TestScanEnvNamesRules(t *testing.T) {
 	write("a/a.go", "package a\nimport \"os\"\nvar knownEnv = os.Getenv(\"FSCACHE_HIDDEN\")\n")
 	write("a/testdata/x.go", "package x\nvar v = \"FSCACHE_IN_TESTDATA\"\n")
 	write("a/m.go", "package a\nvar m = map[string]bool{\"FSCACHE_ONLY_LISTED\": true}\nvar r = envOr(\"FSCACHE_READ\", \"\")\nfunc f() { var knownEnv = []string{\"FSCACHE_LOCAL\"}; _ = knownEnv }\n")
+	write("a/.dot/d.go", "package d\nvar v = \"FSCACHE_IN_DOT_DIR\"\n")
+	write("a/_under/u.go", "package u\nvar v = \"FSCACHE_IN_UNDERSCORE_DIR\"\n")
 	names, reads := scanEnvNames(t, root)
+	for _, skipped := range []string{"FSCACHE_IN_DOT_DIR", "FSCACHE_IN_UNDERSCORE_DIR"} {
+		if _, ok := names[skipped]; ok {
+			t.Errorf("%s: a dot or underscore directory was scanned", skipped)
+		}
+	}
 	for _, want := range []string{"FSCACHE_HIDDEN", "FSCACHE_ONLY_LISTED", "FSCACHE_READ", "FSCACHE_LOCAL"} {
 		if _, ok := names[want]; !ok {
 			t.Errorf("scan missed %s", want)
@@ -400,5 +396,21 @@ func TestReconciledLineCarriesDuration(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no reconciled line:\n%s", logs)
+	}
+}
+
+// The duration attribute is rounded to the millisecond and rendered as a
+// Go duration string.
+func TestReconcileDurationFormat(t *testing.T) {
+	cases := map[time.Duration]string{
+		1234567 * time.Microsecond: "1.235s",
+		400 * time.Microsecond:     "0s",
+		1500 * time.Microsecond:    "2ms",
+		90 * time.Second:           "1m30s",
+	}
+	for in, want := range cases {
+		if got := reconcileDuration(in); got != want {
+			t.Errorf("reconcileDuration(%v) = %q, want %q", in, got, want)
+		}
 	}
 }

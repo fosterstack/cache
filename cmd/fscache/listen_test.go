@@ -13,7 +13,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // REQ-CFG-004: configuration is validated, and the listen address bound,
@@ -251,4 +253,69 @@ func TestStartupLineReportsBoundAddress(t *testing.T) {
 	if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
 		t.Errorf("startup addr = %q, want 127.0.0.1:<the bound port>", addr)
 	}
+}
+
+// Race fix (review round 3): serve must not return while its serving
+// goroutine is still running, or a test that swaps the package-level seam
+// next (httpServe, httpShutdown) races with that goroutine's read of it.
+// Run the suite as CI does and under shuffle to catch this class:
+//
+//	go test -race -shuffle=on -count=20 ./cmd/fscache
+//
+// The wrapper delays the "exited" flag after the real Serve returns, so a
+// serve() that does not wait for the goroutine returns first and fails.
+func trackServeExit(t *testing.T) *atomic.Bool {
+	t.Helper()
+	var exited atomic.Bool
+	orig := httpServe
+	httpServe = func(s *http.Server, ln net.Listener) error {
+		err := orig(s, ln)
+		time.Sleep(300 * time.Millisecond)
+		exited.Store(true)
+		return err
+	}
+	t.Cleanup(func() { httpServe = orig })
+	return &exited
+}
+
+func TestServeWaitsForServingGoroutineOnShutdown(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	exited := trackServeExit(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := serve(ctx, quietLogger(), func() { cancel() }); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	if !exited.Load() {
+		t.Fatal("serve returned while its serving goroutine was still running")
+	}
+}
+
+// The same when Shutdown itself fails: the server is closed and the
+// goroutine reaped before serve returns, so no listener or goroutine is
+// left behind.
+func TestServeWaitsForServingGoroutineWhenShutdownFails(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	addr := freePort(t)
+	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+	t.Setenv("FSCACHE_ADDR", addr)
+	exited := trackServeExit(t)
+	origShutdown := httpShutdown
+	httpShutdown = func(*http.Server, context.Context) error { return errTestShutdown }
+	defer func() { httpShutdown = origShutdown }()
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := serve(ctx, quietLogger(), func() { cancel() }); err == nil {
+		t.Fatal("serve hid the shutdown error")
+	}
+	if !exited.Load() {
+		t.Fatal("serve returned while its serving goroutine was still running")
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("port still held after serve returned: %v", err)
+	}
+	_ = ln.Close()
 }
