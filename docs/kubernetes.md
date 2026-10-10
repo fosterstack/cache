@@ -204,8 +204,10 @@ the guard that matters.
 shell, no `curl` — so an `exec` probe has nothing to run. Same reason the
 [Docker deploy doc](docker-deploy.md) ships no container `HEALTHCHECK`.
 
-Point liveness and readiness probes at /healthz; any other path is a cache
-key, and probing it counts as a miss.
+Point liveness and readiness probes at `/healthz`. Every path other than the
+reserved endpoints (`/`, `/healthz`, `/metrics`, `/statusz`) is a cache key: a
+GET of an absent key returns 404 and counts as a miss, so a probe pointed at
+one fails and skews the hit ratio.
 
 ## The data directory
 
