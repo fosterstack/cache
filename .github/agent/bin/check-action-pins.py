@@ -78,6 +78,9 @@ ONE expression runner is accepted (REQ-REL-005-AC2, advisor-approved read-back O
 plain-string labels from the closed set {ubuntu-24.04, ubuntu-24.04-arm} (and, beside it, only `fail-fast: true|false`).
 Such a job reads as bash like any ubuntu job; every other form (see literal_matrix_runner) is a runs-on finding, and a
 key given twice in a job, its strategy or its matrix is a finding with the key named.
+Repeated keys (REQ-REL-005-AC3): in a workflow file, or an action.yml/action.yaml under .github/, two keys of one mapping
+that this check reads as one (key_of: trimmed, lower-cased) are a finding naming each spelling and the path, since YAML
+keeps only the last copy and a second spelling could hide the first one's script (see repeated_keys_everywhere).
 Inside the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown
 options, a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
 outside the check today: the repository uses it (ci.yml, go-freshness.yml), so failing it closed is an outbox question.
@@ -2754,6 +2757,48 @@ def check_runners(where, doc, bad):
                        f"runners only and refuses any other")
 
 
+# ---- REQ-REL-005-AC3: a key given twice in one mapping (the advisor's AC2b, Oct 9-10) ----
+# YAML keeps the last copy of a repeated key, so a second spelling of `run` can hide the script this check reads in the first.
+# Keys are compared as this check reads them (key_of: trimmed, lower-cased; never case-folded or normalized).
+
+def reads_repeated_keys(rel):
+    """AC3's scope: a workflow file, or an action file (action.yml/action.yaml in any letter case) anywhere under .github/."""
+    name = rel.rsplit("/", 1)[-1].lower()
+    return rel.startswith(".github/workflows/") or (rel.startswith(".github/") and name in ("action.yml", "action.yaml"))
+
+
+def ac2_mapping(path):
+    """A workflow job, its strategy or its matrix: AC2 names a repeated key there itself (check_runners), once."""
+    p = [k.strip().lower() if isinstance(k, str) else k for k in path]
+    return len(p) >= 2 and p[0] == "jobs" and p[2:] in ([], ["strategy"], ["strategy", "matrix"])
+
+
+def spellings_by_key(node):
+    """AC3: a mapping's key spellings, grouped by key_of, in file order (a non-string key is walk()'s finding)."""
+    groups = {}
+    for k, _ in node.value:
+        if isinstance(k, yaml.ScalarNode):
+            groups.setdefault(key_of(k), []).append(k.value)
+    return groups
+
+
+def repeated_keys_everywhere(where, node, path, workflow, bad):
+    """AC3: one finding per mapping and repeated key, naming each spelling once in file order and the mapping's path,
+    `<file>.jobs.build.steps[2]: duplicate key 'run', 'Run'; a key is given once` (AC2's form). Every mapping of the file
+    is read, flow style included; text inside a block scalar is not a key."""
+    if isinstance(node, yaml.MappingNode):
+        if not (workflow and ac2_mapping(path)):
+            for spellings in spellings_by_key(node).values():
+                if len(spellings) > 1:
+                    named = ", ".join(repr(s) for s in dict.fromkeys(spellings))
+                    bad.append(f"{where}{show(path)}: duplicate key {named}; a key is given once")
+        for k, v in node.value:
+            repeated_keys_everywhere(where, v, path + [getattr(k, "value", None)], workflow, bad)
+    elif isinstance(node, yaml.SequenceNode):
+        for i, v in enumerate(node.value):
+            repeated_keys_everywhere(where, v, path + [i], workflow, bad)
+
+
 def check_file(tree, rel, pins, bad):
     text = tree.read(rel)
     lines = text.splitlines()
@@ -2770,6 +2815,9 @@ def check_file(tree, rel, pins, bad):
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
             if rel.startswith(".github/workflows/"):
                 check_runners(rel, d, bad)
+            if reads_repeated_keys(rel):           # AC3: the file-wide anchor refusal above has already returned
+                where = rel + (f"[doc{i}]" if len(docs) > 1 else "")
+                repeated_keys_everywhere(where, d, [], rel.startswith(".github/workflows/"), bad)
             # every mapping key of the parsed document — quoted, flow-style or block (Codex #164 r3, C13)
             stack = [d]
             while stack:
