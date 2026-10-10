@@ -370,11 +370,15 @@ def make_repo(name):
     return clone, bare
 
 
-def run_lines(clone, lines):
+def run_lines(clone, lines, github_actions="true"):
+    """Run the tag lines in the clone with GITHUB_ACTIONS set to `github_actions` (None removes it): this test may itself run in CI, where it is true."""
     script = "#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(lines) + "\n"
     with open(work + "/tag-lines.sh", "w") as f:
         f.write(script)
-    return subprocess.run(["bash", work + "/tag-lines.sh"], cwd=clone, capture_output=True, text=True)
+    env = {k: v for k, v in os.environ.items() if k != "GITHUB_ACTIONS"}
+    if github_actions is not None:
+        env["GITHUB_ACTIONS"] = github_actions
+    return subprocess.run(["bash", work + "/tag-lines.sh"], cwd=clone, capture_output=True, text=True, env=env)
 
 
 def stamp(clone):
@@ -444,13 +448,32 @@ def case_rerun():
     return first.returncode == 0 and second.returncode == 0 and version == "v0.0.0-rc.1", "rc %s %s, stamp %r" % (first.returncode, second.returncode, version)
 
 
+def case_guard():
+    """Outside GitHub Actions the lines refuse before any `git tag`: a developer's clone keeps every tag, an unpushed local one included."""
+    problems = []
+    for value in (None, "", "false", "FALSE", "TRUE", "1", "true "):
+        clone, bare = make_repo("guard")
+        git(clone, "tag", "keep-me")
+        git(clone, "tag", "unpushed-local-v9.9.9")
+        before = sorted(git(clone, "tag", "--points-at", "HEAD").stdout.split())
+        r = run_lines(clone, shape.SNAPSHOT_TAG_LINES, value)
+        after = sorted(git(clone, "tag", "--points-at", "HEAD").stdout.split())
+        if r.returncode != 2 or "outside GitHub Actions" not in r.stderr or before != after:
+            problems.append("GITHUB_ACTIONS=%r -> rc %s, stderr %r, tags %s -> %s" % (value, r.returncode, r.stderr[:100], before, after))
+        shutil.rmtree(clone, ignore_errors=True)
+        shutil.rmtree(bare, ignore_errors=True)
+    return not problems, "; ".join(problems)[:300]
+
+
+real("real git: outside GitHub Actions (unset, empty, false, FALSE, TRUE, 1, 'true ') the lines exit 2 naming the reason, every tag stays",
+     case_guard)
 real("real git and go: CONTROL - with only `git tag --force v0.0.0-rc.1 HEAD` and v0.3.0 at HEAD, Go's stamp is still v0.3.0 (the problem)", case_control)
 real("real git and go: the snapshot tag lines make the stamp v0.0.0-rc.1 and vcs.revision equal to HEAD, although v0.3.0 was at HEAD", case_stamp)
 real("real git and go: after the lines HEAD carries only v0.0.0-rc.1 (v0.3.0 and v0.2.9 deleted locally)", case_tags)
 real("real git and go: the remote is untouched - v0.3.0 is still there, v0.0.0-rc.1 was never pushed", case_remote)
 real("real git and go: a non-v* tag at HEAD fails the lines naming it, and it is not deleted or restored", case_nonv)
 real("real git and go: a second run (v0.0.0-rc.1 already there) succeeds and the stamp is still v0.0.0-rc.1", case_rerun)
-EXPECT = 159
+EXPECT = 160
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:

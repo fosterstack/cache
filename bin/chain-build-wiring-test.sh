@@ -977,7 +977,8 @@ with_timeout() { # with_timeout SECONDS COMMAND...   macOS has no timeout(1): a 
 }
 run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 if it hangs); GH_TOKEN is set as the apk job's Witness step sets it
   local dir=$1 kind=$2 mode=$3 tag=$4; shift 4
-  ( cd "$dir" && if with_timeout 120 env "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" HARNESS_DIR="$root/bin" REAL_CV="$CV" \
+  ( cd "$dir" && if with_timeout 120 env GITHUB_ACTIONS=true "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" \
+        HARNESS_DIR="$root/bin" REAL_CV="$CV" \
         GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GH_TOKEN=SENTINEL-GH-TOKEN PATH="$dir/bin:$PATH" \
         bash "./bin/build-stage-$kind.sh" > stage.out 2> stage.err; then echo 0; else echo $?; fi )
 }
@@ -1193,6 +1194,20 @@ tag_cases() {
     bad "$ac $t $kind: v0.3.0 v0.2.9 at HEAD -> rc=$rc, tags left: $(tr '\n' ' ' < "$d/fake-tags.txt" 2> /dev/null)," \
         "calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
+  # the GUARD (advisor, Oct 9 night): outside GitHub Actions the script refuses BEFORE any git tag, so nothing is deleted on a developer's clone
+  local v ok_all=yes
+  for v in "" false FALSE TRUE 1 "true "; do
+    mk "$d" "$kind" "$s" "$mode" "$SNAP_TAG"
+    rc=$(run_stage "$d" "$kind" "$mode" "$SNAP_TAG" "GITHUB_ACTIONS=$v" "FAKE_TAGS_AT_HEAD=v0.3.0 keep-me"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+    if [ "$rc" = 0 ] || ! grep -q 'outside GitHub Actions' "$d/stage.err" || grep -q 'git tag' <<< "$calls" || grep -q '^apk ' <<< "$calls" \
+       || [ -e "$d/fake-tags.txt" ]; then      # the fake git creates the tag list on its first use: no file means git was never run
+      ok_all=no
+      bad "$ac $t $kind: GITHUB_ACTIONS='$v' -> rc=$rc, err: $(head -c 100 "$d/stage.err" 2> /dev/null), calls: $(tr '\n' '|' <<< "$calls" | cut -c1-120)"
+    fi
+  done
+  if [ "$ok_all" = yes ]; then
+    ok "$ac $t $kind: with GITHUB_ACTIONS unset, false, FALSE, TRUE, 1 or 'true ' the script exits non-zero naming the reason before any git tag"
+  fi
   mk "$d" "$kind" "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" "$kind" "$mode" "$SNAP_TAG" "FAKE_TAGS_AT_HEAD=v0.3.0 keep-me"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" != 0 ] && grep -q 'keep-me' "$d/stage.err" && ! grep -q '^apk ' <<< "$calls" && ! grep -q 'git tag -d keep-me' <<< "$calls" \
@@ -1202,6 +1217,13 @@ tag_cases() {
   else
     bad "$ac $t $kind: keep-me at HEAD -> rc=$rc, err: $(head -c 120 "$d/stage.err" 2> /dev/null), tags: $(tr '\n' ' ' < "$d/fake-tags.txt" 2> /dev/null)"
   fi
+}
+# guard_first FILE KIND: the apk scripts that delete tags must test GITHUB_ACTIONS on a line BEFORE their first `git tag` line (the other kinds have no tags)
+guard_first() {
+  local f=$1 kind=$2 guard first_tag
+  case "$kind" in snapshot-apk|snapshot-rebuild-apk) ;; *) return 0;; esac
+  guard=$(grep -n 'GITHUB_ACTIONS' "$f" | head -1 | cut -d: -f1); first_tag=$(grep -n 'git tag' "$f" | head -1 | cut -d: -f1)
+  [ -n "$guard" ] && [ -n "$first_tag" ] && [ "$guard" -lt "$first_tag" ]
 }
 beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   local t=$1 s=$2 mode=$3 d="$work/b-sapk-$1" rc calls
@@ -1358,7 +1380,7 @@ PY
   fi
   REF_NAME=
 }
-snap_cases_of() { case "$1" in snapshot-apk) echo 10;; snapshot-assemble) echo 5;; snapshot-rebuild-apk) echo 5;; snapshot-rebuild-assemble) echo 4;; esac; }
+snap_cases_of() { case "$1" in snapshot-apk) echo 11;; snapshot-assemble) echo 5;; snapshot-rebuild-apk) echo 6;; snapshot-rebuild-assemble) echo 4;; esac; }
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
@@ -1379,6 +1401,8 @@ for tag in fixture real; do
       bad "AC12 $tag bin/build-stage-$kind.sh never pushes a tag (the script does not exist: RED until implemented)"
     elif grep -Eq '(^|[^[:alnum:]_-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*push|--push' "$f"; then
       bad "AC12 $tag bin/build-stage-$kind.sh names a git push (the snapshot tag is local and never pushed)"
+    elif ! guard_first "$f" "$kind"; then
+      bad "AC12 $tag bin/build-stage-$kind.sh: the GITHUB_ACTIONS guard does not come before the first git tag"
     elif grep -Eq '(^|[^[:alnum:]_.-])gh[[:space:]]|build-admit' "$f"; then
       bad "AC12 $tag bin/build-stage-$kind.sh names gh or the admission (snapshot mode makes no API read)"
     else
@@ -1612,7 +1636,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=550
+EXPECT=554
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

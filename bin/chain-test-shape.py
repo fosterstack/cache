@@ -57,15 +57,17 @@ SNAPSHOT_TAG = "v" + SNAPSHOT_VERSION
 # ADVISOR RULING (Oct 9): a v* tag that HEAD already carries in snapshot mode (scan.yml also runs on a push of a v* tag) is ACCEPTED: nothing is refused. But
 # Go stamps the HIGHEST semver tag at HEAD (probe: with v0.3.0 at HEAD, `git tag --force v0.0.0-rc.1 HEAD` still gives the stamp v0.3.0, and cache's
 # driver reads the buildinfo `mod` line and would refuse). So the script first DELETES every other local v* tag that points at HEAD (git tag -d in the
-# job's own checkout;
-# nothing is pushed, fetched or restored, and no ref of the remote is touched), then makes v0.0.0-rc.1, then refuses, naming the tag, if HEAD still carries any
+# job's own checkout; nothing is pushed, fetched or restored, and no ref of the remote is touched), then makes v0.0.0-rc.1, then refuses, naming the tag, if HEAD still carries any
 # tag other than v0.0.0-rc.1 (a non-v* tag is not ours to delete). The real-Go proof is in bin/chain-snapshot-test.sh.
+# GUARD (advisor, Oct 9 night): deleting tags is destructive on a developer's clone (an unpushed local tag would be lost), so outside GitHub Actions the script
+# refuses, before any `git tag`, and exits 2 naming the reason. A local run belongs in a throwaway clone, where GITHUB_ACTIONS=true can be set on purpose.
+SNAPSHOT_TAG_GUARD = ('[ "${GITHUB_ACTIONS:-}" = true ] || { echo "refusing to delete tags outside GitHub Actions (run in a throwaway clone)" >&2; exit 2; }')
 SNAPSHOT_TAG_DELETE = ("for t in $(git tag --list 'v*' --points-at HEAD); do [ \"$t\" = %s ] || git tag -d \"$t\" > /dev/null; done" % SNAPSHOT_TAG)
 SNAPSHOT_TAG_LINE = "git tag --force %s HEAD" % SNAPSHOT_TAG
 SNAPSHOT_TAG_CHECK = ("if git tag --points-at HEAD | grep -qvx '%s'; then "
                       "echo \"::error::HEAD carries the tag $(git tag --points-at HEAD | grep -vx '%s' | head -1): not a snapshot\" >&2; exit 1; fi"
                       % (SNAPSHOT_TAG, SNAPSHOT_TAG))
-SNAPSHOT_TAG_LINES = [SNAPSHOT_TAG_DELETE, SNAPSHOT_TAG_LINE, SNAPSHOT_TAG_CHECK]
+SNAPSHOT_TAG_LINES = [SNAPSHOT_TAG_GUARD, SNAPSHOT_TAG_DELETE, SNAPSHOT_TAG_LINE, SNAPSHOT_TAG_CHECK]
 
 
 def apk_cmd(variant, ver=VER):
