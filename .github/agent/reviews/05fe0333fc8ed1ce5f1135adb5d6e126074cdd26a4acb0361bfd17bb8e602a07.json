@@ -1,0 +1,75 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "05fe0333fc8ed1ce5f1135adb5d6e126074cdd26a4acb0361bfd17bb8e602a07",
+ "change": "REQ-SCAN-015 the scanner cloud identities cannot be reached through a caller: neither scan.yml nor main-candidate-rescan.yml is callable as a reusable workflow; the required allowlist job carries exactly the guard step (trusted pin-wiring judge); the trusted review gate runs the default branch's guard over the PR head as git objects; the guard script is GUARDED and ENFORCEMENT -- PR #251",
+ "reviewed_commit": "90a07a8bd21483559b04a30e35b1ff1d95131744",
+ "closed_commit": "90a07a8bd21483559b04a30e35b1ff1d95131744",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "Sonnet and Opus medium rounds 1-2 on heads fc3307c and 59cf085 (GREEN); evidence kept in the private audit tree",
+   "reviewers": {}
+  },
+  {
+   "round": 3,
+   "label": "Codex security tier on 59cf085: 1 blocker (the pin-wiring judge did not require the guard step) -- fixed tests first, e221ed5",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "84621d88582192fb85f0fbaf91e37c152c0002da921ca7819bd094cbd63ba814"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "Codex security tier on fa4da0a: 1 blocker (an earlier CI step could overwrite the guard script on disk) -- fixed tests first: the trusted gate runs main's guard over the PR head as git objects (0470e0a), REQ-SCAN-015-AC3",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "63bb4a9e49052eaad138553c8f6488e74b760b76d3555331d74c4d7e35043774"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "Codex security tier on b5d5490: GREEN, no blockers; 1 should-fix (git-object mode accepted an annotated tag sha) and 2 notes -- fixed in 4132471/4c4224e",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "b9e40a4c6585a9ca33224bb164ed815530a00d7d142dbcb55fc7ef61e742b9b9"
+    }
+   }
+  },
+  {
+   "round": 6,
+   "label": "final head 90a07a8 (plain merge of main bbe08db after the fixes): Codex security tier delta re-check GREEN no findings, and a full Sonnet review of the whole change GREEN no blockers",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "b473e7afcf4e153f6f96efc04fb4b7632dad3aa0dfbb409232d88b31b31833ef"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "8ddadb3967bd72720e1fd459a75cf77e208182462f4f780e303049111d178bf2"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "advisor reading: the guard script is treated as enforcement; REQ-AUD-018-AC4's list wording awaits the owner",
+  "deployment timing: the trusted-gate protection takes effect when the gate workflow reaches the default branch; until then this head's own CI step is the only enforcement",
+  "a duplicate top-level on: key in a guarded workflow (workflow_call first) passes the judge (PyYAML keeps the last key); GitHub rejects duplicate keys; the pin checker's repeated-key rule is tracked in REQ-REL-005-AC3 (branch pin-check-repeated-keys)",
+  "Codex could not run the scanner/allowlist/pin-wiring suites in its read-only sandbox (mktemp denied): NOT VERIFIED there; run by Sonnet, Opus and CI (guard 63/63, gate suite 594 OK, pin-wiring 120/0, allowlist 519/0)",
+  "obfuscation-only findings are out of the pin checker's scope (owner Oct 3)"
+ ],
+ "row78": "adversarial pass in every round (Sonnet, Opus, Codex): the change adds no action reference (only a run: step in ci.yml and two run: lines in the trusted gate workflow); check-action-pins.py whole-repo run: 27 files / 148 pinned actions / 0 findings; no bypass found; GATE_WORKFLOW_SHA256 updated for the gate edit"
+}
