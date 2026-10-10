@@ -149,7 +149,6 @@ import hashlib
 SCRIPT_EXTS = (".sh", ".bash", ".py", ".js", ".mjs", ".cjs", ".rb", ".pl")
 LITERAL_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 LIT_WORD = re.compile(r"[A-Za-z0-9_./:=@%+,-]+")
-ENV_OK = re.compile(r"(GITHUB|RUNNER)_[A-Z_]+")                  # READS of these are fine; they may never be SET in env:
 FORBID_ENV = re.compile(r"(BASH_ENV|ENV|PATH|LD_[A-Z0-9_]*|PYTHON[A-Z0-9_]*|NODE_[A-Z_]*|IFS|SHELL|SHELLOPTS|BASHOPTS|BASH_[A-Z_]*|CDPATH|"
                         r"PS4|PROMPT_COMMAND|HOME|TMPDIR|GIT_[A-Z_]*|GITHUB_[A-Z_]*|RUNNER_[A-Z_]*|LC_[A-Z_]*|LANG|USER|"
                         r"RUBY[A-Z_]*|PERL[A-Z0-9_]*|CLASSPATH|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS)")
@@ -251,7 +250,7 @@ def _arg_error(parts, envnames):
             m = re.fullmatch(r"\$(\w+)|\$\{(\w+)\}", t)
             if m:
                 nm = m.group(1) or m.group(2)
-                if nm not in envnames and not ENV_OK.fullmatch(nm):
+                if nm not in envnames:                  # AC1: the step's OWN env only (Codex #249 r4 B3b: no GITHUB_*/RUNNER_* exception)
                     return "\"$%s\" is not a variable of this step's env: (only a whole read of the step's own env is allowed)" % nm
             elif "$" in t or "`" in t or "!" in t:
                 return "double-quoted argument %r mixes text with a variable or substitution (use a whole \"$NAME\" from env:)" % t
