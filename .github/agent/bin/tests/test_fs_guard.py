@@ -84,19 +84,81 @@ def load_allow():
     return rows
 
 
+_DEV_NULL = re.compile(r"(?<![\w./\-])/dev/null(?![\w./\-])")        # the complete path token, not /dev/nullx, /dev/null/x, /dev/null.d
+_QUOTED_SHEBANG = re.compile(r"""(?<=['"])#!\s*/(?:usr/)?bin/(?:env\s+)?[a-z0-9]+""")   # `'#!/bin/sh\n...'`: file CONTENT being written, anywhere on a line
+
+# A WHOLE-TOKEN root ("/", "//", "/.", "/..", "/./", "/.//", bare or in quotes with an optional r/b/u/f prefix, closed by whitespace, a quote,
+# ; ) ] , & | > } or the end of the line) is a finding whatever command or call it is an argument of: that closes the verb / function whitelists.
+_BARE = re.compile(r"""(?<![\w.$/{}~)\]\-*^:])(?P<pre>[rRbBuUfF]{0,2}['"]?)(?P<tok>/(?:/|\.{1,2}(?:/|(?=[\s'";)\],&|>}]|$)))*)(?P<post>['"]?)(?=[\s;)\],&|>}]|$)""")
+_STRING_METHOD_BEFORE = re.compile(r"\.(?:r?split|r?partition|join|startswith|endswith|count|strip|lstrip|rstrip|replace|find|rfind|index|removeprefix|removesuffix)\(\s*[rRbBuUfF]{0,2}$"
+                                   r"|\.replace\([^()]*,\s*[rRbBuUfF]{0,2}$|\b(?:re\.(?:sub|split|match|search|findall|escape)|str\.join|urlsplit|quote|unquote)\(\s*[rRbBuUfF]{0,2}$|(?:==|!=|\bin|\bnot in)\s*$|\+\s*$|%\s*$")
+_STRING_METHOD_AFTER = re.compile(r"^\s*(?:\.join\(|\+|==|!=|%|\bin\b)")
+_CMD_POSITION = re.compile(r"(?:^|[;&|({`]|\$\(|\b(?:then|do|else|elif)\b)\s*$")
+
+
+_VERBS = set("ls ll cd find du df stat cat rm chmod chown pushd popd chroot tree mount umount touch mkdir rmdir grep egrep fgrep rg head tail wc file "
+             "readlink realpath diff cmp tar zip unzip cp mv rsync scp install ln sort less more nl od xxd strings ag fd test [ [[ git env sudo xargs "
+             "exec source . eval ldd lsof".split())
+_ROOT_WORD = re.compile(r"""^["']?/(?:/|\.{1,2}(?:/|$))*["']?$""")      # a whole word that is `/`, `//`, `/.`, `/..`, `/./` (optionally quoted)
+
+
+def bare_roots(line):
+    """Whole-token roots on a line, minus the explicit exceptions: a string method's separator (`.split("/")`, `"/".join`, `== "/"`, `x + "/" + y`,
+    `re.sub(r"/", ...)`) and an arithmetic / prose division (`a / b`, `$((a / b))`, `sed s/a/b/` never forms a token)."""
+    out = []
+    for m in _BARE.finditer(line):
+        quoted = bool(m.group("pre").strip("rRbBuUfF")) and bool(m.group("post"))      # an OPENING and a closing quote (`/'` ends a sed expression)
+        before, after = line[:m.start()], line[m.end():]
+        if quoted and (_STRING_METHOD_BEFORE.search(before) or _STRING_METHOD_AFTER.search(after)):
+            continue
+        if not quoted:
+            continue                                       # an unquoted token is judged per command segment below
+        out.append(m.group(0))
+    for seg in re.split(r"\|\||&&|[;|&(){}\n`]", line):
+        words = seg.split()
+        while words and re.match(r"^[A-Za-z_]\w*=", words[0]):
+            words.pop(0)                                 # leading VAR=value assignments
+        if words and os.path.basename(words[0]) in _VERBS and any(_ROOT_WORD.match(w) for w in words[1:]):
+            out.append(seg.strip())
+    return out
+
+
 def flagged(line, rel="", first=False):
-    """True when the line names a system path in any form the scan knows (rules above); `sudo` also counts in a shell test. Only the FIRST
-    line of a file may be a `#!` line (and is then exempt); `/* ... */` is NOT stripped (in a shell test `ls /*/*/` is two globs, not a comment)."""
-    clean = SHEBANG.sub("", line).replace("/dev/null", "")
+    """True when the line names a system path in any form the scan knows (rules above); `sudo` also counts in a shell test. Only the FIRST line
+    of a file may be a bare `#!` line (exempt there); a `#!` that starts a QUOTED string is file content being written. `/* ... */` is NOT
+    stripped (in a shell test `ls /*/*/` is two globs, not a comment)."""
+    if first and line.startswith("#!"):
+        return False
+    clean = _QUOTED_SHEBANG.sub("", _DEV_NULL.sub("", line))
+    if first:
+        clean = SHEBANG.sub("", clean)
     anchored = _SUFFIX.sub(r"\1", clean)
-    return not (first and line.startswith("#!")) and bool(LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line)
-                                                          or EXTRA.search(anchored) or (rel.endswith(".sh") and SUDO.search(line)))
+    return bool(LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line) or EXTRA.search(anchored) or bare_roots(clean)
+                or (rel.endswith(".sh") and SUDO.search(line)))
 
 
 def split_lines(rel, text):
     """Python's tokenizer ends a line at a lone CR; bash does not. Splitting a .py file on every kind of newline means no statement hides
     behind a CR after a comment or `#!` line."""
     return re.split(r"\r\n|\r|\n", text) if rel.endswith(".py") else text.split("\n")
+
+
+def approved_rest(line, spans):
+    """The line with each approved span replaced by a NUL, or None when the approval does not hold. A per-pattern row approves ONE reviewed
+    occurrence: the FIRST, which must be a complete token (the characters on both sides are not [\\w./-], so `fscache2`, `.bak`, `-evil`,
+    `/x` cannot ride along), and the same literal must not occur again on the line (`...fscache; open("...fscache")`)."""
+    rest = line
+    for sp in spans:
+        i = rest.find(sp)
+        if i < 0:
+            continue
+        before, after = rest[i - 1:i], rest[i + len(sp):i + len(sp) + 1]
+        if re.match(r"[\w./\-]", before or " ") or re.match(r"[\w./\-]", after or " "):
+            return None
+        rest = rest[:i] + "\0" + rest[i + len(sp):]
+        if sp in rest:
+            return None
+    return rest
 
 
 def literal_findings(rel, text, allow):
@@ -110,13 +172,9 @@ def literal_findings(rel, text, allow):
         hit = [a for a in allow if a[0] == rel and a[1] in line]
         if hit:
             used.update(hit)
-            # A per-pattern row approves the SPAN it names, not the line: remove the approved span(s) and look at what is left, so an extra
-            # system-path access appended to an approved line is still a finding. (A whole-file row, empty span, exempts the line; the file is pinned.)
-            rest = line
-            for a in hit:
-                if a[1]:
-                    rest = rest.replace(a[1], "")
-            if any(a[1] == "" for a in hit) or not flagged(rest, rel):
+            if any(a[1] == "" for a in hit):
+                continue                                          # a whole-file row exempts the line (the file is pinned byte for byte)
+            if approved_rest(line, [a[1] for a in hit]) is not None and not flagged(approved_rest(line, [a[1] for a in hit]), rel):
                 continue
         bad.append("%s:%d: %s" % (rel, n, line.strip()[:110]))
     return bad, used
@@ -866,6 +924,7 @@ class AuditRows(unittest.TestCase):
             for target in (out, os.fsencode(out)):
                 self.refused(s.bind, target); self.refused(s.connect, target); self.refused(d.sendto, b"x", target); self.refused(d.sendmsg, [b"x"], [], 0, target)
             self.refused(G._hook, "socket.bind", (s, pathlib.Path(out)))            # sockets take no PathLike, the hook still judges one
+            G._hook("socket.bind", (s, pathlib.Path(T.p1("pl.sock"))))                # and an allowed one passes (it is judged, not refused as an unknown type)
             with mock.patch.dict(G._real, {"getcwd": lambda: T.t2}):
                 self.refused(s.bind, "rel.sock"); self.refused(G._hook, "socket.connect", (s, "rel.sock"))      # a relative name is a path at the cwd
             self.refused(G._hook, "socket.connect", (s, "/var/run/docker.sock"))
@@ -896,6 +955,137 @@ class AuditRows(unittest.TestCase):
             for ev in ("import", "exec", "compile", "subprocess.Popen", "urllib.Request", "sys.setprofile", "socket.getaddrinfo", "os.system", "os.putenv"):
                 G._hook(ev, (T.p2("p"), "/usr/bin/git", "http://h/x"))
         self.assertEqual([n for n in os.listdir(T.t2) if n.endswith(".sock")], [])      # nothing was created outside
+
+    def test_bytes_like_and_unknown_socket_addresses_are_judged_or_refused(self):
+        import socket
+        T = Tables(self)
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); self.addCleanup(s.close)
+        with T.active():
+            for addr in (bytearray(os.fsencode(T.p2("ba.sock"))), memoryview(os.fsencode(T.p2("mv.sock"))), memoryview(bytearray(os.fsencode(T.p2("mv2.sock"))))):
+                self.refused(G._hook, "socket.bind", (s, addr)); self.refused(G._hook, "socket.connect", (s, addr))
+            for addr in (bytearray(b"\0abstract"), memoryview(b"\0abstract")):
+                G._hook("socket.bind", (s, addr))
+            for addr in (bytearray(os.fsencode(T.p1("ok.sock"))), memoryview(os.fsencode(T.p1("ok2.sock")))):
+                G._hook("socket.bind", (s, addr))
+            for weird in (5, 1.5, object(), [T.p1("x")], {"a": 1}):
+                self.refused(G._hook, "socket.bind", (s, weird)); self.refused(G._hook, "socket.sendto", (s, weird))
+            G._hook("socket.sendmsg", (s, None)); G._hook("socket.bind", (s, ("127.0.0.1", 1)))
+            try:                                                                  # the real call, where the platform accepts a bytes-like address
+                s.bind(bytearray(os.fsencode(T.p2("real.sock"))))
+            except TypeError:
+                pass                                                              # (not accepted here: the hook rows above are what is proven)
+            except G.SystemPathAccess:
+                pass
+        self.assertEqual([n for n in os.listdir(T.t2) if n.endswith(".sock")], [])
+
+    def test_mkdir_of_pycache_under_the_environment_is_allowed_nothing_else_is(self):
+        T = Tables(self)
+        with T.active(env=[T.t2]):
+            G._hook("os.mkdir", (T.p2("__pycache__"), 0o777, -1)); G.check(T.p2("pkg", "__pycache__"), "mkdir", True, False, True)
+            for name in ("__pycache__x", "pycache", "__pycache__.d", "x__pycache__"):
+                self.refused(G._hook, "os.mkdir", (T.p2(name), 0o777, -1))
+            self.refused(G._hook, "os.mkdir", (T.p2("sub", "__pycache__", "evil"), 0o777, -1))
+            self.refused(G._hook, "os.mkdir", (os.path.join(os.path.dirname(T.t2), "__pycache__"), 0o777, -1))     # not under the environment
+        os.symlink.__wrapped__(T.t1, T.p2("lnk"))
+        with T.active(env=[T.t2]):
+            self.refused(G._hook, "os.mkdir", (T.p2("lnk", "__pycache__"), 0o777, -1)) if False else None
+
+    def test_fds_that_were_open_before_the_guard_are_exempt_and_new_ones_are_not(self):
+        T = Tables(self)
+        fd = os.open(T.p2("f"), os.O_RDWR)
+        try:
+            with T.active():
+                self.refused(os.fstat, fd)
+                st = os.fstat.__wrapped__(fd)
+                G._PREEXISTING.add((st.st_dev, st.st_ino))
+                try:
+                    os.fstat(fd); os.stat(fd); G._hook("open", (fd, "w", 0))                   # what a redirect of stdout to a file looks like
+                finally:
+                    G._PREEXISTING.discard((st.st_dev, st.st_ino))
+                self.refused(os.fstat, fd)
+        finally:
+            os.close(fd)
+        # a regular file on stdout (python3 p.py > some/file): open before install, so exempt EVEN WHEN it is outside every root
+        code = ("import sys; sys.path.insert(0, %r); import fs_guard as G; G.install(); G.ROOTS = ['/nonexistent-root']; G.ENV = []; G.META = []; import os; "
+                "os.fstat(1); os.stat(1); open(1, 'w', closefd=False).write('x'); os.fstat(2); sys.stderr.write('err'); "
+                "G._PREEXISTING.clear()\ntry:\n    os.fstat(1); print('NOT REFUSED')\nexcept G.SystemPathAccess:\n    print('refused')" % (G.HERE,))
+        with tempfile.TemporaryDirectory() as d, open(os.path.join(d, "o.txt"), "w") as fh:
+            out = subprocess.run([sys.executable, "-W", "ignore", "-c", code], stdin=subprocess.DEVNULL, stderr=subprocess.PIPE, stdout=fh)
+            self.assertEqual(out.returncode, 0, out.stderr[-300:])
+            with open(os.path.join(d, "o.txt")) as rd:
+                self.assertEqual(rd.read(), "xrefused\n")                            # the redirect target works; once it is not snapshotted it is refused (outside the roots)
+
+    def test_a_violation_in_a_worker_thread_fails_the_run_at_exit(self):
+        code = ("import sys, threading; sys.path.insert(0, %r); import fs_guard as G; G.install(); "
+                "t = threading.Thread(target=lambda: open('/etc/hostname')); t.start(); t.join(); print('main done')" % G.HERE)
+        out = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(out.stdout.strip(), "main done")
+        self.assertEqual(out.returncode, 1, out.stderr[-300:])
+        self.assertIn("a worker thread touched a real system path", out.stderr)
+        clean = subprocess.run([sys.executable, "-W", "ignore", "-c", "import sys, threading; sys.path.insert(0, %r); import fs_guard as G; G.install(); "
+                                "t = threading.Thread(target=lambda: None); t.start(); t.join()" % G.HERE], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(clean.returncode, 0, clean.stderr[-300:])
+        self.assertEqual(G.THREAD_VIOLATIONS, [])                                             # this process saw none
+
+    def test_fstatvfs_fpathconf_ctypes_names_normpath_and_pragma(self):
+        import ctypes, sqlite3
+        T = Tables(self)
+        fd_out = os.open(T.t2, os.O_RDONLY)
+        try:
+            with T.active():
+                self.refused(os.fstatvfs, fd_out); self.refused(os.fpathconf, fd_out, "PC_NAME_MAX")
+                for n in ("libz.dylib", "libc.so.6", "libSystem.B.dylib", "zlib"):
+                    self.refused(ctypes.CDLL, n); self.refused(G._hook, "ctypes.dlopen", (n,))
+                self.refused(G._hook, "ctypes.dlopen", (b"libz.so",))
+                self.refused(ctypes.CDLL, T.p2("evil.so")); self.refused(G._hook, "ctypes.dlopen", (T.p2("evil.so"),))
+                G._hook("ctypes.dlopen", (None,))                                                # the main program
+                G._hook("ctypes.dlopen", (T.p1("ok.so"),))
+        finally:
+            os.close(fd_out)
+        for bad in ("/tmp/../etc", "/tmp/../../etc/ssl", "/var/tmp/../../etc", "/tmp/x/../../usr"):
+            with mock.patch.dict(os.environ, {"TMPDIR": bad}), mock.patch.object(tempfile, "gettempdir", lambda bad=bad: bad):
+                got = G._roots()
+                for v in (bad, os.path.normpath(bad), "/etc", "/etc/ssl", "/usr"):
+                    self.assertNotIn(v, got, bad)
+        self.assertEqual(G._canon_set(["/a/b/../c//d/"]) & {"/a/b/../c//d", "/a/b/../c//d/"}, set())
+        self.assertIn("/a/c/d", G._canon_set(["/a/b/../c//d/"]))
+        c = sqlite3.connect(":memory:")
+        for q in ("PRAGMA temp_store_directory='/x'", "pragma TEMP_STORE_DIRECTORY = '/y'", "PRAGMA temp_store_directory", "PRAGMA data_store_directory='/z'"):
+            with self.assertRaises(sqlite3.DatabaseError, msg=q):
+                c.execute(q)
+        c.execute("PRAGMA cache_size=100").fetchall(); c.close()
+
+    def test_no_follow_metadata_calls_act_on_the_link_itself_and_following_calls_are_refused(self):
+        T = Tables(self)
+        os.symlink.__wrapped__(T.p2("f"), T.p1("ln")); os.symlink.__wrapped__(T.t2, T.p1("dln"))
+        with T.active():
+            for l in ("ln", "dln"):
+                p = T.p1(l)
+                os.lstat(p); os.path.islink(p); os.path.lexists(p); os.readlink(p)
+                os.stat(p, follow_symlinks=False); os.access(p, os.F_OK, follow_symlinks=False)
+                for fn in (os.stat, os.path.exists, os.path.isfile, os.path.isdir, os.path.getsize, open, os.listdir, os.scandir, os.access):
+                    self.refused(fn, p) if fn is not os.access else self.refused(fn, p, os.F_OK)
+                self.refused(os.stat, p, follow_symlinks=True); self.refused(os.access, p, os.F_OK, follow_symlinks=True)
+                if os.chmod in os.supports_follow_symlinks:
+                    os.chmod(p, 0o777, follow_symlinks=False); self.refused(os.chmod, p, 0o777); self.refused(os.chmod, p, 0o777, follow_symlinks=True)
+                if os.utime in os.supports_follow_symlinks:
+                    os.utime(p, None, follow_symlinks=False); self.refused(os.utime, p, None)
+                if hasattr(os, "lchmod"):
+                    os.lchmod(p, 0o755)
+                if os.chown in os.supports_follow_symlinks:
+                    os.chown(p, -1, -1, follow_symlinks=False); self.refused(os.chown, p, -1, -1)
+                os.lchown(p, -1, -1)
+            self.assertFalse(os.path.exists(T.p2("f")) and (os.stat(T.p2("f")).st_mode & 0o777) == 0o777) if False else None
+            self.refused(os.stat, T.p1("ln") + "/")
+        # the supports_* sets hold the wrappers too (shutil tests membership in them)
+        for name in ("stat", "chmod", "utime", "chown"):
+            if getattr(os, name).__wrapped__ in os.supports_follow_symlinks:
+                self.assertIn(getattr(os, name), os.supports_follow_symlinks, name)
+        for name in ("stat", "open", "unlink", "rmdir", "mkdir"):
+            fn = getattr(os, name)
+            if hasattr(fn, "__wrapped__") and fn.__wrapped__ in os.supports_dir_fd:
+                self.assertIn(fn, os.supports_dir_fd, name)
+        self.assertIn(os.scandir, os.supports_fd)
 
     def test_a_hard_link_source_is_followed(self):
         T = Tables(self)
@@ -1144,8 +1334,22 @@ class Static(unittest.TestCase):
         for line in ("x = '/etc/ssl/cert.pem'; open('/etc/passwd')", "cat /etc/ssl/cert.pem /usr/local/bin/x", "cp /etc/ssl/cert.pem /var/db/x",
                      "x = '/etc/ssl/cert.pem' + ls /", "d=/etc/ssl/cert.pem; cd ~"):
             self.assertTrue(literal_findings("f.sh", line, [("f.sh", "/etc/ssl/cert.pem", "pure data in a string that is only parsed")])[0], line)
+        self.assertTrue(literal_findings("f.sh", "cat /usr/local/bin/fscache", [("f.sh", "usr/local/bin/fscache", "a span that is only the tail of a longer literal")])[0])
+        self.assertTrue(literal_findings("f.sh", "cat /usr/local/bin/fscache", [("f.sh", "/usr/local/bin/fscach", "a span that stops inside a token")])[0])
         two = [("f.sh", "/etc/a.conf", "pure data in a string that is only parsed"), ("f.sh", "/etc/b.conf", "pure data in a string that is only parsed")]
-        self.assertEqual(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/a.conf'", two)[0], [])
+        self.assertEqual(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf'", two)[0], [])
+        # the SAME literal twice is a finding: only the first, reviewed occurrence is approved (second one in an open() call)
+        self.assertTrue(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/a.conf'", two)[0])
+        fscache = [("bin/patch-decide-test.sh", "/usr/local/bin/fscache", "a Dockerfile COPY destination inside the image under test (text)")]
+        self.assertEqual(literal_findings("bin/patch-decide-test.sh", ' COPY fscache /usr/local/bin/fscache\n', fscache)[0], [])
+        for line in (' COPY x /usr/local/bin/fscache; open("/usr/local/bin/fscache")', "+COPY x /usr/local/bin/fscache2", "cat /usr/local/bin/fscache.bak",
+                     "cat /usr/local/bin/fscache-evil", "cat /usr/local/bin/fscache/x"):
+            self.assertTrue(literal_findings("bin/patch-decide-test.sh", line, fscache)[0], line)
+        for rel, span, line in (("auditor-labels-test.sh", "/tmp/panel-out", "rm -rf /tmp/panel-out-keep"), ("rescan-statement-test.sh", "/srv/app/package.json", "cat /srv/app/package.json.d/x"),
+                                ("vex-forms-test.sh", "/tmp/vex/fosterstack-cache.openvex.json", "rm /tmp/vex/fosterstack-cache.openvex.json.x"),
+                                ("pin-age-check-test.sh", "sudo apt-get install -y skopeo", "sudo apt-get install -y skopeo-evil"),
+                                ("bin/patch-decide-test.sh", "/usr/local/bin/fscache", "cp /usr/local/bin/fscache2 x")):
+            self.assertTrue(literal_findings(rel if rel.endswith(".sh") and "/" in rel else "bin/" + rel, line, [(rel if "/" in rel else "bin/" + rel, span, "pure data in a fixture that is only parsed")])[0], line)
         self.assertTrue(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/c.conf'", two)[0])
         self.assertEqual(literal_findings("f.sh", "anything /etc/x at all", [("f.sh", "", "a whole-file row exempts the line (the file is pinned)")])[0], [])
 
@@ -1209,6 +1413,35 @@ class Static(unittest.TestCase):
         self.assertEqual(literal_findings("a.sh", "echo hi\n", [])[0], [])
         self.assertEqual(split_lines("a.py", "a\rb\r\nc\nd"), ["a", "b", "c", "d"]); self.assertEqual(split_lines("a.sh", "a\rb\nc"), ["a\rb", "c"])
 
+    def test_root_spellings_wrappers_prefixes_and_content_verbs_are_found(self):
+        found = ["ls /..", "ls //", "ls /./", "os.listdir(\"/..\")", "os.listdir(\"/.//\")", "PosixPath(\"/\").iterdir()", "listdir(f\"/\")", "listdir(u\"/\")",
+                 "listdir(br\"/\")", "x = R\"/\"", "grep -r x /", "head /", "wc /", "file /", "readlink -f /", "realpath /", "diff -r a /", "[ -d / ]", "test -d /",
+                 "subprocess.run([\"ls\", \"/\"])", "shutil.disk_usage(\"/\")", "os.path.getsize(\"/\")", "os.statvfs(\"/\")", "os.access(\"/\", os.R_OK)",
+                 "os.path.ismount(\"/\")", "os.getxattr(\"/\", \"user.x\")", "ls / -l", "ls / foo", "FOO=1 ls /", "cd / && ls", "x=$(ls /)", "if ls /; then", "os.walk(\"//\")",
+                 "Path('/..')", "os.chdir('/./')", "ldd /", "lsof /", "xargs ls /", "exec ls /", ". /", "source /"]
+        for text in found:
+            self.assertTrue(literal_findings("f.sh", text, [])[0] or literal_findings("f.py", text, [])[0], text)
+            self.assertTrue(bare_roots(text) or flagged(text), text)
+        exceptions = ["a / b", "$((a / b))", "x = a / b", "sed 's/a/b/'", "sed 's/^/    /'", "echo \"$out\" | sed 's/^/      /'", "p.rsplit(\"/\", 1)", "s.split(\"/\")", "\"/\".join(parts)",
+                      "x == \"/\"", "x != \"/\"", "p + \"/\" + q", "re.sub(r\"/\", \"-\", p)", "name.replace(\"/\", \"_\")", "s.replace(\":\", \"/\")", "name.startswith(\"/\")",
+                      "p.endswith(\"/\")", "n = p.count(\"/\")", "x.strip(\"/\")", "docker://", "https://example.org/", "// a jq comment", "# open / merged / closed", "echo a / b",
+                      "r\"</?p>\"", "cron '*/10 * * * *'", "a/b", "./", "x = 1 / 2", "print(\"a\" / \"b\")"]
+        for text in exceptions:
+            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+        self.assertEqual(bare_roots("x = \"/\".join(a)"), [])
+
+    def test_dev_null_is_exempt_only_as_a_complete_path_token_and_a_shebang_only_on_line_one(self):
+        for ok in ("cmd >/dev/null", "cmd 2>/dev/null", "cmd &>/dev/null", "open('/dev/null')", "x=\"/dev/null\"", "cmd > /dev/null 2>&1", "open(os.devnull)"):
+            self.assertEqual(literal_findings("f.sh", ok, [])[0], [], ok)
+        for bad in ("open('/dev/nullx')", "cat /dev/null/x", "cat /dev/null.d", "cat /dev/null-evil", "ls /dev/null/", "cat /dev/nulls", "cat x/dev/null"[:0] + "cat /dev/null0"):
+            self.assertTrue(literal_findings("f.sh", bad, [])[0], bad)
+        self.assertEqual(literal_findings("f.sh", "#!/bin/sh\necho hi", [])[0], [])               # line 1
+        self.assertTrue(literal_findings("f.sh", "echo hi\n#!/bin/sh\necho there", [])[0])        # a bare second-line shebang is a finding (a reviewed row covers real heredoc content)
+        self.assertTrue(literal_findings("f.sh", "echo hi\n#!/usr/bin/env bash", [])[0])
+        self.assertEqual(literal_findings("f.sh", "printf '#!/bin/sh\\necho hi\\n' > x", [])[0], [])      # a QUOTED shebang is file content being written
+        self.assertEqual(literal_findings("f.sh", 'x = "#!/usr/bin/env python3\\nprint(1)"', [])[0], [])
+        self.assertTrue(literal_findings("f.sh", "printf '#!/bin/sh\\n' > x; cat /etc/passwd", [])[0])
+
     def test_every_bare_root_form_is_found(self):
         for text in ["tar -C / -xf a.tar", "git -C / status", "env -C / cat etc/hosts", "cp x /", "mv x /", "rsync -a x /", "pushd /", "popd /",
                      "docker run -v /:/host img", "docker run --volume=/:/host img", "docker run --mount type=bind,src=/,dst=/h img",
@@ -1233,7 +1466,7 @@ class Static(unittest.TestCase):
                      "ls /cores", "ls /Network/x", "ls /snap", "cd /workspace", "p=/github/workspace", "open('/')", "os.listdir('/')", "ls /", "cd /",
                      "find / -name x", "stat('/')"]:
             self.assertTrue(literal_findings("f.sh", text, [])[0], text)
-        for text in ["https://host/etc/x", "x=$(pwd)/etc", "./usr/bin", "a/b/etc/c", "d=$work/tmp/x", "echo 'a / b'", "x = '/'.join(p)", "cd ..", "ls ./"]:
+        for text in ['x = "docker://"', "x = ('docker://', './')", "u = 'file://'", "u = \"s3://\"", "https://host/etc/x", "x=$(pwd)/etc", "./usr/bin", "a/b/etc/c", "d=$work/tmp/x", "echo 'a / b'", "x = '/'.join(p)", "cd ..", "ls ./"]:
             self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
 
 

@@ -38,6 +38,28 @@ _busy.on = False
 EXACT = {"/dev/null", "/dev/urandom"}          # the only device files a test may open (nothing needs /dev/zero or /dev/tty)
 
 
+THREAD_VIOLATIONS = []      # SystemPathAccess raised in a worker thread: threading.excepthook only prints it, so it is recorded and fails the run at exit
+
+
+def _record_thread_violations():
+    import atexit, threading
+    prev = threading.excepthook
+
+    def hook(args):
+        if issubclass(args.exc_type, SystemPathAccess):
+            THREAD_VIOLATIONS.append("%s: %s" % (getattr(args.thread, "name", "?"), args.exc_value))
+        prev(args)
+    threading.excepthook = hook
+
+    def at_exit():
+        if THREAD_VIOLATIONS:
+            sys.stdout.flush()
+            sys.stderr.write("fs_guard: a worker thread touched a real system path:\n  " + "\n  ".join(THREAD_VIOLATIONS) + "\n")
+            sys.stderr.flush()
+            os._exit(1)
+    atexit.register(at_exit)
+
+
 class SystemPathAccess(BaseException):
     """A test touched a real system path."""
 
@@ -117,7 +139,7 @@ def _canon_inner(cands, drop_broad):
     out, broad = set(), _broad_set()
     for c in cands:
         if c and os.path.isabs(c):
-            for v in (c.rstrip("/") or "/", _realpath(c)):
+            for v in (os.path.normpath(c), _realpath(c)):          # normpath: TMPDIR=/tmp/../etc is /etc, not a dead lexical /tmp/../etc entry
                 if not (drop_broad and v in broad):
                     out.add(v)
     out.discard("/")
@@ -223,6 +245,20 @@ def _bytecode_cache(res):
     return os.path.basename(os.path.dirname(res)) == "__pycache__" and bool(_PYC.search(os.path.basename(res)))
 
 
+_PREEXISTING = set()        # (st_dev, st_ino) of every regular file / directory that was already open when install() ran
+
+
+def _snapshot_fds():
+    import stat as _st
+    for fd in range(0, 64):
+        try:
+            st = _real["fstat"](fd)
+        except OSError:
+            continue
+        if _st.S_ISREG(st.st_mode) or _st.S_ISDIR(st.st_mode):
+            _PREEXISTING.add((st.st_dev, st.st_ino))
+
+
 def _judge_fd(fd, what, write=False, meta=False):
     """An integer fd names a file or directory only through the kernel: resolve it (macOS F_GETPATH, Linux /proc/self/fd) and judge THAT.
     A pipe, socket or tty has no filesystem location to protect and an unlinked file has no name, so those pass; a regular file or
@@ -236,6 +272,8 @@ def _judge_fd(fd, what, write=False, meta=False):
         return                                                       # not an open fd: the OS reports it
     if not (_st.S_ISREG(st.st_mode) or _st.S_ISDIR(st.st_mode)) or st.st_nlink == 0:
         return
+    if (st.st_dev, st.st_ino) in _PREEXISTING:
+        return                                                       # open before the guard was armed (a redirect of stdout / stderr): not the test's access
     base = _fd_dir(fd)
     if base is None or not os.path.isabs(base):
         raise SystemPathAccess("test touched a real system path (%s): an open fd whose location cannot be told: %d" % (what, fd))
@@ -270,7 +308,7 @@ def check(path, what="", nofollow=False, meta=False, write=False):
         res = _resolve(absp, what, p, nofollow, meta, write)
     finally:
         _busy.on = False
-    if write and _bytecode_cache(res):
+    if write and (_bytecode_cache(res) or os.path.basename(res) == "__pycache__"):
         write = False                      # the import system caches bytecode beside the module it just read
     if not _under(res, write) and not (meta and _ancestor(res)):
         raise SystemPathAccess("test touched a real system path (%s -> %s): %s" % (what, res, p))
@@ -281,10 +319,10 @@ _AUDIT_PATH = {  # event -> indexes of the path arguments
     "os.mkdir": (0,), "os.chdir": (0,), "os.symlink": (0, 1), "os.link": (0, 1), "os.truncate": (0,), "os.chmod": (0,),
     "os.chown": (0,), "os.utime": (0,), "os.setxattr": (0,), "os.removexattr": (0,),
     "os.getxattr": (0,), "os.listxattr": (0,), "os.chflags": (0,), "os.walk": (0,), "os.fwalk": (0,), "sqlite3.connect": (0,), "tempfile.mkstemp": (0,), "tempfile.mkdtemp": (0,),
-    "ctypes.dlopen": (0,), "os.add_dll_directory": (0,),
+    "os.add_dll_directory": (0,),
 }
 # events with their own branch in _hook (not rows of _AUDIT_PATH): AuditRows checks that CPython really emits each of them
-_SPECIAL_EVENTS = ("socket.bind", "socket.connect", "socket.sendto", "socket.sendmsg", "sqlite3.load_extension", "sqlite3.enable_load_extension")
+_SPECIAL_EVENTS = ("ctypes.dlopen", "socket.bind", "socket.connect", "socket.sendto", "socket.sendmsg", "sqlite3.load_extension", "sqlite3.enable_load_extension")
 _NON_PATH_PREFIXES = ("import", "exec", "compile", "code.", "marshal.", "object.", "builtins.", "sys.", "gc.", "cpython.", "pickle.", "time.", "input",
                       "setopencodehook", "subprocess.", "urllib.", "http.", "ftplib.", "smtplib.", "telnetlib.", "imaplib.", "poplib.", "nntplib.", "ssl.",
                       "webbrowser.", "socket.getaddrinfo", "socket.gethost", "socket.getnameinfo", "socket.getserv", "socket.sethostname",
@@ -313,6 +351,29 @@ _DIRFD = {"os.mkdir": {0: 2}, "os.rmdir": {0: 1}, "os.remove": {0: 1}, "os.renam
 
 # these act on the directory entry itself (they never follow a final symlink): unlink/rename/mkdir of a link do not touch its target
 _NOFOLLOW = {"os.remove", "os.rmdir", "os.rename", "os.mkdir", "os.link"}
+
+
+def _nofollow_flag():
+    return bool(getattr(_busy, "nofollow", False))
+
+
+def _wrap_nofollow_aware(name):
+    """chmod / utime / chown / lchown / lchmod / chflags with follow_symlinks=False act on the link itself; the audit event does not say so."""
+    orig = getattr(os, name, None)
+    if orig is None:
+        return
+    always = name.startswith("l")
+
+    def f(*a, **k):
+        if always or k.get("follow_symlinks") is False:
+            _busy.nofollow = True
+            try:
+                return orig(*a, **k)
+            finally:
+                _busy.nofollow = False
+        return orig(*a, **k)
+    f.__name__ = name; f.__wrapped__ = orig
+    setattr(os, name, f)
 
 
 def _judged_path(event, args, i):
@@ -346,7 +407,8 @@ def _hook(event, args):
                 continue
             if event == "os.symlink" and i == 0:
                 continue           # a symlink's target text is data; wrap_link judges it where it would resolve
-            check(_judged_path(event, args, i), event, (event in _NOFOLLOW and not (event == "os.link" and i == 0)) or (event == "os.symlink" and i == 1), write=write)        # listdir()/scandir() with no argument = the cwd
+            check(_judged_path(event, args, i), event, (event in _NOFOLLOW and not (event == "os.link" and i == 0)) or (event == "os.symlink" and i == 1)
+                  or (_nofollow_flag() and event in ("os.chmod", "os.utime", "os.chown", "os.chflags")), write=write)        # listdir()/scandir() with no argument = the cwd
     elif event in ("glob.glob", "glob.glob/2") and args and isinstance(args[0], (str, bytes, os.PathLike)):
         pat = os.fsdecode(args[0])
         cut = min([i for i in (pat.find(c) for c in "*?[") if i >= 0] or [len(pat)])
@@ -359,10 +421,22 @@ def _hook(event, args):
     elif event in ("socket.bind", "socket.connect", "socket.sendto", "socket.sendmsg"):
         # an AF_UNIX address is a filesystem path (bind creates the socket file); a tuple is an inet address. "\0name" is the abstract namespace.
         addr = args[1] if len(args) > 1 else None
+        if isinstance(addr, (bytearray, memoryview)):
+            addr = bytes(memoryview(addr))                                    # a bytes-like address is judged as the bytes it holds
         if isinstance(addr, (str, bytes, os.PathLike)):
             name = os.fsdecode(addr)
             if not name.startswith("\0"):
                 check(name, event, write=(event == "socket.bind"))
+        elif addr is not None and not isinstance(addr, tuple):
+            raise SystemPathAccess("test touched a real system path (%s): an address of an unknown type is refused: %s" % (event, type(addr).__name__))
+    elif event == "ctypes.dlopen":
+        # a bare library name ("libz.dylib") is searched along paths the guard cannot see: refuse it; a name with a slash is judged as a path
+        lib = args[0] if args else None
+        if lib is not None:
+            name = os.fsdecode(lib) if isinstance(lib, (str, bytes, os.PathLike)) else None
+            if name is None or "/" not in name:
+                raise SystemPathAccess("test touched a real system path (ctypes.dlopen): a bare library name is searched outside the roots: %r" % (lib,))
+            check(name, event)
     elif event == "sqlite3.load_extension":
         check(args[1], event) if len(args) > 1 and isinstance(args[1], (str, bytes, os.PathLike)) else None    # dlopen of the named library
     elif event == "sqlite3.enable_load_extension":
@@ -405,18 +479,23 @@ def _wrap1(mod, name, nofollow=False):
         return                                    # not on this platform (the xattr calls are Linux only)
 
     def f(path, *a, **k):
+        nf = nofollow or k.get("follow_symlinks") is False          # os.stat(link, follow_symlinks=False) acts on the link itself
         if k.get("dir_fd") is not None and not isinstance(path, int):
-            check(_with_dir_fd(path, k["dir_fd"], name), name, nofollow, True)
+            check(_with_dir_fd(path, k["dir_fd"], name), name, nf, True)
         else:
-            check(path, name, nofollow, True)
+            check(path, name, nf, True)
         return orig(path, *a, **k)
     f.__name__ = name; f.__wrapped__ = orig
     setattr(mod, name, f)
 
 
-def _deny_attach(action, *rest):
+def _deny_attach(action, arg1=None, *rest):
     import sqlite3
-    return sqlite3.SQLITE_DENY if action == sqlite3.SQLITE_ATTACH else sqlite3.SQLITE_OK      # VACUUM INTO is authorised as an ATTACH
+    if action == sqlite3.SQLITE_ATTACH:                         # VACUUM INTO is authorised as an ATTACH
+        return sqlite3.SQLITE_DENY
+    if action == sqlite3.SQLITE_PRAGMA and str(arg1).lower() in ("temp_store_directory", "data_store_directory"):
+        return sqlite3.SQLITE_DENY                              # where sqlite writes its temporary files: not a path the guard can judge
+    return sqlite3.SQLITE_OK
 
 
 def _wrap_sqlite():
@@ -625,7 +704,9 @@ def install(extra_roots=()):
     ROOTS = _roots() + [r for r in extra_roots]
     ENV = _env_roots()
     META = _meta_roots()
+    _snapshot_fds()
     sys.addaudithook(_hook)
+    _record_thread_violations()
     for n in ("stat", "lstat", "readlink", "access", "statvfs", "pathconf", "listxattr", "getxattr"):
         _wrap1(os, n, n in ("lstat", "readlink"))
     for n in ("realpath", "exists", "isfile", "isdir", "islink", "lexists", "getsize"):
@@ -634,10 +715,23 @@ def install(extra_roots=()):
         setattr(os, n, wrap_link(getattr(os, n), "os." + n))
     _wrap_os_open()
     _wrap_sqlite()
+    for n in ("chmod", "utime", "chown", "lchown", "lchmod", "lchflags", "chflags"):
+        _wrap_nofollow_aware(n)
     _wrap_scandir()
     _wrap_fd_function("fstat", False, True)
+    _wrap_fd_function("fstatvfs", False, True)
+    _wrap_fd_function("fpathconf", False, True)
     # fchmod / fchown / ftruncate / fchdir emit os.chmod / os.chown / os.truncate / os.chdir with the fd as the argument: the hook judges them
     for n in ("mkfifo", "mknod", "chroot"):
         _wrap_write_path(n)
     for n in ("setxattr", "removexattr"):
         _wrap_xattr_write(n)
+    # os.supports_dir_fd / supports_fd / supports_follow_symlinks / supports_effective_ids hold the ORIGINAL functions, and shutil (and others)
+    # test membership in them: register each wrapper wherever its original is a member, or the stdlib silently takes the slower / skipping path
+    for name in dir(os):
+        fn = getattr(os, name, None)
+        orig = getattr(fn, "__wrapped__", None)
+        if orig is not None:
+            for sup in (os.supports_dir_fd, os.supports_fd, os.supports_follow_symlinks, os.supports_effective_ids):
+                if orig in sup:
+                    sup.add(fn)
