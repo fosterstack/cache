@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=53
+pass=0 failn=0 EXPECT=56
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -477,16 +477,30 @@ assert rc == 1 and "DISPUTED" in out and lap and "write a fresh ruling" in lap[0
 assert "DEAD EXCEPTION" not in out and "dormant" not in out.lower(), out[-700:]
 PY
 
-py "AC15: a ruling with the right package and ids but the wrong version, or an advisory changed since it was written, is LAPSED too (exit 1)" <<'PY'
+py "AC15: a ruling whose pin is held and whose advisory changed since it was written is LAPSED too (exit 1)" <<'PY'
 aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])
 base = {"ids": ["GHSA-syn-0001-xxxx", "GO-SYN-1"], "package": "cosign",
         "authoritative": {"source": "GitHub", "id": "GHSA-syn-0001-xxxx", "ranges": ["< 3.0.0"]},
         "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
         "modified": {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2026-02-02T00:00:00Z"}}
 older = {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2025-01-01T00:00:00Z"}
-for what, change in (("version", {"version": "3.1.4"}), ("modified", {"modified": older})):
-    rc, out = main_out([aff], {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", "< 3.0.0")}, [dict(base, **change)])
-    assert rc == 1 and "LAPSED EXCEPTION" in out and "DEAD EXCEPTION" not in out, (what, rc, out[-600:])
+rc, out = main_out([aff], {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", "< 3.0.0")}, [dict(base, modified=older)])
+assert rc == 1 and "LAPSED EXCEPTION" in out and "DEAD EXCEPTION" not in out, (rc, out[-600:])
+PY
+py "AC15: two rulings share package and ids but name different versions and only one pin is held: that one decides, the other is DORMANT (exit 0), in" \
+   " either order" <<'PY'
+aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])
+def ruling(ver):
+    return {"ids": ["GHSA-syn-0001-xxxx", "GO-SYN-1"], "package": "cosign",
+            "authoritative": {"source": "GitHub", "id": "GHSA-syn-0001-xxxx", "ranges": ["< 3.0.0"]},
+            "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": ver,
+            "modified": {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2026-02-02T00:00:00Z"}}
+gh = {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", "< 3.0.0")}
+for order in (("3.1.3", "3.1.2"), ("3.1.2", "3.1.3")):
+    rc, out = main_out([aff], gh, [ruling(v) for v in order])
+    summary = [l for l in out.splitlines() if l.startswith("audit: no known-compromised")]
+    assert rc == 0 and summary and "1 dormant" in summary[0] and "cosign 3.1.2" in summary[0], (order, rc, out[-600:])
+    assert "LAPSED" not in out and "DEAD" not in out, (order, out[-600:])
 PY
 py "AC15: the daily run counts HISTORY pins (90-day lookback): a ruling is dormant, then alive while main held the pin in the window, dormant again after" \
    " the window (the three cosign rulings: alive until about 2026-12-14 unless cosign 3.1.3 is pinned again)" <<'PY'
@@ -534,6 +548,18 @@ bad = {"empty events": [{"type": "SEMVER", "events": []}], "no events key": [{"t
 for what, rgs in bad.items():
     try: hit("3.1.3", [rec("GO-X-43", ent(n, ranges=rgs))], none_ignored=True, sups=(True,))   # the record came back from a bare or alias query
     except AssertionError as e: raise AssertionError((what,) + e.args)
+PY
+py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
+a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
+b = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")), aliases=["GHSA-syn-0001-xxxx"])
+net = mknet([], {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", ">= 3.0.0, < 3.2.0")}, True)
+net._osv_post = lambda q: [copy.deepcopy(a)] if q["package"]["name"] == BARE + "/v3" else [copy.deepcopy(b)]
+finds, _ = run(cosign("3.1.3"), net)
+assert finds and all(f.disputed for f in finds), [(f.kind, f.ids, f.disputed) for f in finds]
+PY
+py "B2: a malformed exact entry reaching the audit through the BARE-path query (exact-query mode) beside a covering bare entry is a HIT" <<'PY'
+bad = rec("GO-X-46", ent(BARE + "/v3", ranges=[{"type": "SEMVER", "events": [{}]}]), ent(BARE, INTRO0))
+hit("3.1.3", [bad], sups=(False,), none_ignored=True)
 PY
 py "I1: two copies of one OSV id returned by different query paths are OR-ed: a copy with no exact entry makes it a hit even when another copy is clean" <<'PY'
 clean_copy = record("GO-X-44", [(BARE + "/v3", fixed("3.0.4"))])
