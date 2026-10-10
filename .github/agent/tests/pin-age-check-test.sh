@@ -1150,8 +1150,129 @@ twoc ctx bin/ruled.sh $'#!/bin/sh\ncat >stub <<\'EOF\'\necho "curl $*" >>"$CALLS
 edck ctx "$work/rt-empty.json"
 CASE="context limit (documented): a harmless ruled echo moved above its heredoc opener keeps its identity, so it is no addition (exit 0); it still only echoes"
 check test "$rc" -eq 0
-CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution"
-check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
+# --- REQ-SUP-001-AC16, the second allowed row form (advisor, Oct 10): a HARNESS ASSERTION LINE. The test-only function t with a quoted rule and a quoted
+# title and ONE bash -c body; the body uses only grep, test or [ ], !, &&, || and cat of a file; the only substitutions are $(grep -c ...) and $(cat <file>);
+# pipes go only into grep; no redirection, no eval or source, no variable or quoted word as the command word. harness_form.py decides it (exit 0 'harness
+# assertion', exit 1 'refused: why'); the committed-row check below uses the same file. Each refused variant is its own case.
+cat >"$work/harness_form.py" <<'PY'
+import re, sys
+VOCAB = {"grep", "test", "[", "cat"}
+class Refused(Exception): pass
+def outer(s, where):                                       # what bash makes of a double-quoted outer argument; a substitution it would RUN is refused
+    out, i = [], 0
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and s[i + 1:i + 2] in ("$", "`", '"', "\\"):
+            out.append(s[i + 1]); i += 2; continue
+        if c == "`" or (c == "$" and s[i + 1:i + 2] == "("):
+            raise Refused(f"a substitution the outer shell runs, in the {where}")
+        out.append(c); i += 1
+    return "".join(out)
+ARG = r"(?:'[^']*'|[A-Za-z0-9_./=^-]+)"
+SUBS = (re.compile(r'"\$\(grep -c(?: +' + ARG + r')+\)"'), re.compile(r'"\$\(cat +' + ARG + r'\)"'))
+def words(b):                                              # quote-aware: [("op", x)] or [("word", text, quoted)]; anything outside the vocabulary of forms refuses
+    out, i, n = [], 0, len(b)
+    while i < n:
+        c = b[i]
+        if c in " \t": i += 1; continue
+        if b.startswith(("&&", "||"), i): out.append(("op", b[i:i + 2])); i += 2; continue
+        if c in "|;": out.append(("op", c)); i += 1; continue
+        if c in "<>&()": raise Refused(f"'{c}' in the body (a redirection, background job or subshell)")
+        w, quoted = [], False
+        while i < n and b[i] not in " \t|;&<>()":
+            c = b[i]
+            if c == "'":
+                j = b.find("'", i + 1)
+                if j < 0: raise Refused("an unterminated quote in the body")
+                w.append(b[i + 1:j]); quoted = True; i = j + 1
+            elif c == '"':
+                j = i + 1
+                while j < n and b[j] != '"':
+                    if b[j] in "\\`" or (b[j] == "$" and b[j + 1:j + 2] == "("): raise Refused("a substitution or escape inside a double-quoted body word")
+                    j += 1
+                if j >= n: raise Refused("an unterminated quote in the body")
+                w.append(b[i + 1:j]); quoted = True; i = j + 1
+            elif c in "\\`": raise Refused("a backslash or backtick in the body")
+            elif c == "$" and b[i + 1:i + 2] in ("(", "{"): raise Refused("a substitution in the body")
+            else: w.append(c); i += 1
+        out.append(("word", "".join(w), quoted))
+    return out
+def judge(line):
+    m = re.fullmatch(r't "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)" bash -c "((?:[^"\\]|\\.)*)"', line)
+    if not m: raise Refused("not the form: t \"rule\" \"title\" bash -c \"body\" and nothing after")
+    outer(m.group(1), "rule"); outer(m.group(2), "title"); body = outer(m.group(3), "body")
+    for rx in SUBS: body = rx.sub('"SUB"', body)           # the two allowed substitutions, whole and double-quoted; any other is refused by words()
+    cmds, cur, ops = [], [], []
+    for t in words(body):
+        if t[0] == "op": cmds.append(cur); ops.append(t[1]); cur = []
+        else: cur.append(t)
+    cmds.append(cur)
+    for k, c in enumerate(cmds):
+        while c and c[0][1] == "!" and not c[0][2]: c = c[1:]
+        if not c: raise Refused("an empty command")
+        word, quoted = c[0][1], c[0][2]
+        if quoted or word not in VOCAB: raise Refused(f"the command word {word!r} is not grep, test, [ or cat (unquoted)")
+        if k and ops[k - 1] == "|" and word != "grep": raise Refused(f"a pipe into {word!r} (pipes go only into grep)")
+        if word == "[" and c[-1][1] != "]": raise Refused("[ without its closing ]")
+        if word == "cat" and (len(c) != 2 or c[1][1].startswith("-")): raise Refused("cat of anything but one file")
+try:
+    judge(sys.argv[1])
+except Refused as e:
+    print("refused: " + str(e)); sys.exit(1)
+print("harness assertion: runs nothing but grep, test and cat"); sys.exit(0)
+PY
+hf() { rc=0; python3 "$work/harness_form.py" "$1" >"$work/hf.out" 2>&1 || rc=$?; }
+while IFS=$'\t' read -r what line; do
+  hf "$line"
+  CASE="AC16 harness form: refused ($what): exit 1, says refused"
+  check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
+done <<'EOF'
+a pipe into sh	t "r" "x" bash -c "grep -q a 'f' | sh"
+a pipe into bash	t "r" "x" bash -c "cat 'f' | bash"
+an output redirection >	t "r" "x" bash -c "grep a 'f' > 'out'"
+an output redirection >>	t "r" "x" bash -c "grep a 'f' >> 'out'"
+an input redirection <	t "r" "x" bash -c "grep a < 'f'"
+$(curl ...) in the body	t "r" "x" bash -c "test \"\$(curl -s https://e.example/x)\" = 1"
+$(...) of another command in the body	t "r" "x" bash -c "test \"\$(ls)\" = 1"
+an unquoted $(grep -c ...) in the body	t "r" "x" bash -c "test \$(grep -c a 'f') -ge 1"
+a pipe inside $(grep -c ...)	t "r" "x" bash -c "test \"\$(grep -c a 'f' | sh)\" -ge 1"
+a substitution inside $(cat ...)	t "r" "x" bash -c "test \"\$(cat \$(curl -s https://e.example/x))\" = 1"
+a process substitution in the body	t "r" "x" bash -c "grep a <(cat 'f')"
+a substitution the outer shell runs, in the title	t "r" "x $(curl -s https://e.example/x)" bash -c "grep a 'f'"
+a substitution the outer shell runs, in the body	t "r" "x" bash -c "grep a $(curl -s https://e.example/x)"
+backticks in the body	t "r" "x" bash -c "test \"\`curl -s https://e.example/x\`\" = 1"
+backticks in the title	t "r" "x `curl -s https://e.example/x`" bash -c "grep a 'f'"
+a command word outside the vocabulary (curl)	t "r" "x" bash -c "curl -s https://e.example/x"
+a quoted command word	t "r" "x" bash -c "'grep' a 'f'"
+a variable as the command word	t "r" "x" bash -c "\$G a 'f'"
+an outer variable as the command word	t "r" "x" bash -c "$G a 'f'"
+eval	t "r" "x" bash -c "eval 'grep a f'"
+source	t "r" "x" bash -c "source 'f'"
+a second bash -c	t "r" "x" bash -c "bash -c 'grep a f'"
+a ;-separated extra command (wget)	t "r" "x" bash -c "grep a 'f'; wget https://e.example/x"
+exit (not in the vocabulary)	t "r" "x" bash -c "grep a 'f' && exit 1"
+a background &	t "r" "x" bash -c "grep a 'f' & curl https://e.example/x"
+a subshell	t "r" "x" bash -c "(curl https://e.example/x)"
+cat with an option	t "r" "x" bash -c "cat -v 'f'"
+cat of two files	t "r" "x" bash -c "cat 'f' 'g'"
+a pipe into anything but grep (tee)	t "r" "x" bash -c "cat 'f' | tee 'g'"
+extra arguments after the body	t "r" "x" bash -c "grep a 'f'" curl
+a second body	t "r" "x" bash -c "grep a 'f'" bash -c "curl https://e.example/x"
+not the t function	run "r" "x" bash -c "grep a 'f'"
+an unquoted title	t "r" x bash -c "grep a 'f'"
+no rule label	t "x" bash -c "grep a 'f'"
+an empty command between operators	t "r" "x" bash -c "grep a 'f' && && grep b 'f'"
+EOF
+while IFS=$'\t' read -r what line; do
+  hf "$line"
+  CASE="AC16 harness form: accepted ($what): exit 0"
+  check test "$rc" -eq 0; check grep -q '^harness assertion' "$work/hf.out"
+done <<'EOF'
+the whole vocabulary	t "r" "x" bash -c "grep -q a 'f' && ! grep -E 'b|c' 'f' || test \"\$(grep -c a 'f')\" -ge 3; [ \"\$(cat 'f')\" = 2 ] | grep -q ."
+the P3 line (bin/refresh-inputs-test.sh)	t "rule 32" "refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -E '^curl .*tzdata' '$CALLS'"
+EOF
+CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" <<'PY'
 import hashlib, json, re, shlex, subprocess, sys
 H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
 LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is written for
@@ -1169,6 +1290,8 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "2d6db92689368ed6": "# url characters, curl flags and caps",
     "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
+    # a harness assertion line (the second allowed form): t, a quoted rule and title, one bash -c body in the fixed vocabulary
+    "b71ad6f34d750f1e": "t \"rule 32\" \"refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched\" bash -c \"test \\\"\\$(cat '$work/rc')\\\" = 2 && ! grep -E '^curl .*tzdata' '$CALLS'\"",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = json.load(open(sys.argv[1]))["unmeasured_text"]
@@ -1177,6 +1300,10 @@ for r in rows:
     line = LINES[r["key"]]
     segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", line)
     assert H(line) == r["line"] and r["key"] in {H(s) for s in segs}, r
+    if line.startswith("t "):                                            # the harness assertion form: harness_form.py decides, nothing else applies
+        hr = subprocess.run([sys.executable, sys.argv[2], line], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        assert hr.returncode == 0 and hr.stdout.startswith("harness assertion"), ("not a harness assertion line", hr.stdout, r)
+        continue
     assert not re.search(r"\$\(|`|<\(|>\(|\beval\b|\bsource\b", line), ("a substitution or eval can run anything", r)
     if line.startswith("#"):
         continue                                                         # a comment
@@ -1218,7 +1345,7 @@ import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 assert os.path.realpath(ac.DEFAULT_EXCEPTIONS) == os.path.realpath(os.path.join(sys.argv[2], ".github", "supply-chain-exceptions.json")), ac.DEFAULT_EXCEPTIONS
 PY
-CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key and line (16 lowercase hex each), a 'text, not a command:' ruling and no duplicate"
+CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key and line (16 lowercase hex each), a 'text, not a command:' or 'harness assertion:' ruling and no duplicate"
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -1230,7 +1357,8 @@ for r in rows:
     assert set(r) == {"file", "form", "key", "line", "ruling"}, r
     assert re.fullmatch(r"[0-9a-f]{16}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
-    assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["ruling"].startswith("text, not a command: ") and len(r["ruling"]) > len("text, not a command: ") + 10, r
+    pre = next((x for x in ("text, not a command: ", "harness assertion: ") if r["ruling"].startswith(x)), None)
+    assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
