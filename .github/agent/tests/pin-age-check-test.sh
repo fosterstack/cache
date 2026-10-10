@@ -1336,12 +1336,20 @@ check eval '! stub_refused 0'
 # the inventory command is never read from the environment: with IBT_RUN exported as a stub that always prints a diagnostic and exits 1,
 # the real cases still run the real inventory (the stub's diagnostic never satisfies them, the real one does)
 ibt_env_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; echo "install-build-tools: unmeasured: a download" >"$work/ibt.out"; return 1; }
+# iso W H R CMD...: run CMD in a child bash with IBT_RUN exported as the stub; the paths and the command reach the child as ARGUMENTS, never spliced into its script
+iso() { IBT_RUN=ibt_env_stub bash -c "$(declare -f ibt ibt_refused ibt_env_stub)"'
+work=$1 here=$2 root=$3; shift 3; "$@"' iso-child "$@"; }
 CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the variable-version mutant still fails on the REAL diagnostic (not a measurable pin)"
-check bash -c "export IBT_RUN=ibt_env_stub; $(declare -f ibt ibt_refused ibt_env_stub); work='$work' here='$here' root='$root'; ibt_refused variable 'not a measurable pin.*v[\$][{]var[}]'"
+check iso "$work" "$here" "$root" ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
 CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the stub's diagnostic is not what the variable-version mutant yields"
-check bash -c "export IBT_RUN=ibt_env_stub; $(declare -f ibt ibt_refused ibt_env_stub); work='$work' here='$here' root='$root'; ! ibt_refused variable 'unmeasured: a download'"
+check iso "$work" "$here" "$root" eval '! ibt_refused variable "unmeasured: a download"'
 CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the real positive case still passes"
-check bash -c "export IBT_RUN=ibt_env_stub; $(declare -f ibt ibt_refused ibt_env_stub); work='$work' here='$here' root='$root'; ibt inventory '$root/bin/install-build-tools.sh'"
+check iso "$work" "$here" "$root" ibt inventory "$root/bin/install-build-tools.sh"
+q="$work/it's a dir"; mkdir -p "$q/agent/tests" "$q/root/bin"; cp -R "$here/../supply-chain" "$q/agent/supply-chain"; cp "$root/bin/install-build-tools.sh" "$q/root/bin/"; cp "$work/ibt-inv.py" "$q/"
+CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, the real positive case still passes"
+check iso "$q" "$q/agent/tests" "$q/root" ibt inventory "$q/root/bin/install-build-tools.sh"
+CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, the variable-version mutant still fails on the REAL diagnostic"
+check iso "$q" "$q/agent/tests" "$q/root" ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
