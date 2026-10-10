@@ -477,8 +477,14 @@ func setDiskGauges(cfg Config, smp storesample.Sample) {
 		w = 1
 	}
 	cfg.Metrics.StoreWritable.Set(w)
+	if betweenGaugeSets != nil {
+		betweenGaugeSets() // test seam only: the gap between the two gauge writes (nil in production)
+	}
 	cfg.Metrics.StoreFreeBytes.Set(float64(smp.FreeBytes))
 }
+
+// betweenGaugeSets is nil outside tests.
+var betweenGaugeSets func()
 
 // countPutError records one failed PUT under exactly one reason and, for a
 // disk failure, marks the shared sample stale so the next read measures again.

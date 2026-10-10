@@ -881,6 +881,45 @@ func TestConcurrentScrapesExportOnePair(t *testing.T) {
 	}
 }
 
+// Review of #258 (round 4, R2): the scrape lock is what keeps two scrapes from exporting a mix of two samples, so its removal must be caught every time, not by luck.
+// The seam fires between the two gauge writes of scrape 1. There the disk changes and a second scrape starts. With the lock, scrape 2 waits for scrape 1 and cannot
+// finish inside the gap; without it, scrape 2 sets and gathers its own pair in the gap and scrape 1 then exports its writable value with scrape 2's free bytes.
+func TestScrapeLockKeepsAScrapeFromMixingTwoSamples(t *testing.T) {
+	e := newObsEnv(t)
+	var fired atomic.Int64
+	var second chan string
+	var secondFinishedInGap bool
+	betweenGaugeSets = func() {
+		if fired.Add(1) != 1 {
+			return
+		}
+		e.disk.set(func(d *srvDisk) { d.syncErr, d.avail = syscall.ENOSPC, 111 })
+		e.advance(6)
+		second = make(chan string, 1)
+		go func() { second <- e.metrics(t) }()
+		select {
+		case b := <-second:
+			secondFinishedInGap = true
+			second <- b
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+	t.Cleanup(func() { betweenGaugeSets = nil })
+	e.disk.set(func(d *srvDisk) { d.syncErr, d.avail = nil, 222 })
+	e.advance(6)
+	first := e.metrics(t) // scrape 1 sees (writable, 222); scrape 2, started in the gap, sees (not writable, 111)
+	body2 := <-second
+	for i, body := range []string{first, body2} {
+		w, f := mval(body, "fscache_store_writable"), mval(body, "fscache_store_free_bytes")
+		if !(w == "1" && f == "222") && !(w == "0" && f == "111") {
+			t.Errorf("scrape %d exported writable=%q with free=%q: a mix of two samples", i+1, w, f)
+		}
+	}
+	if secondFinishedInGap {
+		t.Error("the second scrape ran to the end inside the first scrape's gap: the scrapes are not serialized")
+	}
+}
+
 // the buffered /metrics response keeps the status, the headers and the body of what the gatherer wrote
 func TestBufferedResponseKeepsStatusHeadersAndBody(t *testing.T) {
 	b := &bufferedResponse{header: http.Header{}, status: http.StatusOK}

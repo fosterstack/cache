@@ -73,6 +73,10 @@ type Sampler struct {
 	busy  bool     // a probe goroutine is running (possibly past its limit)
 	rf    *refresh // the refresh in flight or last started; each refresh has its OWN state, so a stale goroutine can only touch its own
 	last  *bool    // last published writable state, for change logging
+	seq   uint64   // number of the latest publication (guarded by mu)
+
+	logMu  sync.Mutex // orders the state-change log lines
+	logged uint64     // seq of the latest line written (guarded by logMu)
 
 	afterFinish func() // test seam only (nil in production)
 }
@@ -237,10 +241,20 @@ func (s *Sampler) finish(rf *refresh, r result, limit bool) (first bool) {
 	prev := s.last
 	w := smp.Writable
 	s.last = &w
+	s.seq++
+	mySeq := s.seq
 	s.mu.Unlock()
 	if prev != nil && *prev == w || prev == nil && w {
 		return first
 	}
+	// the line is written under its own lock and only if no later transition has been logged yet, so the lines come out in the order of the states and
+	// the last line never contradicts the gauge
+	s.logMu.Lock()
+	defer s.logMu.Unlock()
+	if mySeq < s.logged {
+		return first
+	}
+	s.logged = mySeq
 	err := r.probeErr
 	if err == nil {
 		err = r.statErr

@@ -484,6 +484,65 @@ func TestStaleLimitGoroutineCannotTouchTheNextRefresh(t *testing.T) {
 	}
 }
 
+// Review of #258 (round 4, R1): a refresh-1 limit that fires WHILE refresh 2 is still running must not publish into refresh 2. Refresh 1's probe takes 30 ms with
+// a 40 ms limit, so its limit fires inside the hook; refresh 2 (started in the hook) has its probe blocked and released 20 ms later, inside refresh 2's own limit.
+// A limit that used the CURRENT refresh instead of its own would publish "not writable" into refresh 2 and the sample would not read writable.
+func TestStaleLimitFiringDuringTheNextRefreshDoesNotPublishIntoIt(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	deps := d.deps(&now)
+	release := make(chan struct{})
+	var calls atomic.Int64
+	deps.OpenProbe = func(string) (ProbeFile, error) {
+		d.probes.Add(1)
+		if calls.Add(1) == 1 {
+			time.Sleep(30 * time.Millisecond) // refresh 1: slow but inside nothing yet (limit 40 ms)
+		} else {
+			<-release // refresh 2: blocked until the test releases it
+		}
+		return fakeFile{d}, nil
+	}
+	s := New("/data/blobs", deps, Options{ProbeLimit: 40 * time.Millisecond, WaitBudget: 5 * time.Millisecond, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
+	var hooked atomic.Int64
+	s.afterFinish = func() {
+		if hooked.Add(1) != 1 {
+			return
+		}
+		s.MarkStale()
+		s.refreshIfNeeded()               // refresh 2 starts in the gap, its probe blocked
+		time.Sleep(20 * time.Millisecond) // refresh 1's limit fires at 40 ms, while refresh 2 is running
+		close(release)                    // refresh 2's probe ends inside its own limit
+		time.Sleep(10 * time.Millisecond)
+	}
+	s.Start()
+	time.Sleep(200 * time.Millisecond)
+	if !s.Get().Writable {
+		t.Fatal("refresh 1's stale limit published into refresh 2: the sample reads not writable although refresh 2 finished inside its own limit")
+	}
+	if n := d.probes.Load(); n != 2 {
+		t.Fatalf("%d probes; want 2", n)
+	}
+}
+
+// Review of #258 (round 4, R3): a state-change line that is overtaken by a later transition's line is not written, so the last line never contradicts the gauge.
+func TestOvertakenStateChangeLineIsNotWritten(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	s, buf := newSampler(t, d, &now)
+	s.Start() // first sample: writable, no line (a healthy start is silent)
+	s.logMu.Lock()
+	s.logged = 1 << 40 // a later transition has already been logged
+	s.logMu.Unlock()
+	rf := &refresh{done: make(chan struct{})}
+	s.finish(rf, result{probeErr: syscall.ENOSPC}, false) // a change to not writable, numbered earlier than the line already written
+	if buf.Len() != 0 {
+		t.Fatalf("an overtaken transition wrote a line: %q", buf.String())
+	}
+	if s.Get().Writable {
+		t.Fatal("the sample still reads writable after the failed probe")
+	}
+}
+
 // Many readers, failing PUTs marking the sample stale, and a limit that fires right at the probe's end: nothing may panic, and the slot is always released.
 func TestStressGetMarkStaleAtTheLimit(t *testing.T) {
 	d := &fakeDisk{avail: 1}
