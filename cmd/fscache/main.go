@@ -22,6 +22,7 @@ import (
 	"github.com/fosterstack/cache/internal/metadata"
 	"github.com/fosterstack/cache/internal/metrics"
 	"github.com/fosterstack/cache/internal/server"
+	"github.com/fosterstack/cache/internal/storesample"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -247,7 +248,14 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 			"removed_temp_files", stats.RemovedTempFiles)
 	}
 
+	// The store sample (writable, free bytes) is taken once here, before the
+	// listener opens, and then lazily on read (REQ-OBS-002-AC10). It probes the
+	// blob store's root, on the same volume as the metadata index.
+	sampler := storesample.New(filepath.Join(cfg.dataDir, "blobs"), storesample.Deps{}, storesample.Options{Log: log})
+	sampler.Start()
+
 	handler := server.New(server.Config{
+		Sampler:              sampler,
 		Cache:                c,
 		Metrics:              m,
 		Registry:             metricsGatherer,

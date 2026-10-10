@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 75 |
-| Acceptance criteria | 203 |
+| Acceptance criteria | 221 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 187 |
+| ACs with mapped evidence | 205 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -303,27 +303,40 @@ A PUT whose entry is larger than the configured cache cap (FSCACHE_MAX_BYTES, wh
 
 ### REQ-OBS-001 — Liveness endpoint
 
-The server shall answer GET /healthz with HTTP 200 and body "ok".
+The server shall answer GET /healthz with HTTP 200 and body "ok" for as long as the process is serving. /healthz is a liveness check only: it does not look at the data directory, the disk, or the store, so it never reports a full, read-only, or otherwise failing data directory. Operators who need to alert on disk trouble use the fscache_store_writable, fscache_store_free_bytes, and fscache_put_errors_total metrics (REQ-OBS-002).
 
-*Introduced v0.1.0 · tier community · confidence documented · source: README.md quickstart; docs/docker-deploy.md; internal/server/server.go handleHealthz*
+*Introduced v0.1.0 · tier community · confidence documented · source: README.md quickstart; docs/docker-deploy.md; internal/server/server.go handleHealthz; owner decision 2026-10-09 (backlog 13 (a)+(c)); advisor step 5 2026-10-09*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-OBS-001-AC1 | Given a running server; when GET /healthz; then 200 with body "ok" | http-integration | yes | approved | 1 item(s) |
+| REQ-OBS-001-AC2 | Given a server whose data directory is read-only (permissions removed) and a server whose store reports "no space left"; when GET /healthz on each; then both answer 200 with body "ok" | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-001-AC3 | Given a server whose data directory is gone or unreadable (statfs and the writability probe both fail); when GET /healthz; then 200 "ok", and serving the request performs no filesystem operation on the data directory (a probe-counting fake sees zero calls) | unit |  | approved | 1 item(s) |
+| REQ-OBS-001-AC4 | Given docs/kubernetes.md and docs/docker-deploy.md; when inspected; then each says /healthz is liveness only and never reports disk trouble, and names the three metrics | inspection |  | approved | 1 item(s) |
 
 ### REQ-OBS-002 — Prometheus metrics
 
-GET /metrics shall expose, in Prometheus format, at least fscache_http_requests_total (by method and status), fscache_cache_hits_total, fscache_cache_misses_total, fscache_bytes_read_total, fscache_bytes_written_total, fscache_http_request_duration_seconds, fscache_evicted_entries_total, fscache_store_bytes, and fscache_store_entries, and the counters shall move with real traffic.
+GET /metrics shall expose, in Prometheus format, at least fscache_http_requests_total (by method and status), fscache_cache_hits_total, fscache_cache_misses_total, fscache_bytes_read_total, fscache_bytes_written_total, fscache_http_request_duration_seconds, fscache_evicted_entries_total, fscache_store_bytes, and fscache_store_entries, and fscache_store_writable, fscache_store_free_bytes, and fscache_put_errors_total (by reason). The last three describe disk trouble; /healthz never does (REQ-OBS-001). The counters shall move with real traffic.
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md; docs/gradle.md §6; internal/metrics/metrics.go*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-OBS-002-AC1 | Given a server that served one hit and one miss; when /metrics is scraped; then every named metric is present and hits/misses read 1 and 1 | http-integration | yes | approved | 2 item(s) |
+| REQ-OBS-002-AC2 | Given a server with a normal writable data directory; when /metrics is scraped; then fscache_store_writable is present, is a gauge, reads exactly 1; its help text says it is 1 when the server could create, sync and delete a file in the data directory within the probe limit, else 0 | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-002-AC3 | Given a data directory made read-only, and separately a store whose writes fail with "no space"; when /metrics is scraped after the sample has expired (or after a failed PUT marked it stale); then fscache_store_writable reads 0 in both cases, and reads 1 again on the next scrape after the directory is made writable (and the sample has expired); a change of state is logged once | http-integration |  | approved | 6 item(s) |
+| REQ-OBS-002-AC4 | Given a server probing its data directory, including one probe that fails midway; when GET/HEAD of any key, store_bytes, store_entries and the cap are read during and after probes; then no probe file is ever served as a key (no key of any spelling reaches it), nothing is counted against bytes, entries or the cap, no eviction is triggered, and no probe file remains after a successful probe (a failed midway probe leaves at most a .tmp- file that the startup sweep removes) | http-integration |  | approved | 3 item(s) |
+| REQ-OBS-002-AC5 | Given a store sample taken less than 5 seconds ago, and a probe that blocks longer than 2 seconds; when /metrics and /statusz are scraped repeatedly; then no new probe starts while the sample is fresh; only one probe runs at a time; a scrape never waits more than a few milliseconds for the disk; a probe over 2 seconds yields writable 0 | unit |  | approved | 4 item(s) |
+| REQ-OBS-002-AC6 | Given a data directory on a filesystem whose available space is known (injected statfs: blocks available x block size); when /metrics is scraped; then fscache_store_free_bytes is a gauge equal to available blocks times block size (not free blocks, not the cap); if statfs fails it reads 0 and fscache_store_writable reads 0 | unit |  | approved | 3 item(s) |
+| REQ-OBS-002-AC7 | Given a server and PUTs failing with: no space (ENOSPC), quota (EDQUOT), read-only (EROFS), permission (EACCES), declared size over the cap, chunked body over the cap, body over the body limit, an I/O error (EIO), and a client that disconnects in the middle of the body; when /metrics is scraped; then fscache_put_errors_total{reason} reads no_space 2, read_only 2, too_large 3, other 1, client_aborted 1; the HTTP responses are unchanged from today (500 "internal error" for the first four and the I/O error, 413 for the size cases, X-FSCache-Reject only on the cap case) | http-integration |  | approved | 3 item(s) |
+| REQ-OBS-002-AC8 | Given a fresh server that has had no PUT error; when /metrics is scraped; then all five series (no_space, read_only, too_large, client_aborted, other) are present and read 0; no other reason label value ever appears, and a wrapped error of an unknown type counts as other, never as no series at all; each failed PUT increments exactly one series by exactly one | unit |  | approved | 3 item(s) |
+| REQ-OBS-002-AC9 | Given PUTs refused for bad key (400), bad credentials (401), read-only credential (403), upload bound (429), and a successful PUT; when /metrics is scraped; then fscache_put_errors_total did not move | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-002-AC10 | Given a server that started on a healthy directory whose volume later becomes read-only or full, and a server asked to start on a read-only or full directory; when /metrics is scraped; then in the first case fscache_store_writable reads 0 and fscache_store_free_bytes the real free bytes within one refresh, the fscache_put_errors_total series count the failed PUTs by reason, and GETs still work; in the second case the server exits at start with the fatal error naming the failed write and serves nothing, and it never reports writable 1 for a volume it could not write | http-integration |  | approved | 3 item(s) |
+| REQ-OBS-002-AC11 | Given the Gradle and Maven acceptance builds; when run with the new signals present; then results are identical to today (the existing REQ-PROTO and REQ-EVICT acceptance ACs stay green; no new header, status code, or path) | acceptance-gradle |  | approved | 1 item(s) |
 
 ### REQ-OBS-003 — Read-only status page
 
-GET /statusz shall return the server's state — version, revision, FIPS posture, uptime, store bytes against the configured cap, entry count, hit and miss counts with ratio, evictions, and auth state — as JSON to non-browser clients and HTML to browsers, with counters read from the same values that feed /metrics so the two cannot disagree.
+GET /statusz shall return the server's state — version, revision, FIPS posture, uptime, store bytes against the configured cap, entry count, hit and miss counts with ratio, evictions, whether the data directory is writable, the free bytes of its filesystem, the PUT error counts by reason, and auth state — as JSON to non-browser clients and HTML to browsers, with every number read from the same values that feed /metrics (counters from the same counter objects, the disk signals from the same store sample) so the two cannot disagree.
 
 *Introduced v0.2.0 · tier community · confidence documented · source: docs/migrate-from-bcn.md "What replaces the UI"; docs/gradle.md §6; internal/server/status.go*
 
@@ -331,6 +344,11 @@ GET /statusz shall return the server's state — version, revision, FIPS posture
 |---|---|---|---|---|---|
 | REQ-OBS-003-AC1 | Given a server with known traffic counts; when /statusz is fetched as JSON and /metrics is scraped; then hits, misses, entries, and store bytes agree exactly between the two | http-integration |  | approved | 3 item(s) |
 | REQ-OBS-003-AC2 | Given a request with an HTML Accept header; when /statusz is fetched; then the response is HTML containing no form, button, or state-changing control | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC3 | Given a running server; when /statusz is fetched as JSON; then it contains store_writable (true/false), store_free_bytes (integer, bytes), and put_errors (an object with exactly the keys no_space, read_only, too_large, client_aborted, other, each a number), alongside the existing fields, which are unchanged | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC4 | Given a server in each state: healthy; read-only directory; fake full disk; after one failed PUT of each reason; when /statusz (JSON) and /metrics are read with no sample refresh between them (same cached sample, fixed test clock); then store_writable true/false equals gauge 1/0; store_free_bytes equals fscache_store_free_bytes exactly up to 2^53 bytes (the precision of the metrics format; /statusz gives the exact count); each put_errors.<reason> equals fscache_put_errors_total{reason="<reason>"} exactly | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC5 | Given /statusz and /metrics requested within the same 5-second sample lifetime (either order); when both responses are compared; then the disk values are identical, because both returned the one cached sample; neither request caused the other to see an older or newer measurement (if the sample expires between the two requests the second re-measures; the equality rule is guaranteed within a sample) | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC6 | Given a request with an HTML Accept header, on a healthy and on a read-only server; when /statusz is fetched; then the page shows a "Data directory" row ("writable, X GiB free" or "NOT writable, X GiB free") and PUT errors by reason; still no form, button, or state-changing control (extends AC2) | http-integration |  | approved | 1 item(s) |
+| REQ-OBS-003-AC7 | Given auth enabled; when /statusz, /metrics, /healthz are fetched without credentials; then /statusz is refused as today; /metrics and /healthz stay open as today (/metrics now exposes the free bytes of the data volume: operational, not secret, the same exposure level as store_bytes) | http-integration |  | approved | 1 item(s) |
 
 ### REQ-OBS-004 — Startup announcement
 
