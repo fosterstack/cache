@@ -1,0 +1,10 @@
+[
+  {
+    "command": "cosign verify <IMAGE_REF> --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is not run before release (rule 79, open for the owner)"
+  },
+  {
+    "command": "cosign verify <IMAGE_REF_FIPS> --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> --certificate-oidc-issuer https://token.actions.githubusercontent.com",
+    "reason": "needs the image in a registry; Check holds the candidate as a file, so this command is not run before release (rule 79, open for the owner)"
+  }
+]

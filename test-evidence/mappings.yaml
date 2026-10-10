@@ -746,3 +746,24 @@ mappings:
   - ac: REQ-OBS-003-AC7
     evidence:
       - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }
+  - ac: REQ-GUIDE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
+  - ac: REQ-GUIDE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/verify-release-guide-test.sh" }
