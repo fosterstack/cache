@@ -21,7 +21,7 @@ Design (installed once, on import, by test_fs_guard.py, which unittest discovery
   * The violation is a BaseException, so a code path under test that does `except Exception` cannot swallow it.
 Subprocesses (bash, git, a spawned python3) are not covered here; the static scan in test_fs_guard.py covers the shell tests.
 """
-import os, shutil, site, sys, sysconfig, tempfile
+import errno, os, re, shutil, site, sys, sysconfig, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
@@ -54,7 +54,7 @@ def _resolve(p, what, orig, nofollow=False, meta=False, write=False):
             cur = os.path.dirname(cur) or "/"
             continue
         nxt = os.path.join(cur, c)
-        if not _under(nxt, write) and not _ancestor(nxt):
+        if not _under(nxt) and not _ancestor(nxt):          # walking THROUGH a directory is a read, whatever the final operation is
             raise SystemPathAccess("test touched a real system path (%s): %s" % (what, orig))
         try:
             st = _real["lstat"](nxt)
@@ -65,7 +65,8 @@ def _resolve(p, what, orig, nofollow=False, meta=False, write=False):
         if _st.S_ISLNK(st.st_mode) and not (nofollow and last):
             hops += 1
             if hops > 40:
-                raise SystemPathAccess("test touched a real system path (%s): too many symbolic links: %s" % (what, orig))
+                # every link on the way was inside an allowed root (a step outside is refused above), so this is the OS's own answer
+                raise OSError(errno.ELOOP, os.strerror(errno.ELOOP), orig)
             t = _real["readlink"](nxt)
             if t.startswith("/"):
                 cur = "/"
@@ -99,21 +100,34 @@ def _canon_set(cands, drop_broad=False):
         _busy.bypass = False
 
 
+def _broad_set():
+    """BROAD, its canonical forms (/etc is /private/etc on macOS) and the home directory: none of them may become a root."""
+    out = set(BROAD)
+    for b in BROAD:
+        out.add(_realpath(b))
+    home = os.path.expanduser("~")
+    if home and os.path.isabs(home):
+        out.add(home.rstrip("/")); out.add(_realpath(home))
+    return out
+
+
 def _canon_inner(cands, drop_broad):
-    out = set()
+    out, broad = set(), _broad_set()
     for c in cands:
         if c and os.path.isabs(c):
             for v in (c.rstrip("/") or "/", _realpath(c)):
-                if not (drop_broad and v in BROAD):
+                if not (drop_broad and v in broad):
                     out.add(v)
     out.discard("/")
     return out
 
 
 def _roots():
-    cand = {tempfile.gettempdir(), REPO, HERE}
-    cand.update(os.environ.get(k, "") for k in ("COVERAGE_RCFILE", "TMPDIR"))
-    return sorted(_canon_set(cand))
+    own = {REPO, HERE}
+    # what the environment says (TMPDIR and so tempfile.gettempdir(), COVERAGE_RCFILE) must not widen the roots to a system directory,
+    # `/` or the home directory
+    named = {tempfile.gettempdir()} | {os.environ.get(k, "") for k in ("COVERAGE_RCFILE", "TMPDIR")}
+    return sorted(_canon_set(own) | _canon_set(named, drop_broad=True))
 
 
 def _env_roots():
@@ -151,7 +165,7 @@ def _meta_roots():
             cand.add(f())
         except Exception:
             pass
-    return sorted(_canon_set(cand, drop_broad=True))
+    return sorted(_canon_set(cand))                # metadata of a named directory is harmless, so nothing is dropped for breadth here
 
 
 def _under(p, write=False):
@@ -178,6 +192,14 @@ def _pyvenv_probe(absp, what, orig):
         return True                        # absent: the common case
 
 
+_PYC = re.compile(r"\.pyc(\.\d+)?$")           # importlib writes <name>.pyc.<id> and renames it to <name>.pyc
+
+
+def _bytecode_cache(res):
+    """The RESOLVED path is a bytecode file directly inside a directory named exactly __pycache__."""
+    return os.path.basename(os.path.dirname(res)) == "__pycache__" and bool(_PYC.search(os.path.basename(res)))
+
+
 def check(path, what="", nofollow=False, meta=False, write=False):
     """Raise unless `path` (lexically and after symlink resolution) is inside an allowed root."""
     if not (ROOTS or ENV or META) or isinstance(path, int) or getattr(_busy, "bypass", False):
@@ -195,15 +217,17 @@ def check(path, what="", nofollow=False, meta=False, write=False):
     absp = p if os.path.isabs(p) else os.path.join(_real["getcwd"](), p)
     if meta and not write and os.path.basename(absp) == "pyvenv.cfg" and _pyvenv_probe(absp, what, p):
         return                             # coverage asks "is this file in a virtualenv?" for every ancestor of every traced module
-    if write and "/__pycache__/" in absp and _under(absp):
-        write = False                      # the import system caches bytecode beside the module it just read
     if getattr(_busy, "on", False):
         return
+    if nofollow and p.endswith("/"):
+        nofollow = False                   # `L/` names the directory the link points to: the OS follows the last link (`L/.` already does)
     _busy.on = True
     try:
         res = _resolve(absp, what, p, nofollow, meta, write)
     finally:
         _busy.on = False
+    if write and _bytecode_cache(res):
+        write = False                      # the import system caches bytecode beside the module it just read
     if not _under(res, write) and not (meta and _ancestor(res)):
         raise SystemPathAccess("test touched a real system path (%s -> %s): %s" % (what, res, p))
 
@@ -228,7 +252,28 @@ def _open_writes(args):
     return (isinstance(mode, str) and any(c in mode for c in "wax+")) or bool(flags & _WRITE_FLAGS)
 
 
+# audit event -> {path index: index of the dir_fd that path is relative to}; -1 or None means "no dir_fd"
+_DIRFD = {"os.mkdir": {0: 2}, "os.rmdir": {0: 1}, "os.remove": {0: 1}, "os.rename": {0: 2, 1: 3}, "os.chmod": {0: 2}, "os.utime": {0: 3},
+          "os.symlink": {1: 2}, "os.link": {0: 2, 1: 3}, "os.mkfifo": {0: 2}, "os.mknod": {0: 3}, "os.chown": {0: 3}}
+
+
+# these act on the directory entry itself (they never follow a final symlink): unlink/rename/mkdir of a link do not touch its target
+_NOFOLLOW = {"os.remove", "os.rmdir", "os.rename", "os.mkdir", "os.mkfifo", "os.mknod", "os.link"}
+
+
+def _judged_path(event, args, i):
+    """args[i] as the operating system will see it: relative to the dir_fd the same call carries, when there is one."""
+    p = args[i] if args[i] is not None else "."
+    j = _DIRFD.get(event, {}).get(i)
+    if j is not None and j < len(args) and isinstance(args[j], int) and args[j] >= 0:
+        return _with_dir_fd(p, args[j], event)
+    return p
+
+
 def _hook(event, args):
+    if event == "sqlite3.connect" and args and isinstance(args[0], (str, bytes)) and os.fsdecode(args[0]).startswith("file:"):
+        # fail closed: "file:/abs/db?mode=ro" and "file:../x/db" name a path the audit argument does not show as one
+        raise SystemPathAccess("test touched a real system path (sqlite3.connect): the file: URI form is refused (the guard does not parse it): %s" % (args[0],))
     if event in _AUDIT_PATH:
         write = _open_writes(args) if event == "open" else event not in _READ_EVENTS
         for i in _AUDIT_PATH[event]:
@@ -236,7 +281,7 @@ def _hook(event, args):
                 continue
             if event == "os.symlink" and i == 0:
                 continue           # a symlink's target text is data; wrap_link judges it where it would resolve
-            check(args[i] if args[i] is not None else ".", event, write=write)        # listdir()/scandir() with no argument = the cwd
+            check(_judged_path(event, args, i), event, event in _NOFOLLOW or (event == "os.symlink" and i == 1), write=write)        # listdir()/scandir() with no argument = the cwd
     elif event in ("glob.glob", "glob.glob/2") and args and isinstance(args[0], (str, bytes, os.PathLike)):
         pat = os.fsdecode(args[0])
         cut = min([i for i in (pat.find(c) for c in "*?[") if i >= 0] or [len(pat)])
@@ -301,23 +346,34 @@ def _wrap_os_open():
     os.open = f
 
 
-def check_link(target, dst, what):
-    """Creating a link whose TARGET text is outside the allowed roots is refused, though the target is never opened (symlink
-    creation emits no audit event, and a link to a system path is what the OS asked the user to administer). A relative target
-    is judged where it would resolve: next to the link."""
+def check_link(target, dst, what, dir_fd=None, src_dir_fd=None):
+    """Creating a link whose TARGET is outside the allowed roots is refused, though the target is never opened (symlink creation emits
+    no audit event of its own for the target, and a link to a system path is what the OS asked the user to administer).
+    A symlink's relative target is judged where it would resolve: next to the link (NOT normalised: `B/../x` goes through B's link).
+    A hard link's source is relative to the cwd or src_dir_fd. dir_fd names the directory the link location is relative to."""
     t = os.fsdecode(_real["fspath"](target))
     d = os.fsdecode(_real["fspath"](dst))
+    if isinstance(dir_fd, int) and dir_fd >= 0:
+        d = _with_dir_fd(d, dir_fd, what)
     if not os.path.isabs(d):
         d = os.path.join(_real["getcwd"](), d)
-    if not os.path.isabs(t):
-        t = os.path.join(os.path.dirname(d), t)       # NOT normalised: `B/../x` must be resolved through B's link
+    if what == "os.link":
+        if isinstance(src_dir_fd, int) and src_dir_fd >= 0:
+            t = _with_dir_fd(t, src_dir_fd, what)
+        elif not os.path.isabs(t):
+            t = os.path.join(_real["getcwd"](), t)
+    elif not os.path.isabs(t):
+        t = os.path.join(os.path.dirname(d), t)
     check(t, what, False, write=True)
     check(d, what, True, write=True)
 
 
 def wrap_link(orig, name):
     def f(src, dst, *a, **k):
-        check_link(src, dst, name)
+        if name == "os.link":
+            check_link(src, dst, name, k.get("dst_dir_fd"), k.get("src_dir_fd"))
+        else:
+            check_link(src, dst, name, k.get("dir_fd"))
         return orig(src, dst, *a, **k)
     f.__name__ = name; f.__wrapped__ = orig
     return f

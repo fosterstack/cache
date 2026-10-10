@@ -9,17 +9,32 @@ import fs_guard as G  # noqa: E402
 G.install()
 REPO = G.REPO
 
-# Absolute system-path literals a test script may not contain. A leading boundary keeps URLs, relative paths and $VAR/path out.
-SYS_DIRS = r"etc|usr|var|private|Library|System|opt|bin|sbin|dev|home|root|proc|sys|Users|tmp|Applications|Volumes|run|srv|lib|lib64|boot|mnt|nix|cores|Network|snap|workspace|github|media|data"
+# Absolute system-path literals a test script may not contain. This is an ENUMERATION of top-level directory names (plus the variants
+# below): flagging ANY absolute-looking token was measured at 314 findings on the tree (217 of them `+ "/branches"`-style suffixes, URL
+# fragments and regexes), so the scan stays narrow and a first component outside this list (`/scratch/x`, `/afs/x`) is a documented residual.
+SYS_NAMES = ["etc", "usr", "var", "private", "Library", "System", "opt", "bin", "sbin", "dev", "home", "root", "proc", "sys", "Users",
+             "tmp", "Applications", "Volumes", "run", "srv", "lib", "lib64", "boot", "mnt", "nix", "cores", "Network", "snap",
+             "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost\\+found", "vol"]
+SYS_DIRS = "|".join(SYS_NAMES)
 SHEBANG = re.compile(r"#!\s*/(?:usr/)?bin/(?:env\s+)?[a-z0-9]+")     # a script's first line written into a fixture file: file content, not a path used
 # The boundary before the slash excludes only word characters, `.`/`$`/`/`/braces/`~`/`)` (a relative or variable-based path, a URL host, a
 # command substitution). `:` and `-` are NOT excluded, so `${TMPDIR:-/tmp}`, `oci-archive:/tmp/x`, `PATH=/a:/usr/bin`, `-o/etc/hosts` and
-# `tar -C/etc` are found. Case-insensitive: APFS resolves /Etc/hosts to /etc/hosts.
-LITERAL = re.compile(r"(?:(?<![A-Za-z0-9_.$/{}~)])|(?<=[\s'\"]-[A-Za-z]))/(?:%s)(?:/|(?![A-Za-z0-9_\-]))" % SYS_DIRS, re.I)
-# The bare root: open('/'), os.listdir('/'), `ls /`, `cd /`, `find /`.
-ROOT_ONLY = re.compile(r"""\b(?:open|listdir|scandir|stat|lstat|walk|chdir|realpath|exists|isdir|isfile|iterdir|Path)\(\s*[rb]?['"]/['"]|"""
-                       r"""\b(?:ls|cd|find|du|stat|cat|rm|chmod|chown|df)\s+(?:-[A-Za-z]+\s+)*/(?=\s|$|;|\))""")
-HOME_USE = re.compile(r"~/|\$HOME|\$\{HOME|expanduser|Path\.home")
+# `tar -C/etc` are found. Case-insensitive: APFS resolves /Etc/hosts to /etc/hosts. Extra slashes, `/./` and `/../` before the name
+# (`//etc`, `/./etc`, `/../etc`, `file:///etc`), a digit or `_` after it (`/usr2`, `/tmp_dir`, `/lib64`), `/{etc,usr}` and a one-character `?`
+# wildcard in the name (`/e?c`) are found too.
+_GLOB = "|".join(n[:i] + r"\?" + n[i + 1:] for n in SYS_NAMES if "\\" not in n for i in range(len(n)))
+_START = r"""(?:(?<![A-Za-z0-9_.$/{}~)])/(?!/)|(?<![A-Za-z0-9_.$/{}~):])//+|(?<=[\s'"]-[A-Za-z])/)"""     # `://` (a URL) is not a path
+LITERAL = re.compile(_START + r"(?:\.{1,2}/+)*(?:(?:%s)(?:/|(?![A-Za-z\-]))|\{(?:%s)[,}]|(?:%s)(?:/|(?![A-Za-z\-])))" % (SYS_DIRS, SYS_DIRS, _GLOB), re.I)
+# The bare root: open('/'), os.listdir('/'), os.path.join('/', ..), cwd='/', `ls /`, `cd /`, `pushd /`, `tar -C /`, `git -C / status`, `cp x /`,
+# `mv x /`, `rsync -a x /`, `docker run -v /:/host`.
+_END = r"(?=\s|$|;|\)|&|\||['\"])"
+ROOT_ONLY = re.compile(r"""\b(?:open|listdir|scandir|stat|lstat|walk|fwalk|chdir|realpath|abspath|normpath|exists|isdir|isfile|islink|iterdir|Path|join|rmtree|chroot|glob|rglob|samefile)\(\s*[rb]?['"]/['"]"""
+                       r"""|\bcwd\s*=\s*[rb]?['"]/['"]"""
+                       r"""|\b(?:ls|cd|find|du|stat|cat|rm|chmod|chown|df|pushd|popd|chroot|tree|mount|umount|touch|mkdir|rmdir)\b[^;&|\n]*?(?<=\s)/""" + _END +
+                       r"""|(?:^|\s)(?:-C|-w|--directory|--chdir|--work-tree|--git-dir|--workdir|--root|--prefix)(?:\s+|=)/""" + _END +
+                       r"""|\b(?:cp|mv|rsync|install|ln|scp|tar|zip|unzip|cpio)\b[^;&|\n]*\s/(?=\s*(?:$|[;&|)'"]))"""
+                       r"""|\s(?:-v|--volume)(?:\s+|=)/:|--mount[ =]\S*src=/(?=[,\s])""")
+HOME_USE = re.compile(r"~/|\$HOME|\$\{HOME|expanduser|Path\.home|(?:^|[\s=:'\"(,])~(?=$|[;)])|\b(?:cd|ls|cat|cp|mv|rm|source|find|tar)\s+(?:-[A-Za-z-]+\s+)*~(?=\s|$|;)|\bcd\s*(?:$|;|&&|\|\|)|(?:\.\./){3,}|\bfile:/+(?:[A-Za-z]|\.\.?/)")
 SELF = "bin/tests/test_fs_guard.py"
 
 
@@ -167,10 +182,10 @@ def literal_lines(text):
 
 
 def row_pin(text):
-    """(count, sha256) of the literal-bearing lines of a file. A whole-file allow row exempts every such line, so the SET is pinned:
-    a new literal in a whole-file row changes the pin and must be added to system_path_allowlist.PINS with a reason."""
-    lines = literal_lines(text)
-    return len(lines), hashlib.sha256("\n".join(lines).encode()).hexdigest()
+    """(sha256 of the WHOLE file, the system-path-literal lines). A whole-file allow row exempts every literal in its file, and a hash of
+    only the literal lines is blind to context (moving a closing quote makes a quoted fixture line a real command), so ANY edit to such a
+    file changes the pin and needs a reviewed PINS update; the stored lines show a reviewer what the file is allowed to contain."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest(), tuple(literal_lines(text))
 
 
 def whole_file_rows():
@@ -256,8 +271,16 @@ class Rules(unittest.TestCase):
         for i in range(45):
             raw(prev, T.p1("c%d" % i)); prev = "c%d" % i
         with T.active():
-            self.refused(os.stat, T.p1("p")); self.refused(open, T.p1("c44"))
+            for fn, p in ((os.stat, "p"), (open, "c44"), (os.path.getsize, "q")):           # a cycle wholly inside the root: the OS's own answer
+                with self.assertRaises(OSError, msg=p) as cm:
+                    fn(T.p1(p))
+                self.assertEqual(cm.exception.errno, __import__("errno").ELOOP)
             os.stat(T.p1("c3"))                                                   # a short chain is fine
+        os.symlink.__wrapped__(T.p2("f"), T.p1("esc0"))
+        for i in range(1, 45):
+            os.symlink.__wrapped__("esc%d" % (i - 1), T.p1("esc%d" % i))
+        with T.active():
+            self.refused(os.stat, T.p1("esc2"))                                   # a link that leaves the root is a guard refusal, not ELOOP
 
     def test_lstat_readlink_islink_do_not_follow_the_last_link_but_stat_exists_isfile_do(self):
         T = self.T
@@ -325,6 +348,117 @@ class Rules(unittest.TestCase):
             for mode in ("x", "a", "w", "r+", "ab", "xb"):
                 self.refused(G._hook, "open", (T.p2("f"), mode, 0))
             G._hook("open", (T.p2("f"), "rb", 0)); G._hook("open", (T.p2("f"), None, os.O_RDONLY))
+
+    def test_dir_fd_in_the_audit_events_is_judged_under_the_fd_directory(self):
+        """Probe: fd = os.open(T1/a), cwd = T1/a/b/c, name ../../t2/X: the cwd-relative reading is inside the root, the OS acts outside it."""
+        T = self.T
+        os.makedirs(T.p1("a", "b", "c"))
+        fd_in, fd_out = os.open(T.p1("a"), os.O_RDONLY), os.open(T.t2, os.O_RDONLY)
+        try:
+            with T.active():
+                with mock.patch.dict(G._real, {"getcwd": lambda: T.p1("a", "b", "c")}):
+                    name = os.path.join("..", "..", os.path.basename(T.t2), "X")        # = parent(T1)/<t2>/X under the fd, T1/a/<t2>/X under the cwd
+                    evs = [("os.mkdir", (name, 0o777, fd_in)), ("os.rmdir", (name, fd_in)), ("os.remove", (name, fd_in)),
+                           ("os.rename", (name, "ok", fd_in, -1)), ("os.rename", ("ok", name, -1, fd_in)), ("os.chmod", (name, 0o600, fd_in)),
+                           ("os.utime", (name, None, None, fd_in)), ("os.symlink", ("t", name, fd_in)), ("os.link", (name, "ok", fd_in, -1)),
+                           ("os.link", ("ok", name, -1, fd_in)), ("os.mkfifo", (name, 0o600, fd_in)), ("os.mknod", (name, 0o600, 0, fd_in)),
+                           ("os.chown", (name, -1, -1, fd_in))]
+                    for ev, args in evs:
+                        self.refused(G._hook, ev, args)
+                    # the same names relative to an fd INSIDE the root, and calls without a dir_fd (-1 / None), are judged as before
+                    for ev, args in (("os.mkdir", ("b/new", 0o777, fd_in)), ("os.remove", ("b/f", fd_in)), ("os.rename", ("b/x", "b/y", fd_in, fd_in)),
+                                     ("os.mkdir", ("new", 0o777, -1)), ("os.mkdir", ("new", 0o777, None))):
+                        G._hook(ev, args)
+                with mock.patch.object(G, "_fd_dir", lambda fd: None):
+                    for ev, args in evs[:3]:
+                        self.refused(G._hook, ev, args)                                # an fd with an unknown directory: fail closed
+        finally:
+            os.close(fd_in); os.close(fd_out)
+
+    def test_link_creation_honours_dir_fd(self):
+        T = self.T
+        os.makedirs(T.p1("a"))
+        fd_in, fd_out = os.open(T.p1("a"), os.O_RDONLY), os.open(T.t2, os.O_RDONLY)
+        made = []
+        sym = G.wrap_link(lambda *a, **k: made.append(1), "os.symlink")
+        lnk = G.wrap_link(lambda *a, **k: made.append(1), "os.link")
+        try:
+            with T.active():
+                self.refused(sym, "t", "X", dir_fd=fd_out)                    # the link location is T2/X
+                self.refused(lnk, T.p1("f"), "X", dst_dir_fd=fd_out)
+                self.refused(lnk, "f", "X", src_dir_fd=fd_out, dst_dir_fd=fd_in)  # the source is T2/f
+                sym("t", "X", dir_fd=fd_in); lnk("f", "X", src_dir_fd=fd_in, dst_dir_fd=fd_in)
+                with mock.patch.dict(G._real, {"getcwd": lambda: T.t2}):
+                    self.refused(lnk, "f", T.p1("g"))                             # a hard link's source is relative to the CWD, not the link's directory
+        finally:
+            os.close(fd_in); os.close(fd_out)
+        self.assertEqual(len(made), 2)
+
+    def test_a_trailing_slash_or_dot_follows_the_last_link(self):
+        T = self.T
+        os.symlink.__wrapped__(T.t2, T.p1("out")); os.symlink(T.p1("sub"), T.p1("in"))
+        with T.active():
+            os.lstat(T.p1("out")); os.path.islink(T.p1("out")); os.path.lexists(T.p1("out")); os.readlink(T.p1("out"))
+            for suffix in ("/", "/.", "/./", "//"):
+                for fn in (os.lstat, os.path.islink, os.path.lexists, os.readlink):
+                    self.refused(fn, T.p1("out") + suffix)
+                os.lstat(T.p1("in") + suffix); os.path.islink(T.p1("in") + suffix)
+
+    def test_a_sqlite_file_uri_is_refused_and_a_plain_name_is_judged(self):
+        T = self.T
+        with T.active():
+            for name in ("file:" + T.p1("db") + "?mode=ro", "file:../x/db", "file:" + T.p2("db"), b"file:/x"):
+                self.refused(G._hook, "sqlite3.connect", (name,))
+            G._hook("sqlite3.connect", (T.p1("db"),)); self.refused(G._hook, "sqlite3.connect", (T.p2("db"),))
+
+    def test_bytecode_writes_are_allowed_only_for_a_resolved_pyc_directly_in_pycache(self):
+        T = self.T
+        os.makedirs(T.p2("__pycache__")); os.makedirs(T.p2("lib", "__pycache__"))
+        os.symlink.__wrapped__(T.p2("sub"), T.p2("__pycache__", "lnk"))
+        with T.active(env=[T.t2]):
+            for p in (("__pycache__", "m.cpython-314.pyc"), ("__pycache__", "m.cpython-314.pyc.1234"), ("lib", "__pycache__", "x.pyc")):
+                G.check(T.p2(*p), "open", write=True); G._hook("open", (T.p2(*p), "wb", 0))
+                G._hook("os.rename", (os.path.join(os.path.dirname(T.p2(*p)), "tmp.cpython-314.pyc.4242"), T.p2(*p)))
+            for p in (("__pycache__", "..", "site.py"), ("__pycache__", "..", "evil.pth"), ("__pycache__", "evil.txt"), ("__pycache__", "m.py"),
+                      ("__pycache__", "m.pyc.x"), ("__pycache__", "sub2", "m.pyc"), ("__pycache__x", "m.pyc"), ("__pycache__", "lnk", "m.pyc"),
+                      ("site.py",), ("lib", "__pycache__", "..", "evil.pth")):
+                self.refused(G.check, T.p2(*p), "open", write=True)
+                self.refused(G._hook, "open", (T.p2(*p), "w", 0))
+                self.refused(G._hook, "os.remove", (T.p2(*p), -1))
+                self.refused(G._hook, "os.rename", (T.p1("f"), T.p2(*p)))
+            self.refused(G._hook, "os.rename", (T.p2("__pycache__", "m.pyc"), T.p2("__pycache__", "..", "evil.pth")))
+            G.check(T.p2("__pycache__", "..", "f"), "open")                       # reading through it is still fine
+
+    def test_neither_the_root_nor_a_broad_directory_becomes_a_root(self):
+        self.assertNotIn("/", G._canon_set(["/", "/usr"]))
+        for b in sorted(G.BROAD - {"/"}):
+            self.assertEqual(G._canon_set([b], drop_broad=True), set(), b)
+        for b in ("/sbin", "/root", "/bin", "/etc", "/var", "/System", "/Library", "/home", "/Users", "/opt", "/opt/homebrew"):
+            self.assertIn(b, G.BROAD)
+        home = os.path.realpath(os.path.expanduser("~"))
+        with mock.patch.dict(os.environ, {"TMPDIR": "/usr", "COVERAGE_RCFILE": "/", "HOME": "/opt/fakehome"}):
+            self.assertNotIn("/usr", G._roots())
+            self.assertNotIn("/", G._roots())
+        for bad in ("/usr", "/opt/fakehome", "/", "/home"):                              # tempfile.gettempdir() follows TMPDIR
+            with mock.patch.dict(os.environ, {"HOME": "/opt/fakehome"}), mock.patch.object(tempfile, "gettempdir", lambda bad=bad: bad):
+                self.assertNotIn(bad, G._roots(), bad)
+        with mock.patch.dict(os.environ, {"HOME": "/opt/fakehome", "TMPDIR": "/opt/fakehome"}):
+            self.assertNotIn("/opt/fakehome", G._roots())                          # the home directory is never a root
+            with mock.patch.object(sys, "path", ["/opt/fakehome", "/opt/fakelib"]):
+                self.assertNotIn("/opt/fakehome", G._env_roots()); self.assertIn("/opt/fakelib", G._env_roots())
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch.dict(os.environ, {"TMPDIR": d}):
+                self.assertIn(os.path.realpath(d), G._roots())
+        self.assertTrue(home)
+
+    def test_bytes_and_pathlike_paths_in_the_generic_branch_are_judged(self):
+        import pathlib
+        T = self.T
+        with T.active():
+            for a in (os.fsencode(T.p2("x")), pathlib.Path(T.p2("x")), T.p2("x")):
+                self.refused(G._hook, "os.some_future_event", (a,))
+            G._hook("os.some_future_event", (os.fsencode(T.p1("x")),)); G._hook("os.some_future_event", (pathlib.Path(T.p1("x")),))
+            G._hook("os.some_future_event", (b"no-slash", "no-slash", 5))
 
     def test_listdir_without_an_argument_is_judged_at_the_cwd(self):
         T = self.T
@@ -488,32 +622,72 @@ class Static(unittest.TestCase):
         self.assertFalse(makes_files_without_temp(mk.replace("mkdir", "touch") + "python3 -c 'import tempfile; tempfile.mkdtemp()'\n"))
         self.assertFalse(makes_files_without_temp("echo hi\n"))
 
-    def test_a_whole_file_allow_row_pins_the_exact_set_of_literal_lines(self):
+    def test_a_whole_file_allow_row_pins_the_whole_file_and_shows_its_literal_lines(self):
         import system_path_allowlist as A
         rows = whole_file_rows()
         self.assertEqual(sorted(A.PINS), rows, "every whole-file row needs a pin and every pin a whole-file row")
         for rel in rows:
             with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
-                got = row_pin(fh.read())
-            self.assertEqual(got, tuple(A.PINS[rel][:2]),
-                             "%s: a new (or removed) system-path literal in a whole-file row must be added to PINS with a reason" % rel)
-            self.assertGreaterEqual(len(A.PINS[rel][2].strip()), 12)
+                sha, lines = row_pin(fh.read())
+            want_sha, want_lines, reason = A.PINS[rel]
+            self.assertGreaterEqual(len(reason.strip()), 12)
+            self.assertEqual(sorted(set(lines) - set(want_lines)), [], "%s: new system-path literal lines (add them to PINS with a reason)" % rel)
+            self.assertEqual(tuple(lines), tuple(want_lines), "%s: the literal lines changed" % rel)
+            self.assertEqual(sha, want_sha, "%s: the file changed; a whole-file row pins the whole file. Review the edit, then run "
+                                            "`python3 test_fs_guard.py --print-pins` and update PINS in system_path_allowlist.py" % rel)
 
     def test_the_whole_file_pin_bites_on_every_form_of_added_command(self):
         import system_path_allowlist as A
         rel = sorted(A.PINS)[0]
         with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
             base = fh.read()
-        self.assertEqual(row_pin(base), tuple(A.PINS[rel][:2]))
+        self.assertEqual(row_pin(base)[0], A.PINS[rel][0])
         forms = ["grep -q root /etc/passwd", "ls /usr/local/bin", "source /etc/os-release", ". /etc/os-release", "head -1 /etc/hostname",
                  "[ -x /usr/local/bin/grype ]", "test -f /etc/hosts", "x=$(cat /etc/hosts)", "if cat /etc/hosts; then", "cp a ${X:-/etc/y}",
                  "</etc/hosts", "x | tee -a /etc/x", "find /usr/local -name x", "cmd >/tmp/out", "echo 'a\"b'; cat /etc/hosts",
-                 "ls /", "open('/')", "os.listdir('/')", "tar -C/etc -x", "cat /Etc/hosts", "ls /cores", "ls /Network", "ls /snap", "cd /workspace",
-                 "cat /github/x", "${TMPDIR:-/tmp}/a", "oci-archive:/tmp/x", "PATH=/a:/usr/bin", "cc -o/etc/hosts", "cat ~/x", "cat $HOME/x"]
+                 "ls /", "open('/')", "os.listdir('/')", "tar -C/etc -x", "cat /Etc/hosts", "ls /cores", "cat ~/x", "cat $HOME/x", "echo hi", "# a comment"]
         for f in forms:
-            self.assertNotEqual(row_pin(base + "\n" + f + "\n"), tuple(A.PINS[rel][:2]), f)
-        for f in ["echo hi", "cp a b", "x=$(pwd)/y", "https://example.org/etc/x", "cat ./etc/hosts"]:
-            self.assertEqual(row_pin(base + "\n" + f + "\n"), tuple(A.PINS[rel][:2]), f)
+            self.assertNotEqual(row_pin(base + "\n" + f + "\n")[0], A.PINS[rel][0], f)       # ANY edit changes the whole-file hash
+        self.assertNotEqual(row_pin(base + "\ncp /tmp/y /usr/bin/y\n")[1], tuple(A.PINS[rel][1]))     # and a new literal shows in the lines
+        # the context attack: moving a closing quote turns a quoted fixture line into a top-level command; the literal lines are the same
+        unmoved = 'case_ x bad "$(r \'echo hi\')" "\ncp /tmp/y /usr/bin/y\n"\n'          # the cp line is INSIDE a quoted fixture
+        moved = 'case_ x bad "$(r \'echo hi\')" ""\ncp /tmp/y /usr/bin/y\n'              # the closing quote moved up: a real command
+        self.assertEqual(row_pin(moved)[1], row_pin(unmoved)[1])
+        self.assertNotEqual(row_pin(moved)[0], row_pin(unmoved)[0])
+
+    EXPECTED_NAMES = ["etc", "usr", "var", "private", "Library", "System", "opt", "bin", "sbin", "dev", "home", "root", "proc", "sys", "Users",
+                      "tmp", "Applications", "Volumes", "run", "srv", "lib", "lib64", "boot", "mnt", "nix", "cores", "Network", "snap",
+                      "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost+found", "vol"]
+
+    def test_every_top_level_name_is_found_in_every_position(self):
+        self.assertEqual([x.replace("\\", "") for x in SYS_NAMES], self.EXPECTED_NAMES)      # an independent copy: dropping a name fails here
+        for n in self.EXPECTED_NAMES:
+            for text in ("ls /%s/x" % n, "d=/%s" % n, "open('/%s/f')" % n, "cc -o/%s/f" % n, "p=${V:-/%s}/f" % n, "ls /%s" % n.upper(),
+                         "ls //%s/x" % n, "ls /./%s/x" % n, "ls /../%s/x" % n, "ls /{%s,x}/f" % n, "x=/%s2/f" % n, "x=/%s_dir/f" % n):
+                self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            for text in ("x=/q%s/f" % n, "u=https://h/%s/x" % n, "r=a/%s/b" % n, "./%s/x" % n, "d=$work/%s" % n) + (("echo /%s-x" % n,) if n != "lib64" else ()):
+                self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+        for text in ("ls /e?c/hosts", "ls /?tc", "ls /us?/bin", "ls /{etc,usr}/x", "ls /{usr,x}", "cat /et?"):
+            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+
+    def test_every_bare_root_form_is_found(self):
+        for text in ["tar -C / -xf a.tar", "git -C / status", "env -C / cat etc/hosts", "cp x /", "mv x /", "rsync -a x /", "pushd /", "popd /",
+                     "docker run -v /:/host img", "docker run --volume=/:/host img", "docker run --mount type=bind,src=/,dst=/h img",
+                     "subprocess.run(['ls'], cwd='/')", "os.path.join('/', 'etc', 'hosts')", "Path('/')", "os.chdir('/')", "os.walk('/')",
+                     "shutil.rmtree('/')", "ls -la /", "cd /", "cd -P /", "find / -name x", "du -s /", "cat /", "chmod -R 700 /", "chroot / sh",
+                     "df -h /", "touch /", "mkdir /", "rmdir /", "tree /", "mount /", "x = os.listdir('/')", "p.iterdir('/')", "tar --directory / -x",
+                     "tar --directory=/ -x", "make -C / all", "cp -r a b /", "install -m 0755 x /", "ln -s a /", "scp a /", "zip -r a.zip /"]:
+            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+        for text in ["cd ..", "ls ./", "echo 'a / b'", "x = '/'.join(p)", "a / b", "sed 's/a/b/'", "cp x ./", "cp x y/", "tar -C dir -x", "cd $d",
+                     "git -C \"$repo\" status", "echo $((a / b))", "x=`pwd`/y"]:
+            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+
+    def test_home_without_a_slash_and_dotdot_chains_are_found(self):
+        for text in ["cat ~/x", "x=~/y", "cd ~", "cd", "cd; ls", "cd && ls", "ls ~", "cat ~;", "x=~", "cp -r ~ y", "../../../../etc/hosts", "cat ../../../x", "file:///etc/hosts",
+                     "file:/etc/hosts", "file://localhost/x", "echo $HOME", "os.path.expanduser('~')"]:
+            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+        for text in ["cd ..", "cd $d", "x ~ y", "'~' suffix", "cat ../../x", "file://$work/rel", "file://.", "cd dir"]:
+            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
 
     def test_the_literal_scan_finds_every_plain_form(self):
         for text in ["d=${TMPDIR:-/tmp}/a", "docker load oci-archive:/tmp/x", "PATH=/a:/usr/bin", "cc -o/etc/hosts", "tar -C/etc -x", "cat /Etc/hosts",
@@ -701,4 +875,13 @@ class Guard(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if "--print-pins" in sys.argv:
+        import pprint, system_path_allowlist as A
+        reasons = {r[0]: r[2] for r in A.ROWS if r[1] == ""}
+        for rel in whole_file_rows():
+            with open(os.path.join(REPO, rel), encoding="utf-8", errors="replace") as fh:
+                sha, lines = row_pin(fh.read())
+            print("    %r: (%r,\n        %s,\n        %r)," % (rel, sha, pprint.pformat(list(lines), width=130, indent=9).replace("\n", "\n        "),
+                                                          A.PINS.get(rel, (0, 0, reasons[rel]))[2]))
+    else:
+        unittest.main()
