@@ -227,6 +227,27 @@
       "key": "9f54b594e70eb20f",
       "line": "9f54b594e70eb20f",
       "ruling": "text, not a command: opens the quoted heredoc that writes the curl STUB (a file named curl in the stubs directory) as data; the stub records its argv and serves local fixture files"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "2d6db92689368ed6",
+      "line": "2d6db92689368ed6",
+      "ruling": "text, not a command: a shell comment heading the test section on url characters, curl flags and caps"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "bd58928b6ad7d1e1",
+      "line": "bd58928b6ad7d1e1",
+      "ruling": "text, not a command: a shell comment describing the fixture for the melange busybox move (a copy of the live melange lock and the new apk in the live archive/curl fixture directory)"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "e40f62c4290cc6dc",
+      "line": "e40f62c4290cc6dc",
+      "ruling": "text, not a command: a shell comment heading the review-round-2 test section (its topics include the curl flags)"
     }
   ]
 }

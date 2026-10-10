@@ -1165,6 +1165,10 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "9f54b594e70eb20f": "cat >\"$stubs/curl\" <<'EOF'",
     "1314309c3220e619": "echo \"curl $*\" >>\"$CALLS\"",
     "64612fb9a9fe82be": "else echo \"stub curl: 22 $url\" >&2; exit 22; fi",
+    # the flattened lines of the daily input refresh tests (bin/refresh-inputs-test.sh) the P3 rows are written for
+    "2d6db92689368ed6": "# url characters, curl flags and caps",
+    "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
+    "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = json.load(open(sys.argv[1]))["unmeasured_text"]
