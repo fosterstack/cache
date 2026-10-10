@@ -119,7 +119,9 @@ def git(*a):
     if r.returncode:
         sys.exit("git %s failed: %s" % (a[0], r.stderr.decode(errors="replace").strip()))
     return r.stdout
-git("cat-file", "-e", rev + "^{commit}")
+otype = subprocess.run(["git", "cat-file", "-t", rev], capture_output=True).stdout.strip()
+if otype != b"commit":   # a tag object would peel to its commit in ls-tree: only a commit object is judged
+    sys.exit("%s is not a commit (object type %r)" % (rev, otype.decode(errors="replace") or "absent"))
 os.makedirs(out)
 for entry in git("ls-tree", "-r", "-z", "--full-tree", rev, "--", ".github/workflows", ".github/actions").split(b"\0"):
     if not entry:
