@@ -73,12 +73,13 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
 Scope (advisor 0080): ubuntu runners only. Every job that runs steps must name an ubuntu runner literally
 (ubuntu-latest, ubuntu-<version>, ubuntu-<version>-arm); any other runs-on — Windows, macOS, self-hosted labels, a
 group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal.
-ONE expression runner is accepted (REQ-REL-005-AC2, advisor-approved read-back Oct 9, pin matrix): `runs-on: ${{ matrix.<key> }}`
-over a strategy that is a matrix of exactly that one key, a literal non-empty list of plain-string labels from the closed set
-{ubuntu-24.04, ubuntu-24.04-arm} (and, beside it, only `fail-fast: true|false`). Such a job reads as bash like any ubuntu job;
-every other form (see literal_matrix_runner) is a runs-on finding, and a key given twice in a job, its strategy or its matrix is
-a finding with the key named. Inside the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options,
-a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
+ONE expression runner is accepted (REQ-REL-005-AC2, advisor-approved read-back Oct 9, pin matrix):
+`runs-on: ${{ matrix.<key> }}` over a strategy that is a matrix of exactly that one key, a literal non-empty list of
+plain-string labels from the closed set {ubuntu-24.04, ubuntu-24.04-arm} (and, beside it, only `fail-fast: true|false`).
+Such a job reads as bash like any ubuntu job; every other form (see literal_matrix_runner) is a runs-on finding, and a
+key given twice in a job, its strategy or its matrix is a finding with the key named.
+Inside the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown
+options, a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
 outside the check today: the repository uses it (ci.yml, go-freshness.yml), so failing it closed is an outbox question.
 
 The boundary: the owner's instruction of Sep 30 (handoff 0023), "no exceptions, anywhere", and "every finding
@@ -2698,6 +2699,8 @@ def literal_label_matrix(matrix, key):
     """AC2: `matrix` is a mapping of exactly the one `key`, a non-empty list of plain-string labels from MATRIX_RUNNER_LABELS."""
     entries = exact_map(matrix)
     if entries is None or repeated_keys(matrix) or list(entries) != [key]:
+        return False
+    if key in ("include", "exclude"):             # AC2: GitHub gives these two names another meaning; they are not label keys
         return False
     labels = entries[key]
     return (isinstance(labels, yaml.SequenceNode) and bool(labels.value)
