@@ -554,12 +554,49 @@ vrun snyk 1 "$SNYK_ALT" "$D/v/snyk-alt.json"; expect "snyk: a statement naming t
 # find-issue: a valid first page followed by garbage is an error; an object (not an array) reply is an error
 cat >"$D/bin/gh-bad" <<'GH'
 #!/bin/bash
-case "${GH_MODE}" in page-garbage) echo '[{"number":1,"title":"x"}]'; echo 'not json';; object) echo '{"message":"Not Found"}';; esac
+case "${GH_MODE}" in page-garbage) echo '[{"number":1,"title":"x"}]'; echo 'not json';; object) echo '{"message":"Not Found"}';; nonum) printf '[{"title":"%s"}]\n' "$GH_TITLE";; strnum) printf '[{"number":"5","title":"%s"}]\n' "$GH_TITLE";; esac
 GH
 chmod +x "$D/bin/gh-bad"; mkdir -p "$D/bin2"; cp "$D/bin/gh-bad" "$D/bin2/gh"
-for mode in page-garbage object; do
-  GH_MODE=$mode PATH="$D/bin2:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$TITLE" >"$D/found.out" 2>"$D/found.err" && rc=0 || rc=$?
+for mode in page-garbage object nonum strnum; do
+  GH_TITLE="$TITLE" GH_MODE=$mode PATH="$D/bin2:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$TITLE" >"$D/found.out" 2>"$D/found.err" && rc=0 || rc=$?
   if [ $rc = 1 ] && [ ! -s "$D/found.out" ]; then ok; else bad "find-issue ($mode): must be an error (exit 1) with no output (rc=$rc)"; fi
+done
+
+# ---- round 2 of the review of #268 --------------------------------------------------------------------------------------------------------------------------------
+# a subcomponent without a usable package name makes the VEX unreadable (it would match a finding that has no package identity)
+for sub in '[{"@id":""}]' '[{"@id":"pkg:generic/@1.0"}]' '[{"@id":"   "}]'; do
+  badvex "subcomponent-noname-$(printf '%s' "$sub" | tr -c 'A-Za-z0-9' '_')" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",$(printf "$PR" "$sub")}"
+done
+# a finding with NO package identity never matches a statement that names packages (but is covered by a product-wide statement)
+OSV_NOPKG='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"]}]}]}]}'
+vexdoc "$D/v/sub-busybox.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:generic/busybox@1.37.0"}]}]')]"
+vrun osv-scanner 1 "$OSV_NOPKG" "$D/v/sub-busybox.json"; expect "osv: a finding with no package name or version is NOT removed by a statement that names packages" findings true 1 0
+vrun osv-scanner 1 "$OSV_NOPKG" "$D/v/by-cve.json"; expect "osv: ...but a product-wide statement still covers it" clean false 0 1
+# conflicting @id and identifiers.purl in one product; a Go product with qualifiers
+badvex id-purl-conflict '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","identifiers":{"purl":"pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates"}}]}'
+badvex go-qualifier '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:golang/github.com/fosterstack/cache?x=y"}]}'
+# a malformed scanner entry (a list-valued id, a non-string package name) is an operational error; the VALID findings around it are still counted and the outputs are written
+OSV_BADID='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":"golang.org/x/net","version":"0.1.0"},"vulnerabilities":[{"id":["GO-1"],"aliases":[]},{"id":"GO-2024-0002","aliases":["CVE-2024-8888"]}]}]}]}'
+vrun osv-scanner 1 "$OSV_BADID" "$D/v/by-cve.json"; expect "osv: a list-valued id is a malformed entry: verdict error, the valid finding still counted, has_findings written" error true 1 0
+if [ -s "$D/stmtv.json" ]; then ok; else bad "osv: no statement was written for a report with a malformed entry"; fi
+OSV_BADNAME='{"results":[{"source":{"path":"go.mod","type":"lockfile"},"packages":[{"package":{"name":5,"version":"0.1.0"},"vulnerabilities":[{"id":"GO-2024-0001","aliases":["CVE-2024-9999"]}]},{"package":{"name":"golang.org/x/text","version":"0.1.0"},"vulnerabilities":[{"id":"GO-2024-0003","aliases":["CVE-2024-7777"]}]}]}]}'
+vrun osv-scanner 1 "$OSV_BADNAME" "$D/v/by-cve.json"; expect "osv: a package name that is not a string is a malformed entry (error), the valid package's finding still counted" error true 1 0
+# a 200,000-deep document cannot crash the run: it is an unreadable VEX
+python3 -c "import sys; sys.stdout.write('{\"statements\":' + '['*200000 + ']'*200000 + '}')" >"$D/v/deep.json"
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/deep.json"; expect "osv: a 200000-deep VEX is an operational error, not a crash" error true 1 0
+# the image reference must carry a real digest; a trailing slash is not one of our repositories
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "ghcr.io/fosterstack/cache@garbage"; expect "osv: an image reference with a digest that is not sha256:<64 hex> identifies no image (the OCI statement does not apply)" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "ghcr.io/fosterstack/cache/@$AMD"; expect "osv: ...a trailing slash in the repository identifies no image either" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "ghcr.io/fosterstack/cache:v0.3.0@$AMD"; expect "osv: a tag AND a valid digest is the cache image (suppressed)" clean false 0 1
+# the PUBLISHED VEX: every one of its statements really SUPPRESSES the finding it describes (not just parses), for the cache image and the candidates image
+n=$(jq '.statements | length' .vex/fosterstack-cache.openvex.json)
+for i in $(seq 0 $((n-1))); do
+  name=$(jq -r ".statements[$i].vulnerability.name" .vex/fosterstack-cache.openvex.json)
+  sub=$(jq -r "[.statements[$i].products[] | .subcomponents // [] | .[] | .\"@id\"][0] // empty" .vex/fosterstack-cache.openvex.json)
+  if [ -n "$sub" ]; then pname=$(printf '%s' "$sub" | sed 's#^pkg:[a-z]*/##; s#@.*##'); pver=${sub##*@}; else pname="github.com/golang-jwt/jwt/v4"; pver="v4.5.0"; fi
+  rep=$(jq -nc --arg n "$name" --arg p "$pname" --arg v "$pver" '{"results":[{"source":{"path":"x","type":"lockfile"},"packages":[{"package":{"name":$p,"version":$v},"vulnerabilities":[{"id":$n,"aliases":[]}]}]}]}')
+  vrun osv-scanner 1 "$rep" ".vex/fosterstack-cache.openvex.json" production linux/amd64 "$REPO@$AMD"
+  expect "the published VEX statement $i ($name, $pname@$pver) removes its finding from the cache image" clean false 0 1
 done
 
 echo "rescan-statement: ${pass} passed, ${fail} failed"

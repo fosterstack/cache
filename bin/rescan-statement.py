@@ -39,6 +39,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import urllib.parse
 
@@ -127,7 +128,10 @@ def cmd_find_issue(args):
         pages += 1
         for it in page:
             if isinstance(it, dict) and "pull_request" not in it and it.get("title") == args.title and found is None:
-                found = it.get("number")
+                if not isinstance(it.get("number"), int) or isinstance(it.get("number"), bool):
+                    err("find-issue: the matching issue has no integer number; refusing to guess")
+                    return 1
+                found = it["number"]
     if pages == 0:
         err("find-issue: gh returned no page at all (an empty reply is not '[]'); refusing to guess that none exists")
         return 1
@@ -195,11 +199,16 @@ def _vex_validate(doc):
             idf = p.get("identifiers", {})
             if not isinstance(idf, dict) or ("purl" in idf and not isinstance(idf["purl"], str)):
                 raise ValueError("product identifiers that are not an object with a string purl")
+            if "@id" in p and "purl" in idf and p["@id"] != idf["purl"]:
+                raise ValueError("a product whose @id and identifiers.purl differ")
             pid = p.get("@id") if "@id" in p else idf.get("purl")
             _parse_product(pid)
             subs = p.get("subcomponents", [])
             if not isinstance(subs, list) or not all(isinstance(x, dict) and isinstance(x.get("@id"), str) for x in subs):
                 raise ValueError("subcomponents that are not a list of objects with a string @id")
+            for x in subs:
+                if not x["@id"].startswith("pkg:") or not _gate.name_version(urllib.parse.unquote(x["@id"]))[0].strip():
+                    raise ValueError("a subcomponent that is not a package URL with a usable package name (%r)" % x["@id"])
 
 
 def _vex_load(path):
@@ -211,8 +220,10 @@ def _vex_load(path):
 
 
 def _image_repo(image_ref):
-    """ghcr.io/fosterstack/cache from ghcr.io/fosterstack/cache@sha256:... (or :tag); None when it is not one of our two repositories"""
-    r = str(image_ref or "").split("@", 1)[0]
+    """ghcr.io/fosterstack/cache from ghcr.io/fosterstack/cache@sha256:<64 hex> (or :tag); None when it is not one of our two repositories or the digest is not a sha256"""
+    r, at, dig = str(image_ref or "").partition("@")
+    if at and not re.fullmatch(r"sha256:[0-9a-f]{64}", dig):
+        return None
     head, sep, tail = r.rpartition(":")
     if sep and "/" not in tail:
         r = head
@@ -226,6 +237,8 @@ def _vex_match(doc, finding, variant, image_repo):
     ids = {i for i in (finding.get("ids") or [finding.get("id")]) if i}
     pkg = ((finding.get("package") or "").lower(), finding.get("version") or "")
     arch = (finding.get("platform") or "").rpartition("/")[2]
+    if not isinstance(finding.get("package") or "", str):
+        raise ValueError("a package name that is not a string")
     for st in doc["statements"]:
         if st["status"] not in _gate.SUPPRESSING:
             continue
@@ -240,6 +253,8 @@ def _vex_match(doc, finding, variant, image_repo):
             if pp[0] == "oci" and not (image_repo is not None and pp[1] == image_repo and pp[2] in (None, variant) and pp[3] in (None, arch)):
                 continue
             subs = [_gate.name_version(urllib.parse.unquote(x["@id"])) for x in p.get("subcomponents", [])]
+            if subs and not pkg[0]:
+                continue   # a finding with no package identity never matches a statement that names packages
             if not subs or any(_gate.same_pkg(pkg, sub) for sub in subs):
                 return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v["name"], "status": st["status"], "product": p.get("@id")}
     return None
@@ -385,7 +400,7 @@ def _shape_ok(scanner, report):
     return False
 
 
-def _normalize(scanner, report, platform):
+def _normalize(scanner, report, platform, bad=None):
     """Normalize a single child's report into a flat finding list, keeping
     the platform and project (targetFile / Target) context on each one."""
     out = []
@@ -415,7 +430,7 @@ def _normalize(scanner, report, platform):
     elif scanner == "snyk":
         # OS/distro findings live at the top level.
         for v in report.get("vulnerabilities") or []:
-            out.append(_snyk_finding(v, platform, target=None, pkg_mgr=None))
+            _guard(out, bad, lambda: _snyk_finding(v, platform, target=None, pkg_mgr=None))
         # Application-dependency findings live under applications[]; each app
         # entry carries its own project context (targetFile / packageManager)
         # — B04d: these were previously dropped entirely.
@@ -425,29 +440,62 @@ def _normalize(scanner, report, platform):
             target = app.get("targetFile") or app.get("path")
             pkg_mgr = app.get("packageManager")
             for v in app.get("vulnerabilities") or []:
-                out.append(_snyk_finding(v, platform, target, pkg_mgr))
+                _guard(out, bad, lambda: _snyk_finding(v, platform, target, pkg_mgr))
     elif scanner == "osv-scanner":
         # OSV.dev JSON: results[] -> source.path, packages[] ->
         # {package:{name,...}, vulnerabilities:[{id, aliases, ...}]}.
         for res in report.get("results") or []:
-            src = (res.get("source") or {}).get("path")
+            if not isinstance(res, dict):
+                _bad(bad)
+                continue
+            src = (res.get("source") or {}).get("path") if isinstance(res.get("source") or {}, dict) else None
             for pkg in res.get("packages") or []:
-                name = (pkg.get("package") or {}).get("name")
+                if not isinstance(pkg, dict):
+                    _bad(bad)
+                    continue
                 for v in pkg.get("vulnerabilities") or []:
-                    aliases = v.get("aliases") or []
-                    cve = next((a for a in aliases
-                                if isinstance(a, str) and a.startswith("CVE-")), None)
-                    out.append({
-                        "id": cve or v.get("id"),
-                        "ids": [x for x in [v.get("id")] + [a for a in aliases if isinstance(a, str)] if isinstance(x, str)],
-                        "severity": _osv_severity(v),
-                        "package": name,
-                        "version": (pkg.get("package") or {}).get("version"),
-                        "fixed_in": None,
-                        "platform": platform,
-                        "target": src,
-                    })
+                    _guard(out, bad, lambda: _osv_finding(v, pkg, src, platform))
     return out
+
+
+def _bad(bad):
+    if bad is not None:
+        bad.append(1)
+
+
+def _guard(out, bad, make):
+    """one scanner entry: a malformed one is counted (the run becomes an operational error) and skipped; the valid ones around it still count"""
+    try:
+        f = make()
+        if not isinstance(f.get("id"), str) and f.get("id") is not None:
+            raise ValueError("an identifier that is not a string")
+        if not all(isinstance(x, str) for x in f.get("ids", [])):
+            raise ValueError("identifiers that are not strings")
+        if not isinstance(f.get("package"), (str, type(None))) or not isinstance(f.get("version"), (str, type(None))):
+            raise ValueError("a package name or version that is not a string")
+        out.append(f)
+    except (TypeError, AttributeError, KeyError, ValueError):
+        _bad(bad)
+
+
+def _osv_finding(v, pkg, src, platform):
+    vid, aliases = v.get("id"), v.get("aliases") or []
+    if not isinstance(vid, str) or not isinstance(aliases, list) or not all(isinstance(a, str) for a in aliases):
+        raise ValueError("a vulnerability whose id is not a string or whose aliases are not a list of strings")
+    pk = pkg.get("package") or {}
+    if not isinstance(pk, dict):
+        raise ValueError("a package entry that is not an object")
+    cve = next((a for a in aliases if a.startswith("CVE-")), None)
+    return {
+        "id": cve or vid,
+        "ids": [vid] + list(aliases),
+        "severity": _osv_severity(v),
+        "package": pk.get("name"),
+        "version": pk.get("version"),
+        "fixed_in": None,
+        "platform": platform,
+        "target": src,
+    }
 
 
 def _osv_severity(v):
@@ -559,7 +607,11 @@ def cmd_statement(args):
             op_fail = True
             continue
         valid_reports.append(report)
-        got = _normalize(scanner, report, platform)
+        bad = []
+        got = _normalize(scanner, report, platform, bad)
+        if bad:
+            err("%d malformed entries in the %s report of %s; the rescan is incomplete (the valid findings still count)" % (len(bad), scanner, platform))
+            op_fail = True
         if code in contract["finding"] and not got:
             consistent = False   # the scanner says "findings" but none could be read: never clean
         findings.extend(got)
@@ -577,14 +629,20 @@ def cmd_statement(args):
             if not args.vex:
                 raise ValueError("no VEX document was given (--vex)")
             vex_doc = _vex_load(args.vex)
-        except (OSError, ValueError, TypeError, AttributeError, KeyError) as e:
+        except (OSError, ValueError, TypeError, AttributeError, KeyError, RecursionError) as e:
             vex_error = "the VEX document cannot be used (%s); the rescan is incomplete" % e
             err(vex_error)
             op_fail = True
         if vex_doc is not None:
             kept = []
             for f in findings:
-                m = _vex_match(vex_doc, f, args.variant, _image_repo(args.image_ref))
+                try:
+                    m = _vex_match(vex_doc, f, args.variant, _image_repo(args.image_ref))
+                except (TypeError, AttributeError, KeyError, ValueError, RecursionError) as e:
+                    vex_error = "a finding could not be matched against the VEX (%s); the rescan is incomplete" % e
+                    err(vex_error)
+                    op_fail = True
+                    m = None
                 if m:
                     suppressed.append(dict(f, vex=m))
                 else:
