@@ -22,28 +22,17 @@ permissions:
   contents: read
 
 jobs:
+  # The candidate build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, no tag and no admission; the callers' grants are a static ceiling (no write but id-token).
   build:
     uses: ./.github/workflows/stage-build.yml
     permissions:
       contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
       id-token: write
-      attestations: write
     with:
       mode: snapshot
-
-  assemble:
-    needs: build
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-      attestations: write
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: pr
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      upload-oci: true
 
   # ---------------------------------------------------------------------------------------------------------
   # The scanner panel (scanner-panel rules 1-9, ratified Oct 2; REQ-SCAN-001..009). Four scanner jobs, each
@@ -53,7 +42,7 @@ jobs:
   # outputs, which the tally counts as "did not run" (rule 3) — never as clean.
   panel-grype:
     name: panel — Grype (six images)
-    needs: [build, assemble]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -89,7 +78,7 @@ jobs:
 
   panel-scout:
     name: panel — Docker Scout (six images)
-    needs: [build, assemble]
+    needs: [build]
     runs-on: ubuntu-latest
     environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
     permissions:
@@ -281,7 +270,7 @@ jobs:
 
   panel-inspector:
     name: panel — Amazon Inspector (six images)
-    needs: [build, assemble]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -327,7 +316,7 @@ jobs:
 
   panel-google:
     name: panel — Google Artifact Analysis (three variants, linux/amd64)
-    needs: [build, assemble]
+    needs: [build]
     runs-on: ubuntu-latest
     # The scanner identity admits main only as `push` or through the main-only `agent` environment; this
     # job runs on `schedule`, so it takes the environment (ops/terraform/gcp; no secret is read here).
@@ -445,7 +434,7 @@ jobs:
   # candidate is red still hands the auditor its inputs.
   scanner-reports:
     name: scanner reports for the daily auditor (non-gating)
-    needs: [build, assemble]
+    needs: [build]
     runs-on: ubuntu-latest
     permissions:
       contents: read

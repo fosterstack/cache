@@ -36,11 +36,12 @@ on:
     branches: [main]
     tags: ['v*']
 
-# Workflow default: read only. Each job states what it needs. The two
-# reusable-stage callers (build, assemble) grant what the shared stage files
-# REQUEST, or the run is a startup_failure with zero jobs
-# (the former release-chain-pr.yml learned this the hard way); id-token/attestations/
-# packages are unused in snapshot/pr mode. The scanner job requests
+# Workflow default: read only. Each job states what it needs. The reusable-stage
+# callers (build, rebuild) grant what the shared stage files REQUEST, or the run is a
+# startup_failure with zero jobs (the former release-chain-pr.yml learned this the hard way);
+# checks/statuses/pull-requests read are requested by Build's admission step, which snapshot mode
+# does not run, but they are static job permissions of the called stage. The callers' grants
+# are a static ceiling (REQ-CHAIN-004-AC14): no write but id-token. The scanner job requests
 # id-token: write for the Inspector leg's role assumption. Dependabot-
 # triggered runs get a read-only token that the permissions key can raise
 # (GitHub docs, "Troubleshooting Dependabot on GitHub Actions"); fork
@@ -49,50 +50,30 @@ permissions:
   contents: read
 
 jobs:
+  # The proof build (REQ-CHAIN-004-AC12, AC14): Build in SNAPSHOT mode, with no tag and no admission; its records are refused by every release verifier.
   build:
     permissions:
       contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
       id-token: write
-      attestations: write
-      packages: write
     uses: ./.github/workflows/stage-build.yml
     with:
       mode: snapshot
 
-  assemble:
+  # The PR-mode proof of the reproducibility property (rule 31, kept): Rebuild in snapshot mode rebuilds everything on fresh runners and compares every item with
+  # Build's snapshot record; it FAILS the job on any difference (REQ-CHAIN-005-AC7). The release relies only on release.yml's own Rebuild; this is a PR/main proof.
+  rebuild:
     needs: build
     permissions:
       contents: read
       id-token: write
-      attestations: write
-      packages: write
-    uses: ./.github/workflows/stage-image.yml
+    uses: ./.github/workflows/stage-reproducibility.yml
     with:
-      mode: pr
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      upload-oci: true
+      mode: snapshot
 
-  # ---------------------------------------------------------------------------------------------------------------
-  # Merged from release-chain-pr.yml (workflow consolidation 5, owner RATIFIED Oct 2; advisor read-back 0062): the
-  # PR-mode proof of the reproducibility property. One build feeds both: `assemble` above is assembly A, `assemble-b`
-  # assembles the same attested binaries again in an independent job (verify only: it uploads no oci-candidate, so the
-  # artifact name stays unique), and the required check `reproducibility` demands identical index digests for every
-  # variant. The release relies only on release.yml's own reproducibility stage (stage-reproducibility.yml, unchanged);
-  # this job is a PR/main proof and never a gate on the tag chain.
-  assemble-b:
-    needs: build
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-      packages: write
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: pr
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-
+  # Check absorbs this call in PR 3 (stage-acceptance-artifacts.yml's handling of the digests JSON and of the artifact name dist is PR 3's change).
   artifact-acceptance:
     needs: build
     permissions:
@@ -100,32 +81,16 @@ jobs:
       packages: read
     uses: ./.github/workflows/stage-acceptance-artifacts.yml
     with:
-      dist-artifact: dist-snapshot
-      expected-checksums: ${{ needs.build.outputs.checksums }}
+      dist-artifact: dist
+      expected-checksums: ${{ needs.build.outputs.digests }}
 
+  # The required check `reproducibility` keeps its name: it passes only when the snapshot Rebuild passed, and that job fails on any differing item.
   reproducibility:
     name: reproducibility
-    needs: [assemble, assemble-b]
+    needs: rebuild
     runs-on: ubuntu-latest
     steps:
-      - name: two independent assemblies must agree, digest for digest
-        run: |
-          set -euo pipefail
-          a='${{ needs.assemble.outputs.digests }}'
-          b='${{ needs.assemble-b.outputs.digests }}'
-          echo "assembly A: $a"
-          echo "assembly B: $b"
-          for v in production debug fips; do
-            da=$(jq -r --arg v "$v" '.[$v]' <<<"$a")
-            db=$(jq -r --arg v "$v" '.[$v]' <<<"$b")
-            if [ -z "$da" ] || [ "$da" = "null" ]; then
-              echo "::error::assembly A produced no digest for ${v}" >&2; exit 1
-            fi
-            if [ "$da" != "$db" ]; then
-              echo "::error::${v} is NOT reproducible: ${da} vs ${db}" >&2; exit 1
-            fi
-            echo "${v}: reproducible at ${da}"
-          done
+      - run: echo "the snapshot Rebuild compared every item with Build's and found them identical"
 
   scanners:
     name: read the scanner list
@@ -139,7 +104,7 @@ jobs:
 
   scanner:
     name: scan (${{ matrix.scanner }})
-    needs: [build, assemble, scanners]
+    needs: [build, scanners]
     runs-on: ubuntu-latest
     # id-token: write is for the Inspector leg's role assumption and is the
     # only place in this workflow's own jobs that requests it.
