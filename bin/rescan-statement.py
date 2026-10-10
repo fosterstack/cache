@@ -36,9 +36,16 @@
 #         descriptor missing its platform FAILS the job.
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import sys
+import urllib.parse
+
+# The VEX matcher is the one the PR gate uses (bin/inspector-gate.py): one definition of "this statement covers this finding".
+_spec = importlib.util.spec_from_file_location("inspector_gate", os.path.join(os.path.dirname(os.path.abspath(__file__)), "inspector-gate.py"))
+_gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_gate)
 
 # Each scanner's exit-code contract. `clean` = completed, no findings;
 # `finding` = completed WITH findings (the configured finding exit code).
@@ -62,6 +69,114 @@ CONTRACTS = {
     #   https://google.github.io/osv-scanner/output/#return-codes
     "osv-scanner": {"clean": {0}, "finding": {1}},
 }
+
+
+# Rule 4 (ratified scanner-panel rules): the published OpenVEX file is the only exception. A scanner that reads it itself (Grype --vex, Trivy --vex) has already
+# applied it; every other scanner of .github/policy/scanners.json has its findings filtered HERE, against the same document. A scanner in neither list
+# cannot be classified, so it cannot bypass the VEX by omission: `classify` (and the test over scanners.json) fail for it.
+NATIVE_VEX = ("grype", "trivy")
+PIPELINE_FILTERED = ("osv-scanner", "snyk")
+
+
+def vex_class(scanner):
+    if scanner in NATIVE_VEX:
+        return "native"
+    if scanner in PIPELINE_FILTERED:
+        return "filtered"
+    return None
+
+
+def cmd_classify(args):
+    c = vex_class(args.scanner)
+    if c is None:
+        err("scanner %r is neither marked as reading the VEX natively (NATIVE_VEX) nor covered by the pipeline filter (PIPELINE_FILTERED); "
+            "a scanner must not bypass the VEX by omission" % args.scanner)
+        return 2
+    print(c)
+    return 0
+
+
+def cmd_find_issue(args):
+    """The number of the open issue (a pull request is not one) of this repository that carries the label and has exactly this title, or nothing. EVERY page is read
+    (`gh api --paginate`, 100 per page): a single default page of 30 would miss a tracking issue on a later page and open a duplicate every day. Any failure to
+    read the list is an error (exit 1), never "no issue"."""
+    import subprocess
+    repo = args.repo or os.environ.get("GITHUB_REPOSITORY", "")
+    if not repo:
+        err("find-issue: no repository (--repo or GITHUB_REPOSITORY)")
+        return 2
+    url = "repos/%s/issues?state=open&labels=%s&per_page=100" % (repo, urllib.parse.quote(args.label))
+    r = subprocess.run(["gh", "api", "--paginate", url], capture_output=True, text=True)
+    if r.returncode != 0:
+        err("find-issue: could not list the open issues (gh api failed: %s); refusing to guess that none exists" % r.stderr.strip()[:200])
+        return 1
+    dec, pos, text, found, pages = json.JSONDecoder(), 0, r.stdout, None, 0
+    while True:
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        if pos >= len(text):
+            break
+        try:
+            page, pos = dec.raw_decode(text, pos)
+        except ValueError:
+            err("find-issue: the issue list could not be read (not JSON); refusing to guess that none exists")
+            return 1
+        if not isinstance(page, list):
+            err("find-issue: the issue list is not an array of issues; refusing to guess that none exists")
+            return 1
+        pages += 1
+        for it in page:
+            if isinstance(it, dict) and "pull_request" not in it and it.get("title") == args.title and found is None:
+                found = it.get("number")
+    if pages == 0:
+        err("find-issue: gh returned no page at all (an empty reply is not '[]'); refusing to guess that none exists")
+        return 1
+    if found is not None:
+        print(found)
+    return 0
+
+
+def _vex_load(path):
+    """the published OpenVEX document, or ValueError: anything that is not an object with a list of statement objects is unreadable"""
+    with open(path, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if not isinstance(doc, dict) or not isinstance(doc.get("statements"), list) or not all(isinstance(x, dict) for x in doc["statements"]):
+        raise ValueError("not an OpenVEX document (an object with a list of statement objects)")
+    return doc
+
+
+def _vex_covers(product, variant, platform):
+    """a product with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names; the repository-wide product covers all"""
+    q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(str(product)).query))
+    arch = (platform or "").rpartition("/")[2]
+    return q.get("variant", variant) == variant and q.get("arch", arch) == arch
+
+
+def _vex_match(doc, finding, variant):
+    """the first statement that removes this finding, or None: status not_affected or fixed, the vulnerability name or an alias equal to one of the finding's
+    ids, a product that is this repository's image or Go module AND covers this variant/platform, and (when the product names subcomponents) the
+    finding's package name@version among them"""
+    ids = {i for i in (finding.get("ids") or [finding.get("id")]) if i}
+    pkg = ((finding.get("package") or "").lower(), finding.get("version") or "")
+    for st in doc["statements"]:
+        if st.get("status") not in _gate.SUPPRESSING:
+            continue
+        v = st.get("vulnerability") or {}
+        if not isinstance(v, dict):
+            continue
+        names = {v.get("name")} | set(a for a in (v.get("aliases") or []) if isinstance(a, str))
+        if not (names & ids):
+            continue
+        for p in st.get("products") or []:
+            if not isinstance(p, dict):
+                continue
+            pid = p.get("@id") or (p.get("identifiers") or {}).get("purl") or ""
+            if not _gate.OUR_PRODUCTS.match(pid) or not _vex_covers(pid, variant, finding.get("platform")):
+                continue
+            subs = [_gate.name_version(urllib.parse.unquote(str(x.get("@id")))) for x in p.get("subcomponents") or [] if isinstance(x, dict)]
+            if not subs or any(_gate.same_pkg(pkg, sub) for sub in subs):
+                return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v.get("name"), "status": st.get("status"), "product": pid}
+    return None
 
 
 def err(msg):
@@ -258,8 +373,10 @@ def _normalize(scanner, report, platform):
                                 if isinstance(a, str) and a.startswith("CVE-")), None)
                     out.append({
                         "id": cve or v.get("id"),
+                        "ids": [x for x in [v.get("id")] + [a for a in aliases if isinstance(a, str)] if isinstance(x, str)],
                         "severity": _osv_severity(v),
                         "package": name,
+                        "version": (pkg.get("package") or {}).get("version"),
                         "fixed_in": None,
                         "platform": platform,
                         "target": src,
@@ -283,6 +400,8 @@ def _snyk_finding(v, platform, target, pkg_mgr):
     ident = cve[0] if cve else v.get("id")
     f = {
         "id": ident,
+        "ids": [x for x in list(cve) + [v.get("id")] if isinstance(x, str)],
+        "version": v.get("version"),
         "severity": (v.get("severity") or "").lower(),
         "package": v.get("packageName"),
         "fixed_in": v.get("nearestFixedInVersion") or None,
@@ -336,6 +455,7 @@ def cmd_statement(args):
                 children.append(json.loads(line))
 
     findings = []
+    consistent = True   # every child exited clean, or exited with the findings code AND the report really held findings
     valid_reports = []
     scanned_platforms = []
     op_fail = False
@@ -373,11 +493,37 @@ def cmd_statement(args):
             op_fail = True
             continue
         valid_reports.append(report)
-        findings.extend(_normalize(scanner, report, platform))
+        got = _normalize(scanner, report, platform)
+        if code in contract["finding"] and not got:
+            consistent = False   # the scanner says "findings" but none could be read: never clean
+        findings.extend(got)
 
     if not children:
         # Enumeration should have failed before this; treat as incomplete.
         op_fail = True
+
+    # Rule 4: for a scanner that cannot read the VEX itself, remove the findings the published VEX covers. An unreadable VEX (missing, not JSON, wrong shape,
+    # or no --vex at all) is an operational error, never "no suppression": the findings stay counted and the run is red.
+    klass = vex_class(scanner)
+    suppressed, vex_error, vex_doc = [], None, None
+    if klass == "filtered":
+        try:
+            if not args.vex:
+                raise ValueError("no VEX document was given (--vex)")
+            vex_doc = _vex_load(args.vex)
+        except (OSError, ValueError) as e:
+            vex_error = "the VEX document cannot be used (%s); the rescan is incomplete" % e
+            err(vex_error)
+            op_fail = True
+        if vex_doc is not None:
+            kept = []
+            for f in findings:
+                m = _vex_match(vex_doc, f, args.variant)
+                if m:
+                    suppressed.append(dict(f, vex=m))
+                else:
+                    kept.append(f)
+            findings = kept
 
     has_findings = len(findings) > 0
     all_clean_exit = bool(children) and all(
@@ -392,6 +538,8 @@ def cmd_statement(args):
         outcome = "findings"
     elif all_clean_exit:
         outcome = "clean"
+    elif suppressed and consistent:
+        outcome = "clean"   # every finding the scanner reported is covered by the published VEX
     else:
         outcome = "error"
 
@@ -429,6 +577,7 @@ def cmd_statement(args):
                    "only exception"),
         "verdict": outcome,
         "findings": findings,
+        "vex_suppressed": suppressed,
         "raw_report": {
             "path": "findings-raw.json",
             "sha256": hashlib.sha256(
@@ -436,7 +585,7 @@ def cmd_statement(args):
         },
     }
 
-    if args.vex and os.path.exists(args.vex):
+    if args.vex and os.path.exists(args.vex) and vex_error is None:
         vex = json.load(open(args.vex))
         short = args.digest.split(":")[-1]
         applicable = [
@@ -450,7 +599,10 @@ def cmd_statement(args):
             "sha256": hashlib.sha256(open(args.vex, "rb").read()).hexdigest(),
             "applicable_statements": applicable,
             "document_statement_count": len(vex.get("statements", [])),
+            "filtered_by_pipeline": klass == "filtered",
         }
+    elif klass == "filtered":
+        statement["vex"] = {"document": args.vex or None, "error": vex_error, "filtered_by_pipeline": True}
 
     with open(args.out, "w") as fh:
         json.dump(statement, fh, indent=1)
@@ -492,6 +644,16 @@ def main(argv):
     ps.add_argument("--out", required=True)
     ps.add_argument("--github-output")
     ps.set_defaults(func=cmd_statement)
+
+    pf = sub.add_parser("find-issue", help="print the number of the open tracking issue with this title (every page), or nothing")
+    pf.add_argument("--title", required=True)
+    pf.add_argument("--label", default="daily-rescan")
+    pf.add_argument("--repo")
+    pf.set_defaults(func=cmd_find_issue)
+
+    pc = sub.add_parser("classify", help="print native or filtered; fail for a scanner with no VEX classification")
+    pc.add_argument("--scanner", required=True)
+    pc.set_defaults(func=cmd_classify)
 
     args = parser.parse_args(argv)
     return args.func(args)
