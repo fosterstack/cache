@@ -126,7 +126,8 @@ for name, want_snapshot in (("snapshot-build", True), ("build", False)):
         check("record-env: a collection named snapshot-build is refused as a snapshot record",
               rc == 1 and first == "refused at build: snapshot record" and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
     else:
-        check("record-env: the same fixture named build is accepted (the control)", rc == 0 and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+        check("record-env: the same fixture named build is accepted (the control)",
+              rc == 0 and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
 for name, want_snapshot in (("snapshot-build", True), ("build", False)):
     record("rec.json", name)
     with open(work + "/items.json", "w") as f:
@@ -138,7 +139,8 @@ for name, want_snapshot in (("snapshot-build", True), ("build", False)):
               rc == 1 and first == "refused at rebuild: snapshot record" and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
     else:
         check("rebuild-compare: the same fixture named build is refused for something else, never as a snapshot record",
-              rc == 1 and first.startswith("refused at rebuild: ") and "snapshot" not in first and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+              rc == 1 and first.startswith("refused at rebuild: ") and "snapshot" not in first and "Traceback" not in err,
+              "exit %s, first line %r" % (rc, first[:140]))
 
 
 def raw_record(path, statement):
@@ -163,7 +165,8 @@ for what, statement in ODD:
     rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
     first = err.split("\n", 1)[0]
     check("verify --stage build: %s is refused cleanly, never as a snapshot record" % what,
-          rc == 1 and first.startswith("refused at build: ") and "snapshot" not in first and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+          rc == 1 and first.startswith("refused at build: ") and "snapshot" not in first and "Traceback" not in err,
+          "exit %s, first line %r" % (rc, first[:140]))
 for what, statement in ODD[:4]:
     raw_record("rec.json", statement)
     rc, out, err = run(["record-env", "--record", "rec.json"])
@@ -181,10 +184,67 @@ for what, name in (("under its own name (snapshot-build)", "snapshot-build"), ("
     first = err.split("\n", 1)[0]
     check("a v0.3.0 policy and a snapshot record %s (HEAD carried v0.3.0) is refused by verify: %s" % (what, want.split(": ", 1)[1]),
           rc == 1 and first == want, "exit %s, first line %r" % (rc, first[:140]))
-    rc, out, err = run(["stage-start", "--stage", "release", "--previous", "build", "--record", "rec.json", "--digests", "digests.json", "--policy", "policy.json"])
+    rc, out, err = run(["stage-start", "--stage", "release", "--previous", "build", "--record", "rec.json",
+             "--digests", "digests.json", "--policy", "policy.json"])
     first = err.split("\n", 1)[0]
     check("the same record %s is refused at the Release side (stage-start release from build): %s" % (what, want.split(": ", 1)[1]),
           rc == 1 and first == want, "exit %s, first line %r" % (rc, first[:140]))
+# ---- REQ-CHAIN-004-AC13, the closed-name check (advisor, Oct 9) ------------------------------------------------------------------------------------
+# The snapshot- prefix refusal is a denylist; a collection name must also be EXACTLY a release name for the stage that reads it: apk or build for Build,
+# rapk or rebuild for Rebuild (check, sign and release records are unaffected here: PR 3 names the Check steps).
+# Anything else, spelling variants and Unicode lookalikes included, is refused BEFORE any certificate with `refused at <stage>: collection name ...`. This is
+# early protection against honest confusion and lookalikes; the real boundary stays the Build Config URI pin of check_identity (a run of scan.yml can name its
+# own record build, but it is not release.yml at the tag).
+LOOKALIKES = [("Snapshot-build (capital S)", "Snapshot-build"), ("a leading space", " snapshot-build"), ("a trailing space", "snapshot-build "),
+              ("a non-breaking hyphen (U+2011)", "snapshot\u2011build"), ("a Cyrillic s (U+0455)", "\u0455napshot-build"),
+              ("an upper-case SNAPSHOT-BUILD", "SNAPSHOT-BUILD"), ("an underscore", "snapshot_build"), ("a different name entirely", "release"),
+              ("Build (capital B)", "Build"), ("builds", "builds"), ("a one for an l (bui1d)", "bui1d"), ("a trailing newline", "build\n"),
+              ("a zero-width space (U+200B)", "bui\u200bld"), ("a Cyrillic a in apk (U+0430)", "\u0430pk"), ("the empty name", "")]
+for what, name in LOOKALIKES:
+    record("rec.json", name)
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("verify --stage build: a collection name with %s is refused by name before any certificate" % what,
+          rc == 1 and first.startswith("refused at build: collection name ") and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+for what, name in (("rapk", "rapk"), ("rebuild", "rebuild"), ("Rebuild (capital R)", "Rebuild"), ("a Build record (build) given to the Rebuild stage", "build"),
+                   ("a Cyrillic e in rebuild (U+0435)", "r\u0435build")):
+    record("rec.json", name)
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "rebuild", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    if name in ("rapk", "rebuild"):
+        check("verify --stage rebuild: the release name %s passes the name check (refused later, for what the fixture is)" % what,
+              rc == 1 and first.startswith("refused at rebuild: ") and not first.startswith("refused at rebuild: collection name ") and "Traceback" not in err,
+              "exit %s, first line %r" % (rc, first[:140]))
+    else:
+        check("verify --stage rebuild: %s is refused by name before any certificate" % what,
+              rc == 1 and first.startswith("refused at rebuild: collection name ") and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+for name in ("apk", "build"):
+    record("rec.json", name)
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("verify --stage build: the release name %s passes the name check (refused later, for what the fixture is)" % name,
+          rc == 1 and first.startswith("refused at build: ") and not first.startswith("refused at build: collection name ") and "Traceback" not in err,
+          "exit %s, first line %r" % (rc, first[:140]))
+for label, args, stage, env in SUBCOMMANDS:
+    if label.startswith("verify") or stage not in ("build", "rebuild"):
+        continue
+    record("rec.json", "Build" if stage == "build" else "Rebuild")
+    rc, out, err = run([a.replace("{rec}", "rec.json") for a in args], env)
+    first = err.split("\n", 1)[0]
+    check("%s: a lookalike collection name is refused by name at every reader of the %s record" % (label, stage),
+          rc == 1 and first.startswith("refused at %s: collection name " % stage) and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+for flag, what, name in (("--snapshot", "Build (capital B)", "Build"), ("--snapshot", "a leading space", " snapshot-build"), ("", "Build (capital B)", "Build"),
+                         ("", "a Cyrillic s", "\u0455napshot-build")):
+    record("rec.json", name)
+    with open(work + "/items.json", "w") as f:
+        json.dump({}, f)
+    args = ["rebuild-compare"] + ([flag] if flag else [])
+    args += ["--build-record", "rec.json", "--expected", "items.json", "--actual", "items.json", "--out", "verdict.json"]
+    rc, out, err = run(args)
+    first = err.split("\n", 1)[0]
+    check("rebuild-compare %s: Build's record named %s is refused by name" % (flag or "(release)", what),
+          rc == 1 and first.startswith("refused at rebuild: ") and "Traceback" not in err and "digest: items.json" not in first,
+          "exit %s, first line %r" % (rc, first[:140]))
 # ---- REQ-CHAIN-004-AC15: the snapshot version -------------------------------------------------------------------------------------------------------------
 SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
 for label, args, stage, env in SUBCOMMANDS:
@@ -217,7 +277,7 @@ check("policy make --tag v0.3.1 is still made (the control of the two refusals a
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--ref", "refs/tags/v0.0.0", "--out", "p2.json"])
 check("policy make --ref refs/tags/v0.0.0 is refused as a snapshot version too (the form sign --check uses)",
       rc == 1 and err.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p2.json"), "exit %s, %r" % (rc, err[:120]))
-EXPECT = 87
+EXPECT = 120
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:
