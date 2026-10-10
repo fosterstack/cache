@@ -682,5 +682,17 @@ M=$(mutant go 'if pp[0] == "go" and image_repo is None:' 'if False:')
 SCRIPT_SAVE=$SCRIPT; SCRIPT=$M; vrun osv-scanner 1 "$OSV_FIND" "$D/v/go-only.json" production linux/amd64 "ghcr.io/evil/cache@$AMD"; SCRIPT=$SCRIPT_SAVE
 [ "$V" = clean ] && ok || bad "mutant (Go product image check removed) was not caught by the foreign-image case (got $V)"
 
+# ---- round 4 of the review of #268: a subcomponent purl with qualifiers or a subpath is not supported (the VEX is unreadable, never "qualifier ignored") ----------
+for sub in '[{"@id":"pkg:generic/busybox@1.37.0?checksum=sha256:deadbeef"}]' '[{"@id":"pkg:generic/busybox@1.37.0?"}]' '[{"@id":"pkg:generic/busybox@1.37.0?a=b&c=d"}]' '[{"@id":"pkg:generic/busybox@1.37.0#frag"}]' '[{"@id":"pkg:generic/busybox@1.37.0#"}]'; do
+  badvex "subcomponent-qualified-$(printf '%s' "$sub" | tr -c 'A-Za-z0-9' '_')" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",$(printf "$PR" "$sub")}"
+done
+vexdoc "$D/v/sub-checksum.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":[{"@id":"pkg:generic/busybox@1.37.0?checksum=sha256:deadbeef"}]}]')]"
+vrun osv-scanner 1 "$(osvrep CVE-2024-9999 busybox 1.37.0)" "$D/v/sub-checksum.json"
+expect "a checksum-scoped subcomponent never suppresses a busybox finding without that checksum: the VEX is unreadable, the finding counts" error true 1 0
+for cve in CVE-2025-60876 CVE-2025-46394 CVE-2024-58251; do
+  vrun osv-scanner 1 "$(osvrep $cve busybox 1.37.0)" "$PUBVEX"; expect "published VEX ($cve, busybox 1.37.0) still suppresses after the qualifier rule" clean false 0 1
+done
+vrun osv-scanner 1 "$(osvrep CVE-2024-51744 github.com/golang-jwt/jwt/v4 v4.5.0)" "$PUBVEX"; expect "published VEX (CVE-2024-51744, Go product) still suppresses after the qualifier rule" clean false 0 1
+
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]

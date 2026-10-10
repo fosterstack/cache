@@ -148,13 +148,16 @@ _OCI_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
 
 
 def _sub_purl(sid):
-    """(name, version) of a subcomponent package URL pkg:<type>/[<namespace>/...]<name>[@<version>][?qualifiers][#subpath]. The type must be lower-case
+    """(name, version) of a subcomponent package URL pkg:<type>/[<namespace>/...]<name>[@<version>]. Qualifiers ('?', even empty) and a subpath ('#') are not
+    supported: a checksum- or subpath-scoped exception cannot be checked against a finding, so it makes the VEX unreadable. The type must be lower-case
     [a-z][a-z0-9.+-]*, every path segment non-blank (and free of an encoded '/'), and a version given with '@' non-empty; anything else is ValueError (the VEX
     is unreadable). The name keeps its namespace and its case (percent-decoded: pkg:npm/%40scope/pkg is @scope/pkg); the type is not compared (a generator may
     call busybox pkg:generic or pkg:apk)."""
     if not isinstance(sid, str) or not sid.startswith("pkg:"):
         raise ValueError("a subcomponent that is not a package URL (%r)" % (sid,))
-    typ, slash, path = sid[4:].split("#", 1)[0].split("?", 1)[0].partition("/")
+    if "?" in sid or "#" in sid:
+        raise ValueError("a subcomponent package URL with qualifiers or a subpath, which cannot be matched against a finding (%r)" % sid)
+    typ, slash, path = sid[4:].partition("/")
     if not slash or not _PURL_TYPE.fullmatch(typ):
         raise ValueError("a subcomponent package URL without a lower-case type (%r)" % sid)
     head, _, last = path.rpartition("/")
