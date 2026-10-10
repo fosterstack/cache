@@ -147,6 +147,25 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMean" }
       - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMeanTieAndNearest" }
+  - ac: REQ-STORE-006-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestRebuildAfterIndexDeleted" }
+  - ac: REQ-STORE-006-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestRebuildAfterIndexEmptied" }
+  - ac: REQ-STORE-006-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestRebuiltBlobsParticipateInEviction" }
+  - ac: REQ-STORE-006-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestNonEmptyIndexIsNotWalked" }
+  - ac: REQ-STORE-006-AC5
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestFreshDataDirDoesNotRebuild" }
+  - ac: REQ-STORE-006-AC6
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestRebuildWalkFailureRefusesStart" }
+      - { type: go-test, ref: "cmd/fscache:TestUncleanMarkerAndEmptyIndexReconcileOnce" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }

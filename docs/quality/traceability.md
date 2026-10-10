@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 76 |
-| Acceptance criteria | 207 |
+| Active requirements | 77 |
+| Acceptance criteria | 213 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 191 |
+| ACs with mapped evidence | 197 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 44 |
+| Confidence: documented | 45 |
 | Confidence: implementation-only | 31 |
 
 ## Cache protocol
@@ -298,6 +298,21 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 | REQ-STORE-005-AC1 | Given a store holding a blob with no metadata record (as after a crash between the two writes); when reconciliation runs; then the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction | component | yes | approved | 3 item(s) |
 | REQ-STORE-005-AC2 | Given a metadata record whose blob is missing; when reconciliation runs; then the record is dropped and totals no longer include it | component | yes | approved | 2 item(s) |
 | REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | 2 item(s) |
+
+### REQ-STORE-006 — An empty index over existing blobs is rebuilt at startup
+
+When the server starts and the metadata index holds no records while the blob store holds one or more blobs, the server shall reconcile the two stores before serving, exactly as REQ-STORE-005 does after an unclean shutdown: blobs without a record are adopted (size from disk, recency now) and the counts are logged. A log line announces the walk before it starts, so a long walk is visible. A start with a non-empty index and no unclean marker shall not walk the blob store. Partial index loss (an index that holds some records but lacks others) is out of scope: it is repaired only by the unclean-marker reconciliation.
+
+*Introduced v0.2.3 · tier community · confidence documented · source: backlog item 16 (advisor; from the v0.2.1 startup-error runs); cmd/fscache/main.go serve; internal/cache Reconcile*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-STORE-006-AC1 | Given a data directory with N blobs, a clean shutdown (no unclean marker) and meta.db deleted; when the server starts; then before serving, the index holds all N (/statusz store_entries is N and the total size is the sum of the blob sizes) and every blob is retrievable; an INFO line "fscache: index empty over existing blobs, rebuilding" is logged before the walk starts, and an INFO line "fscache: index empty over existing blobs, rebuilt" follows it carrying adopted_blobs, dropped_records and removed_temp_files | component |  | approved | 1 item(s) |
+| REQ-STORE-006-AC2 | Given the same store with meta.db present but every record removed; when the server starts; then the same as AC1 | component |  | approved | 1 item(s) |
+| REQ-STORE-006-AC3 | Given N adopted blobs whose total exceeds FSCACHE_MAX_BYTES; when the server starts and a PUT arrives; then the adopted blobs count against the cap and are evicted until the store is within it, the index total equals the bytes on disk | component |  | approved | 1 item(s) |
+| REQ-STORE-006-AC4 | Given a non-empty index, no unclean marker, and a blob the index does not list; when the server starts; then the blob store is not walked, no rebuild line is logged, and the unlisted blob is not adopted (partial index loss is out of scope) | component |  | approved | 1 item(s) |
+| REQ-STORE-006-AC5 | Given a fresh data directory (no blobs, no meta.db); when the server starts; then no rebuild line is logged and no reconciliation runs | component |  | approved | 1 item(s) |
+| REQ-STORE-006-AC6 | Given an empty index over existing blobs and a walk that fails; when the server starts; then it refuses to start with an error naming the reconciliation step and serves nothing; and with both an unclean marker and an empty index over blobs, reconciliation runs once, not twice | component |  | approved | 2 item(s) |
 
 ## Eviction
 
