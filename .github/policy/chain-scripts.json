@@ -6,7 +6,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "7eea19f1a36948e6ba323a9042773ebf448ae90548d1ae48e35a48aa676ee11a",
+      "sha256": "8e9a95ce9b32b7203374ac0d2c3956ba554bd45d56992269a150eed5b308251e",
       "tools": [
         "make",
         "at",

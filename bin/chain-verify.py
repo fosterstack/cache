@@ -494,6 +494,26 @@ def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp, want_kind=
     return stamped
 
 
+def check_slsa_v1(stage, predicate):
+    """REQ-CHAIN-001-AC4 (Codex #249 r4 B4): the provenance is a standard SLSA v1 record, not any statement of its type. The predicate is
+    an object with buildDefinition (an object with buildType and externalParameters) and runDetails (an object whose builder.id is a
+    non-empty string), the fields SLSA v1 requires (https://slsa.dev/spec/v1.0/provenance)."""
+    if not isinstance(predicate, dict):
+        refuse(stage, "predicate: the provenance predicate is not an object (not a SLSA v1 record)")
+    bd, rd = predicate.get("buildDefinition"), predicate.get("runDetails")
+    if not isinstance(bd, dict):
+        refuse(stage, "predicate: the provenance has no buildDefinition object (not a SLSA v1 record)")
+    for k in ("buildType", "externalParameters"):
+        if k not in bd:
+            refuse(stage, "predicate: the provenance buildDefinition has no %s (not a SLSA v1 record)" % k)
+    if not isinstance(rd, dict):
+        refuse(stage, "predicate: the provenance has no runDetails object (not a SLSA v1 record)")
+    builder = rd.get("builder")
+    bid = builder.get("id") if isinstance(builder, dict) else None
+    if not isinstance(bid, str) or not bid.strip():
+        refuse(stage, "predicate: the provenance runDetails.builder.id is not a non-empty string (not a SLSA v1 record)")
+
+
 def check_record_type(stage, pol, ptype, payload):
     """Bind the record type to the stage. Returns (statement, needs_rekor)."""
     if ptype == POLT:
@@ -516,7 +536,8 @@ def check_record_type(stage, pol, ptype, payload):
         if stage != "sign":
             refuse(stage, "predicate type provenance is the sign stage's record type, not %s's" % stage)
         predicate = stmt.get("predicate")
-        if isinstance(predicate, dict) and predicate.get("dryRun") and not pol.get("dry_run"):
+        check_slsa_v1(stage, predicate)
+        if predicate.get("dryRun") and not pol.get("dry_run"):
             refuse(stage, "the provenance says dryRun true (dry): only a dry-run policy accepts it")
         return stmt, True
     if pt == COLL:
