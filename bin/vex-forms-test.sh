@@ -447,7 +447,7 @@ def rel_judge(steps):
                 or "secrets." in prun or "github.token" in prun:
             bad.append("the published check is not credential-free (GH_TOKEN empty, no secret, no token): %s" % pst.get("env"))
         if not prun.startswith("set -euo pipefail\n") or 'base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}"' not in pc \
-                or 'if (cd "$pub" && curl -fsSLO "${base}/${f}"); then ok=1; break; fi' not in pc:
+                or 'if (cd "$pub" && curl -fsSLO --connect-timeout 20 --max-time 120 "${base}/${f}"); then ok=1; break; fi' not in pc:
             bad.append("the published check does not download anonymously from the published release as the docs do")
         if "for _ in 1 2 3 4 5 6; do" not in pc or 'sleep "${RETRY_SLEEP}"' not in pc:
             bad.append("the published download retry is not bounded (6 tries, injectable sleep)")
@@ -672,6 +672,7 @@ MUTANTS = [
     ("the published check without its negative control", m_pub_drop_neg),
     ("the published check verifies the draft copies", mut_run(is_pub, "\ncosign verify-blob", "\npub=/tmp/release-files-draft\ncosign verify-blob")),
     ("the published check retries without bound", mut_run(is_pub, "for _ in 1 2 3 4 5 6; do", "while :; do")),
+    ("the published download without a time bound", mut_run(is_pub, " --connect-timeout 20 --max-time 120", "")),
     ("the published check with a token", m_pub_token),
     ("the published check verifies a loose identity", mut_run(is_pub, '--certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"',
         "--certificate-identity-regexp '^https://github\\.com/'")),
