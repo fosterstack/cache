@@ -10,12 +10,12 @@
 #     (GHSA-w6c6-c85g-mmv6, GHSA-wfqv-66vq-46rm), so GitHub's names and its paged list query are matched under BOTH the bare path and the /vMAJOR path.
 #   * OSV is queried by the /vMAJOR path as well as the bare path (advisor-accepted at step 5): a record that has ONLY a /v3 entry covering the pin is a hit.
 #   * It applies only to a tool in pin-audit.py's committed table GO_TOOLS whose version is a plain MAJOR.MINOR.PATCH (a leading lowercase v allowed).
-#     Cases the rule cannot settle FAIL CLOSED, they are a HIT: a table path that is bare while the pinned major is 2 or more or
-#     that ends in a different /vN (the audit then queries bare and /vMAJOR and hits if any entry covers the version), a record with no exact entry, a
-#     path-less entry next to an exact entry, and a lookalike path (host case, trailing slash). Only these keep the OLD verdict, nothing ignored:
-#     an unparsable version, a tool
-#     not in the table, other item kinds (gotool, owner/repo), and a /v0 or /v1 entry in a record for a major 0/1 pin (the one exception: a Go major
-#     0/1 path has no suffix, so /v0 and /v1 entries are not the exact path and are left to the old filter).
+#     Cases the rule cannot settle FAIL CLOSED, they are a HIT (the approved read-back, not a new rule): a version that is not plain MAJOR.MINOR.PATCH
+#     (for a tool in the table), a table path that is bare while the pinned major is 2 or more or that ends in a different /vN (the audit then queries
+#     bare and /vMAJOR and hits if any entry covers the version), a record with no exact entry, a path-less entry next to an exact entry, and a
+#     lookalike path (host case, trailing slash). Only these keep the OLD verdict, nothing ignored: a tool not in the table, other item kinds
+#     (gotool, owner/repo), and a /v0 or /v1 entry in a record for a major 0/1 pin (a Go major 0/1 path has no suffix, so /v0 and /v1 entries are
+#     not the exact path and are left to the old filter).
 #   * The entry whose path is EXACTLY <bare>/vN (N >= 2) or EXACTLY <bare> (N <= 1) decides; every other entry is ignored and LOGGED. With no exact entry,
 #     or with a path-less entry in the record, nothing can be concluded: the verdict stays a HIT.
 #   * Logging is part of the interface (PROPOSED names): LiveNet.ignored_entries is a list of {"id", "path", "reason"}, one per ignored entry; judge()
@@ -31,7 +31,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=39
+pass=0 failn=0 EXPECT=38
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -131,11 +131,6 @@ def clean(ver, recs, none_ignored=False, **kw):
         assert finds == [], ("expected clean", ver, sup, tb, [(f.kind, f.ids) for f in finds])
         assert not none_ignored or ignored(net) == [], ("nothing may be ignored", sup, tb, ignored(net))
 G4309 = load("osv-GO-2026-4309.json")
-def base(v):
-    """The old verdict for an unparsable version against GO-2026-4309 with the /v3 table: only the entry named like the table path counts."""
-    only = copy.deepcopy(G4309); only["affected"] = [a for a in only["affected"] if a["package"]["name"] == BARE + "/v3"]
-    try: return bool(run(cosign(v, BARE + "/v3"), mknet([only], GG, True))[0])
-    except pa.Fail: return True
 GG = ["GHSA-whqx-f9j3-ch6m"]
 PY
 
@@ -191,25 +186,20 @@ py "a tool NOT in the committed table (owner/repo form) is judged as before: the
 assert "sigstore/cosign" not in pa.GO_TOOLS
 hit("3.1.3", [G4309], ghsas=GG, none_ignored=True, sups=(True,), mk=lambda v, t=None: pa.inv.Item("tool", "sigstore/cosign", v, ""))
 PY
-# An unparsable version is never settled by the rule: nothing is ignored and the verdict is the one the audit gave before (BASE: only the /v3 entry
-# named like the table path counts). The table is the CORRECT /v3 path, so a loose parser (one that reads "3.1.3-rc.1" or "V3.1.3" as major 3)
-# would ignore the bare and /v2 entries and log them; ignored(net) == [] catches it. (With the bare table path the version would be a hit anyway.)
-py "versions the rule cannot parse keep the old verdict and ignore nothing, with the right /v3 table: pre-release, short, v3.1, latest, 4 parts," \
-   " leading zero, wildcard" <<'PY'
-for v in ("3.1.3-rc.1", "3", "v3.1", "latest", "3.1.3.4", "03.1.3", "3.1.x"):
-    net = mknet([G4309], GG, True)
-    try: finds, _ = run(cosign(v, BARE + "/v3"), net)
-    except pa.Fail: finds = ["stopped"]
-    assert bool(finds) == base(v) and ignored(net) == [], (v, finds, ignored(net))
-PY
-py "version parse holes keep the old verdict and ignore nothing, with the right /v3 table: build metadata, +incompatible (a Go major-3" \
-   " +incompatible version belongs to the BARE path), newline, space, V, vv," \
-   " Arabic-Indic, fullwidth" <<'PY'
-for v in ("3.1.3+build.1", "3.1.3+incompatible", "3.1.3\n", " 3.1.3", "V3.1.3", "vv3.1.3", "\u0663.\u0661.\u0663", "\uff13.1.3"):
-    net = mknet([G4309], GG, True)
-    try: finds, _ = run(cosign(v, BARE + "/v3"), net)
-    except pa.Fail: finds = ["stopped"]
-    assert bool(finds) == base(v) and ignored(net) == [], (repr(v), finds, ignored(net))
+# An unparsable version of a tool in the table FAILS CLOSED (the approved read-back): the verdict is a HIT, or the audit stops, in both OSV modes; the
+# rule is not applied, so nothing is ignored. The table is the CORRECT /v3 path, so a fail-open audit (one that clears the version through the /v3
+# entry, fixed 3.0.4) and a loose parser (one that reads "3.1.3-rc.1" or "V3.1.3" as major 3 and logs the bare and /v2 entries) both fail here.
+py "versions the rule cannot parse are a HIT (fail closed) and ignore nothing, with the right /v3 table, in both OSV modes: pre-release, short, v3.1," \
+   " latest, 4 parts, leading zero, wildcard, build metadata, +incompatible (a Go major-3 +incompatible version belongs to the BARE path), newline," \
+   " space, V, vv, Arabic-Indic, fullwidth" <<'PY'
+bad = ("3.1.3-rc.1", "3", "v3.1", "latest", "3.1.3.4", "03.1.3", "3.1.x", "3.1.3+build.1", "3.1.3+incompatible", "3.1.3\n", " 3.1.3", "V3.1.3", "vv3.1.3",
+       "\u0663.\u0661.\u0663", "\uff13.1.3")
+for v in bad:
+    for sup in (True, False):
+        net = mknet([G4309], GG, sup)
+        try: finds, _ = run(cosign(v, BARE + "/v3"), net)
+        except pa.Fail: finds = ["stopped"]
+        assert finds and ignored(net) == [], (repr(v), sup, finds, ignored(net))
 PY
 py "an empty version is not covered at all and nothing is ignored, as before" <<'PY'
 net = mknet([G4309], GG); it = cosign("")
@@ -435,7 +425,7 @@ PY
 
 # --- the program itself ----------------------------------------------------------------------------------------------------------------------------------
 py "GO_TOOLS is the one committed table of Go tools (cosign is in it, rooted at its module), and the audit has no second, hidden table" <<'PY'
-assert "cosign" in pa.GO_TOOLS and pa.GO_TOOLS["cosign"].startswith(BARE)
+assert pa.GO_TOOLS.get("cosign") == BARE + "/v3"
 assert len(re.findall(r"^GO_TOOLS\s*=", open(sys.argv[1]).read(), re.M)) == 1
 PY
 CASE="the audit's own offline suite still passes (pin-audit-test.sh): the new rule changes no existing verdict"
