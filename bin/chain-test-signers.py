@@ -18,7 +18,7 @@ Two small things, and nothing else:
      * step `uses` is a closed list: a digest-pinned actions/checkout (persist-credentials: false, no ref/repository/path/token),
        actions/download-artifact (explicit path that cannot overwrite a listed script, bin/ or .github/) and actions/upload-artifact.
        No local composite action, no docker://, no github-script, no job-level `uses`.
-     * every `run:` line is exactly one of: `set -euo pipefail`; `bash PATH ARGS`; `python3 -I PATH ARGS`; `printf '%s' "$NAME" >
+     * every `run:` line is exactly one of: `set -euo pipefail`; `bash PATH ARGS`; `python3 -I [-B] PATH ARGS`; `printf '%s' "$NAME" >
        digests.json` (the ONE write the Sign job needs; any other line starting with printf is an error); PATH is a plain relative
        literal that is LISTED, with the sha256 the file has; ARGS are literal words or a whole "$NAME" read of the step's env:.
        Anything else at command position is an ERROR naming the file and line.
@@ -282,6 +282,7 @@ def check_run(run, envnames, rows):
             if len(words) < 3 or words[1][0] != "-I":
                 errs.append("line %d: %s: python3 must run isolated, `python3 -I PATH ...` (without -I a file next to the script shadows the standard library)" % (n, line[:90])); continue
             words = [words[0]] + words[2:]
+            if words[1][0] == "-B": words = [words[0]] + words[2:]      # -B (write no bytecode cache) may follow -I
         if cmd not in ("bash", "python3") or len(words) < 2:
             errs.append("line %d: %s: the command must be `bash PATH ...` or `python3 PATH ...` (found %r): a variable, glob, make, xargs, find, npm, a pipe or a direct tool is an error" % (n, line[:90], cmd)); continue
         pw = words[1]

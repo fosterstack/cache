@@ -68,7 +68,7 @@ def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABL
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
 R_INSTALL = r"bash bin/install-scanner\.sh cosign"
-R_SIGN = r"python3 -I bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
+R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
     d, text = load(path); bad = []
@@ -219,6 +219,18 @@ def build_config(base, bad):
     for x in sorted(set(listed) - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
     goreleaser_keys(base, bad)
 
+COMPILED = (".pyc", ".pyo", ".so", ".pyd", ".dll")
+
+def compiled_code(base, bad):
+    """No __pycache__ directory and no compiled or native code file (.pyc .pyo .so .pyd .dll) anywhere under bin/ or .github/ (Opus #249
+    r5): Python would run it instead of, or beside, the hashed source."""
+    for top in ("bin", ".github"):
+        for dp, dirs, fs in os.walk(os.path.join(base, top)):
+            for x in sorted(dirs):
+                if x == "__pycache__": bad.append("AC1: %s is a bytecode cache directory (only hashed source may run)" % os.path.relpath(os.path.join(dp, x), base))
+            for x in sorted(fs):
+                if x.endswith(COMPILED): bad.append("AC1: %s is compiled or native code (only hashed source may run)" % os.path.relpath(os.path.join(dp, x), base))
+
 def stdlib_shadows(base, bad):
     """No file or directory under bin/ or .github/ is named after a standard-library module (Opus #249 r4): Python puts a script's own
     directory first on sys.path, so bin/json.py, bin/hashlib.pyc, bin/__pycache__/argparse.*.pyc or a bin/base64/ package would replace
@@ -251,11 +263,35 @@ def goreleaser_keys(base, bad):
             if not isinstance(e, dict): bad.append("AC1: .goreleaser.yaml %s entry is not a mapping" % sec); continue
             for k in sorted(set(e) - GORELEASER_KEYS[sec]): bad.append("AC1: .goreleaser.yaml %s has key `%s`, outside its closed key set" % (sec, k))
             if sec == "builds":
+                if [x.get("id") for x in entries("builds") if isinstance(x, dict)].count(e.get("id")) > 1:
+                    bad.append("AC1: .goreleaser.yaml build id %r is repeated" % e.get("id")); continue
                 want = GORELEASER_BUILDS.get(e.get("id"))
                 if want is None: bad.append("AC1: .goreleaser.yaml build id %r is not one of %s" % (e.get("id"), sorted(GORELEASER_BUILDS))); continue
                 for k in ("env", "flags", "ldflags"):
                     if e.get(k) != want[k]: bad.append("AC1: .goreleaser.yaml build %s %s is %s, not exactly %s" % (e.get("id"), k, e.get(k), want[k]))
     if (d.get("before") or {}).get("hooks") != GORELEASER_HOOKS: bad.append("AC1: .goreleaser.yaml before.hooks are not exactly %s" % GORELEASER_HOOKS)
+
+MERGE_TAG = "tag:yaml.org,2002:merge"
+
+def merge_keys(base, files, bad):
+    """No YAML merge key anywhere in any workflow or composite action (Opus #249 r5; one structural rule for an open class): a `<<` key or a
+    node tagged !!merge, at any depth, would supply keys that a reader which does not merge (BaseLoader) never sees."""
+    acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
+    for f in files + sorted(acts):
+        try: root = yaml.compose(open(f).read(), Loader=yaml.BaseLoader)
+        except Exception: continue          # an unparsable file is reported by id_token_jobs and the grammar
+        todo = [(root, "")]
+        while todo:
+            n, path = todo.pop()
+            if n is None: continue
+            if n.tag == MERGE_TAG: bad.append("AC1: %s%s uses a merge key (!!merge); write it out in full" % (os.path.relpath(f, base), path))
+            if isinstance(n, yaml.MappingNode):
+                for k, v in n.value:
+                    kv = k.value if isinstance(k, yaml.ScalarNode) else "?"
+                    if isinstance(k, yaml.ScalarNode) and k.value.strip() == "<<": bad.append("AC1: %s%s uses a merge key (<<); write it out in full" % (os.path.relpath(f, base), path))
+                    todo += [(k, path + "/" + kv), (v, path + "/" + kv)]
+            elif isinstance(n, yaml.SequenceNode):
+                todo += [(x, "%s/%d" % (path, i)) for i, x in enumerate(n.value)]
 
 def id_token_jobs(base, files, bad):
     """A job may hold id-token: write (its own permissions, or the workflow's when it sets none; write-all counts) only if
@@ -279,14 +315,6 @@ def id_token_jobs(base, files, bad):
         wf = os.path.basename(f)
         if not isinstance(d, dict) or not isinstance(d.get("jobs", {}), dict):
             bad.append("AC1: %s is not a workflow mapping with a jobs mapping, so its id-token holders cannot be checked" % wf); continue
-        # a YAML merge key (<<) would supply keys this reader never sees (BaseLoader does not merge): refused at workflow level, at job
-        # level and inside any permissions mapping, wherever it points
-        maps = [("the workflow", d), ("the workflow permissions", d.get("permissions"))]
-        for jn, j in (d.get("jobs") or {}).items():
-            if isinstance(j, dict): maps += [("job %s" % jn, j), ("job %s permissions" % jn, j.get("permissions"))]
-        for where, m in maps:
-            if isinstance(m, dict) and any(str(k).strip() == "<<" for k in m):
-                bad.append("AC1: %s %s uses a << merge key; write it out in full" % (wf, where))
         for jn, j in (d.get("jobs") or {}).items():
             if isinstance(j, dict) and holds(j["permissions"] if "permissions" in j else d.get("permissions")):
                 held.add((os.path.basename(f), jn))
@@ -373,6 +401,8 @@ def judge_tree(base):
     direct_signers(base, files, frozen, listed_signers(base, bad), bad)
     build_config(base, bad)
     stdlib_shadows(base, bad)
+    compiled_code(base, bad)
+    merge_keys(base, files, bad)
     id_token_jobs(base, files, bad)           # every workflow, frozen ones included (their jobs are listed)
     rows, errs, envn = _cts.load_scripts(base)
     bad += ["AC1: " + e for e in errs]

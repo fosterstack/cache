@@ -30,19 +30,31 @@ import sys
 import tempfile
 
 # PyYAML is imported by the `actions` subcommand only (load_yaml): the Sign job installs cosign and nothing else (Codex security r1 S4)
-import importlib.util
+import types
 
 
 def load_sibling(name):
-    """Load the helper module <name> from this directory by its path, never through sys.path (Opus #249 r4): the Sign job runs the
-    interpreter isolated (-I), so this directory is not on sys.path and no file here can stand in for a standard-library module. The
-    module is registered under its name, so the other helper's `from chain_common import` gets this same copy."""
+    """Load the helper module <name> from this directory, never through sys.path and never from a bytecode cache (Opus #249 r4, r5): its
+    bytes must carry the sha256 listed for it in .github/policy/chain-scripts.json, and those same bytes are compiled and run, so a
+    __pycache__ entry cannot stand in for the hashed file. The module is registered under its name first, so the other helper's
+    `from chain_common import` gets this same copy."""
     if name in sys.modules:
         return sys.modules[name]
-    spec = importlib.util.spec_from_file_location(name, os.path.join(os.path.dirname(os.path.abspath(__file__)), name + os.extsep + "py"))
-    mod = importlib.util.module_from_spec(spec)
+    here = os.path.dirname(os.path.abspath(__file__))
+    rel = "bin/" + name + os.extsep + "py"
+    with open(os.path.join(here, name + os.extsep + "py"), "rb") as f:
+        src = f.read()
+    try:
+        with open(os.path.join(os.path.dirname(here), ".github", "policy", "chain-scripts.json"), "rb") as f:
+            listed = {r["path"]: r["sha256"] for r in json.load(f)["scripts"]}
+    except (OSError, ValueError, KeyError, TypeError) as ex:
+        sys.exit("error: cannot read the listed hashes of the helper modules (%s)" % type(ex).__name__)
+    if listed.get(rel) != hashlib.sha256(src).hexdigest():
+        sys.exit("error: %s does not match its sha256 in .github/policy/chain-scripts.json; refusing to run it" % rel)
+    mod = types.ModuleType(name)
+    mod.__file__ = os.path.join(here, name + os.extsep + "py")
     sys.modules[name] = mod
-    spec.loader.exec_module(mod)
+    exec(compile(src, mod.__file__, "exec"), mod.__dict__)
     return mod
 
 

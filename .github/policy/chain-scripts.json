@@ -6,15 +6,16 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "a1290237201c1c0c0ab806e63658449f0d57c33a0a2ef655ce11b01070e31dc5",
+      "sha256": "7eea19f1a36948e6ba323a9042773ebf448ae90548d1ae48e35a48aa676ee11a",
       "tools": [
         "make",
-        "at"
+        "at",
+        "exec"
       ],
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs"
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec"
     },
     {
       "path": "bin/install-scanner.sh",
