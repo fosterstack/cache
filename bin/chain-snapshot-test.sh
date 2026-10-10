@@ -22,7 +22,7 @@
 #
 # Needs: python3, the committed trust files under .github/policy (policy make reads them).
 exec python3 - "$(cd "$(dirname "$0")/.." && pwd)" <<'PY'
-import atexit, base64, json, os, shutil, subprocess, sys, tempfile
+import atexit, base64, importlib.util, json, os, shutil, subprocess, sys, tempfile
 
 root = sys.argv[1]
 CV = root + "/bin/chain-verify.py"
@@ -72,18 +72,28 @@ rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0",
 check("a policy for v0.3.0 is made from the committed template (the fixture of every case)", rc == 0 and os.path.exists(work + "/policy.json"), err[:120])
 
 SIGN_ENV = {"GITHUB_REF": "refs/tags/v0.3.0", "GITHUB_EVENT_NAME": "push"}
-# (label, arguments, stage the refusal names, environment); {rec} is the record file
-SUBCOMMANDS = [
-    ("verify --stage build", ["verify", "--policy", "policy.json", "--stage", "build", "--record", "{rec}"], "build", None),
-    ("verify --stage check", ["verify", "--policy", "policy.json", "--stage", "check", "--record", "{rec}"], "check", None),
-    ("stage-start rebuild from build", ["stage-start", "--stage", "rebuild", "--previous", "build", "--record", "{rec}", "--digests", "digests.json",
-                                        "--policy", "policy.json"], "build", None),
-    ("stage-start check from build", ["stage-start", "--stage", "check", "--previous", "build", "--record", "{rec}", "--digests", "digests.json",
-                                      "--policy", "policy.json"], "build", None),
-    ("stage-start release from check (the Release side)", ["stage-start", "--stage", "release", "--previous", "check", "--record", "{rec}",
-                                                           "--digests", "digests.json", "--policy", "policy.json"], "check", None),
-    ("stage-start release from rebuild (the Release side)", ["stage-start", "--stage", "release", "--previous", "rebuild", "--record", "{rec}",
-                                                             "--digests", "digests.json", "--policy", "policy.json"], "rebuild", None),
+# THE SUBCOMMANDS ARE GENERATED from chain-verify.py's own tables (step-6 round 1, both seats): every stage `verify` takes and EVERY (stage, previous) pair that
+# `stage-start` takes, so an implementation that refuses snapshot records for one stage or one pair only fails. A pair added to the tables without a case
+# is caught by the first check below, which pins the tables this test was written against.
+WRITTEN_FOR = {"stages": ["build", "sign", "rebuild", "check", "release"],
+               "starts_from": {"rebuild": ["build"], "check": ["build"], "sign": ["build"], "release": ["build", "sign", "rebuild", "check"]}}
+sys.path.insert(0, root + "/bin")      # chain-verify.py imports its sibling modules
+try:
+    spec = importlib.util.spec_from_file_location("chain_verify_tables", CV)
+    cv = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cv)
+    tables = {"stages": list(cv.STAGES), "starts_from": {k: list(v) for k, v in cv.STARTS_FROM.items()}}
+except Exception as ex:      # a missing or broken script: every case below fails on its own; the tables fall back to the ones written for
+    tables = WRITTEN_FOR
+    print("note: could not read the tables of chain-verify.py (%s)" % type(ex).__name__)
+check("the stages and (stage, previous) pairs of chain-verify.py are the ones this test was written for (a new one needs a case)", tables == WRITTEN_FOR,
+      "%s" % tables)
+SUBCOMMANDS = [("verify --stage %s" % s, ["verify", "--policy", "policy.json", "--stage", s, "--record", "{rec}"], s, None) for s in WRITTEN_FOR["stages"]]
+for stage, previous_list in WRITTEN_FOR["starts_from"].items():
+    for previous in previous_list:
+        SUBCOMMANDS.append(("stage-start %s from %s" % (stage, previous), ["stage-start", "--stage", stage, "--previous", previous, "--record", "{rec}",
+                                                                            "--digests", "digests.json", "--policy", "policy.json"], previous, None))
+SUBCOMMANDS += [
     ("check-build-record", ["check-build-record", "--digests", "digests.json", "--build-record", "{rec}", "--policy", "policy.json"], "build", None),
     ("sign --check", ["sign", "--check", "--signer", "cosign", "--digests", "digests.json", "--build-record", "{rec}",
                       "--template", TEMPLATE, "--out", "provenance"], "build", SIGN_ENV),
@@ -106,6 +116,60 @@ for name in ("snapshot-apk", "snapshot-rapk", "snapshot-anything"):
     first = err.split("\n", 1)[0]
     check("every collection name that starts with snapshot- is refused (%s)" % name, rc == 1 and first == "refused at build: snapshot record",
           "exit %s, first line %r" % (rc, first[:140]))
+# ---- every reader of a record, not only the verifiers (step-6 round 1, Sonnet 3): record-env and rebuild-compare read it through the same function --------
+rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0", "--out", "policy.json"])
+for name, want_snapshot in (("snapshot-build", True), ("build", False)):
+    record("rec.json", name)
+    rc, out, err = run(["record-env", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    if want_snapshot:
+        check("record-env: a collection named snapshot-build is refused as a snapshot record",
+              rc == 1 and first == "refused at build: snapshot record" and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+    else:
+        check("record-env: the same fixture named build is accepted (the control)", rc == 0 and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+for name, want_snapshot in (("snapshot-build", True), ("build", False)):
+    record("rec.json", name)
+    with open(work + "/items.json", "w") as f:
+        json.dump({}, f)
+    rc, out, err = run(["rebuild-compare", "--build-record", "rec.json", "--expected", "items.json", "--actual", "items.json", "--out", "verdict.json"])
+    first = err.split("\n", 1)[0]
+    if want_snapshot:
+        check("rebuild-compare: a collection named snapshot-build is refused as a snapshot record (without --snapshot)",
+              rc == 1 and first == "refused at rebuild: snapshot record" and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+    else:
+        check("rebuild-compare: the same fixture named build is refused for something else, never as a snapshot record",
+              rc == 1 and first.startswith("refused at rebuild: ") and "snapshot" not in first and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+
+
+def raw_record(path, statement):
+    envelope = {"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
+                "signatures": [{"sig": base64.b64encode(b"x").decode(), "certificate": base64.b64encode(b"x").decode()}]}
+    with open(os.path.join(work, path), "w") as f:
+        json.dump(envelope, f)
+
+
+# ---- odd statements are refused or accepted cleanly: never as a snapshot, never with a traceback (Sonnet 4) ------------------------------------------------
+COLLECTION = "https://witness.testifysec.com/attestation-collection/v0.1"
+STMT = "https://in-toto.io/Statement/v0.1"
+ODD = [("a statement with no predicate at all", {"_type": STMT, "predicateType": COLLECTION, "subject": []}),
+       ("a predicate whose name is the number 5", {"_type": STMT, "predicateType": COLLECTION, "subject": [], "predicate": {"name": 5}}),
+       ("a null predicate", {"_type": STMT, "predicateType": COLLECTION, "subject": [], "predicate": None}),
+       ("a predicate that is a list", {"_type": STMT, "predicateType": COLLECTION, "subject": [], "predicate": []}),
+       ("a SLSA provenance statement (what Release's stage-start --previous sign reads)",
+        {"_type": "https://in-toto.io/Statement/v1", "predicateType": "https://slsa.dev/provenance/v1", "subject": [],
+         "predicate": {"buildDefinition": {}, "runDetails": {}}})]
+for what, statement in ODD:
+    raw_record("rec.json", statement)
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("verify --stage build: %s is refused cleanly, never as a snapshot record" % what,
+          rc == 1 and first.startswith("refused at build: ") and "snapshot" not in first and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+for what, statement in ODD[:4]:
+    raw_record("rec.json", statement)
+    rc, out, err = run(["record-env", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("record-env: %s ends cleanly (accepted or refused), never as a snapshot record" % what,
+          rc in (0, 1, 2) and "snapshot" not in err and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
 # ---- REQ-CHAIN-004-AC15: the snapshot version -------------------------------------------------------------------------------------------------------------
 SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
 for label, args, stage, env in SUBCOMMANDS:
@@ -138,7 +202,7 @@ check("policy make --tag v0.3.1 is still made (the control of the two refusals a
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--ref", "refs/tags/v0.0.0", "--out", "p2.json"])
 check("policy make --ref refs/tags/v0.0.0 is refused as a snapshot version too (the form sign --check uses)",
       rc == 1 and err.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p2.json"), "exit %s, %r" % (rc, err[:120]))
-EXPECT = 45
+EXPECT = 83
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:
