@@ -99,6 +99,17 @@ class CouldNotLook(Exception):
     """The server could not be asked (rate limit, outage): the check cannot run. Never read as 'no proof', never a pass."""
 
 
+GH_TIMEOUT = 120
+
+
+def _gh_run(cmd, **kw):
+    """subprocess.run for the gh and git calls here, with a timeout: a call that hangs is CouldNotLook (the run stops), never an answer."""
+    try:
+        return subprocess.run(cmd, **dict({"timeout": GH_TIMEOUT}, **kw))
+    except subprocess.TimeoutExpired:
+        raise CouldNotLook(f"{cmd[0]} {' '.join(map(str, cmd[1:3]))} did not answer in {GH_TIMEOUT}s")
+
+
 def _gh_failed(r):
     """True for a plain miss (404 and friends); raises when the failure is the service's, not the answer's."""
     if not re.search(r"\b(404|410|422)\b", r.stderr + r.stdout):  # only "not there" is an answer; a 401/403, a rate limit or an outage means we could not look
@@ -108,7 +119,7 @@ def _gh_failed(r):
 
 def _gh_pages(path):
     """Every page of a list endpoint (gh --paginate with --jq '.[]' prints one JSON object per line)."""
-    r = subprocess.run(["gh", "api", "--paginate", path, "--jq", ".[]"], capture_output=True, text=True)
+    r = _gh_run(["gh", "api", "--paginate", path, "--jq", ".[]"], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
@@ -119,7 +130,7 @@ def _gh_pages(path):
 
 
 def _gh_api(path):
-    r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+    r = _gh_run(["gh", "api", path], capture_output=True, text=True)
     if r.returncode:
         _gh_failed(r)
         return None
@@ -227,7 +238,7 @@ _OBS = {}
 
 
 def _gh_bytes(path):
-    r = subprocess.run(["gh", "api", path], capture_output=True)
+    r = _gh_run(["gh", "api", path], capture_output=True)
     if r.returncode:
         _gh_failed(type("R", (), {"stderr": r.stderr.decode("utf-8", "replace"), "stdout": ""})())
         return None
@@ -267,7 +278,7 @@ def _pr_clock(item, root, base, head="HEAD"):
     repo = os.environ.get("GITHUB_REPOSITORY")
     if not repo or not base or not item.version:
         return None
-    r = subprocess.run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
+    r = _gh_run(["git", "-C", root, "rev-list", "--reverse", f"{base}..{head}"], capture_output=True, text=True)
     first = None
     for c in r.stdout.split():
         try:
@@ -282,7 +293,7 @@ def _pr_clock(item, root, base, head="HEAD"):
         return None
     runs = (_gh_api(f"repos/{repo}/actions/runs?head_sha={first}&per_page=100") or {}).get("workflow_runs", [])
     times = [x["created_at"] for x in runs if x.get("created_at")]
-    r2 = subprocess.run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
+    r2 = _gh_run(["gh", "api", "--paginate", f"repos/{repo}/commits/{first}/check-suites?per_page=100", "--jq", ".check_suites[]"], capture_output=True, text=True)
     if r2.returncode:
         _gh_failed(r2)
     else:

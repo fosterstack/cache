@@ -15,6 +15,7 @@ import argparse
 import base64
 import concurrent.futures
 import datetime as dt
+import functools
 import importlib.util
 import json
 import os
@@ -58,9 +59,22 @@ def _norm_name(n):
     return re.sub(r"[-_.]+", "-", str(n)).lower()
 
 
+SUBPROCESS_TIMEOUT = 120
+
+
+def _run(cmd, **kw):
+    """subprocess.run with a timeout (the gh and git calls of this file); a hung one stops the run (a Fail: never reported as a clean day).
+    The gh helpers shared with pin-age-check.py have their own timeout there."""
+    try:
+        return subprocess.run(cmd, **dict({"timeout": SUBPROCESS_TIMEOUT}, **kw))
+    except subprocess.TimeoutExpired:
+        raise Fail(f"{cmd[0]} {' '.join(map(str, cmd[1:3]))} did not answer in {SUBPROCESS_TIMEOUT}s")
+
+
 def _vt(v):
     """(release numbers without trailing zeros, class, suffix parts): class 0 = pre-release (before the final), 1 = final, 2 = post-release.
-    1.0.0-rc.1 and 1.0.0rc1 are BEFORE 1.0.0; 1.0.post1 is AFTER 1.0; 1.2 equals 1.2.0. A suffix of any other kind raises ValueError (callers read it as affected)."""
+    1.0.0-rc.1 and 1.0.0rc1 are BEFORE 1.0.0; 1.0.post1 is AFTER 1.0; 1.2 equals 1.2.0.
+    A suffix of any other kind raises ValueError (callers read it as affected)."""
     m = re.match(r"^v?(\d+(?:\.\d+)*)(.*)$", str(v).split("+", 1)[0].strip(), re.I)  # build metadata (+build.1) does not order versions
     if not m:
         raise ValueError(f"not a version: {v}")
@@ -88,27 +102,55 @@ def _cmp(a, b):
     return (kx > ky) - (kx < ky)
 
 
-def covered_by_events(version, events):
+_SEMVER = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
+
+
+def _semver_key(v):
+    """Strict semver 2.0 ordering key (Go versions, pseudo-versions and +incompatible included): a pre-release is below its release, its identifiers
+    compare numerically when numeric and lexically otherwise (numeric below alphanumeric), build metadata is ignored. Identifiers that
+    SemVer 2.0.0 forbids (empty, or numeric with a leading zero) make the value unparsable, which callers read as affected. The OSV value "0" is the minimum."""
+    if str(v) == "0":
+        return (-1,)
+    m = _SEMVER.fullmatch(str(v))
+    if not m:
+        raise ValueError(f"not a semver version: {v}")
+    pre = m.group(4)
+    if pre and any(x.isdigit() and len(x) > 1 and x[0] == "0" for x in pre.split(".")):
+        raise ValueError(f"SemVer forbids a numeric pre-release identifier with a leading zero: {v}")
+    ids = tuple((0, int(x), "") if x.isdigit() else (1, 0, x) for x in pre.split(".")) if pre else ()
+    return (int(m.group(1)), int(m.group(2)), int(m.group(3)), 0 if pre else 1, ids)
+
+
+def _semver_cmp(a, b):
+    ka, kb = _semver_key(a), _semver_key(b)
+    return (ka > kb) - (ka < kb)
+
+
+def covered_by_events(version, events, semver=False):
+    """Is the version inside the OSV range described by the events? semver=True compares strictly as semver (Go); the default also reads the
+    post-release forms of other ecosystems. A value that cannot be ordered is never read as unaffected."""
     try:
-        return _covered_by_events(version, events)
+        return _covered_by_events(version, events, _semver_cmp if semver else _cmp)
     except ValueError:
-        return True  # a version this check cannot order is never read as unaffected
+        return True
 
 
-def _covered_by_events(version, events):
-    """OSV range events: introduced / fixed / last_affected, in order."""
+def _covered_by_events(version, events, cmp):
+    """OSV range events: sort by version (introduced "0" is the minimum element; at one version introduced comes before fixed, so the fixed wins), then
+    introduced switches affected on, fixed and last_affected (after it) switch it off. A limit is an upper bound: the version must be below ANY limit."""
+    order = {"introduced": 0, "fixed": 1, "last_affected": 1}
+    kinds = [(k, e[k]) for e in events for k in order if k in e]
+    kinds.sort(key=lambda ke: (ke != ("introduced", "0"), functools.cmp_to_key(cmp)(ke[1]), order[ke[0]]))
     state = False
-    for e in events:
-        if "introduced" in e:
-            if e["introduced"] == "0" or _cmp(version, e["introduced"]) >= 0:
-                state = True
-        elif "fixed" in e:
-            if _cmp(version, e["fixed"]) >= 0:
-                state = False
-        elif "last_affected" in e:
-            if _cmp(version, e["last_affected"]) > 0:
-                state = False
-    return state
+    for kind, value in kinds:
+        if kind == "introduced":
+            state = state or value == "0" or cmp(version, value) >= 0
+        elif kind == "fixed":
+            state = state and cmp(version, value) < 0
+        else:
+            state = state and cmp(version, value) <= 0
+    limits = [e["limit"] for e in events if "limit" in e]
+    return state and (not limits or any(cmp(version, x) < 0 for x in limits))
 
 
 def in_range(version, rng):
@@ -180,10 +222,115 @@ class FixtureNet:
 
 
 GO_TOOLS = {"trivy": "github.com/aquasecurity/trivy", "grype": "github.com/anchore/grype", "syft": "github.com/anchore/syft",
-            "osv": "github.com/google/osv-scanner", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint",
-            "goreleaser": "github.com/goreleaser/goreleaser", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign",
+            "osv": "github.com/google/osv-scanner/v2", "gitsign": "github.com/sigstore/gitsign", "golangci-lint": "github.com/golangci/golangci-lint/v2",
+            "goreleaser": "github.com/goreleaser/goreleaser/v2", "scout": "github.com/docker/scout-cli", "cosign": "github.com/sigstore/cosign/v3",
             "kind": "sigs.k8s.io/kind", "helm": "helm.sh/helm/v3"}
 NPM_TOOLS = {"snyk": "snyk"}
+
+# REQ-SUP-001-AC14: Go gives a module of major N >= 2 the path ending in /vN, and majors 0 and 1 the bare path. The table above holds the path of the
+# major we pin; a pin that moves to another major must move its table entry in the same change (the audit fails closed, a hit, until it does).
+_PLAIN_VERSION = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+IGNORED_NOTE = "ignored advisory entry"
+
+
+class GoRule:
+    """AC14: the module paths of one pinned tool. major and right are None for a non-empty version that is not plain MAJOR.MINOR.PATCH."""
+
+    def __init__(self, item, version):
+        self.table = GO_TOOLS[item.name]
+        self.bare = re.sub(r"/v[0-9]+$", "", self.table)
+        m = _PLAIN_VERSION.fullmatch(version)
+        self.major = int(m.group(1)) if m else None
+        self.right = None if m is None else self.bare if self.major <= 1 else f"{self.bare}/v{self.major}"
+
+    @property
+    def paths(self):
+        """Every path OSV and GitHub are asked for: the table path, the path of the pinned major and the bare path (AC14: queried by /vMAJOR as well)."""
+        return list(dict.fromkeys([self.table, self.right, self.bare] if self.right else [self.table, self.bare]))
+
+
+def _without_paths(record):
+    """The record with every affected entry's package removed, so that one name filter (_osv_says) takes all entries into account."""
+    return dict(record, affected=[dict(a, package={}) for a in record["affected"]])
+
+
+# AC14: the allow-schema of a well-formed OSV Go record, as the Go vulnerability database writes it. The keys are the ones real records carry (see
+# the fixtures) plus the OSV schema's versions and severity. Anything else, a wrong type or an empty string is not trusted: the record is a hit.
+_ENTRY_KEYS = {"package", "ranges", "versions", "ecosystem_specific", "database_specific", "severity"}
+_PACKAGE_KEYS = {"ecosystem", "name", "purl"}
+_RANGE_KEYS = {"type", "events", "repo", "database_specific"}
+_EVENT_KEYS = ("introduced", "fixed", "last_affected", "limit")
+
+
+def _text(x):
+    return isinstance(x, str) and x != ""
+
+
+def _readable_record(v):
+    """AC14: the metadata read from a record (OSV schema: id and modified are required strings; aliases is a list of strings, absent or null)."""
+    aliases = v.get("aliases") if isinstance(v, dict) else None
+    return (isinstance(v, dict) and _text(v.get("id")) and _text(v.get("modified"))
+            and (aliases is None or (isinstance(aliases, list) and all(isinstance(a, str) for a in aliases))))
+
+
+def _well_formed_event(event, allow_limit):
+    """One of the OSV event keys, alone, with a non-empty string value that has no v prefix (Go records have none). A limit event belongs to GIT ranges."""
+    if not (isinstance(event, dict) and len(event) == 1):
+        return False
+    (key, value), = event.items()
+    return (key in _EVENT_KEYS and (allow_limit or key != "limit") and _text(value) and not value.lower().startswith("v"))
+
+
+def _well_formed_range(rg):
+    """Every range lists events with an introduced among them (their order is free, the evaluator sorts) and not both fixed and last_affected;
+    a GIT range also names its repo and is never read for a version; a SEMVER or ECOSYSTEM range has no limit."""
+    if not (isinstance(rg, dict) and set(rg) <= _RANGE_KEYS and rg.get("type") in ("SEMVER", "ECOSYSTEM", "GIT")):
+        return False
+    events, git = rg.get("events"), rg["type"] == "GIT"
+    if not (isinstance(events, list) and events and all(_well_formed_event(e, git) for e in events)):
+        return False
+    kinds = {k for e in events for k in e}
+    return ("introduced" in kinds and not {"fixed", "last_affected"} <= kinds and isinstance(rg.get("repo", ""), str)
+            and (not git or _text(rg.get("repo"))) and isinstance(rg.get("database_specific", {}), dict))
+
+
+def _well_formed_package(package):
+    return (isinstance(package, dict) and set(package) <= _PACKAGE_KEYS and _text(package.get("name"))
+            and _text(package.get("ecosystem")) and isinstance(package.get("purl", ""), str))
+
+
+def _well_formed_severity(severity):
+    return isinstance(severity, list) and all(isinstance(x, dict) and _text(x.get("type")) and _text(x.get("score")) for x in severity)
+
+
+def _well_formed_entry(entry):
+    """One affected entry: only the keys of the schema, each of its type."""
+    if not (isinstance(entry, dict) and set(entry) <= _ENTRY_KEYS and _well_formed_package(entry.get("package"))):
+        return False
+    ranges, versions = entry.get("ranges", []), entry.get("versions", [])
+    return (isinstance(ranges, list) and all(_well_formed_range(rg) for rg in ranges)
+            and isinstance(versions, list) and all(_text(v) for v in versions)
+            and _well_formed_severity(entry.get("severity", []))
+            and all(isinstance(entry.get(k, {}), dict) for k in ("ecosystem_specific", "database_specific")))
+
+
+def _well_formed_record(record):
+    """AC14: every OSV entry the Go rule reads matches the schema above, checked once before any branch."""
+    return isinstance(record.get("affected"), list) and all(_well_formed_entry(a) for a in record["affected"])
+
+
+def _reads_git(entry):
+    return any(rg["type"] == "GIT" for rg in entry.get("ranges", []))
+
+
+def _decidable(entry):
+    """AC14: an exact-path entry may clear a version only if it is Go and its ranges are all SEMVER or ECOSYSTEM (a GIT range cannot be judged by version)."""
+    return entry["package"].get("ecosystem") == "Go" and bool(entry.get("ranges")) and all(rg["type"] != "GIT" for rg in entry["ranges"])
+
+
+def _go_rule(item, version):
+    """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table, other kinds of item, an empty version."""
+    return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and version else None
 
 
 class LiveNet:
@@ -191,13 +338,14 @@ class LiveNet:
         self.gh, self.root = gh, root
         self._memo, self._lock = {}, threading.Lock()
         self.incomplete_prs = []
+        self.ignored_entries, self._reported = [], 0   # AC14: every OSV entry the rule did not use, {"id", "path", "reason"}, each once
 
     def _gh_json(self, path, strict=False):
         """JSON from gh api. A 404 is None; with strict=True nothing else may be None either (a 422 or bad JSON is not 'absent')."""
         with self._lock:
             if (path, strict) in self._memo:
                 return self._memo[(path, strict)]
-        r = subprocess.run([*self.gh, "api", path], capture_output=True, text=True)
+        r = _run([*self.gh, "api", path], capture_output=True, text=True)
         if r.returncode:
             try:
                 age._gh_failed(r)
@@ -289,7 +437,8 @@ class LiveNet:
             return {"package": {"name": NPM_TOOLS[item.name], "ecosystem": "npm"}, "version": version}
         mod = None
         if item.kind == "gotool":
-            mod = age._go_module(item.name, item.version)[0]  # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
+            # the module root, resolved through the proxy; unresolved: not covered (never the raw command path)
+            mod = age._go_module(item.name, item.version)[0]
         elif item.kind == "tool":
             mod = GO_TOOLS.get(item.name) or (f"github.com/{item.name}" if re.fullmatch(r"[\w.-]+/[\w.-]+", item.name) else None)
         return {"package": {"name": mod, "ecosystem": "Go"}, "version": version} if mod else None
@@ -301,7 +450,10 @@ class LiveNet:
         adv = self._gh_json(f"advisories/{advisory_id}", strict=True)
         q = self._query(item, self._version_of(item) or "")
         names = {_norm_name(package_of(item)), _norm_name(item.name)} | ({_norm_name(q["package"]["name"])} if q else set())
-        rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", []) if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
+        rule = _go_rule(item, self._version_of(item) or "")
+        names |= {_norm_name(p) for p in (rule.paths if rule else [])}   # AC14: GitHub files some Go ranges under the bare path
+        rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities",
+            []) if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
         return rngs or None
 
     def covered(self, item):
@@ -316,7 +468,8 @@ class LiveNet:
                 gh_all, osv_all = [], []
                 for t in tags:
                     g, o = self._lists_for(item, t)
-                    tag_ = lambda x: dict(x, incident="%s@%s" % (x.get("incident") or x["id"], t))   # a dispute is between the databases about ONE version, never across tags
+                    # a dispute is between the databases about ONE version, never across tags
+                    tag_ = lambda x: dict(x, incident="%s@%s" % (x.get("incident") or x["id"], t))
                     gh_all += [tag_(x) for x in g]
                     osv_all += [tag_(x) for x in o]
                 return gh_all, osv_all
@@ -327,13 +480,19 @@ class LiveNet:
         if q is None or not version:
             return [], []
         osv, ghs = [], []
-        for v in self._osv_post(q):
-            says = self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
+        rule = _go_rule(item, version)
+        paths = rule.paths if rule else [q["package"]["name"]]
+        for copies in self._osv_records(q, paths, strict=bool(rule)).values():
+            v = dict(copies[0], aliases=sorted({a for c in copies for a in (c.get("aliases") or [])}))   # AC14: the aliases of every copy
+            if rule:
+                says = any([self._go_says(c, rule, version) for c in copies])   # AC14: a copy that is unsettled or affected makes the record a hit
+            else:
+                says = self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
             osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")})
             for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
                 if alias.startswith("GHSA-"):
                     adv = self._gh_json(f"advisories/{alias}", strict=True)
-                    names = {_norm_name(q["package"]["name"]), _norm_name(item.name)}
+                    names = {_norm_name(q["package"]["name"]), _norm_name(item.name)} | {_norm_name(p) for p in paths}
                     rngs = [x["vulnerable_version_range"] for x in (adv or {}).get("vulnerabilities", [])
                             if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in names]
                     if adv and rngs:
@@ -343,7 +502,7 @@ class LiveNet:
         if eco:
             seen = {g["id"] for g in ghs}
             page = []
-            asked = [pkg]
+            asked = list(dict.fromkeys([pkg, *paths]))
             if q["package"]["ecosystem"] == "PyPI":
                 info = age._http_json(f"https://pypi.org/pypi/{urllib.parse.quote(pkg)}/json") or {}
                 published = (info.get("info") or {}).get("name")
@@ -364,17 +523,71 @@ class LiveNet:
                 if adv.get("ghsa_id") in seen:
                     continue
                 rngs = [x["vulnerable_version_range"] for x in adv.get("vulnerabilities", [])
-                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) == _norm_name(pkg)]
+                        if x.get("vulnerable_version_range") and _norm_name((x.get("package") or {}).get("name", "")) in {_norm_name(a) for a in asked}]
                 if rngs and in_range(version, "|".join(rngs)):
-                    ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"), "malicious": adv.get("type") == "malware"})
+                    ghs.append({"id": adv["ghsa_id"], "incident": adv["ghsa_id"], "affected": True, "modified": adv.get("updated_at"),
+                        "malicious": adv.get("type") == "malware"})
                     rec = self._osv_get(adv["ghsa_id"])
                     if rec and rec.get("id"):  # OSV knows this incident too: its own verdict for this version decides whether the lists AGREE
                         osv.append({"id": rec["id"], "incident": adv["ghsa_id"], "affected": self._osv_says(rec, pkg, version, versioned=False),
                                     "modified": rec.get("modified"), "malicious": rec["id"].startswith("MAL-")})
         return ghs, osv
 
+    def _osv_records(self, q, paths, strict=False):
+        """The OSV records for the query, asked once per module path (AC14): {id: [the distinct copies returned]}. Copies of one id can differ by path."""
+        records = {}
+        for p in paths:
+            for v in self._osv_post(dict(q, package=dict(q["package"], name=p))):
+                if strict and not _readable_record(v):
+                    v = {"id": "UNREADABLE-OSV-RECORD", "affected": "not a record"}   # AC14: an answer that is not a record is a hit, with this id
+                copies = records.setdefault(v["id"], [])
+                if v not in copies:
+                    copies.append(v)
+        return records
+
+    def _go_says(self, v, rule, version):
+        """AC14: does this OSV record cover a Go tool's pinned version? Where the rule cannot settle it the answer is yes (fail closed)."""
+        if rule.right is None:                       # AC14: a non-empty version that is not plain MAJOR.MINOR.PATCH is a hit
+            return True
+        if not _well_formed_record(v):
+            return True                              # AC14: one strict schema for every entry the rule reads, before any branch
+        entries = v["affected"]
+        path = lambda a: a["package"]["name"]
+        ambiguous = rule.major <= 1 and any(path(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries)
+        if (rule.table != rule.right or ambiguous) and any(_reads_git(a) for a in entries):
+            return True                              # AC14: the two branches below skip GIT ranges, so an entry that has one is a hit
+        if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
+            return self._osv_says(_without_paths(v), "", version, versioned=True, semver=True)
+        if ambiguous:
+            return self._osv_says(v, rule.right, version, versioned=True, semver=True)   # AC14: a /v0 or /v1 path is ambiguous: the old verdict
+        exact = [a for a in entries if path(a) == rule.right]
+        if not exact or not all(_decidable(a) for a in exact):
+            return True                              # AC14: no entry for the exact path, or one that is not plainly Go with readable ranges: a hit
+        for a in entries:
+            if a not in exact:
+                self._log_ignored(v["id"], path(a), self._ignore_reason(a, rule))
+        return self._osv_says(dict(v, affected=exact), rule.right, version, versioned=True, semver=True)
+
     @staticmethod
-    def _osv_says(v, name, version, versioned):
+    def _ignore_reason(entry, rule):
+        eco = entry["package"].get("ecosystem")
+        return f"not the module path of major {rule.major} ({rule.right})" if eco == "Go" else f"ecosystem {eco or 'missing'} is not Go"
+
+    def _log_ignored(self, advisory_id, path, reason):
+        """AC14: an entry the rule did not use is logged, once per id, path and reason (two queries return the same record)."""
+        entry = {"id": advisory_id, "path": path, "reason": reason}
+        with self._lock:
+            if entry not in self.ignored_entries:
+                self.ignored_entries.append(entry)
+
+    def take_ignored(self):
+        """The entries logged since the last call. The net is shared by the judging pool, so a line is attached to whichever item's judge drains it first."""
+        with self._lock:
+            new, self._reported = self.ignored_entries[self._reported:], len(self.ignored_entries)
+        return new
+
+    @staticmethod
+    def _osv_says(v, name, version, versioned, semver=False):
         """Does OSV's record cover this version? Each affected entry's ranges are judged separately and OR-ed (never one merged event list)."""
         entries = [a for a in v.get("affected", []) if (a.get("package") or {}).get("name", "").lower() == name.lower()] or v.get("affected", [])
         judged = False
@@ -389,7 +602,7 @@ class LiveNet:
             for rg in a.get("ranges", []):
                 if rg.get("type") in ("SEMVER", "ECOSYSTEM"):
                     judged = True
-                    if covered_by_events(version, rg.get("events", [])):
+                    if covered_by_events(version, rg.get("events", []), semver):
                         return True
         if not versioned and any(rg.get("type") == "GIT" for a in entries for rg in a.get("ranges", [])):
             return True  # a commit range cannot be judged by version: unresolved is never "not affected", whatever the other ranges say
@@ -398,12 +611,12 @@ class LiveNet:
     def upstream(self, item):
         if item.kind != "action" or not inv.SHA40.match(item.version):
             return None  # only a commit pin can be "not from the action's own repo"
-        r = subprocess.run([*self.gh, "api", f"repos/{item.name}", "--jq", ".default_branch"], capture_output=True, text=True)
+        r = _run([*self.gh, "api", f"repos/{item.name}", "--jq", ".default_branch"], capture_output=True, text=True)
         self._api_ok(r, item)
         branch = r.stdout.strip()
         if r.returncode or not branch:
             return False
-        c = subprocess.run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{branch}", "--jq", ".status"], capture_output=True, text=True)
+        c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{branch}", "--jq", ".status"], capture_output=True, text=True)
         self._api_ok(c, item)
         # compare/<pin>...<branch>: the branch is "ahead" of (or identical to) the pin exactly when the pin is an ancestor of the branch
         if c.stdout.strip() in ("identical", "ahead"):
@@ -412,7 +625,7 @@ class LiveNet:
             return True
         for br in (self._gh_json(f"repos/{item.name}/branches?per_page=100") or []):  # a release branch of the same repository
             if br.get("name") != branch:
-                c = subprocess.run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
+                c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
                 self._api_ok(c, item)
                 if c.stdout.strip() in ("identical", "ahead"):
                     return True
@@ -482,7 +695,8 @@ class LiveNet:
                 elif ref and ref.get("object", {}).get("type") == "tag":
                     t = self._gh_json(f"repos/{repo}/git/tags/{ref['object']['sha']}")
                     sha = (t or {}).get("object", {}).get("sha")
-            cand = inv.Item(item.kind, item.name, sha, r["tag_name"]) if (item.kind == "action" and sha) else inv.Item(item.kind, item.name, r["tag_name"], r["tag_name"])
+            cand = inv.Item(item.kind, item.name, sha, r["tag_name"]) if (item.kind == "action" and sha) else inv.Item(item.kind, item.name, r["tag_name"],
+                r["tag_name"])
             out.append({"version": r["tag_name"], "sha": sha, "published": r["published_at"], "_item": cand})
         return out
 
@@ -497,14 +711,15 @@ class LiveNet:
             raise Fail("could not list the open pull requests")
         for p in pulls:
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            hdr = ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
-            f = subprocess.run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
+            hdr = ["-c",
+                "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
+            f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
             if f.returncode:
                 self.incomplete_prs.append(p["number"])
                 print(f"information: open pull request #{p['number']} could not be fetched: not audited")
                 continue
             try:
-                mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
+                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
                 if not mb:
                     self.incomplete_prs.append(p["number"])
                     print(f"information: open pull request #{p['number']} shares no history with its base: not audited")
@@ -520,19 +735,21 @@ class LiveNet:
         repo = os.environ.get("GITHUB_REPOSITORY")
         if not repo:
             raise Fail("GITHUB_REPOSITORY is not set")
-        r = subprocess.run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "1000"], capture_output=True, text=True)
+        r = _run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "1000"], capture_output=True,
+            text=True)
         if r.returncode:
             raise Fail("could not list open pull requests: " + r.stderr.strip())
         out = []
         for p in json.loads(r.stdout or "[]"):
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-            hdr = ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
-            f = subprocess.run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
+            hdr = ["-c",
+                "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
+            f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
             if f.returncode:
                 continue
             try:
-                head = subprocess.run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True).stdout.strip()
-                mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]], capture_output=True, text=True).stdout.strip()
+                head = _run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True).stdout.strip()
+                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]], capture_output=True, text=True).stdout.strip()
                 moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
             except (RuntimeError, ValueError):
                 continue
@@ -541,10 +758,12 @@ class LiveNet:
             except Fail as e:
                 print(f"information: the runs of pull request #{p['number']} could not be read: {clean(e)}")
                 continue
-            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"), key=lambda x: x.get("created_at", ""), reverse=True)
+            mine = sorted((x for x in runs.get("workflow_runs", []) if str(x.get("path") or "").split("@")[0] == ".github/workflows/supply-chain.yml"),
+                key=lambda x: x.get("created_at", ""), reverse=True)
             failed = mine[:1] if mine and mine[0].get("conclusion") == "failure" else []  # the NEWEST run decides: a later green run needs no re-run
             if moved and failed:
-                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved, "_base": mb, "_head": p["headRefOid"]})
+                out.append({"number": p["number"], "title": p["title"], "run_id": failed[0]["id"], "moved": [m.key for m in moved], "_items": moved,
+                    "_base": mb, "_head": p["headRefOid"]})
         return out
 
     def proofs(self, item, base=None, head="HEAD"):
@@ -601,6 +820,45 @@ def load_exceptions(path, required):
     return ex
 
 
+class RulingLog:
+    """REQ-SUP-001-AC15: what the rulings did in one run. matched: rulings for the package and ids of a real dispute; applied: those that then decided it."""
+
+    def __init__(self):
+        self.matched, self.applied = [], []
+
+
+def undecided_exceptions(exceptions, log, held, net):
+    """REQ-SUP-001-AC15: the rulings that decided no dispute in this run, split into (lapsed, dead, dormant). Lapsed: it matched a real dispute but failed
+    the version, time or live-range check (the dispute stays reported). Dead: no dispute, and a held pin (main, its history or an open pull request)
+    is named by the ruling. Dormant: nobody holds its pin. Judged from what the run matched, applied and held, never from a list."""
+    lapsed, dead, dormant = [], [], []
+    for e in exceptions:
+        if any(e is a for a in log.applied):
+            continue
+        if any(e is m for m in log.matched):
+            lapsed.append(e)
+        elif any(package_of(it) == e["package"] and _ruling_covers(e, it, _pin_versions(it, net), every=False) for it in held):
+            dead.append(e)
+        else:
+            dormant.append(e)
+    return lapsed, dead, dormant
+
+
+def dead_message(e, held, net):
+    """The DEAD EXCEPTION text; when the ruling names only some of a held pin's versions (tags v3 and v3.37.8) it says how to write the series."""
+    msg = f"the ruling for {_ruling_label(e)} decided no dispute while its pin is held: remove it from the exceptions file"
+    for it in held:
+        vers = _pin_versions(it, net)
+        if package_of(it) == e["package"] and _ruling_covers(e, it, vers, every=False) and not _ruling_covers(e, it, vers):
+            series = str(e["version"]).lstrip("v").split(".")[0] + ".*"
+            return msg + f" (it names only some of the versions of the held pin {', '.join(vers)}; to cover the pin write the ruling as {series})"
+    return msg
+
+
+def _ruling_label(e):
+    return f"{clean(', '.join(e['ids']))} ({clean(e['package'])} {clean(e['version'])})"
+
+
 def package_of(item):
     return item.name.split("/", 1)[1] if item.kind == "package" else item.name
 
@@ -614,34 +872,58 @@ def _norm_ranges(rs):
     return {re.sub(r"\s+", "", r) for r in rs}
 
 
+def _pin_versions(item, net):
+    """Every version the pin stands for: all version-like tags at an action's commit, else its one version."""
+    vers = net.versions_of(item) if hasattr(net, "versions_of") else None
+    if not vers:
+        vers = [net.version_of(item) if hasattr(net, "version_of") else version_of(item)]
+    return [v for v in vers if v]
+
+
+def _ruling_covers(e, item, vers, every=True):
+    """Does the ruling name this pin: its one version, or its one series ("4.*"), for EVERY version the pin stands for (to apply a ruling) or for ANY of
+    them (to tell a dead ruling from a dormant one)?"""
+    covered = {str(x).lstrip("v") for x in [*vers, item.label] if x} or {str(item.version).lstrip("v")}
+    want = str(e.get("version", "")).lstrip("v")
+    names = lambda c: c == want or (want.endswith(".*") and (c == want[:-2] or c.startswith(want[:-1])))
+    return bool(want) and (all if every else any)(names(c) for c in covered)
+
+
 def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
     Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
     an exception never covers a version the authoritative source lists as affected)."""
-    vers = (net.versions_of(item) if net is not None and hasattr(net, "versions_of") else None) or [net.version_of(item) if net is not None and hasattr(net, "version_of") else version_of(item)]
-    vers = [v for v in vers if v]
+    return ruling_for(item, dispute_ids, current, exceptions, net, osv_times)[1]
+
+
+def ruling_for(item, dispute_ids, current, exceptions, net=None, osv_times=None, log=None):
+    """excepted() with the ruling that decided: (entry, "pass" | "hit"), or (None, None). REQ-SUP-001-AC15 reads the entry to know a ruling is alive."""
+    vers = _pin_versions(item, net)
     ver = vers[0] if vers else None
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
-        covered = {str(x).lstrip("v") for x in [*vers, item.label] if x} or {str(item.version).lstrip("v")}
-        want = str(e.get("version", "")).lstrip("v")
-        if not want or not all(c == want or (want.endswith(".*") and (c == want[:-2] or c.startswith(want[:-1]))) for c in covered):
-            continue   # a ruling names the one version (or one series, "4.*") it covers and must cover EVERY tag at the commit: never a wildcard, never one tag speaking for another
+        if not _ruling_covers(e, item, vers):
+            # a ruling names the one version (or one series, "4.*") it covers and must cover EVERY tag at the commit:
+            # never a wildcard, never one tag speaking for another
+            continue
+        if log is not None:
+            log.matched.append(e)   # AC15: it names this dispute and this held pin; a failure of the time or range checks below is a lapse, not a dead ruling
         if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it, unchanged
         if any(t is None or e.get("osv_modified", {}).get(i) != t for i, t in (osv_times or {}).items() if i in e["ids"]):
             continue  # unknown is not unchanged: a missing time refuses
         if not ver:
-            return None  # no version to compare with the ranges: stays disputed
+            return None, None  # no version to compare with the ranges: stays disputed
         # the ruling verifies itself (advisor 0182): its copied ranges must equal the authoritative advisory's LIVE ranges, or a wrong entry could hide a hit
         au = e["authoritative"]
         live = net.live_ranges(item, au["source"], au["id"]) if net is not None else None
         if not live or _norm_ranges(live) != _norm_ranges(au["ranges"]):
-            return None
-        return "hit" if any(in_range(v, "|".join(e["authoritative"]["ranges"])) for v in vers) else "pass"   # ANY tag of the commit inside the ranges: affected
-    return None
+            return None, None
+        # ANY tag of the commit inside the ranges: affected
+        return e, "hit" if any(in_range(v, "|".join(e["authoritative"]["ranges"])) for v in vers) else "pass"
+    return None, None
 
 
 # ---------- judging ----------
@@ -652,14 +934,17 @@ class Finding:
         self.pr = None   # the open pull request this pin was found in (not merged yet)
 
 
-def judge(item, net, exceptions, notes, current=True):
-    findings = _judge(item, net, exceptions, notes, current)
+def judge(item, net, exceptions, notes, current=True, log=None):
+    findings = _judge(item, net, exceptions, notes, current, log)
+    for e in (net.take_ignored() if hasattr(net, "take_ignored") else []):   # AC14: nothing is ignored silently
+        notes.append(f"{IGNORED_NOTE} {e['id']} {e['path']}: {e['reason']}")
     if (item.kind == "action" and inv.SHA40.match(item.version) and hasattr(net, "version_of") and net.version_of(item) is None and isinstance(net, LiveNet)):
-        findings.append(Finding(item, "unresolved", ["unresolved"], "no tag of the action's repository points at the pinned commit, so its advisories cannot be matched to a version (the # label is not evidence)"))
+        findings.append(Finding(item, "unresolved", ["unresolved"],
+            "no tag of the action's repository points at the pinned commit, so its advisories cannot be matched to a version (the # label is not evidence)"))
     return findings
 
 
-def _judge(item, net, exceptions, notes, current=True):
+def _judge(item, net, exceptions, notes, current=True, log=None):
     findings = []
     gh_l, osv_l = net.lists(item)
     by_incident = {}
@@ -675,9 +960,12 @@ def _judge(item, net, exceptions, notes, current=True):
                 if x["id"] not in cur or (x["id"].startswith("GHSA-") and x in gh_l):
                     cur[x["id"]] = x.get("modified")
             osv_times = {a2["id"]: a2.get("modified") for a2 in osv_l if any(g["id"] == a2["id"] for g in gh_l)}
-            ruling = excepted(item, set(ids), cur, exceptions, net, osv_times)
+            entry, ruling = ruling_for(item, set(ids), cur, exceptions, net, osv_times, log)
+            if log is not None and entry is not None:
+                log.applied.append(entry)   # AC15: this ruling decided a real dispute in this run
             if ruling == "pass":
-                notes.append(f"exception applied: {package_of(item)} {item.version} ({', '.join(sorted(set(ids)))}) is outside the authoritative source's affected ranges")
+                notes.append(f"exception applied: {package_of(item)} {item.version} ({', '.join(sorted(set(ids)))}) "
+                             "is outside the authoritative source's affected ranges")
                 continue
             if ruling == "hit":
                 findings.append(Finding(item, "advisory", ids, "the authoritative source for this incident lists this version as affected"))
@@ -690,7 +978,8 @@ def _judge(item, net, exceptions, notes, current=True):
                                     "a malicious-package report covers this version" if mal else "an advisory covers this version"))
     reach = net.upstream(item) if current else None  # only today's pins are checked upstream (history items: advisories only)
     if item.kind == "action" and reach is False:
-        findings.append(Finding(item, "unreachable", ["not-upstream"], "the pinned commit is not reachable from a branch or tag of the action's own repository (a fork-only commit)"))
+        findings.append(Finding(item, "unreachable", ["not-upstream"],
+            "the pinned commit is not reachable from a branch or tag of the action's own repository (a fork-only commit)"))
     return findings
 
 
@@ -720,7 +1009,8 @@ def rollback(item, net, now):
             return None
         return (nums, cls, [(0, q) if isinstance(q, int) else (1, q) for q in parts]) if cls != 0 else None   # a pre-release is never a rollback target
     ordered = [x for x in eligible if vkey(x) is not None]
-    for pub, v in sorted(ordered, key=vkey, reverse=True):  # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is reached
+    # newest VERSION first (a late backport is not "newest"); the lists of a candidate are fetched only when it is reached
+    for pub, v in sorted(ordered, key=vkey, reverse=True):
         lists = v.get("lists")
         if lists is None:
             gh_l, osv_l = net.lists(v["_item"])
@@ -731,7 +1021,8 @@ def rollback(item, net, now):
         if cand is not None and net.proofs(cand) is not None and not age.judge_item(cand, net.proofs(cand), now)[0]:
             continue  # the candidate commit must itself be provably old enough (a tag moved under an old release is not an old version)
         if cand is not None and cand.kind == "action" and hasattr(net, "nested"):
-            try:                       # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
+            # the candidate's whole nested tree (depth 3) must be clean too: a replacement that calls a compromised child is no replacement
+            try:
                 dirty, level, seen_c = False, [cand], {cand.key}
                 for _depth in range(3):
                     nxt = []
@@ -740,7 +1031,8 @@ def rollback(item, net, now):
                             m = re.match(r"^([\w.-]+/[\w.-]+)(?:/([^@\s]*))?@([0-9a-f]{40})$", n["ref"])
                             if not m:
                                 continue
-                            child = inv.Item("action", m.group(1), m.group(3), "", m.group(2) or "")     # the subdirectory is part of the child (o/x/sub is not o/x)
+                            # the subdirectory is part of the child (o/x/sub is not o/x)
+                            child = inv.Item("action", m.group(1), m.group(3), "", m.group(2) or "")
                             if child.key in seen_c:
                                 continue
                             seen_c.add(child.key)
@@ -758,7 +1050,7 @@ def rollback(item, net, now):
 
 def clean(text):
     """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
-    return re.sub(r"[\x00-\x1f\x7f]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
+    return re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
 
 
 def _safe(text, limit=64):
@@ -778,20 +1070,24 @@ def title_of(f):
 def body_of(f, rb, owner, ran, today):
     it = f.item
     ver = _safe(it.label or it.version)
-    lines = [f"# {title_of(f)[1]}", "", f"Checked {today}. Pinned: `{it.kind}:{_safe(package_of(it))}@{_safe(it.version, 80)}`" + (f" ({ver})" if it.label else "") + ".", "",
+    lines = [f"# {title_of(f)[1]}", "", f"Checked {today}. Pinned: `{it.kind}:{_safe(package_of(it))}@{_safe(it.version,
+        80)}`" + (f" ({ver})" if it.label else "") + ".", "",
              f"Finding: {f.why}.", f"Advisories: {', '.join(_safe(i) for i in f.ids)}.", ""]
     if f.disputed:
         lines += ["This is a DISPUTED hit, for the advisor to rule on. Nothing was rolled back and nothing was reported clean.",
-                  "A ruling goes in `.github/supply-chain-exceptions.json` (advisory ids, package, version, evidence links, date, each advisory's last-modified time); it lapses when either advisory changes."]
+                  "A ruling goes in `.github/supply-chain-exceptions.json` (advisory ids, package, version, evidence links, date, "
+                  "each advisory's last-modified time); it lapses when either advisory changes."]
         return "\n".join(lines) + "\n"
     if f.via:
         lines.append(f"This action is called inside `{_safe(f.via)}`: replace or drop the outer action. Nothing here can be pinned by us.")
         lines.append("There is no rollback of ours to a clean version of a nested action: the owner decides.")
         return "\n".join(lines) + "\n"
     if rb == UNKNOWN:
-        lines.append("Rollback: this kind of item cannot be searched for older versions automatically; nobody has looked for a clean one, so the owner decides.")
+        lines.append("Rollback: this kind of item cannot be searched for older versions automatically; "
+                     "nobody has looked for a clean one, so the owner decides.")
     elif rb:
-        lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {_safe(rb['version'])}" + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + f", published {_safe(rb['published'])}.")
+        lines.append(f"Rollback: pin the newest clean version public at least {WAIT_DAYS} days: {_safe(rb['version'])}"
+                     + (f" (commit {_safe(rb['sha'])})" if rb.get("sha") else "") + f", published {_safe(rb['published'])}.")
     else:
         lines.append(f"No clean version public at least {WAIT_DAYS} days exists: drop it (remove its use) until one does.")
     if ran:
@@ -822,7 +1118,7 @@ class Gh:
         self.cmd = cmd if isinstance(cmd, list) else [cmd]
 
     def run(self, *args, ok_fail=False):
-        r = subprocess.run([*self.cmd, *args], capture_output=True, text=True)
+        r = _run([*self.cmd, *args], capture_output=True, text=True)
         if r.returncode and not ok_fail:
             raise Fail(f"gh {' '.join(args[:2])} failed: {r.stderr.strip()}")
         return r
@@ -845,10 +1141,13 @@ def file_issues(gh, plan, today):
             continue
         done.add(title); done.add(prefix)
         open_issues = [i for i in open_issues if i.get("number") not in consumed]    # an issue already serving a finding in this run is out of BOTH lookups
-        existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title", "")).startswith(prefix + " ("))), None)
+        existing = next((i for i in open_issues if i.get("number", -1) > 0 and (str(i.get("title", "")) == title or str(i.get("title",
+            "")).startswith(prefix + " ("))), None)
         pkg_of_prefix = prefix[len("supply-chain: "):].split("@")[0]
-        if existing is None and not prefix.startswith("supply-chain: disputed "):   # a dispute that became a confirmed hit is the SAME issue (one per hit), retitled
-            existing = next((i for i in open_issues if i.get("number", -1) > 0 and str(i.get("title", "")).startswith(f"supply-chain: disputed {pkg_of_prefix} (")), None)
+        # a dispute that became a confirmed hit is the SAME issue (one per hit), retitled
+        if existing is None and not prefix.startswith("supply-chain: disputed "):
+            existing = next((i for i in open_issues if i.get("number", -1) > 0 and str(i.get("title",
+                "")).startswith(f"supply-chain: disputed {pkg_of_prefix} (")), None)
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as f:
             f.write(p["body"])
             path = f.name
@@ -938,7 +1237,8 @@ def main(argv=None):
                 ran_keys = {i.key for i in audited}
         except RuntimeError as e:
             raise Fail(str(e))
-        audited = [i for i in audited if i.version not in ("(local)", "(source)")]   # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
+        # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
+        audited = [i for i in audited if i.version not in ("(local)", "(source)")]
         today = now.strftime("%Y-%m-%d")
         if a.observations_out and not a.base:
             state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
@@ -957,7 +1257,8 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
-        notes, findings, incomplete = [], [], False
+        notes, findings, incomplete, log = [], [], False, RulingLog()
+        held = list(audited)   # AC15: the pins the run inventories (main and its 90-day history); the pins of open pull requests are added below
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
                 if not age._tag_for_commit(it.name, it.version):
@@ -969,7 +1270,7 @@ def main(argv=None):
 
         def one(it):
             n2 = []
-            return judge(it, net, exceptions, n2, current=a.base is not None or it.key in head), n2
+            return judge(it, net, exceptions, n2, current=a.base is not None or it.key in head, log=log), n2
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             for fs, n2 in pool.map(one, audited):
@@ -990,12 +1291,13 @@ def main(argv=None):
                 if len(items) > 100:
                     print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were audited")
                     incomplete = True
+                held.extend(items[:100])
                 for it in items[:100]:
                     if it.key in seen_keys:
                         continue
                     seen_keys.add(it.key)
                     try:  # one pull request's failure (a rate limit, a bad response) must never hide main's own findings or other PRs'
-                        for f in judge(it, net, exceptions, notes, current=True):
+                        for f in judge(it, net, exceptions, notes, current=True, log=log):
                             f.pr = number
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
@@ -1027,7 +1329,8 @@ def main(argv=None):
                         print(f"information: not checked against the advisory lists (a nested image has no source): {clean(ref)} inside {outer.name}")
                         continue
                     if not m:
-                        print(f"information: not checked (a nested reference this check cannot resolve: a local action or a Dockerfile): {clean(ref)} inside {outer.name}")
+                        print(f"information: not checked (a nested reference this check cannot resolve: a local action or a Dockerfile): "
+                              f"{clean(ref)} inside {outer.name}")
                         continue
                     child = inv.Item("action", m.group(1), m.group(2), "", (ref.split("@")[0].split("/", 2) + [""])[2])
                     if not inv.SHA40.match(child.version) and hasattr(net, "resolve_ref"):
@@ -1040,13 +1343,14 @@ def main(argv=None):
                         if sha:
                             child = inv.Item("action", child.name, sha, child.version, child.path)  # the moving tag's CURRENT commit, labelled by the tag
                         else:
-                            print(f"information: the moving tag {clean(ref)} inside {outer.name} could not be resolved to a commit; checked by its literal name")
+                            print(f"information: the moving tag {clean(ref)} inside {outer.name} could not be resolved to a commit; "
+                                  "checked by its literal name")
                     if child.key in seen:
                         continue
                     seen.add(child.key)
                     print(f"audit: nested action {clean(child.name)}@{clean(child.version[:12])} inside {clean(outer.name)}")    # listed, clean or not
                     try:
-                        for f in judge(child, net, exceptions, notes, current=True):
+                        for f in judge(child, net, exceptions, notes, current=True, log=log):
                             f.via = outer.name
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
@@ -1058,10 +1362,19 @@ def main(argv=None):
                         print(f"information: not looked into (nesting depth limit of 3): what {child.name} calls")
             queue = nxt
         for n in notes:
-            print(f"audit: {n}")
+            print(f"audit: {clean(n)}")
+        # AC15: the daily run over the checked-in file only
+        lapsed, dead, dormant = ([], [], []) if (a.base or a.exceptions) else undecided_exceptions(exceptions, log, held, net)
+        for e in lapsed:
+            print(f"audit: LAPSED EXCEPTION: the ruling for {_ruling_label(e)} no longer matches the live advisory; write a fresh ruling")
+        for e in dead:
+            print(f"audit: DEAD EXCEPTION: {dead_message(e, held, net)}")
+        for e in dormant:
+            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
-            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}" + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
+            print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}"
+                  + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
             if f.disputed:  # one issue per package and incident, listing every version of it (history can hold many)
                 disputes.setdefault(package_of(f.item), []).append(f)
                 continue
@@ -1094,17 +1407,23 @@ def main(argv=None):
             first.ids = sorted({i for x in fs for i in x.ids})                              # EVERY incident of the package in one issue
             first.why = "; ".join(sorted({x.why for x in fs}))[:1500]
             first.item = inv.Item(first.item.kind, first.item.name, first.item.version, ", ".join(versions))
-            plan.append({"finding": first, "title": (f"supply-chain: disputed {_safe(pkg)}", f"supply-chain: disputed {_safe(pkg)} ({', '.join(_safe(i) for i in first.ids)})"),
+            plan.append({"finding": first, "title": (f"supply-chain: disputed {_safe(pkg)}",
+                f"supply-chain: disputed {_safe(pkg)} ({', '.join(_safe(i) for i in first.ids)})"),
                          "body": body_of(first, None, False, False, today), "owner": False})
         if plan:
             if not a.report_only:
                 file_issues(gh, plan, today)
             return 1
         unchecked = [i for i in audited if not net.covered(i)]
+        excepted_n = len([n for n in notes if not n.startswith(IGNORED_NOTE)])   # AC14: the log lines of ignored entries are not exceptions
         if incomplete:
             print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made today", file=sys.stderr)
             return 1
-        print(f"audit: no known-compromised versions as of {today}" + (f" ({len(notes)} disputed hit(s) covered by a checked-in exception)" if notes else "")
+        if lapsed or dead:
+            return 1
+        print(f"audit: no known-compromised versions as of {today}"
+              + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
+              + (f"; {len(dormant)} dormant exception ruling(s) wait for their pin: {', '.join(_ruling_label(e) for e in dormant)}" if dormant else "")
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:
