@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 75 |
-| Acceptance criteria | 198 |
+| Acceptance criteria | 199 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 182 |
+| ACs with mapped evidence | 183 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -867,7 +867,8 @@ The two workflow files that carry the scanner cloud identities (scan.yml and mai
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-015-AC1 | Given the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml); when the repository's workflows are read; then neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check | ci-workflow |  | approved | 3 item(s) |
+| REQ-SCAN-015-AC1 | Given the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml); when the repository's workflows are read; then neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-015-AC2 | Given a pull request that changes .github/workflows/ci.yml; when the trusted review gate judges its ci.yml; then the allowlist job carries exactly the scanner guard step (named, the single run line, unconditional and unweakened) or the gate fails | ci-workflow |  | approved | 2 item(s) |
 
 ## Licensing
 
