@@ -1311,6 +1311,12 @@ probe mergecomplex "merge key" "a complex key ? << at job level" \
 probe mergelist  "merge key" "a << with a list of anchors" \
   "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\nx-a: &a {permissions: {id-token: write}}\nx-b: &b {timeout-minutes: 5}\njobs:\n\",1);t=t.replace(\"\n  test:\n\",\"\n  test:\n    <<: [*a, *b]\n\",1);open(p,\"w\").write(t)'"
 probe mergeaction "merge key" "a << in a composite action" "mkdir -p .github/actions/mrg; printf 'name: m\nruns:\n  using: composite\n  steps:\n    - <<: {run: echo x}\n      shell: bash\n' > .github/actions/mrg/action.yml"
+# Sonnet r5: the exact anchored hidden job merged with `<<: *d` as the first line under jobs:
+probe mergehidden "merge key" "an anchored hidden job (x-d: &d {hidden: {...id-token: write...}}) merged by <<: *d under jobs:" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\nx-d: &d {hidden: {runs-on: ubuntu-24.04, permissions: {id-token: write}, steps: [{run: \\\"true\\\"}]}}\njobs:\n  <<: *d\n\",1);open(p,\"w\").write(t)'"
+# Sonnet r5: case variants of write / write-all hold the token as far as this check is concerned
+probe idWrite   "ci.yml job probe-job holds id-token" "a job with id-token: Write (capitalised)" "printf '  probe-job:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: Write\n    steps:\n      - run: true\n' >> .github/workflows/ci.yml"
+probe idWriteAll "ci.yml job probe-job holds id-token" "a job with permissions: Write-All" "printf '  probe-job:\n    runs-on: ubuntu-24.04\n    permissions: Write-All\n    steps:\n      - run: true\n' >> .github/workflows/ci.yml"
 probe goreldup   "repeated" "two goreleaser builds with the same id (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"id: fscache-fips\",\"id: fscache\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
@@ -1380,7 +1386,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=317
+EXPECT=320
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
