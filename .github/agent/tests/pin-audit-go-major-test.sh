@@ -22,8 +22,10 @@
 #   * Logging is part of the interface (PROPOSED names): LiveNet.ignored_entries is a list of {"id", "path", "reason"}, one per ignored entry; judge()
 #     adds exactly one note per entry ("ignored advisory entry <id> <path>: <reason>"). An implementation that runs two queries (bare and /vMAJOR) must
 #     de-duplicate that list. The notes are printed sanitised and must not be counted in "N disputed hit(s) covered by a checked-in exception".
-# AC15 (advisor, Oct 9): the daily audit run over the checked-in exceptions file reports a ruling that applied to no finding in that same run as a
-# DEAD EXCEPTION (its advisory ids, package and version) and exits 1; a ruling matched by a real dispute is alive. Judged in the run, never hard-coded.
+# AC15 (advisor, Oct 9, narrowed at step 8): the daily audit run over the checked-in exceptions file reports a ruling that decided no dispute as a
+# DEAD EXCEPTION (its advisory ids, package and version) and exits 1 when its pin is held (on main or in an open pull request) and it decided no dispute;
+# it is DORMANT (information, exit 0, listed with its pin in every summary) when nobody holds the pin; a ruling matched by a real dispute is alive.
+# Judged in the run, never hard-coded.
 # Finding recorded for the implementer: with the corrected GO_TOOLS paths the existing code already clears cosign 3.1.3 through the package-name filter of
 # LiveNet._osv_says. The real work is (1) the corrected table, (2) GitHub names matched under both paths so the five existing rulings keep working,
 # (3) the log of ignored entries, (4) the OSV /vMAJOR query.
@@ -34,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=42
+pass=0 failn=0 EXPECT=48
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -57,7 +59,7 @@ def load(name): return json.load(open(FIX + "/" + name))
 def ent(path, events=(), eco="Go", **more):
     """One OSV `affected` entry: a module path (None: no package at all) and SEMVER events; more: versions=, purl=, ranges=."""
     a = {}
-    if path is not None: a["package"] = {"name": path, "ecosystem": eco}
+    if path is not None: a["package"] = {"name": path} if eco is None else {"name": path, "ecosystem": eco}
     if more.get("purl"): a["package"] = {"purl": more.pop("purl")}
     a["ranges"] = more.pop("ranges", [{"type": "SEMVER", "events": list(events)}])
     a.update(more)
@@ -367,7 +369,7 @@ def main_out(recs, ghsas, rulings=None, cosign_ver="3.1.3"):
     default exceptions file holds `rulings` (default: the checked-in rulings for cosign, the only package this repository pins)."""
     repo = tempfile.mkdtemp(prefix="pa-go-major-")
     env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
-    os.makedirs(repo + "/bin"); open(repo + "/bin/install-scanner.sh", "w").write("COSIGN_VER=%s\n" % cosign_ver)
+    os.makedirs(repo + "/bin"); open(repo + "/bin/install-scanner.sh", "w").write("COSIGN_VER=%s\n" % cosign_ver if cosign_ver else "# no tool pinned\n")
     for c in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "pin"]):
         subprocess.run(["git", "-C", repo, *c], env=env, check=True, capture_output=True)
     os.makedirs(repo + "/.github")
@@ -430,12 +432,58 @@ for go, gh in (("GO-2024-2718", "GHSA-88jx-383q-w4qc"), ("GO-2024-2719", "GHSA-9
                ("GO-2026-5694", "GHSA-w6c6-c85g-mmv6"), ("GO-2026-4529", "GHSA-wfqv-66vq-46rm")):
     r = load("osv-%s.json" % go); r["aliases"] = sorted(set(r.get("aliases", [])) | {gh}); recs.append(r); ghs.append(gh)
 rc, out = main_out(recs, ghs)
-assert rc == 0 and "dead exception" not in out.lower(), (rc, out[-700:])
+assert rc == 0 and "dead exception" not in out.lower() and "dormant" not in out.lower(), (rc, out[-700:])
 PY
 py "AC15: the checked-in file holds no ruling for GO-2026-4529 or GO-2026-5694 (the /v3 entries agree with GitHub: no dispute, the rulings were dead)" <<'PY'
 ids = {i for e in json.load(open(CHECKED_IN))["exceptions"] for i in e["ids"]}
 assert not ids & {"GO-2026-4529", "GO-2026-5694", "GHSA-wfqv-66vq-46rm", "GHSA-w6c6-c85g-mmv6"}, sorted(ids)
 assert {i for e in cosign_rulings() for i in e["ids"]} >= {"GO-2023-2181", "GO-2024-2718", "GO-2024-2719"}
+PY
+
+py "AC15: a ruling whose pin nobody holds is DORMANT: exit 0, an information line and the summary list it with its pin (cosign 3.1.3)" <<'PY'
+rc, out = main_out([], (), None, None)             # the three checked-in cosign rulings, no cosign pin anywhere
+assert rc == 0 and "dead exception" not in out.lower(), (rc, out[-600:])
+summary = [l for l in out.splitlines() if l.startswith("audit: no known-compromised")]
+assert summary and "3 dormant" in summary[0] and "cosign 3.1.3" in summary[0], out[-600:]
+for gid in ("GO-2024-2718", "GO-2024-2719", "GO-2023-2181"):
+    assert gid in summary[0], (gid, summary)
+PY
+py "AC15: dormant becomes alive when the pin appears (cosign 3.1.3 pinned): the three checked-in rulings decide their disputes, none dead, none dormant" <<'PY'
+recs = []; ghs = []
+for go, gh in (("GO-2024-2718", "GHSA-88jx-383q-w4qc"), ("GO-2024-2719", "GHSA-95pr-fxf5-86gv"), ("GO-2023-2181", "GHSA-vfp6-jrw2-99g9")):
+    r = load("osv-%s.json" % go); r["aliases"] = sorted(set(r.get("aliases", [])) | {gh}); recs.append(r); ghs.append(gh)
+rc, out = main_out(recs, ghs)
+assert rc == 0 and "dead exception" not in out.lower() and "dormant" not in out.lower(), (rc, out[-700:])
+assert "(3 disputed hit(s) covered by a checked-in exception)" in out, out[-500:]
+PY
+py "AC15: a ruling whose copied ranges fail the live check while its pin is held is DEAD, and the dispute shows as DISPUTED too" <<'PY'
+aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])
+ruling = {"ids": ["GHSA-syn-0001-xxxx", "GO-SYN-1"], "package": "cosign",
+          "authoritative": {"source": "GitHub", "id": "GHSA-syn-0001-xxxx", "ranges": ["< 3.0.1"]},     # GitHub's live range is < 3.0.0
+          "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
+          "modified": {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2026-02-02T00:00:00Z"}}
+rc, out = main_out([aff], {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", "< 3.0.0")}, [ruling])
+assert rc == 1 and "DISPUTED" in out and "DEAD EXCEPTION" in out and "dormant" not in out.lower(), (rc, out[-700:])
+PY
+
+# --- F3 (step 8): the exact path with an ecosystem the rule cannot read, a malformed range ------------------------------------------------------------------
+py "F3: an exact-path entry whose ecosystem is missing, 'go', 'GO', 'Go ' or 'golang' next to a clean exact Go entry is unsettled:" \
+   " a HIT, nothing dropped" <<'PY'
+n = BARE + "/v3"
+for eco in (None, "go", "GO", "Go ", "golang"):
+    r = rec("GO-X-40", ent(n, fixed("3.0.4")), ent(n, INTRO0, eco=eco))
+    try: hit("3.1.3", [r], none_ignored=True)
+    except AssertionError as e: raise AssertionError((eco,) + e.args)
+PY
+py "F3: the log says why: another module path is 'not the module path of major N'; a non-Go ecosystem entry says its ecosystem" <<'PY'
+r = rec("GO-X-41", ent(BARE + "/v3", fixed("3.0.4")), ent(BARE, INTRO0), ent(BARE, INTRO0, eco="npm"))
+net = mknet([r], (), True); finds, _ = run(cosign("3.1.3"), net)
+assert finds == [], finds
+why = {e["reason"] for e in ignored(net, True)}
+assert len(why) == 2 and sum(bool(re.search(r"\bmajor 3\b", w)) for w in why) == 1 and sum("npm" in w for w in why) == 1, why
+PY
+py "F3: an exact-path Go entry with a malformed event list (no introduced event) is unsettled: a HIT" <<'PY'
+hit("3.1.3", [rec("GO-X-42", ent(BARE + "/v3", ranges=[{"type": "SEMVER", "events": [{}]}]))], none_ignored=True)
 PY
 
 # --- the table must be right for the versions we pin (advisor ruling, step 5) ---------------------------------------------------------------------------------
