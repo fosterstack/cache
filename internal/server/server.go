@@ -101,6 +101,13 @@ func New(cfg Config) http.Handler {
 	}
 	status := &statusSource{cfg: cfg, started: time.Now()}
 
+	// Seed the store gauges from the loaded store so /metrics agrees with
+	// /statusz from the first scrape after a restart, not only after the
+	// first upload (REQ-OBS-003-AC1).
+	if cfg.Metrics != nil && cfg.Cache != nil {
+		updateStoreGauges(cfg)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("GET /metrics", promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{}))

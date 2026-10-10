@@ -1,11 +1,20 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/fosterstack/cache/internal/blobstore"
+	"github.com/fosterstack/cache/internal/cache"
+	"github.com/fosterstack/cache/internal/metadata"
+	"github.com/fosterstack/cache/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus"
 )
 
 // readAll drains a response body and fails the test on error.
@@ -229,6 +238,48 @@ func TestMetricsAndHealthzStayOpenWhenAuthEnabled(t *testing.T) {
 	for _, path := range []string{"/healthz", "/metrics"} {
 		if resp := doReq(t, mustReq(t, "GET", srv.URL+path, "")); resp.StatusCode != 200 {
 			t.Errorf("GET %s without credentials: status = %d, want 200", path, resp.StatusCode)
+		}
+	}
+}
+
+// REQ-OBS-003-AC1 after a restart: a store that already holds entries is
+// handed to a fresh server (fresh metrics, as a new process has). Before
+// any upload, /metrics and /statusz must agree exactly on store bytes and
+// entries, and both must show the real, non-zero values.
+func TestStatuszAgreesWithMetricsAfterRestart(t *testing.T) {
+	blobs, err := blobstore.New(t.TempDir())
+	if err != nil {
+		t.Fatalf("blobstore.New: %v", err)
+	}
+	meta, err := metadata.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatalf("metadata.Open: %v", err)
+	}
+	c := cache.New(blobs, meta)
+	t.Cleanup(func() { _ = c.Close() })
+	for _, k := range []string{"alpha", "beta"} {
+		if _, err := c.Put(context.Background(), k, strings.NewReader("payload")); err != nil {
+			t.Fatalf("seed Put %s: %v", k, err)
+		}
+	}
+
+	// "Restart": new registry, new metrics, same on-disk store, no upload.
+	reg := prometheus.NewRegistry()
+	h := New(Config{Cache: c, Metrics: metrics.New(reg), Registry: reg, MaxBodyBytes: 1 << 20})
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	st := decodeStatus(t, srv.URL, nil)
+	if st.StoreEntries != 2 || st.StoreBytes != int64(2*len("payload")) {
+		t.Fatalf("/statusz = %d entries, %d bytes; want 2, %d", st.StoreEntries, st.StoreBytes, 2*len("payload"))
+	}
+	body := readAll(t, doReq(t, mustReq(t, "GET", srv.URL+"/metrics", "")).Body)
+	for _, want := range []string{
+		fmt.Sprintf("fscache_store_bytes %d", st.StoreBytes),
+		fmt.Sprintf("fscache_store_entries %d", st.StoreEntries),
+	} {
+		if !strings.Contains(body, want+"\n") {
+			t.Errorf("/metrics lacks %q after restart (disagrees with /statusz)", want)
 		}
 	}
 }

@@ -90,6 +90,7 @@ ALLOW_PATTERNS=(
   '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'
   '^bin/rescan-statement-test\.sh$'
+  '^bin/rescan-current-only-test\.sh$'
   '^bin/analyze-egress-trace\.py$'
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
@@ -187,6 +188,46 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
+
+  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ is admitted by the PR that adds it.
+  # Vendoring: the dependency record (root), the regenerate-and-compare script, the provenance tool, their test.
+  '^dependency-provenance\.json$'
+  '^bin/vendor-check\.sh$'
+  '^bin/vendor-provenance\.py$'
+  '^bin/vendoring-test\.sh$'
+  # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
+  # (build/apko.yaml, build/apko-fips.yaml).
+  '^build/melange(-fips)?\.yaml$'
+  '^build/apko(-fips)?\.yaml$'
+  # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
+  '^build/locks/apko(-fips)?\.base\.lock\.json$'
+  '^build/locks/melange\.lock$'
+  # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
+  # key pair, rule 22) and build/keys/release.rsa.pub (the release public key).
+  '^build/keys/assembly\.rsa(\.pub)?$'
+  '^build/keys/release\.rsa\.pub$'
+  # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
+  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, compare-recipes, go-module-sbom (.py).
+  '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
+  '^bin/(apk-tool|compare-recipes|go-module-sbom)\.py$'
+  # The shared test library and the split build-chain tests.
+  '^bin/melange-apko-lib\.sh$'
+  '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
+  # OCI digest and network-probe tools.
+  '^bin/(oci-digest|net-probe)\.py$'
+  # Archive scripts: push, pull (.sh) and verify (.py).
+  '^bin/archive-(push|pull)\.sh$'
+  '^bin/archive-verify\.py$'
+  # Secret-scanning configuration (paths-ignore for the committed non-secret assembly key).
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/secret_scanning.yml must pin
+  # its content (an exact-content test) and add it to the guarded list.
+  '^\.github/secret_scanning\.yml$'
+  # The supply-chain harness manifest (PR #210).
+  '^\.github/agent/supply-chain/harness-manifest\.json$'
+  # The release identity record.
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/release-identity.json must
+  # pin its content (an exact-content test) and add it to the guarded list.
+  '^\.github/release-identity\.json$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

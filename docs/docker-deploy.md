@@ -96,11 +96,17 @@ It must be smaller than the volume. A value that looks like 20 GiB but is
 actually 20 MiB (`20971520`) produces constant eviction and a hit rate that
 never climbs — which reads like "the cache isn't helping" rather than a typo.
 `/statusz` shows the parsed cap next to current usage, which is the fastest way
-to catch it. The server evicts least-recently-used entries once it
-reaches the cap and never grows past it, so the headroom absorbs
-filesystem overhead and in-flight uploads rather than runaway growth.
-Leaving `FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small
-volume is the one configuration that will fill your disk.
+to catch it. The server stores an entry first and then evicts
+least-recently-used entries, so the cache is normally kept at or under the cap
+after each write, and the disk can briefly hold more while uploads are in
+flight. Those in-flight bytes sit outside the cap and outside `/statusz`: up to
+`FSCACHE_MAX_CONCURRENT_UPLOADS` uploads (32 by default; `0` removes the bound)
+at once, each at most the smaller of `FSCACHE_MAX_BODY_BYTES` (1 GiB by
+default) and the cap. The ~20% headroom above assumes typical entries of tens
+of megabytes; on a small volume, lower `FSCACHE_MAX_CONCURRENT_UPLOADS` or
+`FSCACHE_MAX_BODY_BYTES` so that product fits in the headroom. Leaving
+`FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small volume is the
+most common way to fill your disk.
 
 **At the larger end, the network matters more than the CPU.** Throughput
 and round-trip latency between the cache and your CI runners set your hit

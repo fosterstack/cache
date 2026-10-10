@@ -8,6 +8,7 @@
 # The second half reads stage-admission.yml: the policy comes from protected main, and gitsign verify-tag pins the
 # exact identity, issuer, repository, ref and the tagged commit.
 set -euo pipefail
+TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
 python3 - "$here/admission-tag-signer.py" <<'PY'
 import importlib.util, sys
@@ -252,7 +253,7 @@ sys.exit(1 if failed else 0)
 PY
 
 # --- stage-admission.yml wiring
-pass=0; failn=0; work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+pass=0; failn=0; work=$(mktemp -d); trap 'rm -rf "$work" "$TMPDIR"' EXIT
 judge() { python3 - "$1" <<'PY'
 import re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)

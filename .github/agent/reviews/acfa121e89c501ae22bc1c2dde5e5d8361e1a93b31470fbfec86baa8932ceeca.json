@@ -1,0 +1,52 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "acfa121e89c501ae22bc1c2dde5e5d8361e1a93b31470fbfec86baa8932ceeca",
+ "change": "Allowlist: the v0.3.0 build-chain paths (20 exact patterns = 39 declared paths), the structure/exactness test with a pinned script digest, mutation tests, deterministic criss-cross test -- PR #247",
+ "reviewed_commit": "b725c863a4c83ff45c62131cf1fd276d31ed89bb",
+ "closed_commit": "b725c863a4c83ff45c62131cf1fd276d31ed89bb",
+ "rounds": [
+  {
+   "round": 7,
+   "label": "Sonnet on a288cd9 (0 blockers); real Codex on cb8691b: not cleared, one real P2 (criss-cross test depended on git's merge-base pick; fixed in b725c86); two P1s were artifacts of a stale local main in the review worktree; the third P1 was the missing record",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "4d9ea951fa3c0c370ecbc70a607d77c6f0dfede86a63349898785704bb45e21a"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "d0ca92b4e748b7a0bd0546fd566a509342bf68209ccdb96e611b17c1e341c1df"
+    }
+   }
+  },
+  {
+   "round": 8,
+   "label": "final head b725c86: Codex (no confirmed defect; suite objectives NOT VERIFIED by Codex) + Sonnet final-head confirmation (suites 504/0 and 91 OK, mutants killed)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "e2a4cb3256ab29ef610db84ae205bad993b099e1c9c0a29805f02d24293511f9"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "ffcc4cfdfba030a8497255bf69c3bbcb8bb83dae1e41d177f6c3e00587cc3476"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX COULD NOT RUN THE SUITES (its read-only sandbox denies mktemp): the mutation suite, the criss-cross fixture, the HarnessManifest tests and the regression suite are NOT VERIFIED BY CODEX and are NOT a Codex pass; they are covered by Sonnet and Opus runs: Sonnet final-head run on b725c86: bin/check-file-allowlist-test.sh 504 passed / 0 failed, test_review_gate 91 OK, criss-cross single-base mutant and five structure mutants all fail the test; Opus rounds 3-5 on earlier heads (380-mutant corpus 0 survivors); my own run 504/0",
+  "Codex confirmed by independent expansion that the 20 patterns admit exactly the 39 declared paths (real allowlist accepted 39, refused 209 near-miss probes), the pinned script digest matches, 118 prior patterns identical and in order, no trailers, no custody text",
+  "Codex's first run's P1s about substitutes.json and agent-review-gate.yml were artifacts of a stale local main in its review worktree; round 8's brief named the merge-base explicitly",
+  "the declared list and the pin live in the PR's own test file, and a PR that edits both passes its own test: inherent, main's copy of the script judges a PR to the script (defence in depth)",
+  "Opus second-seat passes in rounds 2-5 ran under the owner's Codex stop (Oct 9) and are not recorded as substitutes here; this record carries the real Codex seat"
+ ]
+}
