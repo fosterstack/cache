@@ -89,7 +89,8 @@ mappings:
   - ac: REQ-REL-001-AC3
     evidence:
       - { type: shell-test, ref: "bin/vex-forms-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/stage-promote.yml step 'documented ANONYMOUS customer verification (cosign, no credentials)': release-files.sha256 verify-blob, sha256sum -c --strict, corrupted-copy negative control" }
+      - { type: workflow-job, ref: ".github/workflows/stage-promote.yml step 'documented ANONYMOUS customer verification (cosign, no credentials)': release-files.sha256 verify-blob, sha256sum -c --strict, corrupted-copy negative control, on the assets downloaded from the draft before undraft" }
+      - { type: workflow-job, ref: ".github/workflows/stage-promote.yml step 'documented anonymous verification of the PUBLISHED release-files': the documented curl download from the published release with no credential, verify-blob, sha256sum -c --strict, negative control, after undraft" }
   - ac: REQ-REL-002-AC1
     evidence:
       - { type: manual, ref: "v0.1.0 anonymous-pull verification (cache PR #28 body): all six published tags returned HTTP 200 to a fresh anonymous registry token, 2026-09-07; the release.yml gate now enforces it before undrafting" }

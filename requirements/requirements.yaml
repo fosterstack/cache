@@ -1209,10 +1209,14 @@ requirements:
       2026-10-10-cache-readback-release-files-sha256). They apply from the release
       after v0.2.2; releases up to v0.2.2 are not re-signed, their metadata files are
       covered through the signed manifest's hashes. AC2 is enforced by the promotion
-      workflow before publication and AC3 by its anonymous verification step, which
-      runs in the same promotion job after the upload, on the assets downloaded back
-      from the draft release, and before the release is undrafted (the AC text's
-      "post-publish job" is that job); both are recorded as non-blocking acceptance ACs because the release gate
+      workflow before publication. AC3 is checked twice in the same promotion job:
+      a draft check before the undraft (the customer commands on the assets
+      downloaded back from the draft release with the job's token, so a failure
+      holds the release back), and an anonymous check after publication (the
+      documented curl download from the published release with no credential, the
+      documented cosign verify-blob and sha256sum -c, and the negative control; a
+      failure there fails the job for investigation, the release being already
+      public). Both are recorded as non-blocking acceptance ACs because the release gate
       derives its publication-phase set from a fixed list (REQ-REL-001-AC1,
       REQ-REL-002-AC1) and a blocking AC outside it would be required as a
       candidate-phase pass that no suite reports.

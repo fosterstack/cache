@@ -519,3 +519,44 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "${GITHUB_REF_NAME}" --draft=false
+
+      # REQ-REL-001-AC3: the commands docs/verify-images.md gives a customer, run with NO credential on the PUBLISHED
+      # release (the draft gate above ran on the draft's assets with this job's token). The release is public by now,
+      # so a failure here cannot hold it back: it fails the job loudly for investigation.
+      - name: documented anonymous verification of the PUBLISHED release-files
+        env:
+          GH_TOKEN: ""
+          RETRY_SLEEP: "10"
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          fail() { echo "::error::published release failed the anonymous release-files check: investigate - $1" >&2; exit 1; }
+          pub=$(mktemp -d)
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}"
+          # public assets can take seconds to appear: 6 tries per file, RETRY_SLEEP seconds apart, then fail
+          for f in release-files.sha256 release-files.sha256.bundle release-manifest.json fosterstack-cache.openvex.json \
+                   "fosterstack-cache-${ver}.csaf.json" "fosterstack-cache-${ver}.inspector-filters.json"; do
+            ok=0
+            for _ in 1 2 3 4 5 6; do
+              if (cd "$pub" && curl -fsSLO "${base}/${f}"); then ok=1; break; fi
+              sleep "${RETRY_SLEEP}"
+            done
+            [ "$ok" = 1 ] || fail "${f} was not downloadable after 6 tries"
+          done
+          idflags=( --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"
+                    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' )
+          cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$pub/release-files.sha256" \
+            || fail "the release-files.sha256 bundle does not verify"
+          (cd "$pub" && sha256sum -c release-files.sha256 --strict) \
+            || fail "a published file does not match release-files.sha256"
+          # NEGATIVE CONTROL: a corrupted copy (proven made and different) MUST fail the bundle.
+          neg=$(mktemp -d)
+          cp "$pub/release-files.sha256" "$neg/release-files.sha256"
+          printf 'tamper\n' >> "$neg/release-files.sha256"
+          if [ ! -f "$neg/release-files.sha256" ] || cmp -s "$pub/release-files.sha256" "$neg/release-files.sha256"; then
+            fail "the corrupted copy was not made - the negative control would test nothing"
+          fi
+          if cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$neg/release-files.sha256" >/dev/null 2>&1; then
+            fail "verify-blob accepted a TAMPERED release-files.sha256 - the bundle check is not sound"
+          fi
+          echo "the published release-files.sha256 verifies anonymously; the corrupted copy is rejected"

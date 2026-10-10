@@ -339,8 +339,11 @@ STUB_CURL = r'''#!/usr/bin/env bash
 # test stub: serves the "published release" from $STUB_PUB by the URL's last path part, as curl -O would save it
 for a in "$@"; do case "$a" in -*) ;; *) url=$a;; esac; done
 printf '%s\n' "$url" >> "$STUB_URLS"
-f=${url##*/}; [ -f "$STUB_PUB/$f" ] || exit 22
+f=${url##*/}; [ "$f" = "${STUB_CURL_404:-}" ] && exit 22     # STUB_CURL_404: that asset is not (yet) served
+[ -f "$STUB_PUB/$f" ] || exit 22
 cp "$STUB_PUB/$f" "./$f"
+[ "$f" = "${STUB_CURL_CHANGE:-}" ] && printf x >> "./$f"     # STUB_CURL_CHANGE: that asset is served with a byte added
+exit 0
 '''
 STUB_GH = r'''#!/usr/bin/env bash
 # test stub: the draft release is $STUB_PUB. upload stores each file by its base name (STUB_UPLOAD_SKIP drops one,
@@ -349,7 +352,7 @@ printf 'gh %s\n' "$*" >> "$STUB_CALLS.gh"
 [ "$1" = release ] || exit 2
 op=$2; shift 3
 case "$op" in
-  create) exit 0;;
+  create|edit) exit 0;;
   upload) for f in "$@"; do b=${f##*/}; [ "$b" = "${STUB_UPLOAD_SKIP:-}" ] && continue
             cp "$f" "$STUB_PUB/$b"; [ "$b" = "${STUB_UPLOAD_FLIP:-}" ] && printf x >> "$STUB_PUB/$b"; done; exit 0;;
   download) dir= pats=()
@@ -381,8 +384,11 @@ def rel_case(missing=(), extra=True, identity=GOOD_ID):
     return c, env
 def rel_run(c, env, script, **extra):
     script = script.replace("/tmp/", c + "/tmp/")
-    return subprocess.run(["bash", "-c", script], cwd=os.path.join(c, "work"), env=dict(env, **extra),
-                          capture_output=True, text=True, stdin=subprocess.DEVNULL)
+    try:
+        return subprocess.run(["bash", "-c", script], cwd=os.path.join(c, "work"), env=dict(env, **extra),
+                              capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+    except subprocess.TimeoutExpired:   # an unbounded retry: never ends
+        return subprocess.CompletedProcess(script, 124, "", "timeout")
 def rel_calls(c):
     p = os.path.join(c, "calls")
     return open(p).read().splitlines() if os.path.exists(p) else []
@@ -431,6 +437,33 @@ def rel_judge(steps):
         bad.append("the draft's six assets are not downloaded by exact name after every upload: %s" % [ul[i] for i in dls])
     if ("mkdir %s" % DRAFT) not in ul:
         bad.append("the draft download directory is not created fresh (mkdir without -p)")
+    ps = at(PUBLISHED)
+    if ps is None or undraft is None or ps < undraft:
+        bad.append("no anonymous check of the PUBLISHED release-files after the undraft step: %s" % ((undraft, ps),))
+    else:
+        pst = steps[ps]; prun = pst.get("run") or ""
+        pc = [l.strip() for l in flat(prun).splitlines() if l.strip() and not l.strip().startswith("#")]
+        if pst.get("env") != {"GH_TOKEN": "", "RETRY_SLEEP": "10"} or set(pst) - {"name", "env", "run"} \
+                or "secrets." in prun or "github.token" in prun:
+            bad.append("the published check is not credential-free (GH_TOKEN empty, no secret, no token): %s" % pst.get("env"))
+        if not prun.startswith("set -euo pipefail\n") or 'base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}"' not in pc \
+                or 'if (cd "$pub" && curl -fsSLO "${base}/${f}"); then ok=1; break; fi' not in pc:
+            bad.append("the published check does not download anonymously from the published release as the docs do")
+        if "for _ in 1 2 3 4 5 6; do" not in pc or 'sleep "${RETRY_SLEEP}"' not in pc:
+            bad.append("the published download retry is not bounded (6 tries, injectable sleep)")
+        if "release-files-draft" in prun or 'pub=$(mktemp -d)' not in pc:
+            bad.append("the published check does not run on freshly downloaded public files")
+        if "idflags=( --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}\"" not in pc \
+                or 'cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$pub/release-files.sha256" \\' in pc \
+                or not any(l.startswith('cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$pub/release-files.sha256"') for l in pc) \
+                or not any(l.startswith('(cd "$pub" && sha256sum -c release-files.sha256 --strict)') for l in pc):
+            bad.append("the published check does not run the documented verify-blob (exact identity) and sha256sum -c --strict")
+        if 'cp "$pub/release-files.sha256" "$neg/release-files.sha256"' not in pc or "printf 'tamper\\n' >> \"$neg/release-files.sha256\"" not in pc \
+                or 'if [ ! -f "$neg/release-files.sha256" ] || cmp -s "$pub/release-files.sha256" "$neg/release-files.sha256"; then' not in pc \
+                or not any(l.startswith('if cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$neg/release-files.sha256"') for l in pc):
+            bad.append("the published check has no negative control on a corrupted copy proven made and different")
+        if "published release failed the anonymous release-files check: investigate" not in prun:
+            bad.append("a published-release failure does not say the release is already public")
     try:
         seg = flat(anon_segment(steps[anon]["run"]))
     except (StopIteration, TypeError, KeyError):
@@ -452,8 +485,10 @@ def rel_judge(steps):
     if not any(l.startswith('(cd "$rel" && sha256sum -c release-files.sha256 --strict)') for l in code):
         bad.append("no sha256sum -c --strict of the downloaded files against release-files.sha256")
     return bad
-def rel_pipeline(steps, identity=GOOD_ID, after_upload=None, **extra):
-    """sign, upload (the real step, stub gh), anonymous check; returns the first stage that failed, or ok"""
+PUBLISHED = "documented anonymous verification of the PUBLISHED release-files"
+def rel_pipeline(steps, identity=GOOD_ID, after_upload=None, before_published=None, pub_extra=None, **extra):
+    """sign, upload (the real step, stub gh), anonymous draft check, undraft, anonymous check of the published release
+    (stub curl serving what the draft stored); returns the first stage that failed, or ok"""
     at, sg = rel_steps(steps)
     c, env = rel_case(identity=identity)
     env.update(extra)
@@ -468,6 +503,15 @@ def rel_pipeline(steps, identity=GOOD_ID, after_upload=None, **extra):
             return "nothing downloaded to alter"
     if rel_run(c, env, anon_segment(steps[at("documented ANONYMOUS customer verification")]["run"])).returncode:
         return "verify"
+    ud, ps = at("undraft"), at(PUBLISHED)
+    if ud is None or ps is None or rel_run(c, env, steps[ud]["run"]).returncode:
+        return "undraft"
+    if before_published:
+        before_published(c)
+    penv = dict(env, RETRY_SLEEP="0", **(pub_extra or {}))
+    penv.update({k: v for k, v in (steps[ps].get("env") or {}).items() if k != "RETRY_SLEEP"})
+    if rel_run(c, penv, steps[ps]["run"]).returncode:
+        return "published"
     return "ok"
 def rel_behaviour(steps):
     bad = []
@@ -527,11 +571,41 @@ def rel_behaviour(steps):
                   "https://github.com/fosterstack/cache/.github/workflows/stage-image.yml@refs/tags/v9.9.9",
                   "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/heads/main"):
         cases.append(("a bundle signed as " + wrong, {"identity": wrong}, "verify"))
+    def wrong_bundle(cv):           # the public bundle replaced by one from another workflow, over the same list
+        h = hashlib.sha256(open(os.path.join(cv, "pub", "release-files.sha256"), "rb").read()).hexdigest()
+        open(os.path.join(cv, "pub", "release-files.sha256.bundle"), "w").write(
+            "%s https://github.com/fosterstack/cache/.github/workflows/stage-image.yml@refs/tags/v9.9.9\n" % h)
+    cases += [("the published release serves a changed file", {"pub_extra": {"STUB_CURL_CHANGE": "fosterstack-cache.openvex.json"}}, "published"),
+              ("the published release never serves the bundle", {"pub_extra": {"STUB_CURL_404": "release-files.sha256.bundle"}}, "published"),
+              ("the published bundle is from another workflow", {"before_published": wrong_bundle}, "published"),
+              ("an unsound verifier on the published files", {"pub_extra": {"STUB_VERIFY_ALWAYS": "1"}}, "published")]
     for name, kw, want_stage in cases:
         got_stage = rel_pipeline(steps, **kw)
         if got_stage != want_stage:
             bad.append("%s: stops at %s, want %s" % (name, got_stage, want_stage))
+    # a missing public asset is retried a bounded number of times (6), then the step fails
+    c5, env5 = rel_case()
+    urls5 = env5["STUB_URLS"]
+    if rel_pipeline_urls(steps, c5, env5, {"STUB_CURL_404": "release-files.sha256.bundle"}) != "published" \
+            or sum(1 for u in open(urls5).read().splitlines() if u.endswith("/release-files.sha256.bundle")) != 6:
+        bad.append("a missing public asset is not retried exactly 6 times and then failed")
+    elif not all(u.startswith("https://github.com/fosterstack/cache/releases/download/v9.9.9/") for u in open(urls5).read().splitlines()):
+        bad.append("the published check downloads from somewhere other than this release")
     return bad
+def rel_pipeline_urls(steps, c, env, pub_extra):
+    """the pipeline on a given case dir (so the caller can read the stub curl's URL log)"""
+    at, sg = rel_steps(steps)
+    for name in (None, "create the draft release"):
+        if rel_run(c, env, steps[sg[0]]["run"] if name is None else steps[at(name)]["run"]).returncode:
+            return "before"
+    if rel_run(c, env, anon_segment(steps[at("documented ANONYMOUS customer verification")]["run"])).returncode:
+        return "verify"
+    ud, ps = at("undraft"), at(PUBLISHED)
+    if ud is None or ps is None or rel_run(c, env, steps[ud]["run"]).returncode:
+        return "undraft"
+    penv = dict(env, RETRY_SLEEP="0", **pub_extra)
+    penv.update({k: v for k, v in (steps[ps].get("env") or {}).items() if k != "RETRY_SLEEP"})
+    return "published" if rel_run(c, penv, steps[ps]["run"]).returncode else "ok"
 real_steps = yaml.load(open(WF), Loader=yaml.BaseLoader)["jobs"]["promote"]["steps"]
 jb, bb = rel_judge(real_steps), rel_behaviour(real_steps)
 check("REQ-REL-001-AC2/AC3 the real workflow: release-files.sha256 is written, signed, uploaded and verified as ruled", not jb and not bb, jb + bb)
@@ -558,6 +632,16 @@ def m_old_neg(st):                  # the first form: cp && printf on one line, 
     x = next(y for y in st if is_anon(y.get("run") or ""))
     L = x["run"].splitlines(True); a = next(i for i, l in enumerate(L) if l.startswith('cp "$rel/release-files.sha256" /tmp/release-files.corrupt'))
     x["run"] = "".join(L[:a] + ['cp "$rel/release-files.sha256" /tmp/release-files.corrupt && printf \'tamper\\n\' >> /tmp/release-files.corrupt\n'] + L[a + 5:])
+is_pub = lambda r: "published release failed the anonymous release-files check" in r
+def m_pub_before_undraft(st):
+    i = next(k for k, x in enumerate(st) if is_pub(x.get("run") or ""))
+    x = st.pop(i); st.insert(next(k for k, y in enumerate(st) if (y.get("name") or "").startswith("undraft")), x)
+def m_pub_drop_neg(st):
+    x = next(y for y in st if is_pub(y.get("run") or ""))
+    L = x["run"].splitlines(True); a = next(i for i, l in enumerate(L) if l.startswith('if cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$neg/'))
+    x["run"] = "".join(L[:a] + L[a + 3:])
+def m_pub_token(st):
+    next(y for y in st if is_pub(y.get("run") or ""))["env"]["GH_TOKEN"] = "${{ github.token }}"
 MUTANTS = [
     ("drop the signing step", m_drop),
     ("sign after the release is created", m_after_publish),
@@ -584,6 +668,13 @@ MUTANTS = [
         'cosign verify-blob "$rel/release-files.sha256" --bundle "$rel/release-files.sha256.bundle" --certificate-identity-regexp \'^https://github\\.com/\' --certificate-oidc-issuer \'https://token.actions.githubusercontent.com\'')),
     ("skip sha256sum -c", mut_run(is_anon, '(cd "$rel" && sha256sum -c release-files.sha256 --strict)', "true")),
     ("sha256sum -c without --strict", mut_run(is_anon, "sha256sum -c release-files.sha256 --strict", "sha256sum -c release-files.sha256")),
+    ("the published check before the undraft", m_pub_before_undraft),
+    ("the published check without its negative control", m_pub_drop_neg),
+    ("the published check verifies the draft copies", mut_run(is_pub, "\ncosign verify-blob", "\npub=/tmp/release-files-draft\ncosign verify-blob")),
+    ("the published check retries without bound", mut_run(is_pub, "for _ in 1 2 3 4 5 6; do", "while :; do")),
+    ("the published check with a token", m_pub_token),
+    ("the published check verifies a loose identity", mut_run(is_pub, '--certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"',
+        "--certificate-identity-regexp '^https://github\\.com/'")),
 ]
 for name, fn in MUTANTS:
     st = copy.deepcopy(real_steps)
