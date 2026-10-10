@@ -1,0 +1,49 @@
+{
+ "_note": "The eleven legacy stage files PRs 2-4 rewrite or delete on the integration branch chain-v030, pinned by the sha256 of their bytes at PR 1. bin/chain-sign-wiring-test.sh treats exactly these frozen files as the known red of the real-tree AC1 judge: the tree without them must be green, and a listed file whose bytes differ fails that case. The pull request that rewrites a file removes its row (and its path from LEGACY_EXPECTED in that suite); the one that rewrites the last deletes this list and turns the case into an ordinary `expect ok`.",
+ "files": [
+  {
+   "path": ".github/workflows/stage-acceptance-artifacts.yml",
+   "sha256": "6db2e3c7ce2e9cde225d2fe805d7b9cd7756745962438fc6a9502d5c70dc6494"
+  },
+  {
+   "path": ".github/workflows/stage-acceptance-egress.yml",
+   "sha256": "17491901c831abf89435b82cff5c794c4be3d581394bde316d21966b2b72a018"
+  },
+  {
+   "path": ".github/workflows/stage-acceptance-k8s.yml",
+   "sha256": "727999814b7c7e561611f2c214b0ab12c5c922a99f79ca44eaaa214480f0ac60"
+  },
+  {
+   "path": ".github/workflows/stage-acceptance-predicate.yml",
+   "sha256": "6fc4b5e514cb054c20f4cc56eeebf123fdda54ec9cc985ffef1922c72e8be4a8"
+  },
+  {
+   "path": ".github/workflows/stage-admission.yml",
+   "sha256": "d376ec4ebaae22a932d02ae4512abc5563d69d29462436e75ebe7d454a2c91a2"
+  },
+  {
+   "path": ".github/workflows/stage-authorize.yml",
+   "sha256": "2a0b7c7b6260a372d1d4f31c9de5fb78039b899aa9c4351065f658293523cfdf"
+  },
+  {
+   "path": ".github/workflows/stage-build.yml",
+   "sha256": "34c39aba901c2e7b6685bd1d9419fa420b21a578239e65364ea5ecaf3f7c5998"
+  },
+  {
+   "path": ".github/workflows/stage-image.yml",
+   "sha256": "450a303b13683bb78b8dbdf9f9ce147919c85c45e54551d0b171518d0b8160e2"
+  },
+  {
+   "path": ".github/workflows/stage-promote.yml",
+   "sha256": "c20e7e35cd5800cc16a3ddfe27171eabf0490b9cf826a53142b0c90c4f4a940c"
+  },
+  {
+   "path": ".github/workflows/stage-reproducibility.yml",
+   "sha256": "dc3b6e77e232c093c40a1991058c027cfa73a46569f9f68eb09a7079dfa1ad16"
+  },
+  {
+   "path": ".github/workflows/stage-verify.yml",
+   "sha256": "4bd41b1e9563c3d0c35f9b1ab2f2dff5085615d4d96e545ae1750704a22fdc78"
+  }
+ ]
+}
