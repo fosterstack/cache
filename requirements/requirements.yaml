@@ -2380,7 +2380,7 @@ requirements:
     source: [.github/workflows/stage-build.yml, bin/build-stage.sh, bin/build-admit.py, bin/build-version-check.py]
     tier: community
     introduced: v0.3.0
-    origin: v0.3.0 rules 24, 38a, 38b, 39, 50, 51, 58, 62, 63, 68 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0338); snapshot mode (AC12 to AC14), advisor-approved read-back Oct 9 (snapshot callers); the AC13 closed-name extension and the strike of the clause that said bind has no snapshot-rapk step were accepted by the advisor (Oct 9 night); the AC7 always-upload clause and the GITHUB_ACTIONS guard sentence: advisor confirmed Oct 10 (lane AC, not owner rule text)
+    origin: v0.3.0 rules 24, 38a, 38b, 39, 50, 51, 58, 62, 63, 68 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0338); snapshot mode (AC12 to AC14), advisor-approved read-back Oct 9 (snapshot callers); the AC13 closed-name extension and the strike of the clause that said bind has no snapshot-rapk step were accepted by the advisor (Oct 9 night); the AC7 always-upload clause and the GITHUB_ACTIONS guard sentence, advisor confirmed Oct 10 (lane AC, not owner rule text)
     confidence: implementation-only
     notes: >
       Decisions (advisor, Oct 9): (a) the Witness github attestor is dropped because its record embeds the raw OIDC token (breaks rules 52a and 68), run and
