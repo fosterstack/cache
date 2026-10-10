@@ -204,6 +204,9 @@ the guard that matters.
 shell, no `curl` — so an `exec` probe has nothing to run. Same reason the
 [Docker deploy doc](docker-deploy.md) ships no container `HEALTHCHECK`.
 
+Point liveness and readiness probes at /healthz; any other path is a cache
+key, and probing it counts as a miss.
+
 ## The data directory
 
 `FSCACHE_DATA_DIR` is **required** in this manifest. The image sets no
