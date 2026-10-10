@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -615,17 +616,24 @@ func TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets(t *testing.T) {
 	if !strings.Contains(body, "fscache_store_writable 0\n") {
 		t.Errorf("the gauge does not read 0 after the volume went bad:\n%s", body)
 	}
-	if strings.Contains(body, "fscache_store_free_bytes 0\n") || !strings.Contains(body, "fscache_store_free_bytes ") {
-		t.Errorf("fscache_store_free_bytes is 0 or absent (the real free bytes are expected):\n%s", body)
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		t.Fatal(err)
 	}
-	counted := 0
-	for _, l := range strings.Split(body, "\n") {
-		if strings.HasPrefix(l, "fscache_put_errors_total{") && !strings.HasSuffix(l, " 0") {
-			counted++
+	fsFree := float64(st.Bavail) * float64(st.Bsize) // #nosec G115 -- block counts of a test filesystem fit a float64
+	var gauge float64
+	if _, err := fmt.Sscanf(metricLine(body, "fscache_store_free_bytes "), "fscache_store_free_bytes %g", &gauge); err != nil || gauge <= 0 {
+		t.Errorf("fscache_store_free_bytes is absent or not positive: %q\n%s", metricLine(body, "fscache_store_free_bytes "), body)
+	} else if d := gauge - fsFree; d > 256<<20 || d < -(256<<20) { // the disk keeps changing under the test: a generous tolerance, far below any wrong constant
+		t.Errorf("fscache_store_free_bytes %.0f is not close to the filesystem's %.0f", gauge, fsFree)
+	}
+	if got := metricLine(body, `fscache_put_errors_total{reason="read_only"} `); got != `fscache_put_errors_total{reason="read_only"} 1` {
+		t.Errorf("the failed PUT must count exactly once under read_only; got %q\n%s", got, body)
+	}
+	for _, other := range []string{"no_space", "too_large", "client_aborted", "other"} {
+		if got := metricLine(body, `fscache_put_errors_total{reason="`+other+`"} `); got != `fscache_put_errors_total{reason="`+other+`"} 0` {
+			t.Errorf("reason %s moved: %q", other, got)
 		}
-	}
-	if counted == 0 {
-		t.Errorf("the failed PUT is not counted in any fscache_put_errors_total series:\n%s", body)
 	}
 	if getCode != http.StatusOK {
 		t.Errorf("GET of a stored blob answered %d on the bad volume; want 200", getCode)
@@ -660,4 +668,14 @@ func TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing(t *testing.T) {
 		_ = c.Close()
 		t.Error("something listens on the address: the server served on a directory it could not write")
 	}
+}
+
+// metricLine returns the first line of a scrape that starts with prefix, or "".
+func metricLine(body, prefix string) string {
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, prefix) {
+			return l
+		}
+	}
+	return ""
 }

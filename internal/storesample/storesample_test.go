@@ -545,27 +545,31 @@ func TestOvertakenStateChangeLineIsNotWritten(t *testing.T) {
 }
 
 // Review of #258 (Codex): an open that fails because the probe name is already taken must not delete that existing file; any other open failure still cleans up.
-func TestProbeNameAlreadyTakenIsNotRemoved(t *testing.T) {
-	d := &fakeDisk{avail: 1}
+func TestFailedOpenRemovesNothingButALaterFailureCleansUp(t *testing.T) {
 	now := time.Unix(1000, 0)
-	deps := d.deps(&now)
-	deps.OpenProbe = func(path string) (ProbeFile, error) {
-		d.rec("open")
-		return nil, &fs.PathError{Op: "open", Path: path, Err: syscall.EEXIST}
+	// a failed open (the name taken, or any other error) never removes the path: the file there is not ours
+	for name, openErr := range map[string]error{"exists": &fs.PathError{Op: "open", Path: "p", Err: syscall.EEXIST}, "io": syscall.EIO} {
+		d := &fakeDisk{avail: 1}
+		deps := d.deps(&now)
+		deps.OpenProbe = func(string) (ProbeFile, error) { d.rec("open"); return nil, openErr }
+		s := New("/data/blobs", deps, Options{Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), WaitBudget: 200 * time.Millisecond})
+		s.Start()
+		if strings.Contains(d.opList(), "remove") {
+			t.Fatalf("%s: a failed open removed the path: ops=%s", name, d.opList())
+		}
+		if s.Get().Writable {
+			t.Fatalf("%s: a probe that could not create its file reads writable", name)
+		}
 	}
-	s := New("/data/blobs", deps, Options{Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), WaitBudget: 200 * time.Millisecond})
-	s.Start()
-	if strings.Contains(d.opList(), "remove") {
-		t.Fatalf("an existing file at the probe name was removed: ops=%s", d.opList())
-	}
-	if s.Get().Writable {
-		t.Fatal("a probe that could not create its file reads writable")
-	}
-	d2 := &fakeDisk{avail: 1, openErr: syscall.EIO}
-	s2, _ := newSampler(t, d2, &now)
-	s2.Start()
-	if !strings.Contains(d2.opList(), "remove") {
-		t.Fatalf("an open failure other than 'exists' no longer cleans up: ops=%s", d2.opList())
+	// the file this call created IS removed when a later step fails
+	for name, mod := range map[string]func(*fakeDisk){"write": func(d *fakeDisk) { d.writeErr = syscall.EIO }, "sync": func(d *fakeDisk) { d.syncErr = syscall.EIO }} {
+		d := &fakeDisk{avail: 1}
+		mod(d)
+		s, _ := newSampler(t, d, &now)
+		s.Start()
+		if !strings.Contains(d.opList(), "remove") {
+			t.Fatalf("%s failure after a successful open did not clean up: ops=%s", name, d.opList())
+		}
 	}
 }
 
