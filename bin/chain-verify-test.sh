@@ -679,6 +679,9 @@ add("sign_nan", STAGES["sign"], T, PROV, D, predicate={"x": float("nan")})      
 dj("rekor-nan.json", {"entries": [entry("sign_nan", 22)]})
 open(p("sign_envinf.json"), "w").write(open(p("sign_prov.json")).read().replace('"payloadType"', '"x": Infinity, "payloadType"', 1))
 open(p("rekor-neginf.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -Infinity, "entries"', 1))
+# a number too large for a float parses to inf in Python: a non-finite value is refused like Infinity (Sonnet r1 info)
+open(p("rekor-big.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": 1e400, "entries"', 1))
+open(p("rekor-negbig.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -1e400, "entries"', 1))
 # the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
 open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
 open(p("now-in.txt"), "w").write(fmt(now + dt.timedelta(minutes=2)))
@@ -749,6 +752,14 @@ b64 = lambda b: base64.b64encode(b).decode()
 conf = json.load(open(cfg))
 assert conf["rekorTlogUrls"][0]["majorApiVersion"] == 1, "the signing config must name Rekor v1"
 body = open(st, "rb").read(); pt = "application/vnd.in-toto+json"
+# FAKE_BUNDLE (Opus r1-verify F1): a cosign that signs ANOTHER statement than the one Sign handed it; the bundle is otherwise genuine
+mode = os.environ.get("FAKE_BUNDLE", "")
+if mode in ("swapsubj", "predicate", "addsubj"):
+    stm = json.loads(body)
+    if mode == "swapsubj": stm["subject"] = [{"name": "evil", "digest": {"sha256": "f" * 64}}]
+    if mode == "predicate": stm["predicate"]["runDetails"]["metadata"]["invocationId"] = "https://evil.example/run/1"
+    if mode == "addsubj": stm["subject"].append({"name": "evil", "digest": {"sha256": "f" * 64}})
+    body = json.dumps(stm, sort_keys=True).encode()
 pae = b"DSSEv1 %d %s %d %s" % (len(pt), pt.encode(), len(body), body)
 open(w + "/fake.pae", "wb").write(pae)
 # Fulcio issues the certificate for the run's own ref: a dry run (builder at the branch) gets the branch leaf
@@ -771,12 +782,12 @@ der = sh("x509", "-in", w + "/" + leaf + ".pem", "-outform", "DER")
 vm = {"certificate": {"rawBytes": b64(der)}, "tlogEntries": [tl],
       "timestampVerificationData": {"rfc3161Timestamps": [{"signedTimestamp": b64(open(w + "/fake.tsr", "rb").read())}]}}
 # FAKE_BUNDLE (Codex security r1 S1): a bundle cosign returns with exit 0 but with material missing or wrong; Sign must refuse it
-mode = os.environ.get("FAKE_BUNDLE", "")
 if mode in ("nots", "nothing"): del vm["timestampVerificationData"]
 if mode in ("notlog", "nothing"): del vm["tlogEntries"]
 if mode == "emptyts": vm["timestampVerificationData"]["rfc3161Timestamps"] = []
 if mode == "emptytlog": vm["tlogEntries"] = []
 if mode == "nocert": del vm["certificate"]
+if mode == "sslfail": open(w + "/ssl-fail", "w").close()   # the fake openssl fails from now on (I1)
 if mode == "badtlog": tl["logIndex"] = "99"          # the log's signed entry timestamp no longer verifies: only a verify of the output sees it
 json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm,
            "dsseEnvelope": {"payloadType": pt, "payload": b64(body), "signatures": [{"sig": b64(sig), "keyid": ""}]}}, open(out, "w"))
@@ -1438,6 +1449,22 @@ expect_postsign_refuse "S1 a bundle with no certificate is refused, not a traceb
 expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refused: Sign verifies what it wrote before it says ok" "rekor" badtlog
 [ "$POSTSIGN" = 7 ] && ok "S1 control: cosign WAS called in each of the seven cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 cosign was called in only $POSTSIGN of the seven bundle cases"
 expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/post-control"
+# F1 (Opus r1 verify; 001-AC2): the bundle must carry the statement Sign built; cosign signing another one is refused, naming the mismatch
+expect_postsign_refuse "F1 a cosign that signs a statement with swapped subjects is refused: the signed statement is not the one Sign built" "statement" swapsubj
+expect_postsign_refuse "F1 a cosign that signs a statement with a changed predicate is refused" "statement" predicate
+expect_postsign_refuse "F1 a cosign that signs a statement with an appended subject is refused" "statement" addsubj
+# I1: anything but a refusal inside the self-check (here openssl failing) is a refusal too, never a traceback, and leaves no provenance
+cat > "$work/fakebin-openssl" <<FSSL
+#!/usr/bin/env bash
+if [ -e "$work/ssl-fail" ] && [ "\${1:-}" = x509 ]; then echo "fake openssl: failure" >&2; exit 1; fi
+exec "$OPENSSL" "\$@"
+FSSL
+chmod +x "$work/fakebin-openssl"; REALSSL=$OPENSSL
+OPENSSL="$work/fakebin-openssl" expect_postsign_refuse "I1 an openssl failure while Sign checks its own output is a refusal (no traceback) and removes the output" "openssl" sslfail
+OPENSSL=$REALSSL; rm -f "$work/ssl-fail"
+rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
+[ "$rc" = 0 ] && [ -s "$work/sd/f1-control/provenance.json" ] && ok "F1 control: the honest fake cosign (it signs the statement Sign built) is accepted and the provenance is written" || bad "F1 control: the honest sign failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+[ "$POSTSIGN" = 11 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 7)) of the four cases"
 # S2 (002-AC3, property e): a Rekor entries file whose `entries` is not a list of objects is a refusal naming the shape, never a traceback
 for k in int str null dict nondict; do
   expect_refuse "S2 a Rekor entries file whose entries is $k is refused (no traceback), naming the list" "rekor|list" verify $(V) --stage sign $(rec sign_prov) $(R rekor-shape-$k.json)
@@ -1454,6 +1481,8 @@ expect_refuse "S3 a non-canonical verifier in the Rekor entry's body (signed by 
 expect_refuse "S3 a signed payload holding NaN is refused (not JSON)" "predicate|!signature" verify $(V) --stage sign $(rec sign_nan) $(R rekor-nan.json)
 expect_refuse "S3 an envelope holding Infinity is refused" "envelope" verify $(V) --stage sign $(rec sign_envinf) $(R)
 expect_refuse "S3 a Rekor entries file holding -Infinity is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-neginf.json)
+expect_refuse "S3 a Rekor entries file holding 1e400 (a float that overflows to inf) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-big.json)
+expect_refuse "S3 a Rekor entries file holding -1e400 is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-negbig.json)
 sed 's/^{/{"nan": NaN, /' "$work/policy.json" > "$work/policy-nan.json"
 expect_refuse "S3 a policy holding NaN is refused" "policy" verify --policy "$work/policy-nan.json" --now "$NOW" --stage sign $(rec sign_prov) $(R)
 # S4 (001-AC1, the Sign job installs only cosign): the Sign path runs without PyYAML; only `actions` needs it and says so plainly
@@ -1489,7 +1518,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=438
+EXPECT=446
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
