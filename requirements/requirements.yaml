@@ -2459,23 +2459,25 @@ requirements:
       (Build exposes digests, not checksums.txt; its `dist` artifact holds the four Linux archives, not goreleaser's), so the EXPECTED checksum step is
       replaced by the digests.json text (needs.build.outputs.digests) and artifact-acceptance (PR 3's Check) reads dist; (4) nothing else in those files
       changes, and cache's PR #252 (REQ-REL-004-AC5) edits the manifests job of main-candidate-rescan.yml, which this rewire must not touch (the judge does
-      not read it; chain-v030 is rebased on #252 before the workflow edits). A snapshot record is marked by its Witness step name (snapshot-apk,
-      snapshot-build, snapshot-rapk, snapshot-rebuild), not by a field, and every reader refuses the prefix in one place (read_record and
-      read_collection). THAT MARKER REFUSES HONEST CONFUSION EARLY, with a clear message; it is not the security boundary. A run of scan.yml (a pull
-      request, or a push of a tag) can name its own record `build`, because the step name is chosen by the workflow that runs Witness. The boundary is
-      the Build Config URI pin of check_identity (the calling workflow must be release.yml at the tag, which scan.yml is not), already tested in
-      bin/chain-verify-test.sh (build_coll_scan and the other Sign-identity cases), plus the refusal of the snapshot version (AC15) and of a policy
-      for 0.0.0. The marker is a prefix denylist; a positive closed-name check would also close spelling variants (a design note for the advisor, not
-      changed here, AC13 as accepted says prefix). The mode guard step compares case-sensitively in bash because GitHub's `==` in an expression is
-      case-insensitive (inputs.mode == 'Snapshot' is true), so the guard is load-bearing: a looser guard would let a mixed-case mode skip both Witness
-      steps.
-      Snapshot additions from cache-3f (Oct 9): the local v0.0.0-rc.1 tag (AC12) exists because cache's driver stamps and checks the version (rule 24).
-      RESOLVED by the advisor (Oct 9): scan.yml also runs on a push of a v* tag, where HEAD carries that tag; the snapshot build accepts and ignores it. An
-      earlier draft of AC12 refused any other tag at HEAD; that refusal is removed and nothing replaces it, because the ratified text names no such refusal.
-      Whether cache's driver, with two tags at HEAD, stamps v0.0.0-rc.1 is cache's to confirm. AC15 is the second line of defence behind AC13: a version
-      check that does not depend on a name.
-      AC13 extension (advisor accepted, Oct 9): the earlier note that a positive closed-name check would be a design improvement is now part of AC13; the
-      prefix denylist stays, and the closed names make spelling variants and lookalikes refuse by name.
+      not read it; chain-v030 is rebased on #252 before the workflow edits). A snapshot record is marked by its Witness step name (snapshot-apk, snapshot-
+      build, snapshot-rapk, snapshot-rebuild), not by a field, and every reader applies ONE RULE to the collection name in one place (read_record and
+      read_collection): a name that is exactly snapshot- followed by [a-z0-9_-]* is refused as a snapshot record, and any other name that is not exactly a
+      release name of the stage that reads it (apk or build for Build, rapk or rebuild for Rebuild) is refused by `collection name ...`, so spelling
+      variants and Unicode lookalikes are refused by name too. THIS RULE REFUSES HONEST CONFUSION EARLY, with a clear message; it is not the security
+      boundary. A run of scan.yml (a pull request, or a push of a tag) can name its own record `build`, because the step name is chosen by the workflow that
+      runs Witness. The boundary is the Build Config URI pin of check_identity (the calling workflow must be release.yml at the tag, which scan.yml is not),
+      already tested in bin/chain-verify-test.sh (build_coll_scan and the other Sign-identity cases), plus the refusal of the snapshot version (AC15) and of
+      a policy for 0.0.0. The mode guard step compares case-sensitively in bash because GitHub's `==` in an expression is case-insensitive (inputs.mode ==
+      'Snapshot' is true), so the guard is load-bearing: a looser guard would let a mixed-case mode skip both Witness steps.
+      Snapshot additions from cache-3f (Oct 9): the local v0.0.0-rc.1 tag (AC12) exists because cache's driver reads the Go buildinfo mod line and wants
+      v<version> with vcs.revision equal to HEAD (rule 24). scan.yml also runs on a push of a v* tag, where HEAD carries that tag; the advisor ruled (Oct 9)
+      that such a tag is accepted, not refused, and cache-3f showed that Go stamps the highest semver tag at HEAD, so the snapshot apk scripts DELETE every
+      other local v* tag that points at HEAD (git tag -d, job-local, nothing pushed or fetched) before making v0.0.0-rc.1, and then FAIL the job, naming the
+      tag, if HEAD still carries any tag other than v0.0.0-rc.1 (a non-v* tag, which is not ours to delete). That last failure is a refusal the ratified
+      text did not name, so AC12 and REQ-CHAIN-005-AC7 need the advisor's ratification line. AC15 is the second line of defence behind AC13: a version check
+      that does not depend on a name.
+      AC13 extension (advisor accepted, Oct 9): the positive closed-name check is part of AC13 and is ONE RULE with the snapshot- refusal (see above); it
+      replaces the earlier prefix-only denylist, so there is no remaining name-based gap beyond the exact rule.
       AC15 reads NAMES only: it looks at product-subject file names of a record and at the keys of a digests.json, never at the digest values (a value
       cannot carry a version). The callers' artifact-acceptance call (scan.yml only, PR 3 moves it) is pinned to needs build, permissions contents and
       packages read, and no with, secrets or if: its old inputs (dist-artifact dist-snapshot, expected-checksums) name an artifact and an output that the
