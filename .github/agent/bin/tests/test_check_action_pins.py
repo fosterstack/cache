@@ -650,6 +650,35 @@ class LiteralRunnerMatrix(unittest.TestCase):
             with self.subTest(name):
                 self.refused(head)
 
+    def test_a_key_given_twice_is_refused_with_the_key_named(self):
+        """A key repeated in a job, its strategy or its matrix is refused, whatever its last copy holds (YAML keeps the last
+        copy; GitHub rejects the file). Each family runs with a valid last copy and with an invalid one."""
+        ok = "    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+        for name, (key, head) in {
+            "a job key, both valid": ("name", "    name: one\n    name: two\n    runs-on: ${{ matrix.runner }}\n" + ok),
+            "a job key, the last invalid": ("container", f"    container: alpine@{self.DIGEST}\n    container: alpine:3.20\n"
+                                                         "    runs-on: ${{ matrix.runner }}\n" + ok),
+            "runs-on, the last valid": ("runs-on", "    runs-on: self-hosted\n    runs-on: ${{ matrix.runner }}\n" + ok),
+            "runs-on, the last invalid": ("runs-on", "    runs-on: ${{ matrix.runner }}\n    runs-on: macos-14\n" + ok),
+            "strategy, the last valid": ("strategy", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      max-parallel: 1\n"
+                                                     "      matrix:\n        runner: [ubuntu-24.04]\n" + ok),
+            "strategy, the last invalid": ("strategy", "    runs-on: ${{ matrix.runner }}\n" + ok +
+                                                       "    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n"),
+            "matrix, the last valid": ("matrix", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [macos-14]\n"
+                                                 "      matrix:\n        runner: [ubuntu-24.04]\n"),
+            "matrix, the last invalid": ("matrix", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                                   "      matrix:\n        runner: [macos-14]\n"),
+        }.items():
+            with self.subTest(name):
+                code, out = self.findings(self.job(head))
+                self.assertNotEqual(code, 0, out)
+                self.assertRegex(out, rf"duplicate key '{re.escape(key)}'")
+
+    def test_a_key_given_twice_in_a_call_job_is_refused(self):
+        code, out = self.findings("on: push\njobs:\n  c:\n    uses: ./.github/workflows/w.yml\n    uses: ./.github/workflows/w.yml\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertRegex(out, r"duplicate key 'uses'")
+
     def test_a_matrix_on_another_job_does_not_count(self):
         code, out = self.findings("on: push\njobs:\n  a:\n    runs-on: ubuntu-24.04\n    strategy:\n      matrix:\n"
                                   "        runner: [ubuntu-24.04]\n    steps:\n      - run: true\n"
