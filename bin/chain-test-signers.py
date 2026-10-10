@@ -163,7 +163,8 @@ DENY = INTERPRETERS | {"curl", "wget", "nc", "ncat", "netcat", "telnet", "ssh", 
 STAGE_WF_KEYS = {"name", "on", "permissions", "jobs"}
 STAGE_JOB_KEYS = {"name", "needs", "if", "runs-on", "permissions", "steps", "outputs", "timeout-minutes", "strategy", "environment"}
 STAGE_STEP_KEYS = {"name", "id", "uses", "with", "run", "env", "if", "timeout-minutes"}
-RUNS_ON = re.compile(r"ubuntu-[0-9.]+(-arm)?|ubuntu-latest|\$\{\{ ?matrix\.[A-Za-z_][\w-]* ?\}\}")
+HOSTED = re.compile(r"ubuntu-[0-9.]+(-arm)?|ubuntu-latest")      # a GitHub-hosted ubuntu runner label, the ONLY runner a stage job may use
+MATRIX_READ = re.compile(r"\$\{\{ ?matrix\.([A-Za-z_][\w-]*) ?\}\}")  # the one expression runs-on may hold: a whole read of one matrix key
 MATRIX_LIT = re.compile(r"[A-Za-z0-9_.-]+")
 USES_OK = re.compile(r"actions/(checkout|download-artifact|upload-artifact)@([0-9a-f]{40})")
 
@@ -243,6 +244,11 @@ def _words(line):
     return words, None
 
 def _arg_error(parts, envnames):
+    # Codex #249 r5 B4 (the class closed): a word that reads a variable is exactly ONE part, the whole "$NAME"; a read glued to
+    # any literal, quoted text or a second read (prefix"$X", "$X"suffix, "$A""$B", "$X"'lit') is not a whole read of the env
+    if len(parts) > 1 and any(k == "dq" and ("$" in t or "`" in t) for k, t in parts):
+        return "argument %r glues a variable read to other text (a word that reads a variable must be exactly one whole \"$NAME\")" % "".join(
+            ('"%s"' if k == "dq" else "'%s'" if k == "sq" else "%s") % t for k, t in parts)
     for kind, t in parts:
         if kind == "lit" and not LIT_WORD.fullmatch(t): return "argument %r is not a plain literal" % t
         if kind == "sq" and ("$" in t or "`" in t): return "single-quoted argument %r contains $ or a backtick" % t
@@ -296,11 +302,6 @@ def check_run(run, envnames, rows):
         ran.append(path)
     return errs, ran
 
-def _lit_leaves(x):
-    if isinstance(x, dict): return [v for k in x for v in _lit_leaves(x[k])]
-    if isinstance(x, list): return [v for e in x for v in _lit_leaves(e)]
-    return [x]
-
 def _artifact_path_error(p, rows, download):
     if not isinstance(p, str) or not p.strip(): return "needs an explicit literal `path`"
     for ln in p.splitlines():
@@ -315,6 +316,46 @@ def _artifact_path_error(p, rows, download):
                 if L == q or L.startswith(q + "/"): return "downloads into %r, over the listed script %s" % (ln, L)
     return None
 
+def _runner_errors(pre, j):
+    """REQ-CHAIN-001-AC1 (Codex #249 r5 B3, the class closed): a stage job runs on a GitHub-hosted runner, never self-hosted, and its
+    strategy is only a matrix of literal labels. runs-on is a plain string: a hosted ubuntu label, or exactly one whole matrix read
+    whose key is in the job's matrix and EVERY value of that key is a hosted ubuntu label. The matrix is a mapping of key -> non-empty
+    list of literal strings: no include/exclude (they add or reshape combinations), no string or expression matrix, no nested leaves."""
+    errs = []
+    ro, st = j.get("runs-on"), j.get("strategy")
+    matrix = None
+    if st is not None:
+        if not isinstance(st, dict) or set(st) - {"matrix", "fail-fast", "max-parallel"}:
+            errs.append("%s: strategy may hold only matrix, fail-fast, max-parallel" % pre)
+        elif "matrix" in st:
+            matrix = st["matrix"]
+            if not isinstance(matrix, dict):
+                errs.append("%s: the matrix %r is not a mapping of literal lists (a string or expression matrix cannot be judged)" % (pre, matrix)); matrix = None
+            else:
+                for k, v in matrix.items():
+                    if str(k).strip().lower() in ("include", "exclude"):
+                        errs.append("%s: matrix %s is not allowed (it adds or reshapes combinations outside the literal lists)" % (pre, k)); continue
+                    if not isinstance(v, list) or not v:
+                        errs.append("%s: matrix key %s must be a non-empty list of literal labels, found %r" % (pre, k, v)); continue
+                    for leaf in v:
+                        if not isinstance(leaf, str) or not MATRIX_LIT.fullmatch(leaf):
+                            errs.append("%s: matrix value %r of %s is not a literal runner label or name" % (pre, leaf, k))
+    if ro is None: return errs
+    if not isinstance(ro, str):
+        errs.append("%s: runs-on %r is not a plain string (a label list or a group/labels mapping can pick a self-hosted runner)" % (pre, ro)); return errs
+    if HOSTED.fullmatch(ro): return errs
+    m = MATRIX_READ.fullmatch(ro)
+    if not m:
+        errs.append("%s: runs-on %r is not a GitHub-hosted ubuntu runner or one whole matrix read" % (pre, ro)); return errs
+    key = m.group(1)
+    if not isinstance(matrix, dict) or key not in matrix:
+        errs.append("%s: runs-on reads matrix.%s, which the job's matrix does not define (exactly, same case)" % (pre, key)); return errs
+    vals = matrix[key]
+    for leaf in (vals if isinstance(vals, list) else [vals]):
+        if not isinstance(leaf, str) or not HOSTED.fullmatch(leaf):
+            errs.append("%s: runs-on reads matrix.%s, whose value %r is not a GitHub-hosted ubuntu runner" % (pre, key, leaf))
+    return errs
+
 def stage_grammar(rel, d, rows, env_names=frozenset()):
     """(errors, listed paths run) for a parsed stage workflow file (YAML via the caller). The grammar is FINITE over keys:
     workflow, job and step keys come from closed sets; step `uses` from a closed list; env names from a closed set; the run
@@ -326,15 +367,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
         pre = "%s job %s" % (rel, jn)
         extra = set(j) - STAGE_JOB_KEYS
         if extra: errs.append("%s: job keys %s are not allowed (container, services, defaults, env, uses, secrets, with run other code or reroute steps)" % (pre, sorted(extra)))
-        ro = j.get("runs-on")
-        if ro is not None and (not isinstance(ro, str) or not RUNS_ON.fullmatch(ro)):
-            errs.append("%s: runs-on %r is not a GitHub-hosted ubuntu runner or a matrix read" % (pre, ro))
-        st = j.get("strategy")
-        if st is not None:
-            if not isinstance(st, dict) or set(st) - {"matrix", "fail-fast", "max-parallel"}: errs.append("%s: strategy may hold only matrix, fail-fast, max-parallel" % pre)
-            else:
-                for leaf in _lit_leaves(st.get("matrix") or {}):
-                    if not isinstance(leaf, str) or not MATRIX_LIT.fullmatch(leaf): errs.append("%s: matrix value %r is not a literal runner label or name" % (pre, leaf))
+        errs += _runner_errors(pre, j)
         for s in (j.get("steps") or []):
             nm = s.get("name") or str(s.get("run") or s.get("uses") or "").strip().splitlines()[0][:40]
             sp = "%s step %r" % (pre, nm)
