@@ -71,3 +71,32 @@ LINK_ROWS = [
     ('.github/agent/tests/check-action-pins-test.sh', "ln -s /tmp/a /tmp/b",
      "text of a workflow run: step (case n2-copy-other-file) that the pin checker judges as text; nothing executes it"),
 ]
+
+# A WHOLE-FILE row exempts every system-path literal in its file, so the exact set of such lines is pinned: (count, sha256 of the
+# stripped lines joined by newline, reason). A new literal in a whole-file row must be added here with a reason.
+PINS = {
+    '.github/agent/bin/tests/test_check_action_pins.py': (8, '1684d574876828d4c6c9aeb2b9dca3458878251c1607c29f1a8742c7e6c3f3c5',
+        "shell-script TEXT handed to the pin checker's string analysers (script_installs, _downloaded_commands, _outside, _made_executable); /home/runner/work and /usr/local/bin are the literal GitHub-runner and install-location strings those rules match on, and the functions never open, stat or resolve them (the checker reads only entries of the tree it is given; the guard proves the suite touches no system path at run time)"),
+    '.github/agent/bin/tests/test_panel.py': (7, 'cc2d1d7ed7362918e976ac1c7aee0d09ef65e80a48b39e25a71d24c430f5168b',
+        'container-image-internal paths inside evidence text (package-database and go-build-info lines) that the panel voter parses; no filesystem access'),
+    '.github/agent/bin/tests/test_panel_io.py': (13, '0f959453a8f5d925ab369eca4bbaa618f91e9e176f769a29787e8bf6868ef601',
+        'container-image-internal paths: tar member names written into an in-memory layer archive and read back from a temp .oci file; assertions compare the parsed in-image paths, never the host filesystem (go_buildinfo takes the in-image name as a dict key and copies to its own temp file)'),
+    '.github/agent/tests/check-action-pins-test.sh': (123, '8fe63fbf3b456dff33e5ef8128246e56a6dfef164260417e8bf3490fb408b10d',
+        "text of workflow run: steps, Dockerfiles and script bodies written into per-case temp trees and judged by the pin checker, which reads only the tree's own entries (FsTree/GitTree); the one fixture that creates a link (r24) now points at a file under $work"),
+    '.github/agent/tests/k8s-harness-fence-test.sh': (14, 'e43f6c6833ced748b4d4d83a3efd3c800cf3bbed361d7dedbbc7943c6ff79ccc',
+        "workflow-step text and the names of the two generated scripts the checker's fence excludes; the generator's own python is run with /tmp/ rewritten to a temp dir (line 40) so nothing is written to the system"),
+    '.github/agent/tests/pin-wiring-test.sh': (10, '5ea8e7cce2a40f0549016d593c9ba5bb7ab557448633e22148cb2ef849c4bcb9',
+        'values injected into an in-memory copy of a workflow (env PATH, BASH_ENV ...) to prove the wiring check rejects them; never used as paths by the test'),
+    '.github/agent/tests/pip-pin-test.sh': (5, 'bfd1afda0cd55f604fe401fd7d17cf6b528038c32c18c3e2971a33299d51cde0',
+        "venv-relative suffixes (/bin, /bin/activate) inside the checker's own string rules under test"),
+    '.github/agent/tests/supply-chain-wiring-test.sh': (2, '4c519fd932901cc2f3abe05b4f1e6c54728c64e541309ce7c1387eb2163932e1',
+        'run-step text injected into an in-memory workflow copy to prove the wiring check rejects it'),
+    'bin/admission-tag-signer-test.sh': (7, 'fe4c4be9a566c4d52d97ada07a01f25f3c69a6b301c4ea59778f86aee623bb50',
+        'the runner paths the admission workflow uses (/tmp/policy/...), as text in assertions and in string replacements on an in-memory workflow copy'),
+    'bin/panel-test.sh': (2, '78e2755fc0f1b1748078b4f5b6e064691178cfa283382e0db36d74b97649dab9',
+        'SBOM file-component names (paths inside a scanned image) used as data in a JSON document'),
+    'bin/panel-wiring-test.sh': (2, '3aee0185a532d4ee2b823313d6a23beb97b73deaf0cb2b6db85875ddf6a5058a',
+        'workflow step text compared and mutated in memory'),
+    'bin/release-patch-wiring-test.sh': (5, '3c3eb839c2d98c90100b2adfa2a0a42d55b5f200366a507f881047b59d48e3eb',
+        'run-step text and path-suffix rules for the release wiring check (absolute-path git, PATH injection) evaluated on in-memory workflow copies'),
+}

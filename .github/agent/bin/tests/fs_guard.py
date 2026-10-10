@@ -65,7 +65,7 @@ def _resolve(p, what, orig, nofollow=False, meta=False, write=False):
         if _st.S_ISLNK(st.st_mode) and not (nofollow and last):
             hops += 1
             if hops > 40:
-                return nxt
+                raise SystemPathAccess("test touched a real system path (%s): too many symbolic links: %s" % (what, orig))
             t = _real["readlink"](nxt)
             if t.startswith("/"):
                 cur = "/"
@@ -164,8 +164,6 @@ def _pyvenv_probe(absp, what, orig):
     """Metadata of `<dir>/pyvenv.cfg` where <dir> is an ancestor of an allowed root (or inside one). Only that one file name; the
     directory walk is still judged (a link that escapes is refused), and a pyvenv.cfg that is itself a symlink is judged like any path."""
     d = os.path.dirname(absp)
-    if not (_ancestor(d, False) or _under(d)):
-        return False
     _busy.bypass = True
     try:
         res = _resolve(d, what, orig, False, True, False)
@@ -192,13 +190,13 @@ def check(path, what="", nofollow=False, meta=False, write=False):
         p = os.fsdecode(p)
     if p == "":
         return
-    absp = os.path.abspath(p)
+    # NOT os.path.abspath: that collapses `..` lexically, but the OS follows a link BEFORE it applies `..` (T/L/../x with L -> /etc/ssl
+    # is /etc/x, not T/x). _resolve applies `..` to the already-resolved directory.
+    absp = p if os.path.isabs(p) else os.path.join(_real["getcwd"](), p)
     if meta and not write and os.path.basename(absp) == "pyvenv.cfg" and _pyvenv_probe(absp, what, p):
         return                             # coverage asks "is this file in a virtualenv?" for every ancestor of every traced module
     if write and "/__pycache__/" in absp and _under(absp):
         write = False                      # the import system caches bytecode beside the module it just read
-    if not _under(absp, write) and not (meta and _ancestor(absp)):
-        raise SystemPathAccess("test touched a real system path (%s): %s" % (what, p))
     if getattr(_busy, "on", False):
         return
     _busy.on = True
@@ -213,12 +211,15 @@ def check(path, what="", nofollow=False, meta=False, write=False):
 _AUDIT_PATH = {  # event -> indexes of the path arguments
     "open": (0,), "os.listdir": (0,), "os.scandir": (0,), "os.rename": (0, 1), "os.remove": (0,), "os.rmdir": (0,),
     "os.mkdir": (0,), "os.chdir": (0,), "os.symlink": (0, 1), "os.link": (0, 1), "os.truncate": (0,), "os.chmod": (0,),
-    "os.chown": (0,), "os.utime": (0,), "os.mkfifo": (0,), "os.mknod": (0,),
+    "os.chown": (0,), "os.utime": (0,), "os.mkfifo": (0,), "os.mknod": (0,), "os.setxattr": (0,), "os.removexattr": (0,),
+    "os.getxattr": (0,), "os.listxattr": (0,), "os.chflags": (0,), "os.lchflags": (0,), "os.chroot": (0,), "os.lchown": (0,),
+    "os.lchmod": (0,), "os.walk": (0,), "os.fwalk": (0,), "sqlite3.connect": (0,), "tempfile.mkstemp": (0,), "tempfile.mkdtemp": (0,),
+    "ctypes.dlopen": (0,), "os.add_dll_directory": (0,),
 }
-
-
+_NOT_PATHS = {"os.putenv", "os.unsetenv", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "os.forkpty", "os.kill",
+              "os.killpg", "os.startfile", "os.getxattr", "os.listxattr", "os.setxattr", "os.removexattr"}
+_READ_EVENTS = {"os.listdir", "os.scandir", "os.walk", "os.fwalk", "os.getxattr", "os.listxattr", "sqlite3.connect"}
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
-_READ_EVENTS = {"os.listdir", "os.scandir"}
 
 
 def _open_writes(args):
@@ -231,14 +232,47 @@ def _hook(event, args):
     if event in _AUDIT_PATH:
         write = _open_writes(args) if event == "open" else event not in _READ_EVENTS
         for i in _AUDIT_PATH[event]:
-            if i < len(args) and args[i] is not None and not isinstance(args[i], int):
-                if event == "os.symlink" and i == 0:
-                    continue           # a symlink's target text is data; following it is what open/stat check
-                check(args[i], event, write=write)
+            if i >= len(args) or isinstance(args[i], int):
+                continue
+            if event == "os.symlink" and i == 0:
+                continue           # a symlink's target text is data; wrap_link judges it where it would resolve
+            check(args[i] if args[i] is not None else ".", event, write=write)        # listdir()/scandir() with no argument = the cwd
+    elif event in ("glob.glob", "glob.glob/2") and args and isinstance(args[0], (str, bytes, os.PathLike)):
+        pat = os.fsdecode(args[0])
+        cut = min([i for i in (pat.find(c) for c in "*?[") if i >= 0] or [len(pat)])
+        check(os.path.dirname(pat[:cut]) or ".", event)
     elif event.startswith("shutil."):
+        # copy*: the source is only read; move and everything else (rmtree, chown, unpack_archive ...) writes every path
         for i, a in enumerate(args):
             if isinstance(a, (str, bytes, os.PathLike)):
-                check(a, event, write=not (i == 0 and event.startswith(("shutil.copy", "shutil.move"))))
+                check(a, event, write=not (i == 0 and event.startswith("shutil.copy")))
+    elif event.startswith("os.") and event not in _NOT_PATHS:
+        for a in args:                       # any other os.* event that carries a path: judge it as a write
+            if isinstance(a, os.PathLike) or (isinstance(a, (str, bytes)) and (b"/" in a if isinstance(a, bytes) else "/" in a)):
+                check(a, event, write=True)
+
+
+def _fd_dir(fd):
+    """The directory a dir_fd refers to (macOS F_GETPATH, Linux /proc/self/fd), or None when it cannot be told."""
+    try:
+        import fcntl
+        if hasattr(fcntl, "F_GETPATH"):
+            return os.fsdecode(fcntl.fcntl(fd, fcntl.F_GETPATH, b"\0" * 1024).split(b"\0")[0])
+    except (ImportError, OSError):
+        pass
+    try:
+        return _real["readlink"]("/proc/self/fd/%d" % fd)
+    except OSError:
+        return None
+
+
+def _with_dir_fd(path, dir_fd, what):
+    """A name relative to dir_fd is judged as <the fd's directory>/<name>; an fd whose directory is unknown is refused (fail closed)."""
+    base = _fd_dir(dir_fd)
+    p = os.fsdecode(_real["fspath"](path))
+    if base is None:
+        raise SystemPathAccess("test touched a real system path (%s): dir_fd with an unknown directory: %s" % (what, p))
+    return p if os.path.isabs(p) else os.path.join(base, p)
 
 
 def _wrap1(mod, name, nofollow=False):
@@ -247,10 +281,24 @@ def _wrap1(mod, name, nofollow=False):
         return                                    # not on this platform (the xattr calls are Linux only)
 
     def f(path, *a, **k):
-        check(path, name, nofollow, True)
+        if k.get("dir_fd") is not None and not isinstance(path, int):
+            check(_with_dir_fd(path, k["dir_fd"], name), name, nofollow, True)
+        else:
+            check(path, name, nofollow, True)
         return orig(path, *a, **k)
     f.__name__ = name; f.__wrapped__ = orig
     setattr(mod, name, f)
+
+
+def _wrap_os_open():
+    orig = os.open
+
+    def f(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None:
+            check(_with_dir_fd(path, dir_fd, "os.open"), "os.open", False, False, bool(flags & _WRITE_FLAGS))
+        return orig(path, flags, mode, dir_fd=dir_fd)
+    f.__name__ = "open"; f.__wrapped__ = orig
+    os.open = f
 
 
 def check_link(target, dst, what):
@@ -258,10 +306,13 @@ def check_link(target, dst, what):
     creation emits no audit event, and a link to a system path is what the OS asked the user to administer). A relative target
     is judged where it would resolve: next to the link."""
     t = os.fsdecode(_real["fspath"](target))
+    d = os.fsdecode(_real["fspath"](dst))
+    if not os.path.isabs(d):
+        d = os.path.join(_real["getcwd"](), d)
     if not os.path.isabs(t):
-        t = os.path.join(os.path.dirname(os.path.abspath(os.fsdecode(_real["fspath"](dst)))), t)
-    check(os.path.normpath(t), what, True, write=True)
-    check(dst, what, True, write=True)
+        t = os.path.join(os.path.dirname(d), t)       # NOT normalised: `B/../x` must be resolved through B's link
+    check(t, what, False, write=True)
+    check(d, what, True, write=True)
 
 
 def wrap_link(orig, name):
@@ -287,3 +338,4 @@ def install(extra_roots=()):
         _wrap1(os.path, n, n in ("islink", "lexists"))
     for n in ("symlink", "link"):
         setattr(os, n, wrap_link(getattr(os, n), "os." + n))
+    _wrap_os_open()
