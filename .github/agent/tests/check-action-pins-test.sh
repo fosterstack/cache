@@ -1203,7 +1203,7 @@ case_out pm-extra-strategy-key   bad "$(mx "$M" "$(printf '    strategy:\n      
 case_out pm-second-strategy-key  bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
 # a key given twice in a job, in its strategy or in its matrix is refused with the key named, whatever its last copy holds (YAML keeps
 # the last copy; GitHub rejects the file). `dupjob` builds the job around the duplicated part: <extra job keys> <strategy block>.
-dupjob() { printf 'on: push\njobs:\n  apk:\n%s    steps:\n      - run: bash bin/build.sh' "$1"; }
+dupjob() { printf 'on: push\njobs:\n  apk:\n%s\n    steps:\n      - run: bash bin/build.sh' "$1"; }
 OKS='    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n'
 case_out pm-dup-job-key-valid          bad "$(dupjob "$(printf '    name: one\n    name: two\n    runs-on: ${{ matrix.runner }}\n'"$OKS")")" "duplicate key 'name'"
 case_out pm-dup-job-key-invalid-last   bad "$(dupjob "$(printf '    container: alpine@'"$DIG"'\n    container: alpine:3.20\n    runs-on: ${{ matrix.runner }}\n'"$OKS")")" "duplicate key 'container'"
