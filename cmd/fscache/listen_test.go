@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -218,5 +221,34 @@ func TestServeFailureAfterBindIsReturned(t *testing.T) {
 	defer func() { httpServe = orig }()
 	if err := serve(context.Background(), quietLogger(), nil); err == nil || !strings.Contains(err.Error(), "serve:") {
 		t.Fatalf("serve error = %v, want a serve error", err)
+	}
+}
+
+// Backlog R4: the startup line reports the address actually bound, so
+// FSCACHE_ADDR=127.0.0.1:0 shows the real port, not ":0".
+func TestStartupLineReportsBoundAddress(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+	t.Setenv("FSCACHE_ADDR", "127.0.0.1:0")
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := serve(ctx, log, func() { cancel() }); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	var addr string
+	for _, line := range strings.Split(buf.String(), "\n") {
+		var rec struct {
+			Msg  string `json:"msg"`
+			Addr string `json:"addr"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "fscache: starting" {
+			addr = rec.Addr
+		}
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || host != "127.0.0.1" || port == "0" || port == "" {
+		t.Errorf("startup addr = %q, want 127.0.0.1:<the bound port>", addr)
 	}
 }

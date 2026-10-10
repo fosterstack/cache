@@ -164,7 +164,7 @@ At startup, after the configuration validates, the server shall log one warning 
 | REQ-CFG-005-AC3 | Given unknown names whose values look like secrets (FSCACHE_PASWORD=hunter2-secret), including a value containing "="; when the warnings are logged; then each line carries the name and never the value; no part of any value appears anywhere in the log output | unit |  | approved | 1 item(s) |
 | REQ-CFG-005-AC4 | Given the list of known variables in the code, the names the code reads, and the README configuration table; when a test compares them; then every variable the code reads is in the list, every variable in the list is read by the code, every variable in the README table is in the list, and every variable in the list is in the README table | unit |  | approved | 2 item(s) |
 | REQ-CFG-005-AC5 | Given every known variable present in the environment, including with an empty value; when the check runs; then no warning is logged | unit |  | approved | 1 item(s) |
-| REQ-CFG-005-AC6 | Given an unknown name within Levenshtein distance 2 of a known name (FSCACHE_MAX_BYTE, FSCACHE_DATADIR), and an unknown name farther than that; when the warning is logged; then the near miss carries the attribute did_you_mean naming the closest known variable (ties broken by the order of the list), the far name carries none, and the suggestion is always a known name, never text taken from the environment | unit |  | approved | 1 item(s) |
+| REQ-CFG-005-AC6 | Given an unknown name within Levenshtein distance 2 of a known name (FSCACHE_MAX_BYTE, FSCACHE_DATADIR), and an unknown name farther than that; when the warning is logged; then the near miss carries the attribute did_you_mean naming the closest known variable (ties broken by the order of the list), the far name carries none, and the suggestion is always a known name, never text taken from the environment | unit |  | approved | 2 item(s) |
 
 ## Authentication
 
@@ -243,7 +243,7 @@ The server shall bound concurrent PUT processing: at most FSCACHE_MAX_CONCURRENT
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-HTTP-002-AC1 | Given a server configured with an upload concurrency limit of 1 and one slow upload in progress; when a second PUT arrives; then it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds | http-integration | yes | approved | 3 item(s) |
-| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule, with an error naming FSCACHE_MAX_CONCURRENT_UPLOADS and the value, and the message describes the setting as an upload count | unit |  | approved | 2 item(s) |
+| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule, with an error naming FSCACHE_MAX_CONCURRENT_UPLOADS and the value, and the message describes the setting as an upload count | unit |  | approved | 3 item(s) |
 
 ## Storage
 

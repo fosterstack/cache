@@ -210,9 +210,17 @@ func envSize(key string, def int64, noun string) (int64, error) {
 		return 0, fmt.Errorf("%s=%q is not a valid %s (whole non-negative decimal number): %w", key, v, noun, err)
 	}
 	if n < 0 {
-		return 0, fmt.Errorf("%s=%q is negative; a %s cannot be", key, v, noun)
+		return 0, fmt.Errorf("%s=%q is negative: %s %s cannot be negative", key, v, article(noun), noun)
 	}
 	return n, nil
+}
+
+// article picks "a" or "an" for the noun in an error message.
+func article(noun string) string {
+	if strings.ContainsRune("aeiou", rune(noun[0])) {
+		return "an"
+	}
+	return "a"
 }
 
 // osExit is a seam so main's exit path is testable without ending the
@@ -369,7 +377,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	bi := buildinfo.Read()
 	log.Info("fscache: starting",
 		"version", bi.Version,
-		"addr", cfg.addr,
+		"addr", ln.Addr().String(), // the address actually bound (":0" shows the real port)
 		"data_dir", cfg.dataDir,
 		"max_bytes", cfg.maxBytes,
 		"auth", authNote,

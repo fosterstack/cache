@@ -143,6 +143,7 @@ mappings:
   - ac: REQ-CFG-005-AC6
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMean" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMeanTieAndNearest" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }
@@ -191,6 +192,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
       - { type: go-test, ref: "cmd/fscache:TestInvalidUploadBoundFailsStartupNamingCount" }
+      - { type: go-test, ref: "cmd/fscache:TestNegativeMessageWording" }
   - ac: REQ-GRADLE-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
