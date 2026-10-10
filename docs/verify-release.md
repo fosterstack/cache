@@ -7,12 +7,13 @@ You need cosign, gh and jq. The steps cover both images: production and -fips.
 Set these once:
 
 - `<IMAGE_REF>`: the production image by digest, as repository@sha256:digest. TO-VERIFY: where the release names it.
+- `<IMAGE_REF_FIPS>`: the -fips image by digest, as repository@sha256:digest.
 - `<TAG>`: the release tag, for example v0.3.0.
 - `<IDENTITY>`: https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/<TAG>, the workflow that signs the provenance.
 
 ## 1. Image signatures
 
-Did our release workflow sign these exact images? TO-VERIFY: the signing workflow and the -fips image reference.
+Did our release workflow sign these exact images? TO-VERIFY: the signing workflow.
 
 ```sh
 # Not run before release: it needs the image in a registry.
@@ -20,7 +21,7 @@ cosign verify <IMAGE_REF> \
   --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 # Not run before release: it needs the image in a registry.
-cosign verify ghcr.io/fosterstack/cache:<TAG>-fips \
+cosign verify <IMAGE_REF_FIPS> \
   --certificate-identity https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/<TAG> \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
