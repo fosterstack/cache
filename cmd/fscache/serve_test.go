@@ -81,16 +81,15 @@ func TestServeGracefulShutdown(t *testing.T) {
 	}
 }
 
-// A bad listen address makes the server goroutine error; serve returns
-// that error rather than blocking forever.
+// A bad listen address is refused at startup (REQ-CFG-004).
 func TestServeListenError(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
 	t.Setenv("FSCACHE_ADDR", "256.256.256.256:99999") // unbindable
 	err := serve(context.Background(), quietLogger(), nil)
-	if err == nil || !strings.Contains(err.Error(), "serve") {
-		t.Fatalf("serve error = %v, want a serve error", err)
+	if err == nil || !strings.Contains(err.Error(), "FSCACHE_ADDR") {
+		t.Fatalf("serve error = %v, want a refusal naming FSCACHE_ADDR", err)
 	}
 }
 

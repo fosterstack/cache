@@ -108,6 +108,45 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
       - { type: go-test, ref: "cmd/fscache:TestZeroRemainsValid" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1 — silent-fallback behavior failing the new assertions before the implementation commit)" }
+  - ac: REQ-CFG-004-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestBadAddressRefusedAndDataDirNotCreated" }
+  - ac: REQ-CFG-004-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestBadAddressLeavesExistingDataDirIdentical" }
+  - ac: REQ-CFG-004-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestInvalidConfigDoesNotCreateDataDir" }
+  - ac: REQ-CFG-004-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTakenPortRefusedAndDataDirUnchanged" }
+      - { type: go-test, ref: "cmd/fscache:TestListenerReleasedWhenStoreOpenFails" }
+      - { type: go-test, ref: "cmd/fscache:TestServeFailureAfterBindIsReturned" }
+      - { type: go-test, ref: "cmd/fscache:TestServeWaitsForServingGoroutineOnShutdown" }
+      - { type: go-test, ref: "cmd/fscache:TestServeWaitsForServingGoroutineWhenShutdownFails" }
+  - ac: REQ-CFG-005-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvOneWarningPerName" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDoesNotStopStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDoesNotMaskInvalidConfig" }
+  - ac: REQ-CFG-005-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDuplicateNameWarnsOnce" }
+  - ac: REQ-CFG-005-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvNeverLogsTheValue" }
+  - ac: REQ-CFG-005-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesREADMETable" }
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesNamesReadInCode" }
+      - { type: go-test, ref: "cmd/fscache:TestScanEnvNamesRules" }
+  - ac: REQ-CFG-005-AC5
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvNamesNeverWarned" }
+  - ac: REQ-CFG-005-AC6
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMean" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMeanTieAndNearest" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }
@@ -155,6 +194,8 @@ mappings:
   - ac: REQ-HTTP-002-AC2
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestInvalidUploadBoundFailsStartupNamingCount" }
+      - { type: go-test, ref: "cmd/fscache:TestNegativeMessageWording" }
   - ac: REQ-GRADLE-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }

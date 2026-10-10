@@ -8,11 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,15 +41,15 @@ type config struct {
 }
 
 func loadConfig() (config, error) {
-	maxBytes, err := envSize("FSCACHE_MAX_BYTES", 0)
+	maxBytes, err := envSize("FSCACHE_MAX_BYTES", 0, "byte count")
 	if err != nil {
 		return config{}, err
 	}
-	maxBodyBytes, err := envSize("FSCACHE_MAX_BODY_BYTES", 1<<30) // 1 GiB default cap per blob
+	maxBodyBytes, err := envSize("FSCACHE_MAX_BODY_BYTES", 1<<30, "byte count") // 1 GiB default cap per blob
 	if err != nil {
 		return config{}, err
 	}
-	maxUploads, err := envSize("FSCACHE_MAX_CONCURRENT_UPLOADS", 32)
+	maxUploads, err := envSize("FSCACHE_MAX_CONCURRENT_UPLOADS", 32, "upload count")
 	if err != nil {
 		return config{}, err
 	}
@@ -77,6 +80,85 @@ func loadConfig() (config, error) {
 	}
 	return cfg, nil
 }
+
+// knownEnv is the single source of truth for the FSCACHE_ names the
+// server reads (REQ-CFG-005). A test pins it both ways: against the names
+// loadConfig reads and against the README configuration table, so a new
+// variable cannot be added to one and forgotten in the other.
+var knownEnv = []string{
+	"FSCACHE_ADDR",
+	"FSCACHE_DATA_DIR",
+	"FSCACHE_MAX_BYTES",
+	"FSCACHE_MAX_BODY_BYTES",
+	"FSCACHE_MAX_CONCURRENT_UPLOADS",
+	"FSCACHE_USERNAME",
+	"FSCACHE_PASSWORD",
+	"FSCACHE_RO_USERNAME",
+	"FSCACHE_RO_PASSWORD",
+}
+
+// warnUnknownEnv logs one warning per environment variable that starts
+// with FSCACHE_ (case-sensitive) and is not in knownEnv, sorted by name,
+// and never the value (values can be secrets). A name within Levenshtein
+// distance 2 of a known one carries it as did_you_mean; the suggestion is
+// always a known name, never user text. It never fails startup.
+func warnUnknownEnv(log *slog.Logger, environ []string) {
+	seen := map[string]bool{}
+	var unknown []string
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if !strings.HasPrefix(name, "FSCACHE_") || slices.Contains(knownEnv, name) || seen[name] {
+			continue
+		}
+		seen[name] = true
+		unknown = append(unknown, name)
+	}
+	slices.Sort(unknown)
+	for _, name := range unknown {
+		if hint := nearestKnown(name); hint != "" {
+			log.Warn("fscache: unknown environment variable ignored", "name", name, "did_you_mean", hint)
+			continue
+		}
+		log.Warn("fscache: unknown environment variable ignored", "name", name)
+	}
+}
+
+// nearestKnown returns the closest known name within distance 2, ties
+// broken by knownEnv order, or "" when none is that close.
+func nearestKnown(name string) string {
+	best, bestD := "", 3
+	for _, k := range knownEnv {
+		if d := levenshtein(name, k); d < bestD {
+			best, bestD = k, d
+		}
+	}
+	return best
+}
+
+func levenshtein(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+	return prev[len(b)]
+}
+
+// reconcileDuration renders a reconcile's elapsed time as a Go duration
+// string rounded to the millisecond ("1.235s"), the format of the
+// duration attribute on the reconciled line.
+func reconcileDuration(d time.Duration) string { return d.Round(time.Millisecond).String() }
 
 // uncleanMarkerPath is the marker's location inside the data directory —
 // beside the stores it speaks for, so it travels with the volume.
@@ -117,25 +199,33 @@ func envOr(key, def string) string {
 	return def
 }
 
-// envSize parses a non-negative byte count from the environment, failing
+// envSize parses a non-negative whole number (noun names it in errors) from the environment, failing
 // closed (REQ-CFG-003): an unparseable value, trailing garbage, a
 // negative number, or an overflow stops startup with the variable and the
 // value named. A silent default here once turned a bounded cache
 // unbounded on a units typo — the exact bug this replaces. strconv, not
 // Sscanf: Sscanf's %d happily reads "12abc" as 12.
-func envSize(key string, def int64) (int64, error) {
+func envSize(key string, def int64, noun string) (int64, error) {
 	v := os.Getenv(key)
 	if v == "" {
 		return def, nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%s=%q is not a valid byte count (whole non-negative decimal number): %w", key, v, err)
+		return 0, fmt.Errorf("%s=%q is not a valid %s (whole non-negative decimal number): %w", key, v, noun, err)
 	}
 	if n < 0 {
-		return 0, fmt.Errorf("%s=%q is negative; a byte count cannot be", key, v)
+		return 0, fmt.Errorf("%s=%q is negative: %s %s cannot be negative", key, v, article(noun), noun)
 	}
 	return n, nil
+}
+
+// article picks "a" or "an" for the noun in an error message.
+func article(noun string) string {
+	if strings.ContainsRune("aeiou", rune(noun[0])) {
+		return "an"
+	}
+	return "a"
 }
 
 // osExit is a seam so main's exit path is testable without ending the
@@ -158,6 +248,7 @@ var (
 	cacheClose     = (*cache.Cache).Close
 	cacheReconcile = (*cache.Cache).Reconcile
 	httpShutdown   = (*http.Server).Shutdown
+	httpServe      = (*http.Server).Serve
 	clearMarkerFn  = clearMarker
 )
 
@@ -191,6 +282,23 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	if err != nil {
 		return err
 	}
+	warnUnknownEnv(log, os.Environ())
+
+	// Bind the listen address before anything under the data directory is
+	// created, opened or written (REQ-CFG-004): a bad or taken FSCACHE_ADDR
+	// is refused with the data directory exactly as found. The socket is
+	// served only after the stores are ready, so connections arriving
+	// during a long reconcile wait in the kernel's listen backlog.
+	ln, err := net.Listen("tcp", cfg.addr)
+	if err != nil {
+		return fmt.Errorf("FSCACHE_ADDR=%q cannot be listened on: %w", cfg.addr, err)
+	}
+	served := false
+	defer func() {
+		if !served {
+			_ = ln.Close()
+		}
+	}()
 
 	// Unclean-shutdown marker (REQ-STORE-005): present at startup means
 	// the last process did not exit cleanly, so the stores may disagree
@@ -237,11 +345,13 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 
 	if wasUnclean {
 		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
+		began := time.Now()
 		stats, err := cacheReconcile(c, context.Background())
 		if err != nil {
 			return fmt.Errorf("startup reconciliation: %w", err)
 		}
 		log.Info("fscache: reconciled",
+			"duration", reconcileDuration(time.Since(began)),
 			"adopted_blobs", stats.AdoptedBlobs,
 			"dropped_records", stats.DroppedRecords,
 			"removed_temp_files", stats.RemovedTempFiles)
@@ -274,7 +384,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	bi := buildinfo.Read()
 	log.Info("fscache: starting",
 		"version", bi.Version,
-		"addr", cfg.addr,
+		"addr", ln.Addr().String(), // the address actually bound (":0" shows the real port)
 		"data_dir", cfg.dataDir,
 		"max_bytes", cfg.maxBytes,
 		"auth", authNote,
@@ -282,10 +392,22 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	)
 
 	errCh := make(chan error, 1)
+	served = true // Serve owns and closes the listener from here on
+	// The serving goroutine gets its own copy of the seam (no later write
+	// to the package variable can race with it) and is always reaped before
+	// serve returns: the deferred Close stops Serve whatever path leaves
+	// this function, then waits for the goroutine to exit.
+	serveFn := httpServe
+	done := make(chan struct{})
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		defer close(done)
+		if err := serveFn(httpServer, ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
+	}()
+	defer func() {
+		_ = httpServer.Close()
+		<-done
 	}()
 
 	if ready != nil {

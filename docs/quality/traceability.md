@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 74 |
-| Acceptance criteria | 197 |
+| Active requirements | 76 |
+| Acceptance criteria | 207 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 181 |
+| ACs with mapped evidence | 191 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 42 |
+| Confidence: documented | 44 |
 | Confidence: implementation-only | 31 |
 
 ## Cache protocol
@@ -138,6 +138,34 @@ The server shall refuse to start when a numeric configuration variable (FSCACHE_
 |---|---|---|---|---|---|
 | REQ-CFG-003-AC1 | Given an environment with FSCACHE_MAX_BYTES set to an unparseable value, a value with trailing garbage, a negative value, or an overflowing value; when the server starts; then startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES | unit | yes | approved | 3 item(s) |
 
+### REQ-CFG-004 — Configuration is validated before anything is created
+
+The server shall validate every configuration variable, and bind its listen address, before it creates, opens, or writes anything under FSCACHE_DATA_DIR. It shall refuse to start on an invalid or already taken FSCACHE_ADDR with an error naming FSCACHE_ADDR and the value, and a refused start shall leave the data directory exactly as it found it. The listen socket is bound first and served only once the stores are ready, so connections arriving during a startup reconcile wait in the listen backlog.
+
+*Introduced v0.2.3 · tier community · confidence documented · source: backlog items 15-17 (advisor; from the v0.2.1 startup-error runs); cmd/fscache/main.go serve*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CFG-004-AC1 | Given FSCACHE_ADDR set to a value that is not a usable host:port (8080, localhost, :99999, :abc, a:b:c), and FSCACHE_DATA_DIR pointing at a path that does not exist; when the server starts; then it exits non-zero with an error naming FSCACHE_ADDR and the value, and the data directory does not exist afterwards (no directory, no marker, no meta.db) | unit |  | approved | 1 item(s) |
+| REQ-CFG-004-AC2 | Given the same bad FSCACHE_ADDR and an existing data directory holding blobs/ and meta.db and no unclean-shutdown marker; when the server starts; then it exits non-zero as in AC1, and every file and directory under the data directory is byte-identical (content, mode, size, modification time) and no .unclean-shutdown marker was written | unit |  | approved | 1 item(s) |
+| REQ-CFG-004-AC3 | Given any other invalid configuration (an unparseable size or upload bound, a one-sided credential pair, a read-only pair without the read-write pair) and a data directory that does not exist; when the server starts; then it exits non-zero and the data directory is not created | unit |  | approved | 1 item(s) |
+| REQ-CFG-004-AC4 | Given a valid FSCACHE_ADDR whose port is already taken by another listener, with a nonexistent data directory in one case and an existing data directory in the other; when the server starts; then it exits non-zero with an error naming FSCACHE_ADDR and the address, the nonexistent directory is still absent, and the existing directory is byte-identical with no marker written; the listen socket is bound before any store is opened and is released if startup fails after the bind | unit |  | approved | 5 item(s) |
+
+### REQ-CFG-005 — Unknown FSCACHE_ variables are reported
+
+At startup, after the configuration validates, the server shall log one warning for each environment variable whose name begins with FSCACHE_ (case-sensitive) and is not a configuration variable it knows, and shall start normally. The warning names the variable and never its value. The list of known variables is a single list in the code, kept equal to the documented configuration table.
+
+*Introduced v0.2.3 · tier community · confidence documented · source: backlog item 15 (advisor; from the v0.2.1 startup-error runs); cmd/fscache/main.go knownEnv and warnUnknownEnv*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CFG-005-AC1 | Given an environment with FSCACHE_MAX_BYTE and FSCACHE_FOO set (names that are not configuration variables), a lowercase fscache_addr, and unrelated variables; when the server starts; then it logs exactly one WARN per unknown FSCACHE_ name, with the message "fscache: unknown environment variable ignored" and the attribute name, sorted by name; the lowercase and unrelated names are not reported; the server starts and serves exactly as without them, the exit status is unchanged, and an invalid configuration still fails startup as before | unit |  | approved | 3 item(s) |
+| REQ-CFG-005-AC2 | Given the same unknown name present twice in the environment; when the check runs; then it logs one warning for that name | unit |  | approved | 1 item(s) |
+| REQ-CFG-005-AC3 | Given unknown names whose values look like secrets (FSCACHE_PASWORD=hunter2-secret), including a value containing "="; when the warnings are logged; then each line carries the name and never the value; no part of any value appears anywhere in the log output | unit |  | approved | 1 item(s) |
+| REQ-CFG-005-AC4 | Given the list of known variables in the code, the names the code reads, and the README configuration table; when a test compares them; then every variable the code reads is in the list, every variable in the list is read by the code, every variable in the README table is in the list, and every variable in the list is in the README table | unit |  | approved | 3 item(s) |
+| REQ-CFG-005-AC5 | Given every known variable present in the environment, including with an empty value; when the check runs; then no warning is logged | unit |  | approved | 1 item(s) |
+| REQ-CFG-005-AC6 | Given an unknown name within Levenshtein distance 2 of a known name (FSCACHE_MAX_BYTE, FSCACHE_DATADIR), and an unknown name farther than that; when the warning is logged; then the near miss carries the attribute did_you_mean naming the closest known variable (ties broken by the order of the list), the far name carries none, and the suggestion is always a known name, never text taken from the environment | unit |  | approved | 2 item(s) |
+
 ## Authentication
 
 ### REQ-AUTH-001 — Basic Auth on the cache surface
@@ -215,7 +243,7 @@ The server shall bound concurrent PUT processing: at most FSCACHE_MAX_CONCURRENT
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-HTTP-002-AC1 | Given a server configured with an upload concurrency limit of 1 and one slow upload in progress; when a second PUT arrives; then it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds | http-integration | yes | approved | 3 item(s) |
-| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule | unit |  | approved | 1 item(s) |
+| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule, with an error naming FSCACHE_MAX_CONCURRENT_UPLOADS and the value, and the message describes the setting as an upload count | unit |  | approved | 3 item(s) |
 
 ## Storage
 
