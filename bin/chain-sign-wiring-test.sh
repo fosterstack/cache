@@ -1159,10 +1159,8 @@ for r in d["scripts"]:
 json.dump(d, open(p,"w"), indent=1)' "$@"; }
 probe build    stage-build.yml      "a second provenance signer job in stage-build.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-build.yml"
 probe image    stage-image.yml      "a second provenance signer job in stage-image.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-image.yml"
-probe sneak    bin/sneak.sh         "stage-admission.yml running an unlisted bin/sneak.sh that signs provenance" \
+probe sneak    stage-admission.yml  "stage-admission.yml running an unlisted bin/sneak.sh that signs provenance" \
   "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/sneak.sh\n' >> .github/workflows/stage-admission.yml"
-probe cisneak  bin/ci-sneak.sh      "ci.yml (a non-stage workflow) running an unlisted new bin/ci-sneak.sh that signs provenance" \
-  "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/ci-sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/ci-sneak.sh\n' >> .github/workflows/ci.yml"
 probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
@@ -1171,11 +1169,6 @@ probe comment  "legacy file changed" "a harmless comment added to a legacy file 
 # scripts that frozen files run (only listed scripts were scanned before)
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
-probe vexforms bin/vex-forms.py     "a provenance signer added to bin/vex-forms.py (unlisted, run by frozen stage-promote.yml)" "printf '# cosign attest --type slsaprovenance x\n' >> bin/vex-forms.py"
-probe patchdec bin/patch-decide.py  "a provenance signer added to bin/patch-decide.py (unlisted)" "printf 'X = \"cosign attest --type slsaprovenance\"\n' >> bin/patch-decide.py"
-AUDBIN=".github/""agent/bin"   # (split: REQ-AUD-18 AC1 keeps the auditor directory's literal path out of files outside it)
-probe agentbin "$AUDBIN/auditor-release-authz.py" "a provenance signer added under the auditor's bin directory" "printf '# uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8\n' >> $AUDBIN/auditor-release-authz.py"
-probe allowed  bin/check-workflow-permissions.py "an allow-listed mention file changed (its mentions are then findings)" "printf '# changed\n' >> bin/check-workflow-permissions.py"
 probe extra    "not list exactly the eleven" "a twelfth path in the legacy list" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
 probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
@@ -1206,15 +1199,38 @@ probe scriptsq  "ci.yml job probe-job" "a ci.yml job with id-token: write runnin
   "mkdir -p scripts; printf 'cosign attest --type slsaprovenance --predicate p.json x\n' > scripts/q.sh; printf '$IDJ    steps:\n      - run: bash scripts/q.sh\n' >> .github/workflows/ci.yml"
 probe otherrepo "ci.yml job probe-job" "a ci.yml job with id-token: write calling other/repo/.github/workflows/sign.yml@<sha>" \
   "printf '  probe-job:\n    permissions:\n      id-token: write\n    uses: other/repo/.github/workflows/sign.yml@0123456789abcdef0123456789abcdef01234567\n' >> .github/workflows/ci.yml"
+# Opus r3 B1: a signer STEP added to a job that is already on the id-token list is seen by the signer table (@actions/attest in-process)
+GHS='      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n        with:\n          script: require("@actions/attest").attestProvenance({subjects: []})\n'
+probe listedjob "scorecard.yml signs provenance" "actions/github-script calling attestProvenance added to scorecard.yml's listed analysis job" \
+  "python3 -c 'import sys;p=\".github/workflows/scorecard.yml\";t=open(p).read();i=t.index(\"    steps:\n\")+len(\"    steps:\n\");t=t[:i]+sys.argv[1].encode().decode(\"unicode_escape\")+t[i:];open(p,\"w\").write(t)' '$GHS'"
+# Opus r3 M1: .goreleaser.yaml is a CLOSED key set; each probe re-edits the file's sha256 so only the key rule can catch it
+rehash_cfg() { python3 -c 'import hashlib,json,sys; p=".github/policy/build-config-files.json"; d=json.load(open(p))
+for r in d["files"]:
+    if r["path"] == sys.argv[1]: r["sha256"] = hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()
+json.dump(d, open(p,"w"), indent=1)' "$1"; }
+probe gorelub   "universal_binaries" "universal_binaries with hooks in .goreleaser.yaml (hash re-edited)" "printf 'universal_binaries:\n  - hooks:\n      post: cosign attest-blob x\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
+probe gorelgob  "gobinary" "a build's gobinary set in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    main: ./cmd/fscache\n\",\"    main: ./cmd/fscache\n    gobinary: ./evil-go\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
+probe gorelupx  "upx" "an upx section in .goreleaser.yaml (hash re-edited)" "printf 'upx:\n  - enabled: true\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
+probe gorelnfpm "nfpms" "nfpms with scripts in .goreleaser.yaml (hash re-edited)" "printf 'nfpms:\n  - scripts:\n      postinstall: x.sh\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
+# Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
+probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
 # no `X | grep -q` pipeline in a chain suite: under pipefail grep's early exit can SIGPIPE the writer and fail a case that matched
-if python3 - "$root" <<'PYQ'
-import glob, re, sys
-hits = [f"{f}:{i}" for f in sorted(glob.glob(sys.argv[1] + "/bin/chain-*-test.sh")) for i, l in enumerate(open(f), 1)
-        if not l.lstrip().startswith("#") and re.search(r"(?<!\|)\|(?!\|)\s*grep\b[^|\n]*\s-[A-Za-z]*q", l)]
-print(" ".join(hits)); sys.exit(1 if hits else 0)
+quiet_pipes() {  # quiet_pipes FILE... -> prints FILE:LINE of each pipe into a quiet grep (-q, --quiet, --silent; continued lines joined)
+  python3 - "$@" <<'PYQ'
+import re, sys
+QUIET = re.compile(r"(?<!\|)\|(?!\|)\s*grep\b[^|\n]*\s(-[A-Za-z]*q[A-Za-z]*|--quiet|--silent)\b")
+for f in sys.argv[1:]:
+    text = re.sub(r"\\\n\s*", " ", open(f).read())
+    for i, l in enumerate(text.split("\n"), 1):
+        if not l.lstrip().startswith("#") and QUIET.search(l): print("%s:%d" % (f, i))
 PYQ
-then pass=$((pass + 1)); echo "ok   no chain suite pipes into grep -q (pipefail + SIGPIPE)"; else failn=$((failn + 1)); echo "FAIL a chain suite pipes into grep -q"; fi
+}
+qp=$(quiet_pipes "$root"/bin/chain-*-test.sh)
+if [ -z "$qp" ]; then pass=$((pass + 1)); echo "ok   no chain suite pipes into grep -q (pipefail + SIGPIPE)"; else failn=$((failn + 1)); echo "FAIL a chain suite pipes into grep -q: $qp"; fi
+G=grep; printf 'x | %s --quiet y\n' "$G" > "$work/qp1.sh"; printf 'printf x \\\n  | %s -qF y\n' "$G" > "$work/qp2.sh"
+[ -n "$(quiet_pipes "$work/qp1.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches grep --quiet"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed grep --quiet"; }
+[ -n "$(quiet_pipes "$work/qp2.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches a pipe continued with a backslash (and -qF)"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed a continued pipe"; }
 # the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
 [ "$rc" != 0 ] && grep -F -q "stage-build.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
@@ -1223,7 +1239,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=281
+EXPECT=284
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

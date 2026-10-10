@@ -310,13 +310,15 @@ DSSE = "application/vnd.in-toto+json"
 PROV_URI = "https://slsa.dev/provenance/v1"
 def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, tsa="tsa", signed=True, repo=REPO, issuer=ISSUER,
            stmt="v1", dsse=DSSE, payload=None, config_wf="release.yml", config_ref=None, config_repo=None, no_config=False, no_issuer=False,
-           coll_file=None, coll_variant=None, predicate=None, san_der=None):
+           coll_file=None, coll_variant=None, predicate=None, san_der=None, issuer_der=None, config_der=None):
     _n[0] += 1; leaf = "leaf%d" % _n[0]
     ext = "subjectAltName = critical," + ("DER:" + san_der if san_der else "URI:" + uri(wf, ref, repo))
-    if not no_issuer: ext += "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + issuer
+    if issuer_der: ext += "\n1.3.6.1.4.1.57264.1.8 = DER:" + issuer_der          # the extension's raw bytes, for the DER-shape cases
+    elif not no_issuer: ext += "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + issuer
     # Build Config URI (Fulcio 1.3.6.1.4.1.57264.1.18) = the TOP-LEVEL workflow that called the stage (workflow_ref); the SAN
     # (Build Signer URI, .1.9) is the called file. Harness spike (b): a second workflow that calls stage-sign.yml gets Sign's SAN.
-    if not no_config: ext += "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri(config_wf, config_ref or ref, config_repo or repo)
+    if config_der: ext += "\n1.3.6.1.4.1.57264.1.18 = DER:" + config_der
+    elif not no_config: ext += "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri(config_wf, config_ref or ref, config_repo or repo)
     issue(ca, leaf, ext, start or now - dt.timedelta(minutes=5), end or now + dt.timedelta(minutes=10))
     if payload is None and coll_file:
         # REAL Witness collection shape (in-toto-witness docs/tutorials/artifact-policy.md:58-70): the product attestor names the
@@ -743,6 +745,26 @@ add("sign_badname", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name":
 add("sign_baddigest", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
 dj("rekor-badsubj.json", {"entries": [entry("sign_badname", 50), entry("sign_baddigest", 51)]})
 add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_stmt(COLL, [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}], "v0.1"))
+# ---- Codex security round 3 ----
+# (X2) every envelope field has its JSON type; a wrong one is a refusal ("envelope"), never a traceback
+for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("ptype_null", lambda r: r.__setitem__("payloadType", None)),
+                 ("ptype_list", lambda r: r.__setitem__("payloadType", ["x"])), ("ptype_dict", lambda r: r.__setitem__("payloadType", {"a": 1})),
+                 ("payload_num", lambda r: r.__setitem__("payload", 5)), ("sigs_dict", lambda r: r.__setitem__("signatures", {"a": 1})),
+                 ("sigs_item", lambda r: r.__setitem__("signatures", [5])), ("sig_num", lambda r: r["signatures"][0].__setitem__("sig", 5)),
+                 ("cert_null", lambda r: r["signatures"][0].__setitem__("certificate", None)), ("inter_str", lambda r: r["signatures"][0].__setitem__("intermediates", "x")),
+                 ("inter_item", lambda r: r["signatures"][0].__setitem__("intermediates", [5])), ("stamps_str", lambda r: r["signatures"][0].__setitem__("timestamps", "x")),
+                 ("stamps_item", lambda r: r["signatures"][0].__setitem__("timestamps", [5]))):
+    mutate_field("sign_prov", "env_" + _nm, _ed)
+# (X3) the issuer (.1.8) and Build Config URI (.1.18) extensions are ONE DER UTF8String TLV (Fulcio v2), nothing else
+def _hx(t): return t.encode().hex()
+def _ln(n): return "%02x" % n
+_I, _C = ISSUER, uri("release.yml", T)
+for _nm, _kw in (("iss_raw", {"issuer_der": _hx(_I)}), ("iss_ia5", {"issuer_der": "16" + _ln(len(_I)) + _hx(_I)}),
+                 ("iss_len", {"issuer_der": "0c" + _ln(len(_I) + 1) + _hx(_I)}), ("iss_trail", {"issuer_der": "0c" + _ln(len(_I)) + _hx(_I) + "00"}),
+                 ("cfg_raw", {"config_der": _hx(_C)}), ("cfg_long", {"config_der": "0c81" + _ln(len(_C)) + _hx(_C)}),
+                 ("iss_der", {"issuer_der": "0c" + _ln(len(_I)) + _hx(_I)})):
+    add("sign_" + _nm, STAGES["sign"], T, PROV, D, **_kw)
+dj("rekor-x3.json", {"entries": [entry("sign_" + n, 60 + i) for i, n in enumerate(("iss_raw", "iss_ia5", "iss_len", "iss_trail", "cfg_raw", "cfg_long", "iss_der"))]})
 # the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
 open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
 open(p("now-in.txt"), "w").write(fmt(now + dt.timedelta(minutes=2)))
@@ -1632,6 +1654,27 @@ mkdir -p "$work/nocosign"; ln -s "$(command -v "$OPENSSL")" "$work/nocosign/open
 rc=0; env PATH="$work/nocosign" OPENSSL="$work/nocosign/openssl" "$PY3" "$cv" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/nocosign" 2> "$work/err" > "$work/out" || rc=$?
 [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*cosign not found" "$work/err" && [ ! -e "$work/sd/nocosign" ] && ok "R2 no cosign on PATH: refused 'cosign not found', the output folder Sign made is removed" || bad "R2 no cosign on PATH (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 
+# ---- Codex security round 3 ----
+for k in ptype_num ptype_null ptype_list ptype_dict payload_num sigs_dict sigs_item sig_num cert_null inter_str inter_item stamps_str stamps_item; do
+  expect_refuse "X2 an envelope field of the wrong JSON type ($k) is refused, never a traceback" "envelope" verify $(V) --stage sign $(rec env_$k) $(R)
+done
+for k in iss_raw iss_ia5 iss_len iss_trail cfg_raw cfg_long; do
+  expect_refuse "X3 a Fulcio extension that is not one DER UTF8String TLV ($k) is refused" "malformed" verify $(V) --stage sign $(rec sign_$k) $(R rekor-x3.json)
+done
+expect_ok     "X3 control: the issuer written as an explicit DER UTF8String is accepted" verify $(V) --stage sign $(rec sign_iss_der) $(R rekor-x3.json)
+# X4: shapes GitHub would reject are refused by name, never skipped
+w x4_useslist  "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: [evil/action@main]\n"
+w x4_jobuses   "  j:\n    uses: [evil/repo/.github/workflows/x.yml@main]\n"
+w x4_svcstr    "  j:\n    runs-on: ubuntu-24.04\n    services:\n      db: postgres:latest\n    steps:\n      - run: true\n"
+w x4_svclist   "  j:\n    runs-on: ubuntu-24.04\n    services:\n      - postgres:latest\n    steps:\n      - run: true\n"
+w x4_contlist  "  j:\n    runs-on: ubuntu-24.04\n    container: [ghcr.io/x/y:latest]\n    steps:\n      - run: true\n"
+w x4_stepsmap  "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      a: b\n"
+w x4_stepstr   "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses-evil\n"
+printf 'name: t\non: workflow_call\njobs:\n  - j\n' > "$work/x4_jobslist.yml"
+for c in x4_useslist:"uses" x4_jobuses:"uses" x4_svcstr:"services" x4_svclist:"services" x4_contlist:"container" x4_stepsmap:"steps" x4_stepstr:"step" x4_jobslist:"jobs"; do
+  expect_refuse "X4 ${c%%:*}: a malformed shape is refused and named" "${c#*:}|not" $(A "${c%%:*}")
+done
+
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs plus the S1 cases (where
 # cosign returned a bad bundle and Sign refused it); never one for a refusal of the check itself
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
@@ -1644,7 +1687,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=478
+EXPECT=506
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

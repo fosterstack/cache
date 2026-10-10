@@ -257,23 +257,21 @@ d=$(mk intoto); printf 'jobs:\n  c:\n    steps:\n      - run: in-toto-run --step
 expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify.yml"
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
-# KNOWN RED (strict): the real repository stays red on exactly one finding until PR 3 rewrites stage-verify.yml (its actions/attest step names
-# no literal predicate-type). So that this suite can be a REQUIRED CI step now, that case is judged as a known red: the judge's whole output
-# must be exactly that one finding (any other finding fails), and the day it goes green the case FAILS, so the PR that makes it green turns it
-# back into `expect ok` here. The list lives only in this file (no flag or variable can add to it) and must hold exactly one case.
-KNOWN_RED_N=0
-known_red() {  # known_red LABEL GREEN-WHEN EXACT-OUTPUT DIR
-  local out rc=0; KNOWN_RED_N=$((KNOWN_RED_N + 1))
-  out=$(judge "$4") || rc=$?
-  if [ "$rc" = 0 ]; then failn=$((failn + 1)); echo "FAIL $1 is GREEN now ($2): make it an ordinary expect ok and drop it from the known-red list"
-  elif [ "$out" != "$3" ]; then failn=$((failn + 1)); echo "FAIL $1: the findings are not exactly the known one ($3): ${out:0:300}"
-  else pass=$((pass + 1)); echo "ok   $1 (known red until $2: $out)"; fi; }
-known_red "the real repository: every produced record type has a row with a claim and a stage consumer" "PR 3 rewrites stage-verify.yml" \
-  ".github/workflows/stage-verify.yml: actions/attest with no literal predicate-type (fail closed)" "$root"
-# the known-red judge is strict: run on a GREEN fixture tree it must report FAIL (so a known red that is fixed cannot linger silently)
-if ( pass=0 failn=0; known_red "self-check" "x" "y" "$(mk kr_green)"; [ "$failn" = 1 ] ) > /dev/null; then pass=$((pass + 1)); echo "ok   known_red on a green tree fails (strict)"; else failn=$((failn + 1)); echo "FAIL known_red accepted a green tree"; fi
-[ "$KNOWN_RED_N" = 1 ] && { pass=$((pass + 1)); echo "ok   the known-red list holds exactly one case"; } || { failn=$((failn + 1)); echo "FAIL the known-red list holds $KNOWN_RED_N cases, not exactly one"; }
-EXPECT=59
+# ---- the real repository (no known-red allowance) -------------------------------------------------------------------------------------
+# Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them). The eleven legacy stage files PRs 2-4 rewrite are frozen by
+# sha256 in .github/policy/legacy-stage-files.json: what they produce still counts (so their rows stay consumed), but their OWN fail-closed
+# findings are left out; a changed one is judged in full, and with the list deleted the whole tree is judged.
+gone=$(cd "$root" && git ls-files --deleted -- .github bin)
+if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
+tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$root" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+expect ok "the real repository: every produced record type has a row with a claim and a stage consumer (frozen legacy files' own findings left out)" "$(tracked_copy real)"
+d=$(tracked_copy changed); printf '# x\n' >> "$d/.github/workflows/stage-verify.yml"
+expect_named "a changed byte in frozen stage-verify.yml: it is judged in full and named" "$d" "legacy file changed (judged in full): .github/workflows/stage-verify.yml"
+d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
+expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
+d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
+expect_named "with legacy-stage-files.json deleted the whole tree is judged (red today on stage-verify.yml)" "$d" "stage-verify.yml: actions/attest with no literal predicate-type"
+EXPECT=60
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
