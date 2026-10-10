@@ -189,9 +189,22 @@ def judge_build(path):
     return bad
 
 # FROZEN LEGACY FILES: the eleven legacy stage files PRs 2-4 rewrite on chain-v030, pinned by sha256 in .github/policy/legacy-stage-files.json
-LEGACY_EXPECTED = {".github/workflows/%s.yml" % n for n in ("stage-acceptance-artifacts", "stage-acceptance-egress", "stage-acceptance-k8s",
-                   "stage-acceptance-predicate", "stage-admission", "stage-authorize", "stage-build", "stage-image", "stage-promote",
-                   "stage-reproducibility", "stage-verify")}
+# a PR that rewrites a legacy file removes its row AND its pinned entry; adding or changing an entry here is a reviewed edit and is
+# refused by every other case (advisor ruling, Oct 10: the list is a pre-existing residual that can only shrink). Copied from the list at ae15a44.
+LEGACY_PINNED = {
+    ".github/workflows/stage-acceptance-artifacts.yml": "6db2e3c7ce2e9cde225d2fe805d7b9cd7756745962438fc6a9502d5c70dc6494",
+    ".github/workflows/stage-acceptance-egress.yml": "17491901c831abf89435b82cff5c794c4be3d581394bde316d21966b2b72a018",
+    ".github/workflows/stage-acceptance-k8s.yml": "727999814b7c7e561611f2c214b0ab12c5c922a99f79ca44eaaa214480f0ac60",
+    ".github/workflows/stage-acceptance-predicate.yml": "6fc4b5e514cb054c20f4cc56eeebf123fdda54ec9cc985ffef1922c72e8be4a8",
+    ".github/workflows/stage-admission.yml": "d376ec4ebaae22a932d02ae4512abc5563d69d29462436e75ebe7d454a2c91a2",
+    ".github/workflows/stage-authorize.yml": "2a0b7c7b6260a372d1d4f31c9de5fb78039b899aa9c4351065f658293523cfdf",
+    ".github/workflows/stage-build.yml": "34c39aba901c2e7b6685bd1d9419fa420b21a578239e65364ea5ecaf3f7c5998",
+    ".github/workflows/stage-image.yml": "450a303b13683bb78b8dbdf9f9ce147919c85c45e54551d0b171518d0b8160e2",
+    ".github/workflows/stage-promote.yml": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393",
+    ".github/workflows/stage-reproducibility.yml": "dc3b6e77e232c093c40a1991058c027cfa73a46569f9f68eb09a7079dfa1ad16",
+    ".github/workflows/stage-verify.yml": "4bd41b1e9563c3d0c35f9b1ab2f2dff5085615d4d96e545ae1750704a22fdc78",
+}
+LEGACY_EXPECTED = set(LEGACY_PINNED)
 def sha256_of(path):
     import hashlib
     return hashlib.sha256(open(path, "rb").read()).hexdigest()
@@ -208,6 +221,8 @@ def frozen_files(base, bad):
     if outside: bad.append("AC1: legacy-stage-files.json lists a path outside .github/workflows/: %s" % outside); return set()
     if set(listed) != LEGACY_EXPECTED:
         bad.append("AC1: legacy-stage-files.json does not list exactly the eleven legacy stage files: %s" % sorted(set(listed) ^ LEGACY_EXPECTED)); return set()
+    rehashed = sorted(x for x, h in listed.items() if h != LEGACY_PINNED[x])
+    if rehashed: bad.append("AC1: legacy hash is not the one this suite pins (the list can only shrink): %s" % rehashed); return set()
     frozen = set()
     for x, want in sorted(listed.items()):
         f = os.path.join(base, x)
