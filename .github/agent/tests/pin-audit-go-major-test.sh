@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=56
+pass=0 failn=0 EXPECT=59
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -548,6 +548,41 @@ bad = {"empty events": [{"type": "SEMVER", "events": []}], "no events key": [{"t
 for what, rgs in bad.items():
     try: hit("3.1.3", [rec("GO-X-43", ent(n, ranges=rgs))], none_ignored=True, sups=(True,))   # the record came back from a bare or alias query
     except AssertionError as e: raise AssertionError((what,) + e.args)
+PY
+py "B4: an exact-path entry with a range of another type (WEIRD, no type, lowercase git), versions given as a string, ranges not a list, or an event" \
+   " that is not an object is unreadable: a HIT, never a clean and never a traceback" <<'PY'
+n = BARE + "/v3"
+semver = {"type": "SEMVER", "events": fixed("3.0.4")}
+bad = {"WEIRD range": ent(n, ranges=[semver, {"type": "WEIRD", "events": INTRO0}]), "no type": ent(n, ranges=[semver, {"events": INTRO0}]),
+       "lowercase git": ent(n, ranges=[semver, {"type": "git", "events": INTRO0}]), "versions string": ent(n, ranges=[semver], versions="3.1.3"),
+       "ranges dict": ent(n, ranges={"type": "SEMVER", "events": fixed("3.0.4")}),
+       "event not a dict": ent(n, ranges=[{"type": "SEMVER", "events": ["introduced"]}]),
+       "ranges null": ent(n, ranges=None), "events dict": ent(n, ranges=[{"type": "SEMVER", "events": {"introduced": "0"}}])}
+for what, a in bad.items():
+    try: hit("3.1.3", [rec("GO-X-47", a)], none_ignored=True, sups=(True,))
+    except AssertionError as e: raise AssertionError((what,) + e.args)
+    except Exception as e: raise AssertionError((what, "traceback", repr(e)))
+PY
+py "B5: for dead-or-dormant a ruling names a held pin when its version matches ANY version the pin stands for (tags v3 and v3.37.8 -> DEAD, suggest" \
+   " 3.*); applying a ruling still needs ALL tags" <<'PY'
+class TagNet:
+    def __init__(self, tags): self.tags = tags
+    def versions_of(self, item): return self.tags
+    def version_of(self, item): return self.tags[0]
+def ruling(ver):
+    return {"ids": ["GHSA-vqf5-2xx6-9wfm"], "package": "github/codeql-action", "version": ver}
+pin = pa.inv.Item("action", "github/codeql-action", "a" * 40, "v3.37.8")
+for tags in (["v3.37.8"], ["v3", "v3.37.8"]):
+    lapsed, dead, dormant = pa.undecided_exceptions([ruling("3.37.8")], pa.RulingLog(), [pin], TagNet(tags))
+    assert len(dead) == 1 and not dormant and not lapsed, (tags, lapsed, dead, dormant)
+lapsed, dead, dormant = pa.undecided_exceptions([ruling("4.*")], pa.RulingLog(), [pin], TagNet(["v3", "v3.37.8"]))
+assert dormant and not dead, "a ruling for another series is dormant"
+assert pa.ruling_for(pin, {"GHSA-vqf5-2xx6-9wfm"}, {}, [ruling("3.37.8")], TagNet(["v3", "v3.37.8"]))[0] is None, "applying needs ALL tags"
+assert "3.*" in pa.dead_message(ruling("3.37.8"), [pin], TagNet(["v3", "v3.37.8"])), "the message suggests the series"
+PY
+py "clean() strips the Unicode line separators U+0085, U+2028 and U+2029 too" <<'PY'
+out = pa.clean("a\u0085b\u2028c\u2029d\x1be")
+assert not any(c in out for c in "\u0085\u2028\u2029\x1b"), repr(out)
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
