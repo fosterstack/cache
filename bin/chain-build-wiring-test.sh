@@ -1176,6 +1176,33 @@ PY
 # The run is a pull request's: GITHUB_REF_NAME is 123/merge, which is no tag, so a snapshot script that read the tag would fail or pass a wrong version.
 # The version cache's scripts get is the fixed snapshot one; the oracle is computed for the tag v0.0.0-rc.1 that names it.
 SNAP_TAG=v0.0.0-rc.1
+# tag_cases KIND AC TAGNAME SCRIPT MODE DIR: what the snapshot apk scripts do with the tags at HEAD (two cases).
+# Go stamps the HIGHEST semver tag at HEAD, so every other
+# local v* tag is deleted first (git tag -d, never pushed or fetched), then v0.0.0-rc.1 is made, then any tag left over (a non-v* tag) is refused by name.
+tag_cases() {
+  local kind=$1 ac=$2 t=$3 s=$4 mode=$5 d=$6 rc calls del forced firstbuild
+  mk "$d" "$kind" "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" "$kind" "$mode" "$SNAP_TAG" "FAKE_TAGS_AT_HEAD=v0.3.0 v0.2.9"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  del=$(line_of 'git tag -d v0.3.0' "$d"); forced=$(line_of 'git tag --force v0.0.0-rc.1 HEAD' "$d"); firstbuild=$(line_of '^apk ' "$d")
+  if [ "$rc" = 0 ] && [ -n "$del" ] && [ -n "$forced" ] && [ -n "$firstbuild" ] && [ "$del" -lt "$forced" ] && [ "$forced" -lt "$firstbuild" ] \
+     && [ "$(n_calls 'git tag -d v0.2.9' "$d")" = 1 ] && [ "$(n_calls 'git tag -d v0.3.0' "$d")" = 1 ] && ! grep -q 'git tag -d v0.0.0-rc.1' <<< "$calls" \
+     && [ "$(cat "$d/fake-tags.txt")" = v0.0.0-rc.1 ] && ! grep -Eq 'git (push|fetch)' <<< "$calls" \
+     && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
+    ok "$ac $t $kind: the other local v* tags at HEAD (v0.3.0, v0.2.9) are deleted BEFORE v0.0.0-rc.1 is made and before any build; nothing pushed or fetched"
+  else
+    bad "$ac $t $kind: v0.3.0 v0.2.9 at HEAD -> rc=$rc, tags left: $(tr '\n' ' ' < "$d/fake-tags.txt" 2> /dev/null)," \
+        "calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
+  fi
+  mk "$d" "$kind" "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" "$kind" "$mode" "$SNAP_TAG" "FAKE_TAGS_AT_HEAD=v0.3.0 keep-me"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" != 0 ] && grep -q 'keep-me' "$d/stage.err" && ! grep -q '^apk ' <<< "$calls" && ! grep -q 'git tag -d keep-me' <<< "$calls" \
+     && ! grep -Eq 'git tag (--force )?v0.3.0|git (push|fetch)' <<< "$calls" \
+     && grep -qx keep-me "$d/fake-tags.txt" && ! grep -qx v0.3.0 "$d/fake-tags.txt"; then
+    ok "$ac $t $kind: a tag that is not a v* tag (keep-me) at HEAD fails the job naming it, before any build; it is not deleted and nothing is restored"
+  else
+    bad "$ac $t $kind: keep-me at HEAD -> rc=$rc, err: $(head -c 120 "$d/stage.err" 2> /dev/null), tags: $(tr '\n' ' ' < "$d/fake-tags.txt" 2> /dev/null)"
+  fi
+}
 beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   local t=$1 s=$2 mode=$3 d="$work/b-sapk-$1" rc calls
   REF_NAME=123/merge; mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
@@ -1188,15 +1215,7 @@ beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   else
     bad "AC12 $t snapshot-apk: tag line $tagline, first build $firstbuild, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
-  mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
-  rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" FAKE_TAGS_AT_HEAD=v0.3.0); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ "$(n_calls 'git tag --force v0.0.0-rc.1 HEAD' "$d")" = 1 ] && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ] \
-     && ! grep -q 'version 0.3.0\|--version 0.3.0' <<< "$calls" && ! grep -q 'git push' <<< "$calls" \
-     && [ "$(json_of "$d/out/items-apk.json")" = "$(oracle fragment "$(uname -m)" "$SNAP_TAG")" ]; then
-    ok "AC12 $t snapshot-apk: a v* tag that HEAD already carries (v0.3.0) is accepted and ignored: version stays 0.0.0-rc.1, the local tag is still made"
-  else
-    bad "AC12 $t snapshot-apk: v0.3.0 at HEAD -> rc=$rc calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
-  fi
+  tag_cases snapshot-apk AC12 "$t" "$s" "$mode" "$d"
   mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" APK_RELEASE_SIGNING_KEY=SENTINEL-RELEASE-KEY)
   if [ "$rc" != 0 ] && [ ! -e "$d/out/items-apk.json" ]; then
@@ -1301,13 +1320,7 @@ beh_snapshot_rebuild_apk() { # beh_snapshot_rebuild_apk TAGNAME SCRIPT MODE
     bad "005-AC7 $t snapshot-rebuild-apk: out/items-apk.json differs from the oracle"
   fi
   if [ ! -s "$d/gh.log" ]; then ok "005-AC7 $t snapshot-rebuild-apk: ZERO gh calls"; else bad "005-AC7 $t snapshot-rebuild-apk: gh was called"; fi
-  mk "$d" snapshot-rebuild-apk "$s" "$mode" "$SNAP_TAG"
-  rc=$(run_stage "$d" snapshot-rebuild-apk "$mode" "$SNAP_TAG" FAKE_TAGS_AT_HEAD=v0.3.0); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" = 0 ] && [ "$(n_calls 'git tag --force v0.0.0-rc.1 HEAD' "$d")" = 1 ] && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
-    ok "005-AC7 $t snapshot-rebuild-apk: a v* tag at HEAD (v0.3.0) is accepted and ignored: version stays 0.0.0-rc.1, the local tag is still made"
-  else
-    bad "005-AC7 $t snapshot-rebuild-apk: v0.3.0 at HEAD -> rc=$rc"
-  fi
+  tag_cases snapshot-rebuild-apk 005-AC7 "$t" "$s" "$mode" "$d"
   REF_NAME=
 }
 beh_snapshot_rebuild_assemble() { # beh_snapshot_rebuild_assemble TAGNAME SCRIPT MODE
@@ -1345,7 +1358,7 @@ PY
   fi
   REF_NAME=
 }
-snap_cases_of() { case "$1" in snapshot-apk) echo 9;; snapshot-assemble) echo 5;; snapshot-rebuild-apk) echo 4;; snapshot-rebuild-assemble) echo 4;; esac; }
+snap_cases_of() { case "$1" in snapshot-apk) echo 10;; snapshot-assemble) echo 5;; snapshot-rebuild-apk) echo 5;; snapshot-rebuild-assemble) echo 4;; esac; }
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
@@ -1591,7 +1604,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=542
+EXPECT=546
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

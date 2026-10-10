@@ -162,9 +162,18 @@ sys.exit(int(os.environ.get("FAKE_VERSION_RC", "0")) or (0 if len(found) == 1 el
 '''
 FAKE_GIT = '''#!/usr/bin/env bash
 echo "git $*" >> calls.log
-case "${1:-} ${2:-}" in
-  "tag --points-at") [ -z "${FAKE_TAGS_AT_HEAD:-}" ] || printf '%s\\n' $FAKE_TAGS_AT_HEAD ;;
-  "tag --force") ;;
+# the tags at HEAD live in fake-tags.txt (first use: FAKE_TAGS_AT_HEAD, space separated); `tag -d` removes one, `tag --force` adds one
+if [ ! -f fake-tags.txt ]; then : > fake-tags.txt; for t in ${FAKE_TAGS_AT_HEAD:-}; do echo "$t" >> fake-tags.txt; done; fi
+case "${1:-}" in
+  tag)
+    shift
+    case "${1:-}" in
+      --list) grep '^v' fake-tags.txt || true ;;
+      --points-at) cat fake-tags.txt ;;
+      -d) grep -vx -- "$2" fake-tags.txt > fake-tags.new || true; mv fake-tags.new fake-tags.txt ;;
+      --force) grep -qx -- "$2" fake-tags.txt || echo "$2" >> fake-tags.txt ;;
+      *) echo "fake git: not expected: tag $*" >&2; exit 2 ;;
+    esac ;;
   *) echo "fake git: not expected: $*" >&2; exit 2 ;;
 esac
 '''

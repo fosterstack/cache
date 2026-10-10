@@ -116,7 +116,8 @@ for name in ("snapshot-apk", "snapshot-rapk", "snapshot-anything", "snapshot-", 
     record("rec.json", name)
     rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
     first = err.split("\n", 1)[0]
-    check("a collection name that is exactly snapshot- plus [a-z0-9_-]* is refused as a snapshot record (%s)" % name, rc == 1 and first == "refused at build: snapshot record",
+    check("a collection name that is exactly snapshot- plus [a-z0-9_-]* is refused as a snapshot record (%s)" % name,
+          rc == 1 and first == "refused at build: snapshot record",
           "exit %s, first line %r" % (rc, first[:140]))
 # ---- every reader of a record, not only the verifiers (step-6 round 1, Sonnet 3): record-env and rebuild-compare read it through the same function --------
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0", "--out", "policy.json"])
@@ -203,7 +204,8 @@ LOOKALIKES = [("Snapshot-build (capital S)", "Snapshot-build"), ("a leading spac
               ("Build (capital B)", "Build"), ("builds", "builds"), ("a one for an l (bui1d)", "bui1d"), ("a trailing newline", "build\n"),
               ("a zero-width space (U+200B)", "bui\u200bld"),
               ("a capital after the prefix (not [a-z0-9_-])", "snapshot-Build"), ("a zero-width space after the prefix", "snapshot-bu\u200bild"),
-              ("a newline after the prefix", "snapshot-build\n"), ("a dot after the prefix", "snapshot-build.1"), ("a Cyrillic a in apk (U+0430)", "\u0430pk"), ("the empty name", "")]
+              ("a newline after the prefix", "snapshot-build\n"), ("a dot after the prefix", "snapshot-build.1"),
+              ("a Cyrillic a in apk (U+0430)", "\u0430pk"), ("the empty name", "")]
 for what, name in LOOKALIKES:
     record("rec.json", name)
     rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
@@ -332,7 +334,121 @@ for label, args, stage, env in SUBCOMMANDS:
                   "exit %s, first line %r" % (rc, first[:140]))
 with open(work + "/digests.json", "w") as f:
     json.dump({"image-production": "sha256:" + "a" * 64}, f)
-EXPECT = 153
+# ---- REAL git and REAL go (step-6 round 3, F2): the tag lines of the snapshot apk scripts make Go stamp v0.0.0-rc.1 -------------------
+# Go stamps the highest semver tag at HEAD, so with v0.3.0 at HEAD the single line `git tag --force v0.0.0-rc.1 HEAD` still gives the stamp v0.3.0 and cache's
+# driver (which reads the buildinfo `mod` line) would refuse. The lines come from bin/chain-test-shape.py (SNAPSHOT_TAG_LINES, the same text the script judge
+# demands of the committed scripts) and run in a throw-away repository with a go.mod and a tiny main, whose origin is a bare repository. SKIPPED CLEANLY (and
+# counted, so the total is stable) when go or git is missing: the CI runner has both.
+spec = importlib.util.spec_from_file_location("shape", root + "/bin/chain-test-shape.py")
+shape = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(shape)
+HAVE_TOOLS = shutil.which("go") is not None and shutil.which("git") is not None
+
+
+def git(repo, *args):
+    return subprocess.run(["git", "-C", repo] + list(args), capture_output=True, text=True)
+
+
+def make_repo(name):
+    """A repository with a commit, tags v0.3.0 (and what the caller adds) at HEAD, and a bare origin that has v0.3.0 pushed. Returns (clone, bare)."""
+    bare, clone = "%s/%s-origin.git" % (work, name), "%s/%s" % (work, name)
+    subprocess.run(["git", "init", "-q", "--bare", bare], check=True)
+    subprocess.run(["git", "init", "-q", clone], check=True)
+    for k, v in (("user.email", "t@example.com"), ("user.name", "t"), ("commit.gpgsign", "false"), ("tag.gpgsign", "false")):
+        git(clone, "config", k, v)
+    with open(clone + "/go.mod", "w") as f:
+        f.write("module example.com/snap\n\ngo 1.22\n")
+    with open(clone + "/main.go", "w") as f:
+        f.write("package main\n\nfunc main() {}\n")
+    git(clone, "add", "-A")
+    git(clone, "commit", "-q", "-m", "c")
+    git(clone, "remote", "add", "origin", bare)
+    git(clone, "tag", "v0.3.0")
+    git(clone, "push", "-q", "origin", "v0.3.0")
+    return clone, bare
+
+
+def run_lines(clone, lines):
+    script = "#!/usr/bin/env bash\nset -euo pipefail\n" + "\n".join(lines) + "\n"
+    with open(work + "/tag-lines.sh", "w") as f:
+        f.write(script)
+    return subprocess.run(["bash", work + "/tag-lines.sh"], cwd=clone, capture_output=True, text=True)
+
+
+def stamp(clone):
+    """The main module version in the Go buildinfo (what cache's driver reads), from a build whose output stays outside the clean tree."""
+    out = work + "/app-" + os.path.basename(clone)
+    b = subprocess.run(["go", "build", "-o", out, "."], cwd=clone, capture_output=True, text=True)
+    m = subprocess.run(["go", "version", "-m", out], capture_output=True, text=True)
+    mod = [l.split() for l in m.stdout.splitlines() if l.strip().startswith("mod\t")]
+    rev = [l.split("=", 1)[1] for l in m.stdout.splitlines() if "vcs.revision=" in l]
+    return (mod[0][2] if mod else None), (rev[0] if rev else None), b.stderr
+
+
+def real(label, fn):
+    if not HAVE_TOOLS:
+        check(label + " [SKIP: go or git is not installed here; the CI runner has both]", True)
+        return
+    ok, detail = fn()
+    check(label, ok, detail)
+
+
+def case_control():
+    clone, bare = make_repo("ctl")
+    git(clone, "tag", "--force", "v0.0.0-rc.1", "HEAD")
+    version, rev, err = stamp(clone)
+    return version == "v0.3.0", "stamp %r (the control: the single tag line alone leaves the highest tag, v0.3.0, as the stamp)" % version
+
+
+def case_stamp():
+    clone, bare = make_repo("fix")
+    r = run_lines(clone, shape.SNAPSHOT_TAG_LINES)
+    version, rev, err = stamp(clone)
+    head = git(clone, "rev-parse", "HEAD").stdout.strip()
+    return (r.returncode == 0 and version == "v0.0.0-rc.1" and rev == head,
+            "rc %s, stamp %r, revision %r (HEAD %r), %s" % (r.returncode, version, rev, head, r.stderr[:100]))
+
+
+def case_tags():
+    clone, bare = make_repo("tags")
+    git(clone, "tag", "v0.2.9")
+    r = run_lines(clone, shape.SNAPSHOT_TAG_LINES)
+    left = git(clone, "tag", "--points-at", "HEAD").stdout.split()
+    return r.returncode == 0 and left == ["v0.0.0-rc.1"], "rc %s, tags at HEAD %s" % (r.returncode, left)
+
+
+def case_remote():
+    clone, bare = make_repo("remote")
+    before = subprocess.run(["git", "ls-remote", "--tags", bare], capture_output=True, text=True).stdout
+    r = run_lines(clone, shape.SNAPSHOT_TAG_LINES)
+    after = subprocess.run(["git", "ls-remote", "--tags", bare], capture_output=True, text=True).stdout
+    return r.returncode == 0 and before == after and "v0.3.0" in after and "v0.0.0-rc.1" not in after, "remote before %r after %r" % (before, after)
+
+
+def case_nonv():
+    clone, bare = make_repo("nonv")
+    git(clone, "tag", "keep-me")
+    r = run_lines(clone, shape.SNAPSHOT_TAG_LINES)
+    left = sorted(git(clone, "tag", "--points-at", "HEAD").stdout.split())
+    return (r.returncode != 0 and "keep-me" in r.stderr and "keep-me" in left and "v0.3.0" not in left,
+            "rc %s, stderr %r, tags %s" % (r.returncode, r.stderr[:120], left))
+
+
+def case_rerun():
+    clone, bare = make_repo("rerun")
+    first = run_lines(clone, shape.SNAPSHOT_TAG_LINES)
+    second = run_lines(clone, shape.SNAPSHOT_TAG_LINES)
+    version, rev, err = stamp(clone)
+    return first.returncode == 0 and second.returncode == 0 and version == "v0.0.0-rc.1", "rc %s %s, stamp %r" % (first.returncode, second.returncode, version)
+
+
+real("real git and go: CONTROL - with only `git tag --force v0.0.0-rc.1 HEAD` and v0.3.0 at HEAD, Go's stamp is still v0.3.0 (the problem)", case_control)
+real("real git and go: the snapshot tag lines make the stamp v0.0.0-rc.1 and vcs.revision equal to HEAD, although v0.3.0 was at HEAD", case_stamp)
+real("real git and go: after the lines HEAD carries only v0.0.0-rc.1 (v0.3.0 and v0.2.9 deleted locally)", case_tags)
+real("real git and go: the remote is untouched - v0.3.0 is still there, v0.0.0-rc.1 was never pushed", case_remote)
+real("real git and go: a non-v* tag at HEAD fails the lines naming it, and it is not deleted or restored", case_nonv)
+real("real git and go: a second run (v0.0.0-rc.1 already there) succeeds and the stamp is still v0.0.0-rc.1", case_rerun)
+EXPECT = 159
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:
