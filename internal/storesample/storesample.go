@@ -59,17 +59,18 @@ type Options struct {
 
 // Sampler holds the shared sample.
 type Sampler struct {
-	dir   string
-	d     Deps
-	o     Options
-	mu    sync.Mutex
-	cur   Sample
-	at    time.Time
-	have  bool
-	stale bool
-	busy  bool          // a probe goroutine is running (possibly past its limit)
-	done  chan struct{} // closed when the current refresh has published
-	last  *bool         // last published writable state, for change logging
+	dir     string
+	d       Deps
+	o       Options
+	mu      sync.Mutex
+	cur     Sample
+	at      time.Time
+	have    bool
+	stale   bool
+	busy    bool          // a probe goroutine is running (possibly past its limit)
+	limited bool          // the limit fired while busy: the late result must be published
+	done    chan struct{} // closed when the current refresh has published
+	last    *bool         // last published writable state, for change logging
 }
 
 // New returns a Sampler for dir.
@@ -135,8 +136,21 @@ func (s *Sampler) Get() Sample {
 	return s.cur
 }
 
+// result is one finished measurement.
+type result struct {
+	probeErr error
+	avail    uint64
+	statErr  error
+}
+
 // refreshIfNeeded starts a refresh when the sample is missing, expired or
 // stale and none is running; it returns the channel to wait on, or nil.
+//
+// busy is owned by the measuring goroutine alone: it is set when the goroutine
+// starts and cleared when the goroutine really returns, so a probe stuck past
+// its limit keeps the single slot. The limit only decides when to PUBLISH
+// "not writable"; if the probe finishes later, its real result is published
+// then (limited marks that case).
 func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -146,31 +160,40 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	if s.have && !s.stale && s.d.Now().Sub(s.at) < s.o.Fresh {
 		return nil
 	}
-	s.busy = true
-	s.stale = false
-	s.done = make(chan struct{})
-	done := s.done
-	probeDone := make(chan error, 1)
+	s.busy, s.limited, s.stale = true, false, false
+	done := make(chan struct{})
+	s.done = done
+	resCh := make(chan result, 1)
 	go func() {
-		err := s.probe()
+		r := result{probeErr: s.probe()}
+		r.avail, r.statErr = s.d.Statfs(s.dir) // statfs is inside the measuring goroutine too: a hung statfs cannot hang a reader
 		s.mu.Lock()
-		s.busy = false // the slot is free only when the probe has really returned
+		s.busy = false
+		late := s.limited
 		s.mu.Unlock()
-		probeDone <- err
+		if late {
+			s.publish(r) // the limit already published "not writable"; this is the real, late answer
+		}
+		resCh <- r
 	}()
 	go func() {
-		var werr error
 		t := time.NewTimer(s.o.ProbeLimit)
+		defer t.Stop()
 		select {
-		case werr = <-probeDone:
+		case r := <-resCh:
+			s.publish(r)
 		case <-t.C:
-			werr = errProbeLimit
 			s.mu.Lock()
-			s.busy = true // still held by the stuck probe goroutine until it returns
-			s.mu.Unlock()
+			if s.busy { // still measuring: publish "not writable" now, keep the last known free bytes
+				s.limited = true
+				prev := s.cur.FreeBytes
+				s.mu.Unlock()
+				s.publish(result{probeErr: errProbeLimit, avail: prev})
+			} else { // it finished just as the limit fired: use its result
+				s.mu.Unlock()
+				s.publish(<-resCh)
+			}
 		}
-		t.Stop()
-		s.publish(werr)
 		close(done)
 	}()
 	return done
@@ -182,11 +205,10 @@ func (limitErr) Error() string { return "the writability probe took longer than 
 
 var errProbeLimit error = limitErr{}
 
-func (s *Sampler) publish(probeErr error) {
-	avail, serr := s.d.Statfs(s.dir)
-	smp := Sample{Writable: probeErr == nil && serr == nil}
-	if serr == nil {
-		smp.FreeBytes = avail
+func (s *Sampler) publish(r result) {
+	smp := Sample{Writable: r.probeErr == nil && r.statErr == nil}
+	if r.statErr == nil {
+		smp.FreeBytes = r.avail
 	}
 	s.mu.Lock()
 	s.cur, s.at, s.have = smp, s.d.Now(), true
@@ -198,9 +220,9 @@ func (s *Sampler) publish(probeErr error) {
 		return
 	}
 	if prev == nil || *prev != w {
-		err := probeErr
+		err := r.probeErr
 		if err == nil {
-			err = serr
+			err = r.statErr
 		}
 		if w {
 			s.o.Log.Info("store_writable: the data directory is writable again", "dir", s.dir, "free_bytes", smp.FreeBytes)

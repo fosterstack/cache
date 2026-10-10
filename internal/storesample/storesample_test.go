@@ -286,3 +286,70 @@ func TestRealProbeLeavesNoFileAndFailsOnReadOnlyDir(t *testing.T) {
 	}
 	_ = context.Background
 }
+
+// A probe that returns at about the limit must never leave the single slot held
+// (found in review of PR 258: busy was written by two goroutines).
+func TestNoWedgeWhenProbeReturnsAtTheLimit(t *testing.T) {
+	var n atomic.Int64
+	for i := 0; i < 300; i++ {
+		d := &fakeDisk{avail: 1}
+		now := time.Unix(1000, 0)
+		deps := d.deps(&now)
+		deps.OpenProbe = func(path string) (ProbeFile, error) {
+			time.Sleep(time.Duration(1500+n.Add(1)%1000) * time.Microsecond) // about the 2 ms limit, with jitter
+			return fakeFile{d}, nil
+		}
+		s := New("/data/blobs", deps, Options{ProbeLimit: 2 * time.Millisecond, WaitBudget: 50 * time.Millisecond, Fresh: time.Millisecond, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
+		s.Get()
+		time.Sleep(15 * time.Millisecond)
+		s.mu.Lock()
+		busy := s.busy
+		s.mu.Unlock()
+		if busy {
+			t.Fatalf("iteration %d: busy stayed true after the probe returned (the sampler would never measure again)", i)
+		}
+	}
+}
+
+// A probe that finishes after the limit has its real result published.
+func TestLateProbeResultIsPublished(t *testing.T) {
+	d := &fakeDisk{avail: 1, block: make(chan struct{})}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now, func(o *Options) { o.ProbeLimit = 20 * time.Millisecond; o.WaitBudget = 500 * time.Millisecond })
+	s.Start()
+	if s.Get().Writable {
+		t.Fatal("over the limit must read not writable")
+	}
+	close(d.block)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.Get().Writable {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the late, successful probe result was never published")
+}
+
+// A statfs that hangs cannot hang a reader beyond the wait budget, nor start a second measurement.
+func TestHungStatfsDoesNotHangReaders(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	deps := d.deps(&now)
+	hang := make(chan struct{})
+	deps.Statfs = func(string) (uint64, error) { <-hang; return 1, nil }
+	s := New("/data/blobs", deps, Options{ProbeLimit: 20 * time.Millisecond, WaitBudget: 20 * time.Millisecond})
+	done := make(chan struct{})
+	go func() { s.Start(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Start hung on a hung statfs")
+	}
+	now = now.Add(10 * time.Second)
+	s.Get()
+	if n := d.probes.Load(); n != 1 {
+		t.Fatalf("%d probes; want 1 (the hung measurement keeps the slot)", n)
+	}
+	close(hang)
+}
