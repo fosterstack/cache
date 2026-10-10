@@ -209,6 +209,8 @@ JOB_OUTPUT = "${{ steps.digests.outputs.digests }}"
 MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
+# The guard compares in bash, case-sensitively, on purpose: GitHub's `==` in an expression is case-insensitive (inputs.mode == 'Snapshot' is true), so the
+# guard is load-bearing, not redundant: a looser one would let a mixed-case mode skip both Witness steps.
 MODE_GUARD_RUN = 'case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac'
 # the closed list of snapshot step names
 SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build", "rapk": "snapshot-rapk", "rebuild": "snapshot-rebuild"}

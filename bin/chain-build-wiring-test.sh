@@ -319,6 +319,11 @@ st s_mode_req  "AC12 the mode is required" "on: must be" '        default: relea
 st s_guard_none "AC12 the mode guard is missing (any other mode would skip both Witness steps and upload nothing, green)" "mode guard" \
               "$GUARD_STEP" ''
 st s_guard_open "AC12 the mode guard lets any mode through" "mode guard" 'release|snapshot) ;; *)' 'release|snapshot|*) ;; *)'
+st s_guard_env "AC12 the mode guard reads another value than the input" "mode guard" '          MODE: ${{ inputs.mode }}\n' '          MODE: release\n'
+st s_guard_if "AC12 the mode guard carries an if (it could be skipped)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
+              '          MODE: ${{ inputs.mode }}\n        if: always()\n'
+st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
+              '          MODE: ${{ inputs.mode }}\n        continue-on-error: true\n'
 st s_rel_noif  "AC12 the release Witness step has no if (it would run in a snapshot, with admission)" "release Witness step" \
               '      - name: apk under Witness\n        if: ${{ inputs.mode == '"'release'"' }}\n' '      - name: apk under Witness\n'
 st s_rel_snap  "AC12 the release Witness step runs in snapshot mode" "release Witness step" \
@@ -405,14 +410,14 @@ rb r_mode_snap "005-AC7 the Rebuild mode defaults to snapshot" "on: must be" 'de
 rb r_guard_none "005-AC7 the Rebuild mode guard is missing" "mode guard" "$GUARD_STEP" ''
 rb r_rel_noif "005-AC7 the release Witness step of Rebuild has no if (it would run in a snapshot too)" "release Witness step" \
        "      - name: rapk under Witness\n        if: \${{ inputs.mode == 'release' }}\n" "      - name: rapk under Witness\n"
-rb r_snap_none "005-AC7 the snapshot-rapk Witness step is missing" "snapshot" \
+rb r_snap_none "005-AC7 the snapshot-rapk Witness step is missing" "Witness step" \
        "$RSNAP_OWN" \
            ''
-rb r_snap_rel "005-AC7 the snapshot-rapk step runs the release script (policy and stage-start of a release)" "snapshot" \
+rb r_snap_rel "005-AC7 the snapshot-rapk step runs the release script (policy and stage-start of a release)" "Witness step" \
        'snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'snapshot-rapk bin/build-stage-rebuild-apk.sh'
-rb r_snap_name "005-AC7 the snapshot-rebuild step uses a name outside the closed list" "snapshot" \
+rb r_snap_name "005-AC7 the snapshot-rebuild step uses a name outside the closed list" "Witness step" \
        'witnessed.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh' 'witnessed.sh snapshot-evil bin/build-stage-snapshot-rebuild-assemble.sh'
-rb r_snap_asmname "005-AC7 the snapshot-rapk step runs under the release step name" "snapshot" \
+rb r_snap_asmname "005-AC7 the snapshot-rapk step runs under the release step name" "Witness step" \
        'witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'witnessed.sh rapk bin/build-stage-snapshot-rebuild-apk.sh'
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions 'id-token: write' 'id-token: write\n      checks: read'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
@@ -1565,7 +1570,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=532
+EXPECT=535
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
