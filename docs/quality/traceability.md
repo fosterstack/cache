@@ -867,7 +867,7 @@ The two workflow files that carry the scanner cloud identities (scan.yml and mai
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-SCAN-015-AC1 | Given the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml); when the repository's workflows are read; then neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-015-AC1 | Given the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml); when the repository's workflows are read; then neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check | ci-workflow |  | approved | 3 item(s) |
 
 ## Licensing
 
