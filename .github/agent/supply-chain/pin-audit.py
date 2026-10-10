@@ -234,6 +234,16 @@ def _readable_range(rg):
             and all(_readable_event(e) for e in events) and "introduced" in events[0])
 
 
+def _malformed(entry):
+    """AC14: an entry whose shape the old name-and-range reading cannot trust: package not an object, ranges not a list of objects, a SEMVER or
+    ECOSYSTEM range without readable events, versions not a list. Other range types (GIT) and extra keys are fine; the verdict reads the rest as before."""
+    ranges, versions = entry.get("ranges", []), entry.get("versions", [])
+    return (not isinstance(entry.get("package", {}), dict) or not isinstance(versions, list) or not isinstance(ranges, list)
+            or not all(isinstance(rg, dict) for rg in ranges)
+            or not all(isinstance(rg.get("events"), list) and all(_readable_event(e) for e in rg["events"])
+                       for rg in ranges if rg.get("type") in ("SEMVER", "ECOSYSTEM")))
+
+
 def _unreadable(entry):
     """AC14: an affected entry is not trusted to clear a version unless it has a list of ranges that are ALL readable (so no GIT range, no other type,
     no malformed events) and any versions it lists are a list."""
@@ -459,6 +469,8 @@ class LiveNet:
         entries = v.get("affected")
         if not (isinstance(entries, list) and all(isinstance(a, dict) for a in entries)):
             return True                              # AC14: affected is not a list of objects: unreadable, a hit
+        if any(_malformed(a) for a in entries):
+            return True                              # AC14: every entry the verdict reads must be well formed, in every branch below
         if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
             return self._osv_says(_without_paths(v), "", version, versioned=True)
         name = _entry_path
