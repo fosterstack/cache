@@ -792,5 +792,82 @@ class ClockIsSystemOnly(unittest.TestCase):
             self.assertIn("expired", r.stdout)
 
 
+class GateRunsTheScanGuard(unittest.TestCase):
+    """REQ-SCAN-015-AC2 (proposed AC3): the trusted gate runs the DEFAULT branch's scanner guard (the checked-out
+    bin/scan-no-workflow-call-test.sh) over the PR head read as git objects, in the judge and in the sweep, exactly
+    one line each, unconditional and unswallowed, so a step of the PR's own CI cannot overwrite the guard it runs."""
+    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(BIN)))
+    WF = os.path.join(ROOT, ".github", "workflows", "agent-review-gate.yml")
+    SCRIPT = "scan-no-workflow-call-test.sh"
+    LINES = {"judge": 'PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure',
+             "sweep": '&& PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh; then'}
+
+    def problems(self, text):
+        import yaml
+        wf = yaml.safe_load(text)
+        bad = []
+        for job_name, want in self.LINES.items():
+            job = wf["jobs"][job_name]
+            if "continue-on-error" in job:
+                bad.append(job_name + ": the job has continue-on-error")
+            steps = [st for st in job["steps"] if "auditor-review-gate.py" in st.get("run", "")]
+            if len(steps) != 1:
+                bad.append(job_name + ": not exactly one gate step"); continue
+            st = steps[0]
+            for k in ("if", "continue-on-error"):
+                if k in st:
+                    bad.append("%s: the gate step has `%s`" % (job_name, k))
+            lines = [l.strip() for l in st["run"].splitlines() if not l.lstrip().startswith("#")]
+            every = [l.strip() for s in job["steps"] for l in s.get("run", "").splitlines()
+                     if self.SCRIPT in l and not l.lstrip().startswith("#")]
+            if every != [want] or lines.count(want) != 1:
+                bad.append("%s: the scanner guard line is not exactly %r: %r" % (job_name, want, every)); continue
+            i = lines.index(want)
+            if job_name == "judge":
+                ends = [n for n, l in enumerate(lines) if l.startswith('echo "verdict=')]
+                if not ends or i > ends[0] or "verdict=success" not in lines[:i]:
+                    bad.append("judge: the scanner guard line is not between verdict=success and the verdict output")
+            elif i == 0 or not lines[i - 1].endswith("\\"):
+                bad.append("sweep: the scanner guard line is not the last condition of the verdict")
+        return bad
+
+    def text(self):
+        with open(self.WF) as fh:
+            return fh.read()
+
+    def test_the_real_gate_runs_the_default_branchs_scan_guard_over_the_head(self):
+        self.assertEqual(self.problems(self.text()), [])
+
+    def test_the_scan_guard_is_an_enforcement_file_once_the_gate_runs_it(self):
+        # what the gate runs is never cleared by a substitute (the derived-wiring test above asks the same of every path)
+        self.assertTrue(G.enforces("bin/" + self.SCRIPT))
+
+    def test_mutants_of_the_gate_wiring_are_caught(self):
+        import yaml
+        t, j, s = self.text(), self.LINES["judge"], self.LINES["sweep"]
+        self.assertIn(j, t); self.assertIn(s, t)
+        text_mutants = {
+            "judge line removed": t.replace(j, "", 1),
+            "sweep line removed": t.replace(s, "; then", 1),
+            "judge || true": t.replace(j, j.replace("|| verdict=failure", "|| true"), 1),
+            "judge another sha": t.replace(j, j.replace('"$HEAD_SHA"', '"$GITHUB_SHA"'), 1),
+            "judge the PR's copy": t.replace(j, j.replace("bash bin/" + self.SCRIPT, 'bash <(git show "$HEAD_SHA":bin/' + self.SCRIPT + ")"), 1),
+            "judge a second, swallowed run": t.replace(j, j + "\n          bash bin/" + self.SCRIPT + " || true", 1),
+            "judge after the verdict output": t.replace("          " + j + "\n", "", 1).replace(
+                '          [ "$verdict" = success ]', "          " + j + '\n          [ "$verdict" = success ]', 1),
+        }
+        for name, m in text_mutants.items():
+            self.assertNotEqual(m, t, name)
+            self.assertNotEqual(self.problems(m), [], name)
+        def gate_step(wf, job):
+            return [st for st in wf["jobs"][job]["steps"] if "auditor-review-gate.py" in st.get("run", "")][0]
+        for name, edit in {"gate step if: false": lambda wf: gate_step(wf, "judge").__setitem__("if", False),
+                           "gate step continue-on-error": lambda wf: gate_step(wf, "judge").__setitem__("continue-on-error", True),
+                           "sweep step if: false": lambda wf: gate_step(wf, "sweep").__setitem__("if", False),
+                           "judge job continue-on-error": lambda wf: wf["jobs"]["judge"].__setitem__("continue-on-error", True)}.items():
+            wf = yaml.safe_load(t); edit(wf)
+            self.assertNotEqual(self.problems(yaml.safe_dump(wf, sort_keys=False)), [], name)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -104,6 +104,10 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+# a nested run (the git-object cases below call this script again) is a git-object run only: it never reaches the
+# self-tests, so a missing git-object mode cannot recurse
+[ -z "${SCAN_GUARD_NESTED:-}" ] || { echo "scan guard: a nested run reached the self-tests (no git-object mode)" >&2; exit 2; }
+
 expect() { # expect ok|caught LABEL TREE
   local out rc=0
   out=$(judge "$3") || rc=$?
@@ -190,7 +194,53 @@ expect ok "a neighbour that calls stage-build.yml and mentions scan.yml in a run
 # the real repository (green today)
 expect ok "the real repository: neither file is callable and nothing calls them" "$root"
 
-EXPECT=42
+# 5. git-object mode (REQ-SCAN-015-AC2; proposed AC3): SCAN_GUARD_JUDGE_GIT=<full commit sha> judges THAT commit's
+# workflows and composite actions, read as git objects (nothing checked out or run), with THIS copy of the script. The
+# trusted review gate runs the default branch's copy this way over every pull request head, so a step of the PR's
+# own CI that overwrites the script on disk changes nothing.
+CALL_SCAN=$'name: scan\non:\n  pull_request:\n  workflow_call:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
+CLEAN_SCAN=$'name: scan\non:\n  pull_request:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
+gitjudge() { # gitjudge ok|caught LABEL NAME 'edit in the repo before the commit' ['edit after the commit'] [revision]
+  local r out rc=0 rev
+  r=$(fixture "git-$3")
+  ( cd "$r" && git init -q . && eval "$4" && git add -A \
+      && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm head && eval "${5:-:}" ) >/dev/null 2>&1 \
+    || { failn=$((failn + 1)); echo "FAIL git: $2 -> the fixture repository could not be built"; return; }
+  rev=${6:-$(git -C "$r" rev-parse HEAD)}
+  out=$(cd "$r" && SCAN_GUARD_NESTED=1 SCAN_GUARD_JUDGE_GIT="$rev" bash "$root/bin/scan-no-workflow-call-test.sh" 2>&1) || rc=$?
+  if [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   git: $2"
+  elif [ "$1" = caught ] && [ "$rc" = 1 ]; then pass=$((pass + 1)); echo "ok   git: $2 (caught: $out)"
+  else failn=$((failn + 1)); echo "FAIL git: $2 -> rc=$rc $out"; fi
+}
+gitjudge ok     "a clean head passes" clean ':'
+gitjudge caught "the head's scan.yml declares workflow_call" wfcall "printf '%s\n' \"\$CALL_SCAN\" > .github/workflows/scan.yml"
+gitjudge caught "the head's main-candidate-rescan.yml declares workflow_call" mcr \
+  "printf 'on: [schedule, workflow_call]\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo\n' > .github/workflows/main-candidate-rescan.yml"
+gitjudge caught "the head also replaces the script with exit 0 (this copy still judges)" gutted \
+  "printf '%s\n' \"\$CALL_SCAN\" > .github/workflows/scan.yml && mkdir -p bin && printf '#!/usr/bin/env bash\nexit 0\n' > bin/scan-no-workflow-call-test.sh"
+gitjudge caught "the head's workflow calls ./.github/workflows/scan.yml" local \
+  "printf 'name: o\non: push\njobs:\n  b:\n    uses: ./.github/workflows/scan.yml\n' > .github/workflows/other.yml"
+gitjudge caught "the head's workflow calls o/r/.github/workflows/main-candidate-rescan.yml@main" remote \
+  "printf 'name: o\non: push\njobs:\n  b:\n    uses: o/r/.github/workflows/main-candidate-rescan.yml@main\n' > .github/workflows/other.yml"
+gitjudge caught "a .yaml workflow in the head calls scan.yml" dotyaml \
+  "printf 'name: o\non: push\njobs:\n  b:\n    uses: ./.github/workflows/scan.yml\n' > .github/workflows/o2.yaml"
+gitjudge caught "path form ./.github/workflows/../workflows/scan.yml in the head" pathform \
+  "printf 'name: o\non: push\njobs:\n  b:\n    uses: ./.github/workflows/../workflows/scan.yml\n' > .github/workflows/other.yml"
+gitjudge caught "a dotfile workflow in the head calls scan.yml" dotfile \
+  "printf 'name: h\non: push\njobs:\n  b:\n    uses: ./.github/workflows/scan.yml\n' > .github/workflows/.hidden.yml"
+gitjudge caught "a nested composite action in the head names main-candidate-rescan.yml" composite \
+  "mkdir -p .github/actions/a/b && printf 'name: y\nruns:\n  using: composite\n  steps:\n    - uses: ./.github/workflows/main-candidate-rescan.yml\n' > .github/actions/a/b/action.yaml"
+gitjudge caught "the head has no scan.yml" missing "rm .github/workflows/scan.yml"
+gitjudge caught "the head's scan.yml is a symlink, even to a clean file (fail closed)" symlink \
+  "printf '%s\n' \"\$CLEAN_SCAN\" > elsewhere.yml && rm .github/workflows/scan.yml && ln -s ../../elsewhere.yml .github/workflows/scan.yml"
+gitjudge caught "the disk is clean but the judged commit is not (the object is read, not the disk)" diskclean \
+  "printf '%s\n' \"\$CALL_SCAN\" > .github/workflows/scan.yml" "printf '%s\n' \"\$CLEAN_SCAN\" > .github/workflows/scan.yml"
+gitjudge caught "a revision that is not a full sha (HEAD) is refused" shortrev ':' '' 'HEAD'
+gitjudge caught "a full sha that is not in the repository is refused" norev ':' '' "$(printf '0%.0s' {1..40})"
+gitjudge caught "a submodule entry under .github/actions is refused (fail closed)" submodule \
+  "git update-index --add --cacheinfo 160000,$(printf 'a%.0s' {1..40}),.github/actions/sub"
+
+EXPECT=58
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
