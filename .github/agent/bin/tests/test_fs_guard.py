@@ -84,30 +84,54 @@ def load_allow():
     return rows
 
 
-def flagged(line, rel=""):
-    """True when the line names a system path in any form the scan knows (rules above); `sudo` also counts in a shell test."""
+def flagged(line, rel="", first=False):
+    """True when the line names a system path in any form the scan knows (rules above); `sudo` also counts in a shell test. Only the FIRST
+    line of a file may be a `#!` line (and is then exempt); `/* ... */` is NOT stripped (in a shell test `ls /*/*/` is two globs, not a comment)."""
     clean = SHEBANG.sub("", line).replace("/dev/null", "")
     anchored = _SUFFIX.sub(r"\1", clean)
-    if re.search(r"/\*.*\*/", anchored):
-        anchored = re.sub(r"/\*.*\*/", "", anchored)               # a /* comment */
-    return not line.startswith("#!") and bool(LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line) or EXTRA.search(anchored)
-                                              or (rel.endswith(".sh") and SUDO.search(line)))
+    return not (first and line.startswith("#!")) and bool(LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line)
+                                                          or EXTRA.search(anchored) or (rel.endswith(".sh") and SUDO.search(line)))
+
+
+def split_lines(rel, text):
+    """Python's tokenizer ends a line at a lone CR; bash does not. Splitting a .py file on every kind of newline means no statement hides
+    behind a CR after a comment or `#!` line."""
+    return re.split(r"\r\n|\r|\n", text) if rel.endswith(".py") else text.split("\n")
 
 
 def literal_findings(rel, text, allow):
     used, bad = set(), []
-    for n, line in enumerate(text.split("\n"), 1):
-        if not flagged(line, rel):
+    for m in re.finditer(r"\r(?!\n)", text):                       # a lone CR in ANY scanned file is a finding (nothing legitimate has one)
+        bad.append("%s:%d: a lone CR (not followed by LF) hides what follows from line-based tools" % (rel, text.count("\n", 0, m.start()) + 1))
+        break
+    for n, line in enumerate(split_lines(rel, text), 1):
+        if not flagged(line, rel, n == 1):
             continue
         hit = [a for a in allow if a[0] == rel and a[1] in line]
         if hit:
             used.update(hit)
-        else:
-            bad.append("%s:%d: %s" % (rel, n, line.strip()[:110]))
+            # A per-pattern row approves the SPAN it names, not the line: remove the approved span(s) and look at what is left, so an extra
+            # system-path access appended to an approved line is still a finding. (A whole-file row, empty span, exempts the line; the file is pinned.)
+            rest = line
+            for a in hit:
+                if a[1]:
+                    rest = rest.replace(a[1], "")
+            if any(a[1] == "" for a in hit) or not flagged(rest, rel):
+                continue
+        bad.append("%s:%d: %s" % (rel, n, line.strip()[:110]))
     return bad, used
 
 
+_SCAN = {}
+
+
 def scan():
+    if "scan" not in _SCAN:
+        _SCAN["scan"] = _scan()
+    return _SCAN["scan"]
+
+
+def _scan():
     allow = load_allow()
     used, bad = set(), []
     for rel in test_files():
@@ -185,6 +209,15 @@ def link_findings(rel, text, allow):
 
 
 def link_scan(read=None):
+    if read is None and "link" in _SCAN:
+        return _SCAN["link"]
+    out = _link_scan(read)
+    if read is None:
+        _SCAN["link"] = out
+    return out
+
+
+def _link_scan(read=None):
     from system_path_allowlist import LINK_ROWS
     allow = [tuple(p.strip() for p in r) for r in LINK_ROWS]
     read = read or (lambda rel: decode(read_raw(rel)))
@@ -212,7 +245,7 @@ def makes_files_without_temp(text):
 
 def literal_lines(text, rel=""):
     """The lines of a file that the literal scan would report, stripped."""
-    return [line.strip() for line in text.split("\n") if flagged(line, rel)]
+    return [line.strip() for n, line in enumerate(split_lines(rel, text), 1) if flagged(line, rel, n == 1)]
 
 
 def row_pin(raw, rel=""):
@@ -481,7 +514,7 @@ class Rules(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": "/opt/fakehome", "TMPDIR": "/opt/fakehome"}):
             self.assertNotIn("/opt/fakehome", G._roots())                          # the home directory is never a root
             with mock.patch.object(sys, "path", ["/opt/fakehome", "/opt/fakelib"]):
-                self.assertNotIn("/opt/fakehome", G._env_roots()); self.assertIn("/opt/fakelib", G._env_roots())
+                self.assertNotIn("/opt/fakehome", G._env_roots()); self.assertNotIn("/opt/fakelib", G._env_roots())     # not inside the interpreter / checkout / temp
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.dict(os.environ, {"TMPDIR": d}):
                 self.assertIn(os.path.realpath(d), G._roots())
@@ -517,6 +550,8 @@ class Rules(unittest.TestCase):
         try:
             with T.active():
                 os.stat("f", dir_fd=fd1); os.close(os.open("f", os.O_RDONLY, dir_fd=fd1))
+                with mock.patch.dict(G._real, {"getcwd": lambda: T.t2}):                  # the open event carries only the bare name: the cwd must not matter
+                    os.close(os.open("f", os.O_RDONLY, dir_fd=fd1))
                 for name in ("f", "sub", ".."):
                     self.refused(os.stat, name, dir_fd=fd2); self.refused(os.lstat, name, dir_fd=fd2)
                     self.refused(os.access, name, os.R_OK, dir_fd=fd2); self.refused(os.readlink, name, dir_fd=fd2)
@@ -533,12 +568,23 @@ class Rules(unittest.TestCase):
                 mock.patch.object(sys, "base_prefix", "/usr"), mock.patch.object(sys, "base_exec_prefix", "/usr"), \
                 mock.patch.object(sys, "executable", "/usr/bin/python3"), mock.patch.object(sys, "path", ["/usr", "/usr/local", "", "/opt/fakelib/site"]):
             got = G._env_roots()
-        self.assertNotIn("/usr", got); self.assertNotIn("/usr/local", got); self.assertIn("/opt/fakelib/site", got)
+        self.assertNotIn("/usr", got); self.assertNotIn("/usr/local", got); self.assertNotIn("/opt/fakelib/site", got)
         with mock.patch.object(sys, "prefix", "/opt/fakevenv/cache"), mock.patch.object(sys, "exec_prefix", "/opt/fakevenv/cache"), \
                 mock.patch.object(sys, "base_prefix", "/opt/fakebase/x64"), mock.patch.object(sys, "base_exec_prefix", "/opt/fakebase/x64"), \
-                mock.patch.object(sys, "executable", "/opt/fakevenv/cache/bin/python"):
+                mock.patch.object(sys, "executable", "/opt/fakevenv/cache/bin/python"), \
+                mock.patch.object(sys, "path", ["/opt/fakevenv/cache/lib/python3.12/site-packages", "/opt/fakebase/x64/lib/python3.12", "/opt/other/lib"]):
             got = G._env_roots()
         self.assertIn("/opt/fakevenv/cache", got); self.assertIn("/opt/fakebase/x64", got)
+        self.assertIn("/opt/fakevenv/cache/lib/python3.12/site-packages", got)            # inside the interpreter prefix
+        self.assertNotIn("/opt/other/lib", got)                                           # a sys.path entry elsewhere is not a root
+        with mock.patch.object(sys, "prefix", "/opt/fakevenv/cache"), mock.patch.object(sys, "exec_prefix", "/opt/fakevenv/cache"), \
+                mock.patch.object(sys, "base_prefix", "/opt/fakebase/x64"), mock.patch.object(sys, "base_exec_prefix", "/opt/fakebase/x64"), \
+                mock.patch.object(sys, "executable", "/opt/fakevenv/cache/bin/python"), \
+                mock.patch.object(sys, "path", ["/opt/fakevenv/cache2/lib", "/opt/fakevenv/cachex", "/tmp/zz-syspath", "/tmpx/zz", "/private/var/folders/q/T/p"]):
+            got = G._env_roots()
+        self.assertNotIn("/opt/fakevenv/cache2/lib", got); self.assertNotIn("/opt/fakevenv/cachex", got)       # a sibling that merely shares the prefix text
+        self.assertIn("/tmp/zz-syspath", got); self.assertIn("/private/var/folders/q/T/p", got)             # a standard temp parent is accepted
+        self.assertNotIn("/tmpx/zz", got)
         self.assertEqual(sorted(G._canon_set(["/", "/usr", "/opt/x"], drop_broad=True)), ["/opt/x"])
         self.assertIn("/usr", G._canon_set(["/usr"]))
 
@@ -560,6 +606,12 @@ sys.addaudithook(lambda event, args: _EVENTS.append(event) if _RECORD[0] else No
 class AuditRows(unittest.TestCase):
     """Every row of the audit tables must be a call that really emits its event: CPython 3.12/3.14 emit NOTHING for os.mkfifo, os.mknod and
     os.chroot (a row for them guarded nothing and a test calling G._hook directly hid it). A dead row fails here; the call must be wrapped."""
+    def unix_socket(self, dgram=False):
+        import socket
+        sk = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM if dgram else socket.SOCK_STREAM)
+        self.addCleanup(sk.close)
+        return sk
+
     def exercisers(self, d):
         f, sub = os.path.join(d, "f"), os.path.join(d, "sub")
         open(f, "w").close(); os.mkdir(sub)
@@ -578,40 +630,65 @@ class AuditRows(unittest.TestCase):
             "sqlite3.connect": lambda: __import__("sqlite3").connect(":memory:").close(), "tempfile.mkstemp": lambda: os.close(tf.mkstemp(dir=d)[0]),
             "tempfile.mkdtemp": lambda: tf.mkdtemp(dir=d), "ctypes.dlopen": lambda: __import__("ctypes").CDLL(os.path.join(d, "nolib.so")),
             "os.add_dll_directory": lambda: os.add_dll_directory(d), "os.mkdir@fd": lambda: os.mkdir("z", dir_fd=fd),
+            "os.mkfifo": lambda: os.mkfifo(os.path.join(d, "ff0")), "os.mknod": lambda: os.mknod(os.path.join(d, "nn0")), "os.chroot": lambda: os.chroot(os.path.join(d, "no-such-dir")),      # never a real directory: chroot must not take effect
+            "socket.bind": lambda: self.unix_socket().bind(os.path.join(d, "s.sock")),
+            "socket.connect": lambda: self.unix_socket().connect(os.path.join(d, "s.sock")),
+            "socket.sendto": lambda: self.unix_socket(dgram=True).sendto(b"x", os.path.join(d, "s.sock")),
+            "socket.sendmsg": lambda: self.unix_socket(dgram=True).sendmsg([b"x"], [], 0, os.path.join(d, "s.sock")),
+            "sqlite3.enable_load_extension": lambda: __import__("sqlite3").connect(":memory:").enable_load_extension(False),
+            "sqlite3.load_extension": lambda: __import__("sqlite3").connect(":memory:").load_extension(os.path.join(d, "ext.so")),
         }
 
-    def test_every_audit_row_is_a_call_that_really_emits_its_event(self):
+    def audit_rows_report(self):
+        """(dead rows, rows with no exerciser, rows unproven on this platform): every row must be a call that really emits its event."""
         import errno
-        rows = set(G._AUDIT_PATH) | set(G._DIRFD)
+        rows = set(G._AUDIT_PATH) | set(G._DIRFD) | set(G._SPECIAL_EVENTS)
+        dead, skipped = [], []
         with tempfile.TemporaryDirectory() as d:
             ex = self.exercisers(d)
-            dead, unexercised = [], sorted(r for r in rows if r not in ex)
+            unexercised = sorted(r for r in rows if r not in ex)
             for ev in sorted(rows & set(ex)):
                 _EVENTS.clear(); _RECORD[0] = True
                 try:
                     ex[ev]()
                 except (AttributeError, NotImplementedError):
+                    skipped.append(ev)
                     continue                                           # not on this platform (xattr is Linux, chflags is BSD, dll directory is Windows)
                 except OSError as e:
-                    if e.errno in (errno.ENOTSUP, errno.ENOSYS, errno.EPERM, errno.EOPNOTSUPP, errno.ENODATA, errno.ENOENT) and ev.startswith("os.") and "xattr" in ev:
+                    if e.errno in (errno.ENOTSUP, errno.ENOSYS, errno.EPERM, errno.EOPNOTSUPP, errno.ENODATA, errno.ENOENT) and "xattr" in ev:
+                        skipped.append(ev)
                         continue
-                    if ev != "ctypes.dlopen":
+                    if ev not in ("ctypes.dlopen", "socket.connect", "socket.sendto", "socket.sendmsg", "os.chroot", "os.mknod"):
+                        raise
+                except Exception as e:                                 # sqlite refusing an extension it was never allowed to load, and the like
+                    if ev not in ("sqlite3.load_extension", "sqlite3.enable_load_extension"):
                         raise
                 finally:
                     _RECORD[0] = False
                 if ev not in _EVENTS:
                     dead.append(ev)
+        return dead, unexercised, skipped
+
+    def test_every_audit_row_is_a_call_that_really_emits_its_event(self):
+        dead, unexercised, skipped = self.audit_rows_report()
+        if skipped:
+            print("\nSKIP (unproven on this platform): " + ", ".join(skipped), file=sys.stderr)       # these rows are only proven where the call exists
         self.assertEqual(unexercised, [], "audit rows with no exerciser here (add one, or remove the row)")
         self.assertEqual(dead, [], "audit rows whose event CPython never emits: remove the row and wrap the call in install()")
 
     def test_a_dead_row_would_be_caught(self):
-        with tempfile.TemporaryDirectory() as d:
-            _EVENTS.clear(); _RECORD[0] = True
-            try:
-                os.mkfifo(os.path.join(d, "ff"))
-            finally:
-                _RECORD[0] = False
-        self.assertNotIn("os.mkfifo", _EVENTS)                             # still true: that is why mkfifo is wrapped, not a row
+        saved = (dict(G._AUDIT_PATH), dict(G._DIRFD), G._SPECIAL_EVENTS)
+        try:
+            G._AUDIT_PATH["os.mkfifo"] = (0,)                          # the real defect: a row for a call that emits nothing
+            G._DIRFD["os.mknod"] = {0: 3}
+            G._SPECIAL_EVENTS = G._SPECIAL_EVENTS + ("os.chroot",)
+            dead, unexercised, _ = self.audit_rows_report()
+            self.assertEqual(sorted(set(dead) | set(unexercised)), ["os.chroot", "os.mkfifo", "os.mknod"], (dead, unexercised))
+            G._AUDIT_PATH["os.bogus_event"] = (0,)
+            _, unexercised, _ = self.audit_rows_report()
+            self.assertIn("os.bogus_event", unexercised)
+        finally:
+            G._AUDIT_PATH.clear(); G._AUDIT_PATH.update(saved[0]); G._DIRFD.clear(); G._DIRFD.update(saved[1]); G._SPECIAL_EVENTS = saved[2]
 
     def test_mkfifo_mknod_chroot_are_wrapped_and_refuse_a_path_outside_the_roots(self):
         T = Tables(self)
@@ -652,16 +729,23 @@ class AuditRows(unittest.TestCase):
             os.stat(T.p2("f"))
         self.assertFalse(os.path.exists(T.p2("X")))
 
-    def test_the_standard_temp_parents_and_the_scandir_fd_form(self):
+    def test_the_standard_temp_parents_are_fixed(self):
         self.assertGreaterEqual(set(G.STANDARD_TEMP), {"/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders", "/dev/shm"})
         T = Tables(self)
-        fd = os.open(T.t1, os.O_RDONLY)
+
+    def test_scandir_on_an_fd_judges_the_fd_directory_and_its_entries(self):
+        T = Tables(self)
+        os.symlink.__wrapped__(T.p2("f"), T.p1("ln"))
+        fd_in, fd_out = os.open(T.t1, os.O_RDONLY), os.open(T.t2, os.O_RDONLY)
         try:
-            it = os.scandir(fd)
-            self.assertNotIsInstance(it, G._Scan)                      # an fd scan is passed through (its entries have no judgeable path)
-            it.close()
+            with T.active():
+                self.refused(os.scandir, fd_out); self.refused(os.listdir, fd_out)
+                es = {e.name: e for e in os.scandir(fd_in)}
+                self.assertTrue(es["ln"].is_symlink())
+                self.refused(es["ln"].is_file); self.refused(es["ln"].stat)           # the planted link, relative to the fd's directory
+                es["ln"].stat(follow_symlinks=False); self.assertTrue(es["sub"].is_dir())
         finally:
-            os.close(fd)
+            os.close(fd_in); os.close(fd_out)
 
     def test_xattr_writers_are_wrapped_where_the_platform_has_them(self):
         T = Tables(self)
@@ -700,6 +784,119 @@ class AuditRows(unittest.TestCase):
             c.close()
             self.assertEqual(sorted(os.listdir(d)), [".coverage.1"])
 
+    def test_every_sqlite_entry_point_denies_attach_and_vacuum_into(self):
+        import sqlite3, sqlite3.dbapi2, _sqlite3
+        opens = {
+            "sqlite3.connect": lambda: sqlite3.connect(":memory:"), "sqlite3.dbapi2.connect": lambda: sqlite3.dbapi2.connect(":memory:"),
+            "_sqlite3.connect": lambda: _sqlite3.connect(":memory:"), "sqlite3.Connection": lambda: sqlite3.Connection(":memory:"),
+            "sqlite3.dbapi2.Connection": lambda: sqlite3.dbapi2.Connection(":memory:"), "_sqlite3.Connection": lambda: _sqlite3.Connection(":memory:"),
+            "connect(factory=Connection)": lambda: sqlite3.connect(":memory:", factory=sqlite3.Connection),
+            "connect(factory=C original class)": lambda: sqlite3.connect(":memory:", factory=type("C0", (sqlite3.Connection.__mro__[1],), {})),
+            "connect(factory=subclass)": lambda: sqlite3.connect(":memory:", factory=type("C", (sqlite3.Connection,), {})),
+            "dbapi2.connect(factory=subclass)": lambda: sqlite3.dbapi2.connect(":memory:", factory=type("C2", (sqlite3.Connection,), {})),
+            "connect(uri=True)": lambda: sqlite3.connect(":memory:", uri=True),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for name, make in sorted(opens.items()):
+                c = make()
+                c.execute("create table t(x)")
+                for q in ("ATTACH '%s/a.db' AS x" % d, "VACUUM INTO '%s/b.db'" % d):
+                    with self.assertRaises(sqlite3.DatabaseError, msg=name + " " + q):
+                        c.execute(q)
+                c.close()
+            self.assertEqual(os.listdir(d), [])
+        self.assertIsInstance(sqlite3.connect(":memory:"), sqlite3.Connection)      # isinstance checks still hold
+        self.assertIsInstance(sqlite3.connect(":memory:"), _sqlite3.Connection)
+
+    def test_an_open_fd_outside_the_roots_is_judged_by_its_location(self):
+        T = Tables(self)
+        f_in, f_out = os.open(T.p1("f"), os.O_RDWR), os.open(T.p2("f"), os.O_RDWR)
+        d_in, d_out = os.open(T.t1, os.O_RDONLY), os.open(T.t2, os.O_RDONLY)
+        r, w = os.pipe()
+        parent = os.open(os.path.dirname(T.t1), os.O_RDONLY)
+        try:
+            with T.active():
+                for fn, args in ((os.listdir, (d_out,)), (os.scandir, (d_out,)), (os.stat, (d_out,)), (os.stat, (f_out,)), (os.fstat, (f_out,)),
+                                 (os.fstat, (d_out,)), (os.chdir, (d_out,)), (os.fchdir, (d_out,)), (os.fchmod, (f_out, 0o600)), (os.chmod, (f_out, 0o600)),
+                                 (os.truncate, (f_out, 0)), (os.ftruncate, (f_out, 0)), (os.statvfs, (d_out,)), (os.utime, (f_out, None)),
+                                 (os.chown, (f_out, -1, -1)), (os.fchown, (f_out, -1, -1)), (os.pathconf, (d_out, "PC_NAME_MAX")), (os.access, (f_out, os.R_OK)),
+                                 (os.fwalk, (d_out,))):
+                    if fn is os.fwalk:
+                        continue                                          # fwalk takes a PATH (its dir_fd is judged elsewhere)
+                    self.refused(fn, *args)
+                    self.refused(G._hook, "os." + fn.__name__, (args[0],) + args[1:]) if fn.__name__ in ("listdir", "scandir", "chdir", "chmod", "truncate", "utime", "chown") else None
+                self.refused(G._hook, "open", (f_out, "r", 0))
+                with T.active(env=[T.t2]):
+                    os.fstat(f_out); os.stat(f_out); os.listdir(d_out); list(os.scandir(d_out))                 # an environment directory is readable ...
+                    for fn, args in ((os.fchmod, (f_out, 0o600)), (os.ftruncate, (f_out, 0)), (os.chmod, (f_out, 0o600)), (os.fchown, (f_out, -1, -1))):
+                        self.refused(fn, *args)                                                                 # ... never writable
+                os.fstat(parent); os.stat(parent)                                                               # metadata of an ancestor of the root
+                self.refused(os.listdir, parent); self.refused(os.scandir, parent); self.refused(G._hook, "os.listdir", (parent,))   # not its contents
+                os.fstat(f_in); os.stat(f_in); os.stat(d_in); os.listdir(d_in); list(os.scandir(d_in)); os.fchmod(f_in, 0o644); os.ftruncate(f_in, 0)
+                os.fstat(r); os.fstat(w); os.stat(r); os.fstat(1); os.fstat(2); os.fstat(0)              # pipes and stdio have no location to protect
+                os.fstat(os.open(os.devnull, os.O_RDONLY))                                              # /dev/null is a device
+                with mock.patch.object(G, "_fd_dir", lambda fd: None):
+                    self.refused(os.fstat, f_in); self.refused(os.listdir, d_in); self.refused(os.stat, d_in)       # a regular file / dir with no location: refused
+                    os.fstat(r)                                                                          # a pipe still has none to tell
+            gone = os.open(T.p1("gone"), os.O_RDWR | os.O_CREAT)
+            os.remove(T.p1("gone"))
+            with T.active(), mock.patch.object(G, "_fd_dir", lambda fd: None):
+                os.fstat(gone)                                            # an unlinked file has no name (st_nlink 0): nothing to judge
+            os.close(gone)
+        finally:
+            for fd in (f_in, f_out, d_in, d_out, r, w):
+                os.close(fd)
+            os.close(parent)
+
+    def test_only_dev_null_and_dev_urandom_are_open_devices(self):
+        self.assertEqual(G.EXACT, {"/dev/null", "/dev/urandom"})
+        for p in ("/dev/tty", "/dev/zero", "/dev/random", "/dev/stdin", "/dev/fd/0", "/dev/disk0"):
+            self.refused(open, p); self.refused(os.stat, p); self.refused(os.path.exists, p)
+        open(os.devnull).close(); open("/dev/urandom", "rb").read(1)
+        with open("/dev/null", "w") as fh:
+            fh.write("x")
+
+    def test_unix_sockets_and_sqlite_extensions_are_judged_and_unknown_events_fail_closed(self):
+        import pathlib, socket, sqlite3
+        T = Tables(self)
+        with T.active():
+            s, d = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM), socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            self.addCleanup(s.close); self.addCleanup(d.close)
+            out = T.p2("s.sock")
+            for target in (out, os.fsencode(out)):
+                self.refused(s.bind, target); self.refused(s.connect, target); self.refused(d.sendto, b"x", target); self.refused(d.sendmsg, [b"x"], [], 0, target)
+            self.refused(G._hook, "socket.bind", (s, pathlib.Path(out)))            # sockets take no PathLike, the hook still judges one
+            with mock.patch.dict(G._real, {"getcwd": lambda: T.t2}):
+                self.refused(s.bind, "rel.sock"); self.refused(G._hook, "socket.connect", (s, "rel.sock"))      # a relative name is a path at the cwd
+            self.refused(G._hook, "socket.connect", (s, "/var/run/docker.sock"))
+            self.refused(G._hook, "socket.bind", (s, T.p2("x")))
+            with T.active(env=[T.t2]):                                                   # reading an environment directory is fine, creating a socket in it is not
+                self.refused(G._hook, "socket.bind", (s, T.p2("e.sock")))
+                for ev in ("socket.connect", "socket.sendto", "socket.sendmsg"):
+                    G._hook(ev, (s, T.p2("e.sock")))
+            G._hook("socket.bind", (s, "\0abstract")); G._hook("socket.connect", (s, b"\0abstract"))        # the abstract namespace is not a path
+            G._hook("socket.bind", (s, ("127.0.0.1", 0))); G._hook("socket.connect", (s, ("::1", 80, 0, 0)))
+            s.bind(T.p1("s.sock")); s.listen(1)
+            c = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); self.addCleanup(c.close)
+            c.connect(T.p1("s.sock"))                                                                          # inside the root: fine
+            conn = sqlite3.connect(":memory:")
+            self.refused(G._hook, "sqlite3.enable_load_extension", (conn, True)); G._hook("sqlite3.enable_load_extension", (conn, False))
+            self.refused(G._hook, "sqlite3.enable_load_extension", (conn,))
+            self.refused(G._hook, "sqlite3.load_extension", (conn, T.p2("evil.so")))
+            G._hook("sqlite3.load_extension", (conn, T.p1("ok.so")))
+            if hasattr(conn, "enable_load_extension"):
+                self.refused(conn.enable_load_extension, True)
+                self.refused(conn.load_extension, T.p2("evil.so"))
+            # every OTHER event is examined: a path in an unknown event is judged, the explicit non-path families are not
+            for ev in ("future.event", "mmap.future", "zipfile.Path", "x"):
+                if ev.startswith("mmap."):
+                    G._hook(ev, (T.p2("p"),)); continue
+                self.refused(G._hook, ev, (T.p2("p"),)); self.refused(G._hook, ev, (pathlib.Path(T.p2("p")),)); self.refused(G._hook, ev, (os.fsencode(T.p2("p")),))
+                G._hook(ev, (T.p1("p"),)); G._hook(ev, ("not-a-path", 5, None, b"bytes"))
+            for ev in ("import", "exec", "compile", "subprocess.Popen", "urllib.Request", "sys.setprofile", "socket.getaddrinfo", "os.system", "os.putenv"):
+                G._hook(ev, (T.p2("p"), "/usr/bin/git", "http://h/x"))
+        self.assertEqual([n for n in os.listdir(T.t2) if n.endswith(".sock")], [])      # nothing was created outside
+
     def test_a_hard_link_source_is_followed(self):
         T = Tables(self)
         os.symlink.__wrapped__(T.p2("f"), T.p1("ln"))
@@ -724,6 +921,7 @@ class AuditRows(unittest.TestCase):
                 e.stat(follow_symlinks=False); e.is_dir(follow_symlinks=False); e.is_file(follow_symlinks=False)
                 self.assertEqual(os.fspath(e), T.p1(n)); self.assertEqual(e.path, T.p1(n))
             self.assertTrue(es["sub"].is_dir()); self.assertTrue(es["f"].is_file()); es["f"].stat(); es["f"].inode()
+            self.assertIsInstance(es["f"], os.DirEntry); self.assertFalse(es["f"].is_junction()); self.assertFalse(es["ln"].is_junction())
             it2 = os.scandir(T.t1); next(it2); it2.close()
             self.assertEqual(sorted(os.walk(T.p1("sub")))[0][1], ["deep"])
             fd = os.open(T.t1, os.O_RDONLY)
@@ -741,9 +939,32 @@ class AuditRows(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with mock.patch.dict(os.environ, {"TMPDIR": d, "COVERAGE_RCFILE": os.path.join(d, "rc")}):
                 self.assertIn(os.path.realpath(d), G._roots()); self.assertIn(os.path.realpath(os.path.join(d, "rc")), G._roots())
-        with mock.patch.dict(os.environ, {"RUNNER_TEMP": "/home/runner/work/_temp", "TMPDIR": "/home/runner/work/_temp/x"}), \
-                mock.patch.object(tempfile, "gettempdir", lambda: "/home/runner/work/_temp/x"):
-            self.assertIn("/home/runner/work/_temp/x", G._roots())
+        with mock.patch.dict(os.environ, {"TMPDIR": "/home/runner/work/_temp/x"}), mock.patch.object(tempfile, "gettempdir", lambda: "/home/runner/work/_temp/x"):
+            self.assertIn("/home/runner/work/_temp/x", G._roots())               # the runner's temp is a fixed parent
+
+    def test_environment_supplied_roots_cannot_authorise_a_system_path(self):
+        """RUNNER_TEMP / TMPDIR / sys.path / PYTHONPATH / COVERAGE_RCFILE are validated against FIXED parents, never against each other."""
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": "/etc", "TMPDIR": "/etc", "COVERAGE_RCFILE": "/etc/rc"}), mock.patch.object(tempfile, "gettempdir", lambda: "/etc"):
+            got = G._roots()
+        self.assertNotIn("/etc", got); self.assertNotIn("/etc/rc", got); self.assertNotIn("/private/etc", got)
+        with mock.patch.dict(os.environ, {"RUNNER_TEMP": "/usr/local/bin", "TMPDIR": "/usr/local/bin/x"}), mock.patch.object(tempfile, "gettempdir", lambda: "/usr/local/bin/x"):
+            self.assertNotIn("/usr/local/bin/x", G._roots()); self.assertNotIn("/usr/local/bin", G._roots())
+        with open(G.__file__) as fh:
+            self.assertNotIn('environ.get("RUNNER_TEMP"', fh.read())                 # no environment variable defines a temp parent
+        with mock.patch.object(sys, "path", ["/usr/local/bin", "/etc", "/usr/local/lib/evil", G.HERE]):
+            got = G._env_roots()
+        for bad in ("/usr/local/bin", "/etc", "/usr/local/lib/evil", "/private/etc"):
+            self.assertNotIn(bad, got, bad)
+        with mock.patch.object(sys, "path", ["/usr/local/bin", "/etc", "/usr/lib/python312.zip"]):
+            meta = G._meta_roots()
+        for p in ("/usr/local/bin", "/etc", "/usr/lib/python312.zip"):
+            self.assertIn(p, meta)                                    # coverage stats each sys.path entry: METADATA only (never ENV or ROOTS)
+            self.assertNotIn(p, got)
+        # PYTHONPATH reaches the guard only through sys.path: a real interpreter started with PYTHONPATH=/etc does not make /etc a root
+        out = subprocess.run([sys.executable, "-W", "ignore", "-c", "import sys; sys.path.insert(0, %r); import fs_guard as G; G.install(); "
+                              "print('/etc' in G.ENV, '/etc' in G.ROOTS, '/etc' in G.META)" % G.HERE], env=dict(os.environ, PYTHONPATH="/etc", RUNNER_TEMP="/etc"),
+                             capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(out.stdout.strip(), "False False True", out.stderr[-300:])     # /etc is only METADATA (coverage stats each sys.path entry)
 
     def test_a_pyc_named_link_to_a_module_is_judged_on_the_resolved_path(self):
         T = Tables(self)
@@ -916,6 +1137,18 @@ class Static(unittest.TestCase):
                       "swapfile", "imagegeneration", "datadisk", "cdrom", "lib32", "libx32", "init", "__w", "_work", "docker-entrypoint.d", "entrypoint.sh",
                       "bin.usr-is-merged", "lib.usr-is-merged", "sbin.usr-is-merged"]
 
+    def test_an_approved_span_does_not_exempt_the_rest_of_the_line(self):
+        allow = [("f.sh", "ssl/cert.pem", "pure data in a fixture string that is only parsed")]
+        self.assertEqual(literal_findings("f.sh", "x = 'ssl/cert.pem'", allow)[0], [])
+        self.assertEqual(literal_findings("f.sh", "x = '/etc/ssl/cert.pem'", [("f.sh", "/etc/ssl/cert.pem", "pure data in a string that is only parsed")])[0], [])
+        for line in ("x = '/etc/ssl/cert.pem'; open('/etc/passwd')", "cat /etc/ssl/cert.pem /usr/local/bin/x", "cp /etc/ssl/cert.pem /var/db/x",
+                     "x = '/etc/ssl/cert.pem' + ls /", "d=/etc/ssl/cert.pem; cd ~"):
+            self.assertTrue(literal_findings("f.sh", line, [("f.sh", "/etc/ssl/cert.pem", "pure data in a string that is only parsed")])[0], line)
+        two = [("f.sh", "/etc/a.conf", "pure data in a string that is only parsed"), ("f.sh", "/etc/b.conf", "pure data in a string that is only parsed")]
+        self.assertEqual(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/a.conf'", two)[0], [])
+        self.assertTrue(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/c.conf'", two)[0])
+        self.assertEqual(literal_findings("f.sh", "anything /etc/x at all", [("f.sh", "", "a whole-file row exempts the line (the file is pinned)")])[0], [])
+
     def test_every_top_level_name_is_found_in_every_position(self):
         self.assertEqual([x.replace("\\", "") for x in SYS_NAMES], self.EXPECTED_NAMES)      # an independent copy: dropping a name fails here
         for n in self.EXPECTED_NAMES:
@@ -936,7 +1169,7 @@ class Static(unittest.TestCase):
             G._busy.bypass = False
         self.assertTrue(entries)
         missing = [e for e in entries if not literal_findings("f.sh", "ls /%s/x" % e, [])[0] or not literal_findings("f.sh", "ls /%s" % e, [])[0]]
-        self.assertEqual(missing, [], "top-level entries of / that the scan does not know: add them to SYS_NAMES")
+        self.assertEqual(missing, [], "top-level entries of / that the scan does not know: add them to SYS_NAMES (and to EXPECTED_NAMES, the independent copy in this class)")
 
     def test_first_component_classes_are_found_without_a_name_list(self):
         for text in ["ls /.vol/x", "ls /.file", "cat /.nofollow/etc/hosts", "cat /.resolve/x", "ls /.dockerenv", "ls /.fseventsd/x", "ls /.Spotlight-V100",
@@ -947,12 +1180,34 @@ class Static(unittest.TestCase):
                      "cd \"/\"", "ls '/'", "os.listdir(os.sep)", "shutil.rmtree(os.sep)", "docker run --mount source=/,target=/h", "docker run --mount type=bind,src=/,dst=/h"]:
             self.assertTrue(literal_findings("f.sh", text, [])[0], text)
         for text in ["cd \"$(dirname \"$0\")/../../..\"", "root=\"$here/../..\"", "cp ../x y", "a = '../x'", "u.get('d') == 'x'", "s + \"/.vex/a.json\"",
-                     "open(root + \"/.github/x\")", "glob.glob(a + \"/*.json\")", "ls \"$SRC\"/*/go.mod", "x = /* a comment */ 5", "re.sub(r\"</?p>\", \"\", s)",
-                     "cron: '*/10 * * * *'", ":(glob)**/*.sh", "ls ./.hidden", "cat a/.b", "x = '/branches?'", "echo hi > out.txt", "name = 'a=b'", "a == '/'"][:-1]:
+                     "open(root + \"/.github/x\")", "glob.glob(a + \"/*.json\")", "ls \"$SRC\"/*/go.mod", "re.sub(r\"</?p>\", \"\", s)",
+                     "cron: '*/10 * * * *'", ":(glob)**/*.sh", "ls ./.hidden", "cat a/.b", "x = '/branches?'", "echo hi > out.txt", "name = 'a=b'", "a == '/'"]:
             self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
         self.assertTrue(literal_findings("x-test.sh", "sudo apt-get install x", [])[0])
         self.assertTrue(literal_findings("x-test.sh", "FOO=1 sudo docker pull", [])[0])
         self.assertEqual(literal_findings("test_x.py", "# sudo is not a command here", [])[0], [])
+
+    def test_comment_markers_hide_nothing_and_a_lone_cr_is_a_finding(self):
+        for text in ["ls /*/*/", "ls /*/*/x", "for d in /*/ /*/; do ls $d; done", "cat /*/hosts /*/passwd", "rm -rf /*/ /*/x", "glob.glob('/*') + glob.glob('/*/')",
+                     "ls /* # see */", "ls /*; echo 'a */ b'", "ls /* /* */", "x = /* c */ /*", "ls /* */ /*"]:
+            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
+        # fail closed: even a lone /* comment */ is a finding (a real fixture such as the strace line gets a reviewed allow row)
+        self.assertTrue(literal_findings("f.sh", "x = /* a comment */ 5", [])[0])
+        self.assertEqual(literal_findings("f.sh", "x = /* a comment */ 5", [("f.sh", "/* a comment */", "a comment inside fixture text that is only parsed")])[0], [])
+        # line 1 only: a "#!" line is exempt there, never later; a lone CR is its own finding and splits a .py file into lines
+        self.assertEqual(literal_findings("f.sh", "#!/bin/sh\necho hi", [])[0], [])
+        self.assertTrue(literal_findings("f.sh", "echo hi\n#!x /etc/passwd", [])[0])
+        for text in ["#!x\ropen('/etc/passwd')", "#!/usr/bin/env python3\ropen('/etc/passwd').read()", "# c\ropen('/etc/hostname')", "x = 1\ropen('/etc/hosts')",
+                     "#!x\ropen('/etc/passwd')\n", "pass\r\nopen('/etc/passwd')"]:
+            got = literal_findings("t.py", text, [])[0]
+            self.assertTrue(got, text)
+        self.assertEqual(len([g for g in literal_findings("t.py", "#!x\ropen('/etc/passwd')", [])[0] if "/etc/passwd" in g]), 1)
+        self.assertTrue(any("lone CR" in g for g in literal_findings("a.sh", "echo hi\rcat x\n", [])[0]))
+        self.assertTrue(any("lone CR" in g for g in literal_findings("a.py", "x = 1\rpass\n", [])[0]))
+        self.assertEqual(literal_findings("a.sh", "echo hi\r\ncat x\r\n", [])[0], [])            # CRLF is not a lone CR
+        self.assertEqual(literal_findings("a.sh", "echo hi\n", [])[0], [])
+        self.assertEqual(split_lines("a.py", "a\rb\r\nc\nd"), ["a", "b", "c", "d"]); self.assertEqual(split_lines("a.sh", "a\rb\nc"), ["a\rb", "c"])
 
     def test_every_bare_root_form_is_found(self):
         for text in ["tar -C / -xf a.tar", "git -C / status", "env -C / cat etc/hosts", "cp x /", "mv x /", "rsync -a x /", "pushd /", "popd /",

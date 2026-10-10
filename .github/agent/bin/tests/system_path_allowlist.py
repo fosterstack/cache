@@ -3,11 +3,13 @@
 Row: (file, substring of the line - empty means the whole file, reason). A row that matches nothing fails the test.
 Real file access on a system path is never allow-listed: build the same shape under a temp dir instead."""
 ROWS = [
+    ("bin/analyze-egress-trace-test.sh", "/* corrupt */",
+     "a C comment inside a line of strace output that the egress analyser parses as text; nothing opens or lists anything"),
     (".github/agent/tests/auditor-matrix-test.sh", '=="/.github/agent"',
      "the dependabot.yml `directory` value being compared (a repo-relative setting, not a filesystem path)"),
     (".github/agent/tests/pin-age-check-test.sh", "sudo apt-get install -y skopeo",
      "workflow run: text the pin-age inventory parses; nothing executes it (sudo appears in the fixture on purpose)"),
-    (".github/agent/tests/pin-age-check-test.sh", "curl -fsSL \\\\\\n",
+    (".github/agent/tests/pin-age-check-test.sh", "sudo apt-get -y install foo",
      "workflow run: text (a line-continued curl with sudo) the pin-age inventory parses; nothing executes it"),
     (".github/agent/tests/pin-age-check-test.sh", "url=/URL=/*_BASE_URL",
      "prose in a case description naming the shell variable forms the inventory recognises; not a path"),
@@ -69,7 +71,7 @@ ROWS = [
      '/tmp/vex/fosterstack-cache.openvex.json',
      "text of the release workflow's upload step searched for the file name; not opened"),
     ('bin/workflow-consolidation-test.sh',
-     '/tmp/evil',
+     "'/tmp/evil:/usr/bin:/bin'",
      'value injected into an in-memory workflow copy to prove the check rejects a PATH override'),
 ]
 

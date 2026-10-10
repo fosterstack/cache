@@ -27,7 +27,7 @@ import errno, os, re, shutil, site, sys, sysconfig, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", "..", ".."))
-_real = {n: getattr(os, n) for n in ("stat", "lstat", "readlink", "getcwd", "fspath")}
+_real = {n: getattr(os, n) for n in ("stat", "lstat", "readlink", "getcwd", "fspath", "fstat")}
 _realpath = os.path.realpath
 _installed = False
 ROOTS = []   # temp dir, repo, this dir: read, metadata AND write
@@ -35,7 +35,7 @@ META = []    # directories the interpreter names (every sysconfig scheme, user b
 ENV = []     # the interpreter environment (venv, prefix, stdlib, site-packages): read and metadata only
 _busy = __import__('threading').local()
 _busy.on = False
-EXACT = {"/dev/null", "/dev/urandom", "/dev/zero", "/dev/tty"}
+EXACT = {"/dev/null", "/dev/urandom"}          # the only device files a test may open (nothing needs /dev/zero or /dev/tty)
 
 
 class SystemPathAccess(BaseException):
@@ -126,15 +126,14 @@ def _canon_inner(cands, drop_broad):
 
 # Where a temp dir named by the environment may live. TMPDIR, tempfile.gettempdir() and COVERAGE_RCFILE are accepted as roots only under one
 # of these parents ($RUNNER_TEMP too); anything else (TMPDIR=/etc, =$HOME, =/Users/x/Documents) is ignored, which fails closed.
-STANDARD_TEMP = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders", "/dev/shm")
+# FIXED list: $RUNNER_TEMP (or any other variable) must never define a parent, or RUNNER_TEMP=/etc + TMPDIR=/etc would make /etc a writable
+# root. The two runner locations are written out.
+STANDARD_TEMP = ("/tmp", "/private/tmp", "/var/tmp", "/private/var/tmp", "/var/folders", "/private/var/folders", "/dev/shm",
+                 "/home/runner/work/_temp", "/__w/_temp")
 
 
 def _standard_temp_parents():
-    out = set(STANDARD_TEMP)
-    rt = os.environ.get("RUNNER_TEMP", "")
-    if rt and os.path.isabs(rt):
-        out.add(rt.rstrip("/"))
-    return out | _canon_set(out)
+    return set(STANDARD_TEMP) | _canon_set(set(STANDARD_TEMP))
 
 
 def _under_standard_temp(v):
@@ -164,8 +163,13 @@ def _env_roots():
         precise.add(site.getusersitepackages())
     except Exception:
         pass
-    precise.update(p for p in sys.path if p)
-    return sorted(broad_ok | _canon_set(precise, drop_broad=True))
+    base = broad_ok | _canon_set(precise, drop_broad=True)
+    # sys.path (and so PYTHONPATH) is environment-supplied: an entry is a root only when it is inside the interpreter's own
+    # prefix / stdlib / site directories (computed above from sysconfig, not from the environment) or a standard temp parent.
+    trusted = base                                   # (the checkout is already a root, read AND write)
+    paths = {v for v in _canon_set({p for p in sys.path if p}, drop_broad=True)
+             if any(v == r or v.startswith(r + "/") for r in trusted) or _under_standard_temp(v)}
+    return sorted(base | paths)
 
 
 def _meta_roots():
@@ -182,6 +186,8 @@ def _meta_roots():
             cand.add(f())
         except Exception:
             pass
+    # coverage stats EVERY sys.path entry (python312.zip, a PYTHONPATH directory ...) to describe it: metadata of the entry, never its contents
+    cand.update(p for p in sys.path if p and os.path.isabs(p))
     return sorted(_canon_set(cand))                # metadata of a named directory is harmless, so nothing is dropped for breadth here
 
 
@@ -217,10 +223,31 @@ def _bytecode_cache(res):
     return os.path.basename(os.path.dirname(res)) == "__pycache__" and bool(_PYC.search(os.path.basename(res)))
 
 
+def _judge_fd(fd, what, write=False, meta=False):
+    """An integer fd names a file or directory only through the kernel: resolve it (macOS F_GETPATH, Linux /proc/self/fd) and judge THAT.
+    A pipe, socket or tty has no filesystem location to protect and an unlinked file has no name, so those pass; a regular file or
+    directory whose location cannot be told is refused (fail closed)."""
+    import stat as _st
+    if isinstance(fd, bool) or fd < 0:
+        return
+    try:
+        st = _real["fstat"](fd)
+    except OSError:
+        return                                                       # not an open fd: the OS reports it
+    if not (_st.S_ISREG(st.st_mode) or _st.S_ISDIR(st.st_mode)) or st.st_nlink == 0:
+        return
+    base = _fd_dir(fd)
+    if base is None or not os.path.isabs(base):
+        raise SystemPathAccess("test touched a real system path (%s): an open fd whose location cannot be told: %d" % (what, fd))
+    check(base, what, False, meta, write)
+
+
 def check(path, what="", nofollow=False, meta=False, write=False):
     """Raise unless `path` (lexically and after symlink resolution) is inside an allowed root."""
-    if not (ROOTS or ENV or META) or isinstance(path, int) or getattr(_busy, "bypass", False):
+    if not (ROOTS or ENV or META) or getattr(_busy, "bypass", False):
         return
+    if isinstance(path, int):
+        return _judge_fd(path, what, write, meta)
     try:
         p = _real["fspath"](path)
     except TypeError:
@@ -256,6 +283,15 @@ _AUDIT_PATH = {  # event -> indexes of the path arguments
     "os.getxattr": (0,), "os.listxattr": (0,), "os.chflags": (0,), "os.walk": (0,), "os.fwalk": (0,), "sqlite3.connect": (0,), "tempfile.mkstemp": (0,), "tempfile.mkdtemp": (0,),
     "ctypes.dlopen": (0,), "os.add_dll_directory": (0,),
 }
+# events with their own branch in _hook (not rows of _AUDIT_PATH): AuditRows checks that CPython really emits each of them
+_SPECIAL_EVENTS = ("socket.bind", "socket.connect", "socket.sendto", "socket.sendmsg", "sqlite3.load_extension", "sqlite3.enable_load_extension")
+_NON_PATH_PREFIXES = ("import", "exec", "compile", "code.", "marshal.", "object.", "builtins.", "sys.", "gc.", "cpython.", "pickle.", "time.", "input",
+                      "setopencodehook", "subprocess.", "urllib.", "http.", "ftplib.", "smtplib.", "telnetlib.", "imaplib.", "poplib.", "nntplib.", "ssl.",
+                      "webbrowser.", "socket.getaddrinfo", "socket.gethost", "socket.getnameinfo", "socket.getserv", "socket.sethostname",
+                      "socket.__new__", "winreg.", "msvcrt.", "syslog.", "signal.", "resource.", "multiprocessing.", "threading.", "asyncio.", "uuid.",
+                      "sched.", "importlib.", "zipimport.", "mmap.", "pty.", "fcntl.", "readline.", "ctypes.cdata", "ctypes.call_function",
+                      "ctypes.dlsym", "ctypes.set_errno", "ctypes.set_exception", "ctypes.get_errno", "ctypes.get_last_error", "ctypes.addressof",
+                      "ctypes.create_", "ctypes.seh_exception", "sqlite3.connect/handle", "sqlite3.enable", "sqlite3.add", "unittest.", "pdb.")
 _NOT_PATHS = {"os.putenv", "os.unsetenv", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "os.forkpty", "os.kill",
               "os.killpg", "os.startfile", "os.getxattr", "os.listxattr", "os.setxattr", "os.removexattr"}
 _READ_EVENTS = {"os.listdir", "os.scandir", "os.walk", "os.fwalk", "os.getxattr", "os.listxattr", "sqlite3.connect"}
@@ -303,7 +339,10 @@ def _hook(event, args):
     if event in _AUDIT_PATH:
         write = _open_writes(args) if event == "open" else event not in _READ_EVENTS
         for i in _AUDIT_PATH[event]:
-            if i >= len(args) or isinstance(args[i], int):
+            if i >= len(args):
+                continue
+            if isinstance(args[i], int) and not isinstance(args[i], bool):
+                _judge_fd(args[i], event, write, False)                         # open(fd), listdir(fd), scandir(fd), chdir(fd), chmod(fd) ...
                 continue
             if event == "os.symlink" and i == 0:
                 continue           # a symlink's target text is data; wrap_link judges it where it would resolve
@@ -317,8 +356,22 @@ def _hook(event, args):
         for i, a in enumerate(args):
             if isinstance(a, (str, bytes, os.PathLike)):
                 check(a, event, write=not (i == 0 and event.startswith("shutil.copy")))
-    elif event.startswith("os.") and event not in _NOT_PATHS:
-        for a in args:                       # any other os.* event that carries a path: judge it as a write
+    elif event in ("socket.bind", "socket.connect", "socket.sendto", "socket.sendmsg"):
+        # an AF_UNIX address is a filesystem path (bind creates the socket file); a tuple is an inet address. "\0name" is the abstract namespace.
+        addr = args[1] if len(args) > 1 else None
+        if isinstance(addr, (str, bytes, os.PathLike)):
+            name = os.fsdecode(addr)
+            if not name.startswith("\0"):
+                check(name, event, write=(event == "socket.bind"))
+    elif event == "sqlite3.load_extension":
+        check(args[1], event) if len(args) > 1 and isinstance(args[1], (str, bytes, os.PathLike)) else None    # dlopen of the named library
+    elif event == "sqlite3.enable_load_extension":
+        if len(args) < 2 or args[1]:
+            raise SystemPathAccess("test touched a real system path (sqlite3): loading extensions is refused while the guard is armed")
+    elif event not in _NOT_PATHS and not event.startswith(_NON_PATH_PREFIXES):
+        # fail closed: EVERY other audit event is examined, and an argument that is a PathLike, or a str/bytes naming a path, is judged as a
+        # write. Only the explicit prefixes in _NON_PATH_PREFIXES (events whose strings are code, hosts, URLs, module names ...) are skipped.
+        for a in args:
             if isinstance(a, os.PathLike) or (isinstance(a, (str, bytes)) and (b"/" in a if isinstance(a, bytes) else "/" in a)):
                 check(a, event, write=True)
 
@@ -367,18 +420,35 @@ def _deny_attach(action, *rest):
 
 
 def _wrap_sqlite():
+    """Every way to open a database goes through the authorizer: sqlite3.connect, sqlite3.dbapi2.connect, _sqlite3.connect and a direct
+    sqlite3.Connection(...) (a subclass that sets it in __init__; connect(factory=...) is covered because the result is authorised afterwards)."""
     try:
-        import sqlite3
+        import sqlite3, sqlite3.dbapi2
+        import _sqlite3
     except ImportError:
         return
-    orig = sqlite3.connect
 
-    def connect(*a, **k):
-        c = orig(*a, **k)
-        c.set_authorizer(_deny_attach)
-        return c
-    connect.__name__ = "connect"; connect.__wrapped__ = orig
-    sqlite3.connect = connect
+    def make_connect(orig):
+        def connect(*a, **k):
+            if "factory" not in k and len(a) < 6:
+                k["factory"] = Connection                  # so connect() still returns an instance of sqlite3.Connection
+            c = orig(*a, **k)
+            c.set_authorizer(_deny_attach)
+            return c
+        connect.__name__ = "connect"; connect.__wrapped__ = orig
+        return connect
+    base = sqlite3.Connection
+
+    class Connection(base):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.set_authorizer(_deny_attach)
+    Connection.__name__ = Connection.__qualname__ = "Connection"
+    for mod in (sqlite3, sqlite3.dbapi2, _sqlite3):
+        if hasattr(mod, "connect"):
+            mod.connect = make_connect(mod.connect)
+        if hasattr(mod, "Connection"):
+            mod.Connection = Connection
 
 
 def _wrap_write_path(name):
@@ -409,10 +479,11 @@ def _wrap_xattr_write(name):
 
 class _Entry:
     """An os.DirEntry whose stat/is_dir/is_file are judged when the entry is a symlink (they follow it, with no audit event)."""
-    __slots__ = ("_e",)
+    __slots__ = ("_e", "_base")
 
-    def __init__(self, e):
+    def __init__(self, e, base=None):
         self._e = e
+        self._base = base                       # the directory an fd scan is relative to (entry.path is then just the name)
 
     name = property(lambda self: self._e.name)
     path = property(lambda self: self._e.path)
@@ -423,9 +494,16 @@ class _Entry:
     def is_symlink(self):
         return self._e.is_symlink()
 
+    def is_junction(self):
+        return getattr(self._e, "is_junction", lambda: False)()
+
+    @property
+    def __class__(self):                       # isinstance(entry, os.DirEntry) stays true (os.DirEntry cannot be subclassed)
+        return os.DirEntry
+
     def _follow(self, follow):
         if follow and self._e.is_symlink():
-            check(self._e.path, "DirEntry", False, True)
+            check(os.path.join(self._base, self._e.name) if self._base else self._e.path, "DirEntry", False, True)
 
     def is_dir(self, *, follow_symlinks=True):
         self._follow(follow_symlinks)
@@ -447,14 +525,15 @@ class _Entry:
 
 
 class _Scan:
-    def __init__(self, it):
+    def __init__(self, it, base=None):
         self._it = it
+        self._base = base
 
     def __iter__(self):
         return self
 
     def __next__(self):
-        return _Entry(next(self._it))
+        return _Entry(next(self._it), self._base)
 
     def close(self):
         self._it.close()
@@ -472,9 +551,21 @@ def _wrap_scandir():
 
     def scandir(path=None):
         it = orig(path) if path is not None else orig()
-        return it if isinstance(path, int) else _Scan(it)
+        return _Scan(it, _fd_dir(path) if isinstance(path, int) else None)
     scandir.__name__ = "scandir"; scandir.__wrapped__ = orig
     os.scandir = scandir
+
+
+def _wrap_fd_function(name, write=False, meta=False):
+    orig = getattr(os, name, None)
+    if orig is None:
+        return
+
+    def f(fd, *a, **k):
+        _judge_fd(fd, "os." + name, write, meta)
+        return orig(fd, *a, **k)
+    f.__name__ = name; f.__wrapped__ = orig
+    setattr(os, name, f)
 
 
 def _wrap_os_open():
@@ -483,6 +574,11 @@ def _wrap_os_open():
     def f(path, flags, mode=0o777, *, dir_fd=None):
         if dir_fd is not None:
             check(_with_dir_fd(path, dir_fd, "os.open"), "os.open", False, False, bool(flags & _WRITE_FLAGS))
+            _busy.bypass = True               # judged above under the fd's directory; the open event only carries the bare relative name
+            try:
+                return orig(path, flags, mode, dir_fd=dir_fd)
+            finally:
+                _busy.bypass = False
         return orig(path, flags, mode, dir_fd=dir_fd)
     f.__name__ = "open"; f.__wrapped__ = orig
     os.open = f
@@ -539,6 +635,8 @@ def install(extra_roots=()):
     _wrap_os_open()
     _wrap_sqlite()
     _wrap_scandir()
+    _wrap_fd_function("fstat", False, True)
+    # fchmod / fchown / ftruncate / fchdir emit os.chmod / os.chown / os.truncate / os.chdir with the fd as the argument: the hook judges them
     for n in ("mkfifo", "mknod", "chroot"):
         _wrap_write_path(n)
     for n in ("setxattr", "removexattr"):
