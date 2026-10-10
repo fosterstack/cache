@@ -26,6 +26,8 @@ type fakeDisk struct {
 	openErr  error
 	writeErr error
 	syncErr  error
+	closeErr error
+	rmErr    error
 	removed  bool
 	block    chan struct{} // when non-nil, OpenProbe waits for it to close
 	probes   atomic.Int64
@@ -41,7 +43,7 @@ func (f fakeFile) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 func (f fakeFile) Sync() error  { f.d.rec("sync"); return f.d.syncErr }
-func (f fakeFile) Close() error { f.d.rec("close"); return nil }
+func (f fakeFile) Close() error { f.d.rec("close"); return f.d.closeErr }
 
 func (d *fakeDisk) rec(s string) { d.mu.Lock(); d.ops = append(d.ops, s); d.mu.Unlock() }
 func (d *fakeDisk) opList() string {
@@ -68,7 +70,7 @@ func (d *fakeDisk) deps(now *time.Time) Deps {
 			}
 			return fakeFile{d}, nil
 		},
-		Remove: func(string) error { d.rec("remove"); return nil },
+		Remove: func(string) error { d.rec("remove"); return d.rmErr },
 		Now:    func() time.Time { return *now },
 	}
 }
@@ -352,4 +354,21 @@ func TestHungStatfsDoesNotHangReaders(t *testing.T) {
 		t.Fatalf("%d probes; want 1 (the hung measurement keeps the slot)", n)
 	}
 	close(hang)
+}
+
+// a close or remove that fails also reads not writable; a statfs on a missing directory is an error
+func TestCloseAndRemoveFailuresReadNotWritable(t *testing.T) {
+	for name, mod := range map[string]func(*fakeDisk){
+		"close":  func(d *fakeDisk) { d.closeErr = syscall.EIO },
+		"remove": func(d *fakeDisk) { d.rmErr = syscall.EROFS },
+	} {
+		d := &fakeDisk{avail: 1}
+		mod(d)
+		now := time.Unix(1000, 0)
+		s, _ := newSampler(t, d, &now)
+		s.Start()
+		if s.Get().Writable {
+			t.Errorf("%s failure: reads writable", name)
+		}
+	}
 }

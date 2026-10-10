@@ -68,7 +68,7 @@ type Sampler struct {
 	have    bool
 	stale   bool
 	busy    bool          // a probe goroutine is running (possibly past its limit)
-	limited bool          // the limit fired while busy: the late result must be published
+	pubDone bool          // the current refresh has published (by the goroutine, or by the limit)
 	done    chan struct{} // closed when the current refresh has published
 	last    *bool         // last published writable state, for change logging
 }
@@ -160,41 +160,47 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	if s.have && !s.stale && s.d.Now().Sub(s.at) < s.o.Fresh {
 		return nil
 	}
-	s.busy, s.limited, s.stale = true, false, false
+	s.busy, s.pubDone, s.stale = true, false, false
 	done := make(chan struct{})
 	s.done = done
-	resCh := make(chan result, 1)
+	finished := make(chan struct{})
+	limDone := make(chan struct{}) // closed after the limit's "not writable" sample is published (only if the limit claimed the refresh)
 	go func() {
 		r := result{probeErr: s.probe()}
 		r.avail, r.statErr = s.d.Statfs(s.dir) // statfs is inside the measuring goroutine too: a hung statfs cannot hang a reader
 		s.mu.Lock()
-		s.busy = false
-		late := s.limited
+		first := !s.pubDone // the limit may already have claimed the refresh; then this is the real, late answer
+		s.pubDone = true
 		s.mu.Unlock()
-		if late {
-			s.publish(r) // the limit already published "not writable"; this is the real, late answer
+		if !first {
+			<-limDone // the late answer is published AFTER the limit's sample, never before it
 		}
-		resCh <- r
+		s.publish(r)
+		s.mu.Lock()
+		s.busy = false // the slot is released only after the result is published, so two refreshes never publish out of order
+		s.mu.Unlock()
+		if first {
+			close(done)
+		}
+		close(finished)
 	}()
 	go func() {
 		t := time.NewTimer(s.o.ProbeLimit)
 		defer t.Stop()
 		select {
-		case r := <-resCh:
-			s.publish(r)
+		case <-finished:
 		case <-t.C:
 			s.mu.Lock()
-			if s.busy { // still measuring: publish "not writable" now, keep the last known free bytes
-				s.limited = true
-				prev := s.cur.FreeBytes
-				s.mu.Unlock()
+			first := !s.pubDone
+			s.pubDone = true
+			prev := s.cur.FreeBytes // keep the last known free bytes
+			s.mu.Unlock()
+			if first {
 				s.publish(result{probeErr: errProbeLimit, avail: prev})
-			} else { // it finished just as the limit fired: use its result
-				s.mu.Unlock()
-				s.publish(<-resCh)
+				close(limDone)
+				close(done)
 			}
 		}
-		close(done)
 	}()
 	return done
 }
@@ -237,9 +243,7 @@ func (s *Sampler) publish(r result) {
 // the byte into the page cache and report writable.
 func (s *Sampler) probe() error {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return err
-	}
+	_, _ = rand.Read(b[:]) // never fails (crypto/rand panics instead)
 	path := filepath.Join(s.dir, probePrefix+hex.EncodeToString(b[:]))
 	f, err := s.d.OpenProbe(path)
 	if err != nil {
