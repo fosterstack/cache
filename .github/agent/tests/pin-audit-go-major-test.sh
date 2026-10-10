@@ -9,9 +9,12 @@
 #   * The rule covers OSV `affected` entries ONLY. GitHub's own ranges decide as GitHub files them: GitHub files cosign v3 ranges under the BARE path
 #     (GHSA-w6c6-c85g-mmv6, GHSA-wfqv-66vq-46rm), so GitHub's names and its paged list query are matched under BOTH the bare path and the /vMAJOR path.
 #   * OSV is queried by the /vMAJOR path as well as the bare path (advisor-accepted at step 5): a record that has ONLY a /v3 entry covering the pin is a hit.
-#   * It applies only to a tool in pin-audit.py's committed table GO_TOOLS whose table path is RIGHT for the pinned major (bare for 0/1, ending in the
-#     same /vMAJOR for 2 and up) and whose version is a plain MAJOR.MINOR.PATCH (a leading lowercase v allowed). Otherwise the audit gives the OLD verdict:
-#     a hit stays a hit and a clean stays clean, nothing is ignored. Where a case says "HIT", the old audit hits too, or the new rule must.
+#   * It applies only to a tool in pin-audit.py's committed table GO_TOOLS whose version is a plain MAJOR.MINOR.PATCH (a leading lowercase v allowed).
+#     Cases the rule cannot settle FAIL CLOSED, they are a HIT: a table path that is bare while the pinned major is 2 or more or
+#     that ends in a different /vN (the audit then queries bare and /vMAJOR and hits if any entry covers the version), a record with no exact entry, a
+#     path-less entry next to an exact entry, and a lookalike path (host case, trailing slash). Only these keep the OLD verdict, nothing ignored: an unparsable version, a tool
+#     not in the table, other item kinds (gotool, owner/repo), and a /v0 or /v1 entry in a record for a major 0/1 pin (the one exception: a Go major
+#     0/1 path has no suffix, so /v0 and /v1 entries are not the exact path and are left to the old filter).
 #   * The entry whose path is EXACTLY <bare>/vN (N >= 2) or EXACTLY <bare> (N <= 1) decides; every other entry is ignored and LOGGED. With no exact entry,
 #     or with a path-less entry in the record, nothing can be concluded: the verdict stays a HIT.
 #   * Logging is part of the interface (PROPOSED names): LiveNet.ignored_entries is a list of {"id", "path", "reason"}, one per ignored entry; judge()
@@ -27,7 +30,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=38
+pass=0 failn=0 EXPECT=39
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -127,6 +130,11 @@ def clean(ver, recs, none_ignored=False, **kw):
         assert finds == [], ("expected clean", ver, sup, tb, [(f.kind, f.ids) for f in finds])
         assert not none_ignored or ignored(net) == [], ("nothing may be ignored", sup, tb, ignored(net))
 G4309 = load("osv-GO-2026-4309.json")
+def base(v):
+    """The old verdict for an unparsable version against GO-2026-4309 with the /v3 table: only the entry named like the table path counts."""
+    only = copy.deepcopy(G4309); only["affected"] = [a for a in only["affected"] if a["package"]["name"] == BARE + "/v3"]
+    try: return bool(run(cosign(v, BARE + "/v3"), mknet([only], GG, True))[0])
+    except pa.Fail: return True
 GG = ["GHSA-whqx-f9j3-ch6m"]
 PY
 
@@ -182,21 +190,24 @@ py "a tool NOT in the committed table (owner/repo form) is judged as before: the
 assert "sigstore/cosign" not in pa.GO_TOOLS
 hit("3.1.3", [G4309], ghsas=GG, none_ignored=True, sups=(True,), mk=lambda v, t=None: pa.inv.Item("tool", "sigstore/cosign", v, ""))
 PY
-py "versions the rule cannot parse keep the old verdict (a hit, or the audit stops) and ignore nothing: pre-release, short, v3.1, latest, 4" \
-   " parts, leading zero, wildcard" <<'PY'
+# An unparsable version is never settled by the rule: nothing is ignored and the verdict is the one the audit gave before (BASE: only the /v3 entry
+# named like the table path counts). The table is the CORRECT /v3 path, so a loose parser (one that reads "3.1.3-rc.1" or "V3.1.3" as major 3)
+# would ignore the bare and /v2 entries and log them; ignored(net) == [] catches it. (With the bare table path the version would be a hit anyway.)
+py "versions the rule cannot parse keep the old verdict and ignore nothing, with the right /v3 table: pre-release, short, v3.1, latest, 4 parts," \
+   " leading zero, wildcard" <<'PY'
 for v in ("3.1.3-rc.1", "3", "v3.1", "latest", "3.1.3.4", "03.1.3", "3.1.x"):
     net = mknet([G4309], GG, True)
-    try: finds, _ = run(cosign(v), net)
+    try: finds, _ = run(cosign(v, BARE + "/v3"), net)
     except pa.Fail: finds = ["stopped"]
-    assert finds and ignored(net) == [], (v, finds, ignored(net))
+    assert bool(finds) == base(v) and ignored(net) == [], (v, finds, ignored(net))
 PY
-py "version parse holes stay hits: build metadata, +incompatible (a Go major-3 +incompatible version belongs to the BARE path), newline, space," \
-   " V, vv, Arabic-Indic, fullwidth" <<'PY'
-for v in ("3.1.3+build.1", "3.1.3+incompatible", "3.1.3\n", " 3.1.3", "V3.1.3", "vv3.1.3", "٣.١.٣", "３.1.3"):
+py "version parse holes keep the old verdict and ignore nothing, with the right /v3 table: build metadata, +incompatible (a Go major-3 +incompatible version belongs" \
+   " to the BARE path), newline, space, V, vv, Arabic-Indic, fullwidth" <<'PY'
+for v in ("3.1.3+build.1", "3.1.3+incompatible", "3.1.3\n", " 3.1.3", "V3.1.3", "vv3.1.3", "\u0663.\u0661.\u0663", "\uff13.1.3"):
     net = mknet([G4309], GG, True)
-    try: finds, _ = run(cosign(v), net)
+    try: finds, _ = run(cosign(v, BARE + "/v3"), net)
     except pa.Fail: finds = ["stopped"]
-    assert finds and ignored(net) == [], (repr(v), finds, ignored(net))
+    assert bool(finds) == base(v) and ignored(net) == [], (repr(v), finds, ignored(net))
 PY
 py "an empty version is not covered at all and nothing is ignored, as before" <<'PY'
 net = mknet([G4309], GG); it = cosign("")
@@ -255,6 +266,12 @@ py "two records for one pin: ignoring the entries of one never touches the other
 for sup, tb, finds, notes, net in verdicts("3.1.3", [G4309, record("GO-X-9", [(BARE + "/v3", fixed("3.2.0", "3.0.0"))])], ghsas=GG):
     assert "GO-X-9" in ids(finds) and "GO-2026-4309" not in ids(finds), (sup, [(f.kind, f.ids) for f in finds])
 PY
+py "two identical non-exact entries (one record, or two queries) are logged once each, not twice" <<'PY'
+r = record("GO-X-19", [(BARE + "/v3", fixed("3.0.4")), (BARE, INTRO0), (BARE, INTRO0)])
+net = mknet([r], (), True); finds, notes = run(cosign("3.1.3"), net)
+assert finds == [] and len([e for e in ignored(net, True) if e["path"] == BARE]) == 1, ignored(net)
+assert sum(1 for n in notes if n.startswith(ADV) and (" " + BARE + ":") in n) == 1, notes
+PY
 py "boundaries: 3.0.4 and 3.0.5 are clean (fixed 3.0.4), last_affected == the pin is a hit and one patch later is clean" <<'PY'
 clean("3.0.4", [G4309], ghsas=GG); clean("3.0.5", [G4309], ghsas=GG)
 lastaff = [record("GO-X-14", [(BARE + "/v3", ev(("introduced", "0"), ("last_affected", "3.1.3")))])]
@@ -312,17 +329,22 @@ b = rec("GO-SYN-2", ent(BARE + "/v3", fixed("3.2.0", "3.0.0")), aliases=["GHSA-s
 net = mknet([b], {"GHSA-syn-0002-xxxx": ghsa("GHSA-syn-0002-xxxx", BARE + "/v3", "< 3.0.0")}, True); finds, _ = run(cosign("3.1.3"), net)
 assert finds and all(f.disputed for f in finds), [(f.kind, f.ids, f.disputed) for f in finds]
 PY
-py "the exceptions mechanism still returns a HIT when the authoritative ranges contain the version, and passes when they do not" <<'PY'
-a = rec("GO-SYN-1", ent(BARE + "/v3", fixed("3.0.4")), aliases=["GHSA-syn-0001-xxxx"])
+py "the exceptions mechanism: a ruling whose copied ranges equal GitHub's live ranges passes a disputed hit; with other ranges it stays DISPUTED; a" \
+   " ruling whose ranges contain the version returns a plain HIT" <<'PY'
 def exc(rng):
     return {"ids": ["GHSA-syn-0001-xxxx", "GO-SYN-1"], "package": "cosign", "authoritative": {"source": "GitHub", "id": "GHSA-syn-0001-xxxx", "ranges": [rng]},
             "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
             "modified": {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2026-02-02T00:00:00Z"}}
-adv = {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE, ">= 3.0.0, < 3.2.0")}
-finds, _ = run(cosign("3.1.3"), mknet([a], adv, True), [exc(">= 3.0.0, < 3.2.0")])
+def gh(rng): return {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", rng)}
+aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])      # OSV: 3.1.3 affected, no fix
+finds, _ = run(cosign("3.1.3"), mknet([aff], gh("< 3.0.0"), True), [exc("< 3.0.0")])
+assert finds == [], [(f.kind, f.ids, f.disputed) for f in finds]
+finds, _ = run(cosign("3.1.3"), mknet([aff], gh("< 3.0.0"), True), [exc("< 3.0.1")])           # copied ranges differ from GitHub's live ones
+assert finds and all(f.disputed for f in finds), [(f.kind, f.ids, f.disputed) for f in finds]
+clr = rec("GO-SYN-1", ent(BARE + "/v3", fixed("3.0.4")), aliases=["GHSA-syn-0001-xxxx"])         # OSV: clean, GitHub: affected
+rng = ">= 3.0.0, < 3.2.0"
+finds, _ = run(cosign("3.1.3"), mknet([clr], gh(rng), True), [exc(rng)])
 assert finds and not any(f.disputed for f in finds) and finds[0].kind == "advisory", [(f.kind, f.disputed) for f in finds]
-finds, _ = run(cosign("3.1.3"), mknet([a], adv, True), [exc("= 3.0.0")])
-assert finds == [], [(f.kind, f.disputed) for f in finds]
 PY
 py "the five existing cosign 3.1.3 rulings keep working with the live records, with the table as it is today AND corrected to /v3" <<'PY'
 exc = pa.load_exceptions(root + "/.github/supply-chain-exceptions.json", True)
@@ -352,6 +374,7 @@ def main_out(recs, ghsas, cosign_ver="3.1.3"):
         subprocess.run(["git", "-C", repo, *c], env=env, check=True, capture_output=True)
     os.makedirs(repo + "/.github"); subprocess.run(["cp", root + "/.github/supply-chain-exceptions.json", repo + "/.github/"], check=True)
     net = mknet(recs, ghsas, True); net.open_pr_items = lambda: []
+    pa.GO_TOOLS["cosign"] = BARE + "/v3"
     pa.LiveNet = lambda gh, r: net
     buf = io.StringIO()
     try:
@@ -361,7 +384,8 @@ def main_out(recs, ghsas, cosign_ver="3.1.3"):
         subprocess.run(["rm", "-rf", repo])
     return rc, buf.getvalue()
 PY
-py "the summary counts exceptions only: the five rulings plus GO-2026-4309 give exit 0 and '(5 disputed hit(s) covered by a checked-in exception)'" <<'PY'
+py "the summary counts exceptions only: the five records plus GO-2026-4309 give exit 0 and '(3 disputed hit(s) covered by a checked-in exception)'" \
+   " (GO-2026-4529 and -5694 have exact /v3 entries that agree with GitHub, so they are not disputes)" <<'PY'
 pairs = [("GO-2024-2718", "GHSA-88jx-383q-w4qc"), ("GO-2024-2719", "GHSA-95pr-fxf5-86gv"), ("GO-2023-2181", "GHSA-vfp6-jrw2-99g9"),
          ("GO-2026-5694", "GHSA-w6c6-c85g-mmv6"), ("GO-2026-4529", "GHSA-wfqv-66vq-46rm")]
 recs = [G4309]; ghs = list(GG)
@@ -369,7 +393,7 @@ for go, gh in pairs:
     r = load("osv-%s.json" % go); r["aliases"] = sorted(set(r.get("aliases", [])) | {gh}); recs.append(r); ghs.append(gh)
 rc, out = main_out(recs, ghs)
 assert rc == 0, (rc, out[-600:])
-assert "(5 disputed hit(s) covered by a checked-in exception)" in out, out[-600:]
+assert "(3 disputed hit(s) covered by a checked-in exception)" in out, out[-600:]
 assert any(l.startswith("audit: " + ADV) for l in out.splitlines()), "the ignored entries are printed"
 PY
 py "a hostile module path is printed sanitised: control characters and a '::error::' injection never start a log line" <<'PY'
