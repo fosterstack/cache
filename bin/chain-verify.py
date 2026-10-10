@@ -26,6 +26,7 @@ import json
 import os
 import re
 import subprocess
+import unicodedata
 import sys
 import tempfile
 
@@ -494,24 +495,66 @@ def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp, want_kind=
     return stamped
 
 
+TYPE_URI = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:\S+")
+
+
+def _type_uri(v):
+    """A SLSA v1 TypeURI: a string with a scheme, a colon and a non-empty remainder, and no whitespace, control, format, separator or
+    other invisible character anywhere (Unicode categories Z* and C*: NBSP, U+200B and the rest)."""
+    return (isinstance(v, str) and TYPE_URI.fullmatch(v) is not None
+            and not any(unicodedata.category(c)[0] in "ZC" for c in v))
+
+
 def check_slsa_v1(stage, predicate):
-    """REQ-CHAIN-001-AC4 (Codex #249 r4 B4): the provenance is a standard SLSA v1 record, not any statement of its type. The predicate is
-    an object with buildDefinition (an object with buildType and externalParameters) and runDetails (an object whose builder.id is a
-    non-empty string), the fields SLSA v1 requires (https://slsa.dev/spec/v1.0/provenance)."""
+    """REQ-CHAIN-001-AC4 (Codex #249 r4 B4, r5 B5 + Sonnet: the class closed): the provenance is a standard SLSA v1 record
+    (https://slsa.dev/spec/v1.0/provenance) and every field of it has its type. Required: buildDefinition {buildType: TypeURI,
+    externalParameters: object} and runDetails {builder {id: TypeURI}}. When present: internalParameters an object;
+    resolvedDependencies and byproducts lists of objects (a dependency's uri a string, its digest an object of string values);
+    builder.version an object of strings; metadata an object whose invocationId, startedOn and finishedOn are strings."""
+    def bad(what):
+        refuse(stage, "predicate: the provenance %s (not a SLSA v1 record)" % what)
     if not isinstance(predicate, dict):
-        refuse(stage, "predicate: the provenance predicate is not an object (not a SLSA v1 record)")
+        bad("predicate is not an object")
     bd, rd = predicate.get("buildDefinition"), predicate.get("runDetails")
     if not isinstance(bd, dict):
-        refuse(stage, "predicate: the provenance has no buildDefinition object (not a SLSA v1 record)")
-    for k in ("buildType", "externalParameters"):
-        if k not in bd:
-            refuse(stage, "predicate: the provenance buildDefinition has no %s (not a SLSA v1 record)" % k)
+        bad("has no buildDefinition object")
+    if "buildType" not in bd:
+        bad("buildDefinition has no buildType")
+    if not _type_uri(bd["buildType"]):
+        bad("buildDefinition.buildType is not a URI string")
+    if "externalParameters" not in bd:
+        bad("buildDefinition has no externalParameters")
+    if not isinstance(bd["externalParameters"], dict):
+        bad("buildDefinition.externalParameters is not an object")
+    if "internalParameters" in bd and not isinstance(bd["internalParameters"], dict):
+        bad("buildDefinition.internalParameters is not an object")
+    if "resolvedDependencies" in bd:
+        deps = bd["resolvedDependencies"]
+        if not isinstance(deps, list) or not all(isinstance(x, dict) for x in deps):
+            bad("buildDefinition.resolvedDependencies is not a list of objects")
+        for x in deps:
+            if "uri" in x and not isinstance(x["uri"], str):
+                bad("resolvedDependencies uri is not a string")
+            if "digest" in x and (not isinstance(x["digest"], dict) or not all(isinstance(v, str) for v in x["digest"].values())):
+                bad("resolvedDependencies digest is not an object of strings")
     if not isinstance(rd, dict):
-        refuse(stage, "predicate: the provenance has no runDetails object (not a SLSA v1 record)")
+        bad("has no runDetails object")
     builder = rd.get("builder")
-    bid = builder.get("id") if isinstance(builder, dict) else None
-    if not isinstance(bid, str) or not bid.strip():
-        refuse(stage, "predicate: the provenance runDetails.builder.id is not a non-empty string (not a SLSA v1 record)")
+    if not isinstance(builder, dict):
+        bad("runDetails.builder is not an object")
+    if not _type_uri(builder.get("id")):
+        bad("runDetails.builder.id is not a URI string")
+    if "version" in builder and (not isinstance(builder["version"], dict) or not all(isinstance(v, str) for v in builder["version"].values())):
+        bad("runDetails.builder.version is not an object of strings")
+    if "metadata" in rd:
+        md = rd["metadata"]
+        if not isinstance(md, dict):
+            bad("runDetails.metadata is not an object")
+        for k in ("invocationId", "startedOn", "finishedOn"):
+            if k in md and not isinstance(md[k], str):
+                bad("runDetails.metadata.%s is not a string" % k)
+    if "byproducts" in rd and (not isinstance(rd["byproducts"], list) or not all(isinstance(x, dict) for x in rd["byproducts"])):
+        bad("runDetails.byproducts is not a list of objects")
 
 
 def check_record_type(stage, pol, ptype, payload):
