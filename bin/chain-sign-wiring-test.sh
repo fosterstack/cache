@@ -260,6 +260,8 @@ def judge_calls(root):
 if __name__ == "__main__":
     which, arg = sys.argv[1], sys.argv[2]
     bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree, "calls": judge_calls}[which](arg)
+    if os.environ.get("CHAIN_JUDGE_JSON"):   # one finding per list item, for the known-red check (a finding can hold "; " and newlines)
+        print(json.dumps(list(dict.fromkeys(bad)))); sys.exit(1 if bad else 0)
     print("; ".join(dict.fromkeys(bad)) or "ok"); sys.exit(1 if bad else 0)
 PY
 export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
@@ -1013,26 +1015,60 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 # the real repository (RED until stage-sign.yml exists and PRs 2-4 remove the old provenance signers)
 expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
-# KNOWN RED (strict): the real-tree AC1 judge stays red until PRs 2-4 rewrite the legacy stage files (stage-build.yml, stage-image.yml and
-# stage-verify.yml still sign provenance; the other legacy stage files fail the closed grammar). So that this suite can be a REQUIRED CI step
-# now, that one case is judged as a known red: it must still be red, its first finding must be the known one, and no finding may be about
-# stage-sign.yml itself (only legacy files may be red). The day it goes green the case FAILS, so the PR that makes it green must turn it back
-# into `expect ok` here. The list lives only in this file (no flag or variable can add to it) and must hold exactly one case.
+# KNOWN RED (strict, a CLOSED set): the real-tree AC1 judge stays red until PRs 2-4 rewrite the legacy stage files. So that this suite can be
+# a REQUIRED CI step now, that one case is judged as a known red, finding by finding (Opus #249 blocker: a first-finding check hid every
+# other finding behind the first):
+#   - the files that sign provenance are EXACTLY stage-build.yml, stage-image.yml and stage-verify.yml, one finding each (the legacy signers);
+#   - every other finding is an `AC1 grammar:` finding about one of the LEGACY_STAGE_FILES below (files PRs 2-4 rewrite whole);
+#   - anything else fails: a finding naming any other workflow, a composite action, a listed script, or stage-sign.yml itself.
+# Matched by FILE, not by full text, so a digest bump inside a legacy file does not break CI, while a new signer anywhere does. The day the
+# judge goes green the case FAILS, so the PR that makes it green turns it back into `expect ok`. The lists live only in this file.
+LEGACY_STAGE_FILES="stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml"
+LEGACY_PROVENANCE_SIGNERS="stage-build.yml stage-image.yml stage-verify.yml"
 KNOWN_RED_N=0
-known_red() {  # known_red LABEL GREEN-WHEN FIRST-FINDING-PREFIX judge-args...
-  local l=$1 when=$2 first=$3 out rc=0; shift 3; KNOWN_RED_N=$((KNOWN_RED_N + 1))
-  out=$(judge "$@") || rc=$?
-  if [ "$rc" = 0 ]; then failn=$((failn + 1)); echo "FAIL $l is GREEN now ($when): make it an ordinary expect ok and drop it from the known-red list"
-  elif [ "${out#"$first"}" = "$out" ]; then failn=$((failn + 1)); echo "FAIL $l: the first finding is no longer the known one ($first): ${out:0:300}"
-  elif printf '%s' "$out" | grep -E -q '(^|; )AC[0-9]+( grammar)?: stage-sign\.yml'; then failn=$((failn + 1)); echo "FAIL $l: a finding is about stage-sign.yml itself: ${out:0:300}"
-  else pass=$((pass + 1)); echo "ok   $l (known red until $when; first finding: ${out:0:120})"; fi; }
-known_red "the real tree: only stage-sign.yml is new and only it signs provenance" "PRs 2-4 rewrite the legacy stage files" \
-  "AC1: stage-build.yml signs provenance (attest-build-provenance: uses: actions/attest-build-provenance@" tree "$root"
+known_red_tree() {  # known_red_tree LABEL GREEN-WHEN TREE
+  local l=$1 when=$2 out rc=0 why; KNOWN_RED_N=$((KNOWN_RED_N + 1))
+  out=$(CHAIN_JUDGE_JSON=1 judge tree "$3") || rc=$?
+  if [ "$rc" = 0 ]; then failn=$((failn + 1)); echo "FAIL $l is GREEN now ($when): make it an ordinary expect ok and drop it from the known-red list"; return; fi
+  why=$(printf '%s' "$out" | LEGACY="$LEGACY_STAGE_FILES" SIGNERS="$LEGACY_PROVENANCE_SIGNERS" python3 -c '
+import json, os, re, sys
+legacy, signers = set(os.environ["LEGACY"].split()), sorted(os.environ["SIGNERS"].split())
+found = json.load(sys.stdin)
+prov = sorted(m.group(1) for m in (re.match(r"AC1: ([\w.-]+) signs provenance ", f) for f in found) if m)
+unknown = [f for f in found if not re.match(r"AC1: ([\w.-]+) signs provenance ", f)
+           and not (re.match(r"AC1 grammar: ([\w.-]+) ", f) and re.match(r"AC1 grammar: ([\w.-]+) ", f).group(1) in legacy)]
+if prov != signers: print("the files that sign provenance are %s, not exactly %s" % (prov, signers))
+elif unknown: print("%d finding(s) outside the legacy stage files, e.g. %s" % (len(unknown), " | ".join(u[:160] for u in unknown[:3])))
+else: print("ok %d findings, all in legacy stage files" % len(found))
+')
+  if [ "${why#ok }" = "$why" ]; then failn=$((failn + 1)); echo "FAIL $l: $why"
+  else pass=$((pass + 1)); echo "ok   $l (known red until $when: ${why#ok })"; fi; }
+known_red_tree "the real tree: only stage-sign.yml is new and only it signs provenance" "PRs 2-4 rewrite the legacy stage files" "$root"
+# the closed set catches what a first-finding check missed: a copy of the real tree with ONE more provenance signer, in each place it could hide
+probe_tree() {  # probe_tree NAME -> a copy of the real tree's .github and bin
+  local d="$work/probe-$1"; rm -rf "$d"; mkdir -p "$d"; cp -R "$root/.github" "$root/bin" "$d/"; echo "$d"; }
+ATTEST_STEP="      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n"
+d=$(probe_tree supply); printf "  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n$ATTEST_STEP" >> "$d/.github/workflows/supply-chain.yml"
+p1=$d
+d=$(probe_tree ci); printf "  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n$ATTEST_STEP" >> "$d/.github/workflows/ci.yml"
+p2=$d
+d=$(probe_tree composite); mkdir -p "$d/.github/actions/probe"; printf "name: probe\nruns:\n  using: composite\n  steps:\n$ATTEST_STEP" | sed 's/^      /    /; s/^        /      /; s/^          /        /' > "$d/.github/actions/probe/action.yml"
+p3=$d
+d=$(probe_tree admission); printf "  extra-attest:\n    runs-on: ubuntu-24.04\n    steps:\n$ATTEST_STEP" >> "$d/.github/workflows/stage-admission.yml"
+p4=$d
+# each probe must fail the case AND the failure must name the probe's own file (so it fails for the added signer, not for something else)
+for c in "$p1|supply-chain.yml|a provenance signer added to supply-chain.yml" "$p2|ci.yml|a provenance signer added to ci.yml" \
+         "$p3|probe|a provenance signer in a new composite action" "$p4|stage-admission.yml|a provenance signer added to a legacy stage file (stage-admission.yml)"; do
+  IFS='|' read -r pd pf pl <<< "$c"
+  pout=$( pass=0 failn=0 KNOWN_RED_N=0; known_red_tree "probe" "x" "$pd"; [ "$failn" = 1 ] && echo CAUGHT )
+  if printf '%s' "$pout" | grep -q CAUGHT && printf '%s' "$pout" | grep -F -q -- "$pf"; then pass=$((pass + 1)); echo "ok   known red is a closed set: $pl fails the case"
+  else failn=$((failn + 1)); echo "FAIL known red let through $pl (or failed it without naming $pf): ${pout:0:300}"; fi
+done
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
 # the known-red judge is strict: run on a GREEN fixture tree it must report FAIL (so a known red that is fixed cannot linger silently)
-if ( pass=0 failn=0; known_red "self-check" "x" "AC1: " tree "$(mk t_kr_green)"; [ "$failn" = 1 ] ) > /dev/null; then pass=$((pass + 1)); echo "ok   known_red on a green tree fails (strict)"; else failn=$((failn + 1)); echo "FAIL known_red accepted a green tree"; fi
+if ( pass=0 failn=0; known_red_tree "self-check" "x" "$(mk t_kr_green)"; [ "$failn" = 1 ] ) > /dev/null; then pass=$((pass + 1)); echo "ok   known_red on a green tree fails (strict)"; else failn=$((failn + 1)); echo "FAIL known_red accepted a green tree"; fi
 [ "$KNOWN_RED_N" = 1 ] && { pass=$((pass + 1)); echo "ok   the known-red list holds exactly one case"; } || { failn=$((failn + 1)); echo "FAIL the known-red list holds $KNOWN_RED_N cases, not exactly one"; }
-EXPECT=252
+EXPECT=256
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

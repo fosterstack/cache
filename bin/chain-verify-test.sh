@@ -726,6 +726,9 @@ for _nm, _extra in (("sign_fracedge", 0), ("sign_fracok", 1)):   # the certifica
     PAY[_nm] = hashlib.sha256(_fp).hexdigest()
 dj("rekor-frac.json", {"entries": [entry("sign_fracedge", 40, itime=int(_fwhole.timestamp()) - 60), entry("sign_fracok", 41, itime=int(_fwhole.timestamp()) - 60)]})
 open(p("fracedge.txt"), "w").write("%s.%s" % (_fwhole.strftime("%H:%M:%S"), _ffrac))
+# verify times that put genTime T.fff just past, or just inside, the 10-minute allowance after --now (where the fraction alone decides)
+open(p("now-frac-late.txt"), "w").write(fmt(_fwhole - dt.timedelta(seconds=600)))
+open(p("now-frac-in.txt"), "w").write(fmt(_fwhole - dt.timedelta(seconds=599)))
 # (R2-2, 002-AC3) logIndex and integratedTime are canonical protobuf-JSON decimal STRINGS; any other spelling of the same number is refused
 _base = entry("sign_prov", 7); _it = int(_base["integratedTime"])
 for _nm, _field, _val in (("idxnum", "logIndex", 7), ("idxplus", "logIndex", "+7"), ("idxspace", "logIndex", " 7"), ("idxzero", "logIndex", "07"),
@@ -1436,7 +1439,7 @@ expect_refuse "B-1 (b) a Witness record with a response-form stamp through stage
 expect_refuse "B-1 (c) a provenance carrying a BARE TOKEN (type tsp) is refused: names the form" "timestamp|form" verify $(V) --stage sign $(rec sign_prov_tok) $(R)
 expect_refuse "B-1 (c) token bytes labelled as a response are refused (a response is not parsable from a token)" "timestamp" verify $(V) --stage sign $(rec sign_prov_toklabel) $(R)
 # (d) a genTime with milliseconds is read (the fraction is dropped) and accepted when the stamp is genuinely inside the window
-expect_ok     "B-1 (d) a stamp whose genTime has milliseconds does not crash and is accepted when it is inside the window (the fraction is dropped)" verify $(V) --stage sign $(rec sign_prov_frac) $(R)
+expect_ok     "B-1 (d) a stamp whose genTime has milliseconds does not crash and is accepted when it is inside the window (the fraction is kept)" verify $(V) --stage sign $(rec sign_prov_frac) $(R)
 # S-1 (Sonnet): a certificate with a repeated extension is refused, whatever it says (a second SAN used to replace the first)
 expect_refuse "S-1 a certificate with a second SAN extension is refused before anything is trusted: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupsan) $(R)
 expect_refuse "S-1 a certificate with a second Build Config URI extension is refused: repeated extension" "certificate|repeated" verify $(V) --stage build $(rec build_dupcfg) $(R)
@@ -1608,6 +1611,10 @@ expect_refuse "R2-1 a stamp by a TSA certificate that was not yet valid at its g
 # R2-note (002-AC1): genTime keeps its fraction: T.fff is AFTER a certificate that ends at T
 expect_refuse "R2 genTime $(cat "$work/fracedge.txt") is after a certificate that ends at the whole second: refused" "validity" verify $(V) --stage sign $(rec sign_fracedge) $(R rekor-frac.json)
 expect_ok     "R2 control: the same stamp under a certificate that ends one second later is accepted" verify $(V) --stage sign $(rec sign_fracok) $(R rekor-frac.json)
+# where the fraction alone decides (Opus r2 info): genTime T.fff against a verification clock whose 10-minute allowance ends at T. The certificate
+# window cannot show it (openssl's -attime check at the whole second below already refuses T.fff against an end at T), the clock bound can.
+expect_refuse "R2 genTime T.fff is later than a clock whose allowance ends at T: refused (dropping the fraction would accept it)" "later than the verification time" verify $(V "$(cat "$work/now-frac-late.txt")") --stage sign $(rec sign_fracok) $(R rekor-frac.json)
+expect_ok     "R2 control: the same record with the allowance ending one second later is accepted" verify $(V "$(cat "$work/now-frac-in.txt")") --stage sign $(rec sign_fracok) $(R rekor-frac.json)
 # R2-2 (002-AC3): logIndex and integratedTime must be canonical decimal strings ("7"), never a number, a float, a sign, a space or a leading zero
 for k in idxnum idxplus idxspace idxzero itnum itfloat itplus itzero; do
   expect_refuse "R2-2 a Rekor entry spelled $k (the log's signature still verifies over the number) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-$k.json)
@@ -1637,7 +1644,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=476
+EXPECT=478
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
