@@ -1412,6 +1412,20 @@ case_out rk-space-hides-docker bad "$(rk '    steps:
 case_out rk-case-hides-curl    bad "$(rk '    steps:
       - run: curl -fsSL https://example.org/install.sh | bash
         Run: true')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run', 'Run'"
+# the check trims any whitespace (a leading space, a tab, a no-break space) and lower-cases any letter (the Kelvin sign K is k)
+case_out rk-leading-space-hides-docker bad "$(rk '    steps:
+      - run: docker run alpine
+        " run": "true"')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run', ' run'"
+case_out rk-tab-hides-docker   bad "$(rk '    steps:
+      - run: docker run alpine
+        "run\t": "true"')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run', 'run\\\\t'"
+case_out rk-nbsp-hides-docker  bad "$(rk '    steps:
+      - run: docker run alpine
+        "run\xa0": "true"')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run', 'run\\\\xa0'"
+case_out rk-kelvin-sign        bad "$(rk '    steps:
+      - run: true
+        working-directory: a
+        "WORKING-DIRECTORY": b')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'working-directory', 'WOR.ING-DIRECTORY'"
 case_out rk-case-job-key       bad "$(rk '    name: one
     Name: two
 '"$STEPS")" "jobs\\.j: duplicate key 'name'"
@@ -1462,6 +1476,8 @@ case_out rk-action-yaml-deep bad "$(rk "$STEPS")" "some/action\\.yaml\\.runs\\.s
   "mkdir -p .github/agent/some && printf '$ACTION_RUN_TWICE' > .github/agent/some/action.yaml"
 case_out rk-action-case      bad "$(rk "$STEPS")" "actions/x/action\\.yml\\.runs\\.steps\\[0\\]: duplicate key 'run', 'Run'" '' \
   "mkdir -p .github/actions/x && printf '$ACTION_RUN_CASE' > .github/actions/x/action.yml"
+case_out rk-action-yml-capital bad "$(rk "$STEPS")" "actions/z/Action\\.yml\\.runs\\.steps\\[0\\]: duplicate key 'run'" '' \
+  "mkdir -p .github/actions/z && printf '$ACTION_RUN_TWICE' > .github/actions/z/Action.yml"
 # controls: keys that differ, or the same key in different mappings, stay accepted
 case_out rk-same-key-other-mappings ok "env:
   GREETING: hello
@@ -1483,6 +1499,16 @@ case_out rk-numeric-spellings ok "$(rk '    outputs:
       1: one
       01: two
 '"$STEPS")" '0 finding' 'duplicate key'
+# lower-cased, never case-folded: STRASSE and STRAßE stay two keys (case folding would make both strasse)
+case_out rk-sharp-s          ok  "$(rk '    env:
+      STRASSE: one
+      "STRAßE": two
+'"$STEPS")" '0 finding' 'duplicate key'
+# keys inside a block scalar are script text, not keys
+case_out rk-block-scalar     ok  "$(rk '    steps:
+      - run: |
+          a: 1
+          a: 2')" '0 finding' 'duplicate key'
 case_out rk-include-lookalike ok "$(rk '    strategy:
       matrix:
         include:
@@ -1499,7 +1525,7 @@ case_out rk-scope-other-file ok  "$(rk "$STEPS")" '0 finding' 'duplicate key' \
   "printf 'name: one\\nname: two\\nenv:\\n  A: one\\n  a: two\\n' > .github/other.yml"
 case_out rk-scope-agent-fixture ok "$(rk "$STEPS")" '0 finding' 'duplicate key' \
   "mkdir -p .github/agent/fixtures && printf 'name: one\\nname: two\\n' > .github/agent/fixtures/x.yml"
-RK_EXPECT=46
+RK_EXPECT=53
 if [ $((pm_run - rk_start)) = "$RK_EXPECT" ]; then pass=$((pass+1)); echo "PASS rk-case-count → $RK_EXPECT"
 else failn=$((failn+1)); echo "FAIL rk-case-count → $((pm_run - rk_start)) cases ran, want $RK_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed

@@ -1201,11 +1201,12 @@ requirements:
       - a matrix key that does not exist or is defined on another job or at the workflow level;
       - and a matrix reached through a YAML anchor (the check refuses a file that holds any anchor or alias, whatever it anchors).
       REQ-REL-005-AC3 is the advisor's AC2b (ratified Oct 9, letter case and action files Oct 10; the schema numbers ACs, so it is filed as AC3):
-      - two keys are one key when YAML reads them as equal text once trimmed and lower-cased, the way the check reads keys: quoting, escapes and flow style never make another key (jobs and "jobs", run and "ru\x6e", run and Run, "run " and run, TARGET and target); every scalar is a string, so on and "on" or 1 and "1" are one key; "" and << are ordinary keys (no merge is done);
-      - keys of different text stay accepted (run and runs, 1 and 01, my-include beside include), as does one key in different mappings;
+      - two keys are one key when the text YAML reads for them is equal once trimmed of any whitespace and lower-cased exactly as the check reads keys (Python str.strip().lower(), not casefold): run and Run, " run", "run " or run followed by a tab or a no-break space are all run, the Kelvin sign is k, and STRASSE and STRAßE stay two keys;
+      - quoting, escapes and flow style never make another key (jobs and "jobs", run and "ru\x6e"); every scalar is a string, so on and "on" or 1 and "1" are one key; "" and << are ordinary keys (no merge is done); text inside a block scalar is not a key;
+      - keys of different text stay accepted (run and runs, my-include beside include), as does one key in different mappings; 1 and 01 are accepted as two keys (GitHub's YAML may read 01 as 1, but no key the check reads is numeric);
       - the finding names the file ([docN] after it in a file of several documents, from 0), the path of the mapping (dots, list positions in brackets from 0) and each spelling once, in file order: <file>.jobs.build.steps[2]: duplicate key 'run', 'Run'; a key given three times is one finding;
       - AC2's job, strategy and matrix levels keep AC2's own finding, reported once;
-      - read in files under .github/workflows/ and in action.yml or action.yaml files under .github/, never another YAML file there; a file with any YAML anchor or alias keeps its file-wide refusal.
+      - read in files under .github/workflows/ and in action files under .github/ (action.yml or action.yaml in any letter case, as the check reads them), never another YAML file there; a file with any YAML anchor or alias keeps its file-wide refusal.
     acceptance_criteria:
       - id: REQ-REL-005-AC1
         given: any pull request into main, and any push to main
@@ -1222,7 +1223,7 @@ requirements:
       - id: REQ-REL-005-AC3
         given: "a workflow file under .github/workflows/ or an action file named action.yml or action.yaml under .github/, in which one mapping gives two keys that are equal once trimmed and lower-cased"
         when: "the action-pin check reads the file"
-        then: "it reports a finding that names both spellings and the path of the mapping, whatever the second value is; two keys are compared as YAML reads them, whatever their quoting or escapes; the notes of this requirement give the path form and the accepted controls"
+        then: "it reports a finding that names each spelling once and the path of the mapping (AC2's job, strategy and matrix levels keep AC2's own message), whatever the second value is; two keys are compared as YAML reads them, whatever their quoting or escapes; the notes of this requirement give the path form and the accepted controls"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

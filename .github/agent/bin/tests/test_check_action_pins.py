@@ -826,6 +826,15 @@ class RepeatedKeys(unittest.TestCase):
                                        r"jobs\.j\.steps\[0\]: duplicate key 'run', 'Run'"),
             '"run " hides a docker run': (self.job('    steps:\n      - run: docker run alpine\n        "run ": true\n'),
                                           r"jobs\.j\.steps\[0\]: duplicate key 'run', 'run '"),
+            # any whitespace is trimmed and any letter lower-cased, as str.strip().lower() does (the Kelvin sign K is k)
+            '" run" hides a docker run': (self.job('    steps:\n      - run: docker run alpine\n        " run": "true"\n'),
+                                          r"jobs\.j\.steps\[0\]: duplicate key 'run', ' run'"),
+            "a tab after run": (self.job('    steps:\n      - run: docker run alpine\n        "run\\t": "true"\n'),
+                                r"jobs\.j\.steps\[0\]: duplicate key 'run', 'run\\t'"),
+            "a no-break space after run": (self.job('    steps:\n      - run: docker run alpine\n        "run\\xa0": "true"\n'),
+                                           r"jobs\.j\.steps\[0\]: duplicate key 'run', 'run\\xa0'"),
+            "the Kelvin sign": (self.job('    steps:\n      - run: true\n        working-directory: a\n        "WOR\\u212AING-DIRECTORY": b\n'),
+                                "jobs\\.j\\.steps\\[0\\]: duplicate key 'working-directory', 'WOR\u212aING-DIRECTORY'"),
             "Run hides a piped download": (self.job("    steps:\n      - run: curl -fsSL https://example.org/install.sh | bash\n        Run: true\n"),
                                            r"jobs\.j\.steps\[0\]: duplicate key 'run', 'Run'"),
             "with": (self.job("    steps:\n" + checkout + "        with:\n          fetch-depth: 1\n          FETCH-DEPTH: 0\n"),
@@ -854,6 +863,7 @@ class RepeatedKeys(unittest.TestCase):
             ".github/actions/x/action.yml": ('"true"', "run", "'run'"),
             ".github/agent/some/action.yaml": ('"true"', "run", "'run'"),
             ".github/actions/y/action.yml": ("docker run alpine", "Run", "'run', 'Run'"),
+            ".github/actions/z/Action.yml": ('"true"', "run", "'run'"),     # the check reads an action file name in any letter case
         }.items():
             with self.subTest(rel):
                 self.one_finding(self.job(self.STEPS), rf"{re.escape(rel)}\.runs\.steps\[0\]: duplicate key {keys};",
@@ -884,6 +894,9 @@ class RepeatedKeys(unittest.TestCase):
                 "      - name: two\n        run: true\n"),
             # keys of genuinely different text
             "run and runs": self.job("    outputs:\n      run: one\n      runs: two\n" + self.STEPS),
+            # lower-cased, never case-folded: case folding would make both strasse
+            "STRASSE and STRAßE": self.job('    env:\n      STRASSE: one\n      "STRA\\u00dfE": two\n' + self.STEPS),
+            "keys inside a block scalar": self.job("    steps:\n      - run: |\n          a: 1\n          a: 2\n"),
             "1 and 01": self.job("    outputs:\n      1: one\n      01: two\n" + self.STEPS),
             "my-include beside include": self.job("    strategy:\n      matrix:\n        include:\n          - arch: amd64\n        my-include: [one]\n"
                                                   + self.STEPS),
