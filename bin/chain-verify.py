@@ -19,6 +19,8 @@ in-toto-attestation spec/v1/statement.md:11,19 (_type, subject, predicateType), 
 import argparse
 import base64
 import datetime as dt
+import math
+from fractions import Fraction
 import hashlib
 import json
 import os
@@ -283,16 +285,39 @@ def stamp_token(stamp_der, kind, tmp):
 
 
 def stamp_time(token_path):
-    """genTime of a bare token: the one `Time stamp:` line of `openssl ts -reply -token_in -text` (no status section exists there)."""
+    """genTime of a bare token, as exact epoch seconds (a Fraction): the one `Time stamp:` line of `openssl ts -reply -token_in -text`
+    (no status section exists there). The fraction of a second is KEPT (REQ-CHAIN-002-AC1, Codex security r2 note): 12:00:00.5 is
+    after a certificate that ends at 12:00:00."""
     text = ssl("ts", "-reply", "-in", token_path, "-token_in", "-text").stdout.decode(errors="replace")
-    hits = re.findall(r"^Time stamp: (\w{3})\s+(\d+) (\d\d):(\d\d):(\d\d)(?:\.\d+)? (\d{4}) GMT$", text, re.M)   # a fraction of a second is dropped
+    hits = re.findall(r"^Time stamp: (\w{3})\s+(\d+) (\d\d):(\d\d):(\d\d)(?:\.(\d+))? (\d{4}) GMT$", text, re.M)
     if len(hits) != 1:
         raise ValueError("not exactly one genTime in the timestamp token")
-    return dt.datetime.strptime("%s %s %s:%s:%s %s" % hits[0], "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
+    mon, day, hh, mm, ss, frac, year = hits[0]
+    whole = dt.datetime.strptime("%s %s %s:%s:%s %s" % (mon, day, hh, mm, ss, year), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
+    return Fraction(epoch(whole)) + (Fraction(int(frac), 10 ** len(frac)) if frac else 0)
+
+
+def epoch(when):
+    """Whole epoch seconds of a certificate or clock time (certificate times have no fraction)."""
+    return int(when.timestamp())
 
 
 def stamp_text(when):
-    return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    """A datetime, or exact epoch seconds with any fraction shown."""
+    if isinstance(when, dt.datetime):
+        return when.strftime("%Y-%m-%dT%H:%M:%SZ")
+    whole = math.floor(when)
+    text = dt.datetime.fromtimestamp(whole, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    if when != whole:
+        text += ("%.9f" % float(when - whole))[1:].rstrip("0")
+    return text + "Z"
+
+
+def attimes(when):
+    """The whole second at which openssl checks a chain for `when`. openssl treats a certificate as expired when notAfter <= the
+    -attime and as not yet valid when notBefore > it, and certificate times are whole seconds, so the floor gives the exact answer
+    for a time with a fraction; for a whole-second time equal to a notAfter it refuses (one second stricter: fail closed)."""
+    return [math.floor(when)]
 
 
 def check_identity(stage, pol, leaf):
@@ -330,10 +355,22 @@ def check_chain(stage, pol, cert_pem, intermediates, tmp):
         with open(rp, "w") as f:
             f.write(b64d(root["certificate"]).decode())
         # no default file, directory or store: only the policy's root is trusted, whatever SSL_CERT_FILE / SSL_CERT_DIR say
+        # the path is found here; its validity is checked at the stamp time by chain_valid_at, once that time is known
         r = ssl("verify", "-no_check_time", "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted", rp, "-untrusted", untrusted, leaf_p, check=False)
         if r.returncode == 0:
-            return leaf_p
+            return leaf_p, rp, untrusted
     refuse(stage, "certificate does not chain to a root of the policy (root)")
+
+
+def chain_valid_at(stage, chain, when):
+    """Every certificate of the chain (leaf, intermediates, root) was valid at the stamp's authenticated time (REQ-CHAIN-002-AC1,
+    Codex security r2): an intermediate that had expired, or was not yet valid, then is refused, not only the leaf."""
+    leaf_p, root_p, untrusted = chain
+    for t in attimes(when):
+        r = ssl("verify", "-attime", str(t), "-no-CAfile", "-no-CApath", "-no-CAstore", "-trusted", root_p, "-untrusted", untrusted, leaf_p, check=False)
+        if r.returncode != 0:
+            detail = (r.stdout + r.stderr).decode(errors="replace").strip().splitlines()
+            refuse(stage, "certificate chain is not valid at the timestamp time %s (validity): %s" % (stamp_text(when), detail[-1] if detail else "openssl verify failed"))
 
 
 def check_signature(stage, leaf_p, ptype, payload, sig, tmp):
@@ -374,18 +411,20 @@ def check_timestamp(stage, pol, signature_entry, sig, leaf, now, tmp, want_kind=
                 f.write(b64d(auth["certificate"]).decode())
             with open(ip, "w") as f:
                 f.write("".join(b64d(x).decode().rstrip("\n") + "\n" for x in auth.get("intermediates", [])))
-            r = ssl("ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, "-token_in", "-CAfile", cp, "-untrusted", ip, "-no_check_time", check=False)
-            if r.returncode == 0:
+            # the TSA's signing certificate and its chain must be valid AT genTime (Codex security r2), not merely ever
+            if all(ssl("ts", "-verify", "-digest", hashlib.sha256(sig).hexdigest(), "-in", tokp, "-token_in", "-CAfile", cp, "-untrusted", ip,
+                       "-attime", str(t), check=False).returncode == 0 for t in attimes(when)):
                 stamped = when
                 break
-        if stamped:
+        if stamped is not None:
             break
     if stamped is None:
         refuse(stage, "timestamp: " + why)
-    if not (leaf["not_before"] <= stamped <= leaf["not_after"]):
+    if not (epoch(leaf["not_before"]) <= stamped <= epoch(leaf["not_after"])):
         refuse(stage, "timestamp time %s is outside the certificate validity %s..%s" % (stamp_text(stamped), stamp_text(leaf["not_before"]), stamp_text(leaf["not_after"])))
-    if stamped > now + dt.timedelta(minutes=10):
+    if stamped > epoch(now) + 600:
         refuse(stage, "timestamp time %s is later than the verification time" % stamp_text(stamped))
+    return stamped
 
 
 def check_record_type(stage, pol, ptype, payload):
@@ -437,9 +476,10 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     except Exception as ex:
         refuse(stage, "record certificate or signature is malformed (%s)" % (ex if isinstance(ex, ValueError) else type(ex).__name__))
     check_identity(stage, pol, leaf)
-    leaf_p = check_chain(stage, pol, cert_pem, intermediates, tmp)
-    check_signature(stage, leaf_p, ptype, payload, sig, tmp)
-    check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
+    chain = check_chain(stage, pol, cert_pem, intermediates, tmp)
+    check_signature(stage, chain[0], ptype, payload, sig, tmp)
+    stamped = check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
+    chain_valid_at(stage, chain, stamped)
     stmt, needs_rekor = check_record_type(stage, pol, ptype, payload)
     if needs_rekor:
         check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf)
@@ -453,12 +493,24 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
 # {"apiVersion","kind":"dsse","spec":{"envelopeHash","payloadHash","signatures":[{"signature","verifier"}]}} where signature
 # is the base64 DSSE signature and verifier the base64 PEM certificate. The signed entry timestamp is an ECDSA signature over
 # the canonical JSON {body, integratedTime, logID, logIndex} (sigstore-go pkg/tlog/entry.go VerifySET).
+CANONICAL_DECIMAL = re.compile(r"0|[1-9][0-9]*")
+
+
+def canonical_int(e, field):
+    """protobuf-JSON writes int64 as a decimal STRING; only its one canonical spelling is accepted (REQ-CHAIN-002-AC3, Codex security r2):
+    int() would read 7, "+7", " 7", "07" and 7.9 alike, so an edited outer entry would still match the log's signed numbers."""
+    v = e[field]
+    if not isinstance(v, str) or not CANONICAL_DECIMAL.fullmatch(v):
+        raise ValueError("%s %r is not a canonical decimal string" % (field, v))
+    return int(v)
+
+
 def rekor_entry_fields(e):
     return {
         "body": e["canonicalizedBody"],
-        "integratedTime": int(e["integratedTime"]),
+        "integratedTime": canonical_int(e, "integratedTime"),
         "logID": b64d(e["logId"]["keyId"]).hex(),
-        "logIndex": int(e["logIndex"]),
+        "logIndex": canonical_int(e, "logIndex"),
     }
 
 
@@ -491,6 +543,10 @@ def rekor_body(e):
 
 def check_rekor_entry(pol, e, body, sig, leaf_der, leaf):
     """Returns None when the entry is good, else the reason it is not."""
+    try:
+        rekor_entry_fields(e)
+    except (ValueError, KeyError, TypeError) as ex:
+        return "rekor entry is malformed (%s)" % ex
     spec = body["spec"]
     if not set_is_valid(e, pol["rekor_public_key"]):
         return "rekor entry: the signed entry timestamp does not verify against the policy's rekor key"
@@ -551,35 +607,53 @@ def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
     refuse(stage, first)
 
 
+def typed_subjects(stage, stmt):
+    """The statement's subjects, each {name: string, digest: {algorithm: string}}; anything else is a refusal naming the subject,
+    never a traceback (REQ-CHAIN-003-AC1, 001-AC2, Codex security r2)."""
+    subs = stmt.get("subject")
+    if not isinstance(subs, list):
+        refuse(stage, "the record's subjects are malformed (subject is not a list)")
+    for s in subs:
+        ok = isinstance(s, dict) and isinstance(s.get("name"), str) and isinstance(s.get("digest"), dict) \
+            and all(isinstance(k, str) and isinstance(v, str) for k, v in s["digest"].items())
+        if not ok:
+            refuse(stage, "the record's subjects are malformed (a subject is {name: string, digest: {algorithm: string}}, got %s)" % json.dumps(s)[:120])
+    return subs
+
+
+def product_digest(subs):
+    """The sha256 of the one product subject file:digests.json, or None when there is not exactly one."""
+    hits = [s for s in subs if s["name"] == PRODUCT]
+    return hits[0]["digest"].get("sha256") if len(hits) == 1 else None
+
+
 def digest_compare(stage_prev, stmt, d_bytes, d_obj):
     """Compare the given digest list with the record's subjects (provenance) or its product subject (collection)."""
-    subs = stmt.get("subject")
-    if not isinstance(subs, list) or not all(isinstance(s, dict) for s in subs):
-        refuse(stage_prev, "the record's subjects are malformed")
+    subs = typed_subjects(stage_prev, stmt)
     if stmt.get("predicateType") == PROV:
-        got = {s.get("name"): "sha256:" + str((s.get("digest") or {}).get("sha256")) for s in subs}
+        got = {s["name"]: "sha256:" + str(s["digest"].get("sha256")) for s in subs}
         if len(got) != len(subs) or got != d_obj:
             refuse(stage_prev, "digest list differs from the subjects of the record")
         return
-    hits = [s for s in subs if s.get("name") == PRODUCT]
-    if len(hits) != 1 or (hits[0].get("digest") or {}).get("sha256") != hashlib.sha256(d_bytes).hexdigest():
+    if product_digest(subs) != hashlib.sha256(d_bytes).hexdigest():
         refuse(stage_prev, "digest of the digest file differs from the digests file the record attests")
 
 
-def parse_digest_bytes(raw):
-    """The digest list from the bytes that were read ONCE, or raise Refuse('sign', 'format ...'): the hash Build attested and the
-    subjects of the provenance are then made from the same bytes, never from two reads of a file that could change in between."""
+def parse_digest_bytes(raw, stage="sign"):
+    """The digest list from the bytes that were read ONCE, or raise Refuse(stage, 'format ...'): the hash Build attested and the
+    subjects of the provenance are then made from the same bytes, never from two reads of a file that could change in between.
+    Sign and stage-start use this one check (REQ-CHAIN-001-AC2, 003-AC1)."""
     try:
         obj = strict_json(raw)
     except ValueError as ex:
-        refuse("sign", "digest file format: not UTF-8 JSON or has a duplicate key (%s)" % ex)
+        refuse(stage, "digest file format: not UTF-8 JSON or has a duplicate key (%s)" % ex)
     if not isinstance(obj, dict) or not obj:
-        refuse("sign", "digest file format: must be a non-empty JSON object")
+        refuse(stage, "digest file format: must be a non-empty JSON object")
     for k, v in obj.items():
         if not re.fullmatch(r"[a-z0-9-]+", k):
-            refuse("sign", "digest file format: name %r is not [a-z0-9-]+" % k)
+            refuse(stage, "digest file format: name %r is not [a-z0-9-]+" % k)
         if not isinstance(v, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", v):
-            refuse("sign", "digest file format: value of %r is not sha256:<64 lower-case hex>" % k)
+            refuse(stage, "digest file format: value of %r is not sha256:<64 lower-case hex>" % k)
     return obj
 
 
@@ -613,6 +687,7 @@ def cmd_stage_start(a):
         stmt, payload, dsse = verify_record(pol, a.previous, a.record, a.rekor_stub, now, tmp)
     if dsse["payloadType"] == POLT:
         refuse(a.previous, "predicate: a signed release policy is not a record a stage starts from")
+    parse_digest_bytes(d_bytes, a.previous)   # the same format check Sign applies (Codex security r2), before any comparison
     digest_compare(a.previous, stmt, d_bytes, d_obj)
     print("ok")
 
@@ -656,8 +731,7 @@ def check_build_record(a):
     pol_b.pop("dry_run", None)
     with tempfile.TemporaryDirectory() as tmp:
         stmt, payload, dsse = verify_record(pol_b, "build", a.build_record, None, now, tmp)
-    hits = [s for s in (stmt.get("subject") or []) if isinstance(s, dict) and s.get("name") == PRODUCT]
-    if len(hits) != 1 or (hits[0].get("digest") or {}).get("sha256") != hashlib.sha256(d_bytes).hexdigest():
+    if product_digest(typed_subjects("sign", stmt)) != hashlib.sha256(d_bytes).hexdigest():
         refuse("sign", "digest list differs from the digests Build attested (its digest does not match the record's product subject)")
     return pol, parse_digest_bytes(d_bytes)
 
@@ -776,7 +850,11 @@ def cmd_sign(a):
             json.dump(statement, f, sort_keys=True)
         make_out(a.out)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
-        r = subprocess.run(["cosign", "attest-blob", "--yes", "--signing-config", signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
+        try:
+            r = subprocess.run(["cosign", "attest-blob", "--yes", "--signing-config", signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
+        except OSError as ex:   # no cosign on PATH, or not runnable: a refusal, and the fresh output folder goes
+            remove_own_out(a.out)
+            refuse("sign", "cosign not found on PATH" if isinstance(ex, FileNotFoundError) else "cosign could not be started (%s)" % type(ex).__name__)
         if r.returncode != 0:
             remove_own_out(a.out)
             refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
