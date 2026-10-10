@@ -171,6 +171,46 @@ def judge_build(path):
                 bad.append("002-AC4: signing step %r puts an expression into %s" % (nm, fm.group(1)))
     return bad
 
+# FROZEN LEGACY FILES: the eleven legacy stage files PRs 2-4 rewrite on chain-v030, pinned by sha256 in .github/policy/legacy-stage-files.json
+LEGACY_EXPECTED = {".github/workflows/%s.yml" % n for n in ("stage-acceptance-artifacts", "stage-acceptance-egress", "stage-acceptance-k8s",
+                   "stage-acceptance-predicate", "stage-admission", "stage-authorize", "stage-build", "stage-image", "stage-promote",
+                   "stage-reproducibility", "stage-verify")}
+def sha256_of(path):
+    import hashlib
+    return hashlib.sha256(open(path, "rb").read()).hexdigest()
+
+def frozen_files(base, bad):
+    """The repo paths of the listed legacy files whose bytes match the list (their own findings are left out). No list: nothing is frozen.
+    The list must name exactly the eleven legacy paths, all under .github/workflows/; a listed file that is missing is a finding, one
+    whose bytes differ is judged in full."""
+    p = os.path.join(base, ".github/policy/legacy-stage-files.json")
+    if not os.path.exists(p): return set()
+    try: listed = {r["path"]: r["sha256"] for r in json.load(open(p))["files"]}
+    except Exception as ex: bad.append("AC1: legacy-stage-files.json is malformed (%s)" % ex); return set()
+    outside = sorted(x for x in listed if not re.fullmatch(r"\.github/workflows/[\w.-]+\.ya?ml", x) or ".." in x)
+    if outside: bad.append("AC1: legacy-stage-files.json lists a path outside .github/workflows/: %s" % outside); return set()
+    if set(listed) != LEGACY_EXPECTED:
+        bad.append("AC1: legacy-stage-files.json does not list exactly the eleven legacy stage files: %s" % sorted(set(listed) ^ LEGACY_EXPECTED)); return set()
+    frozen = set()
+    for x, want in sorted(listed.items()):
+        f = os.path.join(base, x)
+        if not os.path.isfile(f): bad.append("AC1: legacy file missing: %s: update legacy-stage-files.json or delete it" % x)
+        elif sha256_of(f) != want: bad.append("AC1: legacy file changed (judged in full): %s" % x)
+        else: frozen.add(x)
+    return frozen
+
+def allowed_mentions(base, bad):
+    """Files that may NAME a provenance signer without being one (tests, the signer table, policy text), each with a reason and the sha256
+    of its bytes (.github/policy/provenance-mentions.json): a changed file is no longer allowed, so its mentions become findings."""
+    p = os.path.join(base, ".github/policy/provenance-mentions.json")
+    if not os.path.exists(p): return set()
+    ok = set()
+    for r in json.load(open(p)).get("files") or []:
+        f = os.path.join(base, r.get("path", ""))
+        if not str(r.get("reason") or "").strip(): bad.append("AC1: provenance-mentions.json row without a reason: %s" % r.get("path"))
+        elif os.path.isfile(f) and sha256_of(f) == r.get("sha256"): ok.add(r["path"])
+    return ok
+
 def judge_tree(base):
     """001-AC1 (advisor decision b, Oct 9; finite grammar, replaces the script-reach scan): (a) stage-sign.yml is the only new workflow
     file; (b) the direct signer-call scan of every workflow and composite action (listed with a reason in chain-signers.json;
@@ -197,6 +237,7 @@ stage-verify.yml supply-chain.yml""".split())
             if any(pv for e in TABLE if re.search(e["regex"], str(r.get("tool", ""))) for pv in [e["prov"] == "always"]): bad.append("AC1: signer list names a provenance signer: %s" % r)
             allowed.setdefault(r.get("file"), set()).add(r.get("tool"))
     acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
+    frozen = frozen_files(base, bad)          # repo paths; their OWN findings are left out, what they run is still followed
     def check(rel, text):
         for e, pv, line in signer_calls(text):
             if rel == "stage-sign.yml": continue
@@ -206,6 +247,7 @@ stage-verify.yml supply-chain.yml""".split())
                 bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
     for f in files + sorted(acts):
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
+        if os.path.relpath(f, base) in frozen: continue
         check(rel, open(f).read())
     rows, errs, envn = _cts.load_scripts(base)
     bad += ["AC1: " + e for e in errs]
@@ -216,7 +258,8 @@ stage-verify.yml supply-chain.yml""".split())
         try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
         e, r = _cts.stage_grammar(rel, d, rows, envn)
-        bad += ["AC1 grammar: " + x for x in e]; ran[rel] = set(r)
+        if os.path.relpath(f, base) not in frozen: bad += ["AC1 grammar: " + x for x in e]
+        ran[rel] = set(r)                      # reach is computed over the WHOLE tree, frozen files included
     def closure(paths):
         seen, todo = set(), list(paths)
         while todo:
@@ -235,6 +278,21 @@ stage-verify.yml supply-chain.yml""".split())
         if signs == "provenance" and not row.get("sign_subcommand"):
             for rel, rs in reach.items():
                 if p in rs and rel != "stage-sign.yml": bad.append("AC1: %s signs provenance but %s runs it (only stage-sign.yml may)" % (p, rel))
+        # static, whatever runs it: the one provenance row is chain-verify.py's `sign` subcommand
+        if signs == "provenance" and p != "bin/chain-verify.py": bad.append("AC1: %s has signs: provenance; only bin/chain-verify.py may" % p)
+    # every file under bin/ and .github/ (not only listed scripts: a frozen file can run an unlisted one) is scanned as raw text; a provenance
+    # signer anywhere but stage-sign.yml, chain-verify.py, a frozen legacy file or an allow-listed mention file is a finding
+    mentions = allowed_mentions(base, bad)
+    # chain-scripts.json and chain-signers.json are the judge's own data, judged row by row above (a signs value, a signer row naming a
+    # provenance signer), so their text is not scanned
+    skip = frozen | mentions | {".github/workflows/stage-sign.yml", "bin/chain-verify.py", ".github/policy/chain-scripts.json", ".github/policy/chain-signers.json"}
+    for top in ("bin", ".github"):
+        for dp, _dirs, fs in os.walk(os.path.join(base, top)):
+            for fn in sorted(fs):
+                rp = os.path.relpath(os.path.join(dp, fn), base)
+                if rp in skip: continue
+                names = sorted({e["name"] for e, pv, _l in signer_calls(open(os.path.join(dp, fn), errors="replace").read(), False) if pv})
+                if names: bad.append("AC1: %s names a provenance signer (%s); only stage-sign.yml and chain-verify.py sign may" % (rp, ", ".join(names)))
     return bad
 
 def judge_calls(root):
@@ -542,7 +600,8 @@ scriptcase s_prov caught "${S0}cosign attest --yes --type slsaprovenance1 --pred
 scriptcase s_prov_run caught "${S0}cosign attest --yes --type slsaprovenance1 --predicate p.json \"\$IMG\"\n" 'rows["bin/build-stage.sh"]["tools"]=["cosign"]; rows["bin/build-stage.sh"]["signs"]="provenance"; rows["bin/build-stage.sh"]["runs"]=[]' "a provenance signer run by stage-build.yml (only stage-sign.yml may)"
 d=$(mk s_prov_sign); setfile "$d" bin/build-stage.sh "${S0}cosign attest --yes --type slsaprovenance1 --predicate p.json \"\$IMG\"\n"; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["cosign"]; rows["bin/build-stage.sh"]["signs"]="provenance"; rows["bin/build-stage.sh"]["runs"]=[]'
 printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-sign.yml"; printf 'jobs:\n  b:\n    steps:\n      - run: set -euo pipefail\n' > "$d/.github/workflows/stage-build.yml"
-expect ok "AC1 script: the same provenance signer run only by stage-sign.yml" tree "$d"
+# Opus #249 frozen-design blocker 1: the one provenance row is chain-verify.py `sign`; any other row with signs: provenance is refused, whoever runs it
+expect caught "AC1 script: another provenance signer, even one run only by stage-sign.yml (only bin/chain-verify.py may have signs: provenance)" tree "$d"
 d=$(mk s_trans); printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/build-stage.sh a\n' > "$d/.github/workflows/stage-verify.yml"; setfile "$d" bin/prov.sh "${S0}cosign attest --yes --type slsaprovenance1 --predicate p.json \"\$IMG\"\n"
 edit_spec "$d" 'rows["bin/prov.sh"]={"path":"bin/prov.sh","tools":["cosign"],"signs":"provenance","reason":"x","runs":[]}; rows["bin/build-stage.sh"]["runs"].append("bin/prov.sh")'
 setfile "$d" bin/build-stage.sh "${S0}witness run -- bin/build-apk.sh\nwitness run -- bin/prov.sh\n"; gen "$d"; printf 'jobs:\n  b:\n    steps:\n      - run: bash bin/build-stage.sh apk\n' > "$d/.github/workflows/stage-build.yml"
@@ -1057,7 +1116,8 @@ probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by froz
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
 probe vexforms bin/vex-forms.py     "a provenance signer added to bin/vex-forms.py (unlisted, run by frozen stage-promote.yml)" "printf '# cosign attest --type slsaprovenance x\n' >> bin/vex-forms.py"
 probe patchdec bin/patch-decide.py  "a provenance signer added to bin/patch-decide.py (unlisted)" "printf 'X = \"cosign attest --type slsaprovenance\"\n' >> bin/patch-decide.py"
-probe agentbin .github/agent/bin/auditor-release-authz.py "a provenance signer added under .github/agent/bin" "printf '# actions/attest-build-provenance\n' >> .github/agent/bin/auditor-release-authz.py"
+AUDBIN=".github/""agent/bin"   # (split: REQ-AUD-18 AC1 keeps the auditor directory's literal path out of files outside it)
+probe agentbin "$AUDBIN/auditor-release-authz.py" "a provenance signer added under the auditor's bin directory" "printf '# uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8\n' >> $AUDBIN/auditor-release-authz.py"
 probe allowed  bin/check-workflow-permissions.py "an allow-listed mention file changed (its mentions are then findings)" "printf '# changed\n' >> bin/check-workflow-permissions.py"
 probe extra    "not list exactly the eleven" "a twelfth path in the legacy list" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"

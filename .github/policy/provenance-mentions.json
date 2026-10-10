@@ -1,0 +1,30 @@
+{
+ "_note": "Files that NAME a provenance signer without being one, each with a reason and the sha256 of its bytes. The wiring test (REQ-CHAIN-001-AC1) scans every tracked file under bin/ and .github/ for a provenance signer; these files are left out only while their bytes match, so a change to one makes its mentions findings again until its row is updated here, in the same visible pull request.",
+ "files": [
+  {
+   "path": "bin/chain-records-test.sh",
+   "sha256": "9af2c16893a58dc6b170ef63d7b41ee39b8cdff73315a9231d8597549b793979",
+   "reason": "the record-types test: its fixtures hold signers to prove each needs a row"
+  },
+  {
+   "path": "bin/chain-sign-wiring-test.sh",
+   "sha256": "ce7975b92be968bb8465595cc6a563e5e19c5a8350e0d6a741198579bf5a99b9",
+   "reason": "the wiring test: its fixtures and probes hold provenance signers to prove they are caught"
+  },
+  {
+   "path": "bin/chain-test-signers.json",
+   "sha256": "0b5095d4837bade1d45b9e3f998d8fa0ebe3c7a3eab32f80429208239c594e0f",
+   "reason": "the shared table of signing tools the wiring and records tests match: it names every signer by design"
+  },
+  {
+   "path": "bin/chain-verify-test.sh",
+   "sha256": "9f8eb73604b4cae7af4af01cca9e449a59533772b6a348659b0383708f1cf5ea",
+   "reason": "the verifier test: its fake signing tool and pinned command lines name the provenance call"
+  },
+  {
+   "path": "bin/check-workflow-permissions.py",
+   "sha256": "1580ac7f6c0e0334da49c1cf615c243a8cff4bcaf10b3a362cfef5c62530f7fe",
+   "reason": "the workflow-permission check: it maps action names to the permissions they need, it signs nothing"
+  }
+ ]
+}
