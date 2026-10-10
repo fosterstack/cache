@@ -45,7 +45,8 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              signed Ubuntu archive, PyYAML for this checker) are distribution packages, not actions —
              outside this check, the same class as a binary installed by version; covered by the review
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
-  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256
+  The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256 (a
+             frozen set of exactly two digests while cache PR #251 is bootstrapped; PR C leaves one)
              (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
              until this file is updated — a change under .github/agent/, so it needs the review record:
              the enforcement cannot be removed from its caller by an ordinary merge either.
@@ -224,7 +225,12 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-GATE_WORKFLOW_SHA256 = "0c34cbbba707b8b3944064eae259985af22f8981d2ae5b9d22ccfd58d40b0447"
+# the accepted gate-workflow digests (gate_digest: pins masked), a closed set of EXACTLY TWO for the bootstrap of
+# cache PR #251: main's gate workflow and #251's; PR C removes main's old one, leaving one
+GATE_WORKFLOW_SHA256 = frozenset({
+    "0c34cbbba707b8b3944064eae259985af22f8981d2ae5b9d22ccfd58d40b0447",   # main's gate workflow before #251
+    "7007f77f62f9312ca8e0290afccbba284cd8d07e1b2b90dcbe0f44527466df83",   # the gate workflow of cache PR #251
+})
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
@@ -2775,9 +2781,10 @@ def main():
         check_file(tree, rel, pins, bad)
     if GATE_WORKFLOW not in files:
         bad.append(f"{GATE_WORKFLOW}: missing — the gate that runs this check")
-    elif gate_digest(tree.read(GATE_WORKFLOW)) != GATE_WORKFLOW_SHA256:
+    elif gate_digest(tree.read(GATE_WORKFLOW)) not in GATE_WORKFLOW_SHA256:
         bad.append(f"{GATE_WORKFLOW}: changed — update GATE_WORKFLOW_SHA256 in this checker "
-                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}")
+                   f"(a reviewed .github/agent/ change) to {gate_digest(tree.read(GATE_WORKFLOW))}; "
+                   f"accepted: {', '.join(sorted(GATE_WORKFLOW_SHA256))}")
     if verify:
         bad += verify_pins(pins)
     for b in bad:

@@ -1,0 +1,47 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "6864ae5b0ac5041d8bb7de5894bc9c6986e7798614d7ae611873fd2db026ea20",
+ "change": "Gate bootstrap, step A (PR #263): main's pin checker accepts a frozen set of exactly two gate-workflow digests (the current one and the digest of cache PR #251's gate workflow) and main's allowlist admits bin/scan-no-workflow-call-test.sh; PR C removes the old digest after #251 merges [re-bound Oct 10 after a plain merge of main (c352e85, #248); the reviewed content is unchanged, only main's later auditor changes joined the tree] [re-bound Oct 10 after a plain merge of main (c352e85, #248); the reviewed content is unchanged, only main's later auditor changes joined the tree]",
+ "reviewed_commit": "32d543e72b64db3cde01a825657e0ccb531b5607",
+ "closed_commit": "32d543e72b64db3cde01a825657e0ccb531b5607",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "Sonnet and Opus medium review of tests and code, row 78 (both GREEN, no blockers)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "69c6302c51df09637ab26c369a753d75a4dfe30f6db3e94aa9f816724c9ce8c0"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "Codex security tier round 1 on 32d543e: substance GREEN (scope, both digests recomputed from git objects, closed window, row 78); its only blocker was the missing review record bound to this tree (supplied by this record) and one should-fix (the residual wording 'content-identical' overstated: the digest masks four action pins) fixed in the notes; no refusal, no quota error",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "02783148138bf9af448a54b13dc60ae52dbac87a46d7339a42bffefbfd0a7a9b"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "3bd04fc5e5b62d8d74bc14ee070935cba7aa1bf371bf1728a27e1c53cf1dc867"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "by design: during the window any gate workflow whose masked digest equals the second digest passes the pin check (identical to #251's after the masking of its four action pins, which the pin checker verifies separately) and a revert to the first digest passes too; the window closes when PR C removes the old digest",
+  "cache PR #251 conflicts with this PR at the GATE_WORKFLOW_SHA256 definition (set versus scalar): resolved explicitly by #251's plain merge of this PR, its record re-bound to the resulting tree",
+  "Codex could not run the new pin-checker, review-gate and allowlist suites in its read-only sandbox (mktemp denied): NOT VERIFIED there; run by Sonnet and Opus (check-action-pins-test.sh 882/0, test_check_action_pins.py 53 OK, pin-wiring 106/0, gate suite 605 OK, allowlist 519/0) and by CI",
+  "the second review seat in round 2 is Opus medium (anthropic) beside Sonnet; the record's sonnet entry carries the Sonnet seat"
+ ],
+ "row78": "adversarial pass in every round: the change adds no action reference; check-action-pins.py whole-repo run: 27 files / 148 pinned actions / 0 findings; remote uses probes (tag, short or uppercase SHA, extra @, expression, malformed version comment) rejected"
+}

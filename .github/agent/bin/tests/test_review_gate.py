@@ -210,6 +210,22 @@ class GuardFiles(Cli):
         rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
         self.assertEqual(rc, 1)
 
+    def test_a_change_to_the_pin_checker_alone_needs_a_record_and_is_enforcement(self):
+        # the pin checker holds the accepted gate-workflow digests (GATE_WORKFLOW_SHA256): changing that set is a
+        # guarded change: a PR touching only check-action-pins.py fails without a record bound to its content, and
+        # the file is in the gate's ENFORCEMENT set (a substitute never clears it; a real codex entry is needed)
+        pins = ".github/agent/bin/check-action-pins.py"
+        self.assertTrue(G.enforces(pins))
+        self.write(pins, "GATE_WORKFLOW_SHA256 = frozenset({'a', 'b'})\n"); self.git("add", "-A")
+        self.git("commit", "-qm", "base pins"); base = self.git("rev-parse", "HEAD").strip()
+        self.write(pins, "GATE_WORKFLOW_SHA256 = frozenset({'a', 'b', 'c'})\n"); self.git("commit", "-qam", "widen")
+        rc, out, _ = self.run_main("--base", base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no valid review record", out)
+        self.record()
+        rc, out, _ = self.run_main("--base", base, "--head", "HEAD")
+        self.assertEqual(rc, 0, out)
+
     def test_other_files_including_ci_yml_are_unaffected(self):
         self.write(".github/workflows/ci.yml", "ci2\n"); self.write("src/y", "t\n")
         self.git("commit", "-qam", "outside")
