@@ -611,7 +611,8 @@ py "B8: every event object has exactly one known key (introduced, fixed, last_af
 n = BARE + "/v3"
 good = ev(("introduced", "0"), ("fixed", "3.0.4"))
 bad = {"typo key": good + [{"introducd": "3.1.0"}], "empty event": good + [{}], "typo in the middle": [good[0], {"fixd": "3.0.4"}, {"fixed": "3.0.4"}],
-       "two keys": [{"introduced": "0", "fixed": "3.0.4"}], "int value": [{"introduced": "0"}, {"fixed": 304}], "null value": [{"introduced": "0"}, {"fixed": None}],
+       "two keys": [{"introduced": "0", "fixed": "3.0.4"}], "int value": [{"introduced": "0"}, {"fixed": 304}],
+       "null value": [{"introduced": "0"}, {"fixed": None}],
        "list value": [{"introduced": ["0"]}, {"fixed": "3.0.4"}]}
 for what, events in bad.items():
     try: hit("3.1.3", [rec("GO-X-51", ent(n, events))], none_ignored=True, sups=(True,))

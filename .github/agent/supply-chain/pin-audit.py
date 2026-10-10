@@ -209,7 +209,8 @@ class GoRule:
 
 def _entry_path(entry):
     package = entry.get("package")
-    return package.get("name") if isinstance(package, dict) else None
+    name = package.get("name") if isinstance(package, dict) else None
+    return name if isinstance(name, str) else None   # AC14: anything but a string name is "no module path", which is a hit
 
 
 def _without_paths(record):
@@ -217,11 +218,20 @@ def _without_paths(record):
     return dict(record, affected=[dict(a, package={}) for a in record.get("affected", [])])
 
 
+_EVENT_KEYS = ("introduced", "fixed", "last_affected", "limit")
+
+
+def _readable_event(event):
+    """AC14: one key of the four OSV event kinds, a string value, and no v prefix (Go records have none; a prefixed value is not trusted to compare)."""
+    return (isinstance(event, dict) and len(event) == 1 and next(iter(event)) in _EVENT_KEYS
+            and isinstance(next(iter(event.values())), str) and not next(iter(event.values())).lower().startswith("v"))
+
+
 def _readable_range(rg):
-    """AC14: a range of exactly the type SEMVER or ECOSYSTEM whose events are a non-empty list of objects that starts with introduced."""
+    """AC14: a range of exactly the type SEMVER or ECOSYSTEM whose events are a non-empty list of readable events that starts with introduced."""
     events = rg.get("events") if isinstance(rg, dict) else None
     return (isinstance(rg, dict) and rg.get("type") in ("SEMVER", "ECOSYSTEM") and isinstance(events, list) and bool(events)
-            and all(isinstance(e, dict) for e in events) and "introduced" in events[0])
+            and all(_readable_event(e) for e in events) and "introduced" in events[0])
 
 
 def _unreadable(entry):
@@ -446,9 +456,11 @@ class LiveNet:
         """AC14: does this OSV record cover a Go tool's pinned version? Where the rule cannot settle it the answer is yes (fail closed)."""
         if rule.right is None:                       # AC14: a non-empty version that is not plain MAJOR.MINOR.PATCH is a hit
             return True
+        entries = v.get("affected")
+        if not (isinstance(entries, list) and all(isinstance(a, dict) for a in entries)):
+            return True                              # AC14: affected is not a list of objects: unreadable, a hit
         if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
             return self._osv_says(_without_paths(v), "", version, versioned=True)
-        entries = v.get("affected", [])
         name = _entry_path
         if rule.major <= 1 and any(name(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries):
             return self._osv_says(v, rule.right, version, versioned=True)   # AC14: a /v0 or /v1 path is ambiguous: the old verdict
