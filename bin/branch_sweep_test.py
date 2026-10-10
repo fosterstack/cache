@@ -1363,12 +1363,14 @@ class Wiring(unittest.TestCase):  # AC18-AC20
         sweep_job(d)  # the guard is judged in the workflow that now also carries the sweep
         step = [s for s in d["jobs"]["guard"]["steps"] if any("github.actor" in str(v) for v in (s.get("env") or {}).values())][0]
         var = [k for k, v in step["env"].items() if "github.actor" in str(v)][0]
-        for actor, ok in (("fosterstack-automation[bot]", True), ("fosterstack-automation", True), ("octocat", False),
-                          ("fosterstack-automation-evil", False), ("", False),
-                          ("x'; touch /tmp/pwned-by-actor; echo '", False), ("$(touch /tmp/pwned-by-actor)", False)):
-            p = subprocess.run(["bash", "-c", step["run"]], env=dict(os.environ, **{var: actor}), capture_output=True, text=True)
-            self.assertEqual(p.returncode == 0, ok, (actor, p.stderr))
-        self.assertFalse(os.path.exists("/tmp/pwned-by-actor"))
+        with tempfile.TemporaryDirectory() as td:
+            pwned = os.path.join(td, "pwned-by-actor")                       # the canary an injected command would create
+            for actor, ok in (("fosterstack-automation[bot]", True), ("fosterstack-automation", True), ("octocat", False),
+                              ("fosterstack-automation-evil", False), ("", False),
+                              ("x'; touch %s; echo '" % pwned, False), ("$(touch %s)" % pwned, False)):
+                p = subprocess.run(["bash", "-c", step["run"]], env=dict(os.environ, **{var: actor}), capture_output=True, text=True)
+                self.assertEqual(p.returncode == 0, ok, (actor, p.stderr))
+            self.assertFalse(os.path.exists(pwned))
 
     def test_sweep_runs_the_checked_in_script_with_the_job_token(self):
         d, _ = wf()

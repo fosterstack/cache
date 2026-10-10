@@ -1,0 +1,39 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "e3b294bddf010a0faa6706aea2cb98af2f9c368e3206b4df057f34a20872b48f",
+ "change": "Tests touch no real system path: fixtures replace real paths (REQ-AUD-019), a runtime guard (tripwire, armed first in discovery) and the plain-forms static scans -- PR #248",
+ "reviewed_commit": "dec66c8502ebcac10c6991443fa35be4e442e9a2",
+ "closed_commit": "14c9435ec4aec5304eacbd6143f6de5a0bafb723",
+ "rounds": [
+  {
+   "round": 10,
+   "label": "fix-verification 3 (advisor ruling Oct 10: hard stop, diff only, not counted toward the 9-round cap) on dec66c8, diff 0f46161..dec66c8: real Codex (security): no behavioural defect, ONE LOW (a stale lexer comment) fixed in a comment-only line in the head commit; Sonnet: 0 blockers, 91/91, 23 let spellings and the earlier arithmetic spellings OK, AC1 /dev clause probed clause by clause, 4 mutants killed",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "093e36e76ae78a40b1fd62d4fddfd5fcf3ac3d713c54d9b70a0e83dc95b84c2b"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "9523b566057db42ce89bcc11bd307e2c2a4120b3617fdd907dc5943e8d4c35c4"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "ROUND CAP: 9 of 9 review rounds were used (rounds 7 and 8 and 9 held findings); the advisor ruled option A on Oct 10 (the runtime guard is a TRIPWIRE for accidental access by the repository's own tests, not a security boundary against test code that deliberately subverts it) and allowed fix-verifications of the resulting small commits (1, 2, 3) on their diffs only; this record carries the last (3) as its final round",
+  "CODEX COULD NOT RUN THE TEST SUITE in any of its runs on this PR (read-only sandbox: no usable temporary directory): every execution objective (test_fs_guard, AuditRows, mutants, discovery) is NOT VERIFIED BY CODEX and is not a Codex pass; it is covered by the Sonnet runs on dec66c8 (test_fs_guard 91 OK in one process) and by the author's runs: Mac 91 OK, container discovery 690 OK (2 skipped), offline coverage 689 OK, 41+26+230 mutants in the author's container harness; the Codex pass on the head is static-inspection only",
+  "DOCUMENTED RESIDUALS (advisor ruling, family A, hostile or exotic use of the guard; recorded in REQ-AUD-019-AC1 notes): replacing the SQLite authorizer via set_authorizer; a refusal swallowed by except Exception (SQLite DatabaseError) or by asyncio.gather(return_exceptions=True) in the main thread; C-library opens that emit no audit event (ssl, posix.stat); runners other than discovery do not arm the guard (python -m unittest <module>, ci.yml's direct test_panel_sdk_probe.py, pytest); a package sorting before the arming module",
+  "Family B (plain forms only, recorded in AC2/AC3 notes): spelling variants of system paths in Python and shell beyond the listed forms are not detected statically (os.sep + 'etc', chr(47), \\mkdir, 'mkdir' as a command word, find -exec mkdir, tar x, curl -o, sudo -u user mkdir); Go and Java tests are not statically scanned; the shell checks are a lint of plain forms, not a security control",
+  "Sonnet fix-verification 3 residuals, recorded in the AC notes: os.listdir('/dev/null') reaches the OS NotADirectoryError so 'nothing else may be done to the devices' is not strictly enforced for listing a device (harmless); `echo \\\" \"<<EOF\"` + creator is missed (escaped-quote spelling; same as before the commit)",
+  "user-home behaviour change recorded in AC1: a container job whose HOME is not the account's own home (for example /github/home) loses the user-scheme metadata entries coverage stats, so the guard refuses there instead of widening; no workflow in this repository uses container:",
+  "the head commit 14c9435 adds one comment-only line, a NOTES-only edit of REQ-AUD-019-AC1 and the regenerated traceability on top of the reviewed dec66c8 (rebased onto main 480653c; traceability.md conflicts resolved by regenerating); neither reviewer saw those three items; they are text only",
+  "the real Codex seat is openai; no Opus substitute is used in this record (the files are in the gate's enforcement set)"
+ ]
+}
