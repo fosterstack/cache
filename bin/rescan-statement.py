@@ -136,46 +136,112 @@ def cmd_find_issue(args):
     return 0
 
 
+OUR_OCI_REPOS = ("ghcr.io/fosterstack/cache", "ghcr.io/fosterstack/cache-candidates")
+VEX_VARIANTS = ("production", "debug", "fips")
+VEX_ARCHS = ("amd64", "arm64")
+
+
+def _parse_product(pid):
+    """None when the product is not ours; ValueError when it LOOKS like ours but is not in the exact form we accept (a blank, duplicate, upper-case or unknown
+    qualifier, a version or digest on an OCI product, a repository other than the one named by the product, an unknown variant or architecture): a form that
+    could parse as unscoped or as another product makes the whole document unreadable. Otherwise ("go",), ("go-versioned",) or ("oci", repository, variant|None, arch|None)."""
+    if not isinstance(pid, str):
+        raise ValueError("a product identifier that is not a string")
+    if not _gate.OUR_PRODUCTS.match(pid):
+        return None
+    base, _, query = pid.partition("?")
+    if base.startswith("pkg:golang/"):
+        if "?" in pid:
+            raise ValueError("a qualifier on the Go product %r" % pid)
+        if "@" in base:
+            return ("go-versioned",)   # a version-pinned module cannot be tied to the release being scanned: it never applies
+        return ("go",)
+    names = {"pkg:oci/cache": OUR_OCI_REPOS[0], "pkg:oci/cache-candidates": OUR_OCI_REPOS[1]}
+    if base not in names:
+        raise ValueError("the OCI product %r has a version or digest, or an unknown name" % pid)
+    q = {}
+    for part in query.split("&"):
+        k, eq, v = part.partition("=")
+        if not eq or not k or not v or k not in ("repository_url", "variant", "arch") or k in q:
+            raise ValueError("the product %r has a blank, duplicate, upper-case or unknown qualifier" % pid)
+        q[k] = v
+    if q.get("repository_url") != names[base]:
+        raise ValueError("the product %r names another repository than its own" % pid)
+    if q.get("variant") not in (None,) + VEX_VARIANTS or q.get("arch") not in (None,) + VEX_ARCHS:
+        raise ValueError("the product %r names an unknown variant or architecture" % pid)
+    return ("oci", q["repository_url"], q.get("variant"), q.get("arch"))
+
+
+def _vex_validate(doc):
+    """every nested shape the matcher reads, checked up front: anything else is ValueError (the VEX is unreadable), so a malformed statement can never be read as
+    'no restriction'. Returns nothing."""
+    if not isinstance(doc, dict) or not isinstance(doc.get("statements"), list):
+        raise ValueError("not an OpenVEX document (an object with a list of statements)")
+    for st in doc["statements"]:
+        if not isinstance(st, dict) or not isinstance(st.get("status"), str):
+            raise ValueError("a statement that is not an object with a string status")
+        v = st.get("vulnerability")
+        if not isinstance(v, dict) or not isinstance(v.get("name"), str) or not v["name"]:
+            raise ValueError("a statement without a vulnerability name")
+        al = v.get("aliases", [])
+        if not isinstance(al, list) or not all(isinstance(a, str) for a in al):
+            raise ValueError("vulnerability aliases that are not a list of strings")
+        prods = st.get("products")
+        if not isinstance(prods, list):
+            raise ValueError("statement products that are not a list")
+        for p in prods:
+            if not isinstance(p, dict):
+                raise ValueError("a product that is not an object")
+            idf = p.get("identifiers", {})
+            if not isinstance(idf, dict) or ("purl" in idf and not isinstance(idf["purl"], str)):
+                raise ValueError("product identifiers that are not an object with a string purl")
+            pid = p.get("@id") if "@id" in p else idf.get("purl")
+            _parse_product(pid)
+            subs = p.get("subcomponents", [])
+            if not isinstance(subs, list) or not all(isinstance(x, dict) and isinstance(x.get("@id"), str) for x in subs):
+                raise ValueError("subcomponents that are not a list of objects with a string @id")
+
+
 def _vex_load(path):
-    """the published OpenVEX document, or ValueError: anything that is not an object with a list of statement objects is unreadable"""
+    """the published OpenVEX document, or ValueError/OSError: unreadable, not JSON, or any shape the matcher reads is wrong"""
     with open(path, encoding="utf-8") as fh:
         doc = json.load(fh)
-    if not isinstance(doc, dict) or not isinstance(doc.get("statements"), list) or not all(isinstance(x, dict) for x in doc["statements"]):
-        raise ValueError("not an OpenVEX document (an object with a list of statement objects)")
+    _vex_validate(doc)
     return doc
 
 
-def _vex_covers(product, variant, platform):
-    """a product with variant= / arch= qualifiers (the auditor's per-image statements) covers only the image it names; the repository-wide product covers all"""
-    q = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(str(product)).query))
-    arch = (platform or "").rpartition("/")[2]
-    return q.get("variant", variant) == variant and q.get("arch", arch) == arch
+def _image_repo(image_ref):
+    """ghcr.io/fosterstack/cache from ghcr.io/fosterstack/cache@sha256:... (or :tag); None when it is not one of our two repositories"""
+    r = str(image_ref or "").split("@", 1)[0]
+    head, sep, tail = r.rpartition(":")
+    if sep and "/" not in tail:
+        r = head
+    return r if r in OUR_OCI_REPOS else None
 
 
-def _vex_match(doc, finding, variant):
+def _vex_match(doc, finding, variant, image_repo):
     """the first statement that removes this finding, or None: status not_affected or fixed, the vulnerability name or an alias equal to one of the finding's
-    ids, a product that is this repository's image or Go module AND covers this variant/platform, and (when the product names subcomponents) the
-    finding's package name@version among them"""
+    ids, a product that is EXACTLY this image's repository (cache or cache-candidates, never the other) scoped to nothing or to this variant and platform, or the
+    repository-wide Go product, and (when the product names subcomponents) the finding's package name@version among them. The document was validated first."""
     ids = {i for i in (finding.get("ids") or [finding.get("id")]) if i}
     pkg = ((finding.get("package") or "").lower(), finding.get("version") or "")
+    arch = (finding.get("platform") or "").rpartition("/")[2]
     for st in doc["statements"]:
-        if st.get("status") not in _gate.SUPPRESSING:
+        if st["status"] not in _gate.SUPPRESSING:
             continue
-        v = st.get("vulnerability") or {}
-        if not isinstance(v, dict):
+        v = st["vulnerability"]
+        if not ({v["name"]} | set(v.get("aliases", []))) & ids:
             continue
-        names = {v.get("name")} | set(a for a in (v.get("aliases") or []) if isinstance(a, str))
-        if not (names & ids):
-            continue
-        for p in st.get("products") or []:
-            if not isinstance(p, dict):
+        for p in st["products"]:
+            idf = p.get("identifiers", {})
+            pp = _parse_product(p.get("@id") if "@id" in p else idf.get("purl"))
+            if pp is None or pp[0] == "go-versioned":
                 continue
-            pid = p.get("@id") or (p.get("identifiers") or {}).get("purl") or ""
-            if not _gate.OUR_PRODUCTS.match(pid) or not _vex_covers(pid, variant, finding.get("platform")):
+            if pp[0] == "oci" and not (image_repo is not None and pp[1] == image_repo and pp[2] in (None, variant) and pp[3] in (None, arch)):
                 continue
-            subs = [_gate.name_version(urllib.parse.unquote(str(x.get("@id")))) for x in p.get("subcomponents") or [] if isinstance(x, dict)]
+            subs = [_gate.name_version(urllib.parse.unquote(x["@id"])) for x in p.get("subcomponents", [])]
             if not subs or any(_gate.same_pkg(pkg, sub) for sub in subs):
-                return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v.get("name"), "status": st.get("status"), "product": pid}
+                return {"document": doc.get("@id"), "version": doc.get("version"), "statement": v["name"], "status": st["status"], "product": p.get("@id")}
     return None
 
 
@@ -400,7 +466,7 @@ def _snyk_finding(v, platform, target, pkg_mgr):
     ident = cve[0] if cve else v.get("id")
     f = {
         "id": ident,
-        "ids": [x for x in list(cve) + [v.get("id")] if isinstance(x, str)],
+        "ids": [x for x in list(cve) + list((v.get("identifiers") or {}).get("ALTERNATIVE") or []) + [v.get("id")] if isinstance(x, str)],
         "version": v.get("version"),
         "severity": (v.get("severity") or "").lower(),
         "package": v.get("packageName"),
@@ -511,14 +577,14 @@ def cmd_statement(args):
             if not args.vex:
                 raise ValueError("no VEX document was given (--vex)")
             vex_doc = _vex_load(args.vex)
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, TypeError, AttributeError, KeyError) as e:
             vex_error = "the VEX document cannot be used (%s); the rescan is incomplete" % e
             err(vex_error)
             op_fail = True
         if vex_doc is not None:
             kept = []
             for f in findings:
-                m = _vex_match(vex_doc, f, args.variant)
+                m = _vex_match(vex_doc, f, args.variant, _image_repo(args.image_ref))
                 if m:
                     suppressed.append(dict(f, vex=m))
                 else:

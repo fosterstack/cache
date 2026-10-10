@@ -287,12 +287,12 @@ st() { # vulnerability-name aliases-json status products-json [subcomponents]  -
   jq -nc --arg n "$1" --argjson al "$2" --arg s "$3" --argjson pr "$4" '{"vulnerability":{"name":$n,"aliases":$al},"status":$s,"justification":"component_not_present","products":$pr}'
 }
 # run the statement for one scanner/report/exit with a given VEX; sets V (verdict) HF (has_findings) C (count) S (suppressed count)
-vrun() { # scanner exit report vexfile [variant] [platform]
-  local sc="$1" ex="$2" rep="$3" vf="$4" var="${5:-production}" plat="${6:-linux/amd64}" mfv=$D/mv
+vrun() { # scanner exit report vexfile [variant] [platform] [image-ref]
+  local sc="$1" ex="$2" rep="$3" vf="$4" var="${5:-production}" plat="${6:-linux/amd64}" iref="${7:-$REPO@$AMD}" mfv=$D/mv
   : >"$mfv"; child "$mfv" 9 "$plat" "$ex" "$rep"
   local args=(); [ -n "$vf" ] && args=(--vex "$vf")
   out=$(python3 "$SCRIPT" statement --scanner "$sc" --children "$mfv" "${args[@]}" --raw-out "$D/rawv.json" --out "$D/stmtv.json" \
-        --release v0.2.0 --variant "$var" --digest "$AMD" --image-ref "$REPO@$AMD" --scanned-at 2026-09-14T00:00:00+00:00 2>"$D/vrun.err") || { V=SCRIPT-FAILED; HF=; C=; S=; return; }
+        --release v0.2.0 --variant "$var" --digest "$AMD" --image-ref "$iref" --scanned-at 2026-09-14T00:00:00+00:00 2>"$D/vrun.err") || { V=SCRIPT-FAILED; HF=; C=; S=; return; }
   V=$(jq -r '.verdict' <<<"$out"); HF=$(jq -r '.has_findings' <<<"$out"); C=$(jq -r '.count' <<<"$out"); S=$(jq -r '(.vex_suppressed // []) | length' "$D/stmtv.json")
 }
 expect() { # desc want-verdict want-has want-count want-suppressed
@@ -488,6 +488,79 @@ items = json.load(open(sys.argv[1])); items[3]["title"] = "Daily rescan: finding
 P
 node "$D/run-script.js" "$D/script.js" "$D/issues-js-pr.json" >"$D/js.out" 2>"$D/js.err" || true
 if [ "$(jq -c '.comment' "$D/js.out")" = "[]" ] && [ "$(jq '.create | length' "$D/js.out")" = "1" ]; then ok; else bad "the tracking-issue step took a pull request for the tracking issue ($(cat "$D/js.out"))"; fi
+
+# ---- round 1 of the review of #268: fail-closed matching (closed rules, not residuals) ----------------------------------------------------------------------------
+CAND_REPO="ghcr.io/fosterstack/cache-candidates"
+P_CAND='{"@id":"pkg:oci/cache-candidates?repository_url=ghcr.io/fosterstack/cache-candidates&variant=production&arch=amd64"}'
+P_CACHE='{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production&arch=amd64"}'
+vexdoc "$D/v/cand-only.json" "[$(st CVE-2024-9999 '[]' not_affected "[$P_CAND]")]"
+vexdoc "$D/v/cache-only.json" "[$(st CVE-2024-9999 '[]' not_affected "[$P_CACHE]")]"
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/cand-only.json" production linux/amd64 "$REPO@$AMD"
+expect "osv: a cache-candidates-only statement does NOT suppress a finding in the published cache image" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/cache-only.json" production linux/amd64 "$CAND_REPO@$AMD"
+expect "osv: a cache-only statement does NOT suppress a finding in the cache-candidates image" findings true 1 0
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/cand-only.json" production linux/amd64 "$CAND_REPO@$AMD"
+expect "osv: a cache-candidates statement suppresses a finding in the cache-candidates image (exact product)" clean false 0 1
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/cache-only.json" production linux/amd64 "$REPO@$AMD"
+expect "osv: a cache statement suppresses a finding in the cache image (exact product)" clean false 0 1
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/by-cve.json" production linux/amd64 "not-an-image-reference"
+expect "osv: when the scanned image identity cannot be read, no OCI statement applies (only the repository-wide Go product could)" findings true 1 0
+vexdoc "$D/v/go-only.json" "[$(st CVE-2024-9999 '[]' not_affected "[$PROD_GO]")]"
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/go-only.json" production linux/amd64 "$CAND_REPO@$AMD"
+expect "osv: the explicitly allowed repository-wide Go product covers every image" clean false 0 1
+# a version-pinned Go product cannot be tied to this release: it never suppresses (and is not an error)
+vexdoc "$D/v/go-versioned.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:golang/github.com/fosterstack/cache@v0.0.1"}]')]"
+vrun osv-scanner 1 "$OSV_FIND" "$D/v/go-versioned.json"; expect "osv: a version-pinned golang product does not suppress (cannot be tied to this release)" findings true 1 0
+# malformed nested shapes: the VEX is unreadable (operational error; the finding stays counted), never "no restriction"
+badvex() { # name statement-json
+  printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"x","version":1,"statements":[%s]}' "$2" >"$D/v/bad-$1.json"
+  vrun osv-scanner 1 "$OSV_FIND" "$D/v/bad-$1.json"; expect "osv: a malformed VEX statement ($1) makes the VEX unreadable: operational error, finding still counted" error true 1 0
+}
+PR='"products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache","subcomponents":%s}]'
+for sub in '"bad"' '[null]' '["pkg:golang/golang.org/x/net@0.1.0"]' '5' '{"a":1}' '[{"@id":5}]' '[{}]'; do
+  badvex "subcomponents-$(printf '%s' "$sub" | tr -c 'A-Za-z0-9' '_')" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",$(printf "$PR" "$sub")}"
+done
+badvex status-list '{"vulnerability":{"name":"CVE-2024-9999"},"status":["not_affected"],"products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}'
+badvex name-list '{"vulnerability":{"name":["CVE-2024-9999"]},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}'
+badvex aliases-int '{"vulnerability":{"name":"CVE-2024-9999","aliases":5},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}'
+badvex aliases-nonstr '{"vulnerability":{"name":"CVE-2024-9999","aliases":[5]},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}'
+badvex vulnerability-str '{"vulnerability":"CVE-2024-9999","status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}'
+badvex products-dict '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}}'
+badvex products-int '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":5}'
+badvex products-str '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":"pkg:oci/cache"}'
+badvex product-str '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":["pkg:oci/cache"]}'
+badvex product-id-int '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":5}]}'
+badvex identifiers-list '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"identifiers":["x"]}]}'
+badvex vulnerability-missing '{"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}]}'
+# ...and a malformed statement that would NOT apply is still a malformed document
+badvex affected-malformed '{"vulnerability":{"name":"CVE-2024-1"},"status":"affected","products":5}'
+# product identifier forms that would parse as unscoped or as another product: the VEX is unreadable
+for form in "variant=&arch=amd64" "Variant=debug" "variant=debug&variant=production" "repository_url=ghcr.io/fosterstack/cache&repository_url=ghcr.io/evil/x" "repository_url=ghcr.io/fosterstack/cache@sha256:00" "tag=latest" "arch=" "VARIANT=production"; do
+  id="pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&$form"; case $form in repository_url=*) id="pkg:oci/cache?$form";; esac
+  badvex "qualifier-$(printf '%s' "$form" | tr -c 'A-Za-z0-9' '_')" "{\"vulnerability\":{\"name\":\"CVE-2024-9999\"},\"status\":\"not_affected\",\"products\":[{\"@id\":\"$id\"}]}"
+done
+printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"x","version":1,"statements":[%s]}' '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache@sha256:00?repository_url=ghcr.io/fosterstack/cache"}]}' >"$D/v/ign-oci-version.json"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/ign-oci-version.json"
+expect "osv: a product that only resembles ours (oci-version) is not ours: ignored, it suppresses nothing" findings true 1 0
+printf '{"@context":"https://openvex.dev/ns/v0.2.0","@id":"x","version":1,"statements":[%s]}' '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/evil/cache"}]}' >"$D/v/ign-repo-evil.json"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/ign-repo-evil.json"
+expect "osv: a product that only resembles ours (repo-evil) is not ours: ignored, it suppresses nothing" findings true 1 0
+badvex variant-unknown '{"vulnerability":{"name":"CVE-2024-9999"},"status":"not_affected","products":[{"@id":"pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=nope"}]}'
+# a product that is simply not ours is fine (ignored): it neither suppresses nor breaks the document
+vexdoc "$D/v/foreign.json" "[$(st CVE-2024-9999 '[]' not_affected '[{"@id":"pkg:npm/left-pad@1.0.0"}]')]"; vrun osv-scanner 1 "$OSV_FIND" "$D/v/foreign.json"
+expect "osv: a statement for a product that is not ours is ignored (finding kept, no error)" findings true 1 0
+# Snyk: the advisory's alternative identifier is one of the finding's ids
+SNYK_ALT='{"vulnerabilities":[{"id":"SNYK-DEBIAN12-OPENSSL-1","identifiers":{"CVE":[],"ALTERNATIVE":["SNYK-ALT-77"]},"severity":"high","packageName":"openssl","version":"3.0.1"}],"applications":[]}'
+vexdoc "$D/v/snyk-alt.json" "[$(st SNYK-ALT-77 '[]' not_affected "[$PROD_REPO]")]"
+vrun snyk 1 "$SNYK_ALT" "$D/v/snyk-alt.json"; expect "snyk: a statement naming the advisory's ALTERNATIVE identifier removes the finding" clean false 0 1
+# find-issue: a valid first page followed by garbage is an error; an object (not an array) reply is an error
+cat >"$D/bin/gh-bad" <<'GH'
+#!/bin/bash
+case "${GH_MODE}" in page-garbage) echo '[{"number":1,"title":"x"}]'; echo 'not json';; object) echo '{"message":"Not Found"}';; esac
+GH
+chmod +x "$D/bin/gh-bad"; mkdir -p "$D/bin2"; cp "$D/bin/gh-bad" "$D/bin2/gh"
+for mode in page-garbage object; do
+  GH_MODE=$mode PATH="$D/bin2:$PATH" GITHUB_REPOSITORY=fosterstack/cache python3 "$SCRIPT" find-issue --title "$TITLE" >"$D/found.out" 2>"$D/found.err" && rc=0 || rc=$?
+  if [ $rc = 1 ] && [ ! -s "$D/found.out" ]; then ok; else bad "find-issue ($mode): must be an error (exit 1) with no output (rc=$rc)"; fi
+done
 
 echo "rescan-statement: ${pass} passed, ${fail} failed"
 [ "$fail" -eq 0 ]
