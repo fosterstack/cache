@@ -573,7 +573,7 @@ elif mode == "doc-key":
 elif mode == "pins":
     b = text()
     for tool in ("melange", "apko"):
-        assert re.search(r"%s[_A-Z]*VER[A-Z]*=\d" % tool.upper(), b), tool + " version pin"
+        assert re.search(r"releases/download/v\d+\.\d+\.\d+/%s_\d" % tool, b), tool + " version pin (a literal release address, REQ-SUP-001-AC18)"
     assert len(set(re.findall(r"\b[0-9a-f]{64}\b", b))) >= 4, "four checksums (two tools x two arches)"
     assert "cgr.dev" not in b and not re.search(r"docker (run|pull)|@sha256:", b)
     i = min(b.find(x) for x in ("sha256sum", "shasum -a 256") if x in b); j = b.find("tar ")

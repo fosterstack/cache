@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SBOM-001-AC1, REQ-SBOM-001-AC2, REQ-SBOM-001-AC3, REQ-SBOM-001-AC4, REQ-SBOM-001-AC5, REQ-BUILDTOOLS-001-AC1, REQ-BUILDTOOLS-001-AC2, REQ-BUILDTOOLS-001-AC3, REQ-BUILDTOOLS-001-AC4, REQ-BUILDTOOLS-001-AC5, REQ-BUILDTOOLS-001-AC6, REQ-BUILDTOOLS-001-AC7, REQ-BUILDTOOLS-001-AC8, REQ-BUILDTOOLS-001-AC9, REQ-BUILDTOOLS-001-AC10
+# proves: REQ-SBOM-001-AC1, REQ-SBOM-001-AC2, REQ-SBOM-001-AC3, REQ-SBOM-001-AC4, REQ-SBOM-001-AC5, REQ-BUILDTOOLS-001-AC1, REQ-BUILDTOOLS-001-AC2, REQ-BUILDTOOLS-001-AC3, REQ-BUILDTOOLS-001-AC4, REQ-BUILDTOOLS-001-AC5, REQ-BUILDTOOLS-001-AC6, REQ-BUILDTOOLS-001-AC7, REQ-BUILDTOOLS-001-AC8, REQ-BUILDTOOLS-001-AC9, REQ-BUILDTOOLS-001-AC10, REQ-SUP-001-AC18
 # Tests of the PR: helpers: module SBOM tool, apk tool, recipe compare, tool installer, lock tool.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -114,7 +114,139 @@ for tool in melange apko; do
   rm -rf "$work/bin-$tool"
   sf "rule 16" "$tool: a download whose sha256 differs from the pin fails, labeled" 'sha256|checksum' env FAKE_UNAME=x86_64 STUB_CURL_BOGUS=1 "$IT" $tool "$work/bin-$tool"
   t "rule 16" "$tool: after the failed check nothing is installed" bash -c "test -f '$IT' && test ! -e '$work/bin-$tool/$tool'"
+  for um in x86_64:amd64 aarch64:arm64; do
+    sf "rule 16" "$tool ${um#*:}: a bogus download is refused" 'sha256 mismatch' env FAKE_UNAME=${um%%:*} STUB_CURL_BOGUS=1 "$IT" $tool "$work/bin-$tool"
+    t "REQ-SUP-001-AC18" "$tool ${um#*:}: the installer fetched exactly its literal release asset, once" bash -c "test \$(grep -Ec -- ' -o [^ ]+/${tool}_[0-9.]+_linux_${um#*:}\.tar\.gz [^ ]+/chainguard-dev/$tool/releases/download/v[0-9.]+/${tool}_[0-9.]+_linux_${um#*:}\.tar\.gz\$' '$CALLS') = 1 && test \$(wc -l <'$CALLS') = 1"
+  done
 done
+# REQ-SUP-001-AC18: every tool download in install-build-tools.sh is a literal command carrying its exact release version and the
+# sha256 it is verified against, so the pin-age check measures it like any pin. This text names no downloader word and no release
+# address of its own (the pin checks read this file too): the downloader pattern and the address are assembled below.
+cat >"$work/ibt.py" <<'PY'
+import importlib.util, os, re, sys
+SC = os.path.join(os.environ["ROOT"], ".github/agent/supply-chain")
+DL = re.compile(r"\b(?:cu)rl\b|\bwg(?:et)\b")
+HOST = "https://github" + ".com/"
+TOOLS = {"melange": "chainguard-dev/melange", "apko": "chainguard-dev/apko"}
+ARCHES = ("amd64", "arm64")
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(SC, name + ".py"))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+def die(msg):
+    print("install-build-tools: " + msg); sys.exit(1)
+def struct(path):
+    text = open(path).read(); lines = text.split("\n"); seen = {}; vers = {}
+    for n, ln in enumerate(lines, 1):
+        if not DL.search(ln):
+            continue
+        lab = re.match(r"^\s*([a-z0-9]+)-([a-z0-9]+)\)\s", ln)
+        if not lab or lab.group(1) not in TOOLS or lab.group(2) not in ARCHES:
+            die("line %d downloads outside a tool-arch branch: %s" % (n, ln.strip()))
+        tool, arch = lab.groups()
+        links = re.findall(r"https?://[^\s'\"]+", ln)
+        if len(links) != 1:
+            die("line %d (%s-%s) must carry exactly one release address, found %d" % (n, tool, arch, len(links)))
+        link = links[0]
+        if "$" in link or "`" in link:
+            die("line %d (%s-%s): the release address is not literal: %s" % (n, tool, arch, link))
+        m = re.fullmatch(re.escape(HOST) + r"([\w.-]+/[\w.-]+)/releases/download/v(\d+\.\d+\.\d+)/([\w.-]+)", link)
+        if not m:
+            die("line %d (%s-%s): not a literal release address with an exact vX.Y.Z version: %s" % (n, tool, arch, link))
+        repo, ver, asset = m.groups()
+        if repo != TOOLS[tool]:
+            die("line %d: %s downloads from %s, not %s" % (n, tool, repo, TOOLS[tool]))
+        if asset != "%s_%s_linux_%s.tar.gz" % (tool, ver, arch):
+            die("line %d (%s-%s): the asset %s does not match the version v%s of its address" % (n, tool, arch, asset, ver))
+        p = re.search(r"\bpinned\s+(\S+?)(?:\s+([0-9a-f]{64}))?\s*;", ln)
+        if not p or not p.group(2):
+            die("line %d (%s-%s): no sha256 is verified on the download line (pinned <version> <sha256>)" % (n, tool, arch))
+        if p.group(1) != ver:
+            die("line %d (%s-%s): the checksum is pinned for version %s but the address downloads v%s: the versions do not match" % (n, tool, arch, p.group(1), ver))
+        if (tool, arch) in seen:
+            die("%s-%s has two download lines (%d and %d)" % (tool, arch, seen[(tool, arch)], n))
+        seen[(tool, arch)] = n
+        if vers.setdefault(tool, ver) != ver:
+            die("%s is pinned at two versions (%s and %s)" % (tool, vers[tool], ver))
+        if text.count(p.group(2)) != 1:
+            die("the sha256 of %s-%s appears %d times: it must be written once, on its download line" % (tool, arch, text.count(p.group(2))))
+    missing = sorted("%s-%s" % (t, a) for t in TOOLS for a in ARCHES if (t, a) not in seen)
+    if missing:
+        die("missing a download line for: " + ", ".join(missing))
+    for n, ln in enumerate(lines, 1):
+        if n in seen.values():
+            continue
+        if re.search(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", ln):
+            die("line %d holds a sha256 outside the download lines (a second source that could drift)" % n)
+        for tool, ver in sorted(vers.items()):
+            if ver in ln:
+                die("line %d repeats the %s version %s outside its download lines (a second source that could drift)" % (n, tool, ver))
+        if re.search(r"\bpinned\s+\S", ln) and not ln.lstrip().startswith("#"):
+            die("line %d calls pinned outside a download line" % n)
+    print("ok: " + ", ".join("%s v%s" % kv for kv in sorted(vers.items())))
+def inventory(path):
+    inv = load("pin-inventory"); age = load("pin-age-check")
+    text = open(path).read(); f = {"bin/install-build-tools.sh": text}
+    um = inv.unmeasured(f)
+    if um:
+        die("unmeasured: " + "; ".join("%s: %s" % (w, l) for (_, w, l) in sorted(um)))
+    vers = {}
+    for t in TOOLS:
+        m = re.search(re.escape(HOST + TOOLS[t]) + r"/releases/download/v(\d+\.\d+\.\d+)/", text)
+        if not m:
+            die("no literal release address for " + t)
+        vers[t] = m.group(1)
+    want = {(TOOLS[t], "v" + vers[t], "%s_%s_linux_%s.tar.gz" % (t, vers[t], a)) for t in TOOLS for a in ARCHES}
+    got = set()
+    for it in inv.inventory(f).values():
+        repo = age.TOOL_REPOS.get(it.name) or (it.name if re.fullmatch(r"[\w.-]+/[\w.-]+", it.name) else None)
+        if it.kind != "tool" or not repo or not age.is_pin(it.version) or re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", it.name) or "#" not in it.path:
+            die("not a measurable pin with its checksum bound: " + it.key)
+        got.add((it.name, it.version, it.path.split("#")[0]))
+    if got != want:
+        die("measured %s, wanted %s" % (sorted(got), sorted(want)))
+    print("measured: " + ", ".join(sorted("%s@%s %s" % g for g in got)))
+def mutate(src, out, kind):
+    lines = open(src).read().split("\n")
+    def edit(label, rx, rep):
+        for i, ln in enumerate(lines):
+            if re.match(r"^\s*%s\)" % re.escape(label), ln):
+                new, k = re.subn(rx, rep, ln, count=1)
+                if k == 1:
+                    lines[i] = new; return
+        print("mutant %s did not apply" % kind); sys.exit(3)
+    if kind == "variable":
+        edit("melange-amd64", r"/download/v[^/]+/", "/download/v$ver/")
+    elif kind == "repovar":
+        edit("apko-amd64", re.escape(HOST) + r"[\w.-]+/[\w.-]+/", lambda m: HOST + "$repo/")
+    elif kind == "mismatch":
+        edit("apko-arm64", r"/download/v(\d+)\.(\d+)\.(\d+)/apko_\d+\.\d+\.\d+_", lambda m: "/download/v{0}.{1}.{2}/apko_{0}.{1}.{2}_".format(m.group(1), m.group(2), int(m.group(3)) + 1))
+    elif kind == "nosum":
+        edit("melange-arm64", r"\s+[0-9a-f]{64}", "")
+    elif kind == "noline":
+        idx = [i for i, ln in enumerate(lines) if re.match(r"^\s*apko-amd64\)", ln)]
+        if len(idx) != 1:
+            print("mutant noline did not apply"); sys.exit(3)
+        del lines[idx[0]]
+    elif kind == "table":
+        m = re.search(r"/download/v(\d+\.\d+\.\d+)/apko_", "\n".join(lines))
+        if not m:
+            print("mutant table did not apply"); sys.exit(3)
+        lines.insert(1, "APKO_VERSION=" + m.group(1))
+    else:
+        print("unknown mutant " + kind); sys.exit(2)
+    open(out, "w").write("\n".join(lines))
+{"struct": lambda: struct(sys.argv[2]), "inventory": lambda: inventory(sys.argv[2]), "mutate": lambda: mutate(sys.argv[2], sys.argv[3], sys.argv[4])}[sys.argv[1]]()
+PY
+ibt() { ROOT="$root" python3 "$work/ibt.py" "$@"; }
+t "REQ-SUP-001-AC18" "install-build-tools.sh: every download line is a literal release address with an exact vX.Y.Z, its asset and its sha256 on the same line, one per tool and arch" ibt struct "$IT"
+t "REQ-SUP-001-AC18" "install-build-tools.sh: the real pin inventory measures a pin per tool and arch (owner/repo@vX.Y.Z, checksum bound) and finds nothing unmeasured" ibt inventory "$IT"
+for mut in "variable:not literal" "repovar:not literal" "mismatch:versions do not match" "nosum:no sha256" "noline:missing a download line for: apko-amd64" "table:repeats the apko version"; do
+  kind=${mut%%:*} kw=${mut#*:}
+  fails "REQ-SUP-001-AC18" "install-build-tools structure: the $kind mutant is refused" "$kw" bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-$kind.sh' $kind && ROOT='$root' python3 '$work/ibt.py' struct '$work/ibt-$kind.sh'"
+done
+fails "REQ-SUP-001-AC18" "the real pin inventory: a variable version in the address is read as a placeholder, not a pin (the pin-age check refuses it)" 'not a measurable pin.*v[$][{]var[}]' bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-v.sh' variable && ROOT='$root' python3 '$work/ibt.py' inventory '$work/ibt-v.sh'"
+fails "REQ-SUP-001-AC18" "the real pin inventory: a variable repository in the address is unmeasured (the form the pin-age check refuses)" 'unmeasured: a download' bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-r.sh' repovar && ROOT='$root' python3 '$work/ibt.py' inventory '$work/ibt-r.sh'"
+fails "REQ-SUP-001-AC18" "the real pin inventory: the mismatch mutant measures a version outside the pinned set" 'wanted' bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-m.sh' mismatch && ROOT='$root' python3 '$work/ibt.py' inventory '$work/ibt-m.sh'"
 
 # ===== apko-lock.sh: compare / arch-check / verify-archive / evidence (rules 28 29 33 37) ================================
 BL="$fx/base.lock.json" FL="$fx/full.lock.json"
