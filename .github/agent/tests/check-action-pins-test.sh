@@ -1201,6 +1201,24 @@ case_out pm-matrix-twice-last-bad bad "$(mx "$M" "$(printf '    strategy:\n     
 case_out pm-extra-strategy-key   bad "$(mx "$M" "$(printf '    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
 # a second `strategy` key (YAML keeps the last): here the LAST one is the invalid one, so a reader that takes the first is fooled
 case_out pm-second-strategy-key  bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
+# a key given twice in a job, in its strategy or in its matrix is refused with the key named, whatever its last copy holds (YAML keeps
+# the last copy; GitHub rejects the file). `dupjob` builds the job around the duplicated part: <extra job keys> <strategy block>.
+dupjob() { printf 'on: push\njobs:\n  apk:\n%s    steps:\n      - run: bash bin/build.sh' "$1"; }
+OKS='    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n'
+case_out pm-dup-job-key-valid          bad "$(dupjob "$(printf '    name: one\n    name: two\n    runs-on: ${{ matrix.runner }}\n'"$OKS")")" "duplicate key 'name'"
+case_out pm-dup-job-key-invalid-last   bad "$(dupjob "$(printf '    container: alpine@'"$DIG"'\n    container: alpine:3.20\n    runs-on: ${{ matrix.runner }}\n'"$OKS")")" "duplicate key 'container'"
+case_out pm-dup-runs-on-valid-last     bad "$(dupjob "$(printf '    runs-on: self-hosted\n    runs-on: ${{ matrix.runner }}\n'"$OKS")")" "duplicate key 'runs-on'"
+case_out pm-dup-runs-on-invalid-last   bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    runs-on: macos-14\n'"$OKS")")" "duplicate key 'runs-on'"
+case_out pm-dup-strategy-valid-last    bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n'"$OKS")")" "duplicate key 'strategy'"
+case_out pm-dup-strategy-invalid-last  bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n'"$OKS"'    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n')")" "duplicate key 'strategy'"
+case_out pm-dup-matrix-valid-last      bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [macos-14]\n      matrix:\n        runner: [ubuntu-24.04]\n')")" "duplicate key 'matrix'"
+case_out pm-dup-matrix-invalid-last    bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n      matrix:\n        runner: [macos-14]\n')")" "duplicate key 'matrix'"
+# a reusable-workflow call job is a job too
+case_out pm-dup-key-in-a-call-job      bad "on: push
+jobs:
+  c:
+    uses: ./.github/workflows/w.yml
+    uses: ./.github/workflows/w.yml" "duplicate key 'uses'"
 case_out pm-other-job-matrix     bad "on: push
 jobs:
   a:
@@ -1250,7 +1268,7 @@ case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
 OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
 case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
-PM_EXPECT=69
+PM_EXPECT=78
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
