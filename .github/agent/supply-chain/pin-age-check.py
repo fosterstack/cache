@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The pin age check (REQ-SUP-001-AC2, AC3): a version a pull request moves must have been public 7 days, proven by a SERVER-SIDE time.
 
-  pin-age-check.py --root REPO --base REV --head REV [--fixtures FILE] [--json FILE] [--now ISO] [--min-days N]
+  pin-age-check.py --root REPO --base REV --head REV [--fixtures FILE] [--json FILE] [--now ISO] [--min-days N] [--exceptions FILE]
 
 Exit 0: nothing moved, or every moved version is old enough. Exit 1: a moved version is too young or its age cannot be proven (never a pass).
 Exit 2: the check could not run (unreadable input, a tree that does not parse).
@@ -434,6 +434,7 @@ def main(argv=None):
     ap.add_argument("--json")
     ap.add_argument("--now")
     ap.add_argument("--min-days", type=float, default=MIN_DAYS)
+    ap.add_argument("--exceptions", help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
     a = ap.parse_args(argv)
     try:
         fx = json.load(open(a.fixtures)) if a.fixtures else None
@@ -456,15 +457,68 @@ def main(argv=None):
         return 2
 
 
-def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command line): an in-place swap of one line for another is an ADDITION
-    """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
+def _unmeasured_counts(root, base, head):
     b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})   # a read error propagates: the check cannot run (exit 2), never "nothing found"
     h = inv.unmeasured({**inv.tree_files(root, head), **inv.tree_scripts(root, head)})
+    return b, h
+
+
+def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command line): an in-place swap of one line for another is an ADDITION
+    """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
+    b, h = _unmeasured_counts(root, base, head)
     return sorted(k for k, n in h.items() if n > b.get(k, 0))
 
 
+# REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub written as data). They are read from
+# the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the pull request's tree (--root).
+DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
+_RULED_FIELDS = ("file", "form", "key", "ruling")
+
+
+def load_ruled_text(path, required=False):
+    """{(file, form, 16-hex line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
+    raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
+    if not os.path.exists(path):
+        if required:
+            raise RuntimeError(f"the exceptions file {path} (unmeasured_text) does not exist")
+        return {}
+    try:
+        with open(path) as f:
+            d = json.load(f)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"the exceptions file {path} (unmeasured_text) is unreadable: {e}")
+    rows = d.get("unmeasured_text", []) if isinstance(d, dict) else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"{path}: unmeasured_text is not a list")
+    out = {}
+    for i, r in enumerate(rows):
+        bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
+        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count"} or not set(_RULED_FIELDS) <= set(r):
+            raise bad("must be an object with exactly file, form, key, ruling (and an optional count)")
+        if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
+            raise bad("has an empty or non-text file, form, key or ruling")
+        if not re.fullmatch(r"[0-9a-f]{16}", r["key"]):
+            raise bad("key is not the scan's 16 lowercase hex line hash")
+        count = r.get("count", 1)
+        if type(count) is not int or count < 1:
+            raise bad("count is not a whole number of at least 1")
+        k = (r["file"], r["form"], r["key"])
+        if k in out:
+            raise bad("repeats an earlier row (file, form and key)")
+        out[k] = (r["ruling"].strip(), count)
+    return out
+
+
 def _run(a, moved, fx, now):
-    added = _added_unmeasured(a.root, a.base, a.head)
+    rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
+    b, h = _unmeasured_counts(a.root, a.base, a.head)
+    added, ruled = [], []
+    for k in sorted(k for k, n in h.items() if n > b.get(k, 0)):
+        r = rulings.get((k[0], k[1], k[2].split(":", 1)[0]))
+        if r and h[k] <= r[1]:     # every occurrence of the line in the head is covered by the row's count (1 unless it says more)
+            ruled.append((k, r[0]))
+        else:
+            added.append(k)
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
@@ -477,6 +531,10 @@ def _run(a, moved, fx, now):
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+    for (path, what, line), ruling in ruled:
+        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
+                     "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
+        print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
         json.dump({"min_days": a.min_days, "moved": rows}, open(a.json, "w"), indent=1)

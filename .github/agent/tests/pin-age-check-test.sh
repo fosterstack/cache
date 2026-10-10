@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -896,6 +896,140 @@ assert imgs(sh), "the same in a script"
 assert imgs(step("docker run --name --pull=never localhost/x" + D + " true")), "an option's value that spells --pull=never is not a policy"
 cs = {".github/workflows/a.yml": "jobs:\n  j:\n    container: localhost/fa-x\n    services:\n      s:\n        image: localhost/fa-y\n    steps:\n      - uses: docker://localhost/fa-z" + D + "\n"}
 assert len(imgs(cs)) == 3, imgs(cs)           # container:, services: and uses: docker:// pull their images
+PY
+
+# --- REQ-SUP-001-AC16: ruled text lines. The scan stays strict (a line that only MENTIONS curl or wget is an unmeasured download); the BASE branch's
+# exceptions file lists such lines under unmeasured_text: {file, form, key (the scan's 16-hex line hash), ruling[, count]}. A matching row reports the item
+# as ruled text; no row, a wrong hash (an edited line), a row on the pull request's side only, or more occurrences than the row counts fail as before;
+# a malformed list stops the check (exit 2), never "nothing exempted" and never "everything exempted". -------------------------------------------------------
+rtext=$'#!/bin/sh\n# the stub replaces curl and wget on PATH (text, not a command)\necho "run wget https://example.invalid/x later"\n'
+pyw() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }   # python that writes FILE with TEXT
+newcase rt "$(pyw bin/ruled.sh "$rtext")"
+# rtrows REPO OUT MODE: writes an exceptions file whose unmeasured_text rows are built from the REAL scan of REPO (HEAD~1..HEAD), changed by MODE
+rtrows() {
+  python3 - "$chk" "$1" "$2" "$3" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+repo, out, mode = sys.argv[2:5]
+added = ac._added_unmeasured(repo, "HEAD~1", "HEAD")
+rows = [{"file": f, "form": w, "key": k.split(":", 1)[0], "ruling": "text, not a command: a test line"} for f, w, k in added]
+d = {"_format": "t", "exceptions": []}
+if mode == "all": pass
+elif mode == "first": rows = rows[:1]
+elif mode == "none": rows = []
+elif mode == "wronghash": rows[0]["key"] = ("0" if rows[0]["key"][0] != "0" else "1") + rows[0]["key"][1:]
+elif mode == "wrongfile": rows = [dict(r, file="bin/other.sh") for r in rows]
+elif mode == "wrongform": rows = [dict(r, form="a system package install") for r in rows]
+elif mode == "emptyruling": rows[0]["ruling"] = ""
+elif mode == "spaceruling": rows[0]["ruling"] = " \t "
+elif mode == "noruling": del rows[0]["ruling"]
+elif mode == "nokey": del rows[0]["key"]
+elif mode == "intkey": rows[0]["key"] = 12345
+elif mode == "shortkey": rows[0]["key"] = rows[0]["key"][:12]
+elif mode == "fullkey": rows[0]["key"] = added[0][2]
+elif mode == "upperkey": rows[0]["key"] = rows[0]["key"].upper()
+elif mode == "dup": rows = rows + rows[:1]
+elif mode == "extra": rows[0]["note"] = "x"
+elif mode == "notdict": rows[0] = [rows[0]["file"], rows[0]["form"], rows[0]["key"], rows[0]["ruling"]]
+elif mode == "count0": rows[0]["count"] = 0
+elif mode == "countbool": rows[0]["count"] = True
+elif mode == "countstr": rows[0]["count"] = "2"
+elif mode == "count1": rows = [dict(r, count=1) for r in rows]
+elif mode == "count2": rows = [dict(r, count=2) for r in rows]
+elif mode == "notlist": rows = {"rows": rows}
+elif mode == "emptyfile": rows[0]["file"] = ""
+else: raise SystemExit("unknown mode " + mode)
+d["unmeasured_text"] = rows
+json.dump(d, open(out, "w"), indent=2)
+PY
+}
+rtck() { # REPO MODE [extra args] -> rc, $work/rt.out
+  local repo=$1 mode=$2; shift 2; rtrows "$work/$repo" "$work/rt-$mode.json" "$mode"; rc=0
+  python3 "$chk" --root "$work/$repo" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/rt.json" --exceptions "$work/rt-$mode.json" "$@" >"$work/rt.out" 2>&1 || rc=$?
+}
+CASE="AC16 setup: the fixture adds exactly two unmeasured text lines (a comment and an echo that mention a download tool), the scan stays strict"
+check python3 - "$chk" "$work/rt" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+a = ac._added_unmeasured(sys.argv[2], "HEAD~1", "HEAD")
+assert len(a) == 2 and all(x[0] == "bin/ruled.sh" and x[1] == "a download" for x in a), a
+PY
+rtck rt all
+CASE="AC16: a base-branch row for each added text line (file, form, line hash, ruling) passes: exit 0, each reported as ruled text with its ruling"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 2; check grep -q 'text, not a command: a test line' "$work/rt.out"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1]))['moved']; assert len(r)==2 and all(x['ok'] and 'ruled text' in x['reason'] for x in r), r" "$work/rt.json"
+rtck rt first
+CASE="AC16: a row exempts exactly its own item: the other added line has no row and fails (exit 1), named as unmeasured, while the ruled one is reported as ruled"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/ruled.sh' "$work/rt.out"; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1
+rtck rt none
+CASE="AC16: an empty unmeasured_text list exempts nothing: both added lines fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
+rtck rt wronghash
+CASE="AC16: a row whose line hash does not match (one hex digit changed) does not apply: that item fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1
+for m in wrongfile wrongform; do rtck rt $m
+CASE="AC16: a row with the right hash but the wrong ${m#wrong} does not apply: both items fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2; done
+rtrows "$work/rt" "$work/rt-orig.json" all
+newcase rtedit "$(pyw bin/ruled.sh "${rtext/later/soon}")"
+rc=0; python3 "$chk" --root "$work/rtedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-orig.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: editing a ruled line voids its row (the hash changes): the edited line fails (exit 1), the unchanged one stays ruled"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
+for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile; do rtck rt $m
+CASE="AC16: a malformed unmeasured_text ($m) stops the check fail-closed: exit 2, names the list, and is never a pass"
+check test "$rc" -eq 2; check grep -q 'unmeasured_text' "$work/rt.out"; check grep -qi 'not a pass' "$work/rt.out"; done
+printf '{"exceptions": [], "unmeasured_text": [' >"$work/rt-badjson.json"; rc=0
+python3 "$chk" --root "$work/rt" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-badjson.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: an exceptions file that is not JSON stops the check (exit 2), never 'nothing ruled'"
+check test "$rc" -eq 2
+rc=0; python3 "$chk" --root "$work/rt" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/does-not-exist.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: an --exceptions path that does not exist stops the check (exit 2)"
+check test "$rc" -eq 2
+echo '{"exceptions": []}' >"$work/rt-nolist.json"; rc=0
+python3 "$chk" --root "$work/rt" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-nolist.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: a file with no unmeasured_text list rules nothing: the added lines fail as before (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
+# the same line twice: a row covers ONE occurrence unless it says count
+newcase rt2 "$(pyw bin/ruled.sh "$rtext${rtext#*$'\n'}")"
+rtck rt2 all
+CASE="AC16: the same text lines added TWICE need rows that count both: a row without count covers one occurrence, so the items fail (exit 1)"
+check test "$rc" -eq 1
+rtck rt2 count1
+CASE="AC16: count 1 on lines added twice fails too (exit 1)"
+check test "$rc" -eq 1
+rtck rt2 count2
+CASE="AC16: count 2 on lines added twice passes (exit 0)"
+check test "$rc" -eq 0
+# a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
+rtrows "$work/rt" "$work/rt-head.json" all
+newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
+rc=0; python3 "$chk" --root "$work/rthead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: rows that only the pull request adds (its own .github/supply-chain-exceptions.json) are never read: both lines fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
+mkdir -p "$work/trusted-gh/agent"; cp -R "$here/../supply-chain" "$work/trusted-gh/agent/supply-chain"
+git -C "$work/rthead" show HEAD:.github/supply-chain-exceptions.json >"$work/trusted-gh/supply-chain-exceptions.json"; rc=0
+python3 "$work/trusted-gh/agent/supply-chain/pin-age-check.py" --root "$work/rthead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: the default rulings file is the one beside the checkout the script runs from (CI: trusted/.github/supply-chain-exceptions.json): the same rows there pass (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 2
+rm -rf "$work/trusted-gh"
+CASE="AC16: the default rulings path is the script's own checkout (.github/supply-chain-exceptions.json beside .github/agent), whatever --root says"
+check python3 - "$chk" "$root" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert os.path.realpath(ac.DEFAULT_EXCEPTIONS) == os.path.realpath(os.path.join(sys.argv[2], ".github", "supply-chain-exceptions.json")), ac.DEFAULT_EXCEPTIONS
+PY
+CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key (16 lowercase hex), a 'text, not a command:' ruling and no duplicate"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, re, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+rows = json.load(open(sys.argv[2]))["unmeasured_text"]
+loaded = ac.load_ruled_text(sys.argv[2], required=True)
+assert rows and len(loaded) == len(rows), (len(rows), len(loaded))
+forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
+for r in rows:
+    assert set(r) == {"file", "form", "key", "ruling"}, r
+    assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
+    assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["ruling"].startswith("text, not a command: ") and len(r["ruling"]) > len("text, not a command: ") + 10, r
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
