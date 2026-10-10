@@ -10,12 +10,13 @@
 #     (GHSA-w6c6-c85g-mmv6, GHSA-wfqv-66vq-46rm), so GitHub's names and its paged list query are matched under BOTH the bare path and the /vMAJOR path.
 #   * OSV is queried by the /vMAJOR path as well as the bare path (advisor-accepted at step 5): a record that has ONLY a /v3 entry covering the pin is a hit.
 #   * It applies only to a tool in pin-audit.py's committed table GO_TOOLS whose version is a plain MAJOR.MINOR.PATCH (a leading lowercase v allowed).
-#     Cases the rule cannot settle FAIL CLOSED, they are a HIT (the approved read-back, not a new rule): a version that is not plain MAJOR.MINOR.PATCH
+#     Cases the rule cannot settle FAIL CLOSED, they are a HIT (the approved read-back, not a new rule): a NON-EMPTY version that is not plain MAJOR.MINOR.PATCH
 #     (for a tool in the table), a table path that is bare while the pinned major is 2 or more or that ends in a different /vN (the audit then queries
 #     bare and /vMAJOR and hits if any entry covers the version), a record with no exact entry, a path-less entry next to an exact entry, and a
 #     lookalike path (host case, trailing slash). Only these keep the OLD verdict, nothing ignored: a tool not in the table, other item kinds
 #     (gotool, owner/repo), and a /v0 or /v1 entry in a record for a major 0/1 pin (a Go major 0/1 path has no suffix, so /v0 and /v1 entries are
 #     not the exact path and are left to the old filter).
+#     An EMPTY version is not checked, as before (covered() False, nothing listed, listed as unchecked).
 #   * The entry whose path is EXACTLY <bare>/vN (N >= 2) or EXACTLY <bare> (N <= 1) decides; every other entry is ignored and LOGGED. With no exact entry,
 #     or with a path-less entry in the record, nothing can be concluded: the verdict stays a HIT.
 #   * Logging is part of the interface (PROPOSED names): LiveNet.ignored_entries is a list of {"id", "path", "reason"}, one per ignored entry; judge()
