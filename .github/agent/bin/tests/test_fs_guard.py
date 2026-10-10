@@ -322,6 +322,41 @@ _WRAPPERS = {"sudo", "env", "command", "exec", "time", "nohup", "xargs", "nice",
 _CREATORS = {"mkdir", "touch", "cp", "mv", "ln", "install", "tee", "mkfifo", "mknod"}
 
 
+def _arith_end(text, i):
+    """Index just past the `))` that closes an arithmetic expression whose body starts at text[i], counting nested parentheses; len(text) if none."""
+    d, j, n = 0, i, len(text)
+    while j < n:
+        c = text[j]
+        if c == "(":
+            d += 1
+        elif c == ")":
+            if d == 0 and text[j + 1:j + 2] == ")":
+                return j + 2
+            d = max(d - 1, 0)
+        j += 1
+    return n
+
+
+def _blank_arithmetic(s):
+    """Remove the arithmetic contexts where `<<` is a shift, not a heredoc: $(( )) and (( )) with nested parentheses, $[ ], and `let ...`."""
+    out, i, n = [], 0, len(s)
+    while i < n:
+        if s.startswith("$((", i):
+            i = _arith_end(s, i + 3)
+        elif s.startswith("((", i) and (i == 0 or s[i - 1] in " \t;&|({"):
+            i = _arith_end(s, i + 2)
+        elif s.startswith("$[", i):
+            j = s.find("]", i)
+            i = (j + 1) if j >= 0 else n
+        elif re.match(r"let\s", s[i:]) and (i == 0 or s[i - 1] in " \t;&|({"):
+            j = re.search(r"[;&|]", s[i:])
+            i = i + j.start() if j else n
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
 def _strip_heredocs(text):
     """Heredoc bodies are text (python, JSON, a stub script), not shell commands: blank them, keeping line numbers."""
     lines, out, i = text.split("\n"), [], 0
@@ -329,8 +364,8 @@ def _strip_heredocs(text):
         line = lines[i]
         out.append(line)
         code = re.sub(r"<<<", "", line)
-        code = re.sub(r"\$\(\([^)]*\)\)", "", code)                    # $(( 1 << x )) is arithmetic
-        code = re.sub(r"'[^']*'|\"[^\"]*\"", lambda q: q.group(0) if re.search(r"<<-?\s*$", code[:q.start()]) else "Q", code)     # quoted text, except a quoted delimiter
+        code = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", lambda q: q.group(0) if re.search(r"<<-?\s*$", code[:q.start()]) else "Q", code)     # quoted text, except a quoted delimiter
+        code = _blank_arithmetic(code)                                       # $(( )), (( )), $[ ], let: `<<` is a shift there
         code = re.sub(r"(^|\s)#.*$", r"\1", code)                        # a comment
         m = _HEREDOC.search(code)
         i += 1
@@ -367,10 +402,10 @@ def _shell_segments(text):
         nxt = text[i + 1:i + 2]
         if c == "\n":
             line += 1
-        if mode == "arith":
-            if text.startswith("))", i):
-                stack.pop(); i += 2; continue
-            i += 1; continue
+        if mode == "arith":                                                      # entered with `i` at the body; jump to the matching `))`
+            j = _arith_end(text, i)
+            line += text.count("\n", i, j)
+            stack.pop(); i = j; continue
         if mode == "dq":
             if c == "\\":
                 i += 2; continue
@@ -408,6 +443,13 @@ def _shell_segments(text):
             continue
         if text.startswith("$((", i):
             stack.append("arith"); i += 3; continue
+        if text.startswith("((", i) and (not cur or "".join(cur).strip() == ""):      # the (( )) command: arithmetic, so a `>` in it is a comparison
+            flush(); stack.append("arith"); i += 2; continue
+        if text.startswith("$[", i):
+            j = text.find("]", i)
+            cur.append("V")
+            i = (j + 1) if j >= 0 else n
+            continue
         if text.startswith("$(", i):
             flush(); stack.append("sub"); i += 2; continue
         if c == "`":
@@ -469,6 +511,8 @@ def shell_file_creation(text):
         cmd, args = _command_word(words)
         made = redirect or cmd in _CREATORS or (cmd == "dd" and any(a.startswith("of=") and a != "of=/dev/null" for a in args)) \
             or (cmd == "sed" and any(re.match(r"^-[A-Za-z]*i", a) for a in args)) or (cmd == "git" and args[:1] in (["init"], ["clone"]))
+        if cmd == "let":
+            continue                                                         # let evaluates arithmetic: `let a=b>c` compares, it does not redirect
         if cmd == "mktemp":
             mk = True
         elif made:
@@ -766,19 +810,48 @@ class Rules(unittest.TestCase):
         for scheme in sysconfig.get_scheme_names():                             # every sysconfig scheme path stays (coverage realpaths them)
             for p in sysconfig.get_paths(scheme).values():
                 self.assertIn(os.path.normpath(p), G._meta_roots(), p)
-        with mock.patch.object(site, "getuserbase", lambda: "/srv/userbase"), mock.patch.object(site, "getusersitepackages", lambda: "/srv/userbase/lib/site"):
-            meta = G._meta_roots()
-        self.assertNotIn("/srv/userbase", meta); self.assertNotIn("/srv/userbase/lib/site", meta)
+
+    def user_roots_in_child(self, **env):
+        """META and ENV as a fresh interpreter computes them (sysconfig caches the user base per process, so it cannot be patched in this one)."""
+        code = ("import sys, json; sys.path.insert(0, %r); import fs_guard as G\nprint(json.dumps([G._meta_roots(), G._env_roots()]))" % G.HERE)
+        full = dict(os.environ); full.pop("PYTHONUSERBASE", None); full.update(env)
+        out = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL, env=full)
+        self.assertEqual(out.returncode, 0, out.stderr[-400:])
+        import json
+        return json.loads(out.stdout)
+
+    def test_a_home_that_is_not_the_accounts_own_makes_no_user_base_or_user_site_root(self):
+        import pwd
+        own = pwd.getpwuid(os.getuid()).pw_dir
+        meta, env = self.user_roots_in_child()                                   # the real HOME: the user scheme paths stay (coverage stats them)
+        self.assertTrue(any(p.startswith(os.path.realpath(own) + "/") for p in meta), own)
+        for fake in ("/etc", "/Users/other", "/srv/elsewhere", "/mnt/elsewhere2"):
+            meta, env = self.user_roots_in_child(HOME=fake)
+            for p in meta + env:
+                self.assertFalse(p == fake or p.startswith(fake + "/"), (fake, p))      # no entry under the fake home, in META or in ENV (user site-packages)
+            self.assertNotIn(fake, meta)
+        with tempfile.TemporaryDirectory() as d:                                    # a HOME under a standard temp parent is accepted
+            real = os.path.realpath(d)
+            meta, env = self.user_roots_in_child(HOME=real)
+            self.assertTrue(any(p.startswith(real + "/") for p in meta), meta[:3])
+        for ub in ("/etc", "/Users/other/.local"):                                   # PYTHONUSERBASE is environment-supplied too
+            meta, env = self.user_roots_in_child(PYTHONUSERBASE=ub)
+            self.assertFalse([p for p in meta + env if p == ub or p.startswith(ub + "/")], ub)
+        meta, env = self.user_roots_in_child(HOME="/etc", PYTHONUSERBASE=os.path.realpath(tempfile.gettempdir()) + "/ub")
+        self.assertFalse([p for p in meta + env if p.startswith("/etc/")])
 
     def test_every_fd_open_before_the_guard_is_exempt_not_just_the_first_64(self):
-        code = ("import os, sys\n"
-                "import resource\nsoft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)\nresource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 4096) if hard > 0 else 4096, hard))\n"
-                "fd = os.open(%r, os.O_RDONLY)\nfor n in (20, 100, 300, 1500): os.dup2(fd, n)\nos.close(fd)\n"
+        """A DISTINCT file at each high fd and nothing below 64 (the exemption is keyed on device + inode, so one file dup-ed to several fds would
+        prove only the lowest of them)."""
+        files = [os.path.join(G.HERE, n) for n in ("fs_guard.py", "system_path_allowlist.py", "test_0000_arm_fs_guard.py")]
+        code = ("import os, sys, resource\nsoft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)\n"
+                "resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 4096) if hard > 0 else 4096, hard))\n"
+                "for n, path in zip((100, 300, 1500), %r):\n    fd = os.open(path, os.O_RDONLY); os.dup2(fd, n); os.close(fd)\n"
                 "sys.path.insert(0, %r); import fs_guard as G; G.install()\nnew = os.open(%r, os.O_RDONLY)\n"
                 "G.ROOTS = ['/nonexistent-root']; G.ENV = []; G.META = []\n"
-                "for n in (20, 100, 300, 1500): os.fstat(n)\nprint('pre-armed ok')\n"
+                "for n in (100, 300, 1500): os.fstat(n)\nprint('pre-armed ok')\n"
                 "try:\n    os.fstat(new); print('NOT REFUSED')\nexcept G.SystemPathAccess:\n    print('new refused')\n"
-                % (os.path.join(G.HERE, "fs_guard.py"), G.HERE, os.path.join(G.HERE, "test_fs_guard.py")))
+                % (files, G.HERE, os.path.join(G.HERE, "test_fs_guard.py")))
         out = subprocess.run([sys.executable, "-W", "ignore", "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         self.assertEqual((out.returncode, out.stdout.split("\n")[:2]), (0, ["pre-armed ok", "new refused"]), out.stderr[-400:])
 
@@ -1584,6 +1657,8 @@ class Scope(unittest.TestCase):
                     "/bin/mkdir d", "/usr/bin/touch f", "command /bin/cp a b", "sudo -E /bin/mv a b",
                     # the heredoc opener is not recognised inside a comment, double quotes, single quotes or $(( )): the commands after it are code
                     "# cat <<EOF\ntouch f", "echo \"<<EOF\"\ntouch f", "echo '<<EOF'\ntouch f", "echo $((1<<EOF))\ntouch f", "x=1 # <<EOF\nmkdir d",
+                    "x=$(( (1<<n) ))\ntouch f", "x=$(( (1<<n) + (2<<m) ))\nmkdir d", "(( x = 1<<n ))\ntouch f", "((x=1<<n))\ntouch f", "let x=1<<n\ntouch f", "let \"x=1<<n\"\nmkdir d",
+                    "x=$[1<<n]\ntouch f", "echo \"a \\\" <<EOF\"\ntouch f", "echo 'a' \"b\\\"c <<EOF\"\nmkdir d", "echo $(( 1 << 2 )) && touch f", "if (( a < b )); then touch f; fi",
                     # `>&word` is a file redirect; only >&N / >&- are descriptors
                     "echo hi >&out", "echo hi >&out.txt", "echo hi 2>&logfile", "echo hi >>&out",
                     # an inline comment does not credit tempfile
@@ -1592,7 +1667,7 @@ class Scope(unittest.TestCase):
             self.assertTrue(makes_files_without_temp(text + "\n"), text)
         clean = ["w=$(mktemp -d)\nmkdir -p \"$w/out\"", "w=`mktemp -d`\ntouch \"$w/f\"", "w=$(mktemp)\necho hi > \"$w\"", "w=\"$(mktemp -d)\"; mkdir \"$w/x\"", "mktemp -d >/dev/null\ntouch f",
                  "echo hi >&2\ncmd >/dev/null 2>&1\n[ $a -gt 3 ]\nif [ $a -gt 3 ]; then echo ok; fi", "echo hi\n", "python3 -c 'import tempfile; tempfile.mkdtemp()'\ntouch f",
-                 "x=$((a>b))\necho $x", "cat <<'EOF'\ntouch f > out\nEOF\necho done", "echo \"touch f\"; echo 'mkdir d'", "# touch f\n# mkdir d", "echo hi | grep x", "cmd 2>&1 | head",
+                 "x=$((a>b))\necho $x", "(( a > b ))\necho $x", "let a=b>c\necho $x", "x=$(( (a>b) ? 1 : 0 ))\necho $x", "x=$(( ((a)) > 1 ))\necho $x", "x=$(( ((a+b)*(c)) > 1 ))\necho $x", "x=$[a>b]\necho $x", "cat <<'EOF'\ntouch f > out\nEOF\necho done", "echo \"touch f\"; echo 'mkdir d'", "# touch f\n# mkdir d", "echo hi | grep x", "cmd 2>&1 | head",
                  "cmd > /dev/null", "cmd &>/dev/null", "echo hi >&2", "echo hi >&-", "echo hi 2>&1", "echo hi >&10", "echo hi 2>&-", "diff <(echo a) <(echo b)",
                  "cat <<EOF\ntouch f\nEOF\necho done", "cat <<-EOF\n\ttouch f\n\tEOF\necho done", "x=$(cat <<'EOF'\nmkdir d\nEOF\n)", "touch f\nx = 1  # tempfile.mkdtemp(\nw=$(mktemp -d)", "a=$(echo hi)", "[[ $a == b ]] && echo yes", "git status", "sed s/a/b/ f", "dd if=a of=/dev/null"]
         for text in clean:

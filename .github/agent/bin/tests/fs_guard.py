@@ -193,6 +193,27 @@ def _env_roots():
     return sorted(base | paths)
 
 
+def _user_home_trusted():
+    """The user base and user site-packages (sysconfig's *_user schemes, site.getuser*) are derived from $HOME and $PYTHONUSERBASE, both supplied by
+    the environment. They count only when HOME is the account's own home directory (from the password database) or under a standard temp parent,
+    and PYTHONUSERBASE is unset or under a standard temp parent; HOME=/etc or HOME=/Users/other gives no root and no metadata entry."""
+    try:
+        import pwd
+        own = pwd.getpwuid(os.getuid()).pw_dir
+    except (ImportError, KeyError, OSError):
+        own = ""
+    _busy.bypass = True
+    try:
+        home = os.path.expanduser("~")
+        ok_home = bool(home and own and os.path.isabs(home) and os.path.realpath(home) == os.path.realpath(own)) \
+            or bool(home and os.path.isabs(home) and _under_standard_temp(os.path.realpath(home)))
+        ub = os.environ.get("PYTHONUSERBASE", "")
+        ok_ub = not ub or (os.path.isabs(ub) and _under_standard_temp(os.path.realpath(ub)))
+    finally:
+        _busy.bypass = False
+    return ok_home and ok_ub
+
+
 def _interpreter_dirs(with_user_site=True):
     """The interpreter's own directories, computed from sys.prefix / sysconfig / site (not from the environment): the base of _env_roots()."""
     _busy.bypass = True
@@ -205,7 +226,7 @@ def _interpreter_dirs(with_user_site=True):
     broad_ok = _canon_set(cand, drop_broad=True)
     precise = set(sysconfig.get_paths()[k] for k in ("stdlib", "platstdlib", "purelib", "platlib"))
     precise.update(site.getsitepackages())
-    if with_user_site:
+    if with_user_site and _user_home_trusted():
         try:
             precise.add(site.getusersitepackages())
         except Exception:
@@ -223,7 +244,10 @@ def _meta_roots():
     of the directory only. The user base / user site and every sys.path entry (coverage stats those too) count only when they are under the
     interpreter's own directories or a standard temp parent, like the environment roots."""
     cand = set()
+    user_ok = _user_home_trusted()
     for scheme in sysconfig.get_scheme_names():
+        if "user" in scheme and not user_ok:
+            continue                                  # a *_user scheme is HOME-derived: only when HOME is the account's own (see _user_home_trusted)
         try:
             cand.update(sysconfig.get_paths(scheme).values())
         except Exception:
@@ -232,11 +256,12 @@ def _meta_roots():
     out = _canon_set(cand)
     interp = _interpreter_dirs(with_user_site=False)          # the user site is named by HOME, so it cannot vouch for itself
     extra = set()
-    for f in (site.getuserbase, site.getusersitepackages):
-        try:
-            extra.add(f())
-        except Exception:
-            pass
+    if user_ok:
+        for f in (site.getuserbase, site.getusersitepackages):
+            try:
+                extra.add(f())
+            except Exception:
+                pass
     extra.update(p for p in sys.path if p and os.path.isabs(p))
     return sorted(out | {v for v in _canon_set(extra) if _trusted_path(v, interp)})
 
