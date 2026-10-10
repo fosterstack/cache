@@ -157,6 +157,11 @@ consequence of the zero-CVE-surface design — see
 [Scanning FosterStack in your compliance pipeline](scanning.md) for why
 there's no shell in the image in the first place.
 
+`/healthz` is liveness only and never reports disk trouble. To be told about a
+full or read-only data directory, alert on the `fscache_store_writable`,
+`fscache_store_free_bytes` and `fscache_put_errors_total` metrics (see the
+alerting examples in [Kubernetes](kubernetes.md)).
+
 ## Configuration
 
 All configuration is environment variables (see the main
