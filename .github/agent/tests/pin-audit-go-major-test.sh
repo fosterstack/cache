@@ -652,7 +652,8 @@ for what, entries in cases.items():
     try: hit("3.1.3", [rec("GO-X-57", *entries)], tables=(BARE,), sups=(True,))
     except AssertionError as e: raise AssertionError((what, "table branch") + e.args)
     except Exception as e: raise AssertionError((what, "table branch", "traceback", repr(e)))
-extras = [ent(n, ranges=[{"type": "GIT", "events": INTRO0}, {"type": "SEMVER", "events": fixed("3.0.4")}]), ent(n, fixed("3.0.4"), versions=[]),
+git = {"type": "GIT", "repo": "https://example.com/cosign", "events": INTRO0}
+extras = [ent(n, ranges=[git, {"type": "SEMVER", "events": fixed("3.0.4")}]), ent(n, fixed("3.0.4"), versions=[]),
           ent(n, fixed("3.0.4"), ecosystem_specific={"x": 1}, database_specific={"y": 2}), {"package": {"name": n, "ecosystem": "Go"}}]
 clean("3.1.3", [rec("GO-X-58", honest, *extras)], tables=(BARE,), sups=(True,))     # real shapes keep the old verdict
 base = "example.com/o/ytool"

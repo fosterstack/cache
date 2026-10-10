@@ -207,48 +207,52 @@ class GoRule:
         return list(dict.fromkeys([self.table, self.right, self.bare] if self.right else [self.table, self.bare]))
 
 
-def _entry_path(entry):
-    package = entry.get("package")
-    name = package.get("name") if isinstance(package, dict) else None
-    return name if isinstance(name, str) else None   # AC14: anything but a string name is "no module path", which is a hit
-
-
 def _without_paths(record):
     """The record with every affected entry's package removed, so that one name filter (_osv_says) takes all entries into account."""
-    return dict(record, affected=[dict(a, package={}) for a in record.get("affected", [])])
+    return dict(record, affected=[dict(a, package={}) for a in record["affected"]])
 
 
+# AC14: the allow-schema of a well-formed OSV Go record, as the Go vulnerability database writes it. The keys are the ones real records carry (see
+# the fixtures) plus the OSV schema's versions and severity. Anything else, a wrong type or an empty string is not trusted: the record is a hit.
+_ENTRY_KEYS = {"package", "ranges", "versions", "ecosystem_specific", "database_specific", "severity"}
+_PACKAGE_KEYS = {"ecosystem", "name", "purl"}
+_RANGE_KEYS = {"type", "events", "repo", "database_specific"}
 _EVENT_KEYS = ("introduced", "fixed", "last_affected", "limit")
 
 
-def _readable_event(event):
-    """AC14: one key of the four OSV event kinds, a string value, and no v prefix (Go records have none; a prefixed value is not trusted to compare)."""
-    return (isinstance(event, dict) and len(event) == 1 and next(iter(event)) in _EVENT_KEYS
-            and isinstance(next(iter(event.values())), str) and not next(iter(event.values())).lower().startswith("v"))
+def _text(x):
+    return isinstance(x, str) and x != ""
 
 
-def _readable_range(rg):
-    """AC14: a range of exactly the type SEMVER or ECOSYSTEM whose events are a non-empty list of readable events that starts with introduced."""
-    events = rg.get("events") if isinstance(rg, dict) else None
-    return (isinstance(rg, dict) and rg.get("type") in ("SEMVER", "ECOSYSTEM") and isinstance(events, list) and bool(events)
-            and all(_readable_event(e) for e in events) and "introduced" in events[0])
+def _well_formed_event(event):
+    """One of the four event keys, alone, with a non-empty string value that has no v prefix (Go records have none)."""
+    return (isinstance(event, dict) and len(event) == 1 and all(k in _EVENT_KEYS and _text(v) and not v.lower().startswith("v") for k, v in event.items()))
 
 
-def _malformed(entry):
-    """AC14: an entry whose shape the old name-and-range reading cannot trust: package not an object, ranges not a list of objects, a SEMVER or
-    ECOSYSTEM range without readable events, versions not a list. Other range types (GIT) and extra keys are fine; the verdict reads the rest as before."""
-    ranges, versions = entry.get("ranges", []), entry.get("versions", [])
-    return (not isinstance(entry.get("package", {}), dict) or not isinstance(versions, list) or not isinstance(ranges, list)
-            or not all(isinstance(rg, dict) for rg in ranges)
-            or not all(isinstance(rg.get("events"), list) and all(_readable_event(e) for e in rg["events"])
-                       for rg in ranges if rg.get("type") in ("SEMVER", "ECOSYSTEM")))
+def _well_formed_range(rg):
+    """SEMVER and ECOSYSTEM ranges list events starting with introduced; a GIT range names its repo (and is never read for a version)."""
+    if not (isinstance(rg, dict) and set(rg) <= _RANGE_KEYS and rg.get("type") in ("SEMVER", "ECOSYSTEM", "GIT")
+            and isinstance(rg.get("events"), list) and all(_well_formed_event(e) for e in rg["events"])):
+        return False
+    return _text(rg.get("repo")) if rg["type"] == "GIT" else bool(rg["events"]) and "introduced" in rg["events"][0]
 
 
-def _unreadable(entry):
-    """AC14: an affected entry is not trusted to clear a version unless it has a list of ranges that are ALL readable (so no GIT range, no other type,
-    no malformed events) and any versions it lists are a list."""
-    ranges, versions = entry.get("ranges"), entry.get("versions", [])
-    return not (isinstance(ranges, list) and ranges and all(_readable_range(rg) for rg in ranges) and isinstance(versions, list))
+def _well_formed_entry(entry):
+    package = entry.get("package") if isinstance(entry, dict) else None
+    return (isinstance(entry, dict) and set(entry) <= _ENTRY_KEYS and isinstance(package, dict) and set(package) <= _PACKAGE_KEYS
+            and _text(package.get("name")) and isinstance(package.get("ecosystem", ""), str)
+            and isinstance(entry.get("ranges", []), list) and all(_well_formed_range(rg) for rg in entry.get("ranges", []))
+            and isinstance(entry.get("versions", []), list) and all(_text(v) for v in entry.get("versions", [])))
+
+
+def _well_formed_record(record):
+    """AC14: every OSV entry the Go rule reads matches the schema above, checked once before any branch."""
+    return isinstance(record.get("affected"), list) and all(_well_formed_entry(a) for a in record["affected"])
+
+
+def _decidable(entry):
+    """AC14: an exact-path entry may clear a version only if it is Go and its ranges are all SEMVER or ECOSYSTEM (a GIT range cannot be judged by version)."""
+    return entry["package"].get("ecosystem") == "Go" and bool(entry.get("ranges")) and all(rg["type"] != "GIT" for rg in entry["ranges"])
 
 
 def _go_rule(item, version):
@@ -466,24 +470,20 @@ class LiveNet:
         """AC14: does this OSV record cover a Go tool's pinned version? Where the rule cannot settle it the answer is yes (fail closed)."""
         if rule.right is None:                       # AC14: a non-empty version that is not plain MAJOR.MINOR.PATCH is a hit
             return True
-        entries = v.get("affected")
-        if not (isinstance(entries, list) and all(isinstance(a, dict) for a in entries)):
-            return True                              # AC14: affected is not a list of objects: unreadable, a hit
-        if any(_malformed(a) for a in entries):
-            return True                              # AC14: every entry the verdict reads must be well formed, in every branch below
+        if not _well_formed_record(v):
+            return True                              # AC14: one strict schema for every entry the rule reads, before any branch
+        entries = v["affected"]
         if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
             return self._osv_says(_without_paths(v), "", version, versioned=True)
-        name = _entry_path
-        if rule.major <= 1 and any(name(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries):
+        path = lambda a: a["package"]["name"]
+        if rule.major <= 1 and any(path(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries):
             return self._osv_says(v, rule.right, version, versioned=True)   # AC14: a /v0 or /v1 path is ambiguous: the old verdict
-        exact = [a for a in entries if name(a) == rule.right]
-        if not exact or not all(name(a) for a in entries):
-            return True                              # AC14: no entry for the exact path, or an entry with no path: a hit
-        if any((a["package"].get("ecosystem") != "Go") or _unreadable(a) for a in exact):
-            return True                              # AC14: an exact-path entry that is not plainly Go, or whose range cannot be read: a hit
+        exact = [a for a in entries if path(a) == rule.right]
+        if not exact or not all(_decidable(a) for a in exact):
+            return True                              # AC14: no entry for the exact path, or one that is not plainly Go with readable ranges: a hit
         for a in entries:
             if a not in exact:
-                self._log_ignored(v["id"], name(a), self._ignore_reason(a, rule))
+                self._log_ignored(v["id"], path(a), self._ignore_reason(a, rule))
         return self._osv_says(dict(v, affected=exact), rule.right, version, versioned=True)
 
     @staticmethod
