@@ -754,8 +754,10 @@ assert conf["rekorTlogUrls"][0]["majorApiVersion"] == 1, "the signing config mus
 body = open(st, "rb").read(); pt = "application/vnd.in-toto+json"
 # FAKE_BUNDLE (Opus r1-verify F1): a cosign that signs ANOTHER statement than the one Sign handed it; the bundle is otherwise genuine
 mode = os.environ.get("FAKE_BUNDLE", "")
-if mode in ("swapsubj", "predicate", "addsubj"):
+if mode in ("swapsubj", "predicate", "addsubj", "dry1", "dry1f"):
     stm = json.loads(body)
+    if mode == "dry1": stm["predicate"]["dryRun"] = 1          # H2: 1 where Sign built true (Python says 1 == True)
+    if mode == "dry1f": stm["predicate"]["dryRun"] = 1.0       # H2: 1.0 where Sign built true
     if mode == "swapsubj": stm["subject"] = [{"name": "evil", "digest": {"sha256": "f" * 64}}]
     if mode == "predicate": stm["predicate"]["runDetails"]["metadata"]["invocationId"] = "https://evil.example/run/1"
     if mode == "addsubj": stm["subject"].append({"name": "evil", "digest": {"sha256": "f" * 64}})
@@ -1465,6 +1467,39 @@ OPENSSL=$REALSSL; rm -f "$work/ssl-fail"
 rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/f1-control" || rc=$?
 [ "$rc" = 0 ] && [ -s "$work/sd/f1-control/provenance.json" ] && ok "F1 control: the honest fake cosign (it signs the statement Sign built) is accepted and the provenance is written" || bad "F1 control: the honest sign failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
 [ "$POSTSIGN" = 11 ] && ok "F1/I1 control: cosign WAS called in each of the four cases above" || bad "F1/I1 cosign was called in only $((POSTSIGN - 7)) of the four cases"
+# H1 (Opus r1-verify info, 001-AC2): --out must not exist yet. Sign creates it and, on a refusal, removes only what it created; an existing
+# path (., a directory, a file, a symlink) is a usage error before anything runs: nothing deleted, nothing written, cosign never called
+expect_out_refused() { local l=$1 out=$2 dir=$3 rc=0
+  (cd "$dir" && run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$out") || rc=$?
+  if [ "$rc" = 2 ] && ! crashed && grep -q -i "already exists" "$work/err" && [ -e "$dir/keep.txt" ] && [ -z "$(find "$dir" -name 'provenance*' -print -quit)" ] && [ ! -s "$work/cosign-argv.log" ]; then ok "$l"
+  else bad "$l (exit $rc, wanted 2 'already exists', keep.txt kept, nothing written, no cosign; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
+mkdir -p "$work/h1/dot" "$work/h1/dir/existing" "$work/h1/file" "$work/h1/link/target"
+for d in dot dir dir/existing file link/target; do echo keep > "$work/h1/$d/keep.txt"; done
+echo x > "$work/h1/file/out.txt"; ln -s "$work/h1/link/target" "$work/h1/link/out"
+expect_out_refused "H1 --out . (the current directory) is refused, and nothing in it is deleted or written" . "$work/h1/dot"
+expect_out_refused "H1 --out an existing directory is refused, and nothing in it is deleted or written" existing "$work/h1/dir"
+expect_out_refused "H1 --out an existing file is refused, and the file is kept" out.txt "$work/h1/file"
+expect_out_refused "H1 --out a symlink to a directory is refused, and the directory it points to is untouched" "$work/h1/link/out" "$work/h1/link/target"
+rc=0; run sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/h1/fresh" || rc=$?
+[ "$rc" = 0 ] && [ -s "$work/h1/fresh/provenance.json" ] && ok "H1 control: a fresh --out is created and the provenance is written there" || bad "H1 control: a fresh --out failed (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+# H2 (Opus r1-verify info, 001-AC2): the signed statement must equal the built one TYPE-exactly (true is not 1, 1 is not 1.0, false is not 0)
+for m in dry1 dry1f; do
+  rc=0; GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch FAKE_BUNDLE=$m run $(TPR build_coll_br h2-$m) || rc=$?
+  [ -s "$work/cosign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
+  if [ "$rc" = 1 ] && ! crashed && grep -q "^refused at sign: .*statement" "$work/err" && [ ! -e "$work/sd/h2-$m/provenance.json" ]; then ok "H2 a dry run whose signed statement says dryRun $([ $m = dry1 ] && echo 1 || echo 1.0) where Sign built true is refused"
+  else bad "H2 $m: wanted refused at sign ... statement, no provenance (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi
+done
+python3 - "$root" 2>&1 <<'PY' && ok "H2 the statement comparison is type-exact: 1 vs true, 1.0 vs 1, 0 vs false differ (nested too); equal statements are equal" || bad "H2 the statement comparison treats bool, int and float as one type"
+import importlib.util, sys
+root = sys.argv[1]; sys.path.insert(0, root + "/bin")
+spec = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+for a, b in ((1, True), (1.0, 1), (0, False), ({"x": [1]}, {"x": [True]}), ({"p": {"dryRun": True}}, {"p": {"dryRun": 1.0}})):
+    assert not m.same_json(a, b) and not m.same_json(b, a), (a, b)
+for a in ({"s": [{"n": "x", "d": {"sha256": "a"}}], "p": {"dryRun": True}}, [1, 2.5, None, False, "x"]):
+    assert m.same_json(a, a) and m.same_json(a, __import__("json").loads(__import__("json").dumps(a))), a
+assert not m.same_json({"a": 1}, {"a": 1, "b": 2}) and not m.same_json([1], [1, 1])
+PY
+GITHUB_REF=refs/heads/hostile-proof/x GITHUB_EVENT_NAME=workflow_dispatch expect_ok "H2 control: the honest dry-run sign (dryRun true as built) is accepted" $(TPR build_coll_br h2-control)
 # S2 (002-AC3, property e): a Rekor entries file whose `entries` is not a list of objects is a refusal naming the shape, never a traceback
 for k in int str null dict nondict; do
   expect_refuse "S2 a Rekor entries file whose entries is $k is refused (no traceback), naming the list" "rekor|list" verify $(V) --stage sign $(rec sign_prov) $(R rekor-shape-$k.json)
@@ -1518,7 +1553,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=446
+EXPECT=455
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
