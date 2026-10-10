@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=65
+pass=0 failn=0 EXPECT=66
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -664,6 +664,27 @@ for what, entry in {"last_affected only": ent(base, [{"last_affected": "9.9.9"}]
     try: hit("1.5.0", [rec("GO-X-59", entry, v1)], mk=mk, sups=(True,))
     except AssertionError as e: raise AssertionError((what, "/v1 branch") + e.args)
     except Exception as e: raise AssertionError((what, "/v1 branch", "traceback", repr(e)))
+PY
+py "B11: one strict schema for every entry the rule reads: an unknown key in the entry, the package or a range, an empty name or event value, a null" \
+   " ecosystem is a HIT in the exact-path and the table-mismatch branches; the keys real records carry (and severity) are fine" <<'PY'
+n = BARE + "/v3"
+def with_key(entry, where, key):
+    e = copy.deepcopy(entry)
+    {"entry": e, "package": e["package"], "range": e["ranges"][0]}[where][key] = "x"
+    return e
+honest = ent(n, fixed("3.0.4"))
+cases = {"unknown entry key": with_key(honest, "entry", "surprise"), "unknown package key": with_key(honest, "package", "surprise"),
+         "unknown range key": with_key(honest, "range", "surprise"), "empty name": {"package": {"name": "", "ecosystem": "Go"}, "ranges": honest["ranges"]},
+         "null ecosystem": {"package": {"name": n, "ecosystem": None}, "ranges": honest["ranges"]},
+         "empty event value": ent(n, [{"introduced": ""}, {"fixed": "3.0.4"}])}
+for what, entry in cases.items():
+    for tables in ((None,), (BARE,)):
+        try: hit("3.1.3", [rec("GO-X-60", honest, entry)], tables=tables, sups=(True,))
+        except AssertionError as e: raise AssertionError((what, tables) + e.args)
+        except Exception as e: raise AssertionError((what, tables, "traceback", repr(e)))
+fine = with_key(with_key(honest, "entry", "severity"), "entry", "ecosystem_specific")
+fine["database_specific"] = {"url": "x"}; fine["package"]["purl"] = "pkg:golang/" + n
+clean("3.1.3", [rec("GO-X-61", honest, fine)], tables=(None, BARE), sups=(True,))
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
