@@ -720,14 +720,16 @@ class Substitute0350(unittest.TestCase):
 
     def test_a_sonnet_substitution_is_still_refused(self):
         text = real_subs_text()
-        r = rec0350(); r["rounds"][0]["reviewers"]["sonnet"] = opus(substitute_id="0350", substitute_for="sonnet")
-        self.assertNotEqual(problems(r, subs=text, now=D0350), [])
+        sonnet_marked = "sonnet is marked as a substitute; only the codex seat can be substituted, and only by opus"
+        r = rec0350(); r["rounds"][0]["reviewers"]["sonnet"] = opus(substitute_id="0350", substitute_for="sonnet",
+                                                                       evidence_sha256="12" * 32)
+        self.assertIn(sonnet_marked, problems(r, subs=text, now=D0350))
         r = rec0350(); del r["rounds"][0]["reviewers"]["sonnet"]
-        self.assertTrue(named(problems(r, subs=text, now=D0350), "no sonnet review"))
-        r = good(); del r["rounds"][0]["reviewers"]["sonnet"]
-        r["rounds"][0]["reviewers"]["opus"] = opus(substitute_id="0350", substitute_for="sonnet")
-        r["rounds"][0]["completed_at"] = D0350
-        self.assertNotEqual(problems(r, subs=text, now=D0350), [])
+        self.assertIn("final round has no sonnet review", problems(r, subs=text, now=D0350))
+        r = rec0350(substitute_for="sonnet"); del r["rounds"][0]["reviewers"]["sonnet"]   # opus claims the sonnet seat
+        ps = problems(r, subs=text, now=D0350)
+        self.assertIn("final round has no sonnet review", ps)
+        self.assertIn("opus substitute_for is 'sonnet', want 'codex'", ps)
 
     def test_the_gate_clock_ignores_environment_and_options(self):
         text = real_subs_text()
@@ -824,15 +826,37 @@ class Substitute0350Cli(unittest.TestCase):
                 self.assertIn(path, out)
                 self.assertIn("real codex entry is required", out)
 
-    def test_the_pr_s_own_copy_is_never_trusted(self):
+    def without_0350(self):
         o = json.loads(self.real); o["substitutes"] = [e for e in o["substitutes"] if e["id"] != "0350"]
-        self.write(self.SUBPATH, json.dumps(o, indent=2) + "\n"); self.git("commit", "-qam", "main without 0350")
+        return json.dumps(o, indent=2) + "\n"
+
+    def split_trusted_from_head(self, branch_point_text, main_tip_text):
+        """The PR branches from a commit holding `branch_point_text` and never edits substitutes.json (so the
+        enforcement rule cannot fire); main then moves to `main_tip_text`. Returns main's tip (the trusted revision)."""
+        self.write(self.SUBPATH, branch_point_text); self.git("commit", "-q", "--allow-empty", "-am", "branch point")
         self.base = self.git("rev-parse", "HEAD").strip()
-        self.write(self.SUBPATH, self.real); self.git("commit", "-qam", "the PR's own copy has 0350")
-        self.propose()
-        rc, out, _ = self.judge()
+        self.git("checkout", "-q", "-b", "pr")
+        self.git("checkout", "-q", "main")
+        self.write(self.SUBPATH, main_tip_text); self.git("commit", "-qam", "main moves on")
+        tip = self.git("rev-parse", "HEAD").strip()
+        self.git("checkout", "-q", "pr")
+        self.propose()                                                    # a NON-enforcement change: prompts/x.py
+        self.assertEqual(self.git("diff", "--name-only", self.base, "HEAD", "--", self.SUBPATH), "")
+        return tip
+
+    def test_the_pr_s_own_copy_is_never_trusted(self):
+        # the head's copy HAS 0350, the trusted copy (main's tip) does not: rejected, naming the missing entry
+        tip = self.split_trusted_from_head(self.real, self.without_0350())
+        rc, out, _ = self.judge("--subs-rev", tip)
         self.assertEqual(rc, 1, out)
-        self.assertIn("substitutes.json", out)
+        self.assertIn("substitute_id '0350' names 0 entries of .github/agent/reviews/substitutes.json", out)
+        self.assertNotIn("a substitute never applies", out)
+
+    def test_the_trusted_copy_decides_even_when_the_head_s_copy_lacks_the_entry(self):
+        # the converse: the head's copy LACKS 0350, the trusted copy has it: accepted
+        tip = self.split_trusted_from_head(self.without_0350(), self.real)
+        rc, out, _ = self.judge("--subs-rev", tip)
+        self.assertEqual(rc, 0, out)
 
     def test_the_environment_cannot_move_the_subprocess_gate_s_clock(self):
         # a real subprocess on the system clock: the verdict follows the real UTC time, whatever the environment says
