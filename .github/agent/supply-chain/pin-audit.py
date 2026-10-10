@@ -207,6 +207,24 @@ class GoRule:
         return list(dict.fromkeys([self.table, self.right, self.bare] if self.right else [self.table, self.bare]))
 
 
+def _entry_path(entry):
+    return (entry.get("package") or {}).get("name")
+
+
+def _without_paths(record):
+    """The record with every affected entry's package removed, so that one name filter (_osv_says) takes all entries into account."""
+    return dict(record, affected=[dict(a, package={}) for a in record.get("affected", [])])
+
+
+def _unreadable(entry):
+    """AC14: an affected entry is not trusted to clear a version unless it has at least one SEMVER or ECOSYSTEM range, every such range lists events
+    that start with introduced, and it has no GIT range (a commit range cannot be judged by version)."""
+    ranges = entry.get("ranges") or []
+    versioned = [rg for rg in ranges if rg.get("type") in ("SEMVER", "ECOSYSTEM")]
+    starts_ok = lambda rg: isinstance(rg.get("events"), list) and rg["events"] and isinstance(rg["events"][0], dict) and "introduced" in rg["events"][0]
+    return not versioned or not all(starts_ok(rg) for rg in versioned) or any(rg.get("type") == "GIT" for rg in ranges)
+
+
 def _go_rule(item, version):
     """The AC14 rule for this pin, or None where the old audit applies unchanged: not a tool of the table, other kinds of item, an empty version."""
     return GoRule(item, version) if item.kind == "tool" and item.name in GO_TOOLS and version else None
@@ -358,8 +376,12 @@ class LiveNet:
         osv, ghs = [], []
         rule = _go_rule(item, version)
         paths = rule.paths if rule else [q["package"]["name"]]
-        for v in self._osv_records(q, paths):
-            says = self._go_says(v, rule, version) if rule else self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
+        for copies in self._osv_records(q, paths).values():
+            v = copies[0]
+            if rule:
+                says = any([self._go_says(c, rule, version) for c in copies])   # AC14: a copy that is unsettled or affected makes the record a hit
+            else:
+                says = self._osv_says(v, q["package"]["name"], version, versioned="version" in q)
             osv.append({"id": v["id"], "incident": v["id"], "affected": says, "modified": v.get("modified"), "malicious": v["id"].startswith("MAL-")})
             for alias in [v["id"], *v.get("aliases", [])]:  # an OSV record can itself be the GitHub advisory (GHSA-... primary id)
                 if alias.startswith("GHSA-"):
@@ -405,30 +427,39 @@ class LiveNet:
         return ghs, osv
 
     def _osv_records(self, q, paths):
-        """The OSV records for the query, asked once per module path (AC14), one record per id."""
+        """The OSV records for the query, asked once per module path (AC14): {id: [the distinct copies returned]}. Copies of one id can differ by path."""
         records = {}
         for p in paths:
             for v in self._osv_post(dict(q, package=dict(q["package"], name=p))):
-                records.setdefault(v["id"], v)
-        return records.values()
+                copies = records.setdefault(v["id"], [])
+                if v not in copies:
+                    copies.append(v)
+        return records
 
     def _go_says(self, v, rule, version):
         """AC14: does this OSV record cover a Go tool's pinned version? Where the rule cannot settle it the answer is yes (fail closed)."""
         if rule.right is None:                       # AC14: a non-empty version that is not plain MAJOR.MINOR.PATCH is a hit
             return True
         if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
-            return self._osv_says(dict(v, affected=[dict(a, package={}) for a in v.get("affected", [])]), "", version, versioned=True)
+            return self._osv_says(_without_paths(v), "", version, versioned=True)
         entries = v.get("affected", [])
-        name = lambda a: (a.get("package") or {}).get("name")
+        name = _entry_path
         if rule.major <= 1 and any(name(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries):
             return self._osv_says(v, rule.right, version, versioned=True)   # AC14: a /v0 or /v1 path is ambiguous: the old verdict
-        exact = [a for a in entries if name(a) == rule.right and a["package"].get("ecosystem") == "Go"]
+        exact = [a for a in entries if name(a) == rule.right]
         if not exact or not all(name(a) for a in entries):
             return True                              # AC14: no entry for the exact path, or an entry with no path: a hit
+        if any((a["package"].get("ecosystem") != "Go") or _unreadable(a) for a in exact):
+            return True                              # AC14: an exact-path entry that is not plainly Go, or whose range cannot be read: a hit
         for a in entries:
             if a not in exact:
-                self._log_ignored(v["id"], name(a), f"not the module path of major {rule.major} ({rule.right})")
+                self._log_ignored(v["id"], name(a), self._ignore_reason(a, rule))
         return self._osv_says(dict(v, affected=exact), rule.right, version, versioned=True)
+
+    @staticmethod
+    def _ignore_reason(entry, rule):
+        eco = entry["package"].get("ecosystem")
+        return f"not the module path of major {rule.major} ({rule.right})" if eco == "Go" else f"ecosystem {eco or 'missing'} is not Go"
 
     def _log_ignored(self, advisory_id, path, reason):
         """AC14: an entry the rule did not use is logged, once per id, path and reason (two queries return the same record)."""
@@ -438,7 +469,7 @@ class LiveNet:
                 self.ignored_entries.append(entry)
 
     def take_ignored(self):
-        """The entries logged since the last call, for the notes of the item being judged (AC14)."""
+        """The entries logged since the last call. The net is shared by the judging pool, so a line is attached to whichever item's judge drains it first."""
         with self._lock:
             new, self._reported = self.ignored_entries[self._reported:], len(self.ignored_entries)
         return new
@@ -671,9 +702,32 @@ def load_exceptions(path, required):
     return ex
 
 
-def dead_exceptions(exceptions, applied):
-    """REQ-SUP-001-AC15: the rulings that decided no dispute in this run. Judged here, from what the run applied, never from a list."""
-    return [e for e in exceptions if not any(e is a for a in applied)]
+class RulingLog:
+    """REQ-SUP-001-AC15: what the rulings did in one run. matched: rulings for the package and ids of a real dispute; applied: those that then decided it."""
+
+    def __init__(self):
+        self.matched, self.applied = [], []
+
+
+def undecided_exceptions(exceptions, log, held, net):
+    """REQ-SUP-001-AC15: the rulings that decided no dispute in this run, split into (lapsed, dead, dormant). Lapsed: it matched a real dispute but failed
+    the version, time or live-range check (the dispute stays reported). Dead: no dispute, and a held pin (main, its history or an open pull request)
+    is named by the ruling. Dormant: nobody holds its pin. Judged from what the run matched, applied and held, never from a list."""
+    lapsed, dead, dormant = [], [], []
+    for e in exceptions:
+        if any(e is a for a in log.applied):
+            continue
+        if any(e is m for m in log.matched):
+            lapsed.append(e)
+        elif any(package_of(it) == e["package"] and _ruling_covers(e, it, _pin_versions(it, net)) for it in held):
+            dead.append(e)
+        else:
+            dormant.append(e)
+    return lapsed, dead, dormant
+
+
+def _ruling_label(e):
+    return f"{clean(', '.join(e['ids']))} ({clean(e['package'])} {clean(e['version'])})"
 
 
 def package_of(item):
@@ -689,6 +743,19 @@ def _norm_ranges(rs):
     return {re.sub(r"\s+", "", r) for r in rs}
 
 
+def _pin_versions(item, net):
+    """Every version the pin stands for: all version-like tags at an action's commit, else its one version."""
+    vers = (net.versions_of(item) if net is not None and hasattr(net, "versions_of") else None) or [net.version_of(item) if net is not None and hasattr(net, "version_of") else version_of(item)]
+    return [v for v in vers if v]
+
+
+def _ruling_covers(e, item, vers):
+    """Does the ruling name this pin: its one version, or its one series ("4.*"), for EVERY version the pin stands for?"""
+    covered = {str(x).lstrip("v") for x in [*vers, item.label] if x} or {str(item.version).lstrip("v")}
+    want = str(e.get("version", "")).lstrip("v")
+    return bool(want) and all(c == want or (want.endswith(".*") and (c == want[:-2] or c.startswith(want[:-1]))) for c in covered)
+
+
 def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     """The advisor's ruling for ONE incident and package: names exactly the advisories of this dispute, each unchanged since it was written.
     Returns None (no ruling: still disputed), "pass" (the version is outside the authoritative source's affected ranges) or "hit" (inside them:
@@ -696,17 +763,16 @@ def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
     return ruling_for(item, dispute_ids, current, exceptions, net, osv_times)[1]
 
 
-def ruling_for(item, dispute_ids, current, exceptions, net=None, osv_times=None):
+def ruling_for(item, dispute_ids, current, exceptions, net=None, osv_times=None, log=None):
     """excepted() with the ruling that decided: (entry, "pass" | "hit"), or (None, None). REQ-SUP-001-AC15 reads the entry to know a ruling is alive."""
-    vers = (net.versions_of(item) if net is not None and hasattr(net, "versions_of") else None) or [net.version_of(item) if net is not None and hasattr(net, "version_of") else version_of(item)]
-    vers = [v for v in vers if v]
+    vers = _pin_versions(item, net)
     ver = vers[0] if vers else None
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
-        covered = {str(x).lstrip("v") for x in [*vers, item.label] if x} or {str(item.version).lstrip("v")}
-        want = str(e.get("version", "")).lstrip("v")
-        if not want or not all(c == want or (want.endswith(".*") and (c == want[:-2] or c.startswith(want[:-1]))) for c in covered):
+        if log is not None:
+            log.matched.append(e)   # AC15: it names this dispute; whatever the checks below say, it is not dead
+        if not _ruling_covers(e, item, vers):
             continue   # a ruling names the one version (or one series, "4.*") it covers and must cover EVERY tag at the commit: never a wildcard, never one tag speaking for another
         if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
@@ -732,8 +798,8 @@ class Finding:
         self.pr = None   # the open pull request this pin was found in (not merged yet)
 
 
-def judge(item, net, exceptions, notes, current=True, applied=None):
-    findings = _judge(item, net, exceptions, notes, current, applied)
+def judge(item, net, exceptions, notes, current=True, log=None):
+    findings = _judge(item, net, exceptions, notes, current, log)
     for e in (net.take_ignored() if hasattr(net, "take_ignored") else []):   # AC14: nothing is ignored silently
         notes.append(f"{IGNORED_NOTE} {e['id']} {e['path']}: {e['reason']}")
     if (item.kind == "action" and inv.SHA40.match(item.version) and hasattr(net, "version_of") and net.version_of(item) is None and isinstance(net, LiveNet)):
@@ -741,7 +807,7 @@ def judge(item, net, exceptions, notes, current=True, applied=None):
     return findings
 
 
-def _judge(item, net, exceptions, notes, current=True, applied=None):
+def _judge(item, net, exceptions, notes, current=True, log=None):
     findings = []
     gh_l, osv_l = net.lists(item)
     by_incident = {}
@@ -757,9 +823,9 @@ def _judge(item, net, exceptions, notes, current=True, applied=None):
                 if x["id"] not in cur or (x["id"].startswith("GHSA-") and x in gh_l):
                     cur[x["id"]] = x.get("modified")
             osv_times = {a2["id"]: a2.get("modified") for a2 in osv_l if any(g["id"] == a2["id"] for g in gh_l)}
-            entry, ruling = ruling_for(item, set(ids), cur, exceptions, net, osv_times)
-            if applied is not None and entry is not None:
-                applied.append(entry)   # AC15: this ruling decided a real dispute in this run
+            entry, ruling = ruling_for(item, set(ids), cur, exceptions, net, osv_times, log)
+            if log is not None and entry is not None:
+                log.applied.append(entry)   # AC15: this ruling decided a real dispute in this run
             if ruling == "pass":
                 notes.append(f"exception applied: {package_of(item)} {item.version} ({', '.join(sorted(set(ids)))}) is outside the authoritative source's affected ranges")
                 continue
@@ -1041,7 +1107,8 @@ def main(argv=None):
         print(f"audit: inventory of {len(head)} item(s):")
         for k in sorted(head):
             print(f"  {clean(k)}")
-        notes, findings, incomplete, applied = [], [], False, []
+        notes, findings, incomplete, log = [], [], False, RulingLog()
+        held = list(audited)   # AC15: the pins the run inventories (main and its 90-day history); the pins of open pull requests are added below
         for it in audited:
             if it.kind == "action" and inv.SHA40.match(it.version) and not it.label and not isinstance(net, FixtureNet):
                 if not age._tag_for_commit(it.name, it.version):
@@ -1053,7 +1120,7 @@ def main(argv=None):
 
         def one(it):
             n2 = []
-            return judge(it, net, exceptions, n2, current=a.base is not None or it.key in head, applied=applied), n2
+            return judge(it, net, exceptions, n2, current=a.base is not None or it.key in head, log=log), n2
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
             for fs, n2 in pool.map(one, audited):
@@ -1074,12 +1141,13 @@ def main(argv=None):
                 if len(items) > 100:
                     print(f"information: open pull request #{number} moves {len(items)} pins: only the first 100 were audited")
                     incomplete = True
+                held.extend(items[:100])
                 for it in items[:100]:
                     if it.key in seen_keys:
                         continue
                     seen_keys.add(it.key)
                     try:  # one pull request's failure (a rate limit, a bad response) must never hide main's own findings or other PRs'
-                        for f in judge(it, net, exceptions, notes, current=True, applied=applied):
+                        for f in judge(it, net, exceptions, notes, current=True, log=log):
                             f.pr = number
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
@@ -1130,7 +1198,7 @@ def main(argv=None):
                     seen.add(child.key)
                     print(f"audit: nested action {clean(child.name)}@{clean(child.version[:12])} inside {clean(outer.name)}")    # listed, clean or not
                     try:
-                        for f in judge(child, net, exceptions, notes, current=True, applied=applied):
+                        for f in judge(child, net, exceptions, notes, current=True, log=log):
                             f.via = outer.name
                             findings.append(f)
                     except (Fail, age.CouldNotLook) as e:
@@ -1143,10 +1211,13 @@ def main(argv=None):
             queue = nxt
         for n in notes:
             print(f"audit: {clean(n)}")
-        dead = [] if (a.base or a.exceptions) else dead_exceptions(exceptions, applied)   # AC15: the daily run over the checked-in file only
+        lapsed, dead, dormant = ([], [], []) if (a.base or a.exceptions) else undecided_exceptions(exceptions, log, held, net)   # AC15: the daily run over the checked-in file only
+        for e in lapsed:
+            print(f"audit: LAPSED EXCEPTION: the ruling for {_ruling_label(e)} no longer matches the live advisory; write a fresh ruling")
         for e in dead:
-            print(f"audit: DEAD EXCEPTION: the ruling for {clean(', '.join(e['ids']))} ({clean(e['package'])} {clean(e['version'])}) applied to no finding in this run: "
-                  "remove it from the exceptions file")
+            print(f"audit: DEAD EXCEPTION: the ruling for {_ruling_label(e)} decided no dispute while its pin is held: remove it from the exceptions file")
+        for e in dormant:
+            print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
         plan, disputes, per_item, pending = [], {}, {}, []
         for f in findings:
             print(f"audit: {'DISPUTED' if f.disputed else 'HIT'}: {clean(f.item.key)} ({clean(', '.join(f.ids))}): {f.why}" + (f" [inside {clean(f.via)}]" if f.via else "") + (f" [open pull request #{f.pr}]" if getattr(f, "pr", None) else ""))
@@ -1188,14 +1259,15 @@ def main(argv=None):
             if not a.report_only:
                 file_issues(gh, plan, today)
             return 1
-        if dead:
-            return 1
         unchecked = [i for i in audited if not net.covered(i)]
         excepted_n = len([n for n in notes if not n.startswith(IGNORED_NOTE)])   # AC14: the log lines of ignored entries are not exceptions
         if incomplete:
             print("audit: INCOMPLETE: some open pull request pins could not be checked (above): no clean claim is made today", file=sys.stderr)
             return 1
+        if lapsed or dead:
+            return 1
         print(f"audit: no known-compromised versions as of {today}" + (f" ({excepted_n} disputed hit(s) covered by a checked-in exception)" if excepted_n else "")
+              + (f"; {len(dormant)} dormant exception ruling(s) wait for their pin: {', '.join(_ruling_label(e) for e in dormant)}" if dormant else "")
               + (f"; {len(unchecked)} of {len(audited)} item(s) have no advisory source and were not checked (listed above)" if unchecked else ""))
         return 0
     except (Fail, age.CouldNotLook) as e:

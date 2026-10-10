@@ -532,7 +532,7 @@ bad = {"empty events": [{"type": "SEMVER", "events": []}], "no events key": [{"t
        "fixed only": [{"type": "SEMVER", "events": ev(("fixed", "3.0.4"))}],
        "git beside semver": [{"type": "SEMVER", "events": fixed("3.0.4")}, {"type": "GIT", "events": INTRO0}]}
 for what, rgs in bad.items():
-    try: hit("3.1.3", [rec("GO-X-43", ent(n, ranges=rgs))], none_ignored=True)
+    try: hit("3.1.3", [rec("GO-X-43", ent(n, ranges=rgs))], none_ignored=True, sups=(True,))   # the record came back from a bare or alias query
     except AssertionError as e: raise AssertionError((what,) + e.args)
 PY
 py "I1: two copies of one OSV id returned by different query paths are OR-ed: a copy with no exact entry makes it a hit even when another copy is clean" <<'PY'
@@ -544,7 +544,7 @@ finds, _ = run(cosign("3.1.3"), net)
 assert finds, "the bare-query copy has no exact entry: fail closed"
 PY
 py "F3: an exact-path Go entry with a malformed event list (no introduced event) is unsettled: a HIT" <<'PY'
-hit("3.1.3", [rec("GO-X-42", ent(BARE + "/v3", ranges=[{"type": "SEMVER", "events": [{}]}]))], none_ignored=True)
+hit("3.1.3", [rec("GO-X-42", ent(BARE + "/v3", ranges=[{"type": "SEMVER", "events": [{}]}]))], none_ignored=True, sups=(True,))
 PY
 
 # --- the table must be right for the versions we pin (advisor ruling, step 5) ---------------------------------------------------------------------------------
