@@ -187,6 +187,8 @@ d=$(mk cosshort); printf 'jobs:\n  c:\n    steps:\n      - run: cosign attest --
 expect ok "cosign attest --type slsaprovenance1 resolves to SLSA provenance v1 (already has a row)" "$d"
 d=$(mk cossign); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "cosign sign (an image signature) with no row fails" "$d"
+d=$(mk cossplit); printf 'jobs:\n  c:\n    steps:\n      - run: |\n          cos\\\n          ign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "cos<backslash-newline>ign sign (bash joins the lines with no space: cosign sign) is seen as cosign sign and has no row" "$d"
 d=$(mk yaml); printf 'jobs:\n  c:\n    steps:\n      - run: witness sign -f policy.json -o policy.signed.json\n' > "$d/.github/workflows/other.yaml"
 expect caught "a .yaml workflow signing the policy with no row fails" "$d"
 d=$(mk comp); mkdir -p "$d/.github/actions/x"; printf 'runs:\n  using: composite\n  steps:\n    - run: cosign sign "$IMG"\n      shell: bash\n' > "$d/.github/actions/x/action.yml"
@@ -287,7 +289,7 @@ d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: acti
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
 expect_named "with legacy-stage-files.json deleted the whole tree is judged (red today on stage-verify.yml)" "$d" "stage-verify.yml: actions/attest with no literal predicate-type"
-EXPECT=60
+EXPECT=61
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

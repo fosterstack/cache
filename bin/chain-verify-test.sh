@@ -1015,6 +1015,15 @@ expect_refuse "002-AC2 a calling release.yml at a tag that only starts like ours
 expect_refuse "002-AC2 a SAN repository that only starts like ours (cache-evil) is refused" "cache-evil" verify $(V) --stage sign $(rec sign_san_repoevil) $(R)
 expect_refuse "002-AC2 a certificate with no Build Config URI extension is refused" "build config" verify $(V) --stage sign $(rec sign_noconfig) $(R)
 expect_refuse "002-AC2 a certificate with no OIDC-issuer extension is refused" "issuer" verify $(V) --stage sign $(rec sign_noissuer) $(R)
+# (Codex #249 r6 B6, 001-AC4 "the refusal names the identity found") every identity refusal names the certificate's SAN, cause words kept
+expect_refuse "001-AC4 no Build Config URI extension: the refusal names the identity found" "build config|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_noconfig) $(R)
+expect_refuse "001-AC4 no OIDC-issuer extension: the refusal names the identity found" "issuer|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_noissuer) $(R)
+expect_refuse "001-AC4 another OIDC issuer: the refusal names the identity found" "issuer|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_badissuer) $(R)
+expect_refuse "001-AC4 a wrong Build Config URI (another caller): the refusal names the identity found" "other-caller.yml|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_othercaller) $(R)
+expect_refuse "001-AC4 a wrong Build Config URI (a caller on a branch): the refusal names the identity found" "refs/heads/main|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_callerbranch) $(R)
+for k in iss_raw cfg_raw; do
+  expect_refuse "001-AC4 a malformed issuer or config extension ($k) with a readable SAN: the refusal names the identity found" "malformed|stage-sign.yml@refs/tags/v0.3.0" verify $(V) --stage sign $(rec sign_$k) $(R rekor-x3.json)
+done
 expect_refuse "002-AC2 a certificate from another root is refused" "root" verify $(V) --stage sign $(rec sign_wrongroot) $(R)
 python3 - "$root" 2> /dev/null <<'PY' && ok "002-AC2 .github/policy/release-policy.template.json names the five stage files and the issuer" || bad "002-AC2 committed template missing or wrong"
 import json, sys
@@ -1754,7 +1763,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=583
+EXPECT=590
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

