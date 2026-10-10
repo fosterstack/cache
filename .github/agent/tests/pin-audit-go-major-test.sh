@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=66
+pass=0 failn=0 EXPECT=68
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -686,6 +686,23 @@ for what, entry in cases.items():
 fine = with_key(with_key(honest, "entry", "severity"), "entry", "ecosystem_specific")
 fine["database_specific"] = {"url": "x"}; fine["package"]["purl"] = "pkg:golang/" + n
 clean("3.1.3", [rec("GO-X-61", honest, fine)], tables=(None, BARE), sups=(True,))
+PY
+py "B12: an OSV answer that is not a record (a string, no id, an id that is not a string) is a HIT with a short reason, never an exception" <<'PY'
+for what, answer in (("string", ["x"]), ("no id", [{"aliases": [], "affected": []}]), ("int id", [{"id": 5, "affected": []}]), ("null", [None])):
+    net = mknet([], (), True)
+    net._osv_post = lambda q, a=answer: copy.deepcopy(a)
+    try: finds, _ = run(cosign("3.1.3"), net)
+    except Exception as e: raise AssertionError((what, "exception", repr(e)))
+    assert finds, (what, "expected a HIT")
+PY
+py "B13: a GIT range together with a SEMVER range in one entry is a HIT in the table-mismatch and /v1 branches too (SEMVER alone would clear it)" <<'PY'
+git = {"type": "GIT", "repo": "https://example.com/cosign", "events": INTRO0}
+n = BARE + "/v3"
+hit("3.1.3", [rec("GO-X-62", ent(n, ranges=[{"type": "SEMVER", "events": fixed("3.0.4")}, git]))], tables=(BARE,), sups=(True,))
+base = "example.com/o/ytool"
+mk = lambda v, t=None: tool("ytool", v, base)
+hit("1.5.0", [rec("GO-X-63", ent(base, ranges=[{"type": "SEMVER", "events": fixed("1.2.0")}, git]), ent(base + "/v1", INTRO0))], mk=mk, sups=(True,))
+clean("1.5.0", [rec("GO-X-64", ent(base, fixed("1.2.0")), ent(base + "/v1", INTRO0))], mk=mk, sups=(True,))     # control: the same without the GIT range
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
