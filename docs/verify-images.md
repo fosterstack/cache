@@ -2,7 +2,8 @@
 
 Every FosterStack Cache release is signed and provenance-attested by
 GitHub's own CI — not by us claiming it, by a chain you can check yourself
-in under a minute, with nothing installed but `cosign` and `gh`.
+in under a minute, with `cosign` and `gh` plus standard tools (`curl`,
+`sed`, `jq`, `base64`, `sha256sum` or `shasum`).
 
 The pull and the cosign commands below are fully anonymous. The
 `gh attestation verify` commands are not — they read GitHub's attestation
@@ -127,7 +128,9 @@ release manifest as a cosign attestation (predicate type
 `https://fosterstack.com/attestations/release-manifest/v1`) to each public
 image digest (production, debug, fips) on GHCR, which is authoritative, and
 on the Docker Hub mirror (best effort), BEFORE the GitHub release is
-published. The `release-manifest.json` on the release page is the same
+published.
+This attestation exists for releases built by the new chain, v0.2.1 and later (v0.1.0 has none, so the command below fails there). <!-- pinned: historical -->
+The `release-manifest.json` on the release page is the same
 content. It has no separate signature file, and `gh attestation verify
 <file>` does not apply to it: it is an attestation on the image, so verify
 it on the image (anonymous, no token):
