@@ -21,8 +21,13 @@ def refuse(stage, reason):
 
 def b64d(s):
     """Standard base64 and nothing else: validate=True refuses any character outside the alphabet (junk, whitespace, the URL-safe
-    - and _), which the default decoder would silently drop or, for - and _, treat as junk too."""
-    return base64.b64decode(s, validate=True)
+    - and _), which the default decoder would silently drop or, for - and _, treat as junk too.
+    One spelling per byte string (REQ-CHAIN-002-AC1/AC3, Codex security r1 S3): the decoder ignores the unused bits before the
+    padding, so YR== and YQ== are the same byte; the text must be exactly what re-encoding the bytes gives, else ValueError."""
+    out = base64.b64decode(s, validate=True)
+    if base64.b64encode(out) != (s.encode() if isinstance(s, str) else bytes(s)):
+        raise ValueError("base64 is not in its canonical form")
+    return out
 
 
 def b64e(b):
@@ -53,12 +58,18 @@ def no_duplicate_keys(pairs):
     return dict(pairs)
 
 
+def no_constants(name):
+    # NaN, Infinity and -Infinity are not JSON (RFC 8259); Python accepts them by default (Codex security r1 S3)
+    raise ValueError("%s is not JSON" % name)
+
+
 def strict_json(raw):
     """JSON in which a repeated key is an error (Python keeps the last one, other readers the first) and bytes are UTF-8 only:
-    json.loads on bytes would also guess UTF-16 or UTF-32 from the first bytes, which another reader would read differently."""
+    json.loads on bytes would also guess UTF-16 or UTF-32 from the first bytes, which another reader would read differently.
+    NaN, Infinity and -Infinity are refused too."""
     if isinstance(raw, (bytes, bytearray)):
         raw = bytes(raw).decode("utf-8")
-    return json.loads(raw, object_pairs_hook=no_duplicate_keys)
+    return json.loads(raw, object_pairs_hook=no_duplicate_keys, parse_constant=no_constants)
 
 
 def load_json(path, what):

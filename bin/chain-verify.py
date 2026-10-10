@@ -28,8 +28,7 @@ import subprocess
 import sys
 import tempfile
 
-import yaml
-
+# PyYAML is imported by the `actions` subcommand only (load_yaml): the Sign job installs cosign and nothing else (Codex security r1 S4)
 from chain_common import Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json  # noqa: E402  (next to this file)
 import chain_hostile  # noqa: E402
 
@@ -513,14 +512,23 @@ def check_rekor_entry(pol, e, body, sig, leaf_der, leaf):
     return None
 
 
-def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
-    if not rekor_path:
-        refuse(stage, "rekor entry required for this record type but no Rekor entries file (--rekor-stub) was given")
+def read_rekor_entries(stage, rekor_path):
+    """The `entries` list of a Rekor entries file. Anything but a list of objects is a refusal, never a traceback
+    (REQ-CHAIN-002-AC3, Codex security r1 S2)."""
     try:
         with open(rekor_path, "rb") as f:
             entries = strict_json(f.read())["entries"]
     except (OSError, ValueError, KeyError, TypeError):
         refuse(stage, "rekor entries file is missing or not JSON")
+    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
+        refuse(stage, "rekor entries file: entries is not a list of entry objects")
+    return entries
+
+
+def check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf):
+    if not rekor_path:
+        refuse(stage, "rekor entry required for this record type but no Rekor entries file (--rekor-stub) was given")
+    entries = read_rekor_entries(stage, rekor_path)
     payload_hash = hashlib.sha256(payload).hexdigest()
     candidates = []
     for e in entries:
@@ -683,25 +691,42 @@ def provenance_statement(pol, obj, dry):
     return statement
 
 
+def bundle_materials(vm):
+    """The bundle's timestamps and Rekor entries. Both must be present and non-empty: a provenance with either missing cannot be
+    accepted by Release, so Sign refuses it here and names each missing one (REQ-CHAIN-002-AC1, 002-AC3, Codex security r1 S1)."""
+    stamps = (vm.get("timestampVerificationData") or {}).get("rfc3161Timestamps")
+    tlog = vm.get("tlogEntries")
+    missing = []
+    if not isinstance(stamps, list) or not stamps:
+        missing.append("no timestamp (verificationMaterial.timestampVerificationData.rfc3161Timestamps is missing or empty)")
+    if not isinstance(tlog, list) or not tlog:
+        missing.append("no Rekor entry (verificationMaterial.tlogEntries is missing or empty)")
+    if missing:
+        refuse("sign", "the bundle cosign wrote has " + " and ".join(missing))
+    return stamps, tlog
+
+
 def bundle_to_outputs(bun, out_dir, pol):
     """Turn the Sigstore bundle cosign wrote into the two files Release verifies: the DSSE envelope with its certificate chain and
     timestamps (provenance.json) and the bundle's own Rekor entries, untouched (provenance.rekor.json)."""
-    vm = bun["verificationMaterial"]
-    leaf_pem = der_to_pem(b64d(vm["certificate"]["rawBytes"]))
-    dsse = bun["dsseEnvelope"]
-    chain = []
-    for root in pol["roots"].values():
-        chain += root.get("intermediates", []) + [root["certificate"]]
-    stamps = vm.get("timestampVerificationData", {}).get("rfc3161Timestamps", [])
-    envelope = {
-        "payloadType": dsse["payloadType"], "payload": dsse["payload"],
-        "signatures": [{"keyid": "", "sig": dsse["signatures"][0]["sig"], "certificate": b64e(leaf_pem.encode()), "intermediates": chain,
-                        "timestamps": [{"type": STAMP_RESPONSE, "data": s["signedTimestamp"]} for s in stamps]}],
-    }
+    try:
+        vm = bun["verificationMaterial"]
+        stamps, tlog = bundle_materials(vm)
+        leaf_pem = der_to_pem(b64d(vm["certificate"]["rawBytes"]))
+        dsse = bun["dsseEnvelope"]
+        envelope = {
+            "payloadType": dsse["payloadType"], "payload": dsse["payload"],
+            "signatures": [{"keyid": "", "sig": dsse["signatures"][0]["sig"], "certificate": b64e(leaf_pem.encode()),
+                            "intermediates": [x for root in pol["roots"].values() for x in root.get("intermediates", []) + [root["certificate"]]],
+                            "timestamps": [{"type": STAMP_RESPONSE, "data": s["signedTimestamp"]} for s in stamps]}],
+        }
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as ex:
+        # a malformed bundle is a refusal, never a traceback (property e); the field named is the one that was missing or wrong
+        refuse("sign", "the bundle cosign wrote is malformed: certificate or envelope field %s (%s)" % (ex, type(ex).__name__))
     with open(os.path.join(out_dir, "provenance.json"), "w") as f:
         json.dump(envelope, f)
     with open(os.path.join(out_dir, "provenance.rekor.json"), "w") as f:
-        json.dump({"entries": vm.get("tlogEntries", [])}, f)
+        json.dump({"entries": tlog}, f)
 
 
 def cmd_sign(a):
@@ -722,12 +747,29 @@ def cmd_sign(a):
         if r.returncode != 0:
             shutil.rmtree(a.out, ignore_errors=True)
             refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
-        with open(bundle) as f:
-            bundle_to_outputs(json.load(f), a.out, pol)
+        try:
+            convert_and_verify(bundle, a.out, pol, parse_now(a.now), tmpd)
+        except Refuse as bad:
+            shutil.rmtree(a.out, ignore_errors=True)   # a failed sign leaves no provenance behind (001-AC2)
+            refuse("sign", bad.reason)
         if dry:
             with open(os.path.join(a.out, "DRY-RUN"), "w") as f:
                 f.write("dry run: Release can never accept this record\n")
     print("ok")
+
+
+def convert_and_verify(bundle, out_dir, pol, now, tmpd):
+    """Write Release's two files from cosign's bundle, then verify them as stage sign exactly as Release will, before Sign says ok
+    (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3, Codex security r1 S1): Sign never reports success for provenance Release would refuse."""
+    try:
+        with open(bundle, "rb") as f:
+            bun = strict_json(f.read())
+    except (OSError, ValueError) as ex:
+        refuse("sign", "the bundle cosign wrote is missing or not JSON (%s)" % type(ex).__name__)
+    bundle_to_outputs(bun, out_dir, pol)
+    vdir = os.path.join(tmpd, "verify-own-output")
+    os.makedirs(vdir)
+    verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), os.path.join(out_dir, "provenance.rekor.json"), now, vdir)
 
 
 # ---- actions: every reference is a listed full digest ------------------------------------------------------------
@@ -778,10 +820,49 @@ def follow_local(ref, allowed, root, seen, errs, job_level):
             check_actions(f, allowed, root, seen, errs)
 
 
+class DuplicateKey(Exception):
+    pass
+
+
+def import_yaml():
+    """PyYAML, which only this subcommand needs (Codex security r1 S4); missing, it is a usage error that says so."""
+    try:
+        import yaml
+    except ImportError:
+        print("error: the actions subcommand needs PyYAML (apt: python3-yaml; pip: pyyaml)", file=sys.stderr)
+        sys.exit(2)
+    return yaml
+
+
+def load_yaml(path):
+    """The file as plain strings (BaseLoader), refusing a mapping key that repeats another key of the same mapping once both are
+    trimmed and case-folded (REQ-CHAIN-003-AC4, Codex security r1 S5): a YAML reader keeps only one of two `uses:` keys, so the
+    reference judged here need not be the one GitHub runs. A key that is not a plain scalar is refused for the same reason."""
+    yaml = import_yaml()
+
+    class NoDuplicateKeys(yaml.BaseLoader):
+        def construct_mapping(self, node, deep=False):
+            first = {}
+            for key, _value in node.value:
+                if not isinstance(key, yaml.ScalarNode):
+                    raise DuplicateKey("%s: a mapping key at line %d is not a plain scalar" % (path, key.start_mark.line + 1))
+                norm = key.value.strip().casefold()
+                if norm in first:
+                    raise DuplicateKey("%s: duplicate key %r at line %d repeats %r at line %d (a YAML reader keeps only one of them)"
+                                       % (path, key.value, key.start_mark.line + 1, first[norm].value, first[norm].start_mark.line + 1))
+                first[norm] = key
+            return super().construct_mapping(node, deep)
+
+    with open(path) as f:
+        return yaml.load(f.read(), Loader=NoDuplicateKeys)
+
+
 def check_actions(path, allowed, root, seen, errs):
     try:
-        with open(path) as f:
-            d = yaml.load(f.read(), Loader=yaml.BaseLoader)
+        d = load_yaml(path)
+    except DuplicateKey as ex:
+        errs.append(str(ex))
+        return
     except Exception as ex:
         errs.append("%s is not YAML (%s)" % (path, type(ex).__name__))
         return
