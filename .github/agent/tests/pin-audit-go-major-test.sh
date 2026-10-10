@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=64
+pass=0 failn=0 EXPECT=65
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -639,6 +639,31 @@ for what, a in {"ranges string": ent(base, ranges="x"), "events int": ent(base, 
     except AssertionError as e: raise AssertionError((what, "/v1 branch") + e.args)
     except Exception as e: raise AssertionError((what, "/v1 branch", "traceback", repr(e)))
 clean("1.5.0", [rec("GO-X-56", ent(base, fixed("1.2.0")), ent(base + "/v1", ev(("introduced", "0"), ("last_affected", "1.0.0"))))], mk=mk, sups=(True,))
+PY
+py "B10: the table-mismatch and /v1 branches apply the exact-path readable-range rule: empty events, events not starting with introduced, an unknown or" \
+   " non-string range type, a package name that is not a string: all a HIT" <<'PY'
+n = BARE + "/v3"
+honest = ent(n, fixed("3.0.4"))
+cases = {"empty events": [ent(n, events=[])], "not starting with introduced": [honest, ent(n, [{"fixed": "9.9.9"}])],
+         "unknown range type": [honest, ent(n, ranges=[{"type": "SEMVR", "events": INTRO0}])],
+         "range type a list": [honest, ent(n, ranges=[{"type": ["SEMVER"], "events": INTRO0}])],
+         "range type missing": [honest, ent(n, ranges=[{"events": INTRO0}])]}
+for what, entries in cases.items():
+    try: hit("3.1.3", [rec("GO-X-57", *entries)], tables=(BARE,), sups=(True,))
+    except AssertionError as e: raise AssertionError((what, "table branch") + e.args)
+    except Exception as e: raise AssertionError((what, "table branch", "traceback", repr(e)))
+extras = [ent(n, ranges=[{"type": "GIT", "events": INTRO0}, {"type": "SEMVER", "events": fixed("3.0.4")}]), ent(n, fixed("3.0.4"), versions=[]),
+          ent(n, fixed("3.0.4"), ecosystem_specific={"x": 1}, database_specific={"y": 2}), {"package": {"name": n, "ecosystem": "Go"}}]
+clean("3.1.3", [rec("GO-X-58", honest, *extras)], tables=(BARE,), sups=(True,))     # real shapes keep the old verdict
+base = "example.com/o/ytool"
+mk = lambda v, t=None: tool("ytool", v, base)
+v1 = ent(base + "/v1", INTRO0)
+for what, entry in {"last_affected only": ent(base, [{"last_affected": "9.9.9"}]), "empty events": ent(base, events=[]),
+                    "name an int": {"package": {"name": 5, "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": fixed("1.2.0")}]},
+                    "name null": {"package": {"name": None, "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": fixed("1.2.0")}]}}.items():
+    try: hit("1.5.0", [rec("GO-X-59", entry, v1)], mk=mk, sups=(True,))
+    except AssertionError as e: raise AssertionError((what, "/v1 branch") + e.args)
+    except Exception as e: raise AssertionError((what, "/v1 branch", "traceback", repr(e)))
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
