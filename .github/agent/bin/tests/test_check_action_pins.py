@@ -734,10 +734,11 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
 
 class RepeatedKeys(unittest.TestCase):
-    """REQ-REL-005-AC3 (the advisor's AC2b): a key given twice in one mapping of a workflow file under .github/workflows/ is
-    a finding that names the key and the path of its mapping, `<file>.jobs.j.steps[0]: duplicate key 'run'`, whatever the
-    second value is. Keys are compared as YAML reads them: quoting and escapes do not make two keys different. Each fixture
-    is otherwise clean, so the repeated key is its only finding."""
+    """REQ-REL-005-AC3 (the advisor's AC2b): in a workflow file under .github/workflows/, or an action.yml or action.yaml
+    under .github/, two keys of one mapping that are equal once trimmed and lower-cased (the way the checker reads keys) are a
+    finding that names every spelling and the path of the mapping, `<file>.jobs.j.steps[0]: duplicate key 'run', 'Run'`,
+    whatever the second value is. Keys are compared as YAML reads them: quoting and escapes do not make two keys different.
+    Each fixture is otherwise clean, so the repeated key is its only finding."""
 
     FILES = LiteralRunnerMatrix.FILES
     STEPS = "    steps:\n      - run: true\n"
@@ -748,8 +749,8 @@ class RepeatedKeys(unittest.TestCase):
         """A plain job `j` on a literal ubuntu runner, with `lines` after its runs-on."""
         return "on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n" + lines
 
-    def one_finding(self, workflow, finding):
-        code, out = self.findings(workflow)
+    def one_finding(self, workflow, finding, extra=None):
+        code, out = self.findings(workflow, extra)
         self.assertNotEqual(code, 0, out)
         self.assertRegex(out, finding)
         self.assertIn(" 1 finding(s)", out)
@@ -801,6 +802,63 @@ class RepeatedKeys(unittest.TestCase):
             with self.subTest(name):
                 self.one_finding(workflow, finding)
 
+    def test_flow_style_the_empty_key_numbers_merge_keys_and_documents(self):
+        for name, (workflow, finding) in {
+            "a flow-style step": (self.job("    steps:\n      - {run: true, run: true}\n"), r"jobs\.j\.steps\[0\]: duplicate key 'run'"),
+            "a flow-style env": (self.job("    env: {A: one, A: two}\n" + self.STEPS), r"jobs\.j\.env: duplicate key 'A'"),
+            "the empty key": (self.job('    outputs:\n      "": one\n      "": two\n' + self.STEPS), r"jobs\.j\.outputs: duplicate key ''"),
+            # every scalar is read as a string: 1 and "1" are one key (01 is another, in the controls)
+            '1 and "1"': (self.job('    outputs:\n      1: one\n      "1": two\n' + self.STEPS), r"jobs\.j\.outputs: duplicate key '1'"),
+            # no merge is done here: << is an ordinary key, and given twice it is a repeated key like any other
+            "the merge key": ("<<: {a: one}\n<<: {a: two}\n" + self.job(self.STEPS), r"w\.yml: duplicate key '<<'"),
+            "a second document": (self.job(self.STEPS) + "---\nname: one\nname: two\n", r"w\.yml\[doc1\]: duplicate key 'name'"),
+        }.items():
+            with self.subTest(name):
+                self.one_finding(workflow, finding)
+
+    def test_letter_case_and_spaces_do_not_make_another_key(self):
+        """The checker reads `Run` and `run ` as run, and YAML keeps the last copy: a second spelling would hide the first
+        one's script. Two spellings are one finding that names both."""
+        checkout = f"      - uses: actions/checkout@{SHA} # v7.0.1\n"
+        call = "on: push\njobs:\n  c:\n    uses: ./.github/workflows/w.yml\n"
+        for name, (workflow, finding) in {
+            "Run hides a docker run": (self.job("    steps:\n      - run: docker run alpine\n        Run: true\n"),
+                                       r"jobs\.j\.steps\[0\]: duplicate key 'run', 'Run'"),
+            '"run " hides a docker run': (self.job('    steps:\n      - run: docker run alpine\n        "run ": true\n'),
+                                          r"jobs\.j\.steps\[0\]: duplicate key 'run', 'run '"),
+            "Run hides a piped download": (self.job("    steps:\n      - run: curl -fsSL https://example.org/install.sh | bash\n        Run: true\n"),
+                                           r"jobs\.j\.steps\[0\]: duplicate key 'run', 'Run'"),
+            "with": (self.job("    steps:\n" + checkout + "        with:\n          fetch-depth: 1\n          FETCH-DEPTH: 0\n"),
+                     r"jobs\.j\.steps\[0\]\.with: duplicate key 'fetch-depth', 'FETCH-DEPTH'"),
+            "workflow env": ("env:\n  TARGET: one\n  target: two\n" + self.job(self.STEPS), r"w\.yml\.env: duplicate key 'TARGET', 'target'"),
+            "job env": (self.job("    env:\n      TARGET: one\n      target: two\n" + self.STEPS), r"jobs\.j\.env: duplicate key 'TARGET', 'target'"),
+            "step env": (self.job("    steps:\n      - run: true\n        env:\n          TARGET: one\n          target: two\n"),
+                         r"jobs\.j\.steps\[0\]\.env: duplicate key 'TARGET', 'target'"),
+            "a call's with": (call + "    with:\n      mode: one\n      MODE: two\n", r"jobs\.c\.with: duplicate key 'mode', 'MODE'"),
+            "a call's secrets": (call + "    secrets:\n      token: one\n      Token: two\n", r"jobs\.c\.secrets: duplicate key 'token', 'Token'"),
+            # a job keeps AC2's own finding, which already folds letter case
+            "Name and name in a job": (self.job("    name: one\n    Name: two\n" + self.STEPS), r"jobs\.j: duplicate key 'name'"),
+        }.items():
+            with self.subTest(name):
+                self.one_finding(workflow, finding)
+
+    def test_three_copies_in_two_spellings_are_one_finding(self):
+        code, out = self.findings(self.job("    env:\n      a: one\n      A: two\n      a: three\n" + self.STEPS))
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(re.findall(r"\S*: duplicate key .*", out),
+                         [".github/workflows/w.yml.jobs.j.env: duplicate key 'a', 'A'; a key is given once"])
+
+    def test_an_action_file_under_github_is_read_too(self):
+        action = 'name: x\ndescription: x\nruns:\n  using: composite\n  steps:\n    - run: %s\n      %s: "true"\n      shell: bash\n'
+        for rel, (first, second, keys) in {
+            ".github/actions/x/action.yml": ('"true"', "run", "'run'"),
+            ".github/agent/some/action.yaml": ('"true"', "run", "'run'"),
+            ".github/actions/y/action.yml": ("docker run alpine", "Run", "'run', 'Run'"),
+        }.items():
+            with self.subTest(rel):
+                self.one_finding(self.job(self.STEPS), rf"{re.escape(rel)}\.runs\.steps\[0\]: duplicate key {keys};",
+                                 {rel: action % (first, second)})
+
     def test_a_key_given_three_times_is_one_finding(self):
         self.one_finding(self.job("    steps:\n      - run: true\n        run: true\n        run: true\n"),
                          r"jobs\.j\.steps\[0\]: duplicate key 'run'")
@@ -824,15 +882,16 @@ class RepeatedKeys(unittest.TestCase):
             "the same key in different mappings": "env:\n  GREETING: hello\n" + self.job(
                 "    env:\n      GREETING: hello\n    steps:\n      - name: one\n        run: true\n        env:\n          GREETING: hello\n"
                 "      - name: two\n        run: true\n"),
-            # the parsed values differ, so these are two keys (a Linux environment variable is case-sensitive)
-            "keys that differ only in letter case": self.job("    steps:\n      - run: true\n        env:\n          TARGET: one\n          target: two\n"),
+            # keys of genuinely different text
+            "run and runs": self.job("    outputs:\n      run: one\n      runs: two\n" + self.STEPS),
+            "1 and 01": self.job("    outputs:\n      1: one\n      01: two\n" + self.STEPS),
             "my-include beside include": self.job("    strategy:\n      matrix:\n        include:\n          - arch: amd64\n        my-include: [one]\n"
                                                   + self.STEPS),
         }.items():
             with self.subTest(name):
                 code, out = self.findings(workflow)
                 self.assertEqual(code, 0, out)
-                self.assertNotIn("duplicate key", out)
+                self.assertNotRegex(out, "duplicate key")
 
     def test_an_anchor_keeps_its_file_wide_refusal(self):
         code, out = self.findings("x-a: &a one\n" + self.job("    steps:\n      - run: true\n        run: true\n"))
@@ -840,14 +899,17 @@ class RepeatedKeys(unittest.TestCase):
         self.assertIn("anchor", out)
         self.assertNotIn("duplicate key", out)
 
-    def test_a_yaml_file_outside_the_workflows_directory_is_not_read_for_repeated_keys(self):
-        code, out = self.findings(self.job(self.STEPS), {".github/other.yml": "name: one\nname: two\n"})
-        self.assertEqual(code, 0, out)
-        self.assertNotIn("duplicate key", out)
+    def test_another_yaml_file_under_github_is_not_read_for_repeated_keys(self):
+        """Neither a workflow nor an action file: another .github YAML file, or an auditor fixture."""
+        for rel in (".github/other.yml", ".github/agent/fixtures/x.yml"):
+            with self.subTest(rel):
+                code, out = self.findings(self.job(self.STEPS), {rel: "name: one\nname: two\nenv:\n  A: one\n  a: two\n"})
+                self.assertEqual(code, 0, out)
+                self.assertNotRegex(out, "duplicate key")
 
     def test_this_repositorys_workflows_repeat_no_key(self):
         code, out = run([os.path.join(BIN, "..", "..", "..")])
-        self.assertNotIn("duplicate key", out)
+        self.assertNotRegex(out, "duplicate key")
 
 
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)

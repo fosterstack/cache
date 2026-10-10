@@ -1283,10 +1283,11 @@ PM_EXPECT=84
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 
-# --- REQ-REL-005-AC3 (the advisor's AC2b): a key given twice in one mapping of a workflow file is a finding that names the key
-# and the path of its mapping (`<file>.jobs.j.steps[0]: duplicate key 'run'`), whatever the second value is. Keys are compared as
-# YAML reads them, so quoting and escapes do not make two keys different. Every fixture is otherwise clean, so the repeated key
-# is the only thing that can turn a case. `rk` writes a plain job `j` with the lines given after its runs-on.
+# --- REQ-REL-005-AC3 (the advisor's AC2b): in a workflow file, or an action.yml/action.yaml under .github/, two keys of one mapping
+# that are equal once trimmed and lower-cased (the way the checker reads keys) are a finding that names every spelling and the
+# path of the mapping (`<file>.jobs.j.steps[0]: duplicate key 'run', 'Run'`), whatever the second value is. Keys are compared as
+# YAML reads them, so quoting and escapes do not make two keys different. Every fixture is otherwise clean, so the repeated key is
+# the only thing that can turn a case. `rk` writes a plain job `j` with the lines given after its runs-on.
 rk_start=$pm_run
 rk() { printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n%s' "$1"; }
 STEPS='    steps:
@@ -1377,6 +1378,90 @@ $(rk "$STEPS")" "w\\.yml: duplicate key 'on'"
 case_out rk-escaped-key      bad "$(rk '    steps:
       - run: true
         "ru\x6e": bash bin/build.sh')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run'"
+# flow style, the empty key, and keys that only look like something else are compared the same way
+case_out rk-flow-step        bad "$(rk '    steps:
+      - {run: true, run: true}')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run'"
+case_out rk-flow-env         bad "$(rk '    env: {A: one, A: two}
+'"$STEPS")" "jobs\\.j\\.env: duplicate key 'A'"
+case_out rk-empty-key        bad "$(rk '    outputs:
+      "": one
+      "": two
+'"$STEPS")" "jobs\\.j\\.outputs: duplicate key ''"
+# every scalar is read as a string: 1 and "1" are one key (01 is another, below)
+case_out rk-numeric-key      bad "$(rk '    outputs:
+      1: one
+      "1": two
+'"$STEPS")" "jobs\\.j\\.outputs: duplicate key '1'"
+# no merge is done here: << is an ordinary key, and given twice it is a repeated key like any other
+case_out rk-merge-key        bad "<<: {a: one}
+<<: {a: two}
+$(rk "$STEPS")" "w\\.yml: duplicate key '<<'"
+# a file of two YAML documents names the document in the path
+case_out rk-second-document  bad "$(rk "$STEPS")
+---
+name: one
+name: two" "w\\.yml\\[doc1\\]: duplicate key 'name'"
+# letter case and a space around a key do not make another key: the checker reads `Run` and `run ` as run, and YAML keeps the last
+# copy, so a second spelling would hide the first one's script
+case_out rk-case-hides-docker  bad "$(rk '    steps:
+      - run: docker run alpine
+        Run: true')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run', 'Run'"
+case_out rk-space-hides-docker bad "$(rk '    steps:
+      - run: docker run alpine
+        "run ": true')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run', 'run '"
+case_out rk-case-hides-curl    bad "$(rk '    steps:
+      - run: curl -fsSL https://example.org/install.sh | bash
+        Run: true')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run', 'Run'"
+case_out rk-case-job-key       bad "$(rk '    name: one
+    Name: two
+'"$STEPS")" "jobs\\.j: duplicate key 'name'"
+case_out rk-case-with        bad "$(rk "    steps:
+      - uses: actions/checkout@$SHA # v7.0.1
+        with:
+          fetch-depth: 1
+          FETCH-DEPTH: 0")" "jobs\\.j\\.steps\\[0\\]\\.with: duplicate key 'fetch-depth', 'FETCH-DEPTH'"
+case_out rk-case-workflow-env bad "env:
+  TARGET: one
+  target: two
+$(rk "$STEPS")" "w\\.yml\\.env: duplicate key 'TARGET', 'target'"
+case_out rk-case-job-env     bad "$(rk '    env:
+      TARGET: one
+      target: two
+'"$STEPS")" "jobs\\.j\\.env: duplicate key 'TARGET', 'target'"
+case_out rk-case-step-env    bad "$(rk '    steps:
+      - run: true
+        env:
+          TARGET: one
+          target: two')" "jobs\\.j\\.steps\\[0\\]\\.env: duplicate key 'TARGET', 'target'"
+case_out rk-case-call-with   bad "on: push
+jobs:
+  c:
+    uses: ./.github/workflows/w.yml
+    with:
+      mode: one
+      MODE: two" "jobs\\.c\\.with: duplicate key 'mode', 'MODE'"
+case_out rk-case-call-secrets bad "on: push
+jobs:
+  c:
+    uses: ./.github/workflows/w.yml
+    secrets:
+      token: one
+      Token: two" "jobs\\.c\\.secrets: duplicate key 'token', 'Token'"
+# three copies in two spellings are one finding that names each spelling once, in file order
+case_out rk-case-three-copies bad "$(rk '    env:
+      a: one
+      A: two
+      a: three
+'"$STEPS")" "jobs\\.j\\.env: duplicate key 'a', 'A';"
+# action files: an action.yml or action.yaml anywhere under .github/ is read too
+ACTION_RUN_TWICE='name: x\ndescription: x\nruns:\n  using: composite\n  steps:\n    - run: "true"\n      run: "true"\n      shell: bash\n'
+ACTION_RUN_CASE='name: x\ndescription: x\nruns:\n  using: composite\n  steps:\n    - run: docker run alpine\n      Run: "true"\n      shell: bash\n'
+case_out rk-action-yml       bad "$(rk "$STEPS")" "actions/x/action\\.yml\\.runs\\.steps\\[0\\]: duplicate key 'run'" '' \
+  "mkdir -p .github/actions/x && printf '$ACTION_RUN_TWICE' > .github/actions/x/action.yml"
+case_out rk-action-yaml-deep bad "$(rk "$STEPS")" "some/action\\.yaml\\.runs\\.steps\\[0\\]: duplicate key 'run'" '' \
+  "mkdir -p .github/agent/some && printf '$ACTION_RUN_TWICE' > .github/agent/some/action.yaml"
+case_out rk-action-case      bad "$(rk "$STEPS")" "actions/x/action\\.yml\\.runs\\.steps\\[0\\]: duplicate key 'run', 'Run'" '' \
+  "mkdir -p .github/actions/x && printf '$ACTION_RUN_CASE' > .github/actions/x/action.yml"
 # controls: keys that differ, or the same key in different mappings, stay accepted
 case_out rk-same-key-other-mappings ok "env:
   GREETING: hello
@@ -1389,25 +1474,32 @@ $(rk '    env:
           GREETING: hello
       - name: two
         run: true')" '0 finding' 'duplicate key'
-case_out rk-letter-case      ok  "$(rk '    steps:
-      - run: true
-        env:
-          TARGET: one
-          target: two')" '0 finding' 'duplicate key'
+# keys of genuinely different text stay two keys
+case_out rk-run-and-runs     ok  "$(rk '    outputs:
+      run: one
+      runs: two
+'"$STEPS")" '0 finding' 'duplicate key'
+case_out rk-numeric-spellings ok "$(rk '    outputs:
+      1: one
+      01: two
+'"$STEPS")" '0 finding' 'duplicate key'
 case_out rk-include-lookalike ok "$(rk '    strategy:
       matrix:
         include:
           - arch: amd64
         my-include: [one]
 '"$STEPS")" '0 finding' 'duplicate key'
-# an anchor keeps its file-wide refusal (the file is not read further); a repeated key in a YAML file outside .github/workflows/
-# is not this check's finding
+# an anchor keeps its file-wide refusal (the file is not read further); a repeated key in another YAML file under .github/ (not a
+# workflow, not an action file) is not this check's finding
 case_out rk-anchor-file-wide bad "x-a: &a one
 $(rk '    steps:
       - run: true
         run: true')" 'anchor' 'duplicate key'
-case_out rk-scope-other-file ok  "$(rk "$STEPS")" '0 finding' 'duplicate key' "printf 'name: one\\nname: two\\n' > .github/other.yml"
-RK_EXPECT=24
+case_out rk-scope-other-file ok  "$(rk "$STEPS")" '0 finding' 'duplicate key' \
+  "printf 'name: one\\nname: two\\nenv:\\n  A: one\\n  a: two\\n' > .github/other.yml"
+case_out rk-scope-agent-fixture ok "$(rk "$STEPS")" '0 finding' 'duplicate key' \
+  "mkdir -p .github/agent/fixtures && printf 'name: one\\nname: two\\n' > .github/agent/fixtures/x.yml"
+RK_EXPECT=46
 if [ $((pm_run - rk_start)) = "$RK_EXPECT" ]; then pass=$((pass+1)); echo "PASS rk-case-count → $RK_EXPECT"
 else failn=$((failn+1)); echo "FAIL rk-case-count → $((pm_run - rk_start)) cases ran, want $RK_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
