@@ -2061,6 +2061,29 @@ probe extra    "not list exactly the eleven" "a twelfth path in the legacy list"
 probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"path\"]=\"bin/chain-verify.py\";json.dump(d,open(p,\"w\"))'"
 probe missing  "legacy file missing: .github/workflows/stage-image.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-image.yml"
+# the legacy list can only SHRINK (advisor ruling, Oct 10): the suite pins each path AND its sha256, so a legacy file edited together with
+# its list hash, or a list entry given a new hash, is refused; a row is removed only together with its pinned entry here
+probe relisted "legacy hash is not the one this suite pins" "a legacy file edited TOGETHER with its sha256 in the list" \
+  "printf '# a comment\n' >> .github/workflows/stage-verify.yml; python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p))
+for r in d[\"files\"]:
+    r[\"sha256\"]=hashlib.sha256(open(r[\"path\"],\"rb\").read()).hexdigest()
+json.dump(d,open(p,\"w\"))'"
+probe rehashed "legacy hash is not the one this suite pins" "a list entry given a different 64-hex hash for an unchanged file" \
+  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"sha256\"]=\"1\"*64;json.dump(d,open(p,\"w\"))'"
+probe rowonly  "not list exactly the eleven" "one row removed from the list while the suite still pins it" \
+  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"]=[r for r in d[\"files\"] if r[\"path\"]!=\".github/workflows/stage-acceptance-egress.yml\"];json.dump(d,open(p,\"w\"))'"
+probe addci    "not list exactly the eleven" "a row for an existing non-legacy file (ci.yml) with its true hash" \
+  "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/ci.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
+probe addsign  "not list exactly the eleven" "a row for stage-sign.yml with its true hash (it would freeze Sign's own findings)" \
+  "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/stage-sign.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/stage-sign.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
+# the shrink a rewriting PR makes: the row AND its pinned entry go (simulated on a copy of this suite's judge), the file is rewritten or deleted
+d=$(tracked_copy shrink); rm "$d/.github/workflows/stage-acceptance-egress.yml"
+python3 -c 'import json,sys;p=sys.argv[1]+"/.github/policy/legacy-stage-files.json";d=json.load(open(p));d["files"]=[r for r in d["files"] if r["path"]!=".github/workflows/stage-acceptance-egress.yml"];json.dump(d,open(p,"w"))' "$d"
+grep -v '^    "\.github/workflows/stage-acceptance-egress\.yml": "' "$work/judge.py" > "$work/judge-shrink.py"
+if cmp -s "$work/judge.py" "$work/judge-shrink.py"; then failn=$((failn + 1)); echo "FAIL shrink: the suite has no pinned entry for stage-acceptance-egress.yml to remove"
+else rc=0; out=$(python3 "$work/judge-shrink.py" tree "$d") || rc=$?
+  if [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   shrink: a row removed TOGETHER with its pinned entry (the file deleted) is accepted"; else failn=$((failn + 1)); echo "FAIL shrink: row + pinned entry removed was refused: ${out:0:300}"; fi; fi
+rm -f "$work/judge-shrink.py"
 # ---- Opus #249 r-final: the signer rule is a CLOSED ALLOW-LIST, not a scan ----
 # (B1) build configuration outside bin/ and .github/ is pinned by sha256, and .goreleaser.yaml may not sign or grow hooks
 probe gorel     .goreleaser.yaml "a before.hooks entry in .goreleaser.yaml that signs provenance (stage-build.yml's build job has id-token: write)" \
@@ -2260,7 +2283,7 @@ open(sys.argv[1], "w").write(t)
 PY
 tg caught "$work/rel-noadm.yml" "R8 mutation: with admission removed from every needs list, the build-to-promotion jobs no longer reach admission and are caught"
 
-EXPECT=478
+EXPECT=484
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
