@@ -695,8 +695,8 @@ check("REQ-REL-001-AC3 the docs verify-blob names the exact identity (stage-prom
       re.search(r"cosign verify-blob --bundle release-files\.sha256\.bundle "
                 r"--certificate-identity \"https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v\$\{VER\}\" "
                 r"--certificate-oidc-issuer='https://token\.actions\.githubusercontent\.com' release-files\.sha256", dflat) is not None, dflat)
-check("REQ-REL-001-AC3 the docs check every listed file with sha256sum -c release-files.sha256",
-      re.search(r"^sha256sum -c release-files\.sha256\b", dflat, re.M) is not None, dflat)
+check("REQ-REL-001-AC3 the docs check every listed file with sha256sum -c release-files.sha256, naming shasum for macOS",
+      re.search(r"^sha256sum -c release-files\.sha256 +# or: shasum -a 256 -c release-files\.sha256\b", dflat, re.M) is not None, dflat)
 sent = re.search(r"applies from the release after v0\.2\.2.*signed manifest", doc)
 check("REQ-REL-001-AC3 the docs say, before the commands, that the list applies from the release after v0.2.2 and how earlier releases are covered",
       sent is not None and blocks and sent.start() < doc.index(dblock))

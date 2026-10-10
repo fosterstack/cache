@@ -330,7 +330,7 @@ cosign verify-blob \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
   release-files.sha256
 
-sha256sum -c release-files.sha256   # the manifest and the three VEX files
+sha256sum -c release-files.sha256    # or: shasum -a 256 -c release-files.sha256 (the manifest and the three VEX files)
 ```
 
 ## 5. Enforcing this in your own cluster (Kyverno)
