@@ -1,0 +1,80 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "992be1cce1328ea84646caa70ce43f8bebd8306580fd711a69aaa3d7a47a88f6",
+ "change": "REQ-SUP-001-AC14/AC15 pin audit: the Go major-path rule (a Go module path's /vMAJOR suffix decides which OSV entry applies; the table is corrected, the exact path decides, a mismatch fails closed), one strict positive OSV schema, an OSV event evaluator with strict SemVer ordering, `limit` refused outside GIT ranges, 120 s timeouts on every subprocess that reaches the network, and the dead/lapsed/dormant exception rulings -- PR #262. Main was merged in by plain merges after the reviews (docs and generated traceability only); the reviewed content is unchanged.",
+ "reviewed_commit": "e5201c275207ed6cfe107c796497e5d3c5fa1d92",
+ "closed_commit": "e5201c275207ed6cfe107c796497e5d3c5fa1d92",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "Codex security tier on the first candidate (blockers found, fixed tests-first)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "b5e0cca252f21aab32536659bb1826fe7b5ca9cf10994aeff65131965419ea89"
+    }
+   }
+  },
+  {
+   "round": 8,
+   "label": "Codex security tier, full pass at 9f846cd-lineage head (limit / required fields / event order / aliases / timeouts findings, fixed tests-first)",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "8ed9b4f5c0d7ab41c710ddebc3d904d043aabd102ddce238173546a3bf8db520"
+    }
+   }
+  },
+  {
+   "round": 9,
+   "label": "security-final at 15bdfdef6bdde79367070b9265a43fcc14da8b95: every round-8 finding CLOSED; ONE blocker held (the strict SemVer parser accepted numeric pre-release identifiers with leading zeros and empty identifiers). Sonnet and Opus were GREEN at this head. The owner's 9-round cap was reached; the advisor evaluated and granted one stated exception (below).",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "73fb2181221b0643d7eca81ed2eb753cf92a1db32b2e25deaabd0bda6804d80d"
+    },
+    "opus": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "d0e97254dc36127e926878e70e5336f8a3a66d42758d29e9a8e9e85b2aaf0efb"
+    }
+   }
+  },
+  {
+   "round": 10,
+   "label": "DELTA-ONLY check after the cap, advisor exception, hard stop, not counted: advisor ruling of Oct 10 2026 ('apply the two-line fix, test first (a leading-zero numeric pre-release is refused as malformed, which makes it a HIT). Then run ONE delta-only Codex check as my stated exception: hard stop, not round 10, same as #248. If that check finds a defect in the fix itself, revert the fix, record the leading-zero case as a residual, and merge. Otherwise merge.'); booked by ops-88 as 'delta-only check after the cap, advisor exception, hard stop, not counted'. The fix (a22726b tests RED, 8ef9f4f code) verified by Codex security-final at e5201c2: GREEN, no findings, 114 invalid-bound probes HIT, 22,236 grammar cases and the 17,248-case oracle green, no defect in the fix; Opus medium: GREEN (40,500-pair comparison with golang.org/x/mod/semver, 0 disagreements); Sonnet: GREEN (200,000 random valid pairs against a SemVer 2.0 reference, 0 differences).",
+   "reviewers": {
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "69db17ef23538db761780425d892f442ffd78199905646ac83f4de3df6e36816"
+    },
+    "opus": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "5e48f0dc0582c7e433a2beac3771545ffb672b23451fc6e1137058b6e587ed7f"
+    },
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "8608289a177caa44e5b37c6213b3c1586be13629f1659e1b341adf2044a179d1"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "Sonnet round 9 should-fix: a record with `fixed` and `last_affected` in different intervals of one range is refused as malformed (false HIT only, never a false clean)",
+  "Opus round 9 information: pin-inventory.py:131 runs local git with no timeout; a two-part GitHub event value such as 1.5 reads as a HIT; _osv_says matches the `versions` list with the lenient comparator (only ever produces hits); non-Go items now sort events and honour limit as ANY; the sort-key lambda at pin-audit.py:140 and the two comparators could read better",
+  "Codex delta check information: a numeric component of 4,301 digits hits Python's integer-conversion limit at both heads and reads as a HIT (pre-existing, fail closed)",
+  "Codex could not run the original suites in its read-only sandbox (mktemp denied): NOT VERIFIED there; run by Sonnet and Opus (go-major 78/78, pin-audit 134, pin-age-check 161, pin-wiring 106, supply-chain-wiring 91, pip-pin 263 mutants killed, check-action-pins 882) and by CI",
+  "pseudo-versions of the zero-time form (0.0.0-00010101000000-000000000000) are ONE alphanumeric identifier and parse as valid; numeric pre-release identifiers with a leading zero and empty identifiers are invalid SemVer and read as unparsable, i.e. affected (fail closed)"
+ ],
+ "row78": "adversarial pass in every round; no action reference is added or changed by this PR; python3 .github/agent/bin/check-action-pins.py . reports 27 files / 148 pinned actions / 0 findings (Codex, Opus and Sonnet at e5201c2)"
+}
