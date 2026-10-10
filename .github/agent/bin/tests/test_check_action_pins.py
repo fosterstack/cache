@@ -631,6 +631,16 @@ class LiteralRunnerMatrix(unittest.TestCase):
             with self.subTest(name):
                 self.refused(ro + matrix)
 
+    def test_a_matrix_of_only_include_or_exclude_is_refused(self):
+        """include and exclude are not label keys: a matrix of only one of them, read as `${{ matrix.include }}`, is refused."""
+        for key in ("include", "exclude"):
+            with self.subTest(key):
+                self.refused("    runs-on: ${{ matrix.%s }}\n    strategy:\n      matrix:\n        %s: [ubuntu-24.04]\n" % (key, key))
+
+    def test_an_explicit_str_tag_is_accepted(self):
+        """!!str resolves to the plain string tag, so it is the same scalar; any other explicit tag is refused (above)."""
+        self.accepted("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [!!str ubuntu-24.04]\n")
+
     def test_refused_strategy_shapes(self):
         for name, head in {
             "strategy as an expression": "    runs-on: ${{ matrix.runner }}\n    strategy: ${{ fromJSON(needs.x.outputs.s) }}\n",
