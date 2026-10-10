@@ -1200,6 +1200,12 @@ requirements:
       - a label not on the two-label list (another case or version, ubuntu-latest, a larger runner, self-hosted, macOS or Windows, a space around a label, a trailing newline, a look-alike character, an explicit YAML tag other than str; !!str resolves to the plain string tag and is accepted), a nested list, a non-string label, an empty list, a scalar instead of a list, a duplicate key;
       - a matrix key that does not exist or is defined on another job or at the workflow level;
       - and a matrix reached through a YAML anchor (the check refuses a file that holds any anchor or alias, whatever it anchors).
+      REQ-REL-005-AC3 is the advisor's AC2b (advisor-ratified Oct 9; the schema numbers ACs, so it is filed as AC3):
+      - keys are compared as YAML reads them (the parsed value, never the spelling): plain, single-quoted, double-quoted and escaped forms of one key are the same key (jobs and "jobs", run and "ru\x6e"); every scalar is read as a string, so a plain on and a quoted "on" are both the key on;
+      - keys whose parsed values differ stay accepted, letter case included (TARGET and target are two keys), as does the same key in different mappings;
+      - the finding names the file, the path of the mapping in dots with list positions in brackets from 0, and the key, the form AC2's findings use: <file>.jobs.build.steps[2]: duplicate key 'run'; a key repeated three times is one finding;
+      - a job, its strategy and its matrix keep AC2's own finding (it folds letter case), reported once;
+      - read in files under .github/workflows/ only; a file with any YAML anchor or alias keeps its file-wide refusal and is not read further.
     acceptance_criteria:
       - id: REQ-REL-005-AC1
         given: any pull request into main, and any push to main
@@ -1211,6 +1217,12 @@ requirements:
         given: "a workflow job whose runs-on is the single expression ${{ matrix.<key> }}, with a strategy that holds a matrix of exactly that one key as a literal list of runner labels (and, beside it, only fail-fast with the literal value true or false)"
         when: "the action-pin check reads the workflow"
         then: "when every label is ubuntu-24.04 or ubuntu-24.04-arm the check reports no finding for the runner and judges the job's steps under bash, the default shell of those runners, each step by its own rules (an unpinned action, container, service or image, a pwsh shell and a piped download each keep their own finding, and none of them is a runner finding); for every other form it reports one finding that names the runner and never picks a shell silently; the refused forms are listed in the notes of this requirement"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-005-AC3
+        given: "a workflow file under .github/workflows/ in which one mapping gives a key twice"
+        when: "the action-pin check reads the workflow"
+        then: "it reports a finding that names the key and its path, whatever the second value is; two keys are the same key when YAML reads them as the same value, whatever their quoting or escapes; the notes of this requirement give the path form and the accepted controls"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

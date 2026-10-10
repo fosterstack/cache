@@ -264,6 +264,11 @@ mappings:
       - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the pm-* cases for the literal-label runner matrix" }
       - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class LiteralRunnerMatrix) and the fixture cases, and requires every line of the checker covered" }
+  - ac: REQ-REL-005-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the rk-* cases for a key given twice in one mapping" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class RepeatedKeys) and the fixture cases, and requires every line of the checker covered" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
