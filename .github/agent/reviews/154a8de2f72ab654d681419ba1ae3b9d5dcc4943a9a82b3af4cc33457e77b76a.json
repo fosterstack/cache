@@ -1,7 +1,7 @@
 {
  "schema": "auditor-review-record/v1",
- "tree": "05fe0333fc8ed1ce5f1135adb5d6e126074cdd26a4acb0361bfd17bb8e602a07",
- "change": "REQ-SCAN-015 the scanner cloud identities cannot be reached through a caller: neither scan.yml nor main-candidate-rescan.yml is callable as a reusable workflow; the required allowlist job carries exactly the guard step (trusted pin-wiring judge); the trusted review gate runs the default branch's guard over the PR head as git objects; the guard script is GUARDED and ENFORCEMENT -- PR #251",
+ "tree": "154a8de2f72ab654d681419ba1ae3b9d5dcc4943a9a82b3af4cc33457e77b76a",
+ "change": "REQ-SCAN-015 the scanner cloud identities cannot be reached through a caller: neither scan.yml nor main-candidate-rescan.yml is callable as a reusable workflow; the required allowlist job carries exactly the guard step (trusted pin-wiring judge); the trusted review gate runs the default branch's guard over the PR head as git objects; the guard script is GUARDED and ENFORCEMENT -- PR #251 -- bound to the tree computed by the DEFAULT BRANCH's gate script (the trusted gate runs main's copy, whose GUARDED set does not yet list the new guard script); the PR's own copy of the gate computes 05fe0333fc8ed1ce5f1135adb5d6e126074cdd26a4acb0361bfd17bb8e602a07 for the same content",
  "reviewed_commit": "90a07a8bd21483559b04a30e35b1ff1d95131744",
  "closed_commit": "90a07a8bd21483559b04a30e35b1ff1d95131744",
  "rounds": [
