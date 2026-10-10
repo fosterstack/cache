@@ -564,18 +564,19 @@ jobs:
                 echo "::error::the current release ${current} has no release-manifest.json asset and is not in the legacy inventory - refusing to rescan nothing" >&2
                 exit 1
               fi
-              if ! gh release download "$current" -p release-manifest.json -O "$w/m-${current}.json"; then
+              tag="$current"
+              if ! gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json"; then
                 echo "::error::release-manifest.json is present on ${current} but could not be downloaded - refusing to drop it from the rescan" >&2
                 exit 1
               fi
-              jq empty "$w/m-${current}.json" 2>/dev/null \
+              jq empty "/tmp/m-${tag}.json" 2>/dev/null \
                 || { echo "::error::release-manifest.json on ${current} is not valid JSON" >&2; exit 1; }
-              imgcount=$(jq '.images | length' "$w/m-${current}.json")
+              imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
               [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${current} lists no images" >&2; exit 1; }
               jq -c --arg tag "$current" --argjson scanners "$scanners" \
                 '.images[] as $img | $scanners[] as $s |
                  {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: "release-manifest"}' \
-                "$w/m-${current}.json" >> "$w/targets.jsonl"
+                "/tmp/m-${tag}.json" >> "$w/targets.jsonl"
             fi
           fi
 
