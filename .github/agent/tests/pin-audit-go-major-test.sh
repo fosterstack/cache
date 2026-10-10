@@ -203,8 +203,8 @@ for v in ("3.1.3-rc.1", "3", "v3.1", "latest", "3.1.3.4", "03.1.3", "3.1.x"):
     assert bool(finds) == base(v) and ignored(net) == [], (v, finds, ignored(net))
 PY
 py "version parse holes keep the old verdict and ignore nothing, with the right /v3 table: build metadata, +incompatible (a Go major-3" \
-   " +incompatible version belongs
-   " to the BARE path), newline, space, V, vv, Arabic-Indic, fullwidth" <<'PY'
+   " +incompatible version belongs to the BARE path), newline, space, V, vv," \
+   " Arabic-Indic, fullwidth" <<'PY'
 for v in ("3.1.3+build.1", "3.1.3+incompatible", "3.1.3\n", " 3.1.3", "V3.1.3", "vv3.1.3", "\u0663.\u0661.\u0663", "\uff13.1.3"):
     net = mknet([G4309], GG, True)
     try: finds, _ = run(cosign(v, BARE + "/v3"), net)
