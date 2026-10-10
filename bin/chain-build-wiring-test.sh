@@ -1190,10 +1190,12 @@ beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   fi
   mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" FAKE_TAGS_AT_HEAD=v0.3.0); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" != 0 ] && ! grep -q '^apk ' <<< "$calls" && ! grep -q 'git tag --force' <<< "$calls" && [ ! -e "$d/out/items-apk.json" ]; then
-    ok "AC12 $t snapshot-apk: a checkout whose HEAD already carries another tag (v0.3.0) is refused before any tag is made or cache script runs"
+  if [ "$rc" = 0 ] && [ "$(n_calls 'git tag --force v0.0.0-rc.1 HEAD' "$d")" = 1 ] && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ] \
+     && ! grep -q 'version 0.3.0\|--version 0.3.0' <<< "$calls" && ! grep -q 'git push' <<< "$calls" \
+     && [ "$(json_of "$d/out/items-apk.json")" = "$(oracle fragment "$(uname -m)" "$SNAP_TAG")" ]; then
+    ok "AC12 $t snapshot-apk: a v* tag that HEAD already carries (v0.3.0) is accepted and ignored: version stays 0.0.0-rc.1, the local tag is still made"
   else
-    bad "AC12 $t snapshot-apk: higher tag at HEAD -> rc=$rc calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
+    bad "AC12 $t snapshot-apk: v0.3.0 at HEAD -> rc=$rc calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
   mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" APK_RELEASE_SIGNING_KEY=SENTINEL-RELEASE-KEY)
@@ -1301,10 +1303,10 @@ beh_snapshot_rebuild_apk() { # beh_snapshot_rebuild_apk TAGNAME SCRIPT MODE
   if [ ! -s "$d/gh.log" ]; then ok "005-AC7 $t snapshot-rebuild-apk: ZERO gh calls"; else bad "005-AC7 $t snapshot-rebuild-apk: gh was called"; fi
   mk "$d" snapshot-rebuild-apk "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-rebuild-apk "$mode" "$SNAP_TAG" FAKE_TAGS_AT_HEAD=v0.3.0); calls=$(cat "$d/calls.log" 2> /dev/null || true)
-  if [ "$rc" != 0 ] && ! grep -q '^apk ' <<< "$calls" && ! grep -q 'git tag --force' <<< "$calls"; then
-    ok "005-AC7 $t snapshot-rebuild-apk: HEAD carrying another tag is refused before any tag is made or cache script runs"
+  if [ "$rc" = 0 ] && [ "$(n_calls 'git tag --force v0.0.0-rc.1 HEAD' "$d")" = 1 ] && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
+    ok "005-AC7 $t snapshot-rebuild-apk: a v* tag at HEAD (v0.3.0) is accepted and ignored: version stays 0.0.0-rc.1, the local tag is still made"
   else
-    bad "005-AC7 $t snapshot-rebuild-apk: higher tag at HEAD -> rc=$rc"
+    bad "005-AC7 $t snapshot-rebuild-apk: v0.3.0 at HEAD -> rc=$rc"
   fi
   REF_NAME=
 }

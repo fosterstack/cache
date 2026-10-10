@@ -170,6 +170,21 @@ for what, statement in ODD[:4]:
     first = err.split("\n", 1)[0]
     check("record-env: %s ends cleanly (accepted or refused), never as a snapshot record" % what,
           rc in (0, 1, 2) and "snapshot" not in err and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+# ---- ruling (1): a snapshot built in a checkout whose HEAD carries v0.3.0 is still a snapshot, and release verification refuses what it left ----------------
+# The snapshot scripts ignore the v* tag at HEAD and build 0.0.0-rc.1, so the record they leave names a snapshot step and 0.0.0 files, while the policy is the
+# one for v0.3.0 (the tag that HEAD carried). Both ways of passing it off are refused: under its own name, and renamed to build.
+rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0", "--out", "policy.json"])
+for what, name in (("under its own name (snapshot-build)", "snapshot-build"), ("renamed to build", "build")):
+    record("rec.json", name, ["out/x86_64/fscache-0.0.0_rc1-r0.apk"])
+    want = "refused at build: snapshot record" if name.startswith("snapshot-") else "refused at build: snapshot version"
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("a v0.3.0 policy and a snapshot record %s (HEAD carried v0.3.0) is refused by verify: %s" % (what, want.split(": ", 1)[1]),
+          rc == 1 and first == want, "exit %s, first line %r" % (rc, first[:140]))
+    rc, out, err = run(["stage-start", "--stage", "release", "--previous", "build", "--record", "rec.json", "--digests", "digests.json", "--policy", "policy.json"])
+    first = err.split("\n", 1)[0]
+    check("the same record %s is refused at the Release side (stage-start release from build): %s" % (what, want.split(": ", 1)[1]),
+          rc == 1 and first == want, "exit %s, first line %r" % (rc, first[:140]))
 # ---- REQ-CHAIN-004-AC15: the snapshot version -------------------------------------------------------------------------------------------------------------
 SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
 for label, args, stage, env in SUBCOMMANDS:
@@ -202,7 +217,7 @@ check("policy make --tag v0.3.1 is still made (the control of the two refusals a
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--ref", "refs/tags/v0.0.0", "--out", "p2.json"])
 check("policy make --ref refs/tags/v0.0.0 is refused as a snapshot version too (the form sign --check uses)",
       rc == 1 and err.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p2.json"), "exit %s, %r" % (rc, err[:120]))
-EXPECT = 83
+EXPECT = 87
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:
