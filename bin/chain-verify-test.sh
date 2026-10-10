@@ -604,7 +604,7 @@ mutate_field("sign_prov", "sign_prov_junkcert", lambda r: r["signatures"][0].__s
 mutate_field("sign_prov", "sign_prov_junkinter", lambda r: r["signatures"][0]["intermediates"].__setitem__(0, ins(r["signatures"][0]["intermediates"][0], "*", 10)))
 mutate_field("sign_prov", "sign_prov_junkstamp", lambda r: r["signatures"][0]["timestamps"][0].__setitem__("data", ins(r["signatures"][0]["timestamps"][0]["data"], "*", 10)))
 def urlsafe(s): return s.replace("+", "-").replace("/", "_")
-for src in ("sign_prov", "sign_prov_frac", "sign_stampafter", "sign_stampbefore", "sign_othertsa", "sign_tamper_payload"):   # all at the tag identity: a branch-identity source (sign_br) was refused for its identity first (a 1-in-~40 stress flake)
+for src in ("sign_prov", "sign_prov_frac", "sign_stampafter", "sign_stampbefore", "sign_othertsa"):   # all at the tag identity: a branch-identity source (sign_br) was refused for its identity first (a 1-in-~40 stress flake)
     r = json.load(open(p(src + ".json")))
     if ("+" in r["signatures"][0]["sig"] or "/" in r["signatures"][0]["sig"]) and ("+" in r["signatures"][0]["timestamps"][0]["data"] or "/" in r["signatures"][0]["timestamps"][0]["data"]):
         URLSRC = src; break
