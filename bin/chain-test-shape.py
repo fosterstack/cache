@@ -216,6 +216,8 @@ MAT = "${{ matrix.runner }}"
 # Build hands Sign the digests.json text: the stage output reads the assemble job's output, which one pinned step fills from digests.json
 STAGE_OUTPUT = "${{ jobs.assemble.outputs.digests }}"
 JOB_OUTPUT = "${{ steps.digests.outputs.digests }}"
+ALWAYS = "always()"
+VERDICT_ARTIFACT = "witness-rebuild"
 MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
@@ -365,10 +367,12 @@ def job(j, family, name, allowed):
             bad.append("step %d must be a pinned actions/upload-artifact of %s under if: %s" % (i, HOSTILE_UP, HOSTILE_IF))
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
+        want_if = ALWAYS if nm == VERDICT_ARTIFACT else None      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
+        if (set(s) - {"uses", "with", "name", "if"} or s.get("if") != want_if or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
                 or (s.get("with") or {}) != {"name": nm, "path": path_}):
-            bad.append("step %d must be a pinned actions/upload-artifact with exactly name %s and the ONE path %s "
-                       "(the artifact is rooted at its common ancestor, so a second path changes every file name in it)" % (i, nm, path_))
+            bad.append("step %d must be a pinned actions/upload-artifact with exactly name %s and the ONE path %s%s "
+                       "(the artifact is rooted at its common ancestor, so a second path changes every file name in it)"
+                       % (i, nm, path_, " under if: always()" if want_if else " and no if"))
     if i != len(steps):
         bad.append("%d steps, the grammar has %d (no extra step)" % (len(steps), i))
     return bad

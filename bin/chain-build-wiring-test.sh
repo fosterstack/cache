@@ -146,7 +146,9 @@ def stage_text(family):
             out += "      - name: upload the hostile attempts (dry run only)\n        if: %s\n" % S.HOSTILE_IF
             out += "        uses: %s # v7.0.1\n        with:\n" % UPLOAD
             out += "          name: hostile-attempts\n          path: attempts\n          if-no-files-found: error\n"
-        for name, path in sp["up"]: out += "      - uses: %s # v7.0.1\n        with:\n          name: %s\n          path: %s\n" % (UPLOAD, name, path)
+        for name, path in sp["up"]:
+            guard = "        if: always()\n" if name == S.VERDICT_ARTIFACT else ""
+            out += "      - uses: %s # v7.0.1\n%s        with:\n          name: %s\n          path: %s\n" % (UPLOAD, guard, name, path)
     return out
 
 
@@ -419,6 +421,14 @@ rb r_snap_name "005-AC7 the snapshot-rebuild step uses a name outside the closed
        'witnessed.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh' 'witnessed.sh snapshot-evil bin/build-stage-snapshot-rebuild-assemble.sh'
 rb r_snap_asmname "005-AC7 the snapshot-rapk step runs under the release step name" "Witness step" \
        'witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh' 'witnessed.sh rapk bin/build-stage-snapshot-rebuild-apk.sh'
+# I5 (step-8, Opus): the Rebuild verdict artifact is uploaded under if: always(), so snapshot-verdict.json is readable even when rebuild-compare failed; no other upload is
+VUP="        if: always()\n        with:\n          name: witness-rebuild"
+rb r_verdict_noif "005-AC7 the verdict upload has no if (a failed comparison would leave no artifact for the differences)" "if: always()" "$VUP" \
+       "        with:\n          name: witness-rebuild"
+rb r_verdict_success "005-AC7 the verdict upload runs only on success" "if: always()" "        if: always()\n        with:\n          name: witness-rebuild" \
+       "        if: success()\n        with:\n          name: witness-rebuild"
+rb r_other_always "005-AC7 another Rebuild upload under always()" "no if" "        with:\n          name: witness-rapk-\${{ matrix.runner }}" \
+       "        if: always()\n        with:\n          name: witness-rapk-\${{ matrix.runner }}"
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions 'id-token: write' 'id-token: write\n      checks: read'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
@@ -1636,7 +1646,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=554
+EXPECT=557
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
