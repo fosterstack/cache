@@ -1317,15 +1317,22 @@ check ibt_refused repovar 'unmeasured: a download'
 CASE="REQ-SUP-001-AC18: a URL version that differs from the pinned set is measured as a version outside it"
 check ibt_refused mismatch 'wanted'
 # the harness itself: a failure to RUN the inventory (exit 126 not executable, 127 not found) is not a refusal, even when the output names the diagnostic
-ibt_stub_rc=1
-ibt_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; echo "install-build-tools: unmeasured: a download" >"$work/ibt.out"; return "$ibt_stub_rc"; }
-stub_refused() { ibt_stub_rc=$1; ibt_refused repovar 'unmeasured: a download' ibt_stub; }
+ibt_stub_rc=1 ibt_stub_msg=""
+ibt_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; printf '%s' "$ibt_stub_msg" >"$work/ibt.out"; return "$ibt_stub_rc"; }
+# stub_refused RC [OUTPUT]: the stub exits RC after printing OUTPUT (default: the expected diagnostic)
+stub_refused() { ibt_stub_rc=$1; ibt_stub_msg=${2-install-build-tools: unmeasured: a download}; ibt_refused repovar 'unmeasured: a download' ibt_stub; }
 CASE="REQ-SUP-001-AC18 harness: an inventory that exits 1 with the diagnostic counts as a refusal (the stub stands in correctly)"
 check stub_refused 1
 CASE="REQ-SUP-001-AC18 harness: an inventory that could not be found (exit 127) is not a refusal, even with the diagnostic"
 check eval '! stub_refused 127'
 CASE="REQ-SUP-001-AC18 harness: an inventory that could not be executed (exit 126) is not a refusal, even with the diagnostic"
 check eval '! stub_refused 126'
+CASE="REQ-SUP-001-AC18 harness: an inventory that exits 1 with a WRONG diagnostic is not a refusal (the diagnostic is pinned)"
+check eval '! stub_refused 1 "install-build-tools: measured something else"'
+CASE="REQ-SUP-001-AC18 harness: an inventory that exits 1 with EMPTY output is not a refusal (the diagnostic is pinned)"
+check eval '! stub_refused 1 ""'
+CASE="REQ-SUP-001-AC18 harness: an inventory that exits 0 WITH the diagnostic is not a refusal (the nonzero status is pinned)"
+check eval '! stub_refused 0'
 # the inventory command is never read from the environment: with IBT_RUN exported as a stub that always prints a diagnostic and exits 1,
 # the real cases still run the real inventory (the stub's diagnostic never satisfies them, the real one does)
 ibt_env_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; echo "install-build-tools: unmeasured: a download" >"$work/ibt.out"; return 1; }
