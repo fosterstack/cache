@@ -1,0 +1,180 @@
+{
+ "_note": "The CLOSED list of the jobs that may hold id-token: write (their own permissions, or the workflow's when they set none). Keyless signing needs the job's OIDC token, so bin/chain-sign-wiring-test.sh fails for any job holding it that is not listed, and for a listed job that no longer holds it (REQ-CHAIN-001-AC1). The list is data: review of a change to it is the control.",
+ "jobs": [
+  {
+   "workflow": "auditor.yml",
+   "job": "audit",
+   "reason": "mints a federated OIDC identity token for the auditor's model vendor (github-script getIDToken); signs nothing"
+  },
+  {
+   "workflow": "auditor.yml",
+   "job": "panel-probe",
+   "reason": "the scanner panel's probe: keyless federation to the panel's vendors, publishes nothing"
+  },
+  {
+   "workflow": "dependabot-reviewer.yml",
+   "job": "review",
+   "reason": "the Dependabot reviewer's OIDC federation to its model vendor; signs nothing"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "build",
+   "reason": "calls stage-build.yml (legacy, frozen), which holds the token for its own steps"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "assemble",
+   "reason": "calls stage-image.yml (legacy, frozen), which holds the token for its own steps"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-inspector",
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-google",
+   "reason": "google-github-actions/auth: OIDC federation to Google for the scanner panel"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "decide",
+   "reason": "the CI patch tag: runs gitsign inline (keyless tag signature, listed in chain-signers.json); calls no stage file"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "admission",
+   "reason": "calls stage-admission.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "build",
+   "reason": "calls stage-build.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign",
+   "reason": "calls stage-sign.yml: Sign, the one provenance signer (REQ-CHAIN-001)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "image",
+   "reason": "calls stage-image.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "reproducibility",
+   "reason": "calls stage-reproducibility.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "scans",
+   "reason": "calls stage-verify.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-artifacts",
+   "reason": "calls stage-acceptance-artifacts.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance",
+   "reason": "calls acceptance.yml, which needs the inherited token for the stage files it calls"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-egress",
+   "reason": "calls stage-acceptance-egress.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-k8s",
+   "reason": "calls stage-acceptance-k8s.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-predicate",
+   "reason": "calls stage-acceptance-predicate.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "authorization",
+   "reason": "calls stage-authorize.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "promotion",
+   "reason": "calls stage-promote.yml (legacy, frozen)"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "build",
+   "reason": "calls stage-build.yml (legacy, frozen) for the PR scan"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "assemble",
+   "reason": "calls stage-image.yml (legacy, frozen) for the PR scan"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "assemble-b",
+   "reason": "calls stage-image.yml (legacy, frozen) for the second image of the PR scan"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "scanner",
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
+  },
+  {
+   "workflow": "scorecard.yml",
+   "job": "analysis",
+   "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
+  },
+  {
+   "workflow": "stage-acceptance-predicate.yml",
+   "job": "predicate",
+   "reason": "legacy stage (frozen): actions/attest of the acceptance predicate; rewritten in PRs 2-4"
+  },
+  {
+   "workflow": "stage-admission.yml",
+   "job": "admit",
+   "reason": "legacy stage (frozen): actions/attest of source admission and the gitsign tag check; rewritten in PRs 2-4"
+  },
+  {
+   "workflow": "stage-authorize.yml",
+   "job": "authorize",
+   "reason": "legacy stage (frozen): actions/attest of the release authorization; rewritten in PRs 2-4"
+  },
+  {
+   "workflow": "stage-build.yml",
+   "job": "build",
+   "reason": "legacy stage (frozen): goreleaser, actions/attest and attest-build-provenance; rewritten in PR 2"
+  },
+  {
+   "workflow": "stage-image.yml",
+   "job": "assemble",
+   "reason": "legacy stage (frozen): image build, actions/attest and attest-build-provenance; rewritten in PRs 2-4"
+  },
+  {
+   "workflow": "stage-promote.yml",
+   "job": "promote",
+   "reason": "legacy stage (frozen): cosign sign/attest of the published images and actions/attest; rewritten in PR 4"
+  },
+  {
+   "workflow": "stage-reproducibility.yml",
+   "job": "reproduce",
+   "reason": "legacy stage (frozen): actions/attest of the rebuild; rewritten in PRs 2-4"
+  },
+  {
+   "workflow": "stage-sign.yml",
+   "job": "sign",
+   "reason": "Sign: the one provenance signer (REQ-CHAIN-001)"
+  },
+  {
+   "workflow": "stage-verify.yml",
+   "job": "scan",
+   "reason": "legacy stage (frozen): actions/attest of the scan results; rewritten in PR 3"
+  }
+ ]
+}

@@ -1,0 +1,67 @@
+{
+  "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
+  "env_names": [
+    "DIGESTS"
+  ],
+  "scripts": [
+    {
+      "path": "bin/chain-verify.py",
+      "sha256": "7eea19f1a36948e6ba323a9042773ebf448ae90548d1ae48e35a48aa676ee11a",
+      "tools": [
+        "make",
+        "at",
+        "exec"
+      ],
+      "runs": [],
+      "signs": "provenance",
+      "sign_subcommand": "sign",
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec"
+    },
+    {
+      "path": "bin/install-scanner.sh",
+      "sha256": "ca7b02f3df53614a081edae2915c620ea6995bac1a6c0e52d64f5390ff325487",
+      "tools": [
+        "curl",
+        "trap",
+        "source",
+        "git",
+        "at"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "installs one pinned tool by checksum (curl downloads it, trap cleans the temp dir); it names gitsign as a tool it can install and signs nothing; the other listed words appear in its comments"
+    },
+    {
+      "path": "bin/chain-hostile-step.sh",
+      "sha256": "284b3cc53f253fcef6c210ba929490243c4c25f7e7d925c51690d15934fc0c69",
+      "tools": [
+        "curl",
+        "bash",
+        "at"
+      ],
+      "runs": [
+        "bin/install-scanner.sh"
+      ],
+      "signs": "other",
+      "reason": "the dry run's hostile Build step: signs forged material with this job's OWN Build identity (cosign sign-blob) only to prove Release refuses it; runs only when the dry run asks (if: inputs.hostile)"
+    },
+    {
+      "path": "bin/chain_common.py",
+      "sha256": "c6ae3f738900c141c24118b6acd8b8ee01bf51685ca62bc0ccf9019be7737e27",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "imported by chain-verify.py and chain_hostile.py: the refusal, base64, the openssl call, strict JSON and the clock"
+    },
+    {
+      "path": "bin/chain_hostile.py",
+      "sha256": "62294dc8e4aa0084dd6d836971db3f07d09b70d459641f5ab6afbe73377b3492",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+    }
+  ]
+}
