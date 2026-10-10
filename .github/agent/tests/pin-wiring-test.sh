@@ -163,6 +163,16 @@ if idx["fetch"] != [1] or idx["check"] != [2]:
     bad.append("the allowlist job's first three steps are not exactly: checkout, base-ref fetch, check (nothing before or between)")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
+# REQ-SCAN-015-AC1: exactly one step runs the scanner guard, and it is exactly this name and run and nothing else
+# (no if, continue-on-error, env, shell, working-directory, timeout); its place after the PyYAML install is not
+# judged, since the guard run without PyYAML fails, which is red, not a bypass
+SCAN_STEP = {"name": "scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)",
+             "run": "bash bin/scan-no-workflow-call-test.sh"}
+sg = [st for st in steps_ if "scan-no-workflow-call-test.sh" in json.dumps(st)]
+if len(sg) != 1:
+    bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC1)")
+elif sg[0] != SCAN_STEP:
+    bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC1)")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
