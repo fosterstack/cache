@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 74 |
-| Acceptance criteria | 198 |
+| Acceptance criteria | 199 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 182 |
+| ACs with mapped evidence | 183 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
