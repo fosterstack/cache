@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -159,6 +160,7 @@ var (
 	cacheClose     = (*cache.Cache).Close
 	cacheReconcile = (*cache.Cache).Reconcile
 	httpShutdown   = (*http.Server).Shutdown
+	httpServe      = (*http.Server).Serve
 	clearMarkerFn  = clearMarker
 )
 
@@ -192,6 +194,22 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	if err != nil {
 		return err
 	}
+
+	// Bind the listen address before anything under the data directory is
+	// created, opened or written (REQ-CFG-004): a bad or taken FSCACHE_ADDR
+	// is refused with the data directory exactly as found. The socket is
+	// served only after the stores are ready, so connections arriving
+	// during a long reconcile wait in the kernel's listen backlog.
+	ln, err := net.Listen("tcp", cfg.addr)
+	if err != nil {
+		return fmt.Errorf("FSCACHE_ADDR=%q cannot be listened on: %w", cfg.addr, err)
+	}
+	served := false
+	defer func() {
+		if !served {
+			_ = ln.Close()
+		}
+	}()
 
 	// Unclean-shutdown marker (REQ-STORE-005): present at startup means
 	// the last process did not exit cleanly, so the stores may disagree
@@ -290,8 +308,9 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	)
 
 	errCh := make(chan error, 1)
+	served = true // Serve owns and closes the listener from here on
 	go func() {
-		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := httpServe(httpServer, ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
