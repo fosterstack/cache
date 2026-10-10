@@ -245,6 +245,34 @@ The probe writes only inside the data volume, so `readOnlyRootFilesystem: true`
 does not matter. Not delivered, by decision: taking a pod with a bad disk out of
 the Service. That needs a readiness path, which is a protocol change.
 
+### Startup and reconcile
+
+After an unclean shutdown (and after a deleted or emptied `meta.db`) the
+server reconciles its stores before it serves. The listen socket is already
+open, so TCP connects succeed during that time, but `/healthz` does not answer
+until the reconcile finishes. On a large store that can outlast the liveness
+probe in the manifest above: with its defaults (`initialDelaySeconds: 3`,
+`periodSeconds: 10`, `timeoutSeconds: 1`, `failureThreshold: 3`) the kubelet
+kills the pod after about 33 seconds, the unclean marker is still there, and
+the next start reconciles again from the beginning: `CrashLoopBackOff`.
+
+Add a startup probe, which holds the liveness and readiness probes off until it
+first succeeds:
+
+    startupProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+      failureThreshold: 60
+
+That allows up to ten minutes; size `failureThreshold` for your store. Do not
+use a `tcpSocket` probe or an L4 load-balancer health check for this: both
+report healthy during the reconcile because the socket accepts connections.
+Gradle and Maven clients that connect meanwhile wait up to their read timeout
+instead of getting connection-refused, and then treat the request as a cache
+miss.
+
 ## The data directory
 
 `FSCACHE_DATA_DIR` is **required** in this manifest. The image sets no
