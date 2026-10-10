@@ -9,7 +9,7 @@
 #                 3. run: bash bin/install-scanner.sh cosign     (the signing tool, pinned by checksum like gitsign; the PR adds
 #                                                                 cosign to bin/install-scanner.sh)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
-#                 5. run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json
+#                 5. run: python3 -I bin/chain-verify.py sign --check --signer cosign --digests digests.json
 #                         --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 #                         (the filenames are PINNED: `--template` names the committed template, from which `sign --check` makes the
 #                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
@@ -423,7 +423,7 @@ jobs:
           DIGESTS: \${{ inputs.digests }}
         run: printf '%s' "\$DIGESTS" > digests.json
       - name: check Build's record, compare the digests, then sign the provenance
-        run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: python3 -I bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: provenance
@@ -442,7 +442,7 @@ PY
 caught() { # LABEL regex replacement
   if mutate "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
 }
-SIGNLINE='run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
+SIGNLINE='run: python3 -I bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
@@ -468,6 +468,9 @@ caught "AC2 the Sign step uses another signer" '--signer cosign' '--signer witne
 caught "AC2 the signing tool is not installed from the pinned installer" 'run: bash bin/install-scanner.sh cosign' 'run: curl -sL https://example.com/cosign -o cosign'
 caught "AC2 the signing step runs before the tool is installed" '      - name: install the signing tool \(pinned by checksum\)\n        run: bash bin/install-scanner.sh cosign\n' ''
 caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
+# Opus r4 B1: Python puts the script's directory first on sys.path, so an unlisted bin/<stdlib name>.py would replace that module inside
+# the Sign job (which holds id-token: write); -I (isolated) removes it. The Sign step must run the verifier isolated.
+caught "AC2 the Sign step runs the verifier without -I (a bin/<stdlib name>.py would shadow the standard library)" 'python3 -I bin/chain-verify.py' 'python3 bin/chain-verify.py'
 caught "AC2 a permissive policy file instead of the template" 'release-policy.template.json' 'permissive.json'
 caught "AC2 a different Build record file name" 'witness-build/build-collection.json' 'witness-build/other.json'
 caught "AC2 the policy argument points outside .github/policy" '--template .github/policy/release-policy.template.json' '--template /tmp/p.json'
@@ -1174,6 +1177,15 @@ probe comment  "legacy file changed" "a harmless comment added to a legacy file 
 # scripts that frozen files run (only listed scripts were scanned before)
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
+# Opus r4 B1 (second belt): a file in bin/ named after a standard-library module would shadow it for any script run from bin/ without -I
+probe stdjson   "bin/json.py" "a new bin/json.py that signs on import" "printf 'import os\nos.system(\"cosign attest-blob --yes --type slsaprovenance --predicate p.json x\")\n' > bin/json.py"
+probe stdfrac   "bin/fractions.py" "a new bin/fractions.py that signs on import" "printf 'import os\nos.system(\"cosign attest-blob --yes --type slsaprovenance x\")\n' > bin/fractions.py"
+probe stdpyc    "bin/hashlib.pyc" "a sourceless bin/hashlib.pyc" "printf '\\0\\0\\0\\0' > bin/hashlib.pyc"
+probe stdpkg    "bin/base64" "a package directory bin/base64/" "mkdir -p bin/base64; printf 'import os\n' > bin/base64/__init__.py"
+probe stdcache  "bin/__pycache__/argparse" "a cached bin/__pycache__/argparse.cpython-312.pyc" "mkdir -p bin/__pycache__; printf '\\0' > bin/__pycache__/argparse.cpython-312.pyc"
+# Opus r4 B1: any python3 run in a job that holds id-token: write runs isolated (-I)
+probe noisolate "without -I" "a python3 step without -I added to scorecard.yml's listed analysis job" \
+  "python3 -c 'p=\".github/workflows/scorecard.yml\";t=open(p).read();i=t.index(\"    steps:\n\")+len(\"    steps:\n\");t=t[:i]+\"      - run: python3 bin/check-workflow-permissions.py\n\"+t[i:];open(p,\"w\").write(t)'"
 probe extra    "not list exactly the eleven" "a twelfth path in the legacy list" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
 probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
@@ -1228,11 +1240,23 @@ probe mergewf   "merge key" "workflow-level permissions with a << merge key carr
 # Sonnet r3: build flags/env that run a tool, and the dockers / nfpms / includes sections, are outside the closed key set (hash re-edited)
 probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
+probe gorelenv0  "env" "a build with env: [] in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    env:\n      - CGO_ENABLED=0\n    goos\",\"    env: []\n    goos\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
+probe gorelld   "ldflags" "ldflags -s -w -linkmode=external -extld=./bin/x.sh in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"- -s -w\",\"- -s -w -linkmode=external -extld=./bin/x.sh\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe goreldock "dockers" "a dockers section in .goreleaser.yaml (hash re-edited)" "printf 'dockers:\n  - image_templates: [x]\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 probe gorelinc  "includes" "an includes section in .goreleaser.yaml (hash re-edited)" "printf 'includes:\n  - from_file:\n      path: evil.yaml\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
 probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
+# the isolation really works: with a bin/fractions.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
+# real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
+iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$iso/bin/"
+printf 'print("SHADOW-MARKER-%s")\nfrom fractions import *\n' "$$" > "$iso/bin/fractions.py"
+rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
+case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/fractions.py (not isolated)";;
+  *usage:*) [ "$rc" = 0 ] && { pass=$((pass + 1)); echo "ok   python3 -I bin/chain-verify.py ignores a bin/fractions.py and runs (usage printed)"; } || { failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help exit $rc"; };;
+  *) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help did not run: ${out:0:200}";; esac
+rc=0; out=$(cd "$iso" && python3 bin/chain-verify.py --help 2>&1) || rc=$?
+case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/fractions.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
 # no `X | grep -q` pipeline in a chain suite: under pipefail grep's early exit can SIGPIPE the writer and fail a case that matched
 quiet_pipes() {  # quiet_pipes FILE... -> prints FILE:LINE of each pipe into a quiet grep (-q, --quiet, --silent; continued lines joined)
   python3 - "$@" <<'PYQ'
@@ -1257,7 +1281,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=291
+EXPECT=302
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
