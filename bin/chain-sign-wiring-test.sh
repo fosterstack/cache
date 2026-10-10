@@ -562,6 +562,16 @@ caught "AC1 two top-level permissions: keys (the second the benign one)" 'permis
 caught "AC1 run line: a trailing NBSP after the sign line (str.strip() would drop it; bash keeps it in the last word)" "$SIGNLINE" "$SIGNLINE"$'\u00a0'
 caught "AC1 run line: a leading NBSP before the install line" 'run: bash bin/install-scanner.sh cosign' 'run: '$'\u00a0''bash bin/install-scanner.sh cosign'
 caught "AC1 run line: a trailing U+200B after the sign line" "$SIGNLINE" "$SIGNLINE"$'\u200b'
+okmut() { if mutate "$1" "$2" "$3"; then expect ok "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi; }
+caught "AC1 Sign judge: runs-on ubuntu-. is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.'
+caught "AC1 Sign judge: runs-on ubuntu-24..04 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-24..04'
+caught "AC1 Sign judge: runs-on ubuntu-26.04 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-26.04'
+caught "AC1 Sign judge: runs-on ubuntu-.-arm is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-.-arm'
+caught "AC1 Sign judge: runs-on ubuntu-20.04 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-20.04'
+caught "AC1 Sign judge: runs-on ubuntu-24.04.1 is not in the closed runner set (Sonnet #249 r7 R2)" 'ubuntu-24.04' 'ubuntu-24.04.1'
+okmut "control: the Sign judge accepts runs-on ubuntu-24.04-arm (the closed set)" 'ubuntu-24.04' 'ubuntu-24.04-arm'
+okmut "control: the Sign judge accepts runs-on ubuntu-latest (the closed set)" 'ubuntu-24.04' 'ubuntu-latest'
+okmut "control: the Sign judge accepts runs-on ubuntu-22.04 (the closed set)" 'ubuntu-24.04' 'ubuntu-22.04'
 caught "AC1 two top-level on: keys (the second the benign workflow_call)" '\non:' "\non: push\non:"
 caught "AC1 job runs in a container" 'runs-on: ubuntu-24.04' 'runs-on: ubuntu-24.04\n    container: alpine'
 caught "AC2 extra input" 'digests:\n        description' 'script:\n        type: string\n      digests:\n        description'
@@ -1889,6 +1899,85 @@ jobs:
     steps:
       - run: bash bin/build-stage.sh a
 EOF
+# signers in the YAML-DECODED text (Sonnet #249 r7 R1, the class closed): every workflow and composite action is ALSO scanned over the
+# decoded run:, uses: and with: values of every step (the raw-text scan stays; findings are the union)
+sigcase() { # sigcase NAME wf|act LABEL ok|caught : the YAML text on stdin is a job's steps (wf: ci.yml) or a composite action's steps
+  local d f; d=$(mk "$1")
+  if [ "$2" = wf ]; then f="$d/.github/workflows/ci.yml"; { printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n'; cat; } > "$f"
+  else f="$d/.github/actions/x/action.yml"; { printf 'name: x\nruns:\n  using: composite\n  steps:\n'; cat; } > "$f"; fi
+  local out rc=0; out=$(judge tree "$d") || rc=$?
+  if [ "$4" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   AC1 decoded: $3"
+  elif [ "$4" = caught ] && [ "$rc" != 0 ] && grep -E -q "calls|signs provenance" <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1 decoded: $3 (caught: ${out:0:140})"
+  else failn=$((failn + 1)); echo "FAIL AC1 decoded: $3 -> rc=$rc ${out:0:300}"; fi; }
+sigcase sg_ok_wf wf 'control: a harmless folded plain scalar (workflow)' ok <<'EOF'
+      - run: echo
+          hello world
+EOF
+sigcase sg_fold_wf wf 'a plain multi-line scalar YAML folds into cosign sign (workflow)' caught <<'EOF'
+      - run: cosign
+          sign --yes img
+EOF
+sigcase sg_dqnl_wf wf 'a double-quoted scalar with an escaped line break (decodes to cosign sign) (workflow)' caught <<'EOF'
+      - run: "cosign\
+          \ sign --yes img"
+EOF
+sigcase sg_tab_wf wf 'a double-quoted \t between the words (workflow)' caught <<'EOF'
+      - run: "cosign\tsign --yes img"
+EOF
+sigcase sg_hex_wf wf 'a double-quoted \x63 escape for the c of cosign (workflow)' caught <<'EOF'
+      - run: "\x63osign sign --yes img"
+EOF
+sigcase sg_str_wf wf 'a !!str-tagged double-quoted scalar with a \u0020 escape (workflow)' caught <<'EOF'
+      - run: !!str "cosign\u0020sign --yes img"
+EOF
+sigcase sg_flow_wf wf 'a run: inside a flow-sequence step with a \u0063 escape (workflow)' caught <<'EOF'
+      - {run: "\u0063osign sign --yes img"}
+EOF
+sigcase sg_uses_wf wf 'a uses: string with a \u0070 escape (attest-build-provenance) (workflow)' caught <<'EOF'
+      - uses: "actions/attest-build-\u0070rovenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
+EOF
+sigcase sg_with_wf wf 'a with: value naming witness run with a \x20 escape (scanned too) (workflow)' caught <<'EOF'
+      - uses: actions/github-script@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          script: "witness\x20run -a slsa -- x"
+EOF
+sigcase sg_ok_act act 'control: a harmless folded plain scalar (composite action)' ok <<'EOF'
+    - run: echo
+        hello world
+EOF
+sigcase sg_fold_act act 'a plain multi-line scalar YAML folds into cosign sign (composite action)' caught <<'EOF'
+    - shell: bash
+      run: cosign
+        sign --yes img
+EOF
+sigcase sg_dqnl_act act 'a double-quoted scalar with an escaped line break (decodes to cosign sign) (composite action)' caught <<'EOF'
+    - shell: bash
+      run: "cosign\
+        \ sign --yes img"
+EOF
+sigcase sg_tab_act act 'a double-quoted \t between the words (composite action)' caught <<'EOF'
+    - shell: bash
+      run: "cosign\tsign --yes img"
+EOF
+sigcase sg_hex_act act 'a double-quoted \x63 escape for the c of cosign (composite action)' caught <<'EOF'
+    - shell: bash
+      run: "\x63osign sign --yes img"
+EOF
+sigcase sg_str_act act 'a !!str-tagged double-quoted scalar with a \u0020 escape (composite action)' caught <<'EOF'
+    - shell: bash
+      run: !!str "cosign\u0020sign --yes img"
+EOF
+sigcase sg_flow_act act 'a run: inside a flow-sequence step with a \u0063 escape (composite action)' caught <<'EOF'
+    - {shell: bash, run: "\u0063osign sign --yes img"}
+EOF
+sigcase sg_uses_act act 'a uses: string with a \u0070 escape (attest-build-provenance) (composite action)' caught <<'EOF'
+    - uses: "actions/attest-build-\u0070rovenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
+EOF
+sigcase sg_with_act act 'a with: value naming witness run with a \x20 escape (scanned too) (composite action)' caught <<'EOF'
+    - uses: actions/github-script@4d101475d8b20a2381f78447822ac1eab6504dd8
+      with:
+        script: "witness\x20run -a slsa -- x"
+EOF
 # listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
 S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
 scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
@@ -2298,7 +2387,7 @@ open(sys.argv[1], "w").write(t)
 PY
 tg caught "$work/rel-noadm.yml" "R8 mutation: with admission removed from every needs list, the build-to-promotion jobs no longer reach admission and are caught"
 
-EXPECT=484
+EXPECT=511
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
