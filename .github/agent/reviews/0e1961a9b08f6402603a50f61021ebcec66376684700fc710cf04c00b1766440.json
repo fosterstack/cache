@@ -1,0 +1,84 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "0e1961a9b08f6402603a50f61021ebcec66376684700fc710cf04c00b1766440",
+ "change": "Offline build helpers for the v0.3.0 build chain (apk tool, recipe generator, module SBOM tool, lock tool, tool installer with literal downloads: REQ-SBOM-001, REQ-BUILDTOOLS-001, REQ-SUP-001-AC18) and their suite wired into ci.yml; reviews of the snapshot (9 rounds + 9d/9e hard-stop verifications) are in the audit folder; this record covers the final-round fix commits after the rebase -- PR #271",
+ "reviewed_commit": "ab5aa42b869a1e3df960869caf7896a1c19ee52f",
+ "closed_commit": "ab5aa42b869a1e3df960869caf7896a1c19ee52f",
+ "rounds": [
+  {
+   "round": 2,
+   "label": "head 61d34ca (mktemp scratch for the static fs_guard rule; inventory test moved under .github/agent/tests for the layout rule; ten ruled lines byte-identical): Codex low only (exit-status guard lost); Sonnet 0",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "24bd857ce1437ebc10cc94b26b1495b8b6523a463881ac372cc9a15acce27b1d"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "0d5d3865d68f76e98292c9905f719a4d2cceee2e075c9834e527b60eb3ec9403"
+    }
+   }
+  },
+  {
+   "round": 3,
+   "label": "head 7d3d5df (126/127 guard restored): Codex low (IBT_RUN read from the environment); Sonnet 0 blockers/3 residuals",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "be65c1a4bcd9123bd6e9b326b67c34e826710f4ca314505e58e391ff6d918b40"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "bda2b7a4321488bfbdf447fdb08351a357489f2b75fba50902c44ad9e23b6dd3"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "head 972af0a (IBT_RUN no longer read; five stub cases pin each guard): Codex low (paths spliced into bash -c); Sonnet 0",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "d6c4f5c18dcec63e13bec4551868ad3085d843d0bbd5a26e9957abebdaffae85"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "bf5baea994c57b7531a61cb9603aa29f6a8668b7aa7476148cad69ef18ea9ef8"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "head ab5aa42 (iso helper passes paths as arguments), fix verification only: Codex no findings; Sonnet 0 blockers/0 residuals",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "dc98940b1a54c48999ec91616409b49002544b1b0d0364f088977105859758b4"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "ce11dc50bb41a5dfffda6dbd412720bf36b1918595c25d3649fc944137b1f1b9"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX COULD NOT RUN THE SUITES (read-only sandbox): suite counts (pin-age-check-test 339/0, build-helpers-test 251/0, others) were run by Sonnet and the author and are NOT VERIFIED BY CODEX",
+  "the nine-round snapshot reviews of this chain (P2 apk tool, generator, SBOM tool, lock tool) and the installer rewrite review (codex-271-installer.md, sonnet-271-installer.md: no findings / 0 blockers) precede this record; their residuals are recorded in the PR body",
+  "Codex found one low test-hardening finding in each of rounds 2-4, each fixed and verified; all low, no functional or security defect",
+  "the zero-uncovered auditor Python coverage gate could not run on the author's Mac (Homebrew Python 3.14 vs coverage fs_guard) and is decided by CI",
+  "the real Codex seat is openai; no Opus substitute is used in this record"
+ ]
+}

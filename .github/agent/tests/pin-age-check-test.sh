@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -1248,6 +1248,108 @@ check test "$rc" -eq 2; check grep -qi 'rate limit' "$work/live.out"
 live notfound
 CASE="live: a 404 (no release for that commit) is 'age not provable': exit 1"
 check test "$rc" -eq 1; check grep -qi 'not provable' "$work/live.out"
+
+# --- REQ-SUP-001-AC18: bin/install-build-tools.sh, read by the REAL inventory, yields one measured pin per tool and arch (owner/repo@vX.Y.Z with
+# its checksum bound) and nothing unmeasured; the variable-address forms it replaced are refused (a placeholder that is not a pin, or unmeasured) -------
+cat >"$work/ibt-inv.py" <<'PY'
+import importlib.util, os, re, sys
+SC = sys.argv[1]
+HOST = "https://github.com/"
+TOOLS = {"melange": "chainguard-dev/melange", "apko": "chainguard-dev/apko"}
+ARCHES = ("amd64", "arm64")
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(SC, name + ".py"))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+def die(msg):
+    print("install-build-tools: " + msg); sys.exit(1)
+def inventory(path):
+    inv = load("pin-inventory"); age = load("pin-age-check")
+    text = open(path).read(); f = {"bin/install-build-tools.sh": text}
+    um = inv.unmeasured(f)
+    if um:
+        die("unmeasured: " + "; ".join("%s: %s" % (w, l) for (_, w, l) in sorted(um)))
+    vers = {}
+    for t in TOOLS:
+        m = re.search(re.escape(HOST + TOOLS[t]) + r"/releases/download/v(\d+\.\d+\.\d+)/", text)
+        if not m:
+            die("no literal release address for " + t)
+        vers[t] = m.group(1)
+    want = {(TOOLS[t], "v" + vers[t], "%s_%s_linux_%s.tar.gz" % (t, vers[t], a)) for t in TOOLS for a in ARCHES}
+    got = set()
+    for it in inv.inventory(f).values():
+        repo = age.TOOL_REPOS.get(it.name) or (it.name if re.fullmatch(r"[\w.-]+/[\w.-]+", it.name) else None)
+        if it.kind != "tool" or not repo or not age.is_pin(it.version) or re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", it.name) or "#" not in it.path:
+            die("not a measurable pin with its checksum bound: " + it.key)
+        got.add((it.name, it.version, it.path.split("#")[0]))
+    if got != want:
+        die("measured %s, wanted %s" % (sorted(got), sorted(want)))
+    print("measured: " + ", ".join(sorted("%s@%s %s" % g for g in got)))
+def mutate(src, out, kind):
+    lines = open(src).read().split("\n")
+    def edit(label, rx, rep):
+        for i, ln in enumerate(lines):
+            if re.match(r"^\s*%s\)" % re.escape(label), ln):
+                new, k = re.subn(rx, rep, ln, count=1)
+                if k == 1:
+                    lines[i] = new; return
+        print("mutant %s did not apply" % kind); sys.exit(3)
+    if kind == "variable":
+        edit("melange-amd64", r"/download/v[^/]+/", "/download/v$ver/")
+    elif kind == "repovar":
+        edit("apko-amd64", re.escape(HOST) + r"[\w.-]+/[\w.-]+/", lambda m: HOST + "$repo/")
+    elif kind == "mismatch":
+        edit("apko-arm64", r"/download/v(\d+)\.(\d+)\.(\d+)/apko_\d+\.\d+\.\d+_", lambda m: "/download/v{0}.{1}.{2}/apko_{0}.{1}.{2}_".format(m.group(1), m.group(2), int(m.group(3)) + 1))
+    else:
+        print("unknown mutant " + kind); sys.exit(2)
+    open(out, "w").write("\n".join(lines))
+{"inventory": lambda: inventory(sys.argv[3]), "mutate": lambda: mutate(sys.argv[3], sys.argv[4], sys.argv[5])}[sys.argv[2]]()
+PY
+ibt() { python3 "$work/ibt-inv.py" "$here/../supply-chain" "$@" </dev/null >"$work/ibt.out" 2>&1; }
+# ibt_refused KIND REGEX [RUNNER]: the inventory command is ibt unless a harness case names a stub as the third argument (never read from the environment)
+ibt_refused() { local kind=$1 kw=$2 run=ibt; [ $# -lt 3 ] || run=$3; ibt mutate "$root/bin/install-build-tools.sh" "$work/ibt-$kind.sh" "$kind" || return 1; local rc=0; "$run" inventory "$work/ibt-$kind.sh" || rc=$?
+  [ "$rc" -ne 0 ] && [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] && grep -Eq -- "$kw" "$work/ibt.out"; }   # 126/127: the inventory could not RUN, which is not a refusal
+CASE="REQ-SUP-001-AC18: the real inventory measures install-build-tools.sh as 4 pins (melange and apko x amd64 and arm64, owner/repo@vX.Y.Z, checksum bound), nothing unmeasured"
+check ibt inventory "$root/bin/install-build-tools.sh"
+CASE="REQ-SUP-001-AC18: a variable version in the release address is read as a placeholder, not a pin (pin-age refuses it)"
+check ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
+CASE="REQ-SUP-001-AC18: a variable repository in the release address is unmeasured (pin-age refuses it)"
+check ibt_refused repovar 'unmeasured: a download'
+CASE="REQ-SUP-001-AC18: a URL version that differs from the pinned set is measured as a version outside it"
+check ibt_refused mismatch 'wanted'
+# the harness itself: a failure to RUN the inventory (exit 126 not executable, 127 not found) is not a refusal, even when the output names the diagnostic
+ibt_stub_rc=1 ibt_stub_msg=""
+ibt_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; printf '%s' "$ibt_stub_msg" >"$work/ibt.out"; return "$ibt_stub_rc"; }
+# stub_refused RC [OUTPUT]: the stub exits RC after printing OUTPUT (default: the expected diagnostic)
+stub_refused() { ibt_stub_rc=$1; ibt_stub_msg=${2-install-build-tools: unmeasured: a download}; ibt_refused repovar 'unmeasured: a download' ibt_stub; }
+CASE="REQ-SUP-001-AC18 harness: an inventory that exits 1 with the diagnostic counts as a refusal (the stub stands in correctly)"
+check stub_refused 1
+CASE="REQ-SUP-001-AC18 harness: an inventory that could not be found (exit 127) is not a refusal, even with the diagnostic"
+check eval '! stub_refused 127'
+CASE="REQ-SUP-001-AC18 harness: an inventory that could not be executed (exit 126) is not a refusal, even with the diagnostic"
+check eval '! stub_refused 126'
+CASE="REQ-SUP-001-AC18 harness: an inventory that exits 1 with a WRONG diagnostic is not a refusal (the diagnostic is pinned)"
+check eval '! stub_refused 1 "install-build-tools: measured something else"'
+CASE="REQ-SUP-001-AC18 harness: an inventory that exits 1 with EMPTY output is not a refusal (the diagnostic is pinned)"
+check eval '! stub_refused 1 ""'
+CASE="REQ-SUP-001-AC18 harness: an inventory that exits 0 WITH the diagnostic is not a refusal (the nonzero status is pinned)"
+check eval '! stub_refused 0'
+# the inventory command is never read from the environment: with IBT_RUN exported as a stub that always prints a diagnostic and exits 1,
+# the real cases still run the real inventory (the stub's diagnostic never satisfies them, the real one does)
+ibt_env_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; echo "install-build-tools: unmeasured: a download" >"$work/ibt.out"; return 1; }
+# iso W H R CMD...: run CMD in a child bash with IBT_RUN exported as the stub; the paths and the command reach the child as ARGUMENTS, never spliced into its script
+iso() { IBT_RUN=ibt_env_stub bash -c "$(declare -f ibt ibt_refused ibt_env_stub)"'
+work=$1 here=$2 root=$3; shift 3; "$@"' iso-child "$@"; }
+CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the variable-version mutant still fails on the REAL diagnostic (not a measurable pin)"
+check iso "$work" "$here" "$root" ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
+CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the stub's diagnostic is not what the variable-version mutant yields"
+check iso "$work" "$here" "$root" eval '! ibt_refused variable "unmeasured: a download"'
+CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the real positive case still passes"
+check iso "$work" "$here" "$root" ibt inventory "$root/bin/install-build-tools.sh"
+q="$work/it's a dir"; mkdir -p "$q/agent/tests" "$q/root/bin"; cp -R "$here/../supply-chain" "$q/agent/supply-chain"; cp "$root/bin/install-build-tools.sh" "$q/root/bin/"; cp "$work/ibt-inv.py" "$q/"
+CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, the real positive case still passes"
+check iso "$q" "$q/agent/tests" "$q/root" ibt inventory "$q/root/bin/install-build-tools.sh"
+CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, the variable-version mutant still fails on the REAL diagnostic"
+check iso "$q" "$q/agent/tests" "$q/root" ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

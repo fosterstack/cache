@@ -2234,6 +2234,12 @@ requirements:
         then: "that item is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100) (accepted by the advisor Oct 10 step 5); and an added item with no such row, a row whose hash does not match (the line was edited), an edited line (any change other than spaces or tabs, including one that keeps its download command), a line holding whitespace other than a space or a tab or joined from a backslash-newline continuation, more occurrences than the row's count, a row with an empty ruling, a malformed list, or a row brought by the pull request itself (not present on the base branch) fails as before"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC18
+        given: "bin/install-build-tools.sh"
+        when: "pin-age inventories it"
+        then: "every tool download is a literal command carrying the exact release version and the sha256 it is verified against, so the version is measured (7 days public) like any pin (accepted by the advisor Oct 10 step 5)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-REPO-001
     title: Branch hygiene without a human
     statement: >
@@ -2462,5 +2468,120 @@ requirements:
         given: "a shell test script (or any other non-Python test script), and a Go or Java test"
         when: "the static scan reads them"
         then: "a shell script fails, naming the file and line, only for two things: a symlink with an absolute target created by ln -s or cp -s (also ln -sf, ln -sfn, ln --symbolic, cp --symbolic-link, and a hard ln to an absolute target), and a script that creates files (mkdir, touch, cp, mv, ln, install, tee, a redirect) without ever calling mktemp or tempfile (the mktemp rule), reporting the first offending line; Go and Java tests are not scanned statically; the shell checks are a lint of plain forms, not a security control, and the runtime guard (AC1) is the control"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+  - id: REQ-SBOM-001
+    title: The Go module list is written by the build from the binary's own embedded list
+    statement: >
+      The Go module list, which neither melange nor apko writes, shall be written by a build step from the vendored module list and the binary's own embedded module list, and signed with the release; no scanner makes or gates the SBOM. The SBOM lists the modules the binary embeds; every embedded path and version must be in both vendor/modules.txt and dependency-provenance.json (a subset, not equality); modules that are vendored but not built are in the dependency list, not the SBOM.
+    source: [bin/go-module-sbom.py]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rule 20 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md, MEL-17)
+    confidence: implementation-only
+    notes: >
+      Advisor reading, binding: path and version are compared; the vendor-mode binary list carries no hashes. Wiring the tool into the apk build (bin/build-apk.sh) and signing the file with the release belong to the melange pull request, not this one.
+    acceptance_criteria:
+      - id: REQ-SBOM-001-AC1
+        given: "a binary's embedded module list in which every module path and version is also in vendor/modules.txt and in dependency-provenance.json"
+        when: "bin/go-module-sbom.py runs with --modules, --provenance, --buildinfo and --out"
+        then: "it writes an SPDX JSON file whose packages are exactly the embedded modules (name and version), with no timestamp, so two runs give the same bytes"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SBOM-001-AC2
+        given: "a module that is in vendor/modules.txt and dependency-provenance.json but is not in the binary's embedded list"
+        when: "bin/go-module-sbom.py runs"
+        then: "it does not fail and the module is not in the SBOM"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SBOM-001-AC3
+        given: "a module the binary embeds that is not in vendor/modules.txt, or is not in dependency-provenance.json, or is there with a different version"
+        when: "bin/go-module-sbom.py runs"
+        then: "it exits non-zero, names the module on standard error, and writes no SBOM file"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SBOM-001-AC4
+        given: "an embedded module list with no hashes (as a vendor-mode binary reports it)"
+        when: "bin/go-module-sbom.py compares it with vendor/modules.txt"
+        then: "it compares path and version only and succeeds when they match"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-SBOM-001-AC5
+        given: "an input the tool cannot resolve: a replace line, an unparseable module line, or a missing or unreadable input file"
+        when: "bin/go-module-sbom.py runs"
+        then: "it refuses (exit 2) and writes no SBOM file, rather than guessing"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+  - id: REQ-BUILDTOOLS-001
+    title: The build's helper tools check apks, recipes, locks and image layouts without the network
+    statement: >
+      The helper tools the v0.3.0 build calls shall inspect and verify its inputs and outputs offline and fail closed: bin/apk-tool.py (apk sections, signer, binary and inputs manifest), bin/gen-recipes.py (both melange recipes are generated from one reviewed, pinned template and differ only in the package name, the description and the two FIPS lines), bin/install-build-tools.sh (melange and apko by pinned checksum), bin/go-module-sbom.py (the module list of the binary) and bin/apko-lock.sh (base lock versus full lock, archive verification, evidence list). The image digest tool and the sealed-namespace probe are in REQ-BUILDTOOLS-002.
+    source: [bin/apk-tool.py, bin/gen-recipes.py, build/melange.yaml.tmpl, bin/install-build-tools.sh, bin/apko-lock.sh, bin/go-module-sbom.py]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 14, 15, 16, 21, 22, 27-29, 31, 33, 37, 40 and 44 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md)
+    confidence: implementation-only
+    notes: >
+      Each tool's argv and exit codes are in its header comment (the pipeline lane reads them). The drivers that call them (bin/build-apk.sh, bin/assemble-image.sh) belong to the melange and apko pull requests. melange 0.61.2 and apko 1.4.6 (both public for more than 7 days when pinned) are pinned by the sha256 values in the release checksums.txt files fetched over HTTPS from the projects' GitHub releases.
+      Known residuals: bin/apk-tool.py refuses a PAX extended header as the FIRST header of stream 0 (the signature stream must start with a plain header); elsewhere only the exact key APK-TOOLS.checksum.SHA1 is accepted. A forwarded-value echo in error messages is not escaped. The real melange and apko runs are pending the runner proof. Review-round-9 ruling: the generator closes the placeholders, the substitutions, the step conditions and the places of the name and description, and pins the template by sha256; it does NOT judge the shell in the template (that is the human and reviewer checklist at the top of build/melange.yaml.tmpl); the final control for the FIPS binary is build-apk.sh's check of the packaged binary. The proof greps only the GOFIPS140 stamp (a go.mod godebug fips140=off would show in DefaultGODEBUG, which is not checked) and writes to the fixed path /tmp/fscache-gobuildinfo.txt inside the melange sandbox. The apk is read whole into memory. The header walk is the check; the tar reader is used only after the walk agrees with it on the number of entries. Data files (review round 9): the package pins of the build environment come from build/locks/melange.lock and the certified Go Cryptographic Module from build/locks/fips-module.txt, each with a closed line grammar; the generator holds no FIPS constant, so the daily refresh and the FIPS-module check change only those files and the generated recipes stay equal to the generator's output.
+    acceptance_criteria:
+      - id: REQ-BUILDTOOLS-001-AC1
+        given: "an apk with a signature and the same apk unsigned or signed by another key"
+        when: "apk-tool.py digest and same run"
+        then: "digest prints sha256:<hex> of the control and data sections together (the signature excluded), and same exits 0 for equal control and data sections whatever the signature, and 1 naming the second file when the data differs (rule 22)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC2
+        given: "an apk signed with the assembly key, one with the release key, and an unsigned one"
+        when: "apk-tool.py signer runs"
+        then: "it prints assembly.rsa.pub, release.rsa.pub and unsigned respectively (rule 22)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC3
+        given: "an apk and a binary file"
+        when: "apk-tool.py binary-check APK FILE runs"
+        then: "it exits 0 when FILE equals usr/bin/fscache in the apk, 1 printing both sha256 digests when it does not, and 2 naming usr/bin/fscache when the apk has none; apk-tool.py cat writes that member's bytes (rule 14)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC4
+        given: "an apk whose embedded .melange.yaml lists a build environment, and the melange lock"
+        when: "apk-tool.py inputs-manifest runs"
+        then: "it writes a manifest holding the lock and the environment read back from the apk when every environment package is in the lock, and fails naming the package when one is not (rule 15)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC5
+        given: "the recipe template build/melange.yaml.tmpl, the generator bin/gen-recipes.py and the two committed recipes build/melange.yaml and build/melange-fips.yaml"
+        when: "bin/gen-recipes.py --check runs"
+        then: "it exits 0 only when both committed recipes are byte-for-byte what the generator makes from the template; the template holds no GOFIPS140, no tab, carriage return or NUL, and no placeholder outside the named set (NAME, DESCRIPTION, FIPS_EXPORT, FIPS_PROOF); the FIPS recipe differs from the regular one only by the generator's two fixed constants (the GOFIPS140 export line and its proof line), the name and the description; any other difference exits 1 printing it (an extra step, GOFLAGS, GOTOOLCHAIN, a Go checksum); the template's sha256 must equal the constant TEMPLATE_SHA256 in the generator, else it exits 1 saying the template changed and the pin must be updated in the same reviewed change; a missing file exits 2 naming it (rule 21; advisor reading: both recipes are generated from one reviewed, sha256-pinned template and differ only in the package name, the description and the two FIPS lines; CI meets rule 21 by checking both committed recipes are byte-for-byte the generator's output and the template matches its pin; behaviour parity rests on the reviewed, pinned template; build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs; mandatory in CI) is the final control)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC6
+        given: "install-build-tools.sh melange or apko"
+        when: "it runs"
+        then: "it installs the pinned version for this Linux architecture only after the download's sha256 equals the pin (checked before unpacking), uses no container image, and installs nothing, naming the checksum, on a mismatch; an unknown tool or an unsupported architecture exits 2 (rule 16)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC7
+        given: "a base lock and the full lock made at build time"
+        when: "apko-lock.sh compare BASE FULL --apk NAME runs"
+        then: "it exits 0 when the full lock is the base lock plus our apk for every architecture (compared by package entries, ignoring urls and the config checksum), 1 naming the package or architecture otherwise, and 2 when the base lock already holds our apk (rule 37)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC8
+        given: "a lock file"
+        when: "apko-lock.sh arch-check LOCK runs"
+        then: "it exits 0 when every package has the same version on every architecture and 1 naming the package when one differs (rule 33)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC9
+        given: "a lock file, the archive and optionally the melange repository"
+        when: "apko-lock.sh verify-archive runs"
+        then: "it exits 0 when every package is present with matching signature, control and data checksums and each repository used has its APKINDEX.tar.gz, and 1 naming the file when a package is missing, tampered with, or an index is missing (rules 27, 28, 44)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDTOOLS-001-AC10
+        given: "a lock file and an archive that holds every package of the lock"
+        when: "apko-lock.sh evidence runs"
+        then: "it copies the lock and writes archive-checksums.txt, a sorted sha256sum-format list of every archive file (packages, indexes, the Wolfi key, the Go tarballs), the same bytes on every run, and fails naming a package of the lock that the archive lacks (rule 29)"
         verification: { method: unit, release_blocking: false }
         status: approved

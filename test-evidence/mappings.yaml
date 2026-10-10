@@ -573,6 +573,10 @@ mappings:
   - ac: REQ-SUP-001-AC16
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC18
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
@@ -755,3 +759,48 @@ mappings:
   - ac: REQ-OBS-003-AC7
     evidence:
       - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }
+  - ac: REQ-SBOM-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
