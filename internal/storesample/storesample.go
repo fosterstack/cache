@@ -62,18 +62,19 @@ type Options struct {
 
 // Sampler holds the shared sample.
 type Sampler struct {
-	dir     string
-	d       Deps
-	o       Options
-	mu      sync.Mutex
-	cur     Sample
-	at      time.Time
-	have    bool
-	stale   bool
-	busy    bool          // a probe goroutine is running (possibly past its limit)
-	pubDone bool          // the current refresh has published (by the goroutine, or by the limit)
-	done    chan struct{} // closed when the current refresh has published
-	last    *bool         // last published writable state, for change logging
+	dir   string
+	d     Deps
+	o     Options
+	mu    sync.Mutex
+	cur   Sample
+	at    time.Time
+	have  bool
+	stale bool
+	busy  bool     // a probe goroutine is running (possibly past its limit)
+	rf    *refresh // the refresh in flight or last started; each refresh has its OWN state, so a stale goroutine can only touch its own
+	last  *bool    // last published writable state, for change logging
+
+	afterFinish func() // test seam only (nil in production)
 }
 
 // New returns a Sampler for dir.
@@ -143,6 +144,16 @@ func (s *Sampler) Get() Sample {
 	return s.cur
 }
 
+// refresh is the state of ONE measurement. Both of its goroutines capture it, so a goroutine that outlives its refresh can never publish into, or close
+// the channel of, a newer one.
+type refresh struct {
+	done      chan struct{} // closed once, when the refresh has published
+	closeOnce sync.Once
+	published bool // guarded by Sampler.mu: the refresh's sample is published (by the measuring goroutine or by the limit)
+}
+
+func (r *refresh) close() { r.closeOnce.Do(func() { close(r.done) }) }
+
 // result is one finished measurement.
 type result struct {
 	probeErr error
@@ -162,20 +173,23 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.busy {
-		return s.done
+		return s.rf.done
 	}
 	if s.have && !s.stale && s.d.Now().Sub(s.at) < s.o.Fresh {
 		return nil
 	}
-	s.busy, s.pubDone, s.stale = true, false, false
-	done := make(chan struct{})
-	s.done = done
+	rf := &refresh{done: make(chan struct{})}
+	s.busy, s.stale, s.rf = true, false, rf
 	finished := make(chan struct{})
 	go func() {
 		r := result{probeErr: s.probe()}
 		r.avail, r.statErr = s.d.Statfs(s.dir) // statfs is inside the measuring goroutine too: a hung statfs cannot hang a reader
-		if s.finish(r, false) {
-			close(done)
+		first := s.finish(rf, r, false)
+		if s.afterFinish != nil {
+			s.afterFinish() // test seam: the gap between releasing the slot and closing the channels
+		}
+		if first {
+			rf.close()
 		}
 		close(finished)
 	}()
@@ -188,21 +202,22 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 			s.mu.Lock()
 			prev := s.cur.FreeBytes // keep the last known free bytes
 			s.mu.Unlock()
-			if s.finish(result{probeErr: errProbeLimit, avail: prev}, true) {
-				close(done)
+			if s.finish(rf, result{probeErr: errProbeLimit, avail: prev}, true) {
+				rf.close()
 			}
 		}
 	}()
-	return done
+	return rf.done
 }
 
-// finish claims the refresh and publishes the sample in ONE critical section, so no ordering window exists. The first finisher publishes its result:
+// finish claims the refresh and publishes its sample in ONE critical section, so no ordering window exists. The first finisher publishes its result:
 // the measuring goroutine normally, or the limit when the probe is still running ("not writable"). The measuring goroutine ALWAYS releases the slot here;
 // when it finishes after the limit has fired, its answer is published as "not writable" with its own free bytes: a probe that took longer than the
-// limit never reads writable, however it ends. It reports whether it was the first finisher (the one that closes done).
-func (s *Sampler) finish(r result, limit bool) (first bool) {
+// limit never reads writable, however it ends. A finisher of an older refresh finds that refresh already published and does nothing. It reports whether
+// it was the first finisher of rf (the one that closes rf.done).
+func (s *Sampler) finish(rf *refresh, r result, limit bool) (first bool) {
 	s.mu.Lock()
-	first = !s.pubDone
+	first = !rf.published
 	if !limit && !first {
 		r.probeErr = errProbeLimit
 	}
@@ -210,7 +225,7 @@ func (s *Sampler) finish(r result, limit bool) (first bool) {
 		s.mu.Unlock()
 		return false
 	}
-	s.pubDone = true
+	rf.published = true
 	if !limit {
 		s.busy = false
 	}

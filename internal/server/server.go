@@ -7,6 +7,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -131,10 +132,13 @@ func New(cfg Config) http.Handler {
 	metricsHandler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
 	var scrapeMu sync.Mutex // set the disk gauges and gather under one lock, so two scrapes can never export a mix of two samples
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		smp := diskSample(cfg) // the wait for a refresh (at most the sampler's few milliseconds) happens BEFORE the lock, so scrapes do not queue behind it
+		buf := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
 		scrapeMu.Lock()
-		defer scrapeMu.Unlock()
-		refreshDiskGauges(cfg) // the gauges are set from the same cached sample /statusz reads
-		metricsHandler.ServeHTTP(w, r)
+		setDiskGauges(cfg, smp)
+		metricsHandler.ServeHTTP(buf, r) // gathered into memory: the lock is not held while a slow client reads the response
+		scrapeMu.Unlock()
+		buf.writeTo(w)
 	})
 
 	// /statusz and the landing page sit behind the same Basic Auth as the
@@ -437,12 +441,37 @@ func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key s
 	}
 }
 
-// refreshDiskGauges sets the two disk gauges from the shared store sample.
-func refreshDiskGauges(cfg Config) {
+// diskSample reads the shared store sample (nil Sampler: the zero sample).
+func diskSample(cfg Config) storesample.Sample {
+	if cfg.Sampler == nil {
+		return storesample.Sample{}
+	}
+	return cfg.Sampler.Get()
+}
+
+// bufferedResponse collects a response in memory so it can be written after a lock is released.
+type bufferedResponse struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (b *bufferedResponse) Header() http.Header         { return b.header }
+func (b *bufferedResponse) WriteHeader(status int)      { b.status = status }
+func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
+func (b *bufferedResponse) writeTo(w http.ResponseWriter) {
+	for k, v := range b.header {
+		w.Header()[k] = v
+	}
+	w.WriteHeader(b.status)
+	_, _ = w.Write(b.body.Bytes())
+}
+
+// setDiskGauges sets the two disk gauges from one sample.
+func setDiskGauges(cfg Config, smp storesample.Sample) {
 	if cfg.Metrics == nil || cfg.Sampler == nil {
 		return
 	}
-	smp := cfg.Sampler.Get()
 	w := 0.0
 	if smp.Writable {
 		w = 1

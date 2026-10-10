@@ -233,6 +233,8 @@ from the first scrape, so `increase()` and `rate()` work immediately.
   10 percent of the volume. This is the free space of the filesystem that holds
   the data directory (what `df` shows as Avail), not of the cache cap; pick the
   threshold per volume.
+  If the volume hangs completely (a sync that never returns), `fscache_store_free_bytes` stays at its last value because the measurement never finishes again:
+  the free-bytes alert is not a substitute for the `fscache_store_writable == 0` alert in that case.
 - **Warn:** `increase(fscache_put_errors_total{reason=~"no_space|read_only|other"}[10m]) > 0`.
 - **Information only:** `fscache_put_errors_total{reason="too_large"}` (oversized
   outputs are normal) and `reason="client_aborted"` (a build that hung up

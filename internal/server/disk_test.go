@@ -40,6 +40,7 @@ type srvDisk struct {
 	statErr error
 	syncErr error
 	openErr error
+	block   chan struct{} // when set, OpenProbe waits for it to close
 	probes  atomic.Int64
 	statfs  atomic.Int64
 }
@@ -60,6 +61,12 @@ func (d *srvDisk) deps(now *atomic.Int64) storesample.Deps {
 		},
 		OpenProbe: func(string) (storesample.ProbeFile, error) {
 			d.probes.Add(1)
+			d.mu.Lock()
+			blk := d.block
+			d.mu.Unlock()
+			if blk != nil {
+				<-blk
+			}
 			d.mu.Lock()
 			defer d.mu.Unlock()
 			if d.openErr != nil {
@@ -104,14 +111,16 @@ type obsEnv struct {
 
 type obsOpt func(*Config)
 
-func newObsEnv(t *testing.T, opts ...obsOpt) *obsEnv {
+func newObsEnv(t *testing.T, opts ...obsOpt) *obsEnv { return newObsEnvBudget(t, time.Second, opts...) }
+
+func newObsEnvBudget(t *testing.T, budget time.Duration, opts ...obsOpt) *obsEnv {
 	t.Helper()
 	disk := &srvDisk{avail: 5 << 30}
 	clock := &atomic.Int64{}
 	clock.Store(1_000_000)
 	var buf bytes.Buffer
 	log := slog.New(slog.NewTextHandler(&buf, nil))
-	smp := storesample.New(t.TempDir(), disk.deps(clock), storesample.Options{Log: log, WaitBudget: time.Second})
+	smp := storesample.New(t.TempDir(), disk.deps(clock), storesample.Options{Log: log, WaitBudget: budget})
 	smp.Start()
 	fs := &faultStore{Store: newTestCache(t)}
 	reg := prometheus.NewRegistry()
@@ -842,43 +851,68 @@ func TestPutOfProbeLikeKeysLeavesTheProbeFileAlone(t *testing.T) {
 	}
 }
 
-// Concurrent scrapes never export a mix of two samples: writable and free bytes always belong together.
-func TestConcurrentScrapesExportOneSample(t *testing.T) {
+// Concurrent scrapes never export a mix of two samples: writable and free bytes always belong together. State i is a pair (writable, free) that
+// changes only between rounds (never while a refresh runs); right after each change 8 scrapes race, and every one must show a pair that existed.
+func TestConcurrentScrapesExportOnePair(t *testing.T) {
 	e := newObsEnv(t)
-	var wg sync.WaitGroup
-	stop := make(chan struct{})
-	go func() { // alternate the disk between two states, expiring the sample each time
-		for i := 0; ; i++ {
-			select {
-			case <-stop:
-				return
-			default:
+	for round := 0; round < 150; round++ {
+		healthy := round%2 == 0
+		e.disk.set(func(d *srvDisk) {
+			if healthy {
+				d.syncErr, d.avail = nil, 222
+			} else {
+				d.syncErr, d.avail = syscall.ENOSPC, 111
 			}
-			e.disk.set(func(d *srvDisk) {
-				if i%2 == 0 {
-					d.syncErr, d.avail = syscall.ENOSPC, 111
-				} else {
-					d.syncErr, d.avail = nil, 222
-				}
-			})
-			e.advance(6)
-			time.Sleep(time.Millisecond)
-		}
-	}()
-	for g := 0; g < 8; g++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for i := 0; i < 60; i++ {
+		})
+		e.advance(6)
+		var wg sync.WaitGroup
+		for g := 0; g < 8; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
 				body := e.metrics(t)
 				w, f := mval(body, "fscache_store_writable"), mval(body, "fscache_store_free_bytes")
-				if w == "" || f == "" {
-					t.Errorf("a scrape lacks the disk gauges")
-					return
+				if !(w == "1" && f == "222") && !(w == "0" && f == "111") {
+					t.Errorf("round %d: a scrape exported writable=%q with free=%q: not a pair that ever existed", round, w, f)
 				}
-			}
-		}()
+			}()
+		}
+		wg.Wait()
+	}
+}
+
+// the buffered /metrics response keeps the status, the headers and the body of what the gatherer wrote
+func TestBufferedResponseKeepsStatusHeadersAndBody(t *testing.T) {
+	b := &bufferedResponse{header: http.Header{}, status: http.StatusOK}
+	b.Header().Set("Content-Type", "text/plain")
+	b.WriteHeader(http.StatusTeapot)
+	if _, err := b.Write([]byte("body")); err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	b.writeTo(rec)
+	if rec.Code != http.StatusTeapot || rec.Header().Get("Content-Type") != "text/plain" || rec.Body.String() != "body" {
+		t.Fatalf("got %d %q %q", rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+}
+
+// Scrapes do not queue behind each other while a probe runs: the wait for a refresh happens before the scrape lock, so 40 concurrent scrapes during a
+// blocked probe take about one budget in total, not 40 budgets (REQ-OBS-002-AC5: a scrape never waits more than a few milliseconds for the disk).
+func TestConcurrentScrapesDoNotQueueBehindAProbe(t *testing.T) {
+	e := newObsEnvBudget(t, 25*time.Millisecond)
+	block := make(chan struct{})
+	e.disk.set(func(d *srvDisk) { d.block = block })
+	e.advance(6) // the sample expired: the next reader starts a probe that blocks
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); e.metrics(t) }()
 	}
 	wg.Wait()
-	close(stop)
+	elapsed := time.Since(start)
+	close(block)
+	if elapsed > 500*time.Millisecond { // serial waits would be about 40 x 25 ms = 1 s
+		t.Fatalf("40 concurrent scrapes took %v while the probe was blocked: they queue behind each other", elapsed)
+	}
 }

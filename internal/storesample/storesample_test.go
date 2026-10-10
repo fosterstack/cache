@@ -324,6 +324,7 @@ func TestLateProbeResultKeepsNotWritable(t *testing.T) {
 	d.mu.Lock()
 	d.avail = 99
 	d.mu.Unlock()
+	now = now.Add(4 * time.Second) // the late answer arrives 4 s after the limit's sample
 	close(d.block)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -331,6 +332,14 @@ func TestLateProbeResultKeepsNotWritable(t *testing.T) {
 		if smp.FreeBytes == 99 { // the late answer has arrived
 			if smp.Writable {
 				t.Fatal("the late, successful probe flipped the gauge back to writable")
+			}
+			// the late answer is a fresh sample: 2 s later it is still inside the 5 s life, so no new probe starts
+			before := d.probes.Load()
+			now = now.Add(2 * time.Second)
+			s.Get()
+			time.Sleep(20 * time.Millisecond)
+			if d.probes.Load() != before {
+				t.Fatal("the late answer kept an old timestamp: a new probe started although it was published 2 s ago")
 			}
 			return
 		}
@@ -371,8 +380,12 @@ func TestProbeOverLimitAfterAGoodSampleReadsZero(t *testing.T) {
 	d.block = make(chan struct{})
 	d.mu.Unlock()
 	now = now.Add(6 * time.Second)
-	if s.Get().Writable {
+	got := s.Get()
+	if got.Writable {
 		t.Fatal("a probe over the limit must turn the gauge to 0")
+	}
+	if got.FreeBytes != 7 {
+		t.Fatalf("the limit's sample must keep the last known free bytes (7), got %d", got.FreeBytes)
 	}
 	close(d.block)
 }
@@ -439,5 +452,62 @@ func TestCloseAndRemoveFailuresReadNotWritable(t *testing.T) {
 		if s.Get().Writable {
 			t.Errorf("%s failure: reads writable", name)
 		}
+	}
+}
+
+// The interleaving found in review of #258: the measuring goroutine of refresh 1 has released the slot but not yet closed its channels; a new refresh 2 starts;
+// then refresh 1's LIMIT fires. It must touch only refresh 1 (already published): no panic (close of a closed channel), no publish into refresh 2.
+// The seam makes the gap deterministic (no luck, no timing assumption beyond "the limit fires while the hook sleeps").
+func TestStaleLimitGoroutineCannotTouchTheNextRefresh(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now, func(o *Options) { o.ProbeLimit = 20 * time.Millisecond; o.WaitBudget = 500 * time.Millisecond })
+	var hooked atomic.Int64
+	started := make(chan struct{})
+	s.afterFinish = func() {
+		if hooked.Add(1) != 1 {
+			return // only the first refresh's gap
+		}
+		s.MarkStale()
+		s.refreshIfNeeded() // refresh 2 starts in the gap (the slot is free)
+		close(started)
+		time.Sleep(80 * time.Millisecond) // refresh 1's limit fires here
+	}
+	s.Start() // refresh 1
+	<-started
+	time.Sleep(150 * time.Millisecond) // everything settles
+	if !s.Get().Writable {
+		t.Fatal("refresh 2's good answer was overwritten by refresh 1's stale limit")
+	}
+	if n := d.probes.Load(); n != 2 {
+		t.Fatalf("%d probes; want exactly 2 (one per refresh)", n)
+	}
+}
+
+// Many readers, failing PUTs marking the sample stale, and a limit that fires right at the probe's end: nothing may panic, and the slot is always released.
+func TestStressGetMarkStaleAtTheLimit(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	deps := d.deps(&now)
+	deps.OpenProbe = func(string) (ProbeFile, error) { time.Sleep(60 * time.Microsecond); return fakeFile{d}, nil }
+	s := New("/data/blobs", deps, Options{ProbeLimit: 60 * time.Microsecond, WaitBudget: time.Millisecond, Fresh: time.Nanosecond, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 300; i++ {
+				s.Get()
+				s.MarkStale()
+			}
+		}()
+	}
+	wg.Wait()
+	time.Sleep(20 * time.Millisecond)
+	s.mu.Lock()
+	busy := s.busy
+	s.mu.Unlock()
+	if busy {
+		t.Fatal("the slot was never released")
 	}
 }
