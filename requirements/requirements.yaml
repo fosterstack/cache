@@ -2451,10 +2451,10 @@ requirements:
     source: [v0.3.0 rule 78 (GUIDE-24), docs/verify-release.md, docs/verify-release.cannot-run.json, bin/verify-release-guide-test.sh]
     tier: community
     introduced: v0.3.0
-    origin: v0.3.0 rule 78 (GUIDE-24; owner, Oct 9 2026; ops/docs/ratify/2026-10-09-v030-rules.md), with rule 79 (GUIDE-25, CI runs every guide command against the latest release candidate) behind AC7 and AC8. AC1 to AC8 accepted (advisor step 5, Oct 10 2026). AC2's placeholder list names <IDENTITY> (the signing identity) beside <IMAGE_REF> and <TAG>, the three placeholders pipeline's AC7 run recognises (coordinator, Oct 10 2026).
+    origin: v0.3.0 rule 78 (GUIDE-24; owner, Oct 9 2026; ops/docs/ratify/2026-10-09-v030-rules.md), with rule 79 (GUIDE-25, CI runs every guide command against the latest release candidate) behind AC7 and AC8. AC1 to AC8 accepted (advisor step 5, Oct 10 2026). AC2's placeholder list is <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <IDENTITY>, the four placeholders pipeline's AC7 run recognises; <IDENTITY> is the signing identity (coordinator, Oct 10 2026) and <IMAGE_REF_FIPS> the -fips image by digest (coordinator, Oct 10 2026; advisor, no objection).
     confidence: documented
     notes: >
-      The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads: a command is a line of a ```sh fenced block (a line ending in a backslash joins the next, so a continued command counts once; a pipeline counts once), a pipeline of cosign verify, cosign verify-attestation, cosign verify-blob, cosign verify-blob-attestation, gh attestation verify and jq with no other shell syntax. A command that needs a registry image cannot run on a candidate, which Check holds as a file: it is listed, with its reason, in docs/verify-release.cannot-run.json, marked "Not run before release" on the page, and keeps the page from being final (AC7) until the owner decides rule 79's open case. The page test checks "in the order a customer runs them" only as "a file is verified before jq reads it"; the full order is judged by AC8's readers. The page is not linked from the README or any other page until v0.3.0 is live; docs/verify-images.md stays the guide for v0.2.x and gets a pointer to this page only when it is final.
+      The command format is the one pipeline's AC7 run (bin/check-guide.sh, REQ-CHAIN-006-AC7) reads: a command is a line of a ```sh fenced block (a line ending in a backslash joins the next, so a continued command counts once; a pipeline counts once), a pipeline of cosign verify, cosign verify-attestation, cosign verify-blob, cosign verify-blob-attestation, gh attestation verify and jq with no other shell syntax. A verify command whose operand is an image reference (<IMAGE_REF>, <IMAGE_REF_FIPS>, oci://..., or a literal registry reference) needs a registry image and cannot run on a candidate, which Check holds as a file: it is listed, with its reason, in docs/verify-release.cannot-run.json, marked "Not run before release" on the page, and keeps the page from being final (AC7) until the owner decides rule 79's open case. The page test checks "in the order a customer runs them" only as "a file is verified before jq reads it"; the full order is judged by AC8's readers. The page is not linked from the README or any other page until v0.3.0 is live; docs/verify-images.md stays the guide for v0.2.x and gets a pointer to this page only when it is final.
     acceptance_criteria:
       - id: REQ-GUIDE-001-AC1
         given: "the v0.3.0 customer verification guide"
@@ -2465,7 +2465,7 @@ requirements:
       - id: REQ-GUIDE-001-AC2
         given: "the commands of docs/verify-release.md"
         when: "a customer, or pipeline's AC7 run, runs them"
-        then: "every command is in a fenced sh block, runs unattended (no prompt, no editor, no pager) given only the placeholders <IMAGE_REF>, <TAG> and <IDENTITY> defined once at the top, and the commands are in the order a customer runs them"
+        then: "every command is in a fenced sh block, runs unattended (no prompt, no editor, no pager) given only the placeholders <IMAGE_REF>, <IMAGE_REF_FIPS>, <TAG> and <IDENTITY> defined once at the top, and the commands are in the order a customer runs them"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-GUIDE-001-AC3
