@@ -64,3 +64,4 @@
 .github/agent/bin/tests/fs_guard.py  test helper (the audit-hook and os.* tripwire that fails any unit test touching a real system path; test code, not auditor code; exercised by test_fs_guard.py)
 .github/agent/bin/tests/test_fs_guard.py  unit test (test code — the Go gate does not measure _test.go either)
 .github/agent/bin/tests/system_path_allowlist.py  test data (the reviewed allow-list of pure-data path literals read by test_fs_guard.py; no statements of auditor code)
+.github/agent/bin/tests/test_0000_arm_fs_guard.py  test helper (arms the runtime guard first in test discovery; defines no tests; test code, not auditor code)

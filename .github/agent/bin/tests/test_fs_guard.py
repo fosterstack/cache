@@ -2,7 +2,7 @@
 """REQ-AUD-019: tests must not touch real system paths. Importing this module (unittest discovery does, before any test runs) arms fs_guard
 for the whole run (the runtime guard covers whatever discovery actually runs, Go and Java included); the static scan is scoped: Python tests in
 full, every other (shell) test only for an absolute-target `ln -s` / `cp -s` and for creating files without a mktemp call."""
-import ast, contextlib, hashlib, os, re, subprocess, sys, tempfile, unittest
+import ast, contextlib, hashlib, os, re, shutil, subprocess, sys, tempfile, unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -18,7 +18,7 @@ SYS_NAMES = ["etc", "usr", "var", "private", "Library", "System", "opt", "bin", 
              "tmp", "Applications", "Volumes", "run", "srv", "lib", "lib64", "boot", "mnt", "nix", "cores", "Network", "snap",
              "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost\\+found", "vol", "pkg",
              "swapfile", "imagegeneration", "datadisk", "cdrom", "lib32", "libx32", "init", "__w", "_work", "docker-entrypoint\\.d", "entrypoint\\.sh",
-             "bin\\.usr-is-merged", "lib\\.usr-is-merged", "sbin\\.usr-is-merged"]
+             "bin\\.usr-is-merged", "lib\\.usr-is-merged", "sbin\\.usr-is-merged", "sw", "firmlinks"]
 SYS_DIRS = "|".join(SYS_NAMES)
 SHEBANG = re.compile(r"#!\s*/(?:usr/)?bin/(?:env\s+)?[a-z0-9]+")     # a script's first line written into a fixture file: file content, not a path used
 # The boundary before the slash excludes only word characters, `.`/`$`/`/`/braces/`~`/`)` (a relative or variable-based path, a URL host, a
@@ -53,7 +53,7 @@ EXTRA = re.compile(_OPEN + r"""/(?:\.[A-Za-z]|\.(?=\s|$|['"])|[A-Za-z0-9_.\-]*(?
                    r"""|\s-[A-Za-z]/(?=\s|$|['"])"""
                    r"""|>>?\s*/""" + _END +
                    r"""|\b(?:cd|ls|cat|rm|find|pushd)\s+['"]/['"]"""
-                   r"""|\b(?:listdir|scandir|walk|chdir|stat|rmtree|Path|join|glob)\(\s*os\.sep\b"""
+                   r"""|(?<!\.split)(?<!\.rsplit)(?<!\.replace)(?<!\.startswith)(?<!\.endswith)(?<!\.strip)(?<!\.lstrip)(?<!\.rstrip)(?<!\.count)(?<!\.find)(?<!\.rfind)(?<!\.index)(?<!\.partition)(?<!\.rpartition)(?<!\.removeprefix)(?<!\.removesuffix)\(\s*os\.(?:path\.)?sep\s*[,)]|\b(?:abspath|realpath|normpath)\(\s*os\.(?:path\.)?sep\b|=\s*os\.(?:path\.)?sep\s*(?:$|[;)])"""
                    r"""|\b(?:src|source)=/(?=[,\s'"]|$)""")
 _SUFFIX = re.compile(r"""(\+\s*[rb]?["'])/""")           # `var + "/x"` appends to a prefix the code controls: not an absolute path by itself
 HOME_USE = re.compile(r"~/|\$HOME|\$\{HOME|expanduser|Path\.home|environ\[\s*['\"]HOME['\"]|(?:getenv|environ\.get)\(\s*['\"]HOME['\"]|getpw(?:uid|nam)\(|(?:^|[\s=:'\"(,])~(?=$|[;)])|\b(?:cd|ls|cat|cp|mv|rm|source|find|tar)\s+(?:-[A-Za-z-]+\s+)*~(?=\s|$|;)|\bcd\s*(?:$|;|&&|\|\|)|(?:\.\./){3,}|\bfile:/+(?:[A-Za-z]|\.\.?/)")
@@ -208,28 +208,38 @@ def _scan():
 
 # --- link creation: no test may create a symlink or hard link whose target is an absolute path (a real system path or any other
 # fixed location). Targets are built from the temp dir, so a literal absolute target is always a finding.
-SHELL_CMD = re.compile(r"(?<![A-Za-z0-9_./-])(ln|cp)\s+([^;&|)\n]*)")
+SHELL_CMD = re.compile(r"(?<![\w.-])(?:[\w.$/{}-]*/)?(ln|cp)\s+([^;&|)\n]*)")      # `/bin/ln`, `/usr/bin/ln` and a bare `ln`
 CP_LINK_FLAGS = re.compile(r"^-[A-Za-z]*[sl][A-Za-z]*$|^--(symbolic-link|link)$")
+_ABS_VAR_DEFAULT = re.compile(r"\$\{\w+:?[-=+]['\"]?[/~]")
 
 
-_ABS_TOKEN = re.compile(r"""(?:^|=|:-|:=|:\+)["']?/(?!/)\S|^-[A-Za-z]+["']?/(?!/)\S""")
+def _abs_operand(tok):
+    """A shell word that names an absolute path: starts with `/` (also `/`, `//x`), `~` (the home directory), `$'/x'`, a `{/x,y}` brace list,
+    a `${V:-/x}` / `${V-/x}` / `${V=/x}` / `${V+/x}` default, or an attached option value (`-t/x`, `--target-directory=/x`)."""
+    w = tok.strip("\"'")
+    if w.startswith("$'") or w.startswith('$"'):
+        w = w[2:].lstrip("\"'")
+    if w.startswith(("/", "~")) or re.match(r"\{[^}]*[,{]?/|\{~", w) or ",/" in w.split("}")[0] and w.startswith("{"):
+        return True
+    if _ABS_VAR_DEFAULT.search(w):
+        return True
+    return bool(re.match(r"^-{1,2}[A-Za-z][\w-]*=?[\"']?[/~]", w))
 
 
 def shell_link_target(line):
-    """The absolute operand of an `ln` (soft or hard, any flags, `--`, --symbolic, -t DIR, attached -t/abs, ${V:-/abs}) or of a link-making
-    `cp` (-s, -l, --symbolic-link) on a line, or None. $VAR/$(..)/relative operands are not absolute and are not reported."""
+    """The absolute operand of an `ln` (soft or hard, any flags in any position, `--`, --symbolic, -t DIR, attached -t/abs, ${V:-/abs}, `~/x`, a
+    brace list) or of a link-making `cp` (-s, -l, --symbolic-link, even after the operands) on a line, or None. $VAR/$(..) and relative operands
+    are not absolute and are not reported."""
     for m in SHELL_CMD.finditer(line):
-        toks, flags, opts = m.group(2).split(), [], True
+        toks = m.group(2).split()
+        before_dd = toks[:toks.index("--")] if "--" in toks else toks
+        flags = [x for x in before_dd if x.startswith("-") and not _abs_operand(x)]
+        if m.group(1) == "cp" and not any(CP_LINK_FLAGS.match(f) for f in flags):
+            continue
         for tok in toks:
-            if opts and tok == "--":
-                opts = False
+            if tok == "--" or (tok.startswith("-") and tok in flags):
                 continue
-            if opts and tok.startswith("-") and not _ABS_TOKEN.search(tok.strip("\"'")):
-                flags.append(tok)
-                continue
-            if m.group(1) == "cp" and not any(CP_LINK_FLAGS.match(f) for f in flags):
-                break
-            if _ABS_TOKEN.search(tok.strip("\"'")):
+            if _abs_operand(tok):
                 return tok.strip("\"'")
     return None
 
@@ -244,14 +254,19 @@ def _consts(node):
 
 
 def link_findings(rel, text, allow):
-    """[(rel, line, why)] for link creations with an absolute target in one file's text; allow = allow-list rows for this file."""
+    """[(rel, line, why)] for link creations with an absolute target in one file's text; allow = allow-list rows for this file. A row approves
+    ONE complete-token occurrence of its span (approved_rest, as for the literal rows), and what is left of the line must hold no further
+    absolute-target link, so `ln -s /tmp/a /tmp/b; ln -s /etc/hosts evil` and a trailing comment copy of the span are findings."""
     found, used = [], set()
 
-    def add(line, why, src_line):
-        hit = [a for a in allow if a[0] == rel and a[1] in src_line]
+    def add(line, why, src_line, shell=True):
+        hit = [a for a in allow if a[0] == rel and a[1] in src_line]            # src_line: the shell logical line, or the one call's own source text
         used.update(hit)
-        if not hit:
-            found.append("%s:%d: %s" % (rel, line, why))
+        if hit:
+            rest = approved_rest(src_line, [a[1] for a in hit])
+            if rest is not None and (not shell or shell_link_target(rest) is None):
+                return
+        found.append("%s:%d: %s" % (rel, line, why))
     lines = text.split("\n")
     if rel.endswith(".py"):
         try:
@@ -266,11 +281,17 @@ def link_findings(rel, text, allow):
                     # every positional and keyword argument: src=/target= forms and an absolute link location are findings too
                     bad = [c for a in list(n.args) + [k.value for k in n.keywords] for c in _consts(a) if c.startswith("/")]
                     if bad:
-                        add(n.lineno, "%s() with an absolute target %r" % (name, bad[0]), lines[n.lineno - 1])
-    for i, line in enumerate(lines, 1):                    # `ln -s <abs>` in shell tests and in command text inside Python tests
-        tgt = shell_link_target(line)
+                        add(n.lineno, "%s() with an absolute target %r" % (name, bad[0]), ast.get_source_segment(text, n) or lines[n.lineno - 1], shell=False)
+    i = 0
+    while i < len(lines):                                   # `ln -s <abs>` in shell tests and in command text inside Python tests
+        start, logical = i + 1, lines[i]
+        while logical.endswith("\\") and i + 1 < len(lines):      # a backslash-newline continuation is one command
+            i += 1
+            logical = logical[:-1] + " " + lines[i]
+        tgt = shell_link_target(logical)
         if tgt:
-            add(i, "link made by ln/cp with an absolute target %s" % tgt, line)
+            add(start, "link made by ln/cp with an absolute target %s" % tgt, logical)
+        i += 1
     return found, used
 
 
@@ -294,19 +315,174 @@ def _link_scan(read=None):
     return bad, [a for a in allow if a not in used]
 
 
-# a redirect that writes a file: not `>&2`, `2>&1`, `>/dev/null`, `=>`/`->`, a here-string `<<<`, or a comparison inside python (`x > 3`)
-REDIRECT_WRITE = re.compile(r"(?<![&>=<\-])>{1,2}(?![&>=])\s*(?!/dev/null)[\"']?(?:\$\{?\w|\.{0,2}/|\w+[./]\w)")
+# --- the mktemp rule (a lint of PLAIN forms, not a security control: the runtime guard is the control). A shell test that creates files must
+# create them under a mktemp directory; the scan checks the weaker, cheap thing: a script that creates files at all also calls mktemp / tempfile.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_]\w*)\1")
+_WRAPPERS = {"sudo", "env", "command", "exec", "time", "nohup", "xargs", "nice", "!", "then", "do", "else", "elif", "if", "while", "until", "{", "}"}
+_CREATORS = {"mkdir", "touch", "cp", "mv", "ln", "install", "tee", "mkfifo", "mknod"}
+
+
+def _strip_heredocs(text):
+    """Heredoc bodies are text (python, JSON, a stub script), not shell commands: blank them, keeping line numbers."""
+    lines, out, i = text.split("\n"), [], 0
+    while i < len(lines):
+        line = lines[i]
+        out.append(line)
+        m = _HEREDOC.search(re.sub(r"<<<", "", line))
+        i += 1
+        if m:
+            while i < len(lines) and lines[i].strip() != m.group(2):
+                out.append("")
+                i += 1
+            if i < len(lines):
+                out.append("")
+                i += 1
+    return "\n".join(out)
+
+
+def _shell_segments(text):
+    """[(line, words, has_file_redirect)] for each simple command in `text` (one stream, so a multi-line quoted string is one token).
+    Splits on ; & | newline ( ) { } $( ` and then/do; single-quoted text is dropped, double-quoted text is dropped except its $( ) and ` `
+    substitutions (which run), a comment ends the line, `>` / `>>` / `>|` to a word that is not &N or /dev/null marks a file redirect,
+    and arithmetic $(( )) is skipped."""
+    segs, cur, line, redirect = [], [], 1, False
+    stack = []                                   # modes: "dq" (inside double quotes), "sub" (inside $( ) or ` `), "arith"
+    seg_line = 1
+
+    def flush():
+        nonlocal cur, redirect, seg_line
+        words = "".join(cur).split()
+        if words or redirect:
+            segs.append((seg_line, words, redirect))
+        cur, redirect, seg_line = [], False, line
+
+    i, n = 0, len(text)
+    while i < n:
+        c = text[i]
+        mode = stack[-1] if stack else "cmd"
+        nxt = text[i + 1:i + 2]
+        if c == "\n":
+            line += 1
+        if mode == "arith":
+            if text.startswith("))", i):
+                stack.pop(); i += 2; continue
+            i += 1; continue
+        if mode == "dq":
+            if c == "\\":
+                i += 2; continue
+            if c == '"':
+                stack.pop(); i += 1; continue
+            if text.startswith("$((", i):
+                stack.append("arith"); i += 3; continue
+            if text.startswith("$(", i):
+                flush(); stack.append("sub"); i += 2; continue
+            if c == "`":
+                flush(); stack.append("bt"); i += 1; continue
+            i += 1; continue
+        # command mode (also inside $( ) and backticks)
+        if c == "\\":
+            i += 2 if nxt != "\n" else 2
+            if nxt == "\n":
+                line += 1
+            continue
+        if c == "'":
+            j = text.find("'", i + 1)
+            line += text.count("\n", i, j if j >= 0 else n)
+            cur.append("Q")
+            i = (j + 1) if j >= 0 else n
+            continue
+        if c == '"':
+            stack.append("dq"); cur.append("Q"); i += 1; continue
+        if c == "#" and (i == 0 or text[i - 1] in " \t\n;&|(){}"):
+            j = text.find("\n", i)
+            i = j if j >= 0 else n
+            continue
+        if text.startswith("${", i):                                         # a parameter expansion is one word (`${#a}`, `${V:-x;y}`), not a brace group
+            j = text.find("}", i)
+            cur.append("V")
+            i = (j + 1) if j >= 0 else n
+            continue
+        if text.startswith("$((", i):
+            stack.append("arith"); i += 3; continue
+        if text.startswith("$(", i):
+            flush(); stack.append("sub"); i += 2; continue
+        if c == "`":
+            flush()
+            if mode == "bt":
+                stack.pop()
+            else:
+                stack.append("bt")
+            i += 1; continue
+        if c == ")" and mode == "sub":
+            flush(); stack.pop(); i += 1; continue
+        if c in ";&|\n(){}":
+            if c == "&" and (text[i - 1:i] in (">", "<") or nxt == ">"):
+                cur.append(c); i += 1; continue
+            if c == "|" and text[i - 1:i] == ">":
+                i += 1; continue                                                 # `>|`
+            flush(); i += 1; continue
+        if c == ">":
+            m = re.match(r">{1,2}\|?\s*(&\S*|\(|/dev/null(?![\w/.-])|)", text[i:])
+            if m and (m.group(1).startswith("&") or m.group(1) == "(" or m.group(1).startswith("/dev/null")):
+                i += m.end(); continue                                           # >&2, >&1, >(proc subst), >/dev/null
+            if text[i - 1:i] in ("<", "=") or nxt == "=":
+                i += 1; continue                                                  # `<>`, `=>`, `>=`: not a redirect
+            redirect = True
+            seg_line = line if not cur else seg_line
+            i += 1
+            while i < n and text[i] == ">":
+                i += 1
+            continue
+        cur.append(c)
+        i += 1
+    flush()
+    return segs
+
+
+def _command_word(words):
+    ws = list(words)
+    while ws:
+        w = ws[0]
+        if re.match(r"^[A-Za-z_]\w*=", w) or w in _WRAPPERS:
+            ws.pop(0)
+            continue
+        if (w.startswith("-") or w.isdigit()) and len(ws) > 1:
+            ws.pop(0)                                    # an option (and a numeric value) of env / sudo / nice: skip it
+            continue
+        break
+    return (os.path.basename(ws[0]), ws[1:]) if ws else ("", [])
+
+
+def shell_file_creation(text):
+    """(creator lines, mktemp called?, tempfile called?). A creator is a command word among mkdir touch cp mv ln install tee mkfifo mknod, `dd of=`,
+    `sed -i`, `git init|clone`, or any command with a `>` / `>>` / `>|` redirect to a word that is not &N or /dev/null. mktemp counts only as a
+    command word in code (not in quotes, comments or heredoc bodies); python's tempfile counts anywhere outside comment lines (python heredocs
+    and -c strings). Returns line numbers so the failure can name the first offending line."""
+    body = _strip_heredocs(text)
+    lines = text.split("\n")
+    creators, mk = [], False
+    for ln, words, redirect in _shell_segments(body):
+        cmd, args = _command_word(words)
+        made = redirect or cmd in _CREATORS or (cmd == "dd" and any(a.startswith("of=") and a != "of=/dev/null" for a in args)) \
+            or (cmd == "sed" and any(re.match(r"^-[A-Za-z]*i", a) for a in args)) or (cmd == "git" and args[:1] in (["init"], ["clone"]))
+        if cmd == "mktemp":
+            mk = True
+        elif made:
+            creators.append(ln)
+    tf = any(re.search(r"\btempfile\.(mkdtemp|mkstemp|TemporaryDirectory|NamedTemporaryFile|mktemp)\(", l) for l in lines if not l.lstrip().startswith("#"))
+    return creators, mk, tf
+
+
+def first_file_creation_without_temp(text):
+    """(line number, line) of the first file-creating command in a script that never calls mktemp or tempfile, or None."""
+    creators, mk, tf = shell_file_creation(text)
+    if creators and not (mk or tf):
+        return creators[0], text.split("\n")[creators[0] - 1].strip()
+    return None
 
 
 def makes_files_without_temp(text):
-    """True when a shell test creates files (mkdir/touch/cp/mv/ln at the start of a line) but never CALLS mktemp or python's tempfile.
-    Comments and words inside strings do not count."""
-    code = [l for l in text.split("\n") if not l.lstrip().startswith("#")]
-    body = "\n".join(re.sub(r"\s#\s.*$", "", l) for l in code)
-    unquoted = "\n".join(re.sub(r"""'[^']*'|"[^"]*\"""", '"$q"', l) for l in body.split("\n") if "\\n" not in l)     # a redirect inside a string is text (a line holding a literal \\n is a python string)
-    makes = re.search(r"^\s*(mkdir|touch|cp|mv|ln)\s", body, re.M) or REDIRECT_WRITE.search(unquoted)
-    calls = re.search(r"\$\(\s*mktemp\b|`\s*mktemp\b|^\s*[A-Za-z_]+=\s*mktemp\b|\btempfile\.(mkdtemp|mkstemp|TemporaryDirectory|NamedTemporaryFile|mktemp)\(", body, re.M)
-    return bool(makes and not calls)
+    return first_file_creation_without_temp(text) is not None
 
 
 def literal_lines(text, rel=""):
@@ -989,7 +1165,7 @@ class AuditRows(unittest.TestCase):
     def test_mkdir_of_pycache_under_the_environment_is_allowed_nothing_else_is(self):
         T = Tables(self)
         with T.active(env=[T.t2]):
-            G._hook("os.mkdir", (T.p2("__pycache__"), 0o777, -1)); G.check(T.p2("pkg", "__pycache__"), "mkdir", True, False, True)
+            G._hook("os.mkdir", (T.p2("__pycache__"), 0o777, -1)); G.check(T.p2("pkg", "__pycache__"), "os.mkdir", True, False, True)
             for name in ("__pycache__x", "pycache", "__pycache__.d", "x__pycache__"):
                 self.refused(G._hook, "os.mkdir", (T.p2(name), 0o777, -1))
             self.refused(G._hook, "os.mkdir", (T.p2("sub", "__pycache__", "evil"), 0o777, -1))
@@ -997,6 +1173,62 @@ class AuditRows(unittest.TestCase):
         os.symlink.__wrapped__(T.t1, T.p2("lnk"))
         with T.active(env=[T.t2]):
             self.refused(G._hook, "os.mkdir", (T.p2("lnk", "__pycache__"), 0o777, -1)) if False else None
+
+    def test_the_pycache_exemption_is_mkdir_of_that_name_and_open_rename_remove_of_a_pyc_only(self):
+        T = Tables(self)
+        os.makedirs(T.p2("__pycache__")); open(T.p2("__pycache__", "m.cpython-314.pyc"), "w").close()
+        with T.active(env=[T.t2]):
+            pyc, d = T.p2("__pycache__", "m.cpython-314.pyc"), T.p2("__pycache__")
+            G._hook("open", (pyc, "wb", 0)); G._hook("os.rename", (pyc + ".7", pyc)); G._hook("os.remove", (pyc, -1)); G._hook("os.mkdir", (T.p2("pkg", "__pycache__"), 0o777, -1))
+            for ev, args in (("os.rmdir", (d, -1)), ("os.chmod", (d, 0o700, -1)), ("os.utime", (d, None, None, -1)), ("os.chmod", (pyc, 0o600, -1)),
+                             ("os.utime", (pyc, None, None, -1)), ("os.truncate", (pyc, 0)), ("os.chown", (pyc, -1, -1, -1)), ("os.symlink", ("t", pyc, -1)),
+                             ("os.link", (T.p1("f"), pyc, -1, -1)), ("os.mkfifo", (pyc,)), ("shutil.rmtree", (d,)), ("shutil.copyfile", (T.p1("f"), pyc)),
+                             ("os.rename", (d, T.p2("elsewhere"))), ("os.remove", (d, -1)), ("os.mkdir", (d + "x", 0o777, -1)), ("os.mkdir", (T.p2("a", "b"), 0o777, -1)),
+                             ("os.chflags", (pyc, 0)), ("os.setxattr", (pyc, "user.x", b"1"))):
+                self.refused(G._hook, ev, args)
+
+    def test_a_worker_thread_unraisable_or_future_violation_fails_the_run_even_when_handlers_hide_it(self):
+        base = "import sys, threading; sys.path.insert(0, %r); import fs_guard as G; G.install()\n" % G.HERE
+        cases = {
+            "excepthook replaced": "threading.excepthook = lambda a: None\nt = threading.Thread(target=lambda: open('/etc/hostname')); t.start(); t.join()",
+            "caught in the thread": "def f():\n    try:\n        open('/etc/hostname')\n    except BaseException:\n        pass\nt = threading.Thread(target=f); t.start(); t.join()",
+            "concurrent future never read": "import concurrent.futures as cf\nwith cf.ThreadPoolExecutor(1) as ex:\n    ex.submit(lambda: open('/etc/hostname'))",
+            "unraisable in __del__": "class A:\n    def __del__(self):\n        open('/etc/hostname')\nA()",
+        }
+        for name, body in cases.items():
+            out = subprocess.run([sys.executable, "-W", "ignore", "-c", base + body], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(out.returncode, 1, (name, out.stderr[-300:]))
+            self.assertIn("a worker thread touched a real system path", out.stderr, name)
+        clean = subprocess.run([sys.executable, "-W", "ignore", "-c", base + "import concurrent.futures as cf\nwith cf.ThreadPoolExecutor(1) as ex:\n    ex.submit(lambda: 1).result()\nprint('ok')"],
+                               capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual((clean.returncode, clean.stdout.strip()), (0, "ok"), clean.stderr[-300:])
+
+    def test_the_arming_module_sorts_first_and_guards_early_and_late_modules_alike(self):
+        names = sorted(n for n in os.listdir(G.HERE) if n.startswith("test_") and n.endswith(".py"))
+        self.assertEqual(names[0], "test_0000_arm_fs_guard.py", names[:3])
+        self.assertTrue(all(n > "test_0000_arm_fs_guard.py" for n in names[1:]))
+        self.assertTrue(G._installed)
+        early = ("import os, unittest\nimport fs_guard\ntry:\n    os.stat('/etc/hosts'); R = 'NOT REFUSED'\nexcept fs_guard.SystemPathAccess:\n    R = 'refused'\n"
+                 "class T(unittest.TestCase):\n    def test_%s(self):\n        self.assertEqual(R, 'refused')\n")
+        arm = open(os.path.join(G.HERE, "test_0000_arm_fs_guard.py")).read()
+        with tempfile.TemporaryDirectory() as d:
+            tests = os.path.join(d, ".github", "agent", "bin", "tests")                  # fs_guard derives the checkout from its own location
+            os.makedirs(tests)
+            for name, text in (("fs_guard.py", open(os.path.join(G.HERE, "fs_guard.py")).read()), ("test_0000_arm_fs_guard.py", arm),
+                               ("test_aaa_early.py", early % "early"), ("test_zzz_late.py", early % "late")):
+                with open(os.path.join(tests, name), "w") as fh:
+                    fh.write(text)
+            run = lambda: subprocess.run([sys.executable, "-W", "ignore", "-m", "unittest", "discover", "-s", tests, "-p", "test_*.py", "-v"],
+                                         capture_output=True, text=True, stdin=subprocess.DEVNULL, cwd=d)
+            out = run()
+            self.assertEqual(out.returncode, 0, out.stderr[-500:])
+            self.assertIn("test_early", out.stderr); self.assertIn("test_late", out.stderr); self.assertIn("Ran 2 tests", out.stderr)
+            os.remove(os.path.join(tests, "test_0000_arm_fs_guard.py"))                  # without it the module that sorts before test_fs_guard is NOT guarded
+            with open(os.path.join(tests, "test_mmm_arms_late.py"), "w") as fh:                  # what test_fs_guard.py alone would do
+                fh.write("import fs_guard\nfs_guard.install()\n")
+            out = run()
+            self.assertNotEqual(out.returncode, 0)
+            self.assertIn("NOT REFUSED", out.stderr)
 
     def test_fds_that_were_open_before_the_guard_are_exempt_and_new_ones_are_not(self):
         T = Tables(self)
@@ -1278,12 +1510,58 @@ class Scope(unittest.TestCase):
         self.assertEqual(link_findings("bin/x-test.sh", "ln -s /etc/hosts x\n", [("bin/x-test.sh", "ln -s /etc/hosts x", "text parsed by a checker, never run")])[0], [])
 
     def test_shell_tests_are_still_scanned_for_creating_files_without_mktemp(self):
-        for text in ["mkdir -p out\n", "touch f\n", "cp a b\n", "mv a b\n", "ln -s a b\n", "echo hi > out.txt\n", "printf x >> \"$f\"\n", "cmd 2> err.log\n",
-                     "# mktemp is mentioned\nmkdir -p out\n", "echo \"no mktemp\"\ntouch f\n"]:
-            self.assertTrue(makes_files_without_temp(text), text)
-        for text in ["w=$(mktemp -d)\nmkdir -p \"$w/out\"\n", "w=`mktemp -d`\ntouch \"$w/f\"\n", "w=$(mktemp)\necho hi > \"$w\"\n", "echo hi >&2\ncmd >/dev/null 2>&1\n", "echo hi\n"]:
-            self.assertFalse(makes_files_without_temp(text), text)
+        creators = ["mkdir -p out", "touch f", "cp a b", "mv a b", "ln -s a b", "echo hi > out.txt", "printf x >> \"$f\"", "cmd 2> err.log",
+                    "# mktemp is mentioned\nmkdir -p out", "echo \"no mktemp\"\ntouch f",
+                    # creators not at the start of a line
+                    "cd x && mkdir y", "[ -d d ] || touch f", "if true; then mkdir d; fi", "sudo mkdir /x", "FOO=1 mkdir d", "x=$(cp a b)", "true; touch f",
+                    "ls | tee out.txt", "echo hi | tee -a out", "for i in 1 2; do touch $i; done", "env A=1 mkdir d", "command mkdir d", "xargs touch", "f() { touch x; }",
+                    "(mkdir d)", "`touch f`", "echo \"$(touch f)\"", "time mkdir d", "! mkdir d", "nice -n 5 mkdir d", "install -d d", "mkfifo f", "mknod f p",
+                    "dd if=a of=b", "sed -i s/a/b/ f", "git init x", "git clone u d",
+                    # redirects: a \n in the line, bare-word targets, >|, a target that is only a name
+                    "printf 'hi\\n' > out.txt", "printf \"x\\n\" > f", "echo hi > out", "echo hi >| out", "echo hi >out", "echo hi 1> out", "echo hi &> out", ": > f",
+                    "cat <<EOF > f\nx\nEOF",
+                    # mktemp that is only text, not a command word
+                    "echo '$(mktemp -d)'\ntouch f", "cat <<'EOF'\n$(mktemp -d)\nEOF\ntouch f", "d=mktemp\ntouch $d/f", "touch f #$(mktemp -d)", "touch f # mktemp -d",
+                    "echo \"mktemp\"; touch f", "x='mktemp'; touch f", "touch f\ncat <<EOF\nmktemp -d\nEOF",
+                    "echo mktemp\ntouch f", "echo a mktemp b; mkdir d", "# tempfile.mkdtemp()\ntouch f", "cat <<< word\ntouch f", "echo a#b; touch f", "echo ${#a}; touch f",
+                    "/bin/mkdir d", "/usr/bin/touch f", "command /bin/cp a b", "sudo -E /bin/mv a b"]
+        for text in creators:
+            self.assertTrue(makes_files_without_temp(text + "\n"), text)
+        clean = ["w=$(mktemp -d)\nmkdir -p \"$w/out\"", "w=`mktemp -d`\ntouch \"$w/f\"", "w=$(mktemp)\necho hi > \"$w\"", "w=\"$(mktemp -d)\"; mkdir \"$w/x\"", "mktemp -d >/dev/null\ntouch f",
+                 "echo hi >&2\ncmd >/dev/null 2>&1\n[ $a -gt 3 ]\nif [ $a -gt 3 ]; then echo ok; fi", "echo hi\n", "python3 -c 'import tempfile; tempfile.mkdtemp()'\ntouch f",
+                 "x=$((a>b))\necho $x", "cat <<'EOF'\ntouch f > out\nEOF\necho done", "echo \"touch f\"; echo 'mkdir d'", "# touch f\n# mkdir d", "echo hi | grep x", "cmd 2>&1 | head",
+                 "cmd > /dev/null", "cmd &>/dev/null", "diff <(echo a) <(echo b)", "a=$(echo hi)", "[[ $a == b ]] && echo yes", "git status", "sed s/a/b/ f", "dd if=a of=/dev/null"]
+        for text in clean:
+            self.assertFalse(makes_files_without_temp(text + "\n"), text)
+        # the failure names the first offending line (AC3: "naming the file and line")
+        self.assertEqual(first_file_creation_without_temp("echo a\necho b\ncd x && mkdir y\ntouch z\n"), (3, "cd x && mkdir y"))
+        self.assertEqual(first_file_creation_without_temp("cat <<'EOF'\nx\ny\nEOF\nprintf 'a\\n' > f\n"), (5, "printf 'a\\n' > f"))
+        self.assertEqual(first_file_creation_without_temp("w=$(mktemp -d)\ntouch f\n"), None)
 
+    def test_the_link_scan_finds_the_plain_spellings_the_review_listed(self):
+        found = ["/bin/ln -s /etc/hosts x", "/usr/bin/ln -s /etc/hosts x", "/usr/local/bin/ln -sf /etc/hosts x", "ln -s \\\n/etc/hosts x", "ln -s / root", "ln -s \"/\" root",
+                 "ln -s //etc/hosts x", "ln -s \"${V-/etc/hosts}\" x", "ln -s \"${V=/etc/hosts}\" x", "ln -s \"${V+/etc/hosts}\" x", "ln -s \"${V:-/etc/hosts}\" x",
+                 "ln -s \"${V:=/etc/hosts}\" x", "ln -s \"${V:+/etc/hosts}\" x", "cp /etc/hosts x -s", "cp /etc/hosts x --symbolic-link", "cp x /etc/hosts -sf",
+                 "ln -s $'/etc/hosts' x", "ln -s ~/x y", "ln -s ~ y", "ln -s {/etc/hosts,x}", "ln -s {x,/etc/hosts}", "ln -s -t /abs a", "ln -s -t/abs a", "ln -s --target-directory=/abs a",
+                 "ln -sT a /opt/b", "ln -sfn a /opt/b", "cp -rs /etc/hosts x", "ln /etc/hosts x", "ln -f /etc/hosts x", "x; ln -s /etc/hosts y", "a && cp -s /etc/hosts y",
+                 "echo ok; /bin/cp --symbolic-link /etc/hosts y"]
+        for text in found:
+            self.assertEqual(len(link_findings("bin/x-test.sh", text + "\n", [])[0]), 1, text)
+        self.assertEqual(link_findings("bin/x-test.sh", "echo a\nln -s \\\n  /etc/hosts \\\n  x\n", [])[0], ["bin/x-test.sh:2: link made by ln/cp with an absolute target /etc/hosts"])
+        ok = ["ln -s ../x y", "ln -s \"$work/p\" y", "ln -sfn $d/t y", "ln -s a b", "ln -sf ./a b", "cp /etc/hosts x", "cp -r /tmp/a /tmp/b", "ln -s $(which d) x", "ln a b",
+              "ln -s \"${V:-rel}\" x", "ln -s '$HOME/x' y", "cp -s $work/a b", "cp --symbolic-link rel b", "echo ln -s", "cat /bin/ln", "ls -l /bin/ln", "x=$(cat /bin/cp)",
+              "ln -s -- a b"]
+        for text in ok:
+            self.assertEqual(link_findings("bin/x-test.sh", text + "\n", [])[0], [], text)
+        # rows are token-bounded and single-occurrence: a second absolute link on the line, or a copy of the span in a comment, is still a finding
+        row = [("bin/x-test.sh", "ln -s /tmp/a /tmp/b", "text parsed by a checker, never run")]
+        self.assertEqual(link_findings("bin/x-test.sh", "case_ x ok \"$(rb 'ln -s /tmp/a /tmp/b')\"\n", row)[0], [])
+        for text in ["ln -s /tmp/a /tmp/b; ln -s /etc/hosts evil", "ln -s /tmp/a /tmp/b # ln -s /tmp/a /tmp/b", "ln -s /tmp/a /tmp/b && ln -s /etc/hosts e", "ln -s /tmp/a /tmp/bb",
+                     "ln -s /tmp/a /tmp/b/x"]:
+            self.assertTrue(link_findings("bin/x-test.sh", text + "\n", row)[0], text)
+        py_row = [("bin/test_x.py", "os.symlink('/tmp/a', d)", "pure data: a checker input")]
+        self.assertEqual(link_findings("bin/test_x.py", "os.symlink('/tmp/a', d)\n", py_row)[0], [])
+        self.assertTrue(link_findings("bin/test_x.py", "os.symlink('/tmp/a', d); os.symlink('/etc/hosts', d)\n", py_row)[0])
 
 class Static(unittest.TestCase):
     def test_the_literal_scan_bites_on_a_mutant_file(self):
@@ -1310,9 +1588,10 @@ class Static(unittest.TestCase):
         bad = []
         for rel in test_files():
             if rel.endswith(".sh"):
-                if makes_files_without_temp(decode(read_raw(rel))):
-                        bad.append(rel)
-        self.assertEqual(bad, [], "shell tests that write files without a mktemp call")
+                hit = first_file_creation_without_temp(decode(read_raw(rel)))
+                if hit:
+                    bad.append("%s:%d: %s" % (rel, hit[0], hit[1][:100]))
+        self.assertEqual(bad, [], "shell tests that create files without ever calling mktemp or tempfile (first offending line):\n" + "\n".join(bad))
 
     def test_the_mktemp_check_wants_a_call_not_a_comment_or_a_word(self):
         mk = "mkdir -p x\n"
@@ -1321,7 +1600,7 @@ class Static(unittest.TestCase):
         self.assertTrue(makes_files_without_temp('printf x >> "$f"\n'))
         self.assertTrue(makes_files_without_temp("cmd 2> err.log\n"))
         self.assertTrue(makes_files_without_temp("cmd > /var/x\n"))
-        self.assertFalse(makes_files_without_temp("echo hi >&2\ncmd >/dev/null 2>&1\ncmd 2>/dev/null\n[ $a -gt 3 ]\nif depth > 0 or x > y: pass\n"))
+        self.assertFalse(makes_files_without_temp("echo hi >&2\ncmd >/dev/null 2>&1\ncmd 2>/dev/null\n[ $a -gt 3 ]\n"))
         self.assertFalse(makes_files_without_temp('w=$(mktemp -d)\necho hi > "$w/out"\n'))
         self.assertTrue(makes_files_without_temp('echo hi > "$out"\n'))
         self.assertFalse(makes_files_without_temp("""case_ x 'echo "A=b" >> "$GITHUB_ENV"'\n"""))
@@ -1381,7 +1660,7 @@ class Static(unittest.TestCase):
                       "tmp", "Applications", "Volumes", "run", "srv", "lib", "lib64", "boot", "mnt", "nix", "cores", "Network", "snap",
                       "workspace", "github", "media", "data", "afs", "net", "scratch", "export", "exports", "nfs", "Developer", "lost+found", "vol", "pkg",
                       "swapfile", "imagegeneration", "datadisk", "cdrom", "lib32", "libx32", "init", "__w", "_work", "docker-entrypoint.d", "entrypoint.sh",
-                      "bin.usr-is-merged", "lib.usr-is-merged", "sbin.usr-is-merged"]
+                      "bin.usr-is-merged", "lib.usr-is-merged", "sbin.usr-is-merged", "sw", "firmlinks"]
 
     def test_an_approved_span_does_not_exempt_the_rest_of_the_line(self):
         allow = [("f.py", "ssl/cert.pem", "pure data in a fixture string that is only parsed")]
@@ -1494,6 +1773,15 @@ class Static(unittest.TestCase):
         self.assertEqual(literal_findings("f.py", "printf '#!/bin/sh\\necho hi\\n' > x", [])[0], [])      # a QUOTED shebang is file content being written
         self.assertEqual(literal_findings("f.py", 'x = "#!/usr/bin/env python3\\nprint(1)"', [])[0], [])
         self.assertTrue(literal_findings("f.py", "printf '#!/bin/sh\\n' > x; cat /etc/passwd", [])[0])
+
+    def test_os_sep_spellings_of_the_root_and_sw_firmlinks_are_found_in_python(self):
+        for text in ["os.listdir(os.sep)", "os.listdir(os.path.sep)", "os.path.abspath(os.sep)", "os.path.abspath(os.path.sep)", "os.path.realpath(os.sep)",
+                     "os.path.normpath(os.path.sep)", "Path(os.sep)", "pathlib.Path(os.path.sep).iterdir()", "os.path.join(os.sep, 'etc')", "os.scandir(os.sep)",
+                     "root = os.sep", "root = os.path.sep;", "d = (os.sep)", "os.walk(os.sep)", "open('/sw/x')", "ls('/firmlinks')", "p = '/SW/bin'", "os.chdir(os.sep)"]:
+            self.assertTrue(literal_findings("bin/test_x.py", text, [])[0], text)
+        for text in ["p.split(os.sep)", "os.sep.join(parts)", "x.replace(os.sep, '_')", "name = a + os.sep + b", "os.path.join(d, 'x')", "sep = os.sep + 'x'", "swap = 1",
+                     "/swift/x"[:0] + "x = 'sw/x'", "x = 'a/firmlinks'"]:
+            self.assertEqual(literal_findings("bin/test_x.py", text, [])[0], [], text)
 
     def test_every_bare_root_form_is_found(self):
         for text in ["tar -C / -xf a.tar", "git -C / status", "env -C / cat etc/hosts", "cp x /", "mv x /", "rsync -a x /", "pushd /", "popd /",

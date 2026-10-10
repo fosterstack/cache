@@ -4,7 +4,7 @@ Why: a test that opens, stats or resolves a real system path (/etc/hostname, /us
 'administer your computer' prompts for the interpreter. Fixtures that need such a path build the same shape under a
 temporary directory instead (a tree holding etc/passwd, a symlink to a temp file, ...).
 
-Design (installed once, on import, by test_fs_guard.py, which unittest discovery imports before any test runs):
+Design (installed once, on import, by test_0000_arm_fs_guard.py, the first module unittest discovery imports; test_fs_guard.py proves it):
   * sys.addaudithook: refuses 'open', os.listdir/scandir/rename/replace/remove/rmdir/mkdir/chdir/symlink/link/truncate/
     chmod/chown/utime and shutil.* events whose path resolves outside the allowed roots.
   * CPython emits no audit event for stat/realpath/readlink, so os.stat, os.lstat, os.readlink, os.path.realpath,
@@ -50,6 +50,13 @@ def _record_thread_violations():
             THREAD_VIOLATIONS.append("%s: %s" % (getattr(args.thread, "name", "?"), args.exc_value))
         prev(args)
     threading.excepthook = hook
+    prev_unraisable = sys.unraisablehook
+
+    def unraisable(args):                                    # raised in a __del__ / weakref callback / finaliser: nobody can catch it
+        if args.exc_type is not None and issubclass(args.exc_type, SystemPathAccess):
+            THREAD_VIOLATIONS.append("unraisable: %s" % (args.exc_value,))
+        prev_unraisable(args)
+    sys.unraisablehook = unraisable
 
     def at_exit():
         if THREAD_VIOLATIONS:
@@ -62,6 +69,11 @@ def _record_thread_violations():
 
 class SystemPathAccess(BaseException):
     """A test touched a real system path."""
+    def __init__(self, *a):
+        super().__init__(*a)
+        import threading
+        if threading.current_thread() is not threading.main_thread():
+            THREAD_VIOLATIONS.append("%s: %s" % (threading.current_thread().name, " ".join(map(str, a))))        # even when the thread's own handler hides it
 
 
 def _resolve(p, what, orig, nofollow=False, meta=False, write=False):
@@ -237,6 +249,9 @@ def _pyvenv_probe(absp, what, orig):
         return True                        # absent: the common case
 
 
+# The ONLY writes the import system makes under the environment: it opens / renames / removes a .pyc directly in a __pycache__ directory and
+# creates that directory (mkdir of exactly that name). rmdir, chmod, utime, truncate, rmtree, symlink ... of either are refused.
+_PYC_EVENTS = {"open", "os.open", "os.rename", "os.remove"}
 _PYC = re.compile(r"\.pyc(\.\d+)?$")           # importlib writes <name>.pyc.<id> and renames it to <name>.pyc
 
 
@@ -308,7 +323,7 @@ def check(path, what="", nofollow=False, meta=False, write=False):
         res = _resolve(absp, what, p, nofollow, meta, write)
     finally:
         _busy.on = False
-    if write and (_bytecode_cache(res) or os.path.basename(res) == "__pycache__"):
+    if write and ((_bytecode_cache(res) and what in _PYC_EVENTS) or (what == "os.mkdir" and os.path.basename(res) == "__pycache__")):
         write = False                      # the import system caches bytecode beside the module it just read
     if not _under(res, write) and not (meta and _ancestor(res)):
         raise SystemPathAccess("test touched a real system path (%s -> %s): %s" % (what, res, p))
