@@ -628,7 +628,8 @@ class SubstituteCli(unittest.TestCase):
         self.assertEqual(sorted(G.ENFORCEMENT_PREFIXES), [".github/agent/bin/", ".github/agent/fixtures/testlib/"])
         self.assertEqual(sorted(G.ENFORCEMENT), sorted([
             ".github/agent/reviews/substitutes.json", ".github/workflows/agent-review-gate.yml",
-            "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh"]))
+            "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
+            "bin/scan-no-workflow-call-test.sh"]))   # REQ-SCAN-015 (round 4): the gate runs the scanner guard too
 
     def test_new_files_and_the_gate_s_other_inputs_need_a_real_codex_entry(self):
         for path in (".github/agent/bin/datetime.py", ".github/agent/bin/json.py", ".github/agent/bin/tests/new_test.py",
