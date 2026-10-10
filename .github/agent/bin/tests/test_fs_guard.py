@@ -364,7 +364,7 @@ def _strip_heredocs(text):
         out.append(line)
         code = re.sub(r"<<<", "", line)
         code = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", lambda q: q.group(0) if re.search(r"<<-?\s*$", code[:q.start()]) else "Q", code)     # quoted text, except a quoted delimiter
-        code = _blank_arithmetic(code)                                       # $(( )), (( )), $[ ], let: `<<` is a shift there
+        code = _blank_arithmetic(code)                                       # $(( )), (( )), $[ ]: `<<` is a shift there (an unquoted let is NOT blanked)
         code = re.sub(r"(^|\s)#.*$", r"\1", code)                        # a comment
         m = _HEREDOC.search(code)
         i += 1
