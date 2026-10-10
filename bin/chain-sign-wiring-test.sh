@@ -55,25 +55,6 @@ cat > "$work/judge.py" <<'PY'
 import glob, json, os, re, sys, yaml
 SHA = r"[0-9a-f]{40}"
 TOKEN = r"ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|id-token|getIDToken|oidc|/proc/\S*environ|\bprintenv\b|\benv\b\s*(\||>|$)|\bset\s+-\w*x"
-class DuplicateKey(Exception): pass
-class NoDuplicateKeys(yaml.BaseLoader):
-    """BaseLoader (plain strings) that refuses a mapping key repeating another key of the same mapping once both are trimmed and
-    case-folded, at any depth (Codex #249 r4 B3a): BaseLoader alone keeps only the LAST of two equal keys, so the judged value need
-    not be the one GitHub runs. A key that is not a plain scalar is refused for the same reason (as chain-verify.py load_yaml)."""
-    def construct_mapping(self, mnode, deep=False):
-        first = {}
-        for key, _value in mnode.value:
-            if not isinstance(key, yaml.ScalarNode):
-                raise DuplicateKey("a mapping key at line %d is not a plain scalar" % (key.start_mark.line + 1))
-            norm = key.value.strip().casefold()
-            if norm in first:
-                raise DuplicateKey("duplicate key %r at line %d repeats %r at line %d (a YAML reader keeps only one of them)"
-                                   % (key.value, key.start_mark.line + 1, first[norm].value, first[norm].start_mark.line + 1))
-            first[norm] = key
-        return super().construct_mapping(mnode, deep)
-def yload(text): return yaml.load(text, Loader=NoDuplicateKeys)
-def load(path):
-    return yload(open(path).read()), open(path).read()
 
 sys.path.insert(0, os.path.join(os.environ["CHAIN_ROOT"], "bin"))
 import importlib.util
@@ -81,6 +62,9 @@ _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.joi
 _cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
 TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
+yload = _cts.yload                       # the ONE duplicate-refusing loader, shared with the hostile judge
+def load(path):
+    return yload(open(path).read()), open(path).read()
 def signer_calls(text, strip_comments=True): return _cts.signer_calls(text, TABLE, strip_comments)
 
 R_PRINTF = r"printf '%s' \"\$DIGESTS\" > digests\.json"
@@ -108,7 +92,7 @@ def judge_sign(path):
     if len(jobs) != 1: bad.append("AC1: exactly one job required, found %d" % len(jobs))
     for name, j in jobs.items():
         ro = j.get("runs-on")
-        if not isinstance(ro, str) or not re.fullmatch(r"ubuntu-[0-9.]+(-arm)?|ubuntu-latest", ro):
+        if not isinstance(ro, str) or not _cts.HOSTED.fullmatch(ro):   # the ONE closed runner set, shared with the stage grammar (Sonnet r7 R2)
             bad.append("AC1: job %s must run on a GitHub-hosted ubuntu runner, got %r" % (name, ro))
         for k in ("container", "services", "uses", "env", "outputs", "strategy", "needs", "environment", "defaults", "if", "secrets"):
             if k in j: bad.append("AC2/AC3: job %s has `%s`, which Sign's job must not have" % (name, k))
@@ -392,6 +376,35 @@ def listed_signers(base, bad):
         allowed.setdefault(r.get("file"), set()).add(r.get("tool"))
     return allowed
 
+def decoded_text(d):
+    """The step text GitHub runs, as YAML DECODES it (Sonnet #249 r7 R1): for every step of every job (jobs.*.steps) or of a composite
+    action (runs.steps), its uses: and its run: on a step line, then each with: value, in the step-line shape the signer table's step
+    context expects. Folded and plain multi-line scalars, escapes (\\t, \\x63, \\u0063, an escaped line break), tags and flow forms
+    are all resolved by the parser, so the scan sees the command the runner sees."""
+    steps = []
+    if isinstance(d, dict):
+        for j in (d.get("jobs") or {}).values() if isinstance(d.get("jobs"), dict) else []:
+            if isinstance(j, dict):
+                if isinstance(j.get("uses"), str): steps.append({"uses": j["uses"], "with": j.get("with")})
+                steps += [x for x in (j.get("steps") or []) if isinstance(x, dict)] if isinstance(j.get("steps"), list) else []
+        runs = d.get("runs")
+        if isinstance(runs, dict) and isinstance(runs.get("steps"), list): steps += [x for x in runs["steps"] if isinstance(x, dict)]
+    out = []
+    for st in steps:
+        if isinstance(st.get("uses"), str): out.append("- uses: " + st["uses"])
+        if isinstance(st.get("run"), str): out.append("- run: " + st["run"])
+        w = st.get("with")
+        for k, v in (w.items() if isinstance(w, dict) else []):
+            out.append("  %s: %s" % (k, v if isinstance(v, str) else json.dumps(v)))
+    return "\n".join(out) + "\n"
+
+def decoded_signer_calls(f, rel, bad):
+    """signer_calls over the decoded step text; a file that does not parse (with the duplicate-refusing loader) is a finding."""
+    try: d = yload(open(f).read())
+    except Exception as ex:
+        bad.append("AC1: %s does not parse, so its decoded steps cannot be scanned for signers (%s)" % (rel, type(ex).__name__)); return []
+    return signer_calls(decoded_text(d))
+
 def direct_signers(base, files, frozen, allowed, bad):
     """001-AC1: "no other workflow, composite action ... signs provenance" (each workflow and composite action matched by the signer table)."""
     wfdir = os.path.join(base, ".github/workflows")
@@ -399,7 +412,7 @@ def direct_signers(base, files, frozen, allowed, bad):
     for f in files + acts:
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
-        for e, pv, line in signer_calls(open(f).read()):
+        for e, pv, line in signer_calls(open(f).read()) + decoded_signer_calls(f, rel, bad):
             if pv: bad.append("AC1: %s signs provenance (%s: %s); only stage-sign.yml may" % (rel, e["name"], line[:80]))
             elif e["name"] not in allowed.get(rel, set()): bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
 

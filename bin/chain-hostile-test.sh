@@ -106,6 +106,7 @@
 # 2026-10-09-harness-witness-spikes-a-c.md:83-100 (the five ways a Build step reaches the signing identity).
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+export CHAIN_ROOT="$root"                 # the wiring judge loads the shared YAML loader from the real bin/chain-test-signers.py
 cv="$root/bin/chain-verify.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
@@ -334,22 +335,14 @@ def conj(cond):
 OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
-class NoDuplicateKeys(yaml.BaseLoader):
-    """BaseLoader that refuses a repeated mapping key (trimmed, case-folded) at any depth, as the stage judge does (Codex #249 r4 B3a):
-    BaseLoader alone keeps only the LAST of two equal keys, so the wiring judged need not be the wiring GitHub runs."""
-    def construct_mapping(self, mnode, deep=False):
-        seen = set()
-        for key, _value in mnode.value:
-            norm = key.value.strip().casefold() if isinstance(key, yaml.ScalarNode) else None
-            if norm is None or norm in seen:
-                raise yaml.YAMLError("duplicate or non-scalar key at line %d" % (key.start_mark.line + 1))
-            seen.add(norm)
-        return super().construct_mapping(mnode, deep)
+import importlib.util as _ilu
+_spec = _ilu.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
+_cts = _ilu.module_from_spec(_spec); _spec.loader.exec_module(_cts)   # the ONE duplicate-refusing loader of the chain test judges
 def load(rel):
     p = os.path.join(root, rel)
     if not os.path.exists(p): return None
-    try: return yaml.load(open(p).read(), Loader=NoDuplicateKeys)
-    except yaml.YAMLError as ex:
+    try: return _cts.yload(open(p).read())
+    except (yaml.YAMLError, _cts.DuplicateKey) as ex:
         print("%s cannot be judged: %s" % (rel, ex)); sys.exit(1)
 sb, rl = load(".github/workflows/stage-build.yml"), load(".github/workflows/release.yml")
 # Run lines the judge reads are judged as bash reads them (Sonnet #249 continuation; advisor: refuse, never model): a backslash-newline, or

@@ -51,6 +51,28 @@ def strip_line(l):
 def strip(text):
     return "\n".join(strip_line(l) for l in text.splitlines())
 
+class DuplicateKey(Exception): pass
+
+def yload(text):
+    """YAML as plain strings (BaseLoader) refusing a mapping key that repeats another of the same mapping, trimmed and case-folded, at any
+    depth, and a key that is not a plain scalar (Codex #249 r4 B3a): BaseLoader alone keeps only the LAST of two equal keys, so the judged
+    value need not be the one GitHub runs. The ONE loader of the chain test judges (wiring and hostile); PyYAML is imported only here, so
+    the records judge, which reads text only, still needs none. bin/chain-verify.py keeps its own copy (it is a sealed product script)."""
+    import yaml
+    class NoDuplicateKeys(yaml.BaseLoader):
+        def construct_mapping(self, mnode, deep=False):
+            first = {}
+            for key, _value in mnode.value:
+                if not isinstance(key, yaml.ScalarNode):
+                    raise DuplicateKey("a mapping key at line %d is not a plain scalar" % (key.start_mark.line + 1))
+                norm = key.value.strip().casefold()
+                if norm in first:
+                    raise DuplicateKey("duplicate key %r at line %d repeats %r at line %d (a YAML reader keeps only one of them)"
+                                       % (key.value, key.start_mark.line + 1, first[norm].value, first[norm].start_mark.line + 1))
+                first[norm] = key
+            return super().construct_mapping(mnode, deep)
+    return yaml.load(text, Loader=NoDuplicateKeys)
+
 def logical(text):
     """Join backslash-newline continuations exactly as bash does: the two characters are removed and NOTHING is inserted
     (Sonnet #249: `cos\\<newline>ign sign` is `cosign sign` to bash; joining with a space would hide it from the signer scan)."""
