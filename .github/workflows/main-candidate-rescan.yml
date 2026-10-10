@@ -1,7 +1,7 @@
 name: Daily main-candidate rescan
 
-# The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), every PUBLISHED
-# release's digests (the manifests and rescan jobs at the end). main's candidate is never pushed to a package; this builds it from source through the
+# The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), the CURRENT
+# published release's digests only (the manifests and rescan jobs at the end; REQ-REL-004-AC5). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
 # 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the six
 # images, Google Artifact Analysis on the three variants on linux/amd64, tallied together by bin/panel.py —
@@ -493,8 +493,8 @@ jobs:
           path: /tmp/reports
 
   # ---------------------------------------------------------------------------------------------------------------
-  # Merged from daily-rescan.yml (workflow consolidation 3 of 4, owner RATIFIED Oct 2): the daily rescan of every
-  # PUBLISHED release's digests (release-chain-design.md §3) — enumerate the release manifests and the legacy inventory,
+  # Merged from daily-rescan.yml (workflow consolidation 3 of 4, owner RATIFIED Oct 2): the daily rescan of the CURRENT
+  # PUBLISHED release's digests (current release only, owner Oct 9) (release-chain-design.md §3) — enumerate the current release's manifest (or legacy inventory entry),
   # then scan each (release, variant, scanner) digest at the release gate's policy, VEX the only exception. It runs under
   # this file's ONE schedule, so the auditor never selects a rescan run that lacks the candidate.
   manifests:
@@ -515,71 +515,92 @@ jobs:
         run: |
           set -euo pipefail
           scanners=$(jq -c '.scanners' .github/policy/scanners.json)
-          : > /tmp/targets.jsonl
+          w="${RUNNER_TEMP:-/tmp}"
+          : > "$w/targets.jsonl"
 
-          # F12: legacy releases that predate release-manifest.json are
-          # covered from a committed inventory, so the daily rescan never
-          # silently stops covering the current public release.
-          jq -c --argjson scanners "$scanners" \
-            '.releases[] as $r | $r.images[] as $img | $scanners[] as $s |
-             {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: "legacy-inventory"}' \
-            .github/policy/legacy-releases.json >> /tmp/targets.jsonl
-          legacy_versions=$(jq -r '[.releases[].version] | join(" ")' .github/policy/legacy-releases.json)
-
-          # Manifest-bearing releases: enumerate ASSETS first, so we can
-          # tell an intentional legacy absence (no manifest asset) from a
-          # FAILED read of a manifest that is present (F13).
+          # The daily rescan covers the CURRENT release only (owner, Oct 9 2026; scanner-panel rules, "the daily rescan
+          # covers the current release only", REQ-REL-004-AC5): the latest published release by SEMANTIC VERSION, not by
+          # date. A draft, a prerelease and a tag that is not exactly vMAJOR.MINOR.PATCH are never current. A release that
+          # stops being current is no longer scanned, so no issue is opened or reopened for it.
           #
-          # R12: capture the release list with an EXPLICIT exit check. A
-          # `for tag in $(gh release list ...)` swallows the command
-          # substitution's failure (set -e does not catch it there), so an
-          # API outage would drop every manifest-bearing release while the
-          # legacy inventory kept the job green. Fail loudly instead; an
-          # empty-but-successful list (no releases yet) is fine.
-          if ! gh release list --limit 100 --json tagName,isDraft > /tmp/releases.json; then
+          # R12: capture the release list with an EXPLICIT exit check. A `for tag in $(gh release list ...)` swallows the
+          # command substitution's failure (set -e does not catch it there), so an API outage would look like "no
+          # release". Fail loudly instead; an empty-but-successful list is the no-release case below.
+          if ! gh release list --limit 1000 --json tagName,isDraft,isPrerelease > "$w/releases.json"; then
             echo "::error::could not enumerate releases (gh release list failed) - refusing to rescan a partial inventory" >&2
             exit 1
           fi
-          jq -e 'type == "array"' /tmp/releases.json >/dev/null \
+          jq -e 'type == "array"' "$w/releases.json" >/dev/null \
             || { echo "::error::gh release list did not return a JSON array" >&2; exit 1; }
-          for tag in $(jq -r '.[] | select(.isDraft | not) | .tagName' /tmp/releases.json); do
-            case " $legacy_versions " in *" $tag "*) continue ;; esac
-            has_manifest=$(gh release view "$tag" --json assets \
-              --jq '[.assets[] | select(.name == "release-manifest.json")] | length')
-            if [ "$has_manifest" -eq 0 ]; then
-              echo "note: ${tag} has no release-manifest.json asset and is not in the legacy inventory — skipping (add it to legacy-releases.json if it must be scanned)"
-              continue
-            fi
-            # The asset exists: a failed download/parse is an ERROR, not
-            # an empty result that would erase the release from coverage.
-            if ! gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json"; then
-              echo "::error::release-manifest.json is present on ${tag} but could not be downloaded — refusing to drop it from the rescan" >&2
-              exit 1
-            fi
-            jq empty "/tmp/m-${tag}.json" 2>/dev/null \
-              || { echo "::error::release-manifest.json on ${tag} is not valid JSON" >&2; exit 1; }
-            imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
-            [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${tag} lists no images" >&2; exit 1; }
-            jq -c --arg tag "$tag" --argjson scanners "$scanners" \
-              '.images[] as $img | $scanners[] as $s |
-               {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: "release-manifest"}' \
-              "/tmp/m-${tag}.json" >> /tmp/targets.jsonl
-          done
+          # gh returns at most --limit releases, newest-created first. A list that REACHES the limit may have cut the current
+          # release off (it can be the oldest by creation date), so it is an error, never a wrong or an empty day.
+          if [ "$(jq 'length' "$w/releases.json")" -ge 1000 ]; then
+            echo "::error::release list reached the limit of 1000: the current release may be hidden - refusing to pick from a truncated list" >&2
+            exit 1
+          fi
+          current=$(jq -r '[.[] | select((.isDraft | not) and (.isPrerelease | not)
+                                         and (.tagName | test("^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$")))
+                            | .tagName]
+                           | sort_by(ltrimstr("v") | split(".") | map(tonumber)) | last // empty' "$w/releases.json")
 
-          targets=$(jq -s -c '.' /tmp/targets.jsonl)
+          if [ -z "$current" ]; then
+            echo "note: no published release (every tag is a draft, a prerelease or not vMAJOR.MINOR.PATCH) - nothing to rescan today"
+          else
+            echo "current release: ${current} (the only release the daily rescan covers)"
+            # F12: a legacy release that predates release-manifest.json is covered from the committed inventory while it
+            # is the current release.
+            if jq -e --arg v "$current" '[.releases[] | select(.version == $v)] | length > 0' \
+                 .github/policy/legacy-releases.json >/dev/null; then
+              jq -c --arg v "$current" --argjson scanners "$scanners" \
+                '.releases[] | select(.version == $v) as $r | $r.images[] as $img | $scanners[] as $s |
+                 {release: $r.version, variant: $img.variant, digest: $img.digest, scanner: $s, source: "legacy-inventory"}' \
+                .github/policy/legacy-releases.json >> "$w/targets.jsonl"
+            else
+              # Enumerate ASSETS first, so an absent manifest is told from a FAILED read of one that is present (F13).
+              # The current release without a manifest is an ERROR: the one release we cover must never silently drop out.
+              has_manifest=$(gh release view "$current" --json assets \
+                --jq '[.assets[] | select(.name == "release-manifest.json")] | length') \
+                || { echo "::error::could not read the assets of release ${current} (gh release view failed) - refusing to rescan nothing" >&2; exit 1; }
+              if [ "$has_manifest" -eq 0 ]; then
+                echo "::error::the current release ${current} has no release-manifest.json asset and is not in the legacy inventory - refusing to rescan nothing" >&2
+                exit 1
+              fi
+              tag="$current"
+              if ! gh release download "$tag" -p release-manifest.json -O "/tmp/m-${tag}.json"; then
+                echo "::error::release-manifest.json is present on ${current} but could not be downloaded - refusing to drop it from the rescan" >&2
+                exit 1
+              fi
+              jq -e 'type == "object"' "/tmp/m-${tag}.json" >/dev/null 2>&1 \
+                || { echo "::error::release-manifest.json on ${current} is not valid JSON" >&2; exit 1; }
+              imgcount=$(jq '.images | length' "/tmp/m-${tag}.json")
+              [ "$imgcount" -ge 1 ] || { echo "::error::release-manifest.json on ${current} lists no images" >&2; exit 1; }
+              jq -c --arg tag "$current" --argjson scanners "$scanners" \
+                '.images[] as $img | $scanners[] as $s |
+                 {release: $tag, variant: $img.variant, digest: $img.digest, scanner: $s, source: "release-manifest"}' \
+                "/tmp/m-${tag}.json" >> "$w/targets.jsonl"
+            fi
+          fi
+
+          targets=$(jq -s -c '.' "$w/targets.jsonl")
           # Every matrix value reaches the rescan job: each must have its exact shape, or no matrix is emitted — a release
           # manifest's data never becomes shell source (Codex #160 pin pass, B78-01)
           TARGET_SHAPE='all(.[]; (.release | test("^v[0-9]+[.][0-9]+[.][0-9]+(-rc[.][0-9]+)?$")) and (.variant | test("^[a-z0-9][a-z0-9-]{0,31}$")) and (.digest | test("^sha256:[0-9a-f]{64}$")) and (.scanner | test("^[a-z0-9][a-z0-9-]{0,31}$")))'
           jq -e "$TARGET_SHAPE" <<<"$targets" > /dev/null \
             || { echo "::error::a rescan target has a malformed release, variant, digest or scanner - refusing to emit the matrix" >&2; exit 1; }
-          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           n=$(jq 'length' <<<"$targets")
-          # There is ALWAYS at least the legacy inventory, so an empty set
-          # means the inventory itself is broken - fail, do not no-op.
+          # No published release is a quiet day, not a failed one: an empty matrix and any=false skip the rescan job.
+          # A current release with no targets (empty legacy images, no scanners, no manifest images) is NOT a quiet day: fail closed.
           if [ "$n" -eq 0 ]; then
-            echo "::error::no rescan targets at all - the legacy inventory is empty or unreadable" >&2
-            exit 1
+            if [ -n "$current" ]; then
+              echo "::error::current release ${current} produced no rescan targets" >&2
+              exit 1
+            fi
+            echo "targets=${targets}" >> "$GITHUB_OUTPUT"
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "no published release: the rescan matrix is empty"
+            exit 0
           fi
+          echo "targets=${targets}" >> "$GITHUB_OUTPUT"
           echo "any=true" >> "$GITHUB_OUTPUT"
           echo "rescanning ${n} (release, variant, scanner) targets"
 

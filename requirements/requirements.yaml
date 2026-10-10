@@ -1173,6 +1173,12 @@ requirements:
         then: it opens a pull request bumping the go directive in both modules to that release
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-REL-004-AC5
+        given: "the published releases"
+        when: "the daily rescan enumerates what to scan"
+        then: "it enumerates exactly the current release (the latest published, non-draft, non-prerelease release by semantic version) and no superseded one; a release that stops being current is no longer scanned; the issues of superseded releases are not reopened or created"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
 
   - id: REQ-REL-005
     title: Every CI action pinned to a commit digest

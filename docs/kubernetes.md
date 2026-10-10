@@ -214,10 +214,14 @@ one fails and skews the hit ratio.
 
 `FSCACHE_DATA_DIR` is **required** in this manifest. The image sets no
 default for it, so the server falls back to `./data` relative to its
-working directory `/home/nonroot` — which on Kubernetes is the pod's
-ephemeral writable layer, not your PVC. Omit the env var and you get a
-cache that appears to work and silently loses everything on every restart.
-Set it to the same path as `volumeMounts[].mountPath`.
+working directory `/home/nonroot`. With this guide's read-only root
+filesystem, omitting the env var stops the pod from starting: it never
+becomes Ready, and the log shows
+`{"msg":"fscache: fatal","error":"write shutdown marker: mkdir data: read-only file system"}`.
+Only if you also make the root filesystem writable do you get a cache that
+appears to work but keeps its data in the pod's ephemeral layer, not your
+PVC, and loses it on every restart. Set it to the same path as
+`volumeMounts[].mountPath`.
 
 ## securityContext
 
