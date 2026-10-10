@@ -138,7 +138,7 @@ it on the image (anonymous, no token):
 ```sh
 cosign verify-attestation \
   --type https://fosterstack.com/attestations/release-manifest/v1 \
-  --certificate-identity-regexp "^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+  --certificate-identity-regexp "^https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ghcr.io/fosterstack/cache:${VER} > manifest-att.json
 ```
