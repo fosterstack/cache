@@ -204,7 +204,10 @@ ALLOW_PATTERNS=(
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'
   # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
-  '^build/locks/archive-(keys|index)\.sha256$'
+  '^build/locks/archive-keys\.sha256$'
+  '^build/locks/archive-index\.sha256$'
+  # The certified Go Cryptographic Module the FIPS recipe is generated with (build/locks/fips-module.txt): one of the two data files the daily job edits.
+  '^build/locks/fips-module\.txt$'
   # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
   # key pair, rule 22) and build/keys/release.rsa.pub (the release public key).
   '^build/keys/assembly\.rsa(\.pub)?$'
