@@ -279,10 +279,14 @@ def id_token_jobs(base, files, bad):
         wf = os.path.basename(f)
         if not isinstance(d, dict) or not isinstance(d.get("jobs", {}), dict):
             bad.append("AC1: %s is not a workflow mapping with a jobs mapping, so its id-token holders cannot be checked" % wf); continue
-        perms = [("the workflow", d.get("permissions"))] + [("job %s" % jn, j.get("permissions")) for jn, j in (d.get("jobs") or {}).items() if isinstance(j, dict)]
-        for where, perm in perms:           # a YAML merge key would hide a permission from this reader (BaseLoader does not merge)
-            if isinstance(perm, dict) and any(str(k).strip() == "<<" for k in perm):
-                bad.append("AC1: %s %s permissions use a << merge key; write permissions out in full" % (wf, where))
+        # a YAML merge key (<<) would supply keys this reader never sees (BaseLoader does not merge): refused at workflow level, at job
+        # level and inside any permissions mapping, wherever it points
+        maps = [("the workflow", d), ("the workflow permissions", d.get("permissions"))]
+        for jn, j in (d.get("jobs") or {}).items():
+            if isinstance(j, dict): maps += [("job %s" % jn, j), ("job %s permissions" % jn, j.get("permissions"))]
+        for where, m in maps:
+            if isinstance(m, dict) and any(str(k).strip() == "<<" for k in m):
+                bad.append("AC1: %s %s uses a << merge key; write it out in full" % (wf, where))
         for jn, j in (d.get("jobs") or {}).items():
             if isinstance(j, dict) and holds(j["permissions"] if "permissions" in j else d.get("permissions")):
                 held.add((os.path.basename(f), jn))
