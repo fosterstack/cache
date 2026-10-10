@@ -41,8 +41,8 @@ codex entry is judged on codex alone. Anything malformed fails closed with a mes
 
 ENFORCEMENT: a substitute never clears a change to anything the gate itself runs or reads — every path
 under .github/agent/bin/ and .github/agent/fixtures/testlib/ (by prefix, so new files count), the
-review-substitutes allow-list, the gate workflow, bin/check-file-allowlist.sh and
-.github/agent/tests/pin-wiring-test.sh. Such a change needs a real codex entry. The workflow runs this
+review-substitutes allow-list, the gate workflow, bin/check-file-allowlist.sh,
+.github/agent/tests/pin-wiring-test.sh and bin/scan-no-workflow-call-test.sh. Such a change needs a real codex entry. The workflow runs this
 script and the pin checker with `python3 -I` (isolated: no script directory on sys.path, no PYTHON* env).
 """
 import datetime, hashlib, json, re, subprocess, sys
@@ -61,10 +61,10 @@ SUBS_PATH = REVIEWS + "substitutes.json"
 # else a substitute-cleared change could remove the substitute's own time box. By PREFIX (so a NEW file
 # counts: a new .github/agent/bin/datetime.py would shadow the stdlib for a script run by path): every path under
 # bin/ and the test-lib fixtures the judge puts on PYTHONPATH; plus the exact files: the allow-list, the gate
-# workflow, and the two scripts the judge and sweep run. A change touching any needs a real codex entry.
+# workflow, and the three scripts the judge and sweep run. A change touching any needs a real codex entry.
 ENFORCEMENT_PREFIXES = (AGENT + "bin/", AGENT + "fixtures/testlib/")
 ENFORCEMENT = (SUBS_PATH, ".github/workflows/agent-review-gate.yml", "bin/check-file-allowlist.sh",
-               AGENT + "tests/pin-wiring-test.sh")
+               AGENT + "tests/pin-wiring-test.sh", "bin/scan-no-workflow-call-test.sh")
 
 
 def enforces(path):

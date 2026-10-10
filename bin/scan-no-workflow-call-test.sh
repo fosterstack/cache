@@ -104,6 +104,43 @@ sys.exit(1 if bad else 0)
 PY
 }
 
+# git-object mode, for the trusted review gate (REQ-SCAN-015-AC2): SCAN_GUARD_JUDGE_GIT=<full commit sha> judges THAT
+# commit's workflows and composite actions, read as git objects from the current repository (nothing checked out or
+# run), with this copy of the judge, and does nothing else. Fail closed: a revision that is not a full sha of a commit
+# here, or any entry under .github/workflows or .github/actions that is not a regular file (a symlink, a submodule).
+if [ -n "${SCAN_GUARD_JUDGE_GIT:-}" ]; then
+  python3 - "$SCAN_GUARD_JUDGE_GIT" "$work/head" <<'PY' || { echo "scan guard: cannot judge ${SCAN_GUARD_JUDGE_GIT} as git objects" >&2; exit 1; }
+import os, re, subprocess, sys
+rev, out = sys.argv[1], sys.argv[2]
+if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", rev):
+    sys.exit("not a full commit sha: %r" % rev)
+def git(*a):
+    r = subprocess.run(["git", *a], capture_output=True)
+    if r.returncode:
+        sys.exit("git %s failed: %s" % (a[0], r.stderr.decode(errors="replace").strip()))
+    return r.stdout
+git("cat-file", "-e", rev + "^{commit}")
+os.makedirs(out)
+for entry in git("ls-tree", "-r", "-z", "--full-tree", rev, "--", ".github/workflows", ".github/actions").split(b"\0"):
+    if not entry:
+        continue
+    meta, path = entry.split(b"\t", 1)
+    mode, kind, obj = meta.split(b" ")
+    path = path.decode("utf-8")
+    parts = path.split("/")
+    if parts[0] != ".github" or parts[1] not in ("workflows", "actions") or any(p in ("", ".", "..") for p in parts):
+        sys.exit("unexpected path %r" % path)
+    if kind != b"blob" or mode not in (b"100644", b"100755"):
+        sys.exit("%s is not a regular file (mode %s)" % (path, mode.decode()))
+    dest = os.path.join(out, *parts)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "wb") as fh:
+        fh.write(git("cat-file", "blob", obj.decode()))
+PY
+  judge "$work/head" && exit 0
+  exit 1
+fi
+
 # a nested run (the git-object cases below call this script again) is a git-object run only: it never reaches the
 # self-tests, so a missing git-object mode cannot recurse
 [ -z "${SCAN_GUARD_NESTED:-}" ] || { echo "scan guard: a nested run reached the self-tests (no git-object mode)" >&2; exit 2; }
@@ -238,7 +275,7 @@ gitjudge caught "the disk is clean but the judged commit is not (the object is r
 gitjudge caught "a revision that is not a full sha (HEAD) is refused" shortrev ':' '' 'HEAD'
 gitjudge caught "a full sha that is not in the repository is refused" norev ':' '' "$(printf '0%.0s' {1..40})"
 gitjudge caught "a submodule entry under .github/actions is refused (fail closed)" submodule \
-  "git update-index --add --cacheinfo 160000,$(printf 'a%.0s' {1..40}),.github/actions/sub"
+  "mkdir -p .github/actions/sub && git -C .github/actions/sub init -q && git -C .github/actions/sub -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m s"
 
 EXPECT=58
 echo "pass=$pass fail=$failn"

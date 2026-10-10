@@ -102,6 +102,9 @@ jobs:
           git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
           mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
           PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure
+          # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
+          # of the PR's own CI that overwrites the guard on disk changes nothing
+          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
           [ "$verdict" = success ]
 
@@ -204,8 +207,9 @@ jobs:
                && GH_TOKEN="$LIST_TOKEN" python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
                && git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh; then
-              conclusion=success   # the review record, every action reference a digest (row 78), main's allowlist guard and pin-wiring judge
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh; then
+              conclusion=success   # the review record, every action reference a digest (row 78), main's allowlist guard, pin-wiring judge and scanner guard
             fi
             if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} ${sha:0:7}: still failure"; continue; fi
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \
