@@ -332,6 +332,17 @@ jobs:
       - name: scanner installer failure-path regressions (pinned-checksum contract)
         run: bash bin/install-scanner-test.sh
 
+      # The v0.3.0 release chain's four suites (REQ-CHAIN-001..003). The pin-wiring judge requires each step exactly as written here.
+      # The verifier's cases run with the network cut and must prove the cut (CHAIN_TEST_REQUIRE_NETCUT=1).
+      - name: "the release chain verifier: identities, timestamps, Rekor, digests, action pins (REQ-CHAIN-001..003)"
+        run: CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh
+      - name: "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)"
+        run: bash bin/chain-hostile-test.sh
+      - name: "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)"
+        run: bash bin/chain-sign-wiring-test.sh
+      - name: "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)"
+        run: bash bin/chain-records-test.sh
+
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: bash bin/dependabot-reviewer-test.sh
       - name: dependency lanes wiring — reviewer hourly from main, guard on every PR/push, patch/minor lane after the guard (rows 75, 80)
