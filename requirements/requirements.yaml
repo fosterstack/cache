@@ -447,7 +447,7 @@ requirements:
       - id: REQ-HTTP-002-AC2
         given: an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value
         when: the server starts
-        then: startup fails per REQ-CFG-003's fail-closed rule
+        then: startup fails per REQ-CFG-003's fail-closed rule, with an error naming FSCACHE_MAX_CONCURRENT_UPLOADS and the value, and the message describes the setting as an upload count
         verification: { method: unit, release_blocking: false }
         status: approved
 

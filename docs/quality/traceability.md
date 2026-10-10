@@ -215,7 +215,7 @@ The server shall bound concurrent PUT processing: at most FSCACHE_MAX_CONCURRENT
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-HTTP-002-AC1 | Given a server configured with an upload concurrency limit of 1 and one slow upload in progress; when a second PUT arrives; then it receives 429 with a Retry-After header and stores nothing, while the first upload completes normally; after it completes, a new PUT succeeds | http-integration | yes | approved | 3 item(s) |
-| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule | unit |  | approved | 2 item(s) |
+| REQ-HTTP-002-AC2 | Given an environment setting FSCACHE_MAX_CONCURRENT_UPLOADS to an invalid value; when the server starts; then startup fails per REQ-CFG-003's fail-closed rule, with an error naming FSCACHE_MAX_CONCURRENT_UPLOADS and the value, and the message describes the setting as an upload count | unit |  | approved | 2 item(s) |
 
 ## Storage
 
