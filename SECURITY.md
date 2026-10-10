@@ -58,7 +58,7 @@ copy — to the public registries. The scan verdict attaches to the
 published digests because they are the scanned digests. Each scanner's
 verdict is a signed, digest-bound statement (see
 [docs/verify-images.md](docs/verify-images.md)), and the daily rescan
-re-checks the published digests against newly disclosed CVEs.
+re-checks the current release's published digests against newly disclosed CVEs.
 
 The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
 artifacts. Its partner is chosen for a database that disagrees with Grype's —
@@ -71,10 +71,10 @@ and published as a release asset. VEX is the single source of truth: any
 tool-specific ignore must cite the statement that governs it and may never
 stand alone. No statement, no exception, no push.
 
-Every published image is also rescanned daily — currently at CRITICAL and
-HIGH severity, which is softer than the release gate — so a CVE disclosed
-against bytes we already shipped raises a tracked issue rather than waiting
-for someone to look.
+The current release's images are also rescanned daily at every severity the
+scanners report (critical through low, and unknown), so a CVE disclosed against
+bytes we already shipped raises a tracked issue (or a new comment on the open
+one for that image and scanner) rather than waiting for someone to look.
 
 ## Approved-only cryptography
 

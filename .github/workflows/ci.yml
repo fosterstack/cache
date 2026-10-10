@@ -355,6 +355,8 @@ jobs:
         run: bash bin/go-freshness-wiring-test.sh
       - name: the ratified workflow consolidation (mutation runs weekly inside go-freshness; owner Oct 2)
         run: bash bin/workflow-consolidation-test.sh
+      - name: the daily rescan covers the current release only (REQ-REL-004-AC5)
+        run: bash bin/rescan-current-only-test.sh
       - name: the scanner panel's wiring — which scanner on which image, Google by federation, the VEX the only exception (rules 1, 2, 4, 9)
         run: bash bin/panel-wiring-test.sh
       - name: the k8s acceptance harness's fenced exclusion — its two generated scripts come only from docs/kubernetes.md (advisor 0084)

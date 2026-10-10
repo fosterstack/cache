@@ -1,0 +1,36 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "a2edfd5fb16f05e17a21d64db993b1134bd82f3f9470fd0bc4f5e9f2db496a16",
+ "change": "Allowlist: the recipe template, the generator (replaces the recipe comparer), the two archive record files and the FIPS module data file (v0.3.0 build chain): exact anchored patterns, declared count 43, EXPECT_ALLOW 137 -- PR #267",
+ "reviewed_commit": "399eab1329ab89faa8b1b226656223e59846c763",
+ "closed_commit": "7bb176f117cdf265ea405bc939d1627c0eb382a0",
+ "rounds": [
+  {
+   "round": 2,
+   "label": "fix commit 399eab1 (round 1 of real Codex, evidence sha256 c29292bc0d22e5db9d3430a02c069590aeeb09585c8880201b28e1d1b69c1279, held 3 defects: declared count 42 vs 39, a no-op mutation, an alternation in the archive pattern; all fixed): real Codex security tier (no confirmed defect; 986 candidate paths, only the intended files changed status) + Sonnet (0 blockers; suite 568/0; own mutants killed)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "5ad7615e75a2b7bda0d24e9d7b908981b4d65e5ee65616bba1fa61323ac72e36"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "582082d7601df596e845051c5e42cdbca5f786fef12100fb9a89dfa790d51c3f"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX COULD NOT RUN THE SUITE (read-only sandbox denies mktemp): the full allowlist test and its mutant executions are NOT VERIFIED BY CODEX and are not a Codex pass; covered by the Sonnet run (568 passed/0 failed on 399eab1, own mutants killed) and the author's run",
+  "Codex verified directly: patterns anchored escaped literals, 986 candidate paths, ALLOW 137 / SUPPRESSION 6 / DECLARED 43, digest outside the region equals the pin, no trailer",
+  "the branch was rebased onto main a71d504 after the reviews (7bb176f; main moved by docs and the pin-audit PR only; the two files are unchanged in content)",
+  "Sonnet residuals: archive-(keys|index) alternation would be behaviour-equivalent and is not killed (style); the fix commit subject names a vendor (not a trailer); deleting a pass case does not fail the suite (no case-count floor, pre-existing); a stale comment at test line 56 says 39 declared paths (the check says 43)",
+  "the real Codex seat is openai; no Opus substitute is used in this record"
+ ]
+}
