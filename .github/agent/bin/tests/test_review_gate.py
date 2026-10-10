@@ -649,6 +649,20 @@ def real_subs_text():
         return fh.read().decode("utf-8")
 
 
+def wall_now():
+    """The real UTC wall clock: the ONLY place a 0350 test reads it."""
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def expected_0350_verdict(before, after):
+    """(returncode, expired) a correct gate on the system clock gives for a 0350 record when its clock read fell
+    between `before` and `after`; None when that window straddles 0350's expiry (the verdict is then undecidable)."""
+    x = dt(X0350)
+    if (before >= x) != (after >= x):
+        return None
+    return (1, True) if before >= x else (0, False)
+
+
 def rec0350(completed=D0350, tree=TREE, **over):
     return sub_rec(opus(substitute_id="0350", **over), completed, tree)
 
@@ -872,19 +886,64 @@ class Substitute0350Cli(unittest.TestCase):
         self.assertEqual(rc, 0, out)
 
     def test_gate_now_tz_and_faketime_do_not_move_the_subprocess_gate_s_clock(self):
-        # a real subprocess on the system clock: the verdict follows the real UTC time, whatever the environment says
+        # a real subprocess on the system clock: the verdict follows the real UTC time, whatever the environment says.
+        # The expected verdict is taken from the wall clock read just before AND just after EACH run, so the test holds
+        # on either side of 0350's expiry; a run whose window straddles the expiry is retried once, then skipped.
         self.clock.stop(); self.addCleanup(self.clock.start)
-        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
-        done = min(now - datetime.timedelta(minutes=1), dt(X0350) - datetime.timedelta(seconds=1))
-        tree = self.propose(completed=done.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        expired = now >= dt(X0350)
+        start = wall_now().replace(microsecond=0)
+        done = min(start - datetime.timedelta(minutes=1), dt(X0350) - datetime.timedelta(seconds=1))
+        self.propose(completed=done.strftime("%Y-%m-%dT%H:%M:%SZ"))
         for env in ({}, {"GATE_NOW": "2026-10-16T00:00:00Z"}, {"GATE_NOW": "2027-01-01T00:00:00Z"},
                     {"TZ": "Etc/GMT+12"}, {"TZ": "Etc/GMT-14"}, {"FAKETIME": "@2027-01-01 00:00:00"}):
-            r = subprocess.run([sys.executable, "-I", self.SCRIPT, "--base", self.base, "--head", "HEAD"],
-                               capture_output=True, text=True, env=dict(os.environ, **env), stdin=subprocess.DEVNULL)
-            self.assertEqual(r.returncode, 1 if expired else 0, (env, r.stdout, r.stderr))
+            for _ in range(2):
+                before = wall_now()
+                r = subprocess.run([sys.executable, "-I", self.SCRIPT, "--base", self.base, "--head", "HEAD"],
+                                   capture_output=True, text=True, env=dict(os.environ, **env), stdin=subprocess.DEVNULL)
+                want = expected_0350_verdict(before, wall_now())
+                if want is not None:
+                    break
+            else:
+                self.skipTest("two runs straddled the 0350 expiry instant %s; the verdict is undecidable" % X0350)
+            rc, expired = want
+            self.assertEqual(r.returncode, rc, (env, r.stdout, r.stderr))
             self.assertEqual("0350 expired" in r.stdout, expired, env)
-        self.assertTrue(tree)
+
+
+class Substitute0350NoTimeBomb(unittest.TestCase):
+    """REQ-AUD-018-AC4: no 0350 test turns red when the wall clock passes 0350's expiry (2026-10-17T05:00:00Z)."""
+
+    def test_the_expected_verdict_is_right_on_both_sides_of_the_expiry(self):
+        x = dt(X0350); s = datetime.timedelta(seconds=1)
+        self.assertEqual(expected_0350_verdict(dt(D0350), dt(D0350) + s), (0, False))      # before: accepted
+        self.assertEqual(expected_0350_verdict(x - 2 * s, x - s), (0, False))
+        self.assertEqual(expected_0350_verdict(x, x + s), (1, True))                       # at and after: rejected
+        self.assertEqual(expected_0350_verdict(dt("2027-01-01T00:00:00Z"), dt("2027-01-01T00:00:09Z")), (1, True))
+        self.assertIsNone(expected_0350_verdict(x - s, x))                                 # straddles: undecidable
+        self.assertIsNone(expected_0350_verdict(x - s, x + s))
+
+    def test_the_wall_clock_is_read_only_through_wall_now(self):
+        # every 0350 test either passes `now=`, patches G._utcnow, or (the one subprocess test) reads wall_now()
+        # around each run; nothing else in this file reads the real clock except the pre-existing 0317 test,
+        # whose expiry (2026-10-10T05:00:00Z) is already past.
+        import ast
+        with open(os.path.abspath(__file__)) as fh:
+            tree = ast.parse(fh.read())
+        readers = set()
+        for fn in ast.walk(tree):
+            if isinstance(fn, ast.FunctionDef):
+                for n in ast.walk(fn):
+                    if isinstance(n, ast.Attribute) and n.attr in ("now", "utcnow", "time", "today") and \
+                            isinstance(n.value, (ast.Attribute, ast.Name)) and \
+                            getattr(n.value, "attr", getattr(n.value, "id", "")) in ("datetime", "time", "date"):
+                        readers.add(fn.name)
+        self.assertEqual(readers, {"wall_now", "test_a_substitute_without_a_clock_uses_the_system_clock_function"})
+
+    def test_every_in_process_cli_test_runs_on_the_patched_clock(self):
+        # Substitute0350Cli's setUp patches G._utcnow (2026-10-16T13:00:00Z) for every in-process run_main call
+        t = Substitute0350Cli("test_an_ordinary_change_clears_with_0350_before_expiry")
+        t.setUp(); self.addCleanup(t.doCleanups)
+        self.assertIsInstance(G._utcnow, mock.Mock)
+        self.assertEqual(G._utcnow(), dt("2026-10-16T13:00:00Z"))
 
 
 class ClockIsSystemOnly(unittest.TestCase):
