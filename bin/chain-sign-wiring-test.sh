@@ -211,6 +211,59 @@ def allowed_mentions(base, bad):
         elif os.path.isfile(f) and sha256_of(f) == r.get("sha256"): ok.add(r["path"])
     return ok
 
+# BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): pinned by sha256
+BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".goreleaser.yaml", ".grype.yaml", ".ko.yaml", ".gremlins.yaml", "build/docker/*", ".githooks/*")
+GORELEASER_HOOKS = ["go mod verify", "git diff --exit-code go.mod go.sum"]      # the only before.hooks .goreleaser.yaml may hold
+GORELEASER_NO = ("signs", "docker_signs", "binary_signs", "notarize", "publishers", "after")
+
+def build_config(base, bad):
+    """Every build configuration file is listed with its sha256 in .github/policy/build-config-files.json; a changed, missing or unlisted
+    one is a finding. .goreleaser.yaml (run with id-token: write by stage-build.yml) may not sign: no signs/docker_signs/binary_signs/notarize/
+    publishers/after, no hooks but GORELEASER_HOOKS, no per-build hooks, no custom sboms command."""
+    p = os.path.join(base, ".github/policy/build-config-files.json")
+    listed = {r["path"]: r["sha256"] for r in (json.load(open(p))["files"] if os.path.exists(p) else [])}
+    present = sorted({os.path.relpath(f, base) for g in BUILD_CONFIG_GLOBS for f in glob.glob(os.path.join(base, g)) if os.path.isfile(f)})
+    for x in present:
+        if x not in listed: bad.append("AC1: build config file not listed: %s: add it to build-config-files.json with its sha256" % x)
+        elif sha256_of(os.path.join(base, x)) != listed[x]: bad.append("AC1: build config file changed: %s: update build-config-files.json or delete it" % x)
+    for x in sorted(set(listed) - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
+    g = os.path.join(base, ".goreleaser.yaml")
+    if not os.path.exists(g): return
+    try: d = yaml.load(open(g).read(), Loader=yaml.BaseLoader) or {}
+    except Exception as ex: bad.append("AC1: .goreleaser.yaml does not parse (%s)" % ex); return
+    for k in GORELEASER_NO:
+        if k in d: bad.append("AC1: .goreleaser.yaml has `%s` (the build job holds id-token: write; only stage-sign.yml signs)" % k)
+    hooks = (d.get("before") or {}).get("hooks") or []
+    if hooks != GORELEASER_HOOKS: bad.append("AC1: .goreleaser.yaml before.hooks are %s, not exactly %s" % (hooks, GORELEASER_HOOKS))
+    for b in d.get("builds") or []:
+        if isinstance(b, dict) and b.get("hooks"): bad.append("AC1: .goreleaser.yaml build %s has hooks" % b.get("id"))
+    for sb in d.get("sboms") or []:
+        if isinstance(sb, dict) and set(sb) & {"cmd", "args", "env"}: bad.append("AC1: .goreleaser.yaml sboms entry sets %s (only the default generator)" % sorted(set(sb) & {"cmd", "args", "env"}))
+
+def id_token_jobs(base, files, bad):
+    """A job may hold id-token: write (its own permissions, or the workflow's when it sets none; write-all counts) only if
+    .github/policy/id-token-jobs.json lists (workflow, job) with a reason; a listed pair that does not hold it is stale. Keyless signing needs
+    the job's OIDC token, so this closes signers the text scans cannot see: remote reusable workflows, in-process libraries, files outside
+    bin/ and .github/, tools missing from the signer table."""
+    p = os.path.join(base, ".github/policy/id-token-jobs.json")
+    rows = json.load(open(p))["jobs"] if os.path.exists(p) else []
+    listed = set()
+    for r in rows:
+        if not str(r.get("reason") or "").strip(): bad.append("AC1: id-token-jobs.json row without a reason: %s" % r)
+        listed.add((r.get("workflow"), r.get("job")))
+    def holds(perm):
+        if isinstance(perm, str): return perm.strip() == "write-all"
+        return isinstance(perm, dict) and str(perm.get("id-token", "")).strip() == "write"
+    held = set()
+    for f in files:
+        try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
+        except Exception: continue          # a file that does not parse is reported by the other checks
+        for jn, j in (d.get("jobs") or {}).items():
+            if isinstance(j, dict) and holds(j["permissions"] if "permissions" in j else d.get("permissions")):
+                held.add((os.path.basename(f), jn))
+    for wf, jn in sorted(held - listed): bad.append("AC1: %s job %s holds id-token: write but is not listed in id-token-jobs.json" % (wf, jn))
+    for wf, jn in sorted(listed - held): bad.append("AC1: id-token-jobs.json lists %s job %s, which does not hold id-token: write (stale)" % (wf, jn))
+
 def judge_tree(base):
     """001-AC1 (advisor decision b, Oct 9; finite grammar, replaces the script-reach scan): (a) stage-sign.yml is the only new workflow
     file; (b) the direct signer-call scan of every workflow and composite action (listed with a reason in chain-signers.json;
@@ -238,6 +291,8 @@ stage-verify.yml supply-chain.yml""".split())
             allowed.setdefault(r.get("file"), set()).add(r.get("tool"))
     acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
     frozen = frozen_files(base, bad)          # repo paths; their OWN findings are left out, what they run is still followed
+    build_config(base, bad)
+    id_token_jobs(base, files, bad)           # every workflow, frozen ones included (their jobs are listed)
     def check(rel, text):
         for e, pv, line in signer_calls(text):
             if rel == "stage-sign.yml": continue
@@ -486,6 +541,7 @@ mk() {
   printf '#!/usr/bin/env bash\nset -euo pipefail\nwitness run --step build -- bin/build-apk.sh "$1"\n' > "$d/bin/build-stage.sh"
   printf '#!/usr/bin/env bash\nset -euo pipefail\necho built\n' > "$d/bin/build-apk.sh"
   printf '{"signers":[{"file":"release.yml","tool":"gitsign","reason":"CI patch tag (REQ-REL-009-AC5)"}]}\n' > "$d/.github/policy/chain-signers.json"
+  printf '{"jobs":[{"workflow":"stage-sign.yml","job":"sign","reason":"Sign, the one provenance signer"}]}\n' > "$d/.github/policy/id-token-jobs.json"
   cat > "$d/.spec.json" <<'JSON'
 [{"path":"bin/install-scanner.sh","tools":["curl","sha256sum"],"signs":false,"runs":[]},
  {"path":"bin/chain-verify.py","tools":[],"signs":"provenance","sign_subcommand":"sign","reason":"only `chain-verify.py sign` in stage-sign.yml signs provenance","runs":[]},

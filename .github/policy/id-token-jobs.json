@@ -1,0 +1,180 @@
+{
+ "_note": "The CLOSED list of the jobs that may hold id-token: write (their own permissions, or the workflow's when they set none). Keyless signing needs the job's OIDC token, so bin/chain-sign-wiring-test.sh fails for any job holding it that is not listed, and for a listed job that no longer holds it (REQ-CHAIN-001-AC1). The list is data: review of a change to it is the control.",
+ "jobs": [
+  {
+   "workflow": "auditor.yml",
+   "job": "audit",
+   "reason": "the auditor's keyless App/OIDC federation to its model vendors (no artifact signing)"
+  },
+  {
+   "workflow": "auditor.yml",
+   "job": "panel-probe",
+   "reason": "the auditor's keyless App/OIDC federation to its model vendors (no artifact signing)"
+  },
+  {
+   "workflow": "dependabot-reviewer.yml",
+   "job": "review",
+   "reason": "the Dependabot reviewer's OIDC federation to its model vendor (no artifact signing)"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "build",
+   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation (calls ./.github/workflows/stage-build.yml)"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "assemble",
+   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation (calls ./.github/workflows/stage-image.yml)"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-inspector",
+   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation"
+  },
+  {
+   "workflow": "main-candidate-rescan.yml",
+   "job": "panel-google",
+   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "decide",
+   "reason": "the release caller: grants id-token to the stage file each job calls"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "admission",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-admission.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "build",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-build.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "sign",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-sign.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "image",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-image.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "reproducibility",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-reproducibility.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "scans",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-verify.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-artifacts",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-artifacts.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/acceptance.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-egress",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-egress.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-k8s",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-k8s.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "acceptance-predicate",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-predicate.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "authorization",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-authorize.yml)"
+  },
+  {
+   "workflow": "release.yml",
+   "job": "promotion",
+   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-promote.yml)"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "build",
+   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation (calls ./.github/workflows/stage-build.yml)"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "assemble",
+   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation (calls ./.github/workflows/stage-image.yml)"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "assemble-b",
+   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation (calls ./.github/workflows/stage-image.yml)"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "scanner",
+   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation"
+  },
+  {
+   "workflow": "scorecard.yml",
+   "job": "analysis",
+   "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
+  },
+  {
+   "workflow": "stage-acceptance-predicate.yml",
+   "job": "predicate",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  },
+  {
+   "workflow": "stage-admission.yml",
+   "job": "admit",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  },
+  {
+   "workflow": "stage-authorize.yml",
+   "job": "authorize",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  },
+  {
+   "workflow": "stage-build.yml",
+   "job": "build",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  },
+  {
+   "workflow": "stage-image.yml",
+   "job": "assemble",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  },
+  {
+   "workflow": "stage-promote.yml",
+   "job": "promote",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  },
+  {
+   "workflow": "stage-reproducibility.yml",
+   "job": "reproduce",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  },
+  {
+   "workflow": "stage-sign.yml",
+   "job": "sign",
+   "reason": "Sign: the one provenance signer (REQ-CHAIN-001)"
+  },
+  {
+   "workflow": "stage-verify.yml",
+   "job": "scan",
+   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+  }
+ ]
+}

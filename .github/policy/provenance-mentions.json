@@ -8,7 +8,7 @@
   },
   {
    "path": "bin/chain-sign-wiring-test.sh",
-   "sha256": "ce7975b92be968bb8465595cc6a563e5e19c5a8350e0d6a741198579bf5a99b9",
+   "sha256": "34d4d87979c72ba2ef5606d5ffb37e67edf5083b2a313610cf5b9f1032f6e840",
    "reason": "the wiring test: its fixtures and probes hold provenance signers to prove they are caught"
   },
   {
@@ -18,7 +18,7 @@
   },
   {
    "path": "bin/chain-verify-test.sh",
-   "sha256": "9f8eb73604b4cae7af4af01cca9e449a59533772b6a348659b0383708f1cf5ea",
+   "sha256": "344e2228dd9c964706c44e79199e6e824e5429a339dfffbf1ac731db55df89d7",
    "reason": "the verifier test: its fake signing tool and pinned command lines name the provenance call"
   },
   {
