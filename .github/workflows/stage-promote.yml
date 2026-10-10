@@ -9,7 +9,8 @@ name: 'Stage: promotion'
 # Candidates never touch Docker Hub. cosign signs the public digests in
 # BOTH registries (signatures are per-registry artifacts). The release
 # is files: the draft GitHub Release gets the archives, checksums and
-# their cosign bundle, SBOMs, VEX document, and release-manifest.json —
+# their cosign bundle, SBOMs, VEX document, release-manifest.json, and
+# release-files.sha256 with its cosign bundle (covers the manifest and VEX) —
 # then the customer-facing verify and anonymous-pull checks run against
 # the public digests, and only then is the release undrafted.
 #
@@ -276,6 +277,39 @@ jobs:
           cosign sign-blob --yes dist/checksums.txt \
             --bundle /tmp/checksums.txt.bundle
 
+      # REQ-REL-001-AC2 (advisor 0362, Oct 10): the manifest and the three VEX files are release assets outside
+      # checksums.txt; one signed list covers exactly those four, hashed from the very files uploaded below. A missing
+      # file, an extra line or a hash that does not match its file stops the run here, before publication.
+      - name: sign the release metadata list (release-files.sha256, customer-verifiable bundle)
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME}"
+          files=( /tmp/release-manifest.json
+                  /tmp/vex/fosterstack-cache.openvex.json
+                  "/tmp/vex/fosterstack-cache-${ver}.csaf.json"
+                  "/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json" )
+          for f in "${files[@]}"; do
+            [ -f "$f" ] && [ ! -L "$f" ] || { echo "::error::release metadata file missing: $f" >&2; exit 1; }
+          done
+          : > release-files.sha256
+          for f in "${files[@]}"; do
+            h=$(sha256sum "$f" | cut -d' ' -f1)
+            printf '%s  %s\n' "$h" "$(basename "$f")" >> release-files.sha256
+          done
+          # exactly the four lines, in order, each matching the file that will be uploaded
+          i=0
+          while IFS= read -r line; do
+            f="${files[$i]:-}"
+            [ -n "$f" ] || { echo "::error::release-files.sha256 has an extra line: ${line}" >&2; exit 1; }
+            h=$(sha256sum "$f" | cut -d' ' -f1)
+            [[ "$h" =~ ^[0-9a-f]{64}$ ]] && [ "$line" = "${h}  $(basename "$f")" ] \
+              || { echo "::error::release-files.sha256 line $((i+1)) does not match its file: ${line}" >&2; exit 1; }
+            i=$((i+1))
+          done < release-files.sha256
+          [ "$i" -eq "${#files[@]}" ] || { echo "::error::release-files.sha256 has ${i} lines, want ${#files[@]}" >&2; exit 1; }
+          cosign sign-blob --yes release-files.sha256 \
+            --bundle release-files.sha256.bundle
+
       - name: create the draft release and upload every file
         env:
           GH_TOKEN: ${{ github.token }}
@@ -292,7 +326,7 @@ jobs:
             --notes-file /tmp/notes.md
           gh release upload "$ver" \
             dist/*.tar.gz dist/checksums.txt /tmp/checksums.txt.bundle \
-            /tmp/release-manifest.json \
+            /tmp/release-manifest.json release-files.sha256 release-files.sha256.bundle \
             /tmp/vex/fosterstack-cache.openvex.json \
             "/tmp/vex/fosterstack-cache-${ver}.inspector-filters.json" "/tmp/vex/fosterstack-cache-${ver}.csaf.json"
           if compgen -G 'dist/*.sbom.json' >/dev/null; then
@@ -385,7 +419,22 @@ jobs:
           if cosign verify-blob /tmp/checksums.corrupt --bundle /tmp/checksums.txt.bundle "${idflags[@]}" >/dev/null 2>&1; then
             echo "::error::verify-blob accepted a TAMPERED checksums file - the bundle check is not sound" >&2; exit 1
           fi
-          echo "anonymous cosign image + checksums verification passed; negative controls rejected"
+          # release-files.sha256 (REQ-REL-001-AC3): the signed list of the four release metadata files, checked as the
+          # docs tell a customer to, on the files as uploaded: the bundle under the same pinned identity (idflags), then
+          # every listed file against the list.
+          rel=$(mktemp -d)
+          cp release-files.sha256 release-files.sha256.bundle /tmp/release-manifest.json /tmp/vex/fosterstack-cache.openvex.json \
+            "/tmp/vex/fosterstack-cache-${GITHUB_REF_NAME}.csaf.json" "/tmp/vex/fosterstack-cache-${GITHUB_REF_NAME}.inspector-filters.json" "$rel/"
+          cosign verify-blob "$rel/release-files.sha256" --bundle "$rel/release-files.sha256.bundle" "${idflags[@]}" \
+            || { echo "::error::anonymous release-files.sha256 bundle verification failed" >&2; exit 1; }
+          (cd "$rel" && sha256sum -c release-files.sha256 --strict) \
+            || { echo "::error::a release metadata file does not match release-files.sha256" >&2; exit 1; }
+          # NEGATIVE CONTROL: a corrupted release-files.sha256 MUST fail the bundle.
+          cp "$rel/release-files.sha256" /tmp/release-files.corrupt && printf 'tamper\n' >> /tmp/release-files.corrupt
+          if cosign verify-blob /tmp/release-files.corrupt --bundle "$rel/release-files.sha256.bundle" "${idflags[@]}" >/dev/null 2>&1; then
+            echo "::error::verify-blob accepted a TAMPERED release-files.sha256 - the bundle check is not sound" >&2; exit 1
+          fi
+          echo "anonymous cosign image + checksums + release-files verification passed; negative controls rejected"
 
       - name: anonymous-pull check, EVERY promised tag, both registries
         run: |

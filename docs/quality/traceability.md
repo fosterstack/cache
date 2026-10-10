@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 77 |
-| Acceptance criteria | 240 |
+| Acceptance criteria | 242 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 224 |
+| ACs with mapped evidence | 226 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -539,9 +539,13 @@ Every release image shall carry a cosign keyless signature and a SLSA provenance
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md headline; RELEASING.md "Verifying a release"; docs/verify-images.md*
 
+> AC2 and AC3 accepted by the advisor Oct 10 step 5 (handoff 0362, read-back 2026-10-10-cache-readback-release-files-sha256). They apply from the release after v0.2.2; releases up to v0.2.2 are not re-signed, their metadata files are covered through the signed manifest's hashes. AC2 is enforced by the promotion workflow before publication and AC3 by its post-publish anonymous verification job; both are recorded as non-blocking acceptance ACs because the release gate derives its publication-phase set from a fixed list (REQ-REL-001-AC1, REQ-REL-002-AC1) and a blocking AC outside it would be required as a candidate-phase pass that no suite reports.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-REL-001-AC1 | Given a published release; when the documented cosign and gh attestation commands run anonymously against each image digest and the checksums bundle; then every verification succeeds and names this repository's release workflow | acceptance-release-artifact | yes | approved | 1 item(s) |
+| REQ-REL-001-AC2 | Given the promotion workflow for a release version; when it publishes the GitHub release; then the release carries `release-files.sha256`, listing the sha256 of exactly release-manifest.json, the OpenVEX file, the CSAF file and the inspector-filters file of that version, and `release-files.sha256.bundle`, a keyless cosign signature of it by the promotion workflow identity at the release tag; a missing file, an extra line or a hash that does not match its file stops the workflow before publication. | acceptance-release-artifact |  | approved | 2 item(s) |
+| REQ-REL-001-AC3 | Given a published release with the new assets; when the documented `cosign verify-blob` and `sha256sum -c` commands run anonymously; then both succeed and name this repository's promotion workflow; and a corrupted copy of `release-files.sha256` fails the bundle (negative control run in the same post-publish job). | acceptance-release-artifact |  | approved | 2 item(s) |
 
 ### REQ-REL-002 — Anonymous availability
 

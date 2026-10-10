@@ -314,6 +314,25 @@ cosign verify-blob \
 sha256sum -c checksums.txt   # verifies every archive you downloaded, transitively
 ```
 
+The release metadata — `release-manifest.json` and the three VEX files
+(OpenVEX, CSAF, Inspector filters) — is covered the same way by its own
+list, `release-files.sha256`, signed by the same promotion workflow:
+
+```sh
+base="https://github.com/fosterstack/cache/releases/download/v${VER}"
+for f in release-files.sha256 release-files.sha256.bundle release-manifest.json fosterstack-cache.openvex.json "fosterstack-cache-v${VER}.csaf.json" "fosterstack-cache-v${VER}.inspector-filters.json"; do curl -fsSLO "${base}/${f}"; done
+
+cosign verify-blob \
+  --bundle release-files.sha256.bundle \
+  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+  --certificate-oidc-issuer='https://token.actions.githubusercontent.com' \
+  release-files.sha256
+
+sha256sum -c release-files.sha256   # the manifest and the three VEX files
+```
+
+`release-files.sha256` applies from the release after v0.2.2; the files of earlier releases are covered through the signed manifest's hashes (the manifest is signed as an attestation on each image digest and records the sha256 of each VEX file). <!-- pinned: historical -->
+
 ## 5. Enforcing this in your own cluster (Kyverno)
 
 For customers who want to *require* this at admission time rather than

@@ -82,6 +82,14 @@ mappings:
   - ac: REQ-REL-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/release.yml: cosign sign per digest, attest-build-provenance, and gh attestation verify gate - executed on the v0.1.0 release" }
+  - ac: REQ-REL-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/stage-promote.yml step 'sign the release metadata list (release-files.sha256, customer-verifiable bundle)' - runs at every release from the release after v0.2.2" }
+  - ac: REQ-REL-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vex-forms-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/stage-promote.yml step 'documented ANONYMOUS customer verification (cosign, no credentials)': release-files.sha256 verify-blob, sha256sum -c --strict, corrupted-copy negative control" }
   - ac: REQ-REL-002-AC1
     evidence:
       - { type: manual, ref: "v0.1.0 anonymous-pull verification (cache PR #28 body): all six published tags returned HTTP 200 to a fresh anonymous registry token, 2026-09-07; the release.yml gate now enforces it before undrafting" }
