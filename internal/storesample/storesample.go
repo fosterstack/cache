@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -24,7 +25,7 @@ import (
 const (
 	DefaultFresh      = 5 * time.Second
 	DefaultProbeLimit = 2 * time.Second
-	DefaultWaitBudget = 50 * time.Millisecond
+	DefaultWaitBudget = 10 * time.Millisecond
 	probePrefix       = ".tmp-probe-" // the blob store's own temporary prefix: leftovers are swept at startup
 )
 
@@ -47,6 +48,8 @@ type Deps struct {
 	OpenProbe func(path string) (ProbeFile, error)
 	Remove    func(path string) error
 	Now       func() time.Time
+	// Sweep removes leftover probe files at start (a probe whose cleanup failed, then a clean restart); the default removes root-level .tmp-probe-* files.
+	Sweep func(dir string)
 }
 
 // Options tune the sampler; zero values use the defaults.
@@ -89,6 +92,9 @@ func New(dir string, d Deps, o Options) *Sampler {
 	if d.Now == nil {
 		d.Now = time.Now
 	}
+	if d.Sweep == nil {
+		d.Sweep = sweepProbeFiles
+	}
 	if o.Fresh == 0 {
 		o.Fresh = DefaultFresh
 	}
@@ -107,6 +113,7 @@ func New(dir string, d Deps, o Options) *Sampler {
 // Start takes the first sample and waits for it (the server does not accept
 // requests before the gauges hold a measured value).
 func (s *Sampler) Start() {
+	s.d.Sweep(s.dir)
 	ch := s.refreshIfNeeded()
 	if ch != nil {
 		<-ch
@@ -164,22 +171,10 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	done := make(chan struct{})
 	s.done = done
 	finished := make(chan struct{})
-	limDone := make(chan struct{}) // closed after the limit's "not writable" sample is published (only if the limit claimed the refresh)
 	go func() {
 		r := result{probeErr: s.probe()}
 		r.avail, r.statErr = s.d.Statfs(s.dir) // statfs is inside the measuring goroutine too: a hung statfs cannot hang a reader
-		s.mu.Lock()
-		first := !s.pubDone // the limit may already have claimed the refresh; then this is the real, late answer
-		s.pubDone = true
-		s.mu.Unlock()
-		if !first {
-			<-limDone // the late answer is published AFTER the limit's sample, never before it
-		}
-		s.publish(r)
-		s.mu.Lock()
-		s.busy = false // the slot is released only after the result is published, so two refreshes never publish out of order
-		s.mu.Unlock()
-		if first {
+		if s.finish(r, false) {
 			close(done)
 		}
 		close(finished)
@@ -191,13 +186,9 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 		case <-finished:
 		case <-t.C:
 			s.mu.Lock()
-			first := !s.pubDone
-			s.pubDone = true
 			prev := s.cur.FreeBytes // keep the last known free bytes
 			s.mu.Unlock()
-			if first {
-				s.publish(result{probeErr: errProbeLimit, avail: prev})
-				close(limDone)
+			if s.finish(result{probeErr: errProbeLimit, avail: prev}, true) {
 				close(done)
 			}
 		}
@@ -205,38 +196,53 @@ func (s *Sampler) refreshIfNeeded() <-chan struct{} {
 	return done
 }
 
-type limitErr struct{}
-
-func (limitErr) Error() string { return "the writability probe took longer than its limit" }
-
-var errProbeLimit error = limitErr{}
-
-func (s *Sampler) publish(r result) {
+// finish claims the refresh and publishes the sample in ONE critical section, so no ordering window exists. The first finisher publishes its result:
+// the measuring goroutine normally, or the limit when the probe is still running ("not writable"). The measuring goroutine ALWAYS releases the slot here;
+// when it finishes after the limit has fired, its answer is published as "not writable" with its own free bytes: a probe that took longer than the
+// limit never reads writable, however it ends. It reports whether it was the first finisher (the one that closes done).
+func (s *Sampler) finish(r result, limit bool) (first bool) {
+	s.mu.Lock()
+	first = !s.pubDone
+	if !limit && !first {
+		r.probeErr = errProbeLimit
+	}
+	if limit && !first {
+		s.mu.Unlock()
+		return false
+	}
+	s.pubDone = true
+	if !limit {
+		s.busy = false
+	}
 	smp := Sample{Writable: r.probeErr == nil && r.statErr == nil}
 	if r.statErr == nil {
 		smp.FreeBytes = r.avail
 	}
-	s.mu.Lock()
 	s.cur, s.at, s.have = smp, s.d.Now(), true
 	prev := s.last
 	w := smp.Writable
 	s.last = &w
 	s.mu.Unlock()
-	if prev == nil && w {
-		return
+	if prev != nil && *prev == w || prev == nil && w {
+		return first
 	}
-	if prev == nil || *prev != w {
-		err := r.probeErr
-		if err == nil {
-			err = r.statErr
-		}
-		if w {
-			s.o.Log.Info("store_writable: the data directory is writable again", "dir", s.dir, "free_bytes", smp.FreeBytes)
-		} else {
-			s.o.Log.Error("store_writable: the data directory is not writable", "dir", s.dir, "free_bytes", smp.FreeBytes, "error", err)
-		}
+	err := r.probeErr
+	if err == nil {
+		err = r.statErr
 	}
+	if w {
+		s.o.Log.Info("store_writable: the data directory is writable again", "dir", s.dir, "free_bytes", smp.FreeBytes)
+	} else {
+		s.o.Log.Error("store_writable: the data directory is not writable", "dir", s.dir, "free_bytes", smp.FreeBytes, "error", err)
+	}
+	return first
 }
+
+type limitErr struct{}
+
+func (limitErr) Error() string { return "the writability probe took longer than its limit" }
+
+var errProbeLimit error = limitErr{}
 
 // probe creates, writes one byte to, syncs, closes and removes a file in the
 // data directory. The sync is deliberate: without it a full disk can accept
@@ -266,4 +272,17 @@ func (s *Sampler) probe() error {
 		first = err
 	}
 	return first
+}
+
+// sweepProbeFiles removes the regular files named .tmp-probe-* directly in dir: leftovers of a probe whose own cleanup failed. It touches nothing else.
+func sweepProbeFiles(dir string) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range ents {
+		if e.Type().IsRegular() && strings.HasPrefix(e.Name(), probePrefix) {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
 }

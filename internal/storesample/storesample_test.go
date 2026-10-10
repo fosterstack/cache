@@ -312,8 +312,8 @@ func TestNoWedgeWhenProbeReturnsAtTheLimit(t *testing.T) {
 	}
 }
 
-// A probe that finishes after the limit has its real result published.
-func TestLateProbeResultIsPublished(t *testing.T) {
+// A probe that finishes AFTER the limit never reads writable: the late answer keeps the gauge at 0 (REQ-OBS-002-AC5) and only refreshes the free bytes.
+func TestLateProbeResultKeepsNotWritable(t *testing.T) {
 	d := &fakeDisk{avail: 1, block: make(chan struct{})}
 	now := time.Unix(1000, 0)
 	s, _ := newSampler(t, d, &now, func(o *Options) { o.ProbeLimit = 20 * time.Millisecond; o.WaitBudget = 500 * time.Millisecond })
@@ -321,15 +321,85 @@ func TestLateProbeResultIsPublished(t *testing.T) {
 	if s.Get().Writable {
 		t.Fatal("over the limit must read not writable")
 	}
+	d.mu.Lock()
+	d.avail = 99
+	d.mu.Unlock()
 	close(d.block)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if s.Get().Writable {
+		smp := s.Get()
+		if smp.FreeBytes == 99 { // the late answer has arrived
+			if smp.Writable {
+				t.Fatal("the late, successful probe flipped the gauge back to writable")
+			}
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatal("the late, successful probe result was never published")
+	t.Fatal("the late answer never refreshed the free bytes")
+}
+
+// A volume whose probe ALWAYS takes longer than the limit reads 0 across many sample periods (it never flaps to 1).
+func TestProbeAlwaysOverLimitStaysZero(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	deps := d.deps(&now)
+	deps.OpenProbe = func(string) (ProbeFile, error) { time.Sleep(30 * time.Millisecond); return fakeFile{d}, nil }
+	s := New("/data/blobs", deps, Options{ProbeLimit: 10 * time.Millisecond, WaitBudget: 100 * time.Millisecond, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
+	s.Start()
+	for i := 0; i < 8; i++ {
+		now = now.Add(6 * time.Second)
+		for j := 0; j < 5; j++ {
+			if s.Get().Writable {
+				t.Fatalf("period %d: a probe that always exceeds the limit read writable", i)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+// With a GOOD earlier sample, a probe over the limit turns the gauge to 0 (not merely "no sample yet").
+func TestProbeOverLimitAfterAGoodSampleReadsZero(t *testing.T) {
+	d := &fakeDisk{avail: 7}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now, func(o *Options) { o.ProbeLimit = 20 * time.Millisecond; o.WaitBudget = 500 * time.Millisecond })
+	s.Start()
+	if !s.Get().Writable {
+		t.Fatal("the first sample must be good")
+	}
+	d.mu.Lock()
+	d.block = make(chan struct{})
+	d.mu.Unlock()
+	now = now.Add(6 * time.Second)
+	if s.Get().Writable {
+		t.Fatal("a probe over the limit must turn the gauge to 0")
+	}
+	close(d.block)
+}
+
+// Leftover probe files in the data directory root are removed at start; other files and directories are not touched.
+func TestStartSweepsLeftoverProbeFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, n := range []string{".tmp-probe-dead", ".tmp-probe-beef", "keep.txt", ".tmp-other"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(dir, ".tmp-probe-adir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	s := New(dir, Deps{}, Options{})
+	s.Start()
+	for _, gone := range []string{".tmp-probe-dead", ".tmp-probe-beef"} {
+		if _, err := os.Stat(filepath.Join(dir, gone)); !os.IsNotExist(err) {
+			t.Errorf("%s survived the start sweep", gone)
+		}
+	}
+	for _, kept := range []string{"keep.txt", ".tmp-other", ".tmp-probe-adir"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Errorf("%s was removed by the sweep", kept)
+		}
+	}
 }
 
 // A statfs that hangs cannot hang a reader beyond the wait budget, nor start a second measurement.

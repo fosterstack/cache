@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fosterstack/cache/internal/blobstore"
@@ -128,7 +129,10 @@ func New(cfg Config) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
 	metricsHandler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
+	var scrapeMu sync.Mutex // set the disk gauges and gather under one lock, so two scrapes can never export a mix of two samples
 	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		scrapeMu.Lock()
+		defer scrapeMu.Unlock()
 		refreshDiskGauges(cfg) // the gauges are set from the same cached sample /statusz reads
 		metricsHandler.ServeHTTP(w, r)
 	})

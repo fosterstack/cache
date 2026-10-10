@@ -796,3 +796,89 @@ func TestClampInt64(t *testing.T) {
 		t.Fatalf("clampInt64(12345) = %d", got)
 	}
 }
+
+// A PUT of a key spelled like the probe file never touches the probe file, and the blob is stored (the probe file lives at the blobs root, keys one level down).
+func TestPutOfProbeLikeKeysLeavesTheProbeFileAlone(t *testing.T) {
+	dir := t.TempDir()
+	blobs, err := blobstore.New(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := metadata.Open(filepath.Join(t.TempDir(), "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := cache.New(blobs, meta)
+	t.Cleanup(func() { _ = c.Close() })
+	name := ".tmp-probe-0123456789abcdef"
+	if err := os.WriteFile(filepath.Join(dir, name), []byte("probe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reg := prometheus.NewRegistry()
+	srv := httptest.NewServer(New(Config{Cache: c, Metrics: metrics.New(reg), Registry: reg}))
+	defer srv.Close()
+	for _, key := range []string{".tmp-x", name, "a/" + name} {
+		req, _ := http.NewRequest(http.MethodPut, srv.URL+"/"+key, strings.NewReader("blob-"+key))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("PUT %s = %d; want 201", key, resp.StatusCode)
+		}
+		g, err := http.Get(srv.URL + "/" + key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(g.Body)
+		_ = g.Body.Close()
+		if string(b) != "blob-"+key {
+			t.Fatalf("GET %s = %q; want the blob just stored", key, b)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(dir, name)); err != nil || string(b) != "probe" {
+		t.Fatalf("the probe file at the blobs root was touched: %q, %v", b, err)
+	}
+}
+
+// Concurrent scrapes never export a mix of two samples: writable and free bytes always belong together.
+func TestConcurrentScrapesExportOneSample(t *testing.T) {
+	e := newObsEnv(t)
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	go func() { // alternate the disk between two states, expiring the sample each time
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			e.disk.set(func(d *srvDisk) {
+				if i%2 == 0 {
+					d.syncErr, d.avail = syscall.ENOSPC, 111
+				} else {
+					d.syncErr, d.avail = nil, 222
+				}
+			})
+			e.advance(6)
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 60; i++ {
+				body := e.metrics(t)
+				w, f := mval(body, "fscache_store_writable"), mval(body, "fscache_store_free_bytes")
+				if w == "" || f == "" {
+					t.Errorf("a scrape lacks the disk gauges")
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(stop)
+}

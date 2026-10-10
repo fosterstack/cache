@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -458,3 +459,94 @@ func TestServeClearMarkerError(t *testing.T) {
 		t.Fatal("serve did not return")
 	}
 }
+
+// serve() takes the first store sample BEFORE the listener opens: the first scrape, with no request before it, already holds measured values (REQ-OBS-002-AC10).
+func TestServeSeedsTheDiskGaugesBeforeAnyRequest(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+	addr := freePort(t)
+	t.Setenv("FSCACHE_ADDR", addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	var body string
+	go func() {
+		errc <- serve(ctx, quietLogger(), func() {
+			for i := 0; i < 100; i++ { // ready() runs as the listener goroutine starts: retry until it accepts
+				resp, err := http.Get("http://" + addr + "/metrics")
+				if err == nil {
+					b, _ := io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					body = string(b)
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			cancel()
+		})
+	}()
+	select {
+	case <-errc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not shut down")
+	}
+	if !strings.Contains(body, "fscache_store_writable 1\n") {
+		t.Errorf("the first scrape does not show fscache_store_writable 1:\n%s", body)
+	}
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, "fscache_store_free_bytes ") && (strings.HasSuffix(l, " 0")) {
+			t.Errorf("fscache_store_free_bytes is 0 on a healthy start: %q", l)
+		}
+	}
+	if !strings.Contains(body, "fscache_store_free_bytes ") {
+		t.Errorf("fscache_store_free_bytes is absent from the first scrape")
+	}
+}
+
+// The first sample is taken at start, before the listener opens: with a data directory that cannot be written the "not writable" line is already in the log
+// when the ready hook runs, before any scrape could have triggered a lazy measurement (REQ-OBS-002-AC10).
+func TestServeTakesTheFirstSampleBeforeReady(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "blobs"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(filepath.Join(dir, "blobs"), 0o700) }()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	var buf syncBuffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var atReady string
+	errc := make(chan error, 1)
+	go func() { errc <- serve(ctx, log, func() { atReady = buf.String(); cancel() }) }()
+	select {
+	case <-errc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not shut down")
+	}
+	if !strings.Contains(atReady, "store_writable") {
+		t.Errorf("no 'store_writable' line was logged before the server announced it was ready:\n%s", atReady)
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
