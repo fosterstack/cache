@@ -1173,6 +1173,13 @@ case_out pm-greek-upsilon-label  bad "$(mx "$M" "$(st '[υbuntu-24.04]')")" 'run
 case_out pm-en-dash-label        bad "$(mx "$M" "$(st '[ubuntu–24.04]')")" 'runs-on'
 case_out pm-cyrillic-o-label     bad "$(mx "$M" "$(st '[ubuntu-24.О4]')")" 'runs-on'
 case_out pm-tag-binary-label     bad "$(mx "$M" "$(st '[!!binary ubuntu-24.04]')")" 'runs-on'
+# a matrix whose only key is `include` or `exclude` (a list of labels), read through `${{ matrix.include }}` / `${{ matrix.exclude }}`: refused
+# although it looks like one key of labels; GitHub gives those two names another meaning
+for IX in include exclude; do
+  case_out pm-only-key-$IX bad "$(mx '${{ matrix.'$IX' }}' "$(printf '    strategy:\n      matrix:\n        %s: [ubuntu-24.04]\n' $IX)")" 'runs-on'
+done
+# an explicit !!str tag resolves to the plain string tag, so the checker accepts it (the notes refuse any explicit tag other than str)
+case_out pm-tag-str-label        ok  "$(mx "$M" "$(st '[!!str ubuntu-24.04]')")" '0 finding' 'pwsh|runs-on'
 case_out pm-tag-unknown-label    bad "$(mx "$M" "$(st '[!x ubuntu-24.04]')")" 'runs-on'
 case_out pm-nested-list          bad "$(mx "$M" "$(st '[[ubuntu-24.04]]')")" 'runs-on'
 case_out pm-non-string-label     bad "$(mx "$M" "$(st '[24.04]')")" 'runs-on'
@@ -1268,7 +1275,7 @@ case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
 OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
 case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
-PM_EXPECT=78
+PM_EXPECT=81
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed

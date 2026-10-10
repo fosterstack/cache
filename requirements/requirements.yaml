@@ -1196,8 +1196,8 @@ requirements:
       reusable workflow included), in its strategy or in its matrix is refused with the key named, whatever the last copy holds.
       Refused forms of REQ-REL-005-AC2, each a finding that names the runner:
       - any other expression or text in runs-on (text before or after the expression, a second expression, a block scalar's trailing newline, braces without spaces), a runner from an input, env or vars, an array index or property of the matrix key, a runs-on list;
-      - a matrix that is an expression or fromJSON, include or exclude, a second matrix key, an extra strategy key (fail-fast may sit beside matrix only as the literal true or false), a strategy with no matrix key, a key given twice in a job, in its strategy or in its matrix (the finding names the key);
-      - a label not on the two-label list (another case or version, ubuntu-latest, a larger runner, self-hosted, macOS or Windows, a space around a label, a trailing newline, a look-alike character, an explicit YAML tag), a nested list, a non-string label, an empty list, a scalar instead of a list, a duplicate key;
+      - a matrix that is an expression or fromJSON, a matrix of only include or exclude, a second matrix key, an extra strategy key (fail-fast may sit beside matrix only as the literal true or false), a strategy with no matrix key, a key given twice in a job, in its strategy or in its matrix (the finding names the key);
+      - a label not on the two-label list (another case or version, ubuntu-latest, a larger runner, self-hosted, macOS or Windows, a space around a label, a trailing newline, a look-alike character, an explicit YAML tag other than str; !!str resolves to the plain string tag and is accepted), a nested list, a non-string label, an empty list, a scalar instead of a list, a duplicate key;
       - a matrix key that does not exist or is defined on another job or at the workflow level;
       - and a matrix reached through a YAML anchor (the check refuses a file that holds any anchor or alias, whatever it anchors).
     acceptance_criteria:
