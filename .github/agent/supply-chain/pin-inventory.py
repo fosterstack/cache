@@ -543,7 +543,9 @@ def tree_scripts(root, rev):
 # certainty (an unterminated quote, heredoc or substitution, too deep a nesting, an alias whose definition is computed) is read as before, every line
 # executed. A command built from an expansion nobody can read is refused under its own form: eval of an expansion, sh -c of an expansion that supplies a
 # command, a command word (or a here-string or heredoc fed to a shell or interpreter) from a variable this script never assigns, a descriptor or coprocess
-# that feeds a shell (exec 3> >(sh), coproc). Workflow files are read as before (every line).
+# that feeds a shell (exec 3> >(sh), coproc). (( )), $(( )) and $[ ] are arithmetic (a << there is a shift, never a heredoc) and their text counts. A group
+# ({ }, ( ), if, for, while, case) whose output is piped or redirected into a process makes its text commands count, and a function whose output
+# is piped into one makes the whole script read as before. Workflow files are read as before (every line).
 _SH_SHELLS = {"sh", "bash", "dash", "zsh", "ksh", "ash", "mksh"}
 _SH_INTERP = _SH_SHELLS | {"python", "python2", "python3", "perl", "ruby", "node", "php", "lua", "source", "."}
 _SH_WRAPPERS = {"env", "sudo", "command", "exec", "nohup", "time", "nice", "timeout", "xargs", "stdbuf", "doas", "setsid", "builtin", "chroot", "ionice", "unbuffer"}
@@ -584,6 +586,7 @@ class _Cmd:
     def __init__(self, start):
         self.start, self.end, self.words, self.name, self.piped_to, self.procsub = start, start, [], None, None, False
         self.assigns, self.herestrings = [], []
+        self.group_out = False      # inside a group ({ }, ( ), if, for, while, case) whose output is piped or redirected into a process: its text may be run
 
 
 def _base(word):
@@ -598,7 +601,9 @@ class _ShellScan:
     def __init__(self, s, depth=0, untrusted=frozenset(), known=frozenset(), data=False):
         self.s, self.n, self.i, self.depth, self.data = s, len(s), 0, depth, data
         self.spans, self.dynamic, self.cmds, self.pending, self.heredocs, self.hits, self.norms = [], [], [], [], [], [], []
-        self.untrusted = set(untrusted) | {m.group(1) or m.group(2) or m.group(3) for m in _SH_DEFINED.finditer(s)}  # a function or alias may shadow echo or cat
+        defined = list(_SH_DEFINED.finditer(s))
+        self.untrusted = set(untrusted) | {m.group(1) or m.group(2) or m.group(3) for m in defined}  # a function or alias may shadow echo or cat
+        self.functions = {m.group(1) or m.group(2) for m in defined if m.group(1) or m.group(2)}
         self.known = set(known) | _SH_SPECIAL
         self.sources = []      # the base names of the files this text sources (. lib.sh): the variables they assign are known here
 
@@ -626,6 +631,11 @@ class _ShellScan:
         self._deeper()
         cmd, pipe_from, paren, case = None, None, 0, 0
         last_op = None
+        groups, closed = [], None      # open groups (closer, index of their first command); the group that just closed
+
+        def mark(start):      # { echo "curl x"; } | sh: every command of the group writes into the consumer
+            for c in self.cmds[start:]:
+                c.group_out = True
 
         def end(op):
             nonlocal cmd, pipe_from
@@ -664,9 +674,15 @@ class _ShellScan:
                 self.i += 1
                 self.depth -= 1
                 return
+            after, closed = closed, None
+            if s.startswith("((", self.i):      # an arithmetic command (or a for (( ))): no heredoc and no command inside; its text counts, fail closed
+                self.i = self.arith(self.i + 2, 2, "(", ")")
+                last_op = None
+                continue
             op = next((o for o in (";;&", ";;", ";&", "&&", "||", "|&", ";", "&", "|", "(", ")") if s.startswith(o, self.i)), None)
             if op and not (op == "&" and s.startswith(("&>",), self.i)):
                 self.i += len(op)
+                closes = op == ")" and paren > 0
                 if op == "(":
                     paren += 1
                 elif op == ")":
@@ -674,7 +690,13 @@ class _ShellScan:
                         paren -= 1
                 if pipe_from is not None and cmd is None and op not in ("|", "|&"):
                     pipe_from.piped_to = "unknown"; pipe_from = None
+                if after is not None and op in ("|", "|&"):
+                    mark(after)
                 end(op)
+                if op == "(":
+                    groups.append((")", len(self.cmds)))
+                elif closes and groups and groups[-1][0] == ")":
+                    closed = groups.pop()[1]
                 last_op = op
                 continue
             redir = next((o for o in ("<<<", "<<-", "<<", "&>>", "&>", "<>", "<&", ">&", ">>", ">|", "<", ">") if s.startswith(o, self.i)), None)
@@ -694,6 +716,10 @@ class _ShellScan:
                     cmd.herestrings.append(w)
                 if w.procsub:
                     cmd.procsub = True
+                    if after is not None:
+                        mark(after)      # { ...; } > >(sh)
+                elif after is not None:
+                    closed = after       # } 2>&1 | sh: the group's redirections come before its pipe
                 last_op = None
                 continue
             w = self.parse_word()
@@ -702,6 +728,10 @@ class _ShellScan:
                 if pipe_from is not None and cmd is None:
                     pipe_from.piped_to = "unknown"; pipe_from = None
                 end(w.value)
+                if w.value == "{":
+                    groups.append(("}", len(self.cmds)))
+                elif groups and groups[-1][0] == "}":
+                    closed = groups.pop()[1]
                 continue
             if cmd is None:
                 cmd = self._new(w.start, pipe_from); pipe_from = None
@@ -712,6 +742,10 @@ class _ShellScan:
                 if plain and w.value in _SH_SKIP:
                     if w.value == "esac" and case:
                         case -= 1
+                    if w.value in ("if", "while", "until"):
+                        groups.append(("fi" if w.value == "if" else "done", len(self.cmds)))
+                    elif w.value in ("fi", "done", "esac") and groups and groups[-1][0] == w.value:
+                        closed = groups.pop()[1]
                     continue
                 if _SH_ASSIGN.match(s, w.start):
                     cmd.assigns.append(w)
@@ -719,6 +753,8 @@ class _ShellScan:
                 cmd.name = w
                 if plain and w.value == "case":
                     case += 1
+                if plain and w.value in ("case", "for", "select"):
+                    groups.append(("esac" if w.value == "case" else "done", len(self.cmds)))
             else:
                 cmd.words.append(w)
 
@@ -849,6 +885,27 @@ class _ShellScan:
                 m = _SH_DQ_RUN.match(s, self.i)
                 w.lit(m.group(0)); self.i = m.end()
 
+    def arith(self, i, depth, opener, closer):
+        """Skip an arithmetic text from i (depth openers already read) to its end; the whole text counts as executed (fail closed)."""
+        s, n = self.s, self.n
+        a = i - depth
+        while depth:
+            if i >= n:
+                raise _ShellUnreadable("an unterminated arithmetic expression")
+            c = s[i]
+            if c == opener:
+                depth += 1
+            elif c == closer:
+                depth -= 1
+            elif c in "'\"`":
+                j = s.find(c, i + 1)
+                if j < 0:
+                    raise _ShellUnreadable("an unterminated quote")
+                i = j
+            i += 1
+        self.spans.append((a, i))
+        return i
+
     def backtick(self, w):
         s, n = self.s, self.n
         a = self.i
@@ -889,6 +946,9 @@ class _ShellScan:
             self.i += 2
             self.parse_list(")")
             self.spans.append((a, self.i)); w.expanded = w.subst = True
+        elif nxt == "[":      # $[ ]: the old arithmetic expansion (no heredoc inside)
+            self.i = self.arith(self.i + 2, 1, "[", "]")
+            w.expanded = w.subst = True
         elif nxt == "{":
             self.i += 2
             m = _SH_BRACE_VAR.match(s, self.i)
@@ -968,7 +1028,7 @@ class _ShellScan:
     def _data_chain(self, cmd):
         """Whether a command and everything its output is piped into only read data (cat, tee, grep, ...: nothing that runs what it reads)."""
         while cmd is not None:
-            if cmd == "unknown" or cmd.procsub or (cmd.name is not None and self._name(cmd) not in _SH_DATA):
+            if cmd == "unknown" or cmd.procsub or cmd.group_out or (cmd.name is not None and self._name(cmd) not in _SH_DATA):
                 return False
             cmd = cmd.piped_to
         return True
@@ -1000,8 +1060,10 @@ class _ShellScan:
             if cmd.name is None:
                 continue
             name = self._name(cmd)
-            if name in _SH_TEXT and not cmd.procsub and self._data_chain(cmd.piped_to):
+            if name in _SH_TEXT and not cmd.procsub and not cmd.group_out and self._data_chain(cmd.piped_to):
                 continue      # its arguments are text, unless its output is piped into something that may run it (echo "curl x" | sh)
+            if not cmd.name.expanded and cmd.name.value in self.functions and (cmd.procsub or not self._data_chain(cmd.piped_to)):
+                raise _ShellUnreadable("a function whose output is piped into a process")     # f | sh: no text exemption holds
             ws = [cmd.name] + cmd.words
             if self.data:      # a body written as data: a command word the shell reads as a download counts (a wrapper's words too), never the text around it
                 counted = ws if name in _SH_WRAPPERS else [cmd.name]
