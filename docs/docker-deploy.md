@@ -179,6 +179,16 @@ Three more:
 A bad numeric value in any of these stops the server at startup with a message
 naming the variable, rather than silently falling back to a default.
 
+The server checks everything before it touches the data directory. A bad or
+already-taken `FSCACHE_ADDR` stops the start with a message naming
+`FSCACHE_ADDR` and the address, and leaves `FSCACHE_DATA_DIR` exactly as it
+was (nothing created, no marker written). The listen socket is opened first
+and answers only once the stores are ready, so after a crash, when the server
+reconciles the stores before serving, connections that arrive meanwhile wait in
+the listen backlog and are answered when it finishes. A readiness probe on a
+large store may time out during that window; give it a generous
+`initialDelaySeconds` or `failureThreshold`.
+
 Configuration is flags and environment only, on purpose. There is no settings
 page and no runtime reconfiguration, which means the running server always
 matches the deployment manifest in your git repository — diffable, reviewable,

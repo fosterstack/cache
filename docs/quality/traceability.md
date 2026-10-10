@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 74 |
-| Acceptance criteria | 197 |
+| Active requirements | 75 |
+| Acceptance criteria | 201 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 181 |
+| ACs with mapped evidence | 185 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 42 |
+| Confidence: documented | 43 |
 | Confidence: implementation-only | 31 |
 
 ## Cache protocol
@@ -137,6 +137,19 @@ The server shall refuse to start when a numeric configuration variable (FSCACHE_
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-CFG-003-AC1 | Given an environment with FSCACHE_MAX_BYTES set to an unparseable value, a value with trailing garbage, a negative value, or an overflowing value; when the server starts; then startup fails with an error naming FSCACHE_MAX_BYTES and the value, for every listed case, and the same holds for FSCACHE_MAX_BODY_BYTES | unit | yes | approved | 3 item(s) |
+
+### REQ-CFG-004 — Configuration is validated before anything is created
+
+The server shall validate every configuration variable, and bind its listen address, before it creates, opens, or writes anything under FSCACHE_DATA_DIR. It shall refuse to start on an invalid or already taken FSCACHE_ADDR with an error naming FSCACHE_ADDR and the value, and a refused start shall leave the data directory exactly as it found it. The listen socket is bound first and served only once the stores are ready, so connections arriving during a startup reconcile wait in the listen backlog.
+
+*Introduced v0.2.3 · tier community · confidence documented · source: backlog items 15-17 (advisor; from the v0.2.1 startup-error runs); cmd/fscache/main.go serve*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-CFG-004-AC1 | Given FSCACHE_ADDR set to a value that is not a usable host:port (8080, localhost, :99999, :abc, a:b:c), and FSCACHE_DATA_DIR pointing at a path that does not exist; when the server starts; then it exits non-zero with an error naming FSCACHE_ADDR and the value, and the data directory does not exist afterwards (no directory, no marker, no meta.db) | unit |  | approved | 1 item(s) |
+| REQ-CFG-004-AC2 | Given the same bad FSCACHE_ADDR and an existing data directory holding blobs/ and meta.db and no unclean-shutdown marker; when the server starts; then it exits non-zero as in AC1, and every file and directory under the data directory is byte-identical (content, mode, size, modification time) and no .unclean-shutdown marker was written | unit |  | approved | 1 item(s) |
+| REQ-CFG-004-AC3 | Given any other invalid configuration (an unparseable size or upload bound, a one-sided credential pair, a read-only pair without the read-write pair) and a data directory that does not exist; when the server starts; then it exits non-zero and the data directory is not created | unit |  | approved | 1 item(s) |
+| REQ-CFG-004-AC4 | Given a valid FSCACHE_ADDR whose port is already taken by another listener, with a nonexistent data directory in one case and an existing data directory in the other; when the server starts; then it exits non-zero with an error naming FSCACHE_ADDR and the address, the nonexistent directory is still absent, and the existing directory is byte-identical with no marker written; the listen socket is bound before any store is opened and is released if startup fails after the bind | unit |  | approved | 3 item(s) |
 
 ## Authentication
 

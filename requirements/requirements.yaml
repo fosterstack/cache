@@ -275,6 +275,48 @@ requirements:
         verification: { method: unit, release_blocking: true }
         status: approved
 
+  - id: REQ-CFG-004
+    title: Configuration is validated before anything is created
+    statement: >
+      The server shall validate every configuration variable, and bind its
+      listen address, before it creates, opens, or writes anything under
+      FSCACHE_DATA_DIR. It shall refuse to start on an invalid or already
+      taken FSCACHE_ADDR with an error naming FSCACHE_ADDR and the value, and
+      a refused start shall leave the data directory exactly as it found it.
+      The listen socket is bound first and served only once the stores are
+      ready, so connections arriving during a startup reconcile wait in the
+      listen backlog.
+    source: [backlog items 15-17 (advisor, from the v0.2.1 startup-error runs), cmd/fscache/main.go serve]
+    tier: community
+    introduced: v0.2.3
+    origin: backlog item 17b (advisor step 5, Oct 9 2026; the listener-first design)
+    confidence: documented
+    acceptance_criteria:
+      - id: REQ-CFG-004-AC1
+        given: FSCACHE_ADDR set to a value that is not a usable host:port (8080, localhost, :99999, :abc, a:b:c), and FSCACHE_DATA_DIR pointing at a path that does not exist
+        when: the server starts
+        then: it exits non-zero with an error naming FSCACHE_ADDR and the value, and the data directory does not exist afterwards (no directory, no marker, no meta.db)
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CFG-004-AC2
+        given: the same bad FSCACHE_ADDR and an existing data directory holding blobs/ and meta.db and no unclean-shutdown marker
+        when: the server starts
+        then: it exits non-zero as in AC1, and every file and directory under the data directory is byte-identical (content, mode, size, modification time) and no .unclean-shutdown marker was written
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CFG-004-AC3
+        given: any other invalid configuration (an unparseable size or upload bound, a one-sided credential pair, a read-only pair without the read-write pair) and a data directory that does not exist
+        when: the server starts
+        then: it exits non-zero and the data directory is not created
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-CFG-004-AC4
+        given: a valid FSCACHE_ADDR whose port is already taken by another listener, with a nonexistent data directory in one case and an existing data directory in the other
+        when: the server starts
+        then: it exits non-zero with an error naming FSCACHE_ADDR and the address, the nonexistent directory is still absent, and the existing directory is byte-identical with no marker written; the listen socket is bound before any store is opened and is released if startup fails after the bind
+        verification: { method: unit, release_blocking: false }
+        status: approved
+
   # ── Authentication ────────────────────────────────────────────────────
 
   - id: REQ-AUTH-001
