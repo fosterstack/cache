@@ -3,8 +3,10 @@
 #
 # Snapshot mode (REQ-CHAIN-004-AC12) lets the proof workflows (scan.yml, main-candidate-rescan.yml) build with no tag and no admission. Witness still signs
 # the step, and the marker is the step name in the signed collection: snapshot-apk and snapshot-build (a closed list). So that a pull request's build can
-# never be mistaken for a release build, EVERY subcommand of bin/chain-verify.py that reads a stage's record refuses a collection whose name starts with
-# `snapshot-`, BEFORE it looks at a certificate, a signature or a timestamp, and says so:
+# never be mistaken for a release build, EVERY subcommand of bin/chain-verify.py that reads a stage's record applies ONE RULE to the collection name,
+# BEFORE it looks at a certificate, a signature or a timestamp: a name that is EXACTLY `snapshot-` followed by [a-z0-9_-]* (possibly nothing) is refused as
+# a snapshot record; any other name that is not exactly a release name of that stage is refused by `collection name ...` (see the closed-name section below).
+# The first says:
 #
 #     refused at <stage>: snapshot record
 #
@@ -110,11 +112,11 @@ for label, args, stage, env in SUBCOMMANDS:
         else:
             check("%s: the same fixture named %s is refused for something else, never as a snapshot record" % (label, name),
                   rc == 1 and named_stage and "snapshot" not in first and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
-for name in ("snapshot-apk", "snapshot-rapk", "snapshot-anything"):
+for name in ("snapshot-apk", "snapshot-rapk", "snapshot-anything", "snapshot-", "snapshot-a_b-9"):
     record("rec.json", name)
     rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
     first = err.split("\n", 1)[0]
-    check("every collection name that starts with snapshot- is refused (%s)" % name, rc == 1 and first == "refused at build: snapshot record",
+    check("a collection name that is exactly snapshot- plus [a-z0-9_-]* is refused as a snapshot record (%s)" % name, rc == 1 and first == "refused at build: snapshot record",
           "exit %s, first line %r" % (rc, first[:140]))
 # ---- every reader of a record, not only the verifiers (step-6 round 1, Sonnet 3): record-env and rebuild-compare read it through the same function --------
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.0", "--out", "policy.json"])
@@ -199,7 +201,9 @@ LOOKALIKES = [("Snapshot-build (capital S)", "Snapshot-build"), ("a leading spac
               ("a non-breaking hyphen (U+2011)", "snapshot\u2011build"), ("a Cyrillic s (U+0455)", "\u0455napshot-build"),
               ("an upper-case SNAPSHOT-BUILD", "SNAPSHOT-BUILD"), ("an underscore", "snapshot_build"), ("a different name entirely", "release"),
               ("Build (capital B)", "Build"), ("builds", "builds"), ("a one for an l (bui1d)", "bui1d"), ("a trailing newline", "build\n"),
-              ("a zero-width space (U+200B)", "bui\u200bld"), ("a Cyrillic a in apk (U+0430)", "\u0430pk"), ("the empty name", "")]
+              ("a zero-width space (U+200B)", "bui\u200bld"),
+              ("a capital after the prefix (not [a-z0-9_-])", "snapshot-Build"), ("a zero-width space after the prefix", "snapshot-bu\u200bild"),
+              ("a newline after the prefix", "snapshot-build\n"), ("a dot after the prefix", "snapshot-build.1"), ("a Cyrillic a in apk (U+0430)", "\u0430pk"), ("the empty name", "")]
 for what, name in LOOKALIKES:
     record("rec.json", name)
     rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
@@ -328,7 +332,7 @@ for label, args, stage, env in SUBCOMMANDS:
                   "exit %s, first line %r" % (rc, first[:140]))
 with open(work + "/digests.json", "w") as f:
     json.dump({"image-production": "sha256:" + "a" * 64}, f)
-EXPECT = 147
+EXPECT = 153
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:
