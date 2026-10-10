@@ -329,7 +329,7 @@ case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
 # ---------------------------------------------------------------------------------------------------------------------
 # PR 5: release-chain-pr.yml -> scan.yml (REQ-REL-008-AC2; advisor read-back 0062). One build feeds both: scan's own
 # assembly (which uploads oci-candidate) is assembly A, a verify-only assembly B uploads nothing (stage-image's artifact
-# name stays unique); the required check `reproducibility` stays a top-level job with its exact name, no condition and no
+# name stays unique); the required check `reproducibility` stays a top-level job with its exact name (since PR 2: `if: always()`, see below) and no
 # token beyond contents read; release.yml's own reproducibility stage is untouched and stays the one the release relies on.
 judge_scan() { python3 - "$1" "$root" <<'PY'
 import os, subprocess, sys, yaml
@@ -345,9 +345,10 @@ builds = [j for j, v in jobs.items() if v.get("uses") == "./.github/workflows/st
 if builds != ["build"]:
     bad.append("not exactly one build feeds both: %s" % builds)
 # PR 2 of the v0.3.0 chain (REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7): stage-image.yml is gone. The one build runs in SNAPSHOT mode and a snapshot Rebuild rebuilds
-# everything on fresh runners and FAILS on any differing item (rule 31 is kept, in the Rebuild stage); the required check `reproducibility` keeps its exact name,
-# no condition and no token beyond contents read, and passes only when the Rebuild job passed. The old inline comparison of two assemblies' digests is replaced
-# by that stage (bin/chain-rebuild-test.sh proves the comparison itself).
+# everything on fresh runners and FAILS on any differing item (rule 31 is kept, in the Rebuild stage); the required check `reproducibility` keeps its exact name and
+# no token beyond contents read, runs under exactly `if: always()` (a job that needs a failed job is SKIPPED, and a skipped required check counts as passing) and
+# its one step fails unless ${{ needs.rebuild.result }} is exactly success. The old inline comparison of two assemblies' digests is replaced by that stage
+# (bin/chain-rebuild-test.sh proves the comparison itself).
 if any(v.get("uses") == "./.github/workflows/stage-image.yml" for v in jobs.values()):
     bad.append("a job still calls the deleted stage-image.yml")
 if (jobs.get("build") or {}).get("with") != {"mode": "snapshot"}:
