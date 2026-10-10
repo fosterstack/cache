@@ -38,15 +38,15 @@ type config struct {
 }
 
 func loadConfig() (config, error) {
-	maxBytes, err := envSize("FSCACHE_MAX_BYTES", 0)
+	maxBytes, err := envSize("FSCACHE_MAX_BYTES", 0, "byte count")
 	if err != nil {
 		return config{}, err
 	}
-	maxBodyBytes, err := envSize("FSCACHE_MAX_BODY_BYTES", 1<<30) // 1 GiB default cap per blob
+	maxBodyBytes, err := envSize("FSCACHE_MAX_BODY_BYTES", 1<<30, "byte count") // 1 GiB default cap per blob
 	if err != nil {
 		return config{}, err
 	}
-	maxUploads, err := envSize("FSCACHE_MAX_CONCURRENT_UPLOADS", 32)
+	maxUploads, err := envSize("FSCACHE_MAX_CONCURRENT_UPLOADS", 32, "upload count")
 	if err != nil {
 		return config{}, err
 	}
@@ -117,23 +117,23 @@ func envOr(key, def string) string {
 	return def
 }
 
-// envSize parses a non-negative byte count from the environment, failing
+// envSize parses a non-negative whole number (noun names it in errors) from the environment, failing
 // closed (REQ-CFG-003): an unparseable value, trailing garbage, a
 // negative number, or an overflow stops startup with the variable and the
 // value named. A silent default here once turned a bounded cache
 // unbounded on a units typo — the exact bug this replaces. strconv, not
 // Sscanf: Sscanf's %d happily reads "12abc" as 12.
-func envSize(key string, def int64) (int64, error) {
+func envSize(key string, def int64, noun string) (int64, error) {
 	v := os.Getenv(key)
 	if v == "" {
 		return def, nil
 	}
 	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("%s=%q is not a valid byte count (whole non-negative decimal number): %w", key, v, err)
+		return 0, fmt.Errorf("%s=%q is not a valid %s (whole non-negative decimal number): %w", key, v, noun, err)
 	}
 	if n < 0 {
-		return 0, fmt.Errorf("%s=%q is negative; a byte count cannot be", key, v)
+		return 0, fmt.Errorf("%s=%q is negative; a %s cannot be", key, v, noun)
 	}
 	return n, nil
 }

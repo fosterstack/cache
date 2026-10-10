@@ -155,6 +155,7 @@ mappings:
   - ac: REQ-HTTP-002-AC2
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestInvalidUploadBoundFailsStartupNamingCount" }
   - ac: REQ-GRADLE-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
