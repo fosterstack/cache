@@ -260,8 +260,6 @@ def judge_calls(root):
 if __name__ == "__main__":
     which, arg = sys.argv[1], sys.argv[2]
     bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree, "calls": judge_calls}[which](arg)
-    if os.environ.get("CHAIN_JUDGE_JSON"):   # one finding per list item, for the known-red check (a finding can hold "; " and newlines)
-        print(json.dumps(list(dict.fromkeys(bad)))); sys.exit(1 if bad else 0)
     print("; ".join(dict.fromkeys(bad)) or "ok"); sys.exit(1 if bad else 0)
 PY
 export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
@@ -1015,60 +1013,81 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 # the real repository (RED until stage-sign.yml exists and PRs 2-4 remove the old provenance signers)
 expect ok "the real stage-sign.yml passes the Sign judge" sign "$root/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$root/.github/workflows/stage-build.yml"
-# KNOWN RED (strict, a CLOSED set): the real-tree AC1 judge stays red until PRs 2-4 rewrite the legacy stage files. So that this suite can be
-# a REQUIRED CI step now, that one case is judged as a known red, finding by finding (Opus #249 blocker: a first-finding check hid every
-# other finding behind the first):
-#   - the files that sign provenance are EXACTLY stage-build.yml, stage-image.yml and stage-verify.yml, one finding each (the legacy signers);
-#   - every other finding is an `AC1 grammar:` finding about one of the LEGACY_STAGE_FILES below (files PRs 2-4 rewrite whole);
-#   - anything else fails: a finding naming any other workflow, a composite action, a listed script, or stage-sign.yml itself.
-# Matched by FILE, not by full text, so a digest bump inside a legacy file does not break CI, while a new signer anywhere does. The day the
-# judge goes green the case FAILS, so the PR that makes it green turns it back into `expect ok`. The lists live only in this file.
-LEGACY_STAGE_FILES="stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml"
-LEGACY_PROVENANCE_SIGNERS="stage-build.yml stage-image.yml stage-verify.yml"
+# KNOWN RED, FROZEN LEGACY FILES PINNED BY CONTENT (Opus #249: every finding-text design was gamed by the next probe). The real-tree AC1 judge
+# stays red until PRs 2-4 rewrite or delete the eleven legacy stage files on chain-v030, and nothing else may be red:
+#   (1) .github/policy/legacy-stage-files.json lists exactly those eleven paths (all under .github/workflows/) with the sha256 of their bytes,
+#       and every listed file has exactly that sha256: a changed byte (even a comment) fails the case, "legacy file changed";
+#   (2) the judge over the whole tree is red: the day it is green, the case FAILS and that pull request makes it `expect ok` and deletes the list;
+#   (3) the judge over the tree WITHOUT the frozen files is GREEN: so the red comes only from frozen bytes, and anything new anywhere is judged
+#       in full (a second signer in a legacy file changes its bytes; a signer in any other file is a finding of the green tree).
+# No finding text is matched. The judge runs over a copy of the TRACKED files of .github/ and bin/ (never the working directory itself, which
+# other suites running in parallel may be writing to, e.g. bin/__pycache__).
+LEGACY_EXPECTED=".github/workflows/stage-acceptance-artifacts.yml .github/workflows/stage-acceptance-egress.yml .github/workflows/stage-acceptance-k8s.yml .github/workflows/stage-acceptance-predicate.yml .github/workflows/stage-admission.yml .github/workflows/stage-authorize.yml .github/workflows/stage-build.yml .github/workflows/stage-image.yml .github/workflows/stage-promote.yml .github/workflows/stage-reproducibility.yml .github/workflows/stage-verify.yml"
+tracked_copy() {  # tracked_copy NAME -> a copy of the tracked files of .github/ and bin/ of the real tree
+  local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
+  ( cd "$root" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+frozen_list_check() {  # frozen_list_check TREE -> prints "ok" or the reason the list does not hold
+  LEGACY_EXPECTED="$LEGACY_EXPECTED" python3 - "$1" <<'PYL'
+import hashlib, json, os, sys
+tree = sys.argv[1]
+try:
+    rows = json.load(open(os.path.join(tree, ".github/policy/legacy-stage-files.json")))["files"]
+    listed = {r["path"]: r["sha256"] for r in rows}
+except Exception as ex:
+    print("legacy-stage-files.json is missing or malformed (%s)" % ex); sys.exit()
+outside = sorted(p for p in listed if not p.startswith(".github/workflows/") or "/" in p[len(".github/workflows/"):] or ".." in p)
+if outside: print("legacy-stage-files.json lists a path outside .github/workflows/: %s" % outside); sys.exit()
+if len(rows) != len(listed) or set(listed) != set(os.environ["LEGACY_EXPECTED"].split()):
+    print("legacy-stage-files.json does not list exactly the eleven legacy stage files: %s" % sorted(set(listed) ^ set(os.environ["LEGACY_EXPECTED"].split()))); sys.exit()
+for p, want in sorted(listed.items()):
+    f = os.path.join(tree, p)
+    if not os.path.isfile(f): print("legacy file missing: %s: update legacy-stage-files.json or delete it" % p); sys.exit()
+    if hashlib.sha256(open(f, "rb").read()).hexdigest() != want: print("legacy file changed: %s (sha256 differs): update legacy-stage-files.json or delete it" % p); sys.exit()
+print("ok")
+PYL
+}
 KNOWN_RED_N=0
-known_red_tree() {  # known_red_tree LABEL GREEN-WHEN TREE
-  local l=$1 when=$2 out rc=0 why; KNOWN_RED_N=$((KNOWN_RED_N + 1))
-  out=$(CHAIN_JUDGE_JSON=1 judge tree "$3") || rc=$?
-  if [ "$rc" = 0 ]; then failn=$((failn + 1)); echo "FAIL $l is GREEN now ($when): make it an ordinary expect ok and drop it from the known-red list"; return; fi
-  why=$(printf '%s' "$out" | LEGACY="$LEGACY_STAGE_FILES" SIGNERS="$LEGACY_PROVENANCE_SIGNERS" python3 -c '
-import json, os, re, sys
-legacy, signers = set(os.environ["LEGACY"].split()), sorted(os.environ["SIGNERS"].split())
-found = json.load(sys.stdin)
-prov = sorted(m.group(1) for m in (re.match(r"AC1: ([\w.-]+) signs provenance ", f) for f in found) if m)
-unknown = [f for f in found if not re.match(r"AC1: ([\w.-]+) signs provenance ", f)
-           and not (re.match(r"AC1 grammar: ([\w.-]+) ", f) and re.match(r"AC1 grammar: ([\w.-]+) ", f).group(1) in legacy)]
-if prov != signers: print("the files that sign provenance are %s, not exactly %s" % (prov, signers))
-elif unknown: print("%d finding(s) outside the legacy stage files, e.g. %s" % (len(unknown), " | ".join(u[:160] for u in unknown[:3])))
-else: print("ok %d findings, all in legacy stage files" % len(found))
-')
-  if [ "${why#ok }" = "$why" ]; then failn=$((failn + 1)); echo "FAIL $l: $why"
-  else pass=$((pass + 1)); echo "ok   $l (known red until $when: ${why#ok })"; fi; }
-known_red_tree "the real tree: only stage-sign.yml is new and only it signs provenance" "PRs 2-4 rewrite the legacy stage files" "$root"
-# the closed set catches what a first-finding check missed: a copy of the real tree with ONE more provenance signer, in each place it could hide
-probe_tree() {  # probe_tree NAME -> a copy of the real tree's .github and bin
-  local d="$work/probe-$1"; rm -rf "$d"; mkdir -p "$d"; cp -R "$root/.github" "$root/bin" "$d/"; echo "$d"; }
-ATTEST_STEP="      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n"
-d=$(probe_tree supply); printf "  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n$ATTEST_STEP" >> "$d/.github/workflows/supply-chain.yml"
-p1=$d
-d=$(probe_tree ci); printf "  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n$ATTEST_STEP" >> "$d/.github/workflows/ci.yml"
-p2=$d
-d=$(probe_tree composite); mkdir -p "$d/.github/actions/probe"; printf "name: probe\nruns:\n  using: composite\n  steps:\n$ATTEST_STEP" | sed 's/^      /    /; s/^        /      /; s/^          /        /' > "$d/.github/actions/probe/action.yml"
-p3=$d
-d=$(probe_tree admission); printf "  extra-attest:\n    runs-on: ubuntu-24.04\n    steps:\n$ATTEST_STEP" >> "$d/.github/workflows/stage-admission.yml"
-p4=$d
-# each probe must fail the case AND the failure must name the probe's own file (so it fails for the added signer, not for something else)
-for c in "$p1|supply-chain.yml|a provenance signer added to supply-chain.yml" "$p2|ci.yml|a provenance signer added to ci.yml" \
-         "$p3|probe|a provenance signer in a new composite action" "$p4|stage-admission.yml|a provenance signer added to a legacy stage file (stage-admission.yml)"; do
-  IFS='|' read -r pd pf pl <<< "$c"
-  pout=$( pass=0 failn=0 KNOWN_RED_N=0; known_red_tree "probe" "x" "$pd"; [ "$failn" = 1 ] && echo CAUGHT )
-  if printf '%s' "$pout" | grep -q CAUGHT && printf '%s' "$pout" | grep -F -q -- "$pf"; then pass=$((pass + 1)); echo "ok   known red is a closed set: $pl fails the case"
-  else failn=$((failn + 1)); echo "FAIL known red let through $pl (or failed it without naming $pf): ${pout:0:300}"; fi
-done
+known_red_frozen() {  # known_red_frozen LABEL GREEN-WHEN TREE
+  local l=$1 when=$2 t=$3 why out rc=0; KNOWN_RED_N=$((KNOWN_RED_N + 1))
+  why=$(frozen_list_check "$t")
+  if [ "$why" != ok ]; then failn=$((failn + 1)); echo "FAIL $l: $why"; return; fi
+  judge tree "$t" > /dev/null || rc=$?
+  if [ "$rc" = 0 ]; then failn=$((failn + 1)); echo "FAIL $l is GREEN now ($when): make it an ordinary expect ok and delete legacy-stage-files.json"; return; fi
+  rm -rf "$t.minus"; cp -R "$t" "$t.minus"; for f in $LEGACY_EXPECTED; do rm -f "$t.minus/$f"; done
+  rc=0; out=$(judge tree "$t.minus") || rc=$?
+  if [ "$rc" != 0 ]; then failn=$((failn + 1)); echo "FAIL $l: the tree without the frozen legacy files is not green: ${out:0:400}"
+  else pass=$((pass + 1)); echo "ok   $l (known red until $when: red only in the eleven frozen legacy files)"; fi; }
+known_red_frozen "the real tree: only stage-sign.yml is new and only it signs provenance" "PRs 2-4 rewrite the legacy stage files" "$(tracked_copy real)"
+# every probe is a copy of the real tree with ONE change; each must fail the case and the failure must name the changed file
+SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
+probe() {  # probe NAME FILE-THE-MESSAGE-MUST-NAME LABEL EDIT(shell, run in the copy)
+  local d; d=$(tracked_copy "probe-$1")
+  ( cd "$d" && eval "$4" ) || echo "probe $1: the edit did not apply"
+  local pout; pout=$( pass=0 failn=0 KNOWN_RED_N=0; known_red_frozen "known red" "x" "$d"; [ "$failn" = 1 ] && echo CAUGHT )
+  if printf '%s' "$pout" | grep -q CAUGHT && printf '%s' "$pout" | grep -F -q -- "$2"; then pass=$((pass + 1)); echo "ok   frozen known red: $3 fails the case"
+  else failn=$((failn + 1)); echo "FAIL frozen known red let through $3 (or failed it without naming $2): ${pout:0:300}"; fi; }
+probe build    stage-build.yml      "a second provenance signer job in stage-build.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-build.yml"
+probe image    stage-image.yml      "a second provenance signer job in stage-image.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-image.yml"
+probe sneak    stage-admission.yml  "stage-admission.yml running an unlisted bin/sneak.sh that signs provenance" \
+  "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/sneak.sh\n' >> .github/workflows/stage-admission.yml"
+probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
+probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
+probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
+probe comment  "legacy file changed: .github/workflows/stage-verify.yml" "a harmless comment added to a legacy file (by design: legacy files are frozen on chain-v030)" "printf '# a comment\n' >> .github/workflows/stage-verify.yml"
+probe extra    "not list exactly the eleven" "a twelfth path in the list" \
+  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
+probe outside  "outside .github/workflows/" "a listed path outside .github/workflows/" \
+  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"path\"]=\"bin/chain-verify.py\";json.dump(d,open(p,\"w\"))'"
+probe missing  "legacy file missing: .github/workflows/stage-image.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-image.yml"
 expect ok "the real tree: only release.yml calls stage-sign.yml and no stage calls a stage (003-AC5; green already: scan.yml and main-candidate-rescan.yml are non-stage callers)" calls "$root"
 # the known-red judge is strict: run on a GREEN fixture tree it must report FAIL (so a known red that is fixed cannot linger silently)
-if ( pass=0 failn=0; known_red_tree "self-check" "x" "$(mk t_kr_green)"; [ "$failn" = 1 ] ) > /dev/null; then pass=$((pass + 1)); echo "ok   known_red on a green tree fails (strict)"; else failn=$((failn + 1)); echo "FAIL known_red accepted a green tree"; fi
+# the known-red judge is strict: on a tree whose eleven listed files hold (and are green), the case must FAIL as "GREEN now"
+krg=$(mk t_kr_green); for f in $LEGACY_EXPECTED; do printf 'jobs: {}\n' > "$krg/$f"; done
+python3 -c 'import hashlib,json,os,sys; t=sys.argv[1]; json.dump({"files":[{"path":p,"sha256":hashlib.sha256(open(os.path.join(t,p),"rb").read()).hexdigest()} for p in sys.argv[2:]]}, open(os.path.join(t,".github/policy/legacy-stage-files.json"),"w"))' "$krg" $LEGACY_EXPECTED
+kout=$( pass=0 failn=0; known_red_frozen "self-check" "x" "$krg"; [ "$failn" = 1 ] && echo CAUGHT )
+if printf '%s' "$kout" | grep -q CAUGHT && printf '%s' "$kout" | grep -q "GREEN now"; then pass=$((pass + 1)); echo "ok   known red on a green tree fails as GREEN now (strict)"; else failn=$((failn + 1)); echo "FAIL known red accepted a green tree: ${kout:0:300}"; fi
 [ "$KNOWN_RED_N" = 1 ] && { pass=$((pass + 1)); echo "ok   the known-red list holds exactly one case"; } || { failn=$((failn + 1)); echo "FAIL the known-red list holds $KNOWN_RED_N cases, not exactly one"; }
-EXPECT=256
+EXPECT=262
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
