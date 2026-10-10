@@ -1,5 +1,7 @@
-"""REQ-AUD tripwire: tests must not touch real system paths. Importing this module (unittest discovery does, before any test
-runs) arms fs_guard for the whole run; the tests below prove the guard bites and run the static scan over every test script."""
+# proves: REQ-AUD-019-AC1, REQ-AUD-019-AC2, REQ-AUD-019-AC3
+"""REQ-AUD-019: tests must not touch real system paths. Importing this module (unittest discovery does, before any test runs) arms fs_guard
+for the whole run (the runtime guard covers whatever discovery actually runs, Go and Java included); the static scan is scoped: Python tests in
+full, every other (shell) test only for an absolute-target `ln -s` / `cp -s` and for creating files without a mktemp call."""
 import ast, contextlib, hashlib, os, re, subprocess, sys, tempfile, unittest
 from unittest import mock
 
@@ -54,8 +56,7 @@ EXTRA = re.compile(_OPEN + r"""/(?:\.[A-Za-z]|\.(?=\s|$|['"])|[A-Za-z0-9_.\-]*(?
                    r"""|\b(?:listdir|scandir|walk|chdir|stat|rmtree|Path|join|glob)\(\s*os\.sep\b"""
                    r"""|\b(?:src|source)=/(?=[,\s'"]|$)""")
 _SUFFIX = re.compile(r"""(\+\s*[rb]?["'])/""")           # `var + "/x"` appends to a prefix the code controls: not an absolute path by itself
-SUDO = re.compile(r"\bsudo\b")
-HOME_USE = re.compile(r"~/|\$HOME|\$\{HOME|expanduser|Path\.home|(?:^|[\s=:'\"(,])~(?=$|[;)])|\b(?:cd|ls|cat|cp|mv|rm|source|find|tar)\s+(?:-[A-Za-z-]+\s+)*~(?=\s|$|;)|\bcd\s*(?:$|;|&&|\|\|)|(?:\.\./){3,}|\bfile:/+(?:[A-Za-z]|\.\.?/)")
+HOME_USE = re.compile(r"~/|\$HOME|\$\{HOME|expanduser|Path\.home|environ\[\s*['\"]HOME['\"]|(?:getenv|environ\.get)\(\s*['\"]HOME['\"]|getpw(?:uid|nam)\(|(?:^|[\s=:'\"(,])~(?=$|[;)])|\b(?:cd|ls|cat|cp|mv|rm|source|find|tar)\s+(?:-[A-Za-z-]+\s+)*~(?=\s|$|;)|\bcd\s*(?:$|;|&&|\|\|)|(?:\.\./){3,}|\bfile:/+(?:[A-Za-z]|\.\.?/)")
 SELF = "bin/tests/test_fs_guard.py"
 
 
@@ -124,17 +125,18 @@ def bare_roots(line):
 
 
 def flagged(line, rel="", first=False):
-    """True when the line names a system path in any form the scan knows (rules above); `sudo` also counts in a shell test. Only the FIRST line
+    """True when the line names a system path in any form the scan knows (rules above);  Only the FIRST line
     of a file may be a bare `#!` line (exempt there); a `#!` that starts a QUOTED string is file content being written. `/* ... */` is NOT
     stripped (in a shell test `ls /*/*/` is two globs, not a comment)."""
+    if rel and not rel.endswith(".py"):
+        return False                                        # the literal scan reads Python tests only (REQ-AUD-019-AC2); "" is unnamed text
     if first and line.startswith("#!"):
         return False
     clean = _QUOTED_SHEBANG.sub("", _DEV_NULL.sub("", line))
     if first:
         clean = SHEBANG.sub("", clean)
     anchored = _SUFFIX.sub(r"\1", clean)
-    return bool(LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line) or EXTRA.search(anchored) or bare_roots(clean)
-                or (rel.endswith(".sh") and SUDO.search(line)))
+    return bool(LITERAL.search(clean) or ROOT_ONLY.search(clean) or HOME_USE.search(line) or EXTRA.search(anchored) or bare_roots(clean))
 
 
 def split_lines(rel, text):
@@ -163,6 +165,8 @@ def approved_rest(line, spans):
 
 def literal_findings(rel, text, allow):
     used, bad = set(), []
+    if rel and not rel.endswith(".py"):
+        return bad, used
     for m in re.finditer(r"\r(?!\n)", text):                       # a lone CR in ANY scanned file is a finding (nothing legitimate has one)
         bad.append("%s:%d: a lone CR (not followed by LF) hides what follows from line-based tools" % (rel, text.count("\n", 0, m.start()) + 1))
         break
@@ -189,10 +193,14 @@ def scan():
     return _SCAN["scan"]
 
 
+def literal_scan_files():
+    return [f for f in test_files() if f.endswith(".py")]
+
+
 def _scan():
     allow = load_allow()
     used, bad = set(), []
-    for rel in test_files():
+    for rel in literal_scan_files():
         b, u = literal_findings(rel, decode(read_raw(rel)), allow)
         bad += b; used |= u
     return bad, [a for a in allow if a not in used]
@@ -1229,6 +1237,54 @@ class Links(unittest.TestCase):
         self.assertTrue(getattr(os.symlink, "__wrapped__", None) and getattr(os.link, "__wrapped__", None))   # installed on the real calls
 
 
+class Scope(unittest.TestCase):
+    """The static scan's SCOPE (REQ-AUD-019): Python tests are scanned in full; shell (and every other non-Python) tests only for an absolute-target
+    `ln -s` / `cp -s` and for creating files without a mktemp call; Go and Java tests are not scanned at all (the runtime guard covers whatever
+    discovery actually runs). A growing list of shell spellings never converged in seven review rounds, so it is not attempted."""
+    SHELL_ONLY_FORMS = ["ls /", "ls /etc/hosts", "cat /Etc/hosts", "cd ~", "echo $HOME", "ls /*/*/", "grep -r x /", "sudo apt-get install x", "tar -C / -x",
+                        "x=${TMPDIR:-/tmp}/a", "ls /..", "cp x /usr/bin/y", "rm -rf /var/db/x", "[ -x /usr/local/bin/grype ]", "cat ../../../../etc/hosts",
+                        "d=/", "cat /dev/nullx", "#!/bin/sh /etc/passwd\necho hi", "echo hi\n#!/bin/sh", "cat /etc/passwd\rcat /etc/hosts", "ls /\rls /"]
+
+    def test_python_tests_are_scanned_in_full_and_non_python_tests_are_not_literal_scanned(self):
+        for text in self.SHELL_ONLY_FORMS:
+            self.assertEqual(literal_findings("bin/x-test.sh", text, [])[0], [], text)
+            self.assertEqual(literal_findings("bin/x.bats", text, [])[0], [], text)
+            self.assertEqual(literal_findings("bin/XTest.java", text, [])[0], [], text)
+            self.assertEqual(literal_findings("bin/x_test.go", text, [])[0], [], text)
+        for text in ["ls /etc/hosts", "open('/etc/hostname')", "p = '/Etc/hosts'", "os.listdir('/')", "x = '~/y'", "os.environ['HOME']", "os.getenv('HOME')",
+                     "os.environ.get(\"HOME\")", "pwd.getpwuid(os.getuid()).pw_dir", "pwd.getpwnam('root')", "d = '/'", "'../../../../etc/hosts'"]:
+            self.assertTrue(literal_findings("bin/test_x.py", text, [])[0], text)
+        self.assertTrue(literal_findings("bin/test_x.py", "x = 1\rpass\n", [])[0])                      # a lone CR: Python's tokenizer ends a line there
+        self.assertEqual(literal_findings("bin/x-test.sh", "x = 1\rpass\n", [])[0], [])
+        self.assertEqual(literal_lines("ls /etc/hosts", "bin/x-test.sh"), [])
+
+    def test_the_literal_scan_reads_python_files_only_and_no_go_or_java_file_is_a_scan_target(self):
+        scanned = literal_scan_files()
+        self.assertTrue(scanned and all(f.endswith(".py") for f in scanned), scanned)
+        self.assertIn(".github/agent/bin/tests/test_panel.py", scanned)
+        for f in test_files():
+            self.assertFalse(f.endswith((".go", ".java")), f)
+        self.assertTrue(any(f.endswith("-test.sh") for f in test_files()))                                 # shell tests are still link- and mktemp-scanned
+
+    def test_shell_tests_are_still_scanned_for_an_absolute_link_target(self):
+        for text in ["ln -s /etc/hostname x", "ln -sf /usr/local/bin/t x", "ln -sfn /opt/y z", "ln --symbolic /etc/hosts x", "ln -s -- /etc/hosts x",
+                     "cp -s /etc/hosts x", "cp -sf /etc/hosts x", "cp --symbolic-link /etc/hosts x", "ln /etc/hosts x", "ln -s \"/Library/x\" y",
+                     "ln -s \"${T:-/etc}\" x", "ln -st d /etc/hosts", "ln -s -t/etc a", "ln -sT a /opt/b", "cp -sf ${X:-/etc/y} z"]:
+            self.assertEqual(len(link_findings("bin/x-test.sh", text + "\n", [])[0]), 1, text)
+            self.assertEqual(len(link_findings("bin/x.bats", text + "\n", [])[0]), 1, text)
+        for text in ["ln -s ../x y", "ln -s \"$work/p\" y", "ln -sfn $d/t y", "ln -s a b", "ln -sf ./a b", "cp /etc/hosts x", "cp -r /tmp/a /tmp/b", "ln -s $(which d) x",
+                     "ln a b", "cp -s $work/a b", "cp --symbolic-link rel b"]:
+            self.assertEqual(link_findings("bin/x-test.sh", text + "\n", [])[0], [], text)
+        self.assertEqual(link_findings("bin/x-test.sh", "ln -s /etc/hosts x\n", [("bin/x-test.sh", "ln -s /etc/hosts x", "text parsed by a checker, never run")])[0], [])
+
+    def test_shell_tests_are_still_scanned_for_creating_files_without_mktemp(self):
+        for text in ["mkdir -p out\n", "touch f\n", "cp a b\n", "mv a b\n", "ln -s a b\n", "echo hi > out.txt\n", "printf x >> \"$f\"\n", "cmd 2> err.log\n",
+                     "# mktemp is mentioned\nmkdir -p out\n", "echo \"no mktemp\"\ntouch f\n"]:
+            self.assertTrue(makes_files_without_temp(text), text)
+        for text in ["w=$(mktemp -d)\nmkdir -p \"$w/out\"\n", "w=`mktemp -d`\ntouch \"$w/f\"\n", "w=$(mktemp)\necho hi > \"$w\"\n", "echo hi >&2\ncmd >/dev/null 2>&1\n", "echo hi\n"]:
+            self.assertFalse(makes_files_without_temp(text), text)
+
+
 class Static(unittest.TestCase):
     def test_the_literal_scan_bites_on_a_mutant_file(self):
         bad, _ = literal_findings("bin/tests/test_mutant.py", "import os\nx = 1\nopen('/etc/hostname').read()\n", [])
@@ -1328,41 +1384,40 @@ class Static(unittest.TestCase):
                       "bin.usr-is-merged", "lib.usr-is-merged", "sbin.usr-is-merged"]
 
     def test_an_approved_span_does_not_exempt_the_rest_of_the_line(self):
-        allow = [("f.sh", "ssl/cert.pem", "pure data in a fixture string that is only parsed")]
-        self.assertEqual(literal_findings("f.sh", "x = 'ssl/cert.pem'", allow)[0], [])
-        self.assertEqual(literal_findings("f.sh", "x = '/etc/ssl/cert.pem'", [("f.sh", "/etc/ssl/cert.pem", "pure data in a string that is only parsed")])[0], [])
+        allow = [("f.py", "ssl/cert.pem", "pure data in a fixture string that is only parsed")]
+        self.assertEqual(literal_findings("f.py", "x = 'ssl/cert.pem'", allow)[0], [])
+        self.assertEqual(literal_findings("f.py", "x = '/etc/ssl/cert.pem'", [("f.py", "/etc/ssl/cert.pem", "pure data in a string that is only parsed")])[0], [])
         for line in ("x = '/etc/ssl/cert.pem'; open('/etc/passwd')", "cat /etc/ssl/cert.pem /usr/local/bin/x", "cp /etc/ssl/cert.pem /var/db/x",
                      "x = '/etc/ssl/cert.pem' + ls /", "d=/etc/ssl/cert.pem; cd ~"):
-            self.assertTrue(literal_findings("f.sh", line, [("f.sh", "/etc/ssl/cert.pem", "pure data in a string that is only parsed")])[0], line)
-        self.assertTrue(literal_findings("f.sh", "cat /usr/local/bin/fscache", [("f.sh", "usr/local/bin/fscache", "a span that is only the tail of a longer literal")])[0])
-        self.assertTrue(literal_findings("f.sh", "cat /usr/local/bin/fscache", [("f.sh", "/usr/local/bin/fscach", "a span that stops inside a token")])[0])
-        two = [("f.sh", "/etc/a.conf", "pure data in a string that is only parsed"), ("f.sh", "/etc/b.conf", "pure data in a string that is only parsed")]
-        self.assertEqual(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf'", two)[0], [])
+            self.assertTrue(literal_findings("f.py", line, [("f.py", "/etc/ssl/cert.pem", "pure data in a string that is only parsed")])[0], line)
+        self.assertTrue(literal_findings("f.py", "cat /usr/local/bin/fscache", [("f.py", "usr/local/bin/fscache", "a span that is only the tail of a longer literal")])[0])
+        self.assertTrue(literal_findings("f.py", "cat /usr/local/bin/fscache", [("f.py", "/usr/local/bin/fscach", "a span that stops inside a token")])[0])
+        two = [("f.py", "/etc/a.conf", "pure data in a string that is only parsed"), ("f.py", "/etc/b.conf", "pure data in a string that is only parsed")]
+        self.assertEqual(literal_findings("f.py", "x = '/etc/a.conf' + '/etc/b.conf'", two)[0], [])
         # the SAME literal twice is a finding: only the first, reviewed occurrence is approved (second one in an open() call)
-        self.assertTrue(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/a.conf'", two)[0])
-        fscache = [("bin/patch-decide-test.sh", "/usr/local/bin/fscache", "a Dockerfile COPY destination inside the image under test (text)")]
-        self.assertEqual(literal_findings("bin/patch-decide-test.sh", ' COPY fscache /usr/local/bin/fscache\n', fscache)[0], [])
+        self.assertTrue(literal_findings("f.py", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/a.conf'", two)[0])
+        fscache = [("bin/test_patch.py", "/usr/local/bin/fscache", "a Dockerfile COPY destination inside the image under test (text)")]
+        self.assertEqual(literal_findings("bin/test_patch.py", ' COPY fscache /usr/local/bin/fscache\n', fscache)[0], [])
         for line in (' COPY x /usr/local/bin/fscache; open("/usr/local/bin/fscache")', "+COPY x /usr/local/bin/fscache2", "cat /usr/local/bin/fscache.bak",
                      "cat /usr/local/bin/fscache-evil", "cat /usr/local/bin/fscache/x"):
-            self.assertTrue(literal_findings("bin/patch-decide-test.sh", line, fscache)[0], line)
-        for rel, span, line in (("auditor-labels-test.sh", "/tmp/panel-out", "rm -rf /tmp/panel-out-keep"), ("rescan-statement-test.sh", "/srv/app/package.json", "cat /srv/app/package.json.d/x"),
-                                ("vex-forms-test.sh", "/tmp/vex/fosterstack-cache.openvex.json", "rm /tmp/vex/fosterstack-cache.openvex.json.x"),
-                                ("pin-age-check-test.sh", "sudo apt-get install -y skopeo", "sudo apt-get install -y skopeo-evil"),
-                                ("bin/patch-decide-test.sh", "/usr/local/bin/fscache", "cp /usr/local/bin/fscache2 x")):
-            self.assertTrue(literal_findings(rel if rel.endswith(".sh") and "/" in rel else "bin/" + rel, line, [(rel if "/" in rel else "bin/" + rel, span, "pure data in a fixture that is only parsed")])[0], line)
-        self.assertTrue(literal_findings("f.sh", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/c.conf'", two)[0])
-        self.assertEqual(literal_findings("f.sh", "anything /etc/x at all", [("f.sh", "", "a whole-file row exempts the line (the file is pinned)")])[0], [])
+            self.assertTrue(literal_findings("bin/test_patch.py", line, fscache)[0], line)
+        for span, line in (("/tmp/panel-out", "rm -rf /tmp/panel-out-keep"), ("/srv/app/package.json", "cat /srv/app/package.json.d/x"),
+                           ("/tmp/vex/fosterstack-cache.openvex.json", "rm /tmp/vex/fosterstack-cache.openvex.json.x"), ("/opt/tool", "cat /opt/tool-evil"),
+                           ("/opt/tool", "cat /opt/tool2"), ("/usr/local/bin/fscache", "cp /usr/local/bin/fscache2 x")):
+            self.assertTrue(literal_findings("bin/test_x.py", line, [("bin/test_x.py", span, "pure data in a fixture that is only parsed")])[0], line)
+        self.assertTrue(literal_findings("f.py", "x = '/etc/a.conf' + '/etc/b.conf' + '/etc/c.conf'", two)[0])
+        self.assertEqual(literal_findings("f.py", "anything /etc/x at all", [("f.py", "", "a whole-file row exempts the line (the file is pinned)")])[0], [])
 
     def test_every_top_level_name_is_found_in_every_position(self):
         self.assertEqual([x.replace("\\", "") for x in SYS_NAMES], self.EXPECTED_NAMES)      # an independent copy: dropping a name fails here
         for n in self.EXPECTED_NAMES:
             for text in ("ls /%s/x" % n, "d=/%s" % n, "open('/%s/f')" % n, "cc -o/%s/f" % n, "p=${V:-/%s}/f" % n, "ls /%s" % n.upper(),
                          "ls //%s/x" % n, "ls /./%s/x" % n, "ls /../%s/x" % n, "ls /{%s,x}/f" % n, "x=/%s2/f" % n, "x=/%s_dir/f" % n):
-                self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+                self.assertTrue(literal_findings("f.py", text, [])[0], text)
             for text in ("x=/q%s/f" % n, "u=https://h/%s/x" % n, "r=a/%s/b" % n, "./%s/x" % n, "d=$work/%s" % n) + (("echo /%s-x" % n,) if not n[-1].isdigit() and "." not in n else ()):
-                self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+                self.assertEqual(literal_findings("f.py", text, [])[0], [], text)
         for text in ("ls /e?c/hosts", "ls /?tc", "ls /us?/bin", "ls /{etc,usr}/x", "ls /{usr,x}", "cat /et?"):
-            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
 
     def test_every_entry_of_the_real_root_of_this_machine_is_found_as_a_first_component(self):
         """Closes "a first component outside the list" for every path that exists on the machine running the suite (the dev Mac, CI)."""
@@ -1372,7 +1427,7 @@ class Static(unittest.TestCase):
         finally:
             G._busy.bypass = False
         self.assertTrue(entries)
-        missing = [e for e in entries if not literal_findings("f.sh", "ls /%s/x" % e, [])[0] or not literal_findings("f.sh", "ls /%s" % e, [])[0]]
+        missing = [e for e in entries if not literal_findings("f.py", "ls /%s/x" % e, [])[0] or not literal_findings("f.py", "ls /%s" % e, [])[0]]
         self.assertEqual(missing, [], "top-level entries of / that the scan does not know: add them to SYS_NAMES (and to EXPECTED_NAMES, the independent copy in this class)")
 
     def test_first_component_classes_are_found_without_a_name_list(self):
@@ -1382,65 +1437,63 @@ class Static(unittest.TestCase):
                      "cat ~root/x", "ls ~nobody", "cat ../../etc/hosts", "cd ../../..", "cd ..//..//x", "cat ../../../../etc/hosts", "x=../../y",
                      "d=/", "r='/'", "r=/ ", "r=\"/\"; ls", "git --git-dir=/x/.git status", "tar --directory=/ -x", "tar -C/ -x", "echo hi > /", "echo x >> /",
                      "cd \"/\"", "ls '/'", "os.listdir(os.sep)", "shutil.rmtree(os.sep)", "docker run --mount source=/,target=/h", "docker run --mount type=bind,src=/,dst=/h"]:
-            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
         for text in ["cd \"$(dirname \"$0\")/../../..\"", "root=\"$here/../..\"", "cp ../x y", "a = '../x'", "u.get('d') == 'x'", "s + \"/.vex/a.json\"",
                      "open(root + \"/.github/x\")", "glob.glob(a + \"/*.json\")", "ls \"$SRC\"/*/go.mod", "re.sub(r\"</?p>\", \"\", s)",
                      "cron: '*/10 * * * *'", ":(glob)**/*.sh", "ls ./.hidden", "cat a/.b", "x = '/branches?'", "echo hi > out.txt", "name = 'a=b'", "a == '/'"]:
-            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
-        self.assertTrue(literal_findings("x-test.sh", "sudo apt-get install x", [])[0])
-        self.assertTrue(literal_findings("x-test.sh", "FOO=1 sudo docker pull", [])[0])
-        self.assertEqual(literal_findings("test_x.py", "# sudo is not a command here", [])[0], [])
+            self.assertEqual(literal_findings("f.py", text, [])[0], [], text)
 
     def test_comment_markers_hide_nothing_and_a_lone_cr_is_a_finding(self):
         for text in ["ls /*/*/", "ls /*/*/x", "for d in /*/ /*/; do ls $d; done", "cat /*/hosts /*/passwd", "rm -rf /*/ /*/x", "glob.glob('/*') + glob.glob('/*/')",
                      "ls /* # see */", "ls /*; echo 'a */ b'", "ls /* /* */", "x = /* c */ /*", "ls /* */ /*"]:
-            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
             self.assertTrue(literal_findings("f.py", text, [])[0], text)
         # fail closed: even a lone /* comment */ is a finding (a real fixture such as the strace line gets a reviewed allow row)
-        self.assertTrue(literal_findings("f.sh", "x = /* a comment */ 5", [])[0])
-        self.assertEqual(literal_findings("f.sh", "x = /* a comment */ 5", [("f.sh", "/* a comment */", "a comment inside fixture text that is only parsed")])[0], [])
+        self.assertTrue(literal_findings("f.py", "x = /* a comment */ 5", [])[0])
+        self.assertEqual(literal_findings("f.py", "x = /* a comment */ 5", [("f.py", "/* a comment */", "a comment inside fixture text that is only parsed")])[0], [])
         # line 1 only: a "#!" line is exempt there, never later; a lone CR is its own finding and splits a .py file into lines
-        self.assertEqual(literal_findings("f.sh", "#!/bin/sh\necho hi", [])[0], [])
-        self.assertTrue(literal_findings("f.sh", "echo hi\n#!x /etc/passwd", [])[0])
+        self.assertEqual(literal_findings("f.py", "#!/bin/sh\necho hi", [])[0], [])
+        self.assertTrue(literal_findings("f.py", "echo hi\n#!x /etc/passwd", [])[0])
         for text in ["#!x\ropen('/etc/passwd')", "#!/usr/bin/env python3\ropen('/etc/passwd').read()", "# c\ropen('/etc/hostname')", "x = 1\ropen('/etc/hosts')",
                      "#!x\ropen('/etc/passwd')\n", "pass\r\nopen('/etc/passwd')"]:
             got = literal_findings("t.py", text, [])[0]
             self.assertTrue(got, text)
         self.assertEqual(len([g for g in literal_findings("t.py", "#!x\ropen('/etc/passwd')", [])[0] if "/etc/passwd" in g]), 1)
-        self.assertTrue(any("lone CR" in g for g in literal_findings("a.sh", "echo hi\rcat x\n", [])[0]))
+        self.assertTrue(any("lone CR" in g for g in literal_findings("a.py", "echo hi\rcat x\n", [])[0]))
         self.assertTrue(any("lone CR" in g for g in literal_findings("a.py", "x = 1\rpass\n", [])[0]))
-        self.assertEqual(literal_findings("a.sh", "echo hi\r\ncat x\r\n", [])[0], [])            # CRLF is not a lone CR
-        self.assertEqual(literal_findings("a.sh", "echo hi\n", [])[0], [])
-        self.assertEqual(split_lines("a.py", "a\rb\r\nc\nd"), ["a", "b", "c", "d"]); self.assertEqual(split_lines("a.sh", "a\rb\nc"), ["a\rb", "c"])
+        self.assertEqual(literal_findings("a.py", "echo hi\r\ncat x\r\n", [])[0], [])            # CRLF is not a lone CR
+        self.assertEqual(literal_findings("a.py", "echo hi\n", [])[0], [])
+        self.assertEqual(split_lines("a.py", "a\rb\r\nc\nd"), ["a", "b", "c", "d"])
 
     def test_root_spellings_wrappers_prefixes_and_content_verbs_are_found(self):
         found = ["ls /..", "ls //", "ls /./", "os.listdir(\"/..\")", "os.listdir(\"/.//\")", "PosixPath(\"/\").iterdir()", "listdir(f\"/\")", "listdir(u\"/\")",
                  "listdir(br\"/\")", "x = R\"/\"", "grep -r x /", "head /", "wc /", "file /", "readlink -f /", "realpath /", "diff -r a /", "[ -d / ]", "test -d /",
                  "subprocess.run([\"ls\", \"/\"])", "shutil.disk_usage(\"/\")", "os.path.getsize(\"/\")", "os.statvfs(\"/\")", "os.access(\"/\", os.R_OK)",
                  "os.path.ismount(\"/\")", "os.getxattr(\"/\", \"user.x\")", "ls / -l", "ls / foo", "FOO=1 ls /", "cd / && ls", "x=$(ls /)", "if ls /; then", "os.walk(\"//\")",
-                 "Path('/..')", "os.chdir('/./')", "ldd /", "lsof /", "xargs ls /", "exec ls /", ". /", "source /"]
+                 "Path('/..')", "os.chdir('/./')", "ldd /", "lsof /", "xargs ls /", "exec ls /", ". /", "source /",
+                 "true && grep -r x /", "echo a | head /", "x=1; wc /", "(file /)", "echo hi; test -d /", "{ ldd /; }"]
         for text in found:
-            self.assertTrue(literal_findings("f.sh", text, [])[0] or literal_findings("f.py", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0] or literal_findings("f.py", text, [])[0], text)
             self.assertTrue(bare_roots(text) or flagged(text), text)
         exceptions = ["a / b", "$((a / b))", "x = a / b", "sed 's/a/b/'", "sed 's/^/    /'", "echo \"$out\" | sed 's/^/      /'", "p.rsplit(\"/\", 1)", "s.split(\"/\")", "\"/\".join(parts)",
                       "x == \"/\"", "x != \"/\"", "p + \"/\" + q", "re.sub(r\"/\", \"-\", p)", "name.replace(\"/\", \"_\")", "s.replace(\":\", \"/\")", "name.startswith(\"/\")",
                       "p.endswith(\"/\")", "n = p.count(\"/\")", "x.strip(\"/\")", "docker://", "https://example.org/", "// a jq comment", "# open / merged / closed", "echo a / b",
                       "r\"</?p>\"", "cron '*/10 * * * *'", "a/b", "./", "x = 1 / 2", "print(\"a\" / \"b\")"]
         for text in exceptions:
-            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+            self.assertEqual(literal_findings("f.py", text, [])[0], [], text)
         self.assertEqual(bare_roots("x = \"/\".join(a)"), [])
 
     def test_dev_null_is_exempt_only_as_a_complete_path_token_and_a_shebang_only_on_line_one(self):
         for ok in ("cmd >/dev/null", "cmd 2>/dev/null", "cmd &>/dev/null", "open('/dev/null')", "x=\"/dev/null\"", "cmd > /dev/null 2>&1", "open(os.devnull)"):
-            self.assertEqual(literal_findings("f.sh", ok, [])[0], [], ok)
+            self.assertEqual(literal_findings("f.py", ok, [])[0], [], ok)
         for bad in ("open('/dev/nullx')", "cat /dev/null/x", "cat /dev/null.d", "cat /dev/null-evil", "ls /dev/null/", "cat /dev/nulls", "cat x/dev/null"[:0] + "cat /dev/null0"):
-            self.assertTrue(literal_findings("f.sh", bad, [])[0], bad)
-        self.assertEqual(literal_findings("f.sh", "#!/bin/sh\necho hi", [])[0], [])               # line 1
-        self.assertTrue(literal_findings("f.sh", "echo hi\n#!/bin/sh\necho there", [])[0])        # a bare second-line shebang is a finding (a reviewed row covers real heredoc content)
-        self.assertTrue(literal_findings("f.sh", "echo hi\n#!/usr/bin/env bash", [])[0])
-        self.assertEqual(literal_findings("f.sh", "printf '#!/bin/sh\\necho hi\\n' > x", [])[0], [])      # a QUOTED shebang is file content being written
-        self.assertEqual(literal_findings("f.sh", 'x = "#!/usr/bin/env python3\\nprint(1)"', [])[0], [])
-        self.assertTrue(literal_findings("f.sh", "printf '#!/bin/sh\\n' > x; cat /etc/passwd", [])[0])
+            self.assertTrue(literal_findings("f.py", bad, [])[0], bad)
+        self.assertEqual(literal_findings("f.py", "#!/bin/sh\necho hi", [])[0], [])               # line 1
+        self.assertTrue(literal_findings("f.py", "echo hi\n#!/bin/sh\necho there", [])[0])        # a bare second-line shebang is a finding (a reviewed row covers real heredoc content)
+        self.assertTrue(literal_findings("f.py", "echo hi\n#!/usr/bin/env bash", [])[0])
+        self.assertEqual(literal_findings("f.py", "printf '#!/bin/sh\\necho hi\\n' > x", [])[0], [])      # a QUOTED shebang is file content being written
+        self.assertEqual(literal_findings("f.py", 'x = "#!/usr/bin/env python3\\nprint(1)"', [])[0], [])
+        self.assertTrue(literal_findings("f.py", "printf '#!/bin/sh\\n' > x; cat /etc/passwd", [])[0])
 
     def test_every_bare_root_form_is_found(self):
         for text in ["tar -C / -xf a.tar", "git -C / status", "env -C / cat etc/hosts", "cp x /", "mv x /", "rsync -a x /", "pushd /", "popd /",
@@ -1449,25 +1502,25 @@ class Static(unittest.TestCase):
                      "shutil.rmtree('/')", "ls -la /", "cd /", "cd -P /", "find / -name x", "du -s /", "cat /", "chmod -R 700 /", "chroot / sh",
                      "df -h /", "touch /", "mkdir /", "rmdir /", "tree /", "mount /", "x = os.listdir('/')", "p.iterdir('/')", "tar --directory / -x",
                      "tar --directory=/ -x", "make -C / all", "cp -r a b /", "install -m 0755 x /", "ln -s a /", "scp a /", "zip -r a.zip /"]:
-            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
         for text in ["cd ..", "ls ./", "echo 'a / b'", "x = '/'.join(p)", "a / b", "sed 's/a/b/'", "cp x ./", "cp x y/", "tar -C dir -x", "cd $d",
                      "git -C \"$repo\" status", "echo $((a / b))", "x=`pwd`/y"]:
-            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+            self.assertEqual(literal_findings("f.py", text, [])[0], [], text)
 
     def test_home_without_a_slash_and_dotdot_chains_are_found(self):
         for text in ["cat ~/x", "x=~/y", "cd ~", "cd", "cd; ls", "cd && ls", "ls ~", "cat ~;", "x=~", "cp -r ~ y", "../../../../etc/hosts", "cat ../../../x", "file:///etc/hosts",
                      "file:/etc/hosts", "file://localhost/x", "echo $HOME", "os.path.expanduser('~')"]:
-            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
         for text in ["cd ..", "cd $d", "x ~ y", "'~' suffix", "cat ../x", "file://$work/rel", "file://.", "cd dir"]:
-            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+            self.assertEqual(literal_findings("f.py", text, [])[0], [], text)
 
     def test_the_literal_scan_finds_every_plain_form(self):
         for text in ["d=${TMPDIR:-/tmp}/a", "docker load oci-archive:/tmp/x", "PATH=/a:/usr/bin", "cc -o/etc/hosts", "tar -C/etc -x", "cat /Etc/hosts",
                      "ls /cores", "ls /Network/x", "ls /snap", "cd /workspace", "p=/github/workspace", "open('/')", "os.listdir('/')", "ls /", "cd /",
                      "find / -name x", "stat('/')"]:
-            self.assertTrue(literal_findings("f.sh", text, [])[0], text)
+            self.assertTrue(literal_findings("f.py", text, [])[0], text)
         for text in ['x = "docker://"', "x = ('docker://', './')", "u = 'file://'", "u = \"s3://\"", "https://host/etc/x", "x=$(pwd)/etc", "./usr/bin", "a/b/etc/c", "d=$work/tmp/x", "echo 'a / b'", "x = '/'.join(p)", "cd ..", "ls ./"]:
-            self.assertEqual(literal_findings("f.sh", text, [])[0], [], text)
+            self.assertEqual(literal_findings("f.py", text, [])[0], [], text)
 
 
 class Guard(unittest.TestCase):

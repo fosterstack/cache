@@ -2274,3 +2274,33 @@ requirements:
         then: "the gate accepts the opus entry as the second review only when all hold: substitute_id names exactly one entry of the reviews allow-list file substitutes.json (in the auditor directory) as read from the trusted default-branch revision (never the pull request's own copy, so a pull request cannot add or extend its own substitute); that entry is for codex, by opus, vendor anthropic, with a non-empty owner_quote; the gate's own UTC clock (read from the system clock only; no environment variable or option can change it) and the record's completed_at are both before the entry's effective_until, and completed_at is not in the future of the gate's clock; and its scope is all, or pr:N with N equal to the number given by --pr (a pr:N scope with no --pr fails). The sonnet review is never substitutable and both entries need zero open blockers; the opus entry never counts as vendor openai; the substitute path applies only when the final round has no codex key at all (a codex entry that is present but not a valid object fails, naming codex), and the opus evidence_sha256 differs from the sonnet entry's (a copied entry fails); a change to any file the review gate itself runs or reads (every path under the auditor directory's bin/ and fixtures/testlib/, the review-substitutes allow-list, the gate workflow, the repository's bin/check-file-allowlist.sh and the auditor directory's tests/pin-wiring-test.sh) is never cleared by a substitute and needs a real codex entry; the gate and the pin checker run in Python isolated mode; a record that has a codex entry is judged on the codex entry alone; any missing or malformed field fails the gate with a message naming it; after the expiry the codex entry is required again"
         verification: { method: unit, release_blocking: false }
         status: approved
+  - id: REQ-AUD-019
+    title: The auditor unit tests touch no real system path
+    statement: >
+      The auditor's Python unit tests shall not open, list, create, link, stat or resolve any real system path: a runtime guard armed for the whole test run fails any such call that leaves the test's temporary directory, the repository checkout and the interpreter's own environment; the Python tests are also scanned statically in full for a system-path literal outside a reviewed allow-list; and every other test script (shell) is scanned statically only for a symbolic link made to an absolute target and for creating files without a temporary directory. Go and Java tests are not scanned statically; the runtime guard covers whatever test discovery actually runs.
+    source: [auditor directory bin/tests/fs_guard.py, auditor directory bin/tests/test_fs_guard.py, auditor directory bin/tests/system_path_allowlist.py]
+    tier: community
+    introduced: v0.3.0
+    origin: the macOS "administer your computer" prompts of Oct 9 2026, traced (advisor) to a test that made a symbolic link to a system path under the command sandbox, and the advisor ruling that the whole class is fixed with a tripwire; the scope of the static scan was narrowed by the advisor (option A) after seven review rounds in which a growing list of shell spellings never converged.
+    confidence: implementation-only
+    notes: >
+      The runtime guard is an audit hook plus wrappers installed when test_fs_guard.py is imported by test discovery; it judges the resolved path of each call (symbolic links followed, ".." applied after a link, a dir_fd or an open fd resolved to its directory) against the temporary directory, the checkout and the interpreter environment (read only), and is proven by mutants run in a container. The static literal scan keeps a reviewed allow-list (system_path_allowlist.py) whose whole-file rows pin the file byte for byte. The shell scan is limited to ln -s / cp -s (and the hard-link form) with an absolute target and to a script that creates files without calling mktemp. Go and Java tests are out of the static scan by decision; they run under the same guard only where discovery runs them in the Python interpreter.
+    acceptance_criteria:
+      - id: REQ-AUD-019-AC1
+        given: "any auditor Python unit test run by test discovery or the auditor coverage gate"
+        when: "a call opens, lists, creates, links, renames, removes, stats or resolves a path (including through a symbolic link, a dir_fd, an open file descriptor, a socket address or a database file) that is outside the test's temporary directory, the repository checkout and the interpreter's own environment, or writes inside the interpreter's environment other than its bytecode cache"
+        then: "the call fails at once with an error that cannot be swallowed by an ordinary except Exception, and a violation raised in a worker thread fails the run at exit"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-AUD-019-AC2
+        given: "a Python test file in the repository"
+        when: "the static scan reads it"
+        then: "it fails, naming the file and line, on a system-path literal (an absolute path under a top-level system directory, the bare root, a home-directory form, a dot or glob first component, or a chain of parent directories) unless a reviewed allow-list row approves that one complete token as pure data, and a whole-file row pins the file byte for byte"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-AUD-019-AC3
+        given: "a shell test script (or any other non-Python test script), and a Go or Java test"
+        when: "the static scan reads them"
+        then: "a shell script fails, naming the file and line, only for a symbolic link (ln -s, ln -sf, ln --symbolic, cp -s, cp --symbolic-link, or a hard ln) made to an absolute target, and for creating files without calling mktemp; Go and Java tests are not scanned statically"
+        verification: { method: unit, release_blocking: false }
+        status: approved
