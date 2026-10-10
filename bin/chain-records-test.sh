@@ -119,7 +119,7 @@ expect() { # expect ok|caught LABEL DIR
 expect_named() { # expect_named LABEL DIR FILE : the judge fails AND its message names FILE (so the mutation, not the fixture, is what failed)
   local out rc=0
   out=$(judge "$2") || rc=$?
-  if [ "$rc" != 0 ] && printf '%s' "$out" | grep -qF -- "$3"; then pass=$((pass + 1)); echo "ok   $1 (caught: ${out:0:140})"
+  if [ "$rc" != 0 ] && grep -qF -- "$3" <<< "$out"; then pass=$((pass + 1)); echo "ok   $1 (caught: ${out:0:140})"
   else failn=$((failn + 1)); echo "FAIL $1 -> rc=$rc, message does not name $3: ${out:0:300}"; fi
 }
 nosign() { rm -f "$1/.github/workflows/stage-sign.yml"; }

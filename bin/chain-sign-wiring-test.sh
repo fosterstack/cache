@@ -1016,6 +1016,9 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .github/ and bin/ of REPO (default: the real tree)
   local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
   ( cd "${2:-$root}" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+# a tracked file deleted in the working tree would make the copy silently partial: fail clearly instead (CI checks out every tracked file)
+gone=$(cd "$root" && git ls-files --deleted -- .github bin)
+if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 REAL=$(tracked_copy real)
 expect ok "the real stage-sign.yml passes the Sign judge" sign "$REAL/.github/workflows/stage-sign.yml"
 expect ok "the real stage-build.yml's signing steps take nothing from a secret" build "$REAL/.github/workflows/stage-build.yml"
@@ -1031,7 +1034,7 @@ probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the
   local d out rc=0; d=$(tracked_copy "probe-$1")
   ( cd "$d" && eval "$4" ) || echo "probe $1: the edit did not apply"
   out=$(judge tree "$d") || rc=$?
-  if [ "$rc" != 0 ] && printf '%s' "$out" | grep -F -q -- "$2"; then pass=$((pass + 1)); echo "ok   real-tree probe: $3 is caught (${out:0:140})"
+  if [ "$rc" != 0 ] && grep -F -q -- "$2" <<< "$out"; then pass=$((pass + 1)); echo "ok   real-tree probe: $3 is caught (${out:0:140})"
   else failn=$((failn + 1)); echo "FAIL real-tree probe let through $3 (or did not name $2): rc=$rc ${out:0:300}"; fi; }
 rehash() {  # rehash PATH: refresh PATH's sha256 in chain-scripts.json of the copy (the probe edits a listed script "properly")
   python3 -c 'import hashlib,json,sys; p=".github/policy/chain-scripts.json"; d=json.load(open(p))
@@ -1042,6 +1045,8 @@ probe build    stage-build.yml      "a second provenance signer job in stage-bui
 probe image    stage-image.yml      "a second provenance signer job in stage-image.yml"     "printf '$SIGN_JOB' >> .github/workflows/stage-image.yml"
 probe sneak    bin/sneak.sh         "stage-admission.yml running an unlisted bin/sneak.sh that signs provenance" \
   "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/sneak.sh\n' >> .github/workflows/stage-admission.yml"
+probe cisneak  bin/ci-sneak.sh      "ci.yml (a non-stage workflow) running an unlisted new bin/ci-sneak.sh that signs provenance" \
+  "printf '#!/usr/bin/env bash\ncosign attest --type slsaprovenance --predicate p.json img\n' > bin/ci-sneak.sh; printf '  sneak:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: bash bin/ci-sneak.sh\n' >> .github/workflows/ci.yml"
 probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
@@ -1061,13 +1066,13 @@ probe outside  "outside .github/workflows/" "a legacy-list path outside .github/
 probe missing  "legacy file missing: .github/workflows/stage-image.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-image.yml"
 # the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
-[ "$rc" != 0 ] && printf '%s' "$out" | grep -F -q "stage-build.yml signs provenance" && ok_n=1 || ok_n=0
+[ "$rc" != 0 ] && grep -F -q "stage-build.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
 if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.json deleted the same case judges the whole tree (red today on the legacy signers)"; else failn=$((failn + 1)); echo "FAIL deleting legacy-stage-files.json did not bring the legacy files back into the judge: rc=$rc ${out:0:200}"; fi
 # only TRACKED files are judged: an untracked file with a signer in a working copy is not part of what CI checks out
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=267
+EXPECT=268
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

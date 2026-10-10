@@ -886,14 +886,14 @@ expect_ok() { local l=$1; shift; local rc=0; run "$@" || rc=$?
 # must also never have been called (the check comes BEFORE the signature: Opus r3 B1).
 expect_refuse() { local l=$1 w=$2 x=; shift 2; local rc=0 miss=0 l1 st reason; run "$@" || rc=$?
   l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
-  if printf '%s' "$l1" | grep -E -q '^refused at [a-z]+: .'; then
+  if grep -E -q '^refused at [a-z]+: .' <<< "$l1"; then
     st=$(printf '%s' "$l1" | sed -E 's/^refused at ([a-z]+): .*/\1/'); reason=${l1#*: }
     reason=${reason//"$(printf '%s' "$work" | tr 'A-Z' 'a-z')"/}   # round 8: the random mktemp path can never stand in for (or against) a cause word
     IFS='|' read -r -a ws <<< "$w"
     for x in "${ws[@]}"; do
       case $x in
-        '!'*) ! printf '%s' "$reason" | grep -F -q -- "${x#!}" || miss=1 ;;          # a word the reason must NOT contain (the other causes)
-        *) [ "$x" = "$st" ] || printf '%s' "$reason" | grep -F -q -- "$x" || miss=1 ;;
+        '!'*) ! grep -F -q -- "${x#!}" <<< "$reason" || miss=1 ;;          # a word the reason must NOT contain (the other causes)
+        *) [ "$x" = "$st" ] || grep -F -q -- "$x" <<< "$reason" || miss=1 ;;
       esac
     done
   else miss=1; fi
@@ -1498,9 +1498,9 @@ expect_postsign_refuse() { local l=$1 words=$2 mode=$3 rc=0 l1 x miss=0; FAKE_BU
     --policy "$work/policy.json" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/post-$mode" || rc=$?
   [ -s "$work/cosign-argv.log" ] && POSTSIGN=$((POSTSIGN + 1))
   l1=$(head -n 1 "$work/err" | tr 'A-Z' 'a-z')
-  printf '%s' "$l1" | grep -q '^refused at sign: ' || miss=1
+  grep -q '^refused at sign: ' <<< "$l1" || miss=1
   IFS='|' read -r -a ws <<< "$words"
-  for x in "${ws[@]}"; do case $x in '!'*) ! printf '%s' "${l1#*: }" | grep -F -q -- "${x#!}" || miss=1 ;; *) printf '%s' "${l1#*: }" | grep -F -q -- "$x" || miss=1 ;; esac; done
+  for x in "${ws[@]}"; do case $x in '!'*) ! grep -F -q -- "${x#!}" <<< "${l1#*: }" || miss=1 ;; *) grep -F -q -- "$x" <<< "${l1#*: }" || miss=1 ;; esac; done
   if [ "$rc" = 1 ] && [ "$miss" = 0 ] && ! crashed && [ ! -e "$work/sd/post-$mode/provenance.json" ]; then ok "$l"
   else bad "$l (exit $rc, wanted 1 with 'refused at sign:' and '$words', no provenance.json left; $(head -c 200 "$work/err" | tr '\n' ' '))"; fi; }
 expect_postsign_refuse "S1 a bundle with no timestampVerificationData is refused after cosign: the timestamp is named" "timestamp|!rekor" nots
