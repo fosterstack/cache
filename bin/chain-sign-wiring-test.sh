@@ -1196,7 +1196,7 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .github/ and bin/ of REPO (default: the real tree)
   local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
   # .github/ and bin/, plus the build configuration the build tooling reads outside them (pinned in .github/policy/build-config-files.json)
-  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .goreleaser.yaml .grype.yaml .ko.yaml .gremlins.yaml build .githooks | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .goreleaser.yaml .grype.yaml .ko.yaml .gremlins.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
 # a tracked file deleted in the working tree would make the copy silently partial: fail clearly instead (CI checks out every tracked file)
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
@@ -1317,6 +1317,38 @@ probe mergehidden "merge key" "an anchored hidden job (x-d: &d {hidden: {...id-t
 # Sonnet r5: case variants of write / write-all hold the token as far as this check is concerned
 probe idWrite   "ci.yml job probe-job holds id-token" "a job with id-token: Write (capitalised)" "printf '  probe-job:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: Write\n    steps:\n      - run: true\n' >> .github/workflows/ci.yml"
 probe idWriteAll "ci.yml job probe-job holds id-token" "a job with permissions: Write-All" "printf '  probe-job:\n    runs-on: ubuntu-24.04\n    permissions: Write-All\n    steps:\n      - run: true\n' >> .github/workflows/ci.yml"
+# Opus r6 L1: a composite action anywhere in the repository is judged (signers and merge keys), not only under .github/actions/
+AUD=".github/""agent"   # (split: REQ-AUD-18 AC1 keeps the auditor directory's literal path out of files outside it)
+ACT_SIGN='name: a\nruns:\n  using: composite\n  steps:\n    - run: cosign attest-blob --yes --type slsaprovenance --predicate p.json x\n      shell: bash\n'
+probe actbin   "bin/act/action.yml" "a composite action at bin/act/action.yml that signs provenance" "mkdir -p bin/act; printf '$ACT_SIGN' > bin/act/action.yml"
+probe actaud   "agent/act/action.yml" "a composite action under the auditor directory that signs provenance" "mkdir -p $AUD/act; printf '$ACT_SIGN' > $AUD/act/action.yml"
+probe actroot  "action.yaml" "a root action.yaml that signs provenance" "printf '$ACT_SIGN' > action.yaml"
+probe actmerge "bin/act2/Action.yml" "a << merge key in a composite action at bin/act2/Action.yml" "mkdir -p bin/act2; printf 'name: m\nruns:\n  using: composite\n  steps:\n    - <<: {run: echo x}\n      shell: bash\n' > bin/act2/Action.yml"
+# Opus r6 L2: a composite action that does not parse is a finding, not skipped
+probe actunparse "m4/action.yml" "a composite action with a second YAML document (it does not parse as one)" "mkdir -p .github/actions/m4; printf 'name: m\nruns:\n  using: composite\n  steps:\n    - <<: {run: echo x}\n      shell: bash\n---\nx: 1\n' > .github/actions/m4/action.yml"
+# Sonnet r6: compiled-code names match case-insensitively
+probe pycupper "bin/x/a.PYC" "a bin/x/a.PYC" "mkdir -p bin/x; printf '\\0' > bin/x/a.PYC"
+probe cacheupper "bin/__PYCACHE__" "a bin/__PYCACHE__ directory" "mkdir -p bin/__PYCACHE__; printf '\\0' > bin/__PYCACHE__/m.txt"
+probe soupper  "bin/y.SO" "a bin/y.SO" "printf '\\0' > bin/y.SO"
+# Sonnet r6: an alias bomb with a merge key at its base: the merge-key walk visits each node once, finishes quickly, and still refuses it
+d=$(tracked_copy bomb); python3 - "$d/.github/workflows/ci.yml" <<'PYB'
+import sys
+p = sys.argv[1]; t = open(p).read()
+bomb = "x-b0: &b0 {<<: {k: v}}\n" + "".join("x-b%d: &b%d [%s]\n" % (i, i, ", ".join(["*b%d" % (i - 1)] * 9)) for i in range(1, 10))
+open(p, "w").write(t.replace("\njobs:\n", "\n" + bomb + "jobs:\n", 1))
+PYB
+bout=$(python3 - "$work/judge.py" "$d" <<'PYT'
+import os, subprocess, sys
+try:
+    r = subprocess.run([sys.executable, sys.argv[1], "tree", sys.argv[2]], capture_output=True, text=True, timeout=120, env=os.environ)
+    print("rc=%d %s" % (r.returncode, r.stdout[:300]))
+except subprocess.TimeoutExpired:
+    print("TIMEOUT")
+PYT
+)
+case "$bout" in *TIMEOUT*) failn=$((failn + 1)); echo "FAIL an alias bomb hung the merge-key walk";;
+  rc=1*"merge key"*) pass=$((pass + 1)); echo "ok   an alias bomb with a merge key at its base is walked once per node, finishes, and is refused";;
+  *) failn=$((failn + 1)); echo "FAIL an alias bomb was not refused: ${bout:0:200}";; esac
 probe goreldup   "repeated" "two goreleaser builds with the same id (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"id: fscache-fips\",\"id: fscache\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
@@ -1386,7 +1418,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=320
+EXPECT=329
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
