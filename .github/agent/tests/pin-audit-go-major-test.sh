@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=68
+pass=0 failn=0 EXPECT=72
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -702,6 +702,72 @@ base = "example.com/o/ytool"
 mk = lambda v, t=None: tool("ytool", v, base)
 hit("1.5.0", [rec("GO-X-63", ent(base, ranges=[{"type": "SEMVER", "events": fixed("1.2.0")}, git]), ent(base + "/v1", INTRO0))], mk=mk, sups=(True,))
 clean("1.5.0", [rec("GO-X-64", ent(base, fixed("1.2.0")), ent(base + "/v1", INTRO0))], mk=mk, sups=(True,))     # control: the same without the GIT range
+PY
+py "B14: OSV range events are evaluated as OSV does: sorted by version (any order in, ties: fixed wins), introduced 0 first, last_affected inclusive," \
+   " limit an upper bound" <<'PY'
+def aff(v, *events): return pa.covered_by_events(v, [dict([e]) for e in events])
+I, F, L, X = "introduced", "fixed", "last_affected", "limit"
+two = [(I, "3.1.0"), (F, "3.2.0"), (I, "1.0.0"), (F, "2.0.0")]
+for order in (two, two[::-1], [two[2], two[3], two[0], two[1]]):                # unsorted in every direction
+    assert aff("3.1.3", *order) and aff("1.5.0", *order) and not aff("2.5.0", *order) and not aff("3.2.0", *order) and not aff("0.5.0", *order), order
+assert aff("1.0.0", (F, "2.0.0"), (I, "0")) and not aff("2.0.0", (F, "2.0.0"), (I, "0"))      # introduced 0 listed last
+for order in ([(I, "3.1.3"), (F, "3.1.3")], [(F, "3.1.3"), (I, "3.1.3")]):         # a tie: the fixed wins at that version
+    assert not aff("3.1.3", *order) and not aff("3.1.4", *order), order
+assert aff("3.1.3", (I, "0"), (L, "3.1.3")) and not aff("3.1.4", (I, "0"), (L, "3.1.3")) and aff("3.1.3", (L, "3.1.3"), (I, "0"))
+assert aff("3.1.2", (I, "0"), (X, "3.1.3")) and not aff("3.1.3", (I, "0"), (X, "3.1.3")) and not aff("3.1.4", (I, "0"), (X, "3.1.3"))   # limit: v < limit
+assert aff("3.1.3", (I, "0"), (X, "4.0.0")) and not aff("3.1.3", (I, "0"), (X, "3.0.4"))
+n = BARE + "/v3"
+hit("3.1.3", [rec("GO-X-70", ent(n, two))], sups=(True,))                                          # the Codex pair, through a record
+clean("3.1.3", [rec("GO-X-71", ent(BARE, INTRO0), ent(n, ev(("introduced", "0"), ("limit", "3.0.4"))))], sups=(True,))   # the exact entry decides
+PY
+py "B15: copy metadata is validated before merging: aliases null, a non-list, non-strings, a non-string modified or id is an unreadable record," \
+   " a HIT, never an exception" <<'PY'
+good = rec("GO-X-72", ent(BARE + "/v3", fixed("3.0.4")))
+for what, change in (("aliases null", {"aliases": None}), ("aliases string", {"aliases": "GHSA-x"}), ("aliases ints", {"aliases": [1, 2]}),
+                     ("modified int", {"modified": 5}), ("id list", {"id": ["x"]})):
+    net = mknet([], (), True)
+    net._osv_post = lambda q, c=change: [dict(copy.deepcopy(good), **c)]
+    try: finds, _ = run(cosign("3.1.3"), net)
+    except Exception as e: raise AssertionError((what, "exception", repr(e)))
+    assert finds, (what, "expected a HIT")
+r = copy.deepcopy(good); r.pop("aliases"); r.pop("modified")                               # absent aliases and modified are fine
+net = mknet([], (), True); net._osv_post = lambda q: [copy.deepcopy(r)]
+assert run(cosign("3.1.3"), net)[0] == []
+PY
+py "B16: value types of the schema: a numeric purl, severity that is not a list of {type, score} strings, ecosystem_specific or database_specific that is" \
+   " not an object, or a GIT range without introduced is a HIT; real shapes stay clean" <<'PY'
+n = BARE + "/v3"
+honest = ent(n, fixed("3.0.4"))
+def with_(**kw):
+    e = copy.deepcopy(honest); e.update(kw); return e
+bad = {"numeric purl": {"package": {"name": n, "ecosystem": "Go", "purl": 5}, "ranges": honest["ranges"]},
+       "severity string": with_(severity="HIGH"), "severity members": with_(severity=["HIGH"]), "severity types": with_(severity=[{"type": 1, "score": "x"}]),
+       "ecosystem_specific list": with_(ecosystem_specific=[1]), "database_specific string": with_(database_specific="x"),
+       "git without introduced": ent(BARE, ranges=[{"type": "GIT", "repo": "https://x", "events": [{"fixed": "abc123"}]}]),
+       "git empty events": ent(BARE, ranges=[{"type": "GIT", "repo": "https://x", "events": []}])}
+for what, entry in bad.items():
+    try: hit("3.1.3", [rec("GO-X-73", honest, entry)], sups=(True,))
+    except AssertionError as e: raise AssertionError((what,) + e.args)
+    except Exception as e: raise AssertionError((what, "traceback", repr(e)))
+fine = [with_(severity=[{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N"}], ecosystem_specific={"imports": []}, database_specific={"url": "x"}),
+        ent(BARE, ranges=[{"type": "GIT", "repo": "https://x", "events": [{"introduced": "0"}, {"fixed": "abc123"}]}])]
+clean("3.1.3", [rec("GO-X-74", honest, *fine)], sups=(True,))
+PY
+py "B17: every gh, git and curl subprocess has a timeout, and a timeout stops the run (a Fail, never a clean day)" <<'PY'
+import subprocess
+seen = []
+def slow(cmd, **kw):
+    seen.append(kw.get("timeout"))
+    raise subprocess.TimeoutExpired(cmd, kw.get("timeout") or 0)
+pa.subprocess.run = slow
+net = pa.LiveNet(["gh"], ".")
+try: net._gh_json("advisories/x", strict=True); raise AssertionError("no Fail")
+except pa.Fail: pass
+try: pa.Gh("gh").run("api", "x"); raise AssertionError("no Fail")
+except pa.Fail: pass
+assert seen and all(t for t in seen), seen
+src = open(sys.argv[1]).read()
+assert src.count("subprocess.run(") == 1, "a subprocess call without the timeout wrapper _run"
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
