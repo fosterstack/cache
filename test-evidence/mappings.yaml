@@ -674,3 +674,73 @@ mappings:
   - ac: REQ-AUD-019-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-OBS-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHealthzStays200OnReadOnlyAndFullDisk" }
+  - ac: REQ-OBS-001-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHealthzTouchesNoFilesystem" }
+  - ac: REQ-OBS-001-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestDocsSayHealthzIsLivenessOnly" }
+  - ac: REQ-OBS-002-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestWritableGaugeHealthyIsOneAndDocumented" }
+  - ac: REQ-OBS-002-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestWritableGaugeZeroOnFullDiskAndRecovers" }
+      - { type: go-test, ref: "internal/server:TestWritableGaugeZeroOnReadOnlyDir" }
+      - { type: go-test, ref: "internal/server:TestFailedPutMarksTheSampleStale" }
+      - { type: go-test, ref: "internal/storesample:TestRecoversAfterFix" }
+      - { type: go-test, ref: "internal/storesample:TestStateChangeIsLoggedOnce" }
+      - { type: go-test, ref: "internal/storesample:TestEachProbeStepFailureReadsNotWritable" }
+  - ac: REQ-OBS-002-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestProbeFileIsNotAKeyNotCountedAndSweptAtStartup" }
+      - { type: go-test, ref: "internal/storesample:TestProbeStepsOrderAndTempName" }
+      - { type: go-test, ref: "internal/storesample:TestRealProbeLeavesNoFileAndFailsOnReadOnlyDir" }
+  - ac: REQ-OBS-002-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestProbeNotRunWhileSampleFresh" }
+      - { type: go-test, ref: "internal/storesample:TestFreshnessAndMarkStale" }
+      - { type: go-test, ref: "internal/storesample:TestOnlyOneProbeInFlightAndScrapeDoesNotWait" }
+      - { type: go-test, ref: "internal/storesample:TestProbeOverLimitReadsZeroAndIsNotDuplicated" }
+  - ac: REQ-OBS-002-AC6
+    evidence:
+      - { type: go-test, ref: "internal/server:TestFreeBytesGaugeAndStatfsFailure" }
+      - { type: go-test, ref: "internal/storesample:TestStatfsFailureReadsZeroAndNotWritable" }
+      - { type: go-test, ref: "internal/storesample:TestAvailIsBavailTimesBsize" }
+  - ac: REQ-OBS-002-AC7
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutErrorTaxonomyAndResponsesUnchanged" }
+      - { type: go-test, ref: "internal/server:TestPutErrorsTooLargeByDeclaredChunkedAndBodyLimit" }
+      - { type: go-test, ref: "internal/server:TestClientAbortMidBodyCountsClientAborted" }
+  - ac: REQ-OBS-002-AC8
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutErrorSeriesExistAtZeroAndNoOthers" }
+      - { type: go-test, ref: "internal/server:TestClassifyPutErrorTable" }
+      - { type: go-test, ref: "internal/server:TestPutErrorTaxonomyAndResponsesUnchanged" }
+  - ac: REQ-OBS-002-AC9
+    evidence:
+      - { type: go-test, ref: "internal/server:TestNonStoreRefusalsAndSuccessDoNotCount" }
+  - ac: REQ-OBS-002-AC10
+    evidence:
+      - { type: go-test, ref: "internal/server:TestGaugesSeededAtStartupHealthyAndBroken" }
+  - ac: REQ-OBS-002-AC11
+    evidence:
+      - { type: go-test, ref: "internal/server:TestRouteSurfaceIsCachePlusReadOnlyEndpoints" }
+  - ac: REQ-OBS-003-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszHasDiskFields" }
+  - ac: REQ-OBS-003-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetricsOnDiskSignalsInEveryState" }
+  - ac: REQ-OBS-003-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszAndMetricsShareOneSample" }
+  - ac: REQ-OBS-003-AC6
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszHTMLShowsDataDirRow" }
+  - ac: REQ-OBS-003-AC7
+    evidence:
+      - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }

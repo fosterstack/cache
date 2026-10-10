@@ -7,6 +7,7 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
 	"errors"
 	"io"
@@ -20,6 +21,7 @@ import (
 	"github.com/fosterstack/cache/internal/blobstore"
 	"github.com/fosterstack/cache/internal/cache"
 	"github.com/fosterstack/cache/internal/metrics"
+	"github.com/fosterstack/cache/internal/storesample"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
@@ -36,9 +38,24 @@ type Credentials struct {
 
 func (c Credentials) enabled() bool { return c.Username != "" && c.Password != "" }
 
+// Store is what the HTTP layer needs from the cache. *cache.Cache is the only
+// production implementation; the interface is a testability seam (tests
+// wrap it to make a store write fail with a chosen error).
+type Store interface {
+	Get(ctx context.Context, key string) (io.ReadCloser, int64, error)
+	Stat(key string) (int64, error)
+	Put(ctx context.Context, key string, r io.Reader) (int64, error)
+	TotalSize() (int64, error)
+	EntryCount() (int, error)
+}
+
 // Config configures New.
 type Config struct {
-	Cache   *cache.Cache
+	Cache Store
+	// Sampler is the one shared store sample (writable, free bytes) that
+	// /metrics and /statusz both read (REQ-OBS-002, REQ-OBS-003). Nil leaves
+	// the disk gauges at 0 and /statusz reporting not writable.
+	Sampler *storesample.Sampler
 	Metrics *metrics.Metrics
 	// Registry is gathered to serve /metrics. Defaults to
 	// prometheus.DefaultGatherer, which is what Metrics must have been
@@ -110,7 +127,11 @@ func New(cfg Config) http.Handler {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealthz)
-	mux.Handle("GET /metrics", promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{}))
+	metricsHandler := promhttp.HandlerFor(cfg.Registry, promhttp.HandlerOpts{})
+	mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {
+		refreshDiskGauges(cfg) // the gauges are set from the same cached sample /statusz reads
+		metricsHandler.ServeHTTP(w, r)
+	})
 
 	// /statusz and the landing page sit behind the same Basic Auth as the
 	// cache when auth is enabled (punch list #8d): they are read-only, so
@@ -346,6 +367,7 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 	// layer's capped reader is the backstop for chunked or mis-declared
 	// bodies.
 	if cfg.MaxBytes > 0 && r.ContentLength > cfg.MaxBytes {
+		countPutError(cfg, cache.ErrEntryTooLarge, nil)
 		writeStoreError(w, cfg, cache.ErrEntryTooLarge, "PUT", key)
 		return
 	}
@@ -355,6 +377,7 @@ func handlePut(w http.ResponseWriter, r *http.Request, cfg Config, key string) {
 	}
 	n, err := cfg.Cache.Put(r.Context(), key, body)
 	if err != nil {
+		countPutError(cfg, err, r.Context().Err())
 		writeStoreError(w, cfg, err, "PUT", key)
 		return
 	}
@@ -408,4 +431,56 @@ func writeStoreError(w http.ResponseWriter, cfg Config, err error, method, key s
 		cfg.Log.Error("server: store error", "method", method, "key", key, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 	}
+}
+
+// refreshDiskGauges sets the two disk gauges from the shared store sample.
+func refreshDiskGauges(cfg Config) {
+	if cfg.Metrics == nil || cfg.Sampler == nil {
+		return
+	}
+	smp := cfg.Sampler.Get()
+	w := 0.0
+	if smp.Writable {
+		w = 1
+	}
+	cfg.Metrics.StoreWritable.Set(w)
+	cfg.Metrics.StoreFreeBytes.Set(float64(smp.FreeBytes))
+}
+
+// countPutError records one failed PUT under exactly one reason and, for a
+// disk failure, marks the shared sample stale so the next read measures again.
+func countPutError(cfg Config, err, ctxErr error) {
+	reason, counted := classifyPutError(err, ctxErr)
+	if !counted {
+		return
+	}
+	if cfg.Metrics != nil {
+		cfg.Metrics.PutErrors.WithLabelValues(reason).Inc()
+	}
+	if (reason == "no_space" || reason == "read_only") && cfg.Sampler != nil {
+		cfg.Sampler.MarkStale()
+	}
+}
+
+// classifyPutError maps a failure of the store write path to the closed
+// reason set. Precedence when a chain matches several: no_space, read_only,
+// too_large, client_aborted, other. Refusals that are not store failures (a
+// bad key) are not counted.
+func classifyPutError(err, ctxErr error) (reason string, counted bool) {
+	switch {
+	case err == nil, errors.Is(err, blobstore.ErrInvalidKey):
+		return "", false
+	case isNoSpace(err):
+		return "no_space", true
+	case isReadOnly(err):
+		return "read_only", true
+	}
+	var maxBytes *http.MaxBytesError
+	switch {
+	case errors.Is(err, cache.ErrEntryTooLarge), errors.As(err, &maxBytes):
+		return "too_large", true
+	case ctxErr != nil, errors.Is(err, context.Canceled), errors.Is(err, io.ErrUnexpectedEOF):
+		return "client_aborted", true
+	}
+	return "other", true
 }

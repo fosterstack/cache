@@ -210,6 +210,38 @@ reserved endpoints (`/`, `/healthz`, `/metrics`, `/statusz`) is a cache key: a
 GET of an absent key returns 404 and counts as a miss, so a probe pointed at
 one fails and skews the hit ratio.
 
+**/healthz is liveness only.** It answers 200 "ok" whenever the process is
+serving and never reports a full or read-only data directory, so a bad disk can
+never restart or unroute the pod through these probes (a restart would not free a
+full volume anyway). To be told about disk trouble, alert on
+`fscache_store_writable == 0`, on `fscache_store_free_bytes` falling below your
+threshold, and on `rate(fscache_put_errors_total[5m]) > 0`. Builds are unaffected
+while the disk is bad: reads still work and a failed store is a 500 (or 413 for an
+oversized entry) on that one PUT, exactly as before.
+
+### Alerting on disk trouble
+
+Example Prometheus expressions, not shipped configuration. The series exist at 0
+from the first scrape, so `increase()` and `rate()` work immediately.
+
+- **Page:** `fscache_store_writable == 0` for 5 minutes (read-only mount, wrong
+  permissions, full disk). The check creates, syncs and deletes one small file
+  in the data directory at most once every 5 seconds while something scrapes; on
+  a network volume with a slow sync it can read 0 for a slow-but-working volume,
+  so use `for: 5m`, not an instant alert.
+- **Warn:** `fscache_store_free_bytes < 10 * 1024^3` for 10 minutes, or less than
+  10 percent of the volume. This is the free space of the filesystem that holds
+  the data directory (what `df` shows as Avail), not of the cache cap; pick the
+  threshold per volume.
+- **Warn:** `increase(fscache_put_errors_total{reason=~"no_space|read_only|other"}[10m]) > 0`.
+- **Information only:** `fscache_put_errors_total{reason="too_large"}` (oversized
+  outputs are normal) and `reason="client_aborted"` (a build that hung up
+  mid-upload is the client's doing, not the server's).
+
+The probe writes only inside the data volume, so `readOnlyRootFilesystem: true`
+does not matter. Not delivered, by decision: taking a pod with a bad disk out of
+the Service. That needs a readiness path, which is a protocol change.
+
 ## The data directory
 
 `FSCACHE_DATA_DIR` is **required** in this manifest. The image sets no

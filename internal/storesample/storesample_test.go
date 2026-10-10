@@ -1,0 +1,288 @@
+package storesample
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+)
+
+// fakeDisk is the injected disk: it records every operation in order, can
+// fail any step, and can block the probe until released.
+type fakeDisk struct {
+	mu       sync.Mutex
+	ops      []string
+	names    []string
+	avail    uint64
+	statErr  error
+	openErr  error
+	writeErr error
+	syncErr  error
+	removed  bool
+	block    chan struct{} // when non-nil, OpenProbe waits for it to close
+	probes   atomic.Int64
+}
+
+type fakeFile struct{ d *fakeDisk }
+
+func (f fakeFile) Write(p []byte) (int, error) {
+	f.d.rec("write")
+	if f.d.writeErr != nil {
+		return 0, f.d.writeErr
+	}
+	return len(p), nil
+}
+func (f fakeFile) Sync() error  { f.d.rec("sync"); return f.d.syncErr }
+func (f fakeFile) Close() error { f.d.rec("close"); return nil }
+
+func (d *fakeDisk) rec(s string) { d.mu.Lock(); d.ops = append(d.ops, s); d.mu.Unlock() }
+func (d *fakeDisk) opList() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return strings.Join(d.ops, ",")
+}
+
+func (d *fakeDisk) deps(now *time.Time) Deps {
+	return Deps{
+		Statfs: func(string) (uint64, error) { return d.avail, d.statErr },
+		OpenProbe: func(path string) (ProbeFile, error) {
+			d.probes.Add(1)
+			d.mu.Lock()
+			d.names = append(d.names, path)
+			blk := d.block
+			d.mu.Unlock()
+			if blk != nil {
+				<-blk
+			}
+			d.rec("open")
+			if d.openErr != nil {
+				return nil, d.openErr
+			}
+			return fakeFile{d}, nil
+		},
+		Remove: func(string) error { d.rec("remove"); return nil },
+		Now:    func() time.Time { return *now },
+	}
+}
+
+func newSampler(t *testing.T, d *fakeDisk, now *time.Time, opt ...func(*Options)) (*Sampler, *bytes.Buffer) {
+	t.Helper()
+	var buf bytes.Buffer
+	o := Options{Log: slog.New(slog.NewTextHandler(&buf, nil)), WaitBudget: 200 * time.Millisecond}
+	for _, f := range opt {
+		f(&o)
+	}
+	return New("/data/blobs", d.deps(now), o), &buf
+}
+
+// REQ-OBS-002-AC2, AC6: a healthy disk reads writable with the available bytes.
+func TestHealthyDiskReadsWritableWithFreeBytes(t *testing.T) {
+	d := &fakeDisk{avail: 12345}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now)
+	s.Start()
+	if got := s.Get(); !got.Writable || got.FreeBytes != 12345 {
+		t.Fatalf("Get = %+v; want writable, 12345 free", got)
+	}
+}
+
+// REQ-OBS-002-AC6: a failed statfs reads 0 free and NOT writable, even if
+// the probe itself worked (fail loud, not silently healthy).
+func TestStatfsFailureReadsZeroAndNotWritable(t *testing.T) {
+	d := &fakeDisk{avail: 999, statErr: errors.New("statfs: boom")}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now)
+	s.Start()
+	if got := s.Get(); got.Writable || got.FreeBytes != 0 {
+		t.Fatalf("Get = %+v; want not writable, 0 free", got)
+	}
+}
+
+// REQ-OBS-002-AC3: each failing step reads 0; a failed sync (the full-disk
+// case that a page-cache write hides) is one of them. Free bytes are still
+// reported when only the write path fails.
+func TestEachProbeStepFailureReadsNotWritable(t *testing.T) {
+	for name, mod := range map[string]func(*fakeDisk){
+		"open":  func(d *fakeDisk) { d.openErr = syscall.EROFS },
+		"write": func(d *fakeDisk) { d.writeErr = syscall.ENOSPC },
+		"sync":  func(d *fakeDisk) { d.syncErr = syscall.ENOSPC },
+	} {
+		d := &fakeDisk{avail: 77}
+		mod(d)
+		now := time.Unix(1000, 0)
+		s, _ := newSampler(t, d, &now)
+		s.Start()
+		if got := s.Get(); got.Writable || got.FreeBytes != 77 {
+			t.Errorf("%s failure: Get = %+v; want not writable, 77 free", name, got)
+		}
+	}
+}
+
+// REQ-OBS-002-AC4: the probe is create, write one byte, sync, close, remove,
+// in that order, and removes its file even when a step fails. Its file name
+// carries the store's temporary prefix so the startup sweep deletes leftovers.
+func TestProbeStepsOrderAndTempName(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now)
+	s.Start()
+	if got := d.opList(); got != "open,write,sync,close,remove" {
+		t.Fatalf("ops = %q; want open,write,sync,close,remove", got)
+	}
+	if len(d.names) != 1 || !strings.HasPrefix(filepath.Base(d.names[0]), ".tmp-probe-") || filepath.Dir(d.names[0]) != "/data/blobs" {
+		t.Fatalf("probe path = %v; want /data/blobs/.tmp-probe-*", d.names)
+	}
+	d2 := &fakeDisk{avail: 1, syncErr: syscall.ENOSPC}
+	s2, _ := newSampler(t, d2, &now)
+	s2.Start()
+	if got := d2.opList(); got != "open,write,sync,close,remove" {
+		t.Fatalf("failing-sync ops = %q; the file must still be closed and removed", got)
+	}
+}
+
+// REQ-OBS-002-AC5: no new probe while the sample is fresh; a new one after 5 s;
+// a failed PUT (MarkStale) forces the next read to re-measure.
+func TestFreshnessAndMarkStale(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now)
+	s.Start()
+	for i := 0; i < 100; i++ {
+		now = now.Add(40 * time.Millisecond) // 4 s in total
+		s.Get()
+	}
+	if n := d.probes.Load(); n != 1 {
+		t.Fatalf("%d probes in 4 s; want 1", n)
+	}
+	now = now.Add(2 * time.Second) // 6 s old
+	s.Get()
+	if n := d.probes.Load(); n != 2 {
+		t.Fatalf("%d probes after 6 s; want 2", n)
+	}
+	s.MarkStale()
+	s.Get()
+	if n := d.probes.Load(); n != 3 {
+		t.Fatalf("%d probes after MarkStale; want 3", n)
+	}
+}
+
+// REQ-OBS-002-AC3: a disk that recovers reads 1 again after the sample expires.
+func TestRecoversAfterFix(t *testing.T) {
+	d := &fakeDisk{avail: 1, syncErr: syscall.ENOSPC}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now)
+	s.Start()
+	if s.Get().Writable {
+		t.Fatal("writable while the disk is full")
+	}
+	d.syncErr = nil
+	now = now.Add(6 * time.Second)
+	if !s.Get().Writable {
+		t.Fatal("still not writable after the disk recovered and the sample expired (sticky)")
+	}
+}
+
+// REQ-OBS-002-AC5: one probe at a time; a scrape during a probe gets the
+// previous sample and does not wait for the disk beyond the small budget.
+func TestOnlyOneProbeInFlightAndScrapeDoesNotWait(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now, func(o *Options) { o.WaitBudget = 20 * time.Millisecond; o.ProbeLimit = 5 * time.Second })
+	s.Start() // healthy first sample
+	d.mu.Lock()
+	d.block = make(chan struct{})
+	d.mu.Unlock()
+	now = now.Add(6 * time.Second)
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); s.Get() }()
+	}
+	wg.Wait()
+	if el := time.Since(start); el > time.Second {
+		t.Fatalf("8 concurrent scrapes took %v while the probe was blocked", el)
+	}
+	if n := d.probes.Load(); n != 2 { // the startup probe and exactly one more
+		t.Fatalf("%d probes started; want exactly 2 (one in flight at a time)", n)
+	}
+	if !s.Get().Writable {
+		t.Fatal("a scrape during a blocked probe must return the previous sample (writable)")
+	}
+	close(d.block)
+}
+
+// REQ-OBS-002-AC5: a probe that runs longer than the limit yields writable 0,
+// and the stuck probe is not joined by a second one.
+func TestProbeOverLimitReadsZeroAndIsNotDuplicated(t *testing.T) {
+	d := &fakeDisk{avail: 1, block: make(chan struct{})}
+	now := time.Unix(1000, 0)
+	s, _ := newSampler(t, d, &now, func(o *Options) { o.ProbeLimit = 30 * time.Millisecond; o.WaitBudget = 500 * time.Millisecond })
+	s.Start()
+	if s.Get().Writable {
+		t.Fatal("a probe over the limit must read not writable")
+	}
+	now = now.Add(6 * time.Second)
+	s.Get()
+	if n := d.probes.Load(); n != 1 {
+		t.Fatalf("%d probes; want 1 (the stuck one still holds the single slot)", n)
+	}
+	close(d.block)
+}
+
+// REQ-OBS-002-AC3: a change of state is logged once, not on every sample.
+func TestStateChangeIsLoggedOnce(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	s, buf := newSampler(t, d, &now)
+	s.Start()
+	d.syncErr = syscall.ENOSPC
+	for i := 0; i < 3; i++ {
+		now = now.Add(6 * time.Second)
+		s.Get()
+	}
+	if n := strings.Count(buf.String(), "store_writable"); n != 1 {
+		t.Fatalf("%d log lines for the healthy->failing change; want 1:\n%s", n, buf.String())
+	}
+	d.syncErr = nil
+	now = now.Add(6 * time.Second)
+	s.Get()
+	if n := strings.Count(buf.String(), "store_writable"); n != 2 {
+		t.Fatalf("%d log lines after recovery; want 2:\n%s", n, buf.String())
+	}
+}
+
+// The real probe: leaves nothing behind on success, fails on a read-only directory.
+func TestRealProbeLeavesNoFileAndFailsOnReadOnlyDir(t *testing.T) {
+	dir := t.TempDir()
+	s := New(dir, Deps{}, Options{})
+	s.Start()
+	got := s.Get()
+	if !got.Writable || got.FreeBytes == 0 {
+		t.Fatalf("real disk sample = %+v; want writable with free bytes", got)
+	}
+	if ents, _ := os.ReadDir(dir); len(ents) != 0 {
+		t.Fatalf("probe left %d entries in the data directory", len(ents))
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+	s2 := New(dir, Deps{}, Options{})
+	s2.Start()
+	if s2.Get().Writable {
+		t.Fatal("a read-only directory must read not writable")
+	}
+	_ = context.Background
+}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fosterstack/cache/internal/buildinfo"
+	"github.com/fosterstack/cache/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -42,6 +43,11 @@ type Status struct {
 	Evicted     float64  `json:"evicted_entries"`
 
 	AuthEnabled bool `json:"auth_enabled"`
+
+	// Disk signals (REQ-OBS-003-AC3): one shared sample, the same one /metrics reads.
+	StoreWritable  bool               `json:"store_writable"`
+	StoreFreeBytes uint64             `json:"store_free_bytes"`
+	PutErrors      map[string]float64 `json:"put_errors"`
 }
 
 // counterValue reads a counter's current value straight from the metric
@@ -74,6 +80,14 @@ func (s *statusSource) snapshot() Status {
 		AuthEnabled:   s.cfg.Auth.enabled(),
 	}
 
+	st.PutErrors = map[string]float64{}
+	for _, r := range metrics.PutErrorReasons {
+		st.PutErrors[r] = 0
+	}
+	if s.cfg.Sampler != nil {
+		smp := s.cfg.Sampler.Get()
+		st.StoreWritable, st.StoreFreeBytes = smp.Writable, smp.FreeBytes
+	}
 	if s.cfg.Cache != nil {
 		if total, err := s.cfg.Cache.TotalSize(); err == nil {
 			st.StoreBytes = total
@@ -86,6 +100,9 @@ func (s *statusSource) snapshot() Status {
 		st.CacheHits = counterValue(m.CacheHitsTotal)
 		st.CacheMisses = counterValue(m.CacheMissTotal)
 		st.Evicted = counterValue(m.EvictedTotal)
+		for _, r := range metrics.PutErrorReasons {
+			st.PutErrors[r] = counterValue(m.PutErrors.WithLabelValues(r))
+		}
 		if got := st.CacheHits + st.CacheMisses; got > 0 {
 			r := st.CacheHits / got
 			st.HitRatio = &r
@@ -138,13 +155,14 @@ func (s *statusSource) handleRoot(w http.ResponseWriter, r *http.Request) {
 type statusView struct {
 	Status
 	StoreHuman string
+	FreeHuman  string
 	MaxHuman   string
 	UsedPct    string
 	HitPct     string
 }
 
 func (s Status) view() statusView {
-	v := statusView{Status: s, StoreHuman: humanBytes(s.StoreBytes), MaxHuman: "unlimited", UsedPct: ""}
+	v := statusView{Status: s, StoreHuman: humanBytes(s.StoreBytes), FreeHuman: humanBytes(int64(s.StoreFreeBytes)), MaxHuman: "unlimited", UsedPct: ""}
 	if s.MaxBytes > 0 {
 		v.MaxHuman = humanBytes(s.MaxBytes)
 		v.UsedPct = fmt.Sprintf("%.1f%%", 100*float64(s.StoreBytes)/float64(s.MaxBytes))
@@ -182,6 +200,8 @@ var statusTmpl = template.Must(template.New("status").Parse(pageHead + `
   <tr><th>Uptime</th><td>{{.Uptime}}</td></tr>
   <tr><th>Cache size</th><td>{{.StoreHuman}} of {{.MaxHuman}}{{if .UsedPct}} ({{.UsedPct}}){{end}}</td></tr>
   <tr><th>Entries</th><td>{{.StoreEntries}}</td></tr>
+  <tr><th>Data directory</th><td>{{if .StoreWritable}}writable{{else}}<span class="warn">NOT writable</span>{{end}}, {{.FreeHuman}} free</td></tr>
+  <tr><th>PUT errors</th><td>{{range $r, $n := .PutErrors}}{{$r}} {{printf "%.0f" $n}}; {{end}}</td></tr>
   <tr><th>Hits / misses</th><td>{{printf "%.0f" .CacheHits}} / {{printf "%.0f" .CacheMisses}} ({{.HitPct}} hit rate)</td></tr>
   <tr><th>Evicted</th><td>{{printf "%.0f" .Evicted}}</td></tr>
   <tr><th>Auth</th><td>{{if .AuthEnabled}}enabled{{else}}disabled{{end}}</td></tr>
