@@ -393,11 +393,13 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 			"removed_temp_files", stats.RemovedTempFiles)
 	} else if rebuild {
 		log.Info("fscache: index empty over existing blobs, rebuilding")
+		began := time.Now()
 		stats, err := cacheReconcile(c, context.Background())
 		if err != nil {
 			return fmt.Errorf("startup reconciliation: %w", err)
 		}
 		log.Info("fscache: index empty over existing blobs, rebuilt",
+			"duration", reconcileDuration(time.Since(began)),
 			"adopted_blobs", stats.AdoptedBlobs,
 			"dropped_records", stats.DroppedRecords,
 			"removed_temp_files", stats.RemovedTempFiles)

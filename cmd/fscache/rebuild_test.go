@@ -180,7 +180,7 @@ func TestRebuildAfterIndexDeleted(t *testing.T) {
 	if start < 0 || done < 0 || start > done {
 		t.Fatalf("want the start line before the done line; start=%d done=%d\n%s", start, done, logs)
 	}
-	for _, want := range []string{`"adopted_blobs":5`, `"dropped_records":0`, `"removed_temp_files":`} {
+	for _, want := range []string{`"adopted_blobs":5`, `"dropped_records":0`, `"removed_temp_files":`, `"duration":"`} {
 		if !strings.Contains(logs[done:], want) {
 			t.Errorf("done line missing %s:\n%s", want, logs[done:])
 		}

@@ -211,7 +211,12 @@ one fails and skews the hit ratio.
 
 ### Startup and reconcile
 
-After an unclean shutdown the server reconciles its stores before it serves.
+After an unclean shutdown, or when `meta.db` has been deleted or emptied while
+the blobs are still on disk, the server reconciles its stores before it serves.
+The first case logs `fscache: unclean shutdown detected, reconciling stores
+before serving` and then `fscache: reconciled`; the second logs `fscache: index
+empty over existing blobs, rebuilding` and then `... rebuilt`. Each closing line
+carries the counts and a `duration`.
 The listen socket is already open, so TCP connects succeed during that time,
 but `/healthz` does not answer until the reconcile finishes. On a large store
 that can outlast the liveness probe in the manifest above. The manifest sets
@@ -239,10 +244,11 @@ first succeeds:
 
 `failureThreshold` 60 times `periodSeconds` 10 is ten minutes. That is a
 starting point, not a measurement. To size it for your store, time a reconcile
-on a copy of the volume: the `duration` on the `fscache: reconciled` log line
-is the number. It covers the reconcile only, not opening the stores, so treat
-twice that time as a floor: make `failureThreshold` x `periodSeconds` at least
-that. An undersized startup probe restarts the container just as the liveness
+on a copy of the volume: the `duration` on the `fscache: reconciled` (or
+`... rebuilt`) log line is the number. It covers the reconcile only, not
+opening the stores, so treat twice that time as a floor: make
+`failureThreshold` x `periodSeconds` at least that. An undersized startup probe
+restarts the container just as the liveness
 probe did, and the marker makes the next start reconcile from zero.
 
 Do not use a `tcpSocket` probe or an L4 load-balancer health check for this:

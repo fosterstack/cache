@@ -677,7 +677,7 @@ requirements:
       - id: REQ-STORE-006-AC1
         given: a data directory with N blobs, a clean shutdown (no unclean marker) and meta.db deleted
         when: the server starts
-        then: 'before serving, the index holds all N (/statusz store_entries is N and the total size is the sum of the blob sizes) and every blob is retrievable; an INFO line "fscache: index empty over existing blobs, rebuilding" is logged before the walk starts, and an INFO line "fscache: index empty over existing blobs, rebuilt" follows it carrying adopted_blobs, dropped_records and removed_temp_files'
+        then: 'before serving, the index holds all N (/statusz store_entries is N and the total size is the sum of the blob sizes) and every blob is retrievable; an INFO line "fscache: index empty over existing blobs, rebuilding" is logged before the walk starts, and an INFO line "fscache: index empty over existing blobs, rebuilt" follows it carrying adopted_blobs, dropped_records, removed_temp_files and duration'
         verification: { method: component, release_blocking: false }
         status: approved
       - id: REQ-STORE-006-AC2
