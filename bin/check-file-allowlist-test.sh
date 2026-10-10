@@ -110,7 +110,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 132, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 133, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -157,7 +157,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "593f7d74f6f183c538935cd568d926240ec3c781b0db6ca5a8a7bd8b8fa677cf"
+PINNED_SHA256 = "bfc68b4909a394875ac571c28a139bd0c8ed3a18934859bdf22ba608c211eb5b"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -277,7 +277,7 @@ pinmutins "ERR trap after the arrays"                               "trap 'exit 
 pinmutins "exec of another script"                                  "exec bash ./other.sh"
 sed -E "s/^  '\^LICENSE\\\$'/  '^evil\/.*\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern LICENSE replaced in place (count unchanged)"
 sed -E "s/^  '\^LICENSE\\\$'/  '^LICENS\$'/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "older pattern narrowed"
-sed -E "345s/return 0/return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
+sed -E "s/^  return 0\$/  return 1/" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a logic line changed"
 sed -E "/^  '\^osv-scanner\\\\\.toml\\\$'\$/d" bin/check-file-allowlist.sh > "$_mut_dir/m.sh"; pinkill "a suppression pattern deleted"
 # B1 (round 6): the script is read once as bytes and any CR (lone or CRLF), NUL or other control byte, and any
 # Unicode line separator, is refused. Each mutant is built from the real script by the python helper below.
@@ -733,6 +733,8 @@ passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "build/archive.json" "secret_scanning.yml"
 passfam "feature/x" "REQ-REL-009: .github/release-identity.json" ".github/release-identity.json"
 runeach fail "feature/x" "REQ-REL-009: release-identity near-miss refused" ".github/release-identity.json.bak" ".github/Release-Identity.json" ".github/release-identity.yaml" ".github/other.json" ".github/nested/release-identity.json" ".github/x/release-identity.json" "release-identity.json" ".github/release-identity.json " ".github/release-identityXjson" ".github/policy/../release-identity.json"
+passfam "feature/x" "REQ-REL-004-AC5: the daily-rescan current-release test" "bin/rescan-current-only-test.sh"
+runeach fail "feature/x" "REQ-REL-004-AC5: rescan-current-only-test near-miss refused" "bin/rescan-current-only-test.sh.bak" "bin/rescan-current-only-test.shx" "bin/Rescan-Current-Only-Test.sh" "bin/sub/rescan-current-only-test.sh" "bin/rescan-current-only-test.py" "rescan-current-only-test.sh" "bin/rescan-current-only-test.sh "
 
 passfam "feature/x" "v030: the supply-chain harness manifest" ".github/agent/supply-chain/harness-manifest.json"
 runeach fail "feature/x" "v030: sibling name in supply-chain/ refused"        ".github/agent/supply-chain/harness-manifest2.json" ".github/agent/supply-chain/other.json"
