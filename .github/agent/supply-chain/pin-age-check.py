@@ -504,6 +504,10 @@ def _no_duplicate_keys(pairs):
     return dict(pairs)
 
 
+def _no_constant(name):
+    raise ValueError(f"{name} is not JSON (Python's reader accepts NaN, Infinity and -Infinity; this file must not hold them)")
+
+
 def load_ruled_text(path, required=False):
     """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
@@ -513,7 +517,7 @@ def load_ruled_text(path, required=False):
         return {}
     try:
         with open(path) as f:
-            d = json.load(f, object_pairs_hook=_no_duplicate_keys)   # a repeated key would let a later copy silently win
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)   # a repeated key would let a later copy silently win
     except (OSError, ValueError) as e:
         raise RuntimeError(f"the exceptions file {path} (unmeasured_text) is unreadable: {e}")
     rows = d.get("unmeasured_text", []) if isinstance(d, dict) else None

