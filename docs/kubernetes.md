@@ -58,8 +58,7 @@ scheduled. The smallest practical node on managed Kubernetes is 2 GB. If you
 size a node pool from the 1 GB machine minimum, the pod will not schedule.
 
 Disk is the variable that matters: size the PVC from `FSCACHE_MAX_BYTES` plus
-about 20% headroom, not the other way round (see [Sizing](docker-deploy.md#sizing)
-for the in-flight upload caveat).
+about 20% headroom, not the other way round.
 
 ## Secret (credentials)
 
@@ -205,58 +204,14 @@ the guard that matters.
 shell, no `curl` — so an `exec` probe has nothing to run. Same reason the
 [Docker deploy doc](docker-deploy.md) ships no container `HEALTHCHECK`.
 
-Point liveness and readiness probes at `/healthz`. Every path other than the
-reserved endpoints (`/`, `/healthz`, `/metrics`, `/statusz`) is a cache key: a
-GET of an absent key returns 404 and counts as a miss, so a probe pointed at
-one fails and skews the hit ratio.
-
-**/healthz is liveness only.** It answers 200 "ok" whenever the process is
-serving and never reports a full or read-only data directory, so a bad disk can
-never restart or unroute the pod through these probes (a restart would not free a
-full volume anyway). To be told about disk trouble, alert on
-`fscache_store_writable == 0`, on `fscache_store_free_bytes` falling below your
-threshold, and on `rate(fscache_put_errors_total[5m]) > 0`. Builds are unaffected
-while the disk is bad: reads still work and a failed store is a 500 (or 413 for an
-oversized entry) on that one PUT, exactly as before.
-
-### Alerting on disk trouble
-
-Example Prometheus expressions, not shipped configuration. The series exist at 0
-from the first scrape, so `increase()` and `rate()` work immediately.
-
-- **Page:** `fscache_store_writable == 0` for 5 minutes (read-only mount, wrong
-  permissions, full disk). The check creates, syncs and deletes one small file
-  in the data directory at most once every 5 seconds while something scrapes; on
-  a network volume with a slow sync it can read 0 for a slow-but-working volume,
-  so use `for: 5m`, not an instant alert.
-- **Warn:** `fscache_store_free_bytes < 10 * 1024^3` for 10 minutes, or less than
-  10 percent of the volume. This is the free space of the filesystem that holds
-  the data directory (what `df` shows as Avail), not of the cache cap; pick the
-  threshold per volume. The gauge is a float64, exact up to 2^53 bytes; `/statusz`
-  gives the exact count.
-  If the volume hangs completely (a sync that never returns), `fscache_store_free_bytes` stays at its last value because the measurement never finishes again:
-  the free-bytes alert is not a substitute for the `fscache_store_writable == 0` alert in that case.
-- **Warn:** `increase(fscache_put_errors_total{reason=~"no_space|read_only|other"}[10m]) > 0`.
-- **Information only:** `fscache_put_errors_total{reason="too_large"}` (oversized
-  outputs are normal) and `reason="client_aborted"` (a build that hung up
-  mid-upload is the client's doing, not the server's).
-
-The probe writes only inside the data volume, so `readOnlyRootFilesystem: true`
-does not matter. Not delivered, by decision: taking a pod with a bad disk out of
-the Service. That needs a readiness path, which is a protocol change.
-
 ## The data directory
 
 `FSCACHE_DATA_DIR` is **required** in this manifest. The image sets no
 default for it, so the server falls back to `./data` relative to its
-working directory `/home/nonroot`. With this guide's read-only root
-filesystem, omitting the env var stops the pod from starting: it never
-becomes Ready, and the log shows
-`{"msg":"fscache: fatal","error":"write shutdown marker: mkdir data: read-only file system"}`.
-Only if you also make the root filesystem writable do you get a cache that
-appears to work but keeps its data in the pod's ephemeral layer, not your
-PVC, and loses it on every restart. Set it to the same path as
-`volumeMounts[].mountPath`.
+working directory `/home/nonroot` — which on Kubernetes is the pod's
+ephemeral writable layer, not your PVC. Omit the env var and you get a
+cache that appears to work and silently loses everything on every restart.
+Set it to the same path as `volumeMounts[].mountPath`.
 
 ## securityContext
 
