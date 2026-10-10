@@ -631,6 +631,46 @@ class LiteralRunnerMatrix(unittest.TestCase):
             with self.subTest(name):
                 self.refused(ro + matrix)
 
+    def test_a_refused_matrix_of_known_ubuntu_labels_is_still_judged_under_bash(self):
+        """Codex round 1, M1: the runner finding AND the step's own finding (the unpinned image) appear when the labels are safely
+        the two ubuntu ones, whatever else is wrong with the shape; labels not safely known stay pwsh (no silent bash)."""
+        ro = "    runs-on: ${{ matrix.runner }}\n    strategy:\n"
+        for name, strategy in {
+            "a second matrix key": "      matrix:\n        runner: [ubuntu-24.04]\n        os: [x]\n",
+            "max-parallel": "      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "exclude beside": "      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        exclude:\n          - runner: ubuntu-24.04-arm\n",
+        }.items():
+            with self.subTest(name):
+                code, out = self.findings(self.job(ro + strategy, self.CHECKOUT + "      - run: docker pull alpine:latest\n"))
+                self.assertNotEqual(code, 0, out)
+                self.assertRegex(out, r"\.runs-on: ")
+                self.assertRegex(out, "alpine")
+
+    def test_labels_not_safely_known_stay_pwsh(self):
+        ro = "    runs-on: ${{ matrix.runner }}\n    strategy:\n"
+        for name, strategy in {
+            "windows": "      matrix:\n        runner: [windows-2022]\n",
+            "include beside ubuntu": "      matrix:\n        runner: [ubuntu-24.04]\n        include:\n          - runner: windows-2022\n",
+            "a repeated key": "      matrix:\n        runner: [windows-2022]\n        runner: [ubuntu-24.04]\n",
+        }.items():
+            with self.subTest(name):
+                code, out = self.findings(self.job(ro + strategy, self.CHECKOUT + "      - run: docker pull alpine:latest\n"))
+                self.assertNotEqual(code, 0, out)
+                self.assertNotIn("alpine", out)
+
+    def test_fail_fast_as_a_string_is_refused(self):
+        """Codex round 1, L2: AC2 says the literal true or false: a quoted or explicitly tagged string is not it."""
+        for form in ('"true"', "'false'", "!!str true"):
+            with self.subTest(form):
+                self.refused("    runs-on: ${{ matrix.runner }}\n    strategy:\n      fail-fast: %s\n      matrix:\n        runner: [ubuntu-24.04]\n" % form)
+
+    def test_a_list_used_as_a_job_key_is_a_finding_not_a_crash(self):
+        """Codex round 1, L3."""
+        code, out = self.findings("on: push\njobs:\n  ? [a, b]\n  : runs-on: ubuntu-24.04\n    steps:\n      - run: echo hi\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertRegex(out, "job key")
+        self.assertNotIn("Traceback", out)
+
     def test_a_matrix_of_only_include_or_exclude_is_refused(self):
         """include and exclude are not label keys: a matrix of only one of them, read as `${{ matrix.include }}`, is refused."""
         for key in ("include", "exclude", "Include", "EXCLUDE", "iNcLuDe"):   # in any letter case

@@ -1252,6 +1252,31 @@ jobs:
     runs-on: \${{ matrix.runner }}
     steps:
       - run: true" 'runs-on'
+# Codex round 1, M1: a refused matrix whose labels are safely known to be the two ubuntu ones is still judged under bash, so the runner
+# finding AND the step's own finding appear; labels not safely known (another OS, an include entry that can add a runner) stay pwsh
+DOCKER='docker pull alpine:latest'
+SK_SECOND='    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        os: [x]\n'
+SK_PARALLEL='    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n'
+SK_EXCLUDE='    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        exclude:\n          - runner: ubuntu-24.04-arm\n'
+for SK in SECOND PARALLEL EXCLUDE; do
+  eval "SKB=\$SK_$SK"
+  case_out pm-known-$SK-runner bad "$(mx "$M" "$(printf "$SKB")" "$DOCKER")" 'runs-on'
+  case_out pm-known-$SK-step   bad "$(mx "$M" "$(printf "$SKB")" "$DOCKER")" 'alpine'
+done
+case_out pm-unknown-windows-pwsh   bad "$(mx "$M" "$(st '[windows-2022]')" "$DOCKER")" 'runs-on' 'alpine'
+case_out pm-unknown-include-pwsh   bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        include:\n          - runner: windows-2022\n')" "$DOCKER")" 'runs-on' 'alpine'
+case_out pm-unknown-duplicate-pwsh bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [windows-2022]\n        runner: [ubuntu-24.04]\n')" "$DOCKER")" 'duplicate key' 'alpine'
+# Codex round 1, L2: fail-fast is the plain unquoted true or false; a quoted or explicitly tagged string is refused
+for FF in '"true"' "'false'" '!!str true'; do
+  case_out "pm-fail-fast-string-$(printf %s "$FF" | tr -c 'a-z' _)" bad "$(mx "$M" "$(printf '    strategy:\n      fail-fast: %s\n      matrix:\n        runner: [ubuntu-24.04]\n' "$FF")")" 'runs-on'
+done
+# Codex round 1, L3: a sequence used as a job key is a finding, not a crash
+case_out pm-job-key-is-a-list    bad 'on: push
+jobs:
+  ? [a, b]
+  : runs-on: ubuntu-24.04
+    steps:
+      - run: echo hi' 'job key'
 # any YAML anchor in the file is refused, whatever it anchors (AC2: file-wide)
 case_out pm-anchored-matrix      bad "on: push
 x-m: &m
@@ -1279,7 +1304,7 @@ case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
 OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
 case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
-PM_EXPECT=84
+PM_EXPECT=97
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
