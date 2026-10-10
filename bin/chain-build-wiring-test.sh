@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6 — the flags; PR 1's verify cases cover the identity
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -90,10 +90,14 @@ DOWNLOAD = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65"
 json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD]}, open(w + "/allowed-actions.json", "w"))
 
 
-def witness_block(spec_):       # the stage's Witness step: one line through the helper (the fixture side of the seam, 1/2)
+def witness_block(spec_):       # the stage's Witness step(s): one line through the helper (the fixture side of the seam, 1/2)
     env = "        env:\n          GH_TOKEN: ${{ github.token }}\n" if spec_["gh"] else ""
     run = "bash bin/witnessed.sh %s bin/build-stage-%s.sh" % (spec_["step"], spec_["kind"])
-    return "      - name: %s under Witness\n%s        run: %s\n" % (spec_["step"], env, run)
+    if not spec_.get("mode"):
+        return "      - name: %s under Witness\n%s        run: %s\n" % (spec_["step"], env, run)
+    out = "      - name: %s under Witness\n        if: %s\n%s        run: %s\n" % (spec_["step"], S.MODE_RELEASE_IF, env, run)
+    snap = "bash bin/witnessed.sh %s bin/build-stage-snapshot-%s.sh" % (S.SNAPSHOT_STEP[spec_["step"]], spec_["kind"])
+    return out + "      - name: %s under Witness\n        if: %s\n        run: %s\n" % (S.SNAPSHOT_STEP[spec_["step"]], S.MODE_SNAPSHOT_IF, snap)
 
 
 def witnessed_text():           # bin/witnessed.sh, the exec line broken at its flag groups (the fixture side of the seam, 2/2)
@@ -118,6 +122,7 @@ def stage_text(family):
     call = ""
     if family == "build":
         call = "    inputs:\n      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n"
+        call += "      mode:\n        description: release or snapshot\n        type: string\n        default: release\n"
         call += "    outputs:\n      digests:\n        description: the digests.json text, for Sign\n        value: %s\n" % S.STAGE_OUTPUT
     out = "name: 'Stage: %s'\non:\n  workflow_call:\n%spermissions:\n  contents: read\njobs:\n" % (family, call)
     for job in ("apk", "assemble"):
@@ -130,13 +135,16 @@ def stage_text(family):
         out += "    steps:\n"
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
         out += "          persist-credentials: false\n          fetch-depth: 0\n          fetch-tags: true\n"
+        if sp.get("mode"):
+            out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
         out += "      - name: install Witness (pinned by checksum)\n        run: ./bin/install-scanner.sh witness\n"
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
         if sp.get("hostile"):
             out += "      - name: hostile step (dry run only)\n        if: %s\n        run: %s\n" % (S.HOSTILE_IF, S.HOSTILE_RUN)
-            out += "      - name: upload the hostile attempts (dry run only)\n        if: %s\n        uses: %s # v7.0.1\n        with:\n" % (S.HOSTILE_IF, UPLOAD)
+            out += "      - name: upload the hostile attempts (dry run only)\n        if: %s\n" % S.HOSTILE_IF
+            out += "        uses: %s # v7.0.1\n        with:\n" % UPLOAD
             out += "          name: hostile-attempts\n          path: attempts\n          if-no-files-found: error\n"
         for name, path in sp["up"]: out += "      - uses: %s # v7.0.1\n        with:\n          name: %s\n          path: %s\n" % (UPLOAD, name, path)
     return out
@@ -271,7 +279,8 @@ st s_mid "AC2 a third-party action between the install and Witness (rule 68)" "s
        '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: apk under Witness'
 st s_ghenv  "AC2 another token than github.token on the Witness step" "GH_TOKEN" 'GH_TOKEN: ${{ github.token }}' 'GH_TOKEN: ${{ secrets.GH_PAT }}'
 st s_nogh   "AC2 the admission job without GH_TOKEN (gh cannot read the checks)" "GH_TOKEN" '        env:\n          GH_TOKEN: ${{ github.token }}\n' ''
-st s_if "AC2 an if: on the Witness step" "Witness step may carry" '      - name: apk under Witness\n' \
+st s_if "AC2 an if: other than the mode on the Witness step" "release Witness step" \
+    '      - name: apk under Witness\n        if: ${{ inputs.mode == '"'release'"' }}\n' \
        '      - name: apk under Witness\n        if: always()\n'
 st s_shell "AC2 a shell: override on the Witness step" "Witness step may carry" '      - name: apk under Witness\n' \
        '      - name: apk under Witness\n        shell: bash -c "{0}"\n'
@@ -284,14 +293,51 @@ st s_step "AC2 the Witness step named differently from its job (the step name se
        'witnessed.sh build bin'
 HOSTILE_STEP='      - name: hostile step (dry run only)\n        if: ${{ inputs.hostile }}\n        run: bash bin/chain-hostile-step.sh\n'
 st s_hin_none "AC2 the hostile input is missing from the Build stage" "on: must be" \
-              '    inputs:\n      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n' ''
+              '      hostile:\n        description: dry run only\n        type: boolean\n        default: false\n' ''
 st s_hin_str  "AC2 the hostile input is a string (a null caller input must not reach the live chain)" "on: must be" 'type: boolean' 'type: string'
-st s_hin_req  "AC2 the hostile input is required" "on: must be" '        default: false\n    outputs:' '        default: false\n        required: true\n    outputs:'
+st s_hin_req  "AC2 the hostile input is required" "on: must be" '        description: dry run only\n        type: boolean\n        default: false\n' \
+              '        description: dry run only\n        type: boolean\n        default: false\n        required: true\n'
 st s_hstep_none "AC2 the hostile step is missing (PR 1's contract: a step gated by inputs.hostile in the Build job)" "hostile" "$HOSTILE_STEP" ''
-st s_hstep_noif "AC2 the hostile step has no if (it would run in every release)" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' '        run: bash'
+st s_hstep_noif "AC2 the hostile step has no if (it would run in every release)" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' \
+    '        run: bash'
 st s_hstep_alw  "AC2 the hostile step runs always()" "hostile" '        if: ${{ inputs.hostile }}\n        run: bash' '        if: always()\n        run: bash'
 st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "hostile" 'name: hostile-attempts' 'name: attempts'
 st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ inputs.hostile }}\n        uses:' '        uses:'
+# REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
+# closed step names; no admission and no GH_TOKEN in the snapshot step.
+GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: '
+GUARD_STEP="$GUARD_STEP"'case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac\n'
+SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
+SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
+RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-rapk.sh\n"
+RSNAP_STEP="$RSNAP_STEP      - name: rapk under Witness\n"
+st s_mode_none "AC12 the mode input is missing from the Build stage" "on: must be" \
+              '      mode:\n        description: release or snapshot\n        type: string\n        default: release\n' ''
+st s_mode_snap "AC12 the mode defaults to snapshot (a caller that passes nothing would build a snapshot)" "on: must be" 'default: release' 'default: snapshot'
+st s_mode_bool "AC12 the mode is a boolean" "on: must be" 'type: string' 'type: boolean'
+st s_mode_req  "AC12 the mode is required" "on: must be" '        default: release\n' '        default: release\n        required: true\n'
+st s_guard_none "AC12 the mode guard is missing (any other mode would skip both Witness steps and upload nothing, green)" "mode guard" \
+              "$GUARD_STEP" ''
+st s_guard_open "AC12 the mode guard lets any mode through" "mode guard" 'release|snapshot) ;; *)' 'release|snapshot|*) ;; *)'
+st s_rel_noif  "AC12 the release Witness step has no if (it would run in a snapshot, with admission)" "release Witness step" \
+              '      - name: apk under Witness\n        if: ${{ inputs.mode == '"'release'"' }}\n' '      - name: apk under Witness\n'
+st s_rel_snap  "AC12 the release Witness step runs in snapshot mode" "release Witness step" \
+              'apk under Witness\n        if: ${{ inputs.mode == '"'release'"' }}' 'apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}'
+st s_snap_none "AC12 the snapshot Witness step is missing (a snapshot would build nothing, green)" "snapshot" \
+              "$SNAP_STEP" ''
+st s_snap_noif "AC12 the snapshot Witness step has no if (it would run in a release too)" "snapshot" \
+              'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n' 'snapshot-apk under Witness\n'
+st s_snap_rel  "AC12 the snapshot Witness step runs the release script (admission and the tag)" "snapshot" \
+              'snapshot-apk bin/build-stage-snapshot-apk.sh' 'snapshot-apk bin/build-stage-apk.sh'
+st s_snap_name "AC12 the snapshot Witness step uses a step name outside the closed list" "snapshot" \
+              'snapshot-apk bin/build-stage-snapshot-apk.sh' 'snapshot bin/build-stage-snapshot-apk.sh'
+st s_snap_relname "AC12 the snapshot script runs under the release step name (its record would not carry the snapshot marker)" "snapshot" \
+              'witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh' 'witnessed.sh apk bin/build-stage-snapshot-apk.sh'
+st s_snap_gh   "AC12 the snapshot Witness step holds GH_TOKEN" "snapshot" \
+              'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n' \
+              'snapshot-apk under Witness\n        if: ${{ inputs.mode == '"'snapshot'"' }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
+st s_snap_asm  "AC12 the assemble job's snapshot step name is outside the closed list" "snapshot" \
+              'witnessed.sh snapshot-build bin/build-stage-snapshot-assemble.sh' 'witnessed.sh snapshot-rebuild bin/build-stage-snapshot-assemble.sh'
 st s_outapk  "AC2 the stage output reads the apk job's output, not the assemble job's" "on: must be" 'value: ${{ jobs.assemble.outputs.digests }}' \
              'value: ${{ jobs.apk.outputs.digests }}'
 st s_outnone "AC2 the stage has no digests output (Sign would get nothing)" "on: must be" \
@@ -349,6 +395,8 @@ rb r_out "005-AC1 Rebuild exposes a stage output (Rebuild's only output is its v
              'workflow_call:\n    outputs:\n      digests:\n        value: ${{ jobs.assemble.outputs.digests }}\n'
 rb r_hin "005-AC1 Rebuild takes the hostile input (only Build has a hostile step)" "on: must be" 'workflow_call:\n' \
              'workflow_call:\n    inputs:\n      hostile:\n        type: boolean\n        default: false\n'
+rb r_snap "AC12 Rebuild has a snapshot Witness step (Rebuild is never called in snapshot mode)" "step" '      - name: rapk under Witness\n' \
+        "$RSNAP_STEP"
 rb r_perm "005-AC1 Rebuild with the admission permissions" permissions 'id-token: write' 'id-token: write\n      checks: read'
 replace "$work/build.yml" "$work/r_kind.yml" 'build-stage-apk.sh' 'build-stage-rebuild-apk.sh' && expect caught \
        "005-AC1 Build running the rebuild script" "exactly the one line" stage "$work/r_kind.yml" build "$AL"
@@ -373,7 +421,7 @@ hm tbefore "AC2 the timeout around Witness instead of the command (the certifica
        'exec timeout 540 witness run'
 hm furl    "AC2 another Fulcio address" 'https://fulcio.sigstore.dev' 'http://fulcio.evil.example'
 hm ftsa    "AC2 another timestamp authority" 'https://timestamp.sigstore.dev/api/v1/timestamp' 'https://tsa.example/ts'
-hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "witness-$step' '-d out -o "witness-$step'
+hm fdir    "AC2 witness -d (the command must run from the repo root)" '-o "witness-${step#snapshot-}' '-d out -o "witness-${step#snapshot-}'
 hm fextra  "AC2 an extra Witness flag" '--env-filter-sensitive-vars' '--enable-archivista --env-filter-sensitive-vars'
 hm fnoflt  "AC8 no environment filter flag (tokens would be recorded)" '--env-filter-sensitive-vars' ''
 hm fnokey  "AC8 no token-variable key pattern" "--env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'" ''
@@ -381,7 +429,7 @@ hm fnogh   "AC8 GH_TOKEN not on the sensitive-key list" '--env-add-sensitive-key
 hm fslsa   "AC2 the slsa attestor (provenance is Sign's alone)" 'environment,git,material,product' 'environment,git,material,slsa'
 hm fgha    "AC8 the github attestor (it embeds the raw OIDC token)" 'environment,git,material,product' 'environment,git,github,material,product'
 hm fstep   "AC2 a fixed --step instead of the closed-list argument" '--step "$step"' '--step build'
-hm fout    "AC2 the record written to another path" '"witness-$step/$step-collection.json"' 'out/x.json'
+hm fout    "AC2 the record written to another path" '"witness-${step#snapshot-}/$step-collection.json"' 'out/x.json'
 hm fopen   "AC2 the step list is open" 'apk|build|rapk|rebuild' '*'
 hm fexec   "AC2 witness not exec'd (its exit status could be lost)" 'exec witness run' 'witness run'
 hm ftee "AC2 the token written elsewhere" '| jq -r .value)' '| jq -r .value | tee /tmp/leak)'
@@ -395,6 +443,12 @@ hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout 540 b
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
 hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
+hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
+hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
+    '"witness-${step#snapshot-}/$step-collection.json"' \
+       '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
+hm fsnapopen "AC12 the step list admits snapshot-rebuild (Rebuild is never a snapshot)" 'snapshot-apk|snapshot-build)' \
+    'snapshot-apk|snapshot-build|snapshot-rebuild)'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -404,7 +458,7 @@ expect ok "AC2 comments in the helper are not commands" "" helper "$work/h_comme
 printf 'set -euo pipefail\nwitness run --step apk -- timeout 540 bash bin/build-stage-apk.sh\n' > "$work/direct.sh"
 expect caught "AC2 a stage script naming witness run directly" "witness run" directwitness "$work/direct.sh"
 # ---- the four stage scripts: an EXACT line grammar (REQ-CHAIN-004-AC3, AC6, AC11; REQ-CHAIN-005-AC2) --------------------------------------
-KINDS="apk assemble rebuild-apk rebuild-assemble"
+KINDS="apk assemble rebuild-apk rebuild-assemble snapshot-apk snapshot-assemble"
 for k in $KINDS; do
   expect ok "AC3 fixture: the known-good bin/build-stage-$k.sh is exactly the grammar (long lines broken with backslashes)" "" script "$work/s-$k.sh" "$k"
 done
@@ -671,6 +725,12 @@ gr g49 "005-AC5 build passes no hostile input (the dry run's hostile step would 
        "build must pass exactly with"
 gr g50 "005-AC5 build passes hostile unconditionally (a tag dispatch or a release would run the hostile step)" "$BHOST" "hostile: true" \
        "build must pass exactly with"
+gr g51 "AC12 release.yml's build call passes mode: snapshot (the live chain never builds a snapshot)" "$BHOST" "$BHOST\n      mode: snapshot" \
+    "build must pass exactly with"
+gr g52 "AC12 release.yml's build call passes mode: release (a second input: the call is exactly hostile)" "$BHOST" "$BHOST\n      mode: release" \
+    "build must pass exactly with"
+gr g53 "AC12 release.yml's rebuild call passes an input (Rebuild takes none; mode: snapshot would be a snapshot Rebuild)" "  rebuild:\n    needs: build" \
+       "  rebuild:\n    needs: build\n    with:\n      mode: snapshot" "rebuild may not pass"
 gr g42 "005-AC5 patch-notes whose if is always() (it would open the changelog PR without a tag)" "if: $PNIF" "if: always()" "must carry exactly the if"
 gr g43 "005-AC5 patch-notes without its if" "    needs: decide\n    if: $PNIF" "    needs: decide" "must carry exactly the if"
 gr g44 "005-AC5 patch-failed that needs only build (it would open an issue for a stage it does not watch)" \
@@ -810,7 +870,9 @@ for tag in fixture real; do
              "no token file exists while the wrapped command runs and the signer was given the token once" \
              "a command that outlives the (test) timeout fails the job and leaves no record and no digests.json" \
              "a failing command fails the job and leaves no record" "an unknown step name exits 2 before witness is called" \
-             "the identity token appears only in the add-mask line" "the wrapped command's environment holds no identity-token variable"; do
+             "the identity token appears only in the add-mask line" "the wrapped command's environment holds no identity-token variable" \
+             "a snapshot step writes its record into the release directory under the snapshot name" \
+             "an unknown snapshot step name (snapshot-rebuild) exits 2 before witness is called"; do
       bad "AC2 $tag helper: $l (bin/witnessed.sh does not exist: RED until implemented)"
     done
     continue
@@ -833,6 +895,20 @@ for tag in fixture real; do
     ok "AC2 $tag helper: a failing command fails the job and leaves no record"
   else
     bad "AC2 $tag helper: failing command -> rc=$rc"
+  fi
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" snapshot-apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && [ -f "$d/witness-apk/snapshot-apk-collection.json" ] && [ ! -e "$d/witness-snapshot-apk" ] && grep -Fq -- '--step snapshot-apk' \
+      <<< "$calls";
+  then
+    ok "AC12 $tag helper: a snapshot step writes witness-apk/snapshot-apk-collection.json (the release directory, the snapshot name)"
+  else
+    bad "AC12 $tag helper: snapshot-apk -> rc=$rc, files: $(ls "$d" | tr '\n' ' ')"
+  fi
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" snapshot-rebuild); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
+    ok "AC12 $tag helper: snapshot-rebuild is not a step (Rebuild is never a snapshot) and exits 2 before witness is called"
+  else
+    bad "AC12 $tag helper: snapshot-rebuild -> rc=$rc calls=$calls"
   fi
   helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" evil); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
@@ -879,7 +955,7 @@ with_timeout() { # with_timeout SECONDS COMMAND...   macOS has no timeout(1): a 
 }
 run_stage() { # run_stage DIR KIND MODE TAG [ENV=VAL...] -> the exit status (124 if it hangs); GH_TOKEN is set as the apk job's Witness step sets it
   local dir=$1 kind=$2 mode=$3 tag=$4; shift 4
-  ( cd "$dir" && if with_timeout 120 env "$@" GITHUB_REF_NAME="$tag" TAG="$tag" ITEMS_MODE="$mode" HARNESS_DIR="$root/bin" REAL_CV="$CV" \
+  ( cd "$dir" && if with_timeout 120 env "$@" GITHUB_REF_NAME="${REF_NAME:-$tag}" TAG="$tag" ITEMS_MODE="$mode" HARNESS_DIR="$root/bin" REAL_CV="$CV" \
         GITHUB_SHA=0123456789abcdef0123456789abcdef01234567 GH_TOKEN=SENTINEL-GH-TOKEN PATH="$dir/bin:$PATH" \
         bash "./bin/build-stage-$kind.sh" > stage.out 2> stage.err; then echo 0; else echo $?; fi )
 }
@@ -1068,6 +1144,83 @@ PY
     fi
   fi
 }
+# ---- the snapshot scripts RUN against the same fakes (REQ-CHAIN-004-AC12): no tag, no admission, no version check, no policy, no verify ---------------
+# The run is a pull request's: GITHUB_REF_NAME is 123/merge, which is no tag, so a snapshot script that read the tag would fail or pass a wrong version.
+# The version cache's scripts get is the fixed snapshot one; the oracle is computed for the tag v0.0.0-rc.1 that names it.
+SNAP_TAG=v0.0.0-rc.1
+beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
+  local t=$1 s=$2 mode=$3 d="$work/b-sapk-$1" rc calls
+  REF_NAME=123/merge; mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && ! grep -q '^admit' <<< "$calls" && [ "$(n_calls '^version ' "$d")" = 0 ] && [ "$(n_calls '^apk ' "$d")" = 2 ] \
+     && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
+    ok "AC12 $t snapshot-apk: no admission and no version check, both variants build with --version ${SNAP_TAG#v} although the ref is a pull request's"
+  else
+    bad "AC12 $t snapshot-apk: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
+  fi
+  if [ "$(n_calls 'SDE=1700000000' "$d")" = 2 ] && ! grep -q 'SDE=unset' "$d/calls.log"; then
+    ok "AC12 $t snapshot-apk: SOURCE_DATE_EPOCH reaches both builds"
+  else
+    bad "AC12 $t snapshot-apk: SOURCE_DATE_EPOCH not exported to both builds"
+  fi
+  if [ "$(json_of "$d/out/items-apk.json")" = "$(oracle fragment "$(uname -m)" "$SNAP_TAG")" ]; then
+    ok "AC12 $t snapshot-apk: out/items-apk.json is exactly the oracle's fragment"
+  else
+    bad "AC12 $t snapshot-apk: out/items-apk.json differs from the oracle"
+  fi
+  mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" FAKE_APK_RC=4)
+  if [ "$rc" != 0 ] && [ ! -e "$d/out/items-apk.json" ]; then
+    ok "AC12 $t snapshot-apk: a build that attempts the network (exit 4) fails the job and leaves no fragment"
+  else
+    bad "AC12 $t snapshot-apk: build exit 4 -> rc=$rc"
+  fi
+  REF_NAME=
+}
+beh_snapshot_assemble() { # beh_snapshot_assemble TAGNAME SCRIPT MODE
+  local t=$1 s=$2 mode=$3 d="$work/b-sasm-$1" rc calls tampered
+  REF_NAME=123/merge; mk "$d" snapshot-assemble "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" snapshot-assemble "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && ! grep -Eq '^verify (policy|verify|stage-start)' <<< "$calls" && [ "$(n_calls 'verify bind --step snapshot-apk' "$d")" = 2 ] \
+     && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" -ge 3 ]; then
+    ok \
+        "AC12 $t snapshot-assemble: no policy, no verify, no stage-start (a snapshot record is refused by them); both directories bound as snapshot-apk"
+  else
+    bad "AC12 $t snapshot-assemble: exit $rc, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-240)"
+  fi
+  if [ "$(json_of "$d/digests.json")" = "$(oracle expect "$d" snapshot-assemble digests "$SNAP_TAG")" ] \
+     && [ "$(json_of "$d/items.json")" = "$(oracle expect "$d" snapshot-assemble items "$SNAP_TAG")" ]; then
+    ok "AC12 $t snapshot-assemble: digests.json and items.json are exactly the oracle's (the same files as a release writes)"
+  else
+    bad "AC12 $t snapshot-assemble: digests.json or items.json differs from the oracle"
+  fi
+  mk "$d" snapshot-assemble "$s" "$mode" "$SNAP_TAG"
+  tampered=$(oracle apkname standard "$SNAP_TAG"); printf 'tampered' >> "$d/apk/ubuntu-24.04-arm/aarch64/$tampered"
+  rc=$(run_stage "$d" snapshot-assemble "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" != 0 ] && ! grep -q '^image ' <<< "$calls" && [ ! -e "$d/digests.json" ]; then
+    ok "AC12 $t snapshot-assemble: an apk whose bytes differ from the record stops the job before any image"
+  else
+    bad "AC12 $t snapshot-assemble: tampered apk -> rc=$rc"
+  fi
+  mk "$d" snapshot-assemble "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" snapshot-assemble "$mode" "$SNAP_TAG" FAKE_IMAGE_RC=4)
+  if [ "$rc" != 0 ] && [ ! -e "$d/digests.json" ] && [ ! -e "$d/items.json" ]; then
+    ok "AC12 $t snapshot-assemble: assemble-image.sh failing (exit 4) leaves no digests.json and no items.json"
+  else
+    bad "AC12 $t snapshot-assemble: assemble-image exit 4 -> rc=$rc"
+  fi
+  REF_NAME=
+}
+for tag in fixture real; do
+  mode=oracle; [ "$tag" = real ] && mode=real
+  for kind in snapshot-apk snapshot-assemble; do
+    if [ ! -f "$(script_of "$tag" "$kind")" ]; then
+      for _ in 1 2 3 4; do bad "AC12 $tag $kind: a behaviour case (bin/build-stage-$kind.sh does not exist: RED until implemented)"; done
+      continue
+    fi
+    "beh_$(tr - _ <<< "$kind")" "$tag" "$(script_of "$tag" "$kind")" "$mode"
+  done
+done
 cases_of() { case "$1" in apk) echo 15;; assemble) echo 16;; rebuild-apk) echo 3;; rebuild-assemble) echo 6;; esac; }    # cases one kind runs for both versions
 for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
@@ -1101,6 +1254,75 @@ if [ "$new_fail" -gt 0 ]; then
 else
   bad "control: the script without stage-start passed every behaviour case"
 fi
+# ---- REQ-CHAIN-004-AC14: the proof workflows call Build in snapshot mode and nothing else -------------------------------------------------------------
+# The fixture is shaped like scan.yml / main-candidate-rescan.yml after the rewire: the `build` call, a scanner job (cache's, never read by the judge) and a
+# `manifests` job with deliberately odd content (cache's REQ-REL-004-AC5 edits it; the judge must not read it).
+cat > "$work/caller.yml" <<'EOF'
+name: Proof
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  build:
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
+      id-token: write
+    uses: ./.github/workflows/stage-build.yml
+    with:
+      mode: snapshot
+  scanners:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: images
+          path: /tmp/oci
+  manifests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: enumerate release manifests
+        run: echo anything at all, including secrets ${{ secrets.X }}
+EOF
+cl() { replace "$work/caller.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" callers "$work/$1.yml"; return 0; }
+expect ok "AC14 fixture: build calls stage-build.yml with mode: snapshot, exactly the stage's permissions; the scanner and manifests jobs are not read" "" \
+       callers "$work/caller.yml"
+cl c1  "AC14 mode: release" "mode: snapshot" "mode: release" "must pass exactly with"
+cl c2  "AC14 an extra input (hostile)" "      mode: snapshot" "      mode: snapshot\n      hostile: true" "must pass exactly with"
+cl c3  "AC14 no input at all (the stage's default is release)" "    with:\n      mode: snapshot\n" "" "must pass exactly with"
+cl c4  "AC14 secrets: inherit" "      mode: snapshot" "      mode: snapshot\n    secrets: inherit" "keys outside"
+cl c5 "AC14 an if on the call" "    uses: ./.github/workflows/stage-build.yml" \
+    "    if: github.event_name == 'push'\n    uses: ./.github/workflows/stage-build.yml" "keys outside"
+cl c6 "AC14 the old wider grants (packages and attestations write)" "      id-token: write\n    uses" \
+    "      id-token: write\n      packages: write\n      attestations: write\n    uses" \
+       "exactly the permissions"
+cl c7  "AC14 narrower grants than the stage requests (a startup_failure with zero jobs)" "      statuses: read\n" "" "exactly the permissions"
+cl c8 "AC14 a call of the deleted stage-image.yml" "  scanners:" \
+    "  assemble:\n    needs: build\n    uses: ./.github/workflows/stage-image.yml\n  scanners:" "stage-image.yml"
+cl c9 "AC14 a call of stage-sign.yml (a proof workflow never signs)" "  scanners:" \
+    "  sign:\n    needs: build\n    uses: ./.github/workflows/stage-sign.yml\n  scanners:" "stage-sign.yml"
+cl c10 "AC14 a call of stage-promote.yml (a proof workflow never releases)" "  scanners:" \
+    "  release:\n    needs: build\n    uses: ./.github/workflows/stage-promote.yml\n  scanners:" \
+       "stage-promote.yml"
+cl c11 "AC14 a call of stage-reproducibility.yml" "  scanners:" \
+    "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  scanners:" "stage-reproducibility.yml"
+cl c12 "AC14 a second call of stage-build.yml" "  scanners:" \
+    "  build2:\n    uses: ./.github/workflows/stage-build.yml\n    with:\n      mode: snapshot\n  scanners:" "also calls"
+cl c13 "AC14 the workflow can be called (REQ-SCAN-015)" "  pull_request:\n" "  pull_request:\n  workflow_call:\n" "workflow_call"
+cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
+replace "$work/caller.yml" "$work/c15.yml" "echo anything at all, including secrets" "echo changed" \
+  && expect ok "AC14 an edit inside the manifests job (cache's REQ-REL-004-AC5) does not change the verdict" "" callers "$work/c15.yml"
+replace "$work/caller.yml" "$work/c16.yml" "    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/download-artifact" \
+    "    runs-on: self-hosted\n    steps:\n      - uses: actions/download-artifact" \
+  && expect ok "AC14 the scanner steps are cache's: a change there does not change the verdict" "" callers "$work/c16.yml"
 # ---- the real repository --------------------------------------------------------------------------------------------------------------------
 RAL="$root/.github/policy/allowed-actions.json"
 expect ok "AC1/AC2 the real stage-build.yml is exactly the Build grammar" "" stage "$root/.github/workflows/stage-build.yml" build "$RAL"
@@ -1113,12 +1335,14 @@ expect ok "AC2 no real stage file or stage script names witness run" "" directwi
 expect ok "AC3 the five real scripts are rows of .github/policy/chain-scripts.json with their sha256" "" listed \
        "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "005-AC5 the real release.yml chain jobs" "" graph "$root/.github/workflows/release.yml"
+expect ok "AC14 the real scan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/scan.yml"
+expect ok "AC14 the real main-candidate-rescan.yml calls Build in snapshot mode and nothing else" "" callers "$root/.github/workflows/main-candidate-rescan.yml"
 expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and the real stage files do not name apko" "" lockflow \
        "$root/bin/build-stage-assemble.sh" "$root/bin/build-stage-rebuild-assemble.sh" "$root/.github/workflows/stage-build.yml" \
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=380
+EXPECT=447
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

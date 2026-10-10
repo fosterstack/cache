@@ -14,6 +14,7 @@ the job graph is exactly the keys and targets in CHAIN. Anything else is a fault
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
   lockflow BUILD_ASM REBUILD_ASM STAGE_YML...   REQ-CHAIN-004-AC11 / REQ-CHAIN-005-AC6: Build and Rebuild assemble identically; no stage file names apko
   listed CHAIN_SCRIPTS.json ROOT            the four scripts are rows of .github/policy/chain-scripts.json with their real sha256 (PR 1's design)
+  callers FILE                              REQ-CHAIN-004-AC14: a proof workflow calls stage-build.yml with mode: snapshot and nothing else
   graph FILE                                REQ-CHAIN-005-AC5: the chain jobs of release.yml
   workflows DIR                             REQ-CHAIN-004-AC1: no workflow file is added beyond stage-sign.yml,
                                              and stage-image.yml / stage-admission.yml are gone
@@ -46,14 +47,20 @@ START = ("python3 bin/chain-verify.py stage-start --stage rebuild --previous bui
          "--digests build-in/digests.json --policy policy.json")
 
 
-def apk_cmd(variant):
+# SNAPSHOT MODE (REQ-CHAIN-004-AC12): the proof workflows (scan.yml, main-candidate-rescan.yml) build with no tag, so there is no version to take from
+# one; the snapshot scripts pass this fixed release-candidate-shaped version to cache's scripts (PROPOSED/UNVERIFIED: cache confirms that
+# build-apk.sh and assemble-image.sh accept it). Nothing built in snapshot mode is ever published, signed by Sign or accepted by a verifier.
+SNAPSHOT_VERSION = "0.0.0-rc.1"
+
+
+def apk_cmd(variant, ver=VER):
     return ('./bin/build-apk.sh --variant %s --arch "$(uname -m)" --version %s --source-dir . --repo %s --keyring %s --go-archive %s '
-            "--melange-lock %s --out out" % (variant, VER, ARCHIVE, KEYRING_WOLFI, GO_ARCHIVE, MELANGE_LOCK))
+            "--melange-lock %s --out out" % (variant, ver, ARCHIVE, KEYRING_WOLFI, GO_ARCHIVE, MELANGE_LOCK))
 
 
-def image_cmd(variant):
+def image_cmd(variant, ver=VER):
     return ("./bin/assemble-image.sh --variant %s --version %s --archive %s --melange-repo melange-repo --keyring-dir keyring --out out"
-            % (variant, VER, ARCHIVE))
+            % (variant, ver, ARCHIVE))
 
 
 def version_check(variant):
@@ -75,13 +82,13 @@ def melange_repo(apk_dir):
             + ["mkdir -p keyring", "cp %s keyring/wolfi-signing.rsa.pub" % KEYRING_WOLFI, "cp %s keyring/assembly.rsa.pub" % ASSEMBLY_PUB])
 
 
-def archives():
-    return "python3 bin/build-archives.py --melange-repo melange-repo --version %s --out dist" % VER
+def archives(ver=VER):
+    return "python3 bin/build-archives.py --melange-repo melange-repo --version %s --out dist" % ver
 
 
-def merge(apk_dir, outputs):
+def merge(apk_dir, outputs, ver=VER):
     frags = " ".join("--fragment %s/%s/items-apk.json" % (apk_dir, r) for r, a in RUNNERS)
-    return "python3 bin/chain-verify.py items-merge %s --images out --archives dist --version %s --archive %s %s" % (frags, VER, ARCHIVE, outputs)
+    return "python3 bin/chain-verify.py items-merge %s --images out --archives dist --version %s --archive %s %s" % (frags, ver, ARCHIVE, outputs)
 
 
 def items_apk():
@@ -97,6 +104,12 @@ def expected_lines(kind):
         return ([H, POLICY] + verify_records("build", "rec-apk", "apk-collection.json") + bind_files("apk", "rec-apk", "apk-collection.json", "apk")
                 + melange_repo("apk") + SDE + [image_cmd("production"), image_cmd("fips"), archives(),
                 merge("apk", "--digests digests.json --items items.json")])
+    if kind == "snapshot-apk":       # no admission, no version check, no tag: the version is the fixed snapshot one
+        return [H] + SDE + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION), items_apk()]
+    if kind == "snapshot-assemble":  # no policy and no verify (a snapshot record is refused by every verifier): the bind is the only link to the record
+        return ([H] + bind_files("snapshot-apk", "rec-apk", "snapshot-apk-collection.json", "apk") + melange_repo("apk") + SDE
+                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION), archives(SNAPSHOT_VERSION),
+                   merge("apk", "--digests digests.json --items items.json", SNAPSHOT_VERSION)])
     if kind == "rebuild-apk":
         return [H, POLICY, START] + SDE + [apk_cmd("standard"), apk_cmd("fips"), items_apk()]
     if kind == "rebuild-assemble":
@@ -109,7 +122,8 @@ def expected_lines(kind):
 
 
 SCRIPTS = {"witnessed": "bin/witnessed.sh", "apk": "bin/build-stage-apk.sh", "assemble": "bin/build-stage-assemble.sh",
-           "rebuild-apk": "bin/build-stage-rebuild-apk.sh", "rebuild-assemble": "bin/build-stage-rebuild-assemble.sh"}
+           "rebuild-apk": "bin/build-stage-rebuild-apk.sh", "rebuild-assemble": "bin/build-stage-rebuild-assemble.sh",
+           "snapshot-apk": "bin/build-stage-snapshot-apk.sh", "snapshot-assemble": "bin/build-stage-snapshot-assemble.sh"}
 
 
 def read_exact(path):
@@ -174,14 +188,19 @@ MAT = "${{ matrix.runner }}"
 # Build hands Sign the digests.json text: the stage output reads the assemble job's output, which one pinned step fills from digests.json
 STAGE_OUTPUT = "${{ jobs.assemble.outputs.digests }}"
 JOB_OUTPUT = "${{ steps.digests.outputs.digests }}"
+MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
+MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
+MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
+MODE_GUARD_RUN = 'case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac'
+SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build"}        # the closed list of snapshot Witness step names; Rebuild has none
 HOSTILE_IF = "${{ inputs.hostile }}"
 HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[],
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True,
+    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("dist", "dist"), ("images", "out")]),
     ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True,
@@ -202,14 +221,15 @@ def stage(path, family, allowed_path=None):
         return ["top-level keys beyond name/on/permissions/jobs: %s" % (sorted(set(d) - {"name", "on", "permissions", "jobs"}) if isinstance(d, dict) else d)]
     on = d.get("on")
     call = on.get("workflow_call") if isinstance(on, dict) else None
-    want_call = {"inputs": {"hostile": {"type": "boolean", "default": "false"}},
+    want_call = {"inputs": {"hostile": {"type": "boolean", "default": "false"}, "mode": {"type": "string", "default": "release"}},
                  "outputs": {"digests": {"value": STAGE_OUTPUT}}} if family == "build" else None
     if isinstance(call, dict):       # a description is free text
-        call = {k: {n: {a: b for a, b in (v or {}).items() if a != "description"} for n, v in (call[k] or {}).items()}
+        call = {k: {n: ({a: b for a, b in v.items() if a != "description"} if isinstance(v, dict) else v) for n, v in call[k].items()}
                 if isinstance(call[k], dict) else call[k] for k in call}
     if not isinstance(on, dict) or set(on) != {"workflow_call"} or (call or None) != want_call:
         bad.append("on: must be exactly workflow_call with %s, got %s"
-                   % ("the one boolean input hostile (default false; the dry run's hostile Build step) and the one output digests = %s" % STAGE_OUTPUT
+                   % ("the inputs hostile (boolean, default false; the dry run's hostile Build step) and mode (string, default release; release or snapshot) "
+                      "and the one output digests = %s" % STAGE_OUTPUT
                       if want_call else "no inputs, secrets or outputs", on))
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
@@ -270,6 +290,10 @@ def job(j, family, name, allowed):
     s = steps[i]; i += 1
     if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout", allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
         bad.append("step 1 must be a digest-pinned actions/checkout (on the allowed list) with exactly %s" % CHECKOUT_WITH)
+    if spec.get("mode"):         # a mode that is neither release nor snapshot would skip both Witness steps and upload nothing, green: refuse it first
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"name", "env", "run"} or s.get("env") != MODE_GUARD_ENV or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
+            bad.append("step %d must be exactly env %s, run: %s (the mode guard)" % (i, MODE_GUARD_ENV, MODE_GUARD_RUN))
     s = steps[i] if i < len(steps) else {}; i += 1
     if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != "./bin/install-scanner.sh witness":
         bad.append("step 2 must be exactly: run ./bin/install-scanner.sh witness (checksum-pinned Witness install)")
@@ -280,12 +304,20 @@ def job(j, family, name, allowed):
             bad.append("step %d must be a pinned actions/download-artifact with exactly name %s and path %s "
                        "(a fresh named directory, never . or bin/ or .github/)" % (i, nm, path_))
     s = steps[i] if i < len(steps) else {}; i += 1
-    want_keys = {"run", "name"} | ({"env"} if spec["gh"] else set())
-    if set(s) - want_keys: bad.append("the Witness step may carry only %s (no if, shell, working-directory)" % sorted(want_keys))
+    want_keys = {"run", "name"} | ({"env"} if spec["gh"] else set()) | ({"if"} if spec.get("mode") else set())
+    if set(s) - want_keys: bad.append("the Witness step may carry only %s (no shell, working-directory)" % sorted(want_keys))
+    if spec.get("mode") and s.get("if") != MODE_RELEASE_IF:
+        bad.append("the release Witness step must carry exactly if: %s" % MODE_RELEASE_IF)
     if spec["gh"] and s.get("env") != {"GH_TOKEN": "${{ github.token }}"}:
         bad.append("the admission job's Witness step must carry env exactly GH_TOKEN: ${{ github.token }} (PROPOSED, advisor-confirmed default)")
     if not spec["gh"] and "env" in s: bad.append("the Witness step has env")
     bad += witness_seam(s.get("run") or "", spec, family)
+    if spec.get("mode"):         # the snapshot Witness step: its own closed step name and script, no GH_TOKEN (nothing is admitted), gated by the mode
+        s = steps[i] if i < len(steps) else {}; i += 1
+        snap = dict(spec, step=SNAPSHOT_STEP[spec["step"]], kind="snapshot-" + spec["kind"])
+        if set(s) - {"run", "name", "if"} or s.get("if") != MODE_SNAPSHOT_IF:
+            bad.append("step %d (the snapshot Witness step) may carry only name, run and if: %s" % (i, MODE_SNAPSHOT_IF))
+        bad += witness_seam(s.get("run") or "", snap, family)
     if spec.get("expose"):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"id", "name", "run"} or s.get("id") != "digests" or str(s.get("run") or "").strip() != EXPOSE:
@@ -310,7 +342,8 @@ def job(j, family, name, allowed):
 
 
 # ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
-STEPS = ("apk", "build", "rapk", "rebuild")      # the closed list of step names; the record is witness-STEP/STEP-collection.json
+STEPS = ("apk", "build", "rapk", "rebuild", "snapshot-apk", "snapshot-build")   # the closed list of step names; the record is witness-DIR/STEP-collection.json
+# (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # The identity token reaches Witness through a one-read process substitution, so no file holds it while the wrapped command runs (Witness loads its
 # signer before it runs the command: in-toto-witness cmd/run.go:51). SOURCE-CHECKED, one read: in-toto-witness cmd/keyloader.go:85 and
 # go-witness signer/fulcio/fulcio.go:295-300 read the path with a single os.ReadFile. DOCUMENTED FALLBACK if that ever changes: write the token to a file
@@ -330,15 +363,15 @@ def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in apk|build|rapk|rebuild) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
-            'mkdir -p "witness-$step"'] + TOKEN + [
+            'case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
+            'mkdir -p "witness-${step#snapshot-}"'] + TOKEN + [
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
             'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
             "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
             "--signer-fulcio-token-path %s -t https://timestamp.sigstore.dev/api/v1/timestamp "
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-$step/$step-collection.json" -- timeout 540 bash "$@"' % (TOKEN_PATH, keys)]
+            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"' % (TOKEN_PATH, keys)]
 
 
 def witness_seam(run, spec, family):
@@ -471,6 +504,8 @@ def graph(path):
                 bad.append("release must carry exactly the if %s (a dry run publishes nothing), got %r" % (RELEASE_IF, job.get("if")))
         elif "if" in job:
             bad.append("%s may not carry an if (it runs after build through needs), got %r" % (name, job["if"]))
+        if name == "rebuild" and "with" in job:
+            bad.append("rebuild may not pass inputs (stage-reproducibility.yml takes none; a mode there would make a snapshot Rebuild), got %s" % job["with"])
         if name == "build" and job.get("with") != BUILD_WITH:
             bad.append("build must pass exactly with: %s (the hostile Build step runs only in a dry run on a branch), got %s" % (BUILD_WITH, job.get("with")))
         if name == "sign":
@@ -509,6 +544,46 @@ def graph(path):
             bad.append("job %s must carry exactly the if %s, got %r" % (name, spec["if"], job.get("if")))
         if "needs" in spec and sorted(needs_of(job)) != spec["needs"]:
             bad.append("job %s must need exactly %s, got %s" % (name, spec["needs"], sorted(needs_of(job))))
+    return bad
+
+
+# ---- the proof workflows call Build in snapshot mode (REQ-CHAIN-004-AC14) ---------------------------------------------------------------
+# scan.yml (every pull request and push) and main-candidate-rescan.yml (daily) keep their file names, because the scanner cloud trust is pinned to exactly
+# those two (ops#107) and REQ-SCAN-015 forbids anyone calling them. Their job `build` calls stage-build.yml with `mode: snapshot` and NOTHING else: no
+# other input (so the dry run's hostile hook stays off), no secrets, no `if`, and exactly the permissions the called stage requests (a caller that grants
+# less is a startup_failure with zero jobs; one that grants more holds rights no job uses). No job of these files calls a stage that signs, compares or
+# publishes (stage-sign, stage-reproducibility, stage-promote), or the deleted stage-image.yml. THE JUDGE READS ONLY `on` AND THE JOBS THAT CALL A STAGE
+# FILE: the scanner steps and the other jobs (`manifests` of main-candidate-rescan.yml, edited by cache's REQ-REL-004-AC5) are cache's and not read here.
+SNAPSHOT_CALLER_PERMISSIONS = dict(PERM_ADMIT)       # the union of what the apk job (PERM_ADMIT) and the assemble job (PERM_PLAIN) of stage-build.yml request
+NEVER_FROM_A_PROOF_WORKFLOW = ("stage-sign.yml", "stage-reproducibility.yml", "stage-promote.yml", "stage-image.yml", "stage-admission.yml")
+
+
+def callers(path):
+    d = yaml.load(read_exact(path), Loader=yaml.BaseLoader)
+    bad, on = [], d.get("on") if isinstance(d, dict) else None
+    if not isinstance(on, dict) or "workflow_call" in on:
+        bad.append("%s: on: must be a mapping without workflow_call (REQ-SCAN-015: nothing may call a scanner workflow), got %s" % (path, on))
+    jobs = d.get("jobs") or {}
+    calls = {n: j for n, j in jobs.items() if isinstance(j, dict) and "uses" in j}
+    for n, j in calls.items():
+        for stage_file in NEVER_FROM_A_PROOF_WORKFLOW:
+            if str(j["uses"]).endswith("/" + stage_file):
+                bad.append("job %s calls %s: a proof workflow never reaches %s" % (n, stage_file, stage_file))
+    build = jobs.get("build")
+    if not isinstance(build, dict):
+        return bad + ["job build is missing (the proof workflow's one call of stage-build.yml)"]
+    if build.get("uses") != "./.github/workflows/stage-build.yml":
+        bad.append("job build must call exactly ./.github/workflows/stage-build.yml, got %r" % build.get("uses"))
+    if build.get("with") != {"mode": "snapshot"}:
+        bad.append("job build must pass exactly with: mode: snapshot (no other input, so no hostile hook), got %s" % build.get("with"))
+    if build.get("permissions") != SNAPSHOT_CALLER_PERMISSIONS:
+        bad.append("job build must hold exactly the permissions the called stage requests %s, got %s" % (SNAPSHOT_CALLER_PERMISSIONS, build.get("permissions")))
+    extra = set(build) - {"uses", "with", "permissions"}
+    if extra:
+        bad.append("job build: keys outside {uses, with, permissions}: %s (no secrets, if, needs, strategy)" % sorted(extra))
+    for n, j in calls.items():
+        if n != "build" and str(j["uses"]).endswith("/stage-build.yml"):
+            bad.append("job %s also calls stage-build.yml (the one call is job build)" % n)
     return bad
 
 
@@ -560,6 +635,7 @@ if __name__ == "__main__":
     bad = {"stage": lambda: stage(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None), "script": lambda: script(sys.argv[2], sys.argv[3]),
            "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2]),
            "listed": lambda: listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
+            "callers": lambda: callers(sys.argv[2]),
             "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)

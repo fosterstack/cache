@@ -135,7 +135,7 @@ def digests_of(items):
 
 
 def expected(d, kind, which, tag):
-    pre = "apk" if kind == "assemble" else "rapk"
+    pre = "apk" if kind in ("assemble", "snapshot-assemble") else "rapk"
     frags = [json.load(open("%s/%s/%s/items-apk.json" % (d, pre, r))) for r, _, _ in RUNNERS]
     items = merge(frags, {i: image_outputs(i, tag) for i in IMAGES}, {k: b for k, (_, b) in archive_files(tag).items()}, d + "/archive")
     return digests_of(items) if which == "digests" else items
@@ -284,7 +284,9 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
                  ("build/keys/assembly.rsa.pub", "a"), ("build/locks/melange.lock", "l"), (".github/policy/release-policy.template.json", "{}")):
         write(d + "/" + f, c)
     pre, rec, step = ("apk", "rec-apk", "apk") if kind == "assemble" else ("rapk", "rec-rapk", "rapk")
-    if kind in ("assemble", "rebuild-assemble"):
+    if kind == "snapshot-assemble":
+        pre, rec, step = "apk", "rec-apk", "snapshot-apk"      # a snapshot record is named snapshot-apk and sits next to the same artifacts
+    if kind in ("assemble", "rebuild-assemble", "snapshot-assemble"):
         for r, arch, _ in RUNNERS:                   # the downloaded artifacts, laid out as upload-artifact rooted at `out` lays them out
             files = out_files(arch, tag)
             files["items-apk.json"] = json.dumps(fragment(arch, tag)).encode()

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC1 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC1 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
 # Written before the bind, items-apk and items-merge subcommands existed (tests before implementation, step 4); they are bin/chain_items.py now.
 #
 # The REAL chain-verify.py subcommands that bin/chain-test-harness.py only fakes. Needs: python3, ubuntu-24.04 or macOS. No network, no keys.
@@ -112,7 +112,7 @@ def bind(label, d, want_rc, cause=None, names=None, step="apk", **override):
     first = err.split("\n", 1)[0]
     ok = rc == want_rc and "Traceback" not in err
     if want_rc == 1:
-        ok = ok and first.startswith("refused at %s: %s: " % ("build" if step == "apk" else "rebuild", cause))
+        ok = ok and first.startswith("refused at %s: %s: " % ("rebuild" if step == "rapk" else "build", cause))
         ok = ok and (names is None or set(first.split(": ", 2)[2].split()) == set(names))
     check(label, ok, "exit %s, first line %r" % (rc, first[:160]))
 
@@ -162,6 +162,20 @@ bind("bind: a Build apk record given to Rebuild (--step rapk) is refused", d, 1,
 d = tree("rapk")
 record(d + "/rec.json", good_subjects(), name="rapk")
 bind("bind: the Rebuild step accepts its own record", d, 0, step="rapk")
+
+# REQ-CHAIN-004-AC12: a snapshot build's record is named snapshot-apk, and bind takes it under --step snapshot-apk only (Rebuild is never a snapshot)
+d = tree("snapok")
+record(d + "/rec.json", good_subjects(), name="snapshot-apk")
+bind("bind: the snapshot step accepts its own record (snapshot-apk)", d, 0, step="snapshot-apk")
+d = tree("snapwrong1")
+record(d + "/rec.json", good_subjects(), name="apk")
+bind("bind: a release apk record given to the snapshot step is refused as another step", d, 1, "step", ["apk"], step="snapshot-apk")
+d = tree("snapwrong2")
+record(d + "/rec.json", good_subjects(), name="snapshot-apk")
+bind("bind: a snapshot record given to the release step (--step apk) is refused as another step", d, 1, "step", ["snapshot-apk"])
+d = tree("snaprapk")
+record(d + "/rec.json", good_subjects(), name="snapshot-rapk")
+bind("bind: snapshot-rapk is not a step (Rebuild is never a snapshot): a usage error", d, 2, step="snapshot-rapk")
 
 d = tree("prefix")
 record(d + "/rec.json", [subject("other/" + r, b) for r, b in FILES.items()])
@@ -342,7 +356,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 40
+EXPECT = 44
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

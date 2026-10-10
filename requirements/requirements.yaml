@@ -2380,7 +2380,7 @@ requirements:
     source: [.github/workflows/stage-build.yml, bin/build-stage.sh, bin/build-admit.py, bin/build-version-check.py]
     tier: community
     introduced: v0.3.0
-    origin: v0.3.0 rules 24, 38a, 38b, 39, 50, 51, 58, 62, 63, 68 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0338)
+    origin: v0.3.0 rules 24, 38a, 38b, 39, 50, 51, 58, 62, 63, 68 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md; advisor read-back approved, handoff 0338); snapshot mode (AC12 to AC14), advisor-approved read-back Oct 9 (snapshot callers)
     confidence: implementation-only
     notes: >
       Decisions (advisor, Oct 9): (a) the Witness github attestor is dropped because its record embeds the raw OIDC token (breaks rules 52a and 68), run and
@@ -2446,6 +2446,22 @@ requirements:
       for the advisor to confirm: digests.json holds ten entries including the four Linux archives (REQ-CHAIN-004-AC9); the release-candidate names (apk
       files fscache-0.3.0_rc1-r0.apk, --version = the tag minus v); and the single `if` gate G on build and sign with release gated by !inputs.dry-run (REQ-
       CHAIN-005-AC5).
+      Snapshot mode (AC12 to AC14; advisor-approved read-back Oct 9 (snapshot callers), 2026-10-09-pipeline-readback-snapshot-callers.md): the proof
+      workflows used to build through the OLD stage-build.yml (mode: snapshot) and stage-image.yml; PR 2 deletes stage-image.yml, so they call the new Build
+      in snapshot mode and take the images from its assemble job. PROPOSED/UNVERIFIED, cache owns the scanner steps and must change these (this lane does
+      not edit them): (1) scan.yml: drop the jobs assemble and assemble-b (stage-image.yml) and rewrite `reproducibility`, which compares their
+      outputs.digests, to compare Build's own digests.json against Rebuild-style second assembly or drop it (a decision for cache and the owner: Rebuild is
+      never called in snapshot mode); (2) scan.yml `scanner` and main-candidate-rescan.yml `panel-grype`, `panel-scout`, `panel-inspector`, `panel-google`
+      and `scanner-reports`: their needs [build, assemble] become [build], they download the artifact `images` (Build assemble's out/ directory:
+      production.tar and fips.tar OCI archives with their .digest and .manifests files, not the old oci-candidate layout) instead of oci-candidate, and the
+      debug variant is gone from this chain (Build assembles production and fips only), so the `six images` of the panel become four, which is a product
+      question for the owner; (3) scan.yml `scanner` and `artifact-acceptance`: needs.build.outputs.checksums and the artifact dist-snapshot do not exist
+      (Build exposes digests, not checksums.txt; its `dist` artifact holds the four Linux archives, not goreleaser's), so the EXPECTED checksum step is
+      replaced by the digests.json text (needs.build.outputs.digests) and artifact-acceptance (PR 3's Check) reads dist; (4) nothing else in those files
+      changes, and cache's PR #252 (REQ-REL-004-AC5) edits the manifests job of main-candidate-rescan.yml, which this rewire must not touch (the judge does
+      not read it; chain-v030 is rebased on #252 before the workflow edits). A snapshot record is marked by its Witness step name (snapshot-apk, snapshot-
+      build), not by a field: the name is inside the signed collection, so no workflow can change it without changing what Fulcio's certificate signs, and
+      every verifier checks it in one place (read_record).
     acceptance_criteria:
       - id: REQ-CHAIN-004-AC1
         given: "stage-build.yml"
@@ -2511,6 +2527,24 @@ requirements:
         given: "the Build stage file and bin/build-stage.sh (cache's real apko v1.4.6 run, audits/2026-10-09/real-lock/REPORT.md)"
         when: "they are read"
         then: "apko runs only through bin/assemble-image.sh, which always builds with the lock (an apko build with the lock and one without give different image digests); no stage file or stage script names apko, passes a lock, build-date, architecture, offline, cache or signature flag to the script, or runs from anywhere but the repository root; the configs are locked and built from the fixed relative paths build/apko.yaml (production) and build/apko-fips.yaml (fips), never from an absolute path or a temporary copy"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-004-AC12
+        given: "the Build stage file and bin/witnessed.sh"
+        when: "they are read, and the snapshot scripts run against the fakes of bin/chain-build-wiring-test.sh"
+        then: "stage-build.yml takes exactly one more input, mode (type string, default release; release or snapshot), and a guard step right after the checkout refuses any other value (a third value would skip both Witness steps and upload nothing, green); each of its two jobs has two Witness steps, one per mode and each gated by if on the mode: the release step is exactly what it is today (admission, the tag, the version check), the snapshot step runs bin/witnessed.sh with the closed step name snapshot-apk (job apk) or snapshot-build (job assemble) and the scripts bin/build-stage-snapshot-apk.sh and bin/build-stage-snapshot-assemble.sh, with no GH_TOKEN; the helper writes a snapshot record to the same directory as a release record (witness-apk, witness-build) under the name STEP-collection.json, so the name inside it carries the snapshot marker; in snapshot mode there is no tag check and no admission (bin/build-admit.py is not run), no version check, no policy and no verify (a snapshot record is refused by them), no Sign (no caller of snapshot mode calls it), no publish, no GitHub attestation and no hostile hook (callers pass no hostile input); the snapshot scripts pass cache's scripts the fixed version 0.0.0-rc.1 (PROPOSED/UNVERIFIED: cache confirms that build-apk.sh and assemble-image.sh accept it), bind the downloaded apk directories to the snapshot-apk records (chain-verify.py bind --step snapshot-apk), and write digests.json and items.json like a release; Rebuild has no snapshot step and no mode, and bin/witnessed.sh refuses snapshot-rebuild; release.yml never passes mode (its build call passes exactly hostile) and its rebuild call passes no input, so the live chain on a tag push is unchanged"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-004-AC13
+        given: "a Witness collection whose name starts with snapshot-"
+        when: "bin/chain-verify.py verify, stage-start, check-build-record or sign --check reads it, at any stage, including the Release side (stage-start with --stage release)"
+        then: "it is refused before any certificate, signature or timestamp is looked at, with the first line `refused at <stage>: snapshot record` (the stage whose record it was: --stage for verify, --previous for stage-start, build for check-build-record and sign --check), exit 1; the same record named without the prefix is refused later, for what it is, never as a snapshot record; bin/chain-verify.py bind accepts a record named snapshot-apk only under --step snapshot-apk (and refuses it under apk, and an apk record under snapshot-apk, as another step) and has no snapshot-rapk step, so a PR build can never be mistaken for a release build (rules 58, 59, 69, 71)"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-004-AC14
+        given: "scan.yml and main-candidate-rescan.yml"
+        when: "their job build and the files' triggers are read"
+        then: "each keeps its file name (the scanner cloud trust is pinned to exactly those two, ops#107) and has no workflow_call trigger (REQ-SCAN-015); its job build calls ./.github/workflows/stage-build.yml with exactly `with: mode: snapshot` (no other input, so no hostile hook; no secrets; no if; no needs) and exactly the permissions the called stage requests (contents, checks, statuses and pull-requests read, id-token write: a caller that grants less is a startup_failure with zero jobs, one that grants more holds rights no job uses); no job of either file calls stage-image.yml (deleted), stage-sign.yml, stage-reproducibility.yml or stage-promote.yml, and no second job calls stage-build.yml, so no snapshot caller can reach Sign or Release; the judge reads only the triggers and the jobs that call a stage file, never the scanner steps or the manifests job of main-candidate-rescan.yml (cache's REQ-REL-004-AC5, which this rewire must not touch); the scanner steps take the images from Build's assemble artifacts (see the notes)"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
 
