@@ -141,13 +141,26 @@ def parse_cert(der):
 
 
 def ext_string(cert, oid):
+    """A Fulcio v2 extension's value (.1.8 issuer, .1.18 Build Config URI): exactly ONE DER UTF8String TLV (tag 0x0C, minimal definite
+    length, no bytes after it), as Fulcio's OID specification defines it (REQ-CHAIN-001-AC4, Codex security r3); anything else is
+    ValueError, never read as raw text."""
     raw = cert["exts"].get(oid)
     if raw is None:
         return None
-    if raw[:1] == b"\x0c":  # DER UTF8String (Fulcio v2 extensions)
-        _, s, e = _tlv(raw, 0)
-        return raw[s:e].decode()
-    return raw.decode(errors="replace")
+    if len(raw) < 2 or raw[0] != 0x0C:
+        raise ValueError("extension %s is not a DER UTF8String" % oid)
+    n = raw[1]
+    if n < 0x80:
+        start, length = 2, n
+    else:
+        k = n & 0x7F
+        length = int.from_bytes(raw[2:2 + k], "big")
+        if k == 0 or k > 2 or length < 0x80 or raw[2] == 0:     # DER: the long form only for 128+ bytes, in the fewest octets
+            raise ValueError("extension %s has a non-minimal length" % oid)
+        start = 2 + k
+    if start + length != len(raw):
+        raise ValueError("extension %s length does not cover exactly its bytes" % oid)
+    return raw[start:].decode("utf-8")
 
 
 def san_uris(cert):
@@ -226,6 +239,28 @@ def pae(t, body):
     return b"DSSEv1 %d %s %d %s" % (len(t.encode()), t.encode(), len(body), body)
 
 
+def envelope_shape(dsse):
+    """Every envelope field has its JSON type (Codex security r3): payloadType and payload strings, signatures a list of objects whose
+    sig and certificate are strings, intermediates a list of strings, timestamps a list of objects. Returns the first wrong field or None."""
+    if not isinstance(dsse, dict):
+        return "the envelope is not an object"
+    for k in ("payloadType", "payload"):
+        if not isinstance(dsse.get(k), str):
+            return "%s is not a string" % k
+    sigs = dsse.get("signatures")
+    if not isinstance(sigs, list) or not all(isinstance(x, dict) for x in sigs):
+        return "signatures is not a list of objects"
+    for x in sigs:
+        for k in ("sig", "certificate"):
+            if not isinstance(x.get(k), str):
+                return "signature field %s is not a string" % k
+        if not isinstance(x.get("intermediates", []), list) or not all(isinstance(i, str) for i in x.get("intermediates", [])):
+            return "intermediates is not a list of strings"
+        if not isinstance(x.get("timestamps", []), list) or not all(isinstance(t, dict) for t in x.get("timestamps", [])):
+            return "timestamps is not a list of objects"
+    return None
+
+
 def read_record(stage, path):
     try:
         with open(path, "rb") as f:
@@ -234,11 +269,13 @@ def read_record(stage, path):
         refuse(stage, "record missing or unreadable: %s" % os.path.basename(path))
     try:
         dsse = strict_json(raw)
-        payload = b64d(dsse["payload"])
-        ptype = dsse["payloadType"]
-        assert isinstance(dsse.get("signatures"), list)
+        why = envelope_shape(dsse)
+        payload = b64d(dsse["payload"]) if not why else None
     except Exception as ex:
         refuse(stage, "record is not a DSSE envelope (%s)" % (ex if isinstance(ex, ValueError) and "duplicate" in str(ex) else type(ex).__name__))
+    if why:
+        refuse(stage, "record is not a DSSE envelope (%s)" % why)
+    ptype = dsse["payloadType"]
     if len(dsse["signatures"]) != 1:
         refuse(stage, "record must carry exactly one signature, it has %d" % len(dsse["signatures"]))
     return dsse, payload, ptype
@@ -989,6 +1026,45 @@ def load_yaml(path):
         return yaml.load(f.read(), Loader=NoDuplicateKeys)
 
 
+def workflow_shape(path, d):
+    """The shapes GitHub accepts, named where they are not (Codex security r3): a reference that is not a string, a services entry that is
+    not a mapping, a container that is neither, steps that are not a list of mappings, jobs that are not a mapping. A shape the walk below
+    would skip is refused here instead (REQ-CHAIN-003-AC4)."""
+    errs = []
+    if not isinstance(d, dict):
+        return ["%s: the file is not a mapping" % path]
+    def steps_of(where, steps):
+        if steps is None:
+            return
+        if not isinstance(steps, list):
+            errs.append("%s: %s steps is not a list" % (path, where)); return
+        for i, st in enumerate(steps):
+            if not isinstance(st, dict):
+                errs.append("%s: %s step %d is not a mapping" % (path, where, i))
+            elif "uses" in st and not isinstance(st["uses"], str):
+                errs.append("%s: %s step %d uses is not a string" % (path, where, i))
+    if "jobs" in d:
+        if not isinstance(d["jobs"], dict):
+            return ["%s: jobs is not a mapping" % path]
+        for jn, j in d["jobs"].items():
+            where = "job %s" % jn
+            if not isinstance(j, dict):
+                errs.append("%s: %s is not a mapping" % (path, where)); continue
+            if "uses" in j and not isinstance(j["uses"], str):
+                errs.append("%s: %s uses is not a string" % (path, where))
+            c = j.get("container")
+            if c is not None and not isinstance(c, str) and not (isinstance(c, dict) and isinstance(c.get("image"), str)):
+                errs.append("%s: %s container is not an image string or a mapping with an image string" % (path, where))
+            sv = j.get("services")
+            if sv is not None and (not isinstance(sv, dict) or not all(isinstance(x, dict) and isinstance(x.get("image"), str) for x in sv.values())):
+                errs.append("%s: %s services is not a mapping of service mappings, each with an image string" % (path, where))
+            steps_of(where, j.get("steps"))
+    runs = d.get("runs")
+    if isinstance(runs, dict):
+        steps_of("runs", runs.get("steps"))
+    return errs
+
+
 def check_actions(path, allowed, root, seen, errs):
     try:
         d = load_yaml(path)
@@ -997,6 +1073,10 @@ def check_actions(path, allowed, root, seen, errs):
         return
     except Exception as ex:
         errs.append("%s is not YAML (%s)" % (path, type(ex).__name__))
+        return
+    shape = workflow_shape(path, d)
+    if shape:
+        errs.extend(shape)
         return
     refs = []
     _walk_uses(d, refs)

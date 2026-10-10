@@ -103,6 +103,12 @@
    "regex": "testifysec/witness-run-action@",
    "prov": "always",
    "pseudo": "https://slsa.dev/provenance/v1"
+  },
+  {
+   "name": "@actions/attest",
+   "regex": "@actions/attest\\b|\\battestProvenance\\b",
+   "prov": "always",
+   "pseudo": "https://slsa.dev/provenance/v1"
   }
  ]
 }

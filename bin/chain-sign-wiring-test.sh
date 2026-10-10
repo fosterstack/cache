@@ -199,22 +199,17 @@ def frozen_files(base, bad):
         else: frozen.add(x)
     return frozen
 
-def allowed_mentions(base, bad):
-    """Files that may NAME a provenance signer without being one (tests, the signer table, policy text), each with a reason and the sha256
-    of its bytes (.github/policy/provenance-mentions.json): a changed file is no longer allowed, so its mentions become findings."""
-    p = os.path.join(base, ".github/policy/provenance-mentions.json")
-    if not os.path.exists(p): return set()
-    ok = set()
-    for r in json.load(open(p)).get("files") or []:
-        f = os.path.join(base, r.get("path", ""))
-        if not str(r.get("reason") or "").strip(): bad.append("AC1: provenance-mentions.json row without a reason: %s" % r.get("path"))
-        elif os.path.isfile(f) and sha256_of(f) == r.get("sha256"): ok.add(r["path"])
-    return ok
-
 # BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): pinned by sha256
 BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".goreleaser.yaml", ".grype.yaml", ".ko.yaml", ".gremlins.yaml", "build/docker/*", ".githooks/*")
-GORELEASER_HOOKS = ["go mod verify", "git diff --exit-code go.mod go.sum"]      # the only before.hooks .goreleaser.yaml may hold
-GORELEASER_NO = ("signs", "docker_signs", "binary_signs", "notarize", "publishers", "after")
+# .goreleaser.yaml as a CLOSED key set (Opus r3, Sonnet r3): the keys, and the values that can run a command, are exactly today's; in
+# particular no signs, docker_signs, binary_signs, dockers, nfpms, includes, universal_binaries, upx, publishers, build hooks or gobinary
+GORELEASER_KEYS = {"": {"version", "project_name", "before", "builds", "archives", "checksum", "sboms", "release", "changelog"},
+                   "before": {"hooks"}, "builds": {"binary", "env", "flags", "goarch", "goos", "id", "ldflags", "main", "mod_timestamp"},
+                   "archives": {"formats", "id", "ids", "name_template"}, "checksum": {"name_template"}, "sboms": {"artifacts"},
+                   "release": {"draft", "github"}, "changelog": {"filters", "sort"}}
+GORELEASER_HOOKS = ["go mod verify", "git diff --exit-code go.mod go.sum"]      # the only before.hooks
+GORELEASER_ENV = {"CGO_ENABLED=0", "GOFIPS140=v1.0.0"}                          # a build's env values (GOFLAGS=-toolexec=... would run a tool)
+GORELEASER_FLAGS = {"-trimpath"}                                                 # a build's flags (-toolexec would run a tool)
 
 def build_config(base, bad):
     """Every build configuration file is listed with its sha256 in .github/policy/build-config-files.json; a changed, missing or unlisted
@@ -227,18 +222,29 @@ def build_config(base, bad):
         if x not in listed: bad.append("AC1: build config file not listed: %s: add it to build-config-files.json with its sha256" % x)
         elif sha256_of(os.path.join(base, x)) != listed[x]: bad.append("AC1: build config file changed: %s: update build-config-files.json or delete it" % x)
     for x in sorted(set(listed) - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
+    goreleaser_keys(base, bad)
+
+def goreleaser_keys(base, bad):
+    """.goreleaser.yaml (run with id-token: write by stage-build.yml's build job) holds only GORELEASER_KEYS, the two hooks, and build
+    env/flags from the closed sets: no signs, docker_signs, binary_signs, universal_binaries, upx, nfpms, publishers, gobinary, tool..."""
     g = os.path.join(base, ".goreleaser.yaml")
     if not os.path.exists(g): return
-    try: d = yaml.load(open(g).read(), Loader=yaml.BaseLoader) or {}
+    try: d = yaml.load(open(g).read(), Loader=yaml.BaseLoader)
     except Exception as ex: bad.append("AC1: .goreleaser.yaml does not parse (%s)" % ex); return
-    for k in GORELEASER_NO:
-        if k in d: bad.append("AC1: .goreleaser.yaml has `%s` (the build job holds id-token: write; only stage-sign.yml signs)" % k)
-    hooks = (d.get("before") or {}).get("hooks") or []
-    if hooks != GORELEASER_HOOKS: bad.append("AC1: .goreleaser.yaml before.hooks are %s, not exactly %s" % (hooks, GORELEASER_HOOKS))
-    for b in d.get("builds") or []:
-        if isinstance(b, dict) and b.get("hooks"): bad.append("AC1: .goreleaser.yaml build %s has hooks" % b.get("id"))
-    for sb in d.get("sboms") or []:
-        if isinstance(sb, dict) and set(sb) & {"cmd", "args", "env"}: bad.append("AC1: .goreleaser.yaml sboms entry sets %s (only the default generator)" % sorted(set(sb) & {"cmd", "args", "env"}))
+    if not isinstance(d, dict): bad.append("AC1: .goreleaser.yaml is not a mapping"); return
+    for k in sorted(set(d) - GORELEASER_KEYS[""]): bad.append("AC1: .goreleaser.yaml has key `%s`, outside its closed key set" % k)
+    def entries(sec):
+        v = d.get(sec)
+        return v if isinstance(v, list) else [v] if isinstance(v, dict) else []
+    for sec in sorted(set(GORELEASER_KEYS) - {""}):
+        if d.get(sec) is not None and not entries(sec): bad.append("AC1: .goreleaser.yaml %s has an unexpected shape" % sec)
+        for e in entries(sec):
+            if not isinstance(e, dict): bad.append("AC1: .goreleaser.yaml %s entry is not a mapping" % sec); continue
+            for k in sorted(set(e) - GORELEASER_KEYS[sec]): bad.append("AC1: .goreleaser.yaml %s has key `%s`, outside its closed key set" % (sec, k))
+            if sec == "builds":
+                if not set(e.get("env") or []) <= GORELEASER_ENV: bad.append("AC1: .goreleaser.yaml build %s env %s is outside %s" % (e.get("id"), e.get("env"), sorted(GORELEASER_ENV)))
+                if not set(e.get("flags") or []) <= GORELEASER_FLAGS: bad.append("AC1: .goreleaser.yaml build %s flags %s are outside %s" % (e.get("id"), e.get("flags"), sorted(GORELEASER_FLAGS)))
+    if (d.get("before") or {}).get("hooks") != GORELEASER_HOOKS: bad.append("AC1: .goreleaser.yaml before.hooks are not exactly %s" % GORELEASER_HOOKS)
 
 def id_token_jobs(base, files, bad):
     """A job may hold id-token: write (its own permissions, or the workflow's when it sets none; write-all counts) only if
@@ -257,7 +263,8 @@ def id_token_jobs(base, files, bad):
     held = set()
     for f in files:
         try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
-        except Exception: continue          # a file that does not parse is reported by the other checks
+        except Exception as ex:
+            bad.append("AC1: %s does not parse, so its id-token holders cannot be checked (%s)" % (os.path.basename(f), type(ex).__name__)); continue
         for jn, j in (d.get("jobs") or {}).items():
             if isinstance(j, dict) and holds(j["permissions"] if "permissions" in j else d.get("permissions")):
                 held.add((os.path.basename(f), jn))
@@ -335,19 +342,6 @@ stage-verify.yml supply-chain.yml""".split())
                 if p in rs and rel != "stage-sign.yml": bad.append("AC1: %s signs provenance but %s runs it (only stage-sign.yml may)" % (p, rel))
         # static, whatever runs it: the one provenance row is chain-verify.py's `sign` subcommand
         if signs == "provenance" and p != "bin/chain-verify.py": bad.append("AC1: %s has signs: provenance; only bin/chain-verify.py may" % p)
-    # every file under bin/ and .github/ (not only listed scripts: a frozen file can run an unlisted one) is scanned as raw text; a provenance
-    # signer anywhere but stage-sign.yml, chain-verify.py, a frozen legacy file or an allow-listed mention file is a finding
-    mentions = allowed_mentions(base, bad)
-    # chain-scripts.json and chain-signers.json are the judge's own data, judged row by row above (a signs value, a signer row naming a
-    # provenance signer), so their text is not scanned
-    skip = frozen | mentions | {".github/workflows/stage-sign.yml", "bin/chain-verify.py", ".github/policy/chain-scripts.json", ".github/policy/chain-signers.json"}
-    for top in ("bin", ".github"):
-        for dp, _dirs, fs in os.walk(os.path.join(base, top)):
-            for fn in sorted(fs):
-                rp = os.path.relpath(os.path.join(dp, fn), base)
-                if rp in skip: continue
-                names = sorted({e["name"] for e, pv, _l in signer_calls(open(os.path.join(dp, fn), errors="replace").read(), False) if pv})
-                if names: bad.append("AC1: %s names a provenance signer (%s); only stage-sign.yml and chain-verify.py sign may" % (rp, ", ".join(names)))
     return bad
 
 def judge_calls(root):

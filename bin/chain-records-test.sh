@@ -40,6 +40,20 @@ SHORT = {"slsaprovenance": "https://slsa.dev/provenance/v0.2", "slsaprovenance02
          "spdx": "https://spdx.dev/Document", "spdxjson": "https://spdx.dev/Document", "cyclonedx": "https://cyclonedx.org/bom",
          "vuln": "https://cosign.sigstore.dev/attestation/vuln/v1", "link": "https://in-toto.io/Link/v1"}
 bad, produced = [], {}
+def frozen_paths():
+    """The legacy stage files listed in .github/policy/legacy-stage-files.json whose bytes match: what they produce still counts (their rows
+    stay consumed), but their OWN fail-closed findings are left out until PRs 2-4 rewrite them. A changed or missing one is a finding."""
+    import hashlib
+    lp = os.path.join(base, ".github/policy/legacy-stage-files.json")
+    if not os.path.exists(lp): return set()
+    out = set()
+    for r in json.load(open(lp))["files"]:
+        f = os.path.join(base, r["path"])
+        if not os.path.isfile(f): bad.append("legacy file missing: %s" % r["path"])
+        elif hashlib.sha256(open(f, "rb").read()).hexdigest() != r["sha256"]: bad.append("legacy file changed (judged in full): %s" % r["path"])
+        else: out.add(r["path"])
+    return out
+FROZEN = frozen_paths()
 rf = os.path.join(base, ".github/policy/chain-records.json")
 if not os.path.exists(rf):
     bad.append("missing: .github/policy/chain-records.json")
@@ -55,6 +69,7 @@ TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
 def scan(rel, text, raw=False):
     def add(t): produced.setdefault(t, set()).add(rel)
+    bad = BAD if rel not in FROZEN else []          # a frozen legacy file's own findings are left out (its products still count)
     for e, ctx in _cts.calls(text, TABLE, not raw):      # a LISTED script is scanned raw: a signer name in a comment, quote or heredoc counts
         n = e["name"]
         if n == "witness run":
@@ -81,6 +96,7 @@ def scan(rel, text, raw=False):
             if _cts.is_prov(e, ctx): add(PROV)
         elif e.get("pseudo"): add(e["pseudo"])
         else: bad.append("%s: signer %s has no resolver and no pseudo type in the table (fail closed)" % (rel, n))
+BAD = bad
 texts = {os.path.relpath(f, base): open(f).read() for f in files}
 for rel, txt in texts.items(): scan(rel, txt)
 # scripts: ONLY those listed in .github/policy/chain-scripts.json (a stage file may run nothing else: chain-sign-wiring-test.sh
