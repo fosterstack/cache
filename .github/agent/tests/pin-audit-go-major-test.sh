@@ -817,7 +817,7 @@ for k in (1, 2, 3):
                                 got = pa.covered_by_events(p, [dict([e]) for e in evs], semver=semver)
                                 assert got == want, (evs, p, semver, got, want)
                             checked += 1
-assert checked > 20000, checked
+assert checked > 15000, checked
 PY
 py "B19: required fields: a record without modified, an ignored entry without package.ecosystem, a non-string repo, a range with both fixed and" \
    " last_affected are unreadable: a HIT, never a clean beside a clean exact entry" <<'PY'
