@@ -80,7 +80,7 @@ func New(dir string, d Deps, o Options) *Sampler {
 	}
 	if d.OpenProbe == nil {
 		d.OpenProbe = func(path string) (ProbeFile, error) {
-			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+			return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- path is the sampler's own probe name inside the data directory
 		}
 	}
 	if d.Remove == nil {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -162,7 +163,7 @@ type statusView struct {
 }
 
 func (s Status) view() statusView {
-	v := statusView{Status: s, StoreHuman: humanBytes(s.StoreBytes), FreeHuman: humanBytes(int64(s.StoreFreeBytes)), MaxHuman: "unlimited", UsedPct: ""}
+	v := statusView{Status: s, StoreHuman: humanBytes(s.StoreBytes), FreeHuman: humanBytes(clampInt64(s.StoreFreeBytes)), MaxHuman: "unlimited", UsedPct: ""}
 	if s.MaxBytes > 0 {
 		v.MaxHuman = humanBytes(s.MaxBytes)
 		v.UsedPct = fmt.Sprintf("%.1f%%", 100*float64(s.StoreBytes)/float64(s.MaxBytes))
@@ -172,6 +173,14 @@ func (s Status) view() statusView {
 		v.HitPct = fmt.Sprintf("%.1f%%", 100**s.HitRatio)
 	}
 	return v
+}
+
+// clampInt64 converts a byte count to int64 without overflow.
+func clampInt64(n uint64) int64 {
+	if n > math.MaxInt64 {
+		return math.MaxInt64
+	}
+	return int64(n)
 }
 
 func humanBytes(n int64) string {

@@ -126,7 +126,7 @@ func newObsEnv(t *testing.T, opts ...obsOpt) *obsEnv {
 
 func (e *obsEnv) advance(sec int64) { e.clock.Add(sec) }
 
-func (e *obsEnv) get(t *testing.T, path string) (int, string, http.Header) {
+func (e *obsEnv) get(t *testing.T, path string) (int, string) {
 	t.Helper()
 	resp, err := http.Get(e.srv.URL + path)
 	if err != nil {
@@ -134,7 +134,7 @@ func (e *obsEnv) get(t *testing.T, path string) (int, string, http.Header) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	b, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(b), resp.Header
+	return resp.StatusCode, string(b)
 }
 
 func (e *obsEnv) put(t *testing.T, key, body string) *http.Response {
@@ -151,7 +151,7 @@ func (e *obsEnv) put(t *testing.T, key, body string) *http.Response {
 
 func (e *obsEnv) metrics(t *testing.T) string {
 	t.Helper()
-	_, b, _ := e.get(t, "/metrics")
+	_, b := e.get(t, "/metrics")
 	return b
 }
 
@@ -179,7 +179,7 @@ func putErrors(t *testing.T, e *obsEnv) map[string]string {
 
 func statusJSON(t *testing.T, e *obsEnv) map[string]any {
 	t.Helper()
-	_, b, _ := e.get(t, "/statusz")
+	_, b := e.get(t, "/statusz")
 	m := map[string]any{}
 	if err := json.Unmarshal([]byte(b), &m); err != nil {
 		t.Fatalf("statusz is not JSON: %v\n%s", err, b)
@@ -193,13 +193,13 @@ func TestHealthzStays200OnReadOnlyAndFullDisk(t *testing.T) {
 	e := newObsEnv(t)
 	e.disk.set(func(d *srvDisk) { d.openErr = syscall.EROFS })
 	e.advance(10)
-	if code, body, _ := e.get(t, "/healthz"); code != 200 || body != "ok" {
+	if code, body := e.get(t, "/healthz"); code != 200 || body != "ok" {
 		t.Fatalf("read-only disk: /healthz = %d %q; want 200 ok", code, body)
 	}
 	e.disk.set(func(d *srvDisk) { d.openErr = nil; d.syncErr = syscall.ENOSPC })
 	e.store.fail(syscall.ENOSPC)
 	e.advance(10)
-	if code, body, _ := e.get(t, "/healthz"); code != 200 || body != "ok" {
+	if code, body := e.get(t, "/healthz"); code != 200 || body != "ok" {
 		t.Fatalf("full disk: /healthz = %d %q; want 200 ok", code, body)
 	}
 }
@@ -210,7 +210,7 @@ func TestHealthzTouchesNoFilesystem(t *testing.T) {
 	e.disk.set(func(d *srvDisk) { d.statErr = errors.New("gone"); d.openErr = errors.New("gone") })
 	e.advance(60)
 	for i := 0; i < 20; i++ {
-		if code, body, _ := e.get(t, "/healthz"); code != 200 || body != "ok" {
+		if code, body := e.get(t, "/healthz"); code != 200 || body != "ok" {
 			t.Fatalf("/healthz = %d %q", code, body)
 		}
 	}
@@ -419,7 +419,7 @@ func TestClientAbortMidBodyCountsClientAborted(t *testing.T) {
 		t.Fatal(err)
 	}
 	w := bufio.NewWriter(conn)
-	fmt.Fprintf(w, "PUT /aborted HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n0123456789")
+	_, _ = fmt.Fprintf(w, "PUT /aborted HTTP/1.1\r\nHost: x\r\nContent-Length: 1000\r\n\r\n0123456789")
 	_ = w.Flush()
 	_ = conn.Close()
 	deadline := time.Now().Add(5 * time.Second)
@@ -688,7 +688,7 @@ func TestStatuszAgreesWithMetricsOnDiskSignalsInEveryState(t *testing.T) {
 		if mval(body, "fscache_store_writable") != wantW {
 			t.Errorf("%s: writable gauge %q vs statusz %v", name, mval(body, "fscache_store_writable"), m["store_writable"])
 		}
-		if got, want := fmt.Sprintf("%.0f", m["store_free_bytes"]), fmt.Sprintf("%s", mval(body, "fscache_store_free_bytes")); got != want && !strings.Contains(want, "e+") {
+		if got, want := fmt.Sprintf("%.0f", m["store_free_bytes"]), mval(body, "fscache_store_free_bytes"); got != want && !strings.Contains(want, "e+") {
 			t.Errorf("%s: free bytes statusz %s vs metrics %s", name, got, want)
 		}
 		pe := m["put_errors"].(map[string]any)
@@ -760,13 +760,13 @@ func TestStatuszHTMLShowsDataDirRow(t *testing.T) {
 
 func TestAuthSurfaceUnchangedWithDiskSignals(t *testing.T) {
 	e := newObsEnv(t, func(c *Config) { c.Auth = Credentials{Username: "u", Password: "p"} })
-	if code, _, _ := e.get(t, "/statusz"); code != 401 {
+	if code, _ := e.get(t, "/statusz"); code != 401 {
 		t.Errorf("/statusz without credentials = %d; want 401", code)
 	}
-	if code, _, _ := e.get(t, "/metrics"); code != 200 {
+	if code, _ := e.get(t, "/metrics"); code != 200 {
 		t.Errorf("/metrics without credentials = %d; want 200", code)
 	}
-	if code, _, _ := e.get(t, "/healthz"); code != 200 {
+	if code, _ := e.get(t, "/healthz"); code != 200 {
 		t.Errorf("/healthz without credentials = %d; want 200", code)
 	}
 }
@@ -785,4 +785,14 @@ func newCappedCache(t *testing.T, capBytes int64) *cache.Cache {
 	c := cache.New(blobs, meta, cache.WithMaxBytes(capBytes))
 	t.Cleanup(func() { _ = c.Close() })
 	return c
+}
+
+// free bytes above int64 are clamped for the page, never wrapped negative
+func TestClampInt64(t *testing.T) {
+	if got := clampInt64(1 << 63); got != 1<<63-1 {
+		t.Fatalf("clampInt64(2^63) = %d; want MaxInt64", got)
+	}
+	if got := clampInt64(12345); got != 12345 {
+		t.Fatalf("clampInt64(12345) = %d", got)
+	}
 }

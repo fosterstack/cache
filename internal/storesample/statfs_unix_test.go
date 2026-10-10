@@ -27,3 +27,12 @@ func TestRealStatfsOnMissingDirIsAnError(t *testing.T) {
 		t.Fatalf("statfs on a real directory = %d, %v", n, err)
 	}
 }
+
+// a non-positive block size gives 0 free bytes, never a wrapped huge number
+func TestAvailWithNonPositiveBlockSizeIsZero(t *testing.T) {
+	st := &syscall.Statfs_t{}
+	st.Bavail, st.Bsize = 10, 0
+	if got := availFromStatfs(st); got != 0 {
+		t.Fatalf("availFromStatfs with Bsize 0 = %d; want 0", got)
+	}
+}

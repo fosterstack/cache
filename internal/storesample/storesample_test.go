@@ -28,7 +28,6 @@ type fakeDisk struct {
 	syncErr  error
 	closeErr error
 	rmErr    error
-	removed  bool
 	block    chan struct{} // when non-nil, OpenProbe waits for it to close
 	probes   atomic.Int64
 }
