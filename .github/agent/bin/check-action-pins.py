@@ -2648,7 +2648,7 @@ def run_scripts(doc):
                 inherited = _default_shell(j) or _default_shell(doc)
                 ro = {key_of(kk): vv for kk, vv in j.value}.get("runs-on")
                 ro_text = yaml.serialize(ro) if ro is not None else ""
-                if inherited is None and not literal_matrix_runner(j) and ("windows" in ro_text.lower() or "${{" in ro_text):
+                if inherited is None and not known_ubuntu_labels(j) and ("windows" in ro_text.lower() or "${{" in ro_text):
                     inherited = "pwsh"   # NEW-10: a Windows (or not statically known) runner's default shell is pwsh
                 inherited_wd = _default_wd(j) or _default_wd(doc)
                 for kk, vv in j.value:
@@ -2695,36 +2695,52 @@ def exact_map(node):
     return {k.value: v for k, v in node.value}
 
 
-def literal_label_matrix(matrix, key):
-    """AC2: `matrix` is a mapping of exactly the one `key`, a non-empty list of plain-string labels from MATRIX_RUNNER_LABELS."""
-    entries = exact_map(matrix)
-    if entries is None or repeated_keys(matrix) or list(entries) != [key]:
+def plain_literal(node, allowed):
+    """AC2: a scalar written plainly (no quotes, no explicit tag, not a block scalar) whose text is exactly one of `allowed`.
+    The source span must be as long as the value: a quoted or tagged `"true"` / `!!str true` spans more than its text."""
+    return (plain_str(node) and node.style is None and node.value in allowed
+            and node.end_mark.pointer - node.start_mark.pointer == len(node.value))
+
+
+def known_ubuntu_labels(job):
+    """AC2: True when the job's runs-on is exactly one `${{ matrix.<key> }}` (a full match: no text or second expression
+    around it, no index or property) and the matrix lists, under that key, only labels of MATRIX_RUNNER_LABELS, so the steps
+    surely run on an ubuntu runner and are judged as bash EVEN IF the rest of the shape is refused (Codex round 1, M1).
+    Anything that could add another runner or make the reading ambiguous is False: a key given twice in the job, its strategy
+    or its matrix, a key spelled include or exclude in any letter case, an include entry beside the key. False leaves the steps
+    under pwsh, never a silent bash."""
+    entries = exact_map(job)
+    if entries is None or repeated_keys(job):
         return False
-    if key.lower() in ("include", "exclude"):     # AC2: GitHub gives these names another meaning, in any letter case (fail closed)
+    runs_on = entries.get("runs-on")
+    named = MATRIX_RUNS_ON.fullmatch(runs_on.value) if plain_str(runs_on) else None
+    strategy = exact_map(entries.get("strategy"))
+    if not named or strategy is None or repeated_keys(entries["strategy"]):
         return False
-    labels = entries[key]
+    matrix = exact_map(strategy.get("matrix"))
+    if matrix is None or repeated_keys(strategy["matrix"]):
+        return False
+    key = named.group(1)
+    if key.lower() in ("include", "exclude") or any(name.lower() == "include" for name in matrix):
+        return False
+    labels = matrix.get(key)
     return (isinstance(labels, yaml.SequenceNode) and bool(labels.value)
             and all(plain_str(label) and label.value in MATRIX_RUNNER_LABELS for label in labels.value))
 
 
 def literal_matrix_runner(job):
-    """AC2: True only when the job's runs-on is exactly one `${{ matrix.<key> }}` (a full match: no text or second expression
-    around it, no index or property) and its strategy is only a matrix of that key (see literal_label_matrix) plus, optionally,
-    `fail-fast` with the literal value true or false. A key given twice anywhere in the job, its strategy or its matrix is never
-    accepted. Anything else is False, which leaves the job to the ordinary runs-on rule (a finding) and its steps read as pwsh."""
+    """AC2: the ONE accepted expression runner: known_ubuntu_labels, a strategy of only the matrix plus, optionally,
+    `fail-fast` with the plain literal true or false, and a matrix of exactly the runs-on key. Anything else is False, which
+    leaves the job to the ordinary runs-on rule (a finding)."""
+    if not known_ubuntu_labels(job):
+        return False
     entries = exact_map(job)
-    if entries is None or repeated_keys(job):
-        return False
-    runs_on, strategy = entries.get("runs-on"), exact_map(entries.get("strategy"))
-    named = MATRIX_RUNS_ON.fullmatch(runs_on.value) if plain_str(runs_on) else None
-    if not named or strategy is None or repeated_keys(entries["strategy"]) or "matrix" not in strategy:
-        return False
+    strategy = exact_map(entries["strategy"])
     if set(strategy) - {"matrix", "fail-fast"}:
         return False
-    fail_fast = strategy.get("fail-fast")
-    if fail_fast is not None and not (plain_str(fail_fast) and fail_fast.value in ("true", "false")):
+    if "fail-fast" in strategy and not plain_literal(strategy["fail-fast"], ("true", "false")):
         return False
-    return literal_label_matrix(strategy["matrix"], named.group(1))
+    return list(exact_map(strategy["matrix"])) == [MATRIX_RUNS_ON.fullmatch(entries["runs-on"].value).group(1)]
 
 
 def check_runners(where, doc, bad):
@@ -2754,6 +2770,16 @@ def check_runners(where, doc, bad):
                        f"runners only and refuses any other")
 
 
+def job_keys_are_names(rel, doc, bad):
+    """Codex round 1, L3: every key under `jobs` is a scalar name. A list or mapping used as a job key is a finding (not a crash
+    in the job loops, which build paths from the name). Returns False when it made that finding."""
+    jobs = {key_of(k): v for k, v in doc.value}.get("jobs") if isinstance(doc, yaml.MappingNode) else None
+    if isinstance(jobs, yaml.MappingNode) and not all(isinstance(k, yaml.ScalarNode) for k, _ in jobs.value):
+        bad.append(f"{rel}: a job key that is not a plain name")
+        return False
+    return True
+
+
 def check_file(tree, rel, pins, bad):
     text = tree.read(rel)
     lines = text.splitlines()
@@ -2768,6 +2794,8 @@ def check_file(tree, rel, pins, bad):
     for i, d in enumerate(docs):
         if d is not None:
             walk(d, [], refs, bad, rel + (f"[doc{i}]" if len(docs) > 1 else ""))
+            if not job_keys_are_names(rel, d, bad):
+                continue                              # Codex round 1, L3: a finding was made; the job loops below read names
             if rel.startswith(".github/workflows/"):
                 check_runners(rel, d, bad)
             # every mapping key of the parsed document — quoted, flow-style or block (Codex #164 r3, C13)
