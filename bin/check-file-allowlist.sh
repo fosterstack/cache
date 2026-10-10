@@ -197,18 +197,22 @@ ALLOW_PATTERNS=(
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
+  # The one template both melange recipes are generated from (bin/gen-recipes.py).
+  '^build/melange\.yaml\.tmpl$'
   '^build/apko(-fips)?\.yaml$'
   # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
   '^build/locks/apko(-fips)?\.base\.lock\.json$'
   '^build/locks/melange\.lock$'
+  # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
+  '^build/locks/archive-(keys|index)\.sha256$'
   # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
   # key pair, rule 22) and build/keys/release.rsa.pub (the release public key).
   '^build/keys/assembly\.rsa(\.pub)?$'
   '^build/keys/release\.rsa\.pub$'
   # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
-  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, compare-recipes, go-module-sbom (.py).
+  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
   '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
-  '^bin/(apk-tool|compare-recipes|go-module-sbom)\.py$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom)\.py$'
   # The shared test library and the split build-chain tests.
   '^bin/melange-apko-lib\.sh$'
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
