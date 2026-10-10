@@ -1,0 +1,53 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "97a1df6fb368a20aa47cc3dab70dadb776c2b8f8a03ebf4b12a3a33b7b7456c6",
+ "change": "Daily rescan covers the current release only (REQ-REL-004-AC5): the manifests job, a release list that reaches the limit fails closed, the shape guard proven before any output, 23-check test, one allowlist pattern -- PR #252",
+ "reviewed_commit": "7179211a22fa399e18c4106d5a6a1f4bcbd0f803",
+ "closed_commit": "7179211a22fa399e18c4106d5a6a1f4bcbd0f803",
+ "rounds": [
+  {
+   "round": 3,
+   "label": "real Codex on 8c42652: not cleared (1 Medium: 1000-release cap could hide the current release; 1 Low: shape-guard ordering test); Sonnet and Opus rounds 1-2 earlier cleared their findings",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "16e6635b1d6f0ea77af798c4f2bf0f9a488f94b3f9aaa00fab6704b89e631319"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "2cc00ac53ea562941f91db363cfd60534d5824eaaa8a47a60f880d5593e73ae3"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "final head 7179211: real Codex (no confirmed defect; row-78 pin question answered first: 27 files, 148 pinned, 0 findings) + Sonnet final-head and row-78 adversarial pass (0 blockers; suites 23/0, 79/0, 504/0; 8 of 9 mutants killed, 1 equivalent)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "16e6635b1d6f0ea77af798c4f2bf0f9a488f94b3f9aaa00fab6704b89e631319"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "8e6414c381dd977e2d5752986df18d716d8d6eb0ab50e83a61676d75b7582449"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX COULD NOT RUN THE SUITES (read-only sandbox denies mktemp): the 23-check rescan suite and the allowlist mutation suite are NOT VERIFIED BY CODEX and are not a Codex pass; covered by the Sonnet final-head run on 7179211: rescan-current-only-test 23/0, workflow-consolidation-test 79/0, check-file-allowlist-test 504/0, requirements check valid, 8 of 9 mutants killed (the ninth equivalent); and the helper's own runs",
+  "a successful but short release list that silently omits the current release is unobservable from the list alone (Codex: suspected, no evidence gh does this; Sonnet: no cheap cross-check exists, releases/latest orders by creation date); the 1000-entry truncation and gh failures fail closed",
+  "on the zero-target failure the step writes targets=[] to GITHUB_OUTPUT before exit 1 (any is never written; every consumer skips the job): moving the write after the check would make it strict",
+  "SECURITY.md's pre-existing 'CRITICAL and HIGH' sentence is untouched by this PR (the workflow scans additional severities)",
+  "jq test() accepts a trailing newline in a tag and a huge numeric tag component sorts by tonumber precision: both unreachable (git refs cannot contain a newline; only the owner creates tags)",
+  "the Codex seat is real (openai); this record carries no Opus substitute; the allowlist script is changed by exactly one pattern line"
+ ]
+}
