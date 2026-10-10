@@ -332,7 +332,7 @@ case_acc no-pr-trigger         bad "d['on'].pop('pull_request')"
 # name stays unique); the required check `reproducibility` stays a top-level job with its exact name, no condition and no
 # token beyond contents read; release.yml's own reproducibility stage is untouched and stays the one the release relies on.
 judge_scan() { python3 - "$1" "$root" <<'PY'
-import os, sys, yaml
+import os, subprocess, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []

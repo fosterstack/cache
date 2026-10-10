@@ -84,13 +84,19 @@ jobs:
       dist-artifact: dist
       expected-checksums: ${{ needs.build.outputs.digests }}
 
-  # The required check `reproducibility` keeps its name: it passes only when the snapshot Rebuild passed, and that job fails on any differing item.
+  # The required check `reproducibility` keeps its name. When `rebuild` fails GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as
+  # passing, so this job runs always() and fails unless rebuild's result is exactly success (the pattern of the `scan` aggregate below). Rebuild fails on any differing item.
   reproducibility:
     name: reproducibility
     needs: rebuild
+    if: always()
     runs-on: ubuntu-latest
     steps:
-      - run: echo "the snapshot Rebuild compared every item with Build's and found them identical"
+      - name: the snapshot Rebuild must have run and passed
+        run: |
+          r='${{ needs.rebuild.result }}'
+          echo "snapshot Rebuild result: ${r}"
+          [ "${r}" = "success" ] || { echo "::error::the build is not shown reproducible: the snapshot Rebuild failed, was cancelled or was skipped (result=${r})" >&2; exit 1; }
 
   scanners:
     name: read the scanner list
