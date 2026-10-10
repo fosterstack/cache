@@ -22,28 +22,20 @@
 #               cannot write (Witness has no Rekor support, rule 53b); the Witness record of Build stays Witness.
 #   judge_build 002-AC4: a Build signing step takes nothing from a secret or the job token. Judged when the file has
 #               signing steps (stage-build.yml today signs with attest actions and is rewritten in PR 2).
-#   judge_tree  001-AC1 (advisor decision b, Oct 9; FINITE GRAMMAR; replaces the script-reach scan of review rounds 4-11): (a) stage-sign.yml
-#               is the only workflow file added since v0.2.2; (b) every workflow and composite action is scanned for DIRECT signing calls
-#               (provenance only in stage-sign.yml; every other signer listed with a reason in .github/policy/chain-signers.json);
-#               (c) every stage-*.yml is judged over a CLOSED KEY SET: workflow keys (name, on, permissions, jobs), job keys (no
-#               defaults, container, services, env, uses, secrets; strategy only a matrix of literal labels), step keys (no shell,
-#               working-directory, continue-on-error); step env names only from the closed `env_names` list of chain-scripts.json (never
-#               BASH_ENV, ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*) and each read whole; step `uses` only a digest-pinned
-#               actions/checkout (persist-credentials: false, no ref/repository/path/token), download-artifact (explicit path that cannot
-#               overwrite a listed script, bin/ or .github/) or upload-artifact (no local composite action, docker://, github-script, job-level
-#               reusable call); and every `run:` line is exactly `set -euo pipefail`, `bash PATH ARGS`, `python3 PATH ARGS` or
-#               `printf '%s' "$NAME" > digests.json` (any other printf line is an error), PATH a plain relative literal LISTED in
-#               .github/policy/chain-scripts.json with the sha256 the file has, ARGS literals or whole "$NAME" reads of the step's env:
-#               (anything else at command position is an error naming file and line: a variable, glob, make, xargs, find, npm, run-parts,
-#               a pipe, `;`/`&&`, a direct tool); (d) a LISTED script is NOT parsed: scan_script is a conservative text scan over the raw
-#               file (any extension or shebang): a command from the finite DENY list not in its `tools`, another script not in its `runs`,
-#               `witness run ... --` followed by anything but a literal path in `runs`, setting PATH/BASH_ENV/LD_*/PYTHON*; its signing calls
-#               are judged from the row's `signs` on the raw text (comments, quotes, heredocs included); a signs=provenance script is
-#               reachable only from stage-sign.yml (except via a `sign_subcommand` row such as bin/chain-verify.py, whose `sign` call text
-#               is itself a provenance signer). STATED EXCLUSION: a command or script path built at run time inside a listed script is not
-#               detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78). No variable resolver, heredoc
-#               stripping, glob/make following, carve-out for test scripts or ci.yml pins remains. On the real repo this judge is RED
-#               until PRs 2-4 replace the old stage files with grammar-conforming ones and add chain-scripts.json.
+#   judge_tree  001-AC1 over the tracked files of .github/ and bin/ plus the pinned build configuration, one function per AC1 clause:
+#               only_new_workflow (stage-sign.yml is the only file added since v0.2.2); listed_signers + direct_signers (every workflow and
+#               composite action matched against the signer table; provenance only in stage-sign.yml, every other signer listed with a
+#               reason in .github/policy/chain-signers.json); stage_grammars (every stage-*.yml over the closed key, env, uses and run-line
+#               grammar, running only scripts listed in .github/policy/chain-scripts.json by path and sha256); listed_scripts (each listed
+#               script scanned as raw text, signing only as its row says; only bin/chain-verify.py `sign` may sign provenance). Three CLOSED
+#               lists keep this from being a text scan: id_token_jobs (.github/policy/id-token-jobs.json: the only jobs that may hold
+#               id-token: write, which keyless signing needs; a << merge key in permissions or an unparsable workflow fails closed),
+#               build_config (.github/policy/build-config-files.json: the build configuration outside bin/ and .github/ pinned by sha256,
+#               and .goreleaser.yaml held to a closed key set), frozen_files (.github/policy/legacy-stage-files.json: the eleven legacy
+#               stage files PRs 2-4 rewrite, pinned by sha256; their own findings are left out, what they run is still followed).
+#               The real tree is an ordinary `expect ok`. STATED EXCLUSIONS: a command built at run time inside a listed script; a signer
+#               step added to a job already on the id-token list but missing from the signer table (review and the pin checker see it);
+#               keyed signing (outside the keyless model: Release accepts only a Fulcio certificate whose SAN is stage-sign.yml at the tag).
 #   (shared)    the signer table bin/chain-test-signers.json is read by this test and by chain-records-test.sh, so the two cannot
 #               disagree about what a signer is; comments are stripped before matching (a trailing `# verify` exempts nothing).
 # Stated exclusions: a signer reached only through an argv array in script code (exec.exec('cosign', ['sign'])), a python/js
@@ -265,54 +257,53 @@ def id_token_jobs(base, files, bad):
         try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
         except Exception as ex:
             bad.append("AC1: %s does not parse, so its id-token holders cannot be checked (%s)" % (os.path.basename(f), type(ex).__name__)); continue
+        wf = os.path.basename(f)
+        if not isinstance(d, dict) or not isinstance(d.get("jobs", {}), dict):
+            bad.append("AC1: %s is not a workflow mapping with a jobs mapping, so its id-token holders cannot be checked" % wf); continue
+        perms = [("the workflow", d.get("permissions"))] + [("job %s" % jn, j.get("permissions")) for jn, j in (d.get("jobs") or {}).items() if isinstance(j, dict)]
+        for where, perm in perms:           # a YAML merge key would hide a permission from this reader (BaseLoader does not merge)
+            if isinstance(perm, dict) and any(str(k).strip() == "<<" for k in perm):
+                bad.append("AC1: %s %s permissions use a << merge key; write permissions out in full" % (wf, where))
         for jn, j in (d.get("jobs") or {}).items():
             if isinstance(j, dict) and holds(j["permissions"] if "permissions" in j else d.get("permissions")):
                 held.add((os.path.basename(f), jn))
     for wf, jn in sorted(held - listed): bad.append("AC1: %s job %s holds id-token: write but is not listed in id-token-jobs.json" % (wf, jn))
     for wf, jn in sorted(listed - held): bad.append("AC1: id-token-jobs.json lists %s job %s, which does not hold id-token: write (stale)" % (wf, jn))
 
-def judge_tree(base):
-    """001-AC1 (advisor decision b, Oct 9; finite grammar, replaces the script-reach scan): (a) stage-sign.yml is the only new workflow
-    file; (b) the direct signer-call scan of every workflow and composite action (listed with a reason in chain-signers.json;
-    provenance only in stage-sign.yml); (c) every stage-*.yml is judged over a closed key set, a closed `uses` list, a closed env name
-    set and the run-line grammar, running only LISTED scripts (chain-scripts.json, by path and sha256); (d) every listed script gets
-    the conservative text scan (tools, runs, launcher argv, PATH-like assignments) and signs only as its row says; a provenance
-    signer is reachable only from stage-sign.yml."""
-    bad = []
-    known = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
+V022_WORKFLOWS = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
 stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml
 stage-verify.yml supply-chain.yml""".split())
-    wfdir = os.path.join(base, ".github/workflows")
-    files = sorted(glob.glob(wfdir + "/*.yml") + glob.glob(wfdir + "/*.yaml"))
-    new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in known)
+
+def only_new_workflow(files, bad):
+    """001-AC1: "it is the only workflow file v0.3.0 adds beyond the files that existed at v0.2.2" (stage-sign.yml)."""
+    new = sorted(os.path.basename(f) for f in files if os.path.basename(f) not in V022_WORKFLOWS)
     if new != ["stage-sign.yml"]: bad.append("AC1: workflow files added since v0.2.2 must be exactly [stage-sign.yml], found %s" % new)
-    allowed = {}
-    sf = os.path.join(base, ".github/policy/chain-signers.json")
-    if not os.path.exists(sf): bad.append("AC1: missing .github/policy/chain-signers.json (the signing calls other than Sign's provenance, each with a reason)")
-    else:
-        for r in json.load(open(sf)).get("signers") or []:
-            if not str(r.get("reason") or "").strip(): bad.append("AC1: signer row without a reason: %s" % r)
-            if any(pv for e in TABLE if re.search(e["regex"], str(r.get("tool", ""))) for pv in [e["prov"] == "always"]): bad.append("AC1: signer list names a provenance signer: %s" % r)
-            allowed.setdefault(r.get("file"), set()).add(r.get("tool"))
+
+def listed_signers(base, bad):
+    """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
+    allowed, sf = {}, os.path.join(base, ".github/policy/chain-signers.json")
+    if not os.path.exists(sf): bad.append("AC1: missing .github/policy/chain-signers.json (the signing calls other than Sign's provenance, each with a reason)"); return allowed
+    for r in json.load(open(sf)).get("signers") or []:
+        if not str(r.get("reason") or "").strip(): bad.append("AC1: signer row without a reason: %s" % r)
+        if any(e["prov"] == "always" for e in TABLE if re.search(e["regex"], str(r.get("tool", "")))): bad.append("AC1: signer list names a provenance signer: %s" % r)
+        allowed.setdefault(r.get("file"), set()).add(r.get("tool"))
+    return allowed
+
+def direct_signers(base, files, frozen, allowed, bad):
+    """001-AC1: "no other workflow, composite action or .yaml file signs provenance" (each signing call matched by the signer table)."""
+    wfdir = os.path.join(base, ".github/workflows")
     acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
-    frozen = frozen_files(base, bad)          # repo paths; their OWN findings are left out, what they run is still followed
-    build_config(base, bad)
-    id_token_jobs(base, files, bad)           # every workflow, frozen ones included (their jobs are listed)
-    def check(rel, text):
-        for e, pv, line in signer_calls(text):
-            if rel == "stage-sign.yml": continue
-            if pv:
-                bad.append("AC1: %s signs provenance (%s: %s); only stage-sign.yml may" % (rel, e["name"], line[:80]))
-            elif e["name"] not in allowed.get(rel, set()):
-                bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
     for f in files + sorted(acts):
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
-        if os.path.relpath(f, base) in frozen: continue
-        check(rel, open(f).read())
-    rows, errs, envn = _cts.load_scripts(base)
-    bad += ["AC1: " + e for e in errs]
+        if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
+        for e, pv, line in signer_calls(open(f).read()):
+            if pv: bad.append("AC1: %s signs provenance (%s: %s); only stage-sign.yml may" % (rel, e["name"], line[:80]))
+            elif e["name"] not in allowed.get(rel, set()): bad.append("AC1: %s calls %r, which is not listed with a reason in chain-signers.json" % (rel, e["name"]))
+
+def stage_grammars(base, files, frozen, rows, envn, bad):
+    """001-AC1: "every stage-*.yml is judged over a closed set of keys" (keys, env names, uses, run lines). Returns what each stage runs."""
     ran = {}
     for f in files:
         rel = os.path.basename(f)
@@ -321,7 +312,12 @@ stage-verify.yml supply-chain.yml""".split())
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
         e, r = _cts.stage_grammar(rel, d, rows, envn)
         if os.path.relpath(f, base) not in frozen: bad += ["AC1 grammar: " + x for x in e]
-        ran[rel] = set(r)                      # reach is computed over the WHOLE tree, frozen files included
+        ran[rel] = set(r)                      # what a frozen file runs is still followed
+    return ran
+
+def listed_scripts(base, rows, ran, bad):
+    """001-AC1: "a listed script is scanned as raw text ... and signs only as its signs value says; a script whose signs value is provenance
+    is run by stage-sign.yml alone" (and only bin/chain-verify.py may have that row)."""
     def closure(paths):
         seen, todo = set(), list(paths)
         while todo:
@@ -340,8 +336,23 @@ stage-verify.yml supply-chain.yml""".split())
         if signs == "provenance" and not row.get("sign_subcommand"):
             for rel, rs in reach.items():
                 if p in rs and rel != "stage-sign.yml": bad.append("AC1: %s signs provenance but %s runs it (only stage-sign.yml may)" % (p, rel))
-        # static, whatever runs it: the one provenance row is chain-verify.py's `sign` subcommand
         if signs == "provenance" and p != "bin/chain-verify.py": bad.append("AC1: %s has signs: provenance; only bin/chain-verify.py may" % p)
+
+def judge_tree(base):
+    """REQ-CHAIN-001-AC1 over a tree, one function per clause, plus the closed lists that keep the rule from being a text scan:
+    frozen legacy files (legacy-stage-files.json), pinned build configuration (build-config-files.json), the jobs that may hold
+    id-token: write (id-token-jobs.json), the signer table with chain-signers.json, and the stage grammar over chain-scripts.json."""
+    bad = []
+    wfdir = os.path.join(base, ".github/workflows")
+    files = sorted(glob.glob(wfdir + "/*.yml") + glob.glob(wfdir + "/*.yaml"))
+    frozen = frozen_files(base, bad)          # their OWN findings are left out; what they run is still followed
+    only_new_workflow(files, bad)
+    direct_signers(base, files, frozen, listed_signers(base, bad), bad)
+    build_config(base, bad)
+    id_token_jobs(base, files, bad)           # every workflow, frozen ones included (their jobs are listed)
+    rows, errs, envn = _cts.load_scripts(base)
+    bad += ["AC1: " + e for e in errs]
+    listed_scripts(base, rows, stage_grammars(base, files, frozen, rows, envn, bad), bad)
     return bad
 
 def judge_calls(root):

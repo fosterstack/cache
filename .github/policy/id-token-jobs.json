@@ -4,127 +4,127 @@
   {
    "workflow": "auditor.yml",
    "job": "audit",
-   "reason": "the auditor's keyless App/OIDC federation to its model vendors (no artifact signing)"
+   "reason": "mints a federated OIDC identity token for the auditor's model vendor (github-script getIDToken); signs nothing"
   },
   {
    "workflow": "auditor.yml",
    "job": "panel-probe",
-   "reason": "the auditor's keyless App/OIDC federation to its model vendors (no artifact signing)"
+   "reason": "the scanner panel's probe: keyless federation to the panel's vendors, publishes nothing"
   },
   {
    "workflow": "dependabot-reviewer.yml",
    "job": "review",
-   "reason": "the Dependabot reviewer's OIDC federation to its model vendor (no artifact signing)"
+   "reason": "the Dependabot reviewer's OIDC federation to its model vendor; signs nothing"
   },
   {
    "workflow": "main-candidate-rescan.yml",
    "job": "build",
-   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation (calls ./.github/workflows/stage-build.yml)"
+   "reason": "calls stage-build.yml (legacy, frozen), which holds the token for its own steps"
   },
   {
    "workflow": "main-candidate-rescan.yml",
    "job": "assemble",
-   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation (calls ./.github/workflows/stage-image.yml)"
+   "reason": "calls stage-image.yml (legacy, frozen), which holds the token for its own steps"
   },
   {
    "workflow": "main-candidate-rescan.yml",
    "job": "panel-inspector",
-   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation"
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
   },
   {
    "workflow": "main-candidate-rescan.yml",
    "job": "panel-google",
-   "reason": "the rescan of main's candidate: its build and assemble calls of stage files and the scanner panel's federation"
+   "reason": "google-github-actions/auth: OIDC federation to Google for the scanner panel"
   },
   {
    "workflow": "release.yml",
    "job": "decide",
-   "reason": "the release caller: grants id-token to the stage file each job calls"
+   "reason": "the CI patch tag: runs gitsign inline (keyless tag signature, listed in chain-signers.json); calls no stage file"
   },
   {
    "workflow": "release.yml",
    "job": "admission",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-admission.yml)"
+   "reason": "calls stage-admission.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "build",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-build.yml)"
+   "reason": "calls stage-build.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "sign",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-sign.yml)"
+   "reason": "calls stage-sign.yml: Sign, the one provenance signer (REQ-CHAIN-001)"
   },
   {
    "workflow": "release.yml",
    "job": "image",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-image.yml)"
+   "reason": "calls stage-image.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "reproducibility",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-reproducibility.yml)"
+   "reason": "calls stage-reproducibility.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "scans",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-verify.yml)"
+   "reason": "calls stage-verify.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "acceptance-artifacts",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-artifacts.yml)"
+   "reason": "calls stage-acceptance-artifacts.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "acceptance",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/acceptance.yml)"
+   "reason": "calls acceptance.yml, which needs the inherited token for the stage files it calls"
   },
   {
    "workflow": "release.yml",
    "job": "acceptance-egress",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-egress.yml)"
+   "reason": "calls stage-acceptance-egress.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "acceptance-k8s",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-k8s.yml)"
+   "reason": "calls stage-acceptance-k8s.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "acceptance-predicate",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-acceptance-predicate.yml)"
+   "reason": "calls stage-acceptance-predicate.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "authorization",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-authorize.yml)"
+   "reason": "calls stage-authorize.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
    "job": "promotion",
-   "reason": "the release caller: grants id-token to the stage file each job calls (calls ./.github/workflows/stage-promote.yml)"
+   "reason": "calls stage-promote.yml (legacy, frozen)"
   },
   {
    "workflow": "scan.yml",
    "job": "build",
-   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation (calls ./.github/workflows/stage-build.yml)"
+   "reason": "calls stage-build.yml (legacy, frozen) for the PR scan"
   },
   {
    "workflow": "scan.yml",
    "job": "assemble",
-   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation (calls ./.github/workflows/stage-image.yml)"
+   "reason": "calls stage-image.yml (legacy, frozen) for the PR scan"
   },
   {
    "workflow": "scan.yml",
    "job": "assemble-b",
-   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation (calls ./.github/workflows/stage-image.yml)"
+   "reason": "calls stage-image.yml (legacy, frozen) for the second image of the PR scan"
   },
   {
    "workflow": "scan.yml",
    "job": "scanner",
-   "reason": "the PR scan: its calls of stage-build.yml / stage-image.yml and the scanner's federation"
+   "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
   },
   {
    "workflow": "scorecard.yml",
@@ -134,37 +134,37 @@
   {
    "workflow": "stage-acceptance-predicate.yml",
    "job": "predicate",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): actions/attest of the acceptance predicate; rewritten in PRs 2-4"
   },
   {
    "workflow": "stage-admission.yml",
    "job": "admit",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): actions/attest of source admission and the gitsign tag check; rewritten in PRs 2-4"
   },
   {
    "workflow": "stage-authorize.yml",
    "job": "authorize",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): actions/attest of the release authorization; rewritten in PRs 2-4"
   },
   {
    "workflow": "stage-build.yml",
    "job": "build",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): goreleaser, actions/attest and attest-build-provenance; rewritten in PR 2"
   },
   {
    "workflow": "stage-image.yml",
    "job": "assemble",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): image build, actions/attest and attest-build-provenance; rewritten in PRs 2-4"
   },
   {
    "workflow": "stage-promote.yml",
    "job": "promote",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): cosign sign/attest of the published images and actions/attest; rewritten in PR 4"
   },
   {
    "workflow": "stage-reproducibility.yml",
    "job": "reproduce",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): actions/attest of the rebuild; rewritten in PRs 2-4"
   },
   {
    "workflow": "stage-sign.yml",
@@ -174,7 +174,7 @@
   {
    "workflow": "stage-verify.yml",
    "job": "scan",
-   "reason": "a legacy stage file (frozen by sha256 in legacy-stage-files.json until PRs 2-4 rewrite it)"
+   "reason": "legacy stage (frozen): actions/attest of the scan results; rewritten in PR 3"
   }
  ]
 }
