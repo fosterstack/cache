@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 74 |
-| Acceptance criteria | 197 |
+| Acceptance criteria | 198 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 181 |
+| ACs with mapped evidence | 182 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -566,9 +566,12 @@ Every GitHub Action a workflow uses shall be pinned to a full commit digest with
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/agent-review-gate.yml; .github/workflows/ci.yml*
 
+> REQ-REL-005-AC2 (the literal-label runner matrix) is advisor-approved at the read-back of Oct 9 (pin matrix): the v0.3.0 Build and Rebuild run their per-architecture apk jobs as a matrix of the two native GitHub-hosted labels, and the check accepts exactly that one expression form and nothing looser (the owner's pin-checker scope: plain forms only). The label list is closed on purpose; adding a runner label is a reviewed edit of the check.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-REL-005-AC1 | Given any pull request into main, and any push to main; when the required checks run; then Every GitHub Action a workflow uses is pinned to a full commit digest with the version in a comment; a tag or branch reference fails the hygiene check. | ci-workflow |  | approved | 4 item(s) |
+| REQ-REL-005-AC2 | Given a workflow job whose runs-on is the single expression ${{ matrix.<key> }}, with a strategy that holds a matrix of exactly that one key as a literal list of runner labels (and, beside it, only fail-fast); when the action-pin check reads the workflow; then when every label is ubuntu-24.04 or ubuntu-24.04-arm the check reports no finding for the runner and judges the job's steps under bash, the default shell of those runners; for every other form it reports a finding that names the runner and never picks a shell silently: any other expression or text in runs-on, a runner from an input, env or vars, a runs-on list, a matrix that is an expression or fromJSON, include or exclude, a second matrix key, an extra strategy key, a label not on the two-label list (another case or version, ubuntu-latest, a larger runner, self-hosted, macOS or Windows, a space around a label), a nested list, a non-string label, an empty list, a scalar instead of a list, a duplicate key, a matrix key that does not exist or is defined on another job or at the workflow level, and a matrix reached through a YAML anchor | ci-workflow |  | approved | 3 item(s) |
 
 ### REQ-REL-006 — Frozen release baselines stay fixed
 
