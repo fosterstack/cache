@@ -2700,7 +2700,7 @@ def literal_label_matrix(matrix, key):
     entries = exact_map(matrix)
     if entries is None or repeated_keys(matrix) or list(entries) != [key]:
         return False
-    if key in ("include", "exclude"):             # AC2: GitHub gives these two names another meaning; they are not label keys
+    if key.lower() in ("include", "exclude"):     # AC2: GitHub gives these names another meaning, in any letter case (fail closed)
         return False
     labels = entries[key]
     return (isinstance(labels, yaml.SequenceNode) and bool(labels.value)
