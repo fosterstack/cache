@@ -872,7 +872,7 @@ func TestConcurrentScrapesExportOnePair(t *testing.T) {
 				defer wg.Done()
 				body := e.metrics(t)
 				w, f := mval(body, "fscache_store_writable"), mval(body, "fscache_store_free_bytes")
-				if !(w == "1" && f == "222") && !(w == "0" && f == "111") {
+				if (w != "1" || f != "222") && (w != "0" || f != "111") {
 					t.Errorf("round %d: a scrape exported writable=%q with free=%q: not a pair that ever existed", round, w, f)
 				}
 			}()
@@ -911,7 +911,7 @@ func TestScrapeLockKeepsAScrapeFromMixingTwoSamples(t *testing.T) {
 	body2 := <-second
 	for i, body := range []string{first, body2} {
 		w, f := mval(body, "fscache_store_writable"), mval(body, "fscache_store_free_bytes")
-		if !(w == "1" && f == "222") && !(w == "0" && f == "111") {
+		if (w != "1" || f != "222") && (w != "0" || f != "111") {
 			t.Errorf("scrape %d exported writable=%q with free=%q: a mix of two samples", i+1, w, f)
 		}
 	}
