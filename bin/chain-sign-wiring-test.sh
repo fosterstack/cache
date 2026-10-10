@@ -9,7 +9,7 @@
 #                 3. run: bash bin/install-scanner.sh cosign     (the signing tool, pinned by checksum like gitsign; the PR adds
 #                                                                 cosign to bin/install-scanner.sh)
 #                 4. run: printf '%s' "$DIGESTS" > digests.json  (env DIGESTS: ${{ inputs.digests }}, the only env in the job)
-#                 5. run: python3 -I bin/chain-verify.py sign --check --signer cosign --digests digests.json
+#                 5. run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json
 #                         --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
 #                         (the filenames are PINNED: `--template` names the committed template, from which `sign --check` makes the
 #                          per-tag policy with the committed trust file and the tag from GITHUB_REF, rule 57; it verifies Build's
@@ -447,7 +447,7 @@ jobs:
           DIGESTS: \${{ inputs.digests }}
         run: printf '%s' "\$DIGESTS" > digests.json
       - name: check Build's record, compare the digests, then sign the provenance
-        run: python3 -I bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
+        run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance
       - uses: actions/upload-artifact@$sha # v7
         with:
           name: provenance
@@ -466,7 +466,7 @@ PY
 caught() { # LABEL regex replacement
   if mutate "$1" "$2" "$3"; then expect caught "$1" sign "$work/$(printf '%s' "$1" | tr -c 'A-Za-z0-9' _).yml"; fi
 }
-SIGNLINE='run: python3 -I bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
+SIGNLINE='run: python3 -I -B bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance'
 expect ok "fixture: known-good Sign passes the judge" sign "$good"
 caught "AC1 self-hosted runner" 'ubuntu-24.04' 'self-hosted'
 caught "AC1 extra trigger" 'workflow_call:' 'push:\n  workflow_call:'
@@ -494,7 +494,8 @@ caught "AC2 the signing step runs before the tool is installed" '      - name: i
 caught "AC2 two signing steps" "        $SIGNLINE" "        $SIGNLINE\n      - run: python3 bin/chain-verify.py sign --check --signer cosign --digests digests.json --build-record witness-build/build-collection.json --template .github/policy/release-policy.template.json --out provenance"
 # Opus r4 B1: Python puts the script's directory first on sys.path, so an unlisted bin/<stdlib name>.py would replace that module inside
 # the Sign job (which holds id-token: write); -I (isolated) removes it. The Sign step must run the verifier isolated.
-caught "AC2 the Sign step runs the verifier without -I (a bin/<stdlib name>.py would shadow the standard library)" 'python3 -I bin/chain-verify.py' 'python3 bin/chain-verify.py'
+caught "AC2 the Sign step runs the verifier without -I (a bin/<stdlib name>.py would shadow the standard library)" 'python3 -I -B bin/chain-verify.py' 'python3 bin/chain-verify.py'
+caught "AC2 the Sign step runs the verifier without -B (it could leave a bytecode cache behind)" 'python3 -I -B bin/chain-verify.py' 'python3 -I bin/chain-verify.py'
 caught "AC2 a permissive policy file instead of the template" 'release-policy.template.json' 'permissive.json'
 caught "AC2 a different Build record file name" 'witness-build/build-collection.json' 'witness-build/other.json'
 caught "AC2 the policy argument points outside .github/policy" '--template .github/policy/release-policy.template.json' '--template /tmp/p.json'
@@ -1208,6 +1209,10 @@ probe stdfrac   "bin/fractions.py" "a new bin/fractions.py that signs on import"
 probe stdpyc    "bin/hashlib.pyc" "a sourceless bin/hashlib.pyc" "printf '\\0\\0\\0\\0' > bin/hashlib.pyc"
 probe stdpkg    "bin/base64" "a package directory bin/base64/" "mkdir -p bin/base64; printf 'import os\n' > bin/base64/__init__.py"
 probe stdcache  "bin/__pycache__/argparse" "a cached bin/__pycache__/argparse.cpython-312.pyc" "mkdir -p bin/__pycache__; printf '\\0' > bin/__pycache__/argparse.cpython-312.pyc"
+# Opus r5 B1: no compiled or cached code anywhere under bin/ or .github/ (it would run instead of, or beside, the hashed source)
+probe pycache   "bin/__pycache__" "a bin/__pycache__/chain_common.cpython-312.pyc" "mkdir -p bin/__pycache__; printf '\\0' > bin/__pycache__/chain_common.cpython-312.pyc"
+probe soext     "bin/json.abi3.so" "a native extension bin/json.abi3.so" "printf '\\0' > bin/json.abi3.so"
+probe pkgcache  ".github/actions/pkg/__pycache__" "a package __pycache__ under .github/actions" "mkdir -p .github/actions/pkg/__pycache__; printf '\\0' > .github/actions/pkg/__pycache__/m.cpython-312.pyc"
 probe extra    "not list exactly the eleven" "a twelfth path in the legacy list" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
 probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
@@ -1265,6 +1270,18 @@ probe mergeanchorjob "merge key" "an anchor x-d: &d {permissions: {id-token: wri
   "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\nx-d: &d {permissions: {id-token: write}}\njobs:\n\",1);t=t.replace(\"\n  test:\n\",\"\n  test:\n    <<: *d\n\",1);open(p,\"w\").write(t)'"
 probe mergewfkey "merge key" "a workflow-level << merge key that supplies permissions to ci.yml" \
   "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\nx-p: &p {permissions: {id-token: write}}\n<<: *p\njobs:\n\",1);open(p,\"w\").write(t)'"
+# Opus r5 M: one structural rule, any merge key or !!merge tag at any depth of any workflow or composite action
+probe mergejobs  "merge key" "a << in the jobs: mapping that adds a whole job" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\njobs:\n  <<: {evil: {runs-on: ubuntu-24.04, permissions: {id-token: write}, steps: [{run: \\\"true\\\"}]}}\n\",1);open(p,\"w\").write(t)'"
+probe mergetag   "merge key" "a !!merge x: key at job level" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\n  test:\n\",\"\n  test:\n    !!merge x: {permissions: {id-token: write}}\n\",1);open(p,\"w\").write(t)'"
+probe mergematrix "merge key" "a << inside a strategy matrix" "printf '  probe-m:\n    runs-on: ubuntu-24.04\n    strategy:\n      matrix:\n        <<: {os: [a]}\n    steps:\n      - run: true\n' >> .github/workflows/ci.yml"
+probe mergecomplex "merge key" "a complex key ? << at job level" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\n  test:\n\",\"\n  test:\n    ? <<\n    : {permissions: {id-token: write}}\n\",1);open(p,\"w\").write(t)'"
+probe mergelist  "merge key" "a << with a list of anchors" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\nx-a: &a {permissions: {id-token: write}}\nx-b: &b {timeout-minutes: 5}\njobs:\n\",1);t=t.replace(\"\n  test:\n\",\"\n  test:\n    <<: [*a, *b]\n\",1);open(p,\"w\").write(t)'"
+probe mergeaction "merge key" "a << in a composite action" "mkdir -p .github/actions/mrg; printf 'name: m\nruns:\n  using: composite\n  steps:\n    - <<: {run: echo x}\n      shell: bash\n' > .github/actions/mrg/action.yml"
+probe goreldup   "repeated" "two goreleaser builds with the same id (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"id: fscache-fips\",\"id: fscache\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelenv0  "env" "a build with env: [] in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    env:\n      - CGO_ENABLED=0\n    goos\",\"    env: []\n    goos\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
@@ -1276,7 +1293,8 @@ probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-t
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
 # the isolation really works: with a bin/fractions.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
-iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$iso/bin/"
+iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$iso/bin/"
+cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
 printf 'print("SHADOW-MARKER-%s")\nfrom fractions import *\n' "$$" > "$iso/bin/fractions.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
 case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py imported bin/fractions.py (not isolated)";;
@@ -1284,6 +1302,30 @@ case "$out" in *SHADOW-MARKER*) failn=$((failn + 1)); echo "FAIL python3 -I bin/
   *) failn=$((failn + 1)); echo "FAIL python3 -I bin/chain-verify.py --help did not run: ${out:0:200}";; esac
 rc=0; out=$(cd "$iso" && python3 bin/chain-verify.py --help 2>&1) || rc=$?
 case "$out" in *SHADOW-MARKER*) pass=$((pass + 1)); echo "ok   control: without -I the same bin/fractions.py IS imported (the probe bites)";; *) failn=$((failn + 1)); echo "FAIL control: without -I the marker did not appear";; esac
+# Opus r5 B1: the helper modules are compiled from the bytes that carry the listed sha256, never from a bytecode cache. An UNCHECKED-HASH
+# bin/__pycache__/chain_common.<tag>.pyc that prints a marker must not run; and a changed chain_common.py (bytes no longer the listed ones)
+# is refused before it runs
+rm -f "$iso/bin/fractions.py"
+python3 - "$iso/bin" <<'PYC'
+import os, py_compile, sys, tempfile
+b = sys.argv[1]
+for name in ("chain_common", "chain_hostile"):
+    src = open(os.path.join(b, name + ".py")).read()
+    with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as t:
+        t.write('print("MARKER-PYC-%s")\n' % name.upper() + src)
+    cache = os.path.join(b, "__pycache__", "%s.%s.pyc" % (name, sys.implementation.cache_tag))
+    os.makedirs(os.path.dirname(cache), exist_ok=True)
+    py_compile.compile(t.name, cfile=cache, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+    os.unlink(t.name)
+PYC
+rc=0; out=$(cd "$iso" && python3 -I -B bin/chain-verify.py --help 2>&1) || rc=$?
+case "$out" in *MARKER-PYC*) failn=$((failn + 1)); echo "FAIL python3 -I -B bin/chain-verify.py ran a bytecode cache instead of the hashed source";;
+  *usage:*) pass=$((pass + 1)); echo "ok   an unchecked-hash bin/__pycache__ copy of the helper modules is never run (the hashed source is compiled)";;
+  *) failn=$((failn + 1)); echo "FAIL python3 -I -B bin/chain-verify.py --help did not run with a pyc present: ${out:0:200}";; esac
+rm -rf "$iso/bin/__pycache__"; printf '# changed\n' >> "$iso/bin/chain_common.py"
+rc=0; out=$(cd "$iso" && python3 -I -B bin/chain-verify.py --help 2>&1) || rc=$?
+case "$out" in *sha256*) [ "$rc" != 0 ] && { pass=$((pass + 1)); echo "ok   a helper module whose bytes do not match chain-scripts.json is refused before it runs"; } || { failn=$((failn + 1)); echo "FAIL a changed helper module ran (exit 0)"; };;
+  *) failn=$((failn + 1)); echo "FAIL a changed helper module was not refused by its sha256 (exit $rc): ${out:0:200}";; esac
 # no `X | grep -q` pipeline in a chain suite: under pipefail grep's early exit can SIGPIPE the writer and fail a case that matched
 quiet_pipes() {  # quiet_pipes FILE... -> prints FILE:LINE of each pipe into a quiet grep (-q, --quiet, --silent; continued lines joined)
   python3 - "$@" <<'PYQ'
@@ -1308,7 +1350,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=304
+EXPECT=317
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
