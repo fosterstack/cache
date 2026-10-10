@@ -86,12 +86,12 @@ for _n, _bl in enumerate(_rawlines, 1):
 DECLARED = set("""
 dependency-provenance.json
 bin/vendor-check.sh bin/vendor-provenance.py bin/vendoring-test.sh
-build/melange.yaml build/melange-fips.yaml build/apko.yaml build/apko-fips.yaml
-build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock
+build/melange.yaml build/melange-fips.yaml build/melange.yaml.tmpl build/apko.yaml build/apko-fips.yaml
+build/locks/apko.base.lock.json build/locks/apko-fips.base.lock.json build/locks/melange.lock build/locks/archive-keys.sha256 build/locks/archive-index.sha256 build/locks/fips-module.txt
 build/keys/assembly.rsa build/keys/assembly.rsa.pub build/keys/release.rsa.pub
 bin/build-apk.sh bin/assemble-image.sh bin/apko-lock.sh bin/install-build-tools.sh bin/release-sign-apks.sh
 bin/sealed-proof.sh bin/lock-proof.sh bin/refresh-inputs.sh
-bin/apk-tool.py bin/compare-recipes.py bin/go-module-sbom.py
+bin/apk-tool.py bin/gen-recipes.py bin/go-module-sbom.py
 bin/melange-apko-lib.sh
 bin/build-helpers-test.sh bin/refresh-inputs-test.sh bin/build-apk-test.sh bin/assemble-image-test.sh bin/archive-test.sh
 bin/oci-digest.py bin/net-probe.py
@@ -100,7 +100,7 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/agent/supply-chain/harness-manifest.json
 .github/release-identity.json
 """.split())
-if len(DECLARED) != 39: errs.append("declared list is not 39 paths: %d" % len(DECLARED))
+if len(DECLARED) != 43: errs.append("declared list is not 43 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -110,7 +110,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 133, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 137, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -214,7 +214,7 @@ mutcheck() { # <desc> <sed-expr>
   if struct_check "$_mut_dir/m.sh" >/dev/null 2>&1; then gf "struct check MISSED mutant: $1" "$2"; else gp "struct check kills mutant: $1"; fi
 }
 mutcheck "suffix on one alternative"      "s/\(build-apk\|assemble-image\|/(build-apk|assemble-image[a-z]+|/"
-mutcheck "extension widened"              "s/\(apk-tool\|compare-recipes\|go-module-sbom\)\\\\\.py\\$/(apk-tool|compare-recipes|go-module-sbom)\\\\.(json|py|sh)\$/"
+mutcheck "extension widened"              "s/\(apk-tool\|gen-recipes\|go-module-sbom\)\\\\\.py\\$/(apk-tool|gen-recipes|go-module-sbom)\\\\.(json|py|sh)\$/"
 mutcheck "group made optional"            "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)?(-x)?/"
 mutcheck "group repeated with +"          "s/\^build\/apko\(-fips\)\?/^build\/apko(-fips)+/"
 mutcheck "? turned into *"                "s/\^build\/melange\(-fips\)\?/^build\/melange(-fips)*/"
@@ -713,13 +713,21 @@ runeach fail "feature/x" "v030: key one directory up refused" "build/assembly.rs
 runeach fail "feature/x" "v030: key traversal refused"   "build/keys/../assembly.rsa"
 runeach fail "feature/x" "v030: key with a suffix refused" "build/keys/assembly.rsa.bak" "build/keys/assembly.rsa.pub.old"
 
+passfam "feature/x" "v030: the recipe template" "build/melange.yaml.tmpl"
+runeach fail "feature/x" "v030: other template names refused" "build/melange-fips.yaml.tmpl" "build/apko.yaml.tmpl" "build/melange.yaml.tmpl.bak" "build/x/melange.yaml.tmpl" "melange.yaml.tmpl" "build/Melange.yaml.tmpl" "build/../melange.yaml.tmpl"
+passfam "feature/x" "v030: the archive keyring digest and index record" "build/locks/archive-keys.sha256" "build/locks/archive-index.sha256"
+passfam "feature/x" "v030: the FIPS module data file" "build/locks/fips-module.txt"
+runeach fail "feature/x" "v030: near-miss FIPS module file names refused" "build/locks/fips-module.txt.bak" "build/locks/fips-module.json" "build/locks/x/fips-module.txt" "build/fips-module.txt" "build/locks/Fips-module.txt" "build/locks/../fips-module.txt" "build/locks/fips-modules.txt"
+runeach fail "feature/x" "v030: the two archive record names are literal, not a group (no mixed or merged name)" "build/locks/archive-keysindex.sha256" "build/locks/archive-(keys|index).sha256" "build/locks/archive-.sha256" "build/locks/archive-keys.sha256x" "build/locks/archive-index.sha2561"
+runeach fail "feature/x" "v030: other archive record names refused" "build/locks/archive-other.sha256" "build/locks/archive-keys.sha256.bak" "build/locks/x/archive-keys.sha256" "build/locks/archive-keys.sha512" "build/locks/../archive-keys.sha256"
+runeach fail "feature/x" "v030: the removed recipe comparer is no longer admitted" "bin/compare-recipes.py"
 passfam "feature/x" "v030: the build-chain scripts" "bin/build-apk.sh" "bin/assemble-image.sh" "bin/apko-lock.sh" "bin/install-build-tools.sh" "bin/release-sign-apks.sh" "bin/sealed-proof.sh" "bin/lock-proof.sh" "bin/refresh-inputs.sh"
-passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/compare-recipes.py" "bin/go-module-sbom.py"
+passfam "feature/x" "v030: the build-chain Python tools" "bin/apk-tool.py" "bin/gen-recipes.py" "bin/go-module-sbom.py"
 runeach fail "feature/x" "v030: bin/build-apk.py (other extension) refused"   "bin/build-apk.py"
 runeach fail "feature/x" "v030: bin/apk-tool.sh (swapped extension) refused"  "bin/apk-tool.sh"
 runeach fail "feature/x" "v030: bin/Build-apk.sh uppercase refused"           "bin/Build-apk.sh"
 runeach fail "feature/x" "v030: bin/x/assemble-image.sh (extra segment) refused" "bin/x/assemble-image.sh" "bin/x/go-module-sbom.py"
-runeach fail "feature/x" "v030: assemble-image.sh one directory up refused"   "assemble-image.sh" "compare-recipes.py"
+runeach fail "feature/x" "v030: assemble-image.sh one directory up refused"   "assemble-image.sh" "gen-recipes.py"
 runeach fail "feature/x" "v030: suffixed script names refused"                "bin/assemble-image.sh.orig" "bin/apk-tool.py.bak"
 runeach fail "feature/x" "v030: sibling names refused"                        "bin/sealed-proof-test.sh" "bin/build-apk-lib.sh" "bin/melange-apko-test.sh" "bin/refresh-inputs.py" "bin/lock-proof.py"
 runeach fail "feature/x" "v030: bin/../build-apk.sh traversal refused"        "bin/../build-apk.sh"
