@@ -1305,7 +1305,8 @@ def mutate(src, out, kind):
 {"inventory": lambda: inventory(sys.argv[3]), "mutate": lambda: mutate(sys.argv[3], sys.argv[4], sys.argv[5])}[sys.argv[2]]()
 PY
 ibt() { python3 "$work/ibt-inv.py" "$here/../supply-chain" "$@" </dev/null >"$work/ibt.out" 2>&1; }
-ibt_refused() { local kind=$1 kw=$2; ibt mutate "$root/bin/install-build-tools.sh" "$work/ibt-$kind.sh" "$kind" || return 1; local rc=0; ${IBT_RUN:-ibt} inventory "$work/ibt-$kind.sh" || rc=$?
+# ibt_refused KIND REGEX [RUNNER]: the inventory command is ibt unless a harness case names a stub as the third argument (never read from the environment)
+ibt_refused() { local kind=$1 kw=$2 run=ibt; [ $# -lt 3 ] || run=$3; ibt mutate "$root/bin/install-build-tools.sh" "$work/ibt-$kind.sh" "$kind" || return 1; local rc=0; "$run" inventory "$work/ibt-$kind.sh" || rc=$?
   [ "$rc" -ne 0 ] && [ "$rc" -ne 126 ] && [ "$rc" -ne 127 ] && grep -Eq -- "$kw" "$work/ibt.out"; }   # 126/127: the inventory could not RUN, which is not a refusal
 CASE="REQ-SUP-001-AC18: the real inventory measures install-build-tools.sh as 4 pins (melange and apko x amd64 and arm64, owner/repo@vX.Y.Z, checksum bound), nothing unmeasured"
 check ibt inventory "$root/bin/install-build-tools.sh"
@@ -1316,14 +1317,24 @@ check ibt_refused repovar 'unmeasured: a download'
 CASE="REQ-SUP-001-AC18: a URL version that differs from the pinned set is measured as a version outside it"
 check ibt_refused mismatch 'wanted'
 # the harness itself: a failure to RUN the inventory (exit 126 not executable, 127 not found) is not a refusal, even when the output names the diagnostic
-ibt_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; echo "install-build-tools: unmeasured: a download" >"$work/ibt.out"; return "$IBT_STUB_RC"; }
-stub_refused() { IBT_STUB_RC=$1 IBT_RUN=ibt_stub ibt_refused repovar 'unmeasured: a download'; }
+ibt_stub_rc=1
+ibt_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; echo "install-build-tools: unmeasured: a download" >"$work/ibt.out"; return "$ibt_stub_rc"; }
+stub_refused() { ibt_stub_rc=$1; ibt_refused repovar 'unmeasured: a download' ibt_stub; }
 CASE="REQ-SUP-001-AC18 harness: an inventory that exits 1 with the diagnostic counts as a refusal (the stub stands in correctly)"
 check stub_refused 1
 CASE="REQ-SUP-001-AC18 harness: an inventory that could not be found (exit 127) is not a refusal, even with the diagnostic"
 check eval '! stub_refused 127'
 CASE="REQ-SUP-001-AC18 harness: an inventory that could not be executed (exit 126) is not a refusal, even with the diagnostic"
 check eval '! stub_refused 126'
+# the inventory command is never read from the environment: with IBT_RUN exported as a stub that always prints a diagnostic and exits 1,
+# the real cases still run the real inventory (the stub's diagnostic never satisfies them, the real one does)
+ibt_env_stub() { [ "$1" = inventory ] || { ibt "$@"; return; }; echo "install-build-tools: unmeasured: a download" >"$work/ibt.out"; return 1; }
+CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the variable-version mutant still fails on the REAL diagnostic (not a measurable pin)"
+check bash -c "export IBT_RUN=ibt_env_stub; $(declare -f ibt ibt_refused ibt_env_stub); work='$work' here='$here' root='$root'; ibt_refused variable 'not a measurable pin.*v[\$][{]var[}]'"
+CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the stub's diagnostic is not what the variable-version mutant yields"
+check bash -c "export IBT_RUN=ibt_env_stub; $(declare -f ibt ibt_refused ibt_env_stub); work='$work' here='$here' root='$root'; ! ibt_refused variable 'unmeasured: a download'"
+CASE="REQ-SUP-001-AC18 isolation: with IBT_RUN=ibt_env_stub exported, the real positive case still passes"
+check bash -c "export IBT_RUN=ibt_env_stub; $(declare -f ibt ibt_refused ibt_env_stub); work='$work' here='$here' root='$root'; ibt inventory '$root/bin/install-build-tools.sh'"
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
