@@ -743,6 +743,11 @@ mappings:
   - ac: REQ-CHAIN-004-AC15
     evidence:
       - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
+  - ac: REQ-CHAIN-005-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
   - ac: REQ-AUD-018-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }

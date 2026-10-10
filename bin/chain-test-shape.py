@@ -118,6 +118,15 @@ def expected_lines(kind):
         return ([H] + bind_files("snapshot-apk", "rec-apk", "snapshot-apk-collection.json", "apk") + melange_repo("apk") + SDE
                 + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION), archives(SNAPSHOT_VERSION),
                    merge("apk", "--digests digests.json --items items.json", SNAPSHOT_VERSION)])
+    if kind == "snapshot-rebuild-apk":      # the same local-tag discipline as the snapshot Build; no policy, no stage-start (a snapshot record is refused)
+        return ([H, SNAPSHOT_TAG_GUARD, SNAPSHOT_TAG_LINE] + SDE
+                + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION), items_apk()])
+    if kind == "snapshot-rebuild-assemble":     # --snapshot makes rebuild-compare accept exactly Build's snapshot-build record and nothing else
+        return ([H] + bind_files("snapshot-rapk", "rec-rapk", "snapshot-rapk-collection.json", "rapk") + melange_repo("rapk") + SDE
+                + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION), archives(SNAPSHOT_VERSION),
+                   merge("rapk", "--items items.json", SNAPSHOT_VERSION),
+                   "python3 bin/chain-verify.py rebuild-compare --snapshot --build-record witness-build/snapshot-build-collection.json "
+                   "--expected build-in/items.json --actual items.json --out %s" % SNAPSHOT_VERDICT])
     if kind == "rebuild-apk":
         return [H, POLICY, START] + SDE + [apk_cmd("standard"), apk_cmd("fips"), items_apk()]
     if kind == "rebuild-assemble":
@@ -131,7 +140,8 @@ def expected_lines(kind):
 
 SCRIPTS = {"witnessed": "bin/witnessed.sh", "apk": "bin/build-stage-apk.sh", "assemble": "bin/build-stage-assemble.sh",
            "rebuild-apk": "bin/build-stage-rebuild-apk.sh", "rebuild-assemble": "bin/build-stage-rebuild-assemble.sh",
-           "snapshot-apk": "bin/build-stage-snapshot-apk.sh", "snapshot-assemble": "bin/build-stage-snapshot-assemble.sh"}
+           "snapshot-apk": "bin/build-stage-snapshot-apk.sh", "snapshot-assemble": "bin/build-stage-snapshot-assemble.sh",
+           "snapshot-rebuild-apk": "bin/build-stage-snapshot-rebuild-apk.sh", "snapshot-rebuild-assemble": "bin/build-stage-snapshot-rebuild-assemble.sh"}
 
 
 def read_exact(path):
@@ -200,7 +210,9 @@ MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
 MODE_GUARD_RUN = 'case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac'
-SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build"}        # the closed list of snapshot Witness step names; Rebuild has none
+# the closed list of snapshot step names
+SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build", "rapk": "snapshot-rapk", "rebuild": "snapshot-rebuild"}
+SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Rebuild's verdict: named, so it can never be mistaken for a release verdict
 HOSTILE_IF = "${{ inputs.hostile }}"
 HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
@@ -211,10 +223,10 @@ JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. A
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("dist", "dist"), ("images", "out")]),
-    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True,
+    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, mode=True,
         down=[("witness-build", "witness-build"), ("digests", "build-in")],
         up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False,
+    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, mode=True,
         down=[("witness-build", "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
@@ -229,8 +241,9 @@ def stage(path, family, allowed_path=None):
         return ["top-level keys beyond name/on/permissions/jobs: %s" % (sorted(set(d) - {"name", "on", "permissions", "jobs"}) if isinstance(d, dict) else d)]
     on = d.get("on")
     call = on.get("workflow_call") if isinstance(on, dict) else None
-    want_call = {"inputs": {"hostile": {"type": "boolean", "default": "false"}, "mode": {"type": "string", "default": "release"}},
-                 "outputs": {"digests": {"value": STAGE_OUTPUT}}} if family == "build" else None
+    mode_input = {"type": "string", "default": "release"}
+    want_call = ({"inputs": {"hostile": {"type": "boolean", "default": "false"}, "mode": mode_input}, "outputs": {"digests": {"value": STAGE_OUTPUT}}}
+                 if family == "build" else {"inputs": {"mode": mode_input}})
     if isinstance(call, dict):       # a description is free text
         call = {k: {n: ({a: b for a, b in v.items() if a != "description"} if isinstance(v, dict) else v) for n, v in call[k].items()}
                 if isinstance(call[k], dict) else call[k] for k in call}
@@ -238,7 +251,7 @@ def stage(path, family, allowed_path=None):
         bad.append("on: must be exactly workflow_call with %s, got %s"
                    % ("the inputs hostile (boolean, default false; the dry run's hostile Build step) and mode (string, default release; release or snapshot) "
                       "and the one output digests = %s" % STAGE_OUTPUT
-                      if want_call else "no inputs, secrets or outputs", on))
+                      if family == "build" else "the one input mode (string, default release; release or snapshot) and no secrets or outputs", on))
     if d.get("permissions") != {"contents": "read"}:
         bad.append("workflow permissions must be exactly contents: read, got %s" % d.get("permissions"))
     if re.search(r"\bwitness\s+run\b", text): bad.append("the stage file names `witness run` directly (every stage goes through bin/witnessed.sh)")
@@ -350,7 +363,8 @@ def job(j, family, name, allowed):
 
 
 # ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
-STEPS = ("apk", "build", "rapk", "rebuild", "snapshot-apk", "snapshot-build")   # the closed list of step names; the record is witness-DIR/STEP-collection.json
+STEPS = ("apk", "build", "rapk", "rebuild",
+         "snapshot-apk", "snapshot-build", "snapshot-rapk", "snapshot-rebuild")      # the closed list; the record is witness-DIR/STEP-collection.json
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # The identity token reaches Witness through a one-read process substitution, so no file holds it while the wrapped command runs (Witness loads its
 # signer before it runs the command: in-toto-witness cmd/run.go:51). SOURCE-CHECKED, one read: in-toto-witness cmd/keyloader.go:85 and
@@ -371,7 +385,8 @@ def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
+            'case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild) ;; '
+            '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
             'mkdir -p "witness-${step#snapshot-}"'] + TOKEN + [
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
@@ -563,7 +578,18 @@ def graph(path):
 # publishes (stage-sign, stage-reproducibility, stage-promote), or the deleted stage-image.yml. THE JUDGE READS ONLY `on` AND THE JOBS THAT CALL A STAGE
 # FILE: the scanner steps and the other jobs (`manifests` of main-candidate-rescan.yml, edited by cache's REQ-REL-004-AC5) are cache's and not read here.
 SNAPSHOT_CALLER_PERMISSIONS = dict(PERM_ADMIT)       # the union of what the apk job (PERM_ADMIT) and the assemble job (PERM_PLAIN) of stage-build.yml request
-NEVER_FROM_A_PROOF_WORKFLOW = ("stage-sign.yml", "stage-reproducibility.yml", "stage-promote.yml", "stage-image.yml", "stage-admission.yml")
+NEVER_FROM_A_PROOF_WORKFLOW = ("stage-sign.yml", "stage-promote.yml", "stage-image.yml", "stage-admission.yml")
+# scan.yml (the PR gate keeps rule 31's two-assembly reproducibility check) also calls Rebuild in snapshot mode after Build; main-candidate-rescan.yml does not
+SNAPSHOT_REBUILD_PERMISSIONS = dict(PERM_PLAIN)
+
+
+def ceiling(job_name, perm):
+    """A snapshot caller's grants are a STATIC CEILING: contents read, checks/statuses/pull-requests read, and id-token write (the one write, only because the
+    called stage requests it). Any other write fails here, whatever the stage asks for."""
+    if not isinstance(perm, dict):
+        return []
+    return ["job %s grants %s: write; the grants of a snapshot caller are a static ceiling (read only, id-token write as the stage requests)" % (job_name, k)
+            for k, v in sorted(perm.items()) if v == "write" and k != "id-token"]
 
 
 def callers(path):
@@ -584,6 +610,7 @@ def callers(path):
         bad.append("job build must call exactly ./.github/workflows/stage-build.yml, got %r" % build.get("uses"))
     if build.get("with") != {"mode": "snapshot"}:
         bad.append("job build must pass exactly with: mode: snapshot (no other input, so no hostile hook), got %s" % build.get("with"))
+    bad += ceiling("build", build.get("permissions"))
     if build.get("permissions") != SNAPSHOT_CALLER_PERMISSIONS:
         bad.append("job build must hold exactly the permissions the called stage requests %s, got %s" % (SNAPSHOT_CALLER_PERMISSIONS, build.get("permissions")))
     extra = set(build) - {"uses", "with", "permissions"}
@@ -592,6 +619,24 @@ def callers(path):
     for n, j in calls.items():
         if n != "build" and str(j["uses"]).endswith("/stage-build.yml"):
             bad.append("job %s also calls stage-build.yml (the one call is job build)" % n)
+    rebuild, name = jobs.get("rebuild"), os.path.basename(path)
+    if name == "scan.yml" and rebuild is None:
+        bad.append("scan.yml must also call Rebuild in snapshot mode (job rebuild): the PR gate keeps the two-assembly reproducibility check (rule 31)")
+    if name == "main-candidate-rescan.yml" and rebuild is not None:
+        bad.append("main-candidate-rescan.yml calls Build only: it needs no Rebuild")
+    if isinstance(rebuild, dict) and name != "main-candidate-rescan.yml":
+        if rebuild.get("uses") != "./.github/workflows/stage-reproducibility.yml":
+            bad.append("job rebuild must call exactly ./.github/workflows/stage-reproducibility.yml, got %r" % rebuild.get("uses"))
+        if rebuild.get("with") != {"mode": "snapshot"}:
+            bad.append("job rebuild must pass exactly with: mode: snapshot, got %s" % rebuild.get("with"))
+        if needs_of(rebuild) != ["build"]:
+            bad.append("job rebuild must need exactly build, got %s" % needs_of(rebuild))
+        bad += ceiling("rebuild", rebuild.get("permissions"))
+        if rebuild.get("permissions") != SNAPSHOT_REBUILD_PERMISSIONS:
+            bad.append("job rebuild must hold exactly the permissions the called stage requests %s, got %s"
+                       % (SNAPSHOT_REBUILD_PERMISSIONS, rebuild.get("permissions")))
+        if set(rebuild) - {"uses", "with", "permissions", "needs"}:
+            bad.append("job rebuild: keys outside {uses, with, permissions, needs}: %s" % sorted(set(rebuild) - {"uses", "with", "permissions", "needs"}))
     return bad
 
 

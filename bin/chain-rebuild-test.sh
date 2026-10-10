@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-005-AC3 — the comparison. REQ-CHAIN-005-AC1, AC2, AC4, AC5 and AC6 are proven by bin/chain-build-wiring-test.sh
+# proves: REQ-CHAIN-005-AC3, REQ-CHAIN-005-AC7 — the comparison. REQ-CHAIN-005-AC1, AC2, AC4, AC5 and AC6 are proven by bin/chain-build-wiring-test.sh
 # (the Rebuild stage-file allowlist, the script order, the job graph), which shares its judges with this lane's Build tests.
 # Written before bin/chain-verify.py had the rebuild-compare subcommand (tests before implementation, step 4 of the nine-step process).
 #
@@ -9,7 +9,7 @@
 # the product hash Witness recorded for items.json from the record's payload.
 #
 # THE CLI THIS TEST ASSUMES (the implementer matches it; anything else is a change to this header first):
-#   chain-verify.py rebuild-compare --build-record REC.json --expected ITEMS.json --actual ITEMS2.json --out VERDICT.json
+#   chain-verify.py rebuild-compare [--snapshot] --build-record REC.json --expected ITEMS.json --actual ITEMS2.json --out VERDICT.json
 #     REC.json   Build's Witness collection as a DSSE envelope; its Statement holds the product subject
 #                https://witness.dev/attestations/product/v0.1/file:items.json with digest {sha256,...}
 #                (in-toto-witness docs/tutorials/artifact-policy.md:58-70).
@@ -21,6 +21,7 @@
 #       missing       an item of the committed list is absent from --expected or --actual (the FIRST line names ONLY the item names, space
 #                     separated; a later line gives the side)
 #       unexpected    an item that is not on the list is present on either side (the line names it)
+#       step          (--snapshot only) the collection is not snapshot-build; without --snapshot a snapshot- record is `refused at rebuild: snapshot record`
 #       differs       the value differs in --expected and --actual (the line names EVERY differing item)
 #     exit 0 only when every listed item is present on both sides and identical. VERDICT.json is written in EVERY case
 #     {"equal":bool,"items":[{"name","expected","actual","status":"same|differs|missing-expected|missing-actual|unexpected"}]}
@@ -63,15 +64,16 @@ exp = {i: val(i) for i in items}
 def dump(name, obj, raw=None):
     b = raw if raw is not None else (json.dumps(obj, sort_keys=True, indent=1) + "\n").encode()
     open(w + "/" + name, "wb").write(b); return hashlib.sha256(b).hexdigest()
-def record(name, subjects):
+def record(name, subjects, collection="build"):
     st = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
-          "subject": subjects, "predicate": {"name": "build", "attestations": []}}
+          "subject": subjects, "predicate": {"name": collection, "attestations": []}}
     env = {"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(st).encode()).decode(), "signatures": []}
     json.dump(env, open(w + "/" + name, "w"))
 def subj(h, name="https://witness.dev/attestations/product/v0.1/file:items.json"):
     return {"name": name, "digest": {"sha256": h, "gitoid:sha1": "gitoid:blob:sha1:" + "0" * 40, "gitoid:sha256": "gitoid:blob:sha256:" + "1" * 64}}
 h = dump("exp.json", exp); dump("act.json", exp)
 record("rec.json", [subj(h), {"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "a" * 64}}])
+record("rec-snap.json", [subj(h)], "snapshot-build")      # Build's record in snapshot mode: the collection is named snapshot-build
 record("rec-none.json", [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "a" * 64}}])
 record("rec-two.json", [subj(h), subj("b" * 64)])
 record("rec-wrongname.json", [subj(h, "https://witness.dev/attestations/product/v0.1/file:items.json.bak")])
@@ -158,6 +160,39 @@ rc=$(rc_of rebuild-compare --build-record "$W/does-not-exist.json" --expected "$
 rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --out "$W/v3.json");
 [ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 a missing --actual is a usage error (exit 2)" || bad \
     "005-AC3 missing --actual -> exit $rc, wanted 2"
+# REQ-CHAIN-005-AC7: a snapshot Rebuild compares against Build's SNAPSHOT record, and only with --snapshot
+snap_run() { # snap_run FLAG REC EXPECTED ACTUAL -> RC; FLAG is --snapshot or empty
+  rm -f "$W/verdict.json"; RC=$(rc_of rebuild-compare $1 --build-record "$W/$2" --expected "$W/$3" --actual "$W/$4" --out "$W/verdict.json"); }
+snap_run --snapshot rec-snap.json exp.json act.json
+if [ -f "$CV" ] && [ "$RC" = 0 ] && jq -e '.equal == true' "$W/verdict.json" > /dev/null 2>&1; then
+  ok "005-AC7 --snapshot accepts Build's snapshot-build record and equal items"
+else
+  bad "005-AC7 --snapshot with snapshot-build and equal items -> exit $RC: $(head -c 160 "$W/err" | tr '\n' ' ')"
+fi
+snap_run --snapshot rec-snap.json exp.json "act-diff-image-fips.json"
+if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: differs: image-fips$'; then
+  ok "005-AC7 --snapshot still names a differing item (rule 31 is not weakened)"
+else
+  bad "005-AC7 --snapshot with a differing item -> exit $RC: $(head -1 "$W/err")"
+fi
+snap_run --snapshot rec.json exp.json act.json
+if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: step: build$'; then
+  ok "005-AC7 --snapshot refuses a release record named build (a snapshot compare never trusts a release record)"
+else
+  bad "005-AC7 --snapshot with a release record -> exit $RC: $(head -1 "$W/err")"
+fi
+snap_run "" rec-snap.json exp.json act.json
+if [ "$RC" = 1 ] && [ "$(head -1 "$W/err")" = "refused at rebuild: snapshot record" ]; then
+  ok "005-AC7 without --snapshot a snapshot-build record is refused as a snapshot record"
+else
+  bad "005-AC7 a snapshot record without --snapshot -> exit $RC: $(head -1 "$W/err")"
+fi
+snap_run --snapshot rec-snap.json exp-tampered.json act.json
+if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: digest: '; then
+  ok "005-AC7 --snapshot still binds items.json to the hash the snapshot record holds"
+else
+  bad "005-AC7 --snapshot with a tampered items.json -> exit $RC: $(head -1 "$W/err")"
+fi
 # the committed list (the implementation adds .github/policy/rebuild-items.json) is exactly the one the CLI contract names
 if [ -f "$root/.github/policy/rebuild-items.json" ]; then
   python3 - "$root/.github/policy/rebuild-items.json" "$W/required.json" <<'PY' \
@@ -176,7 +211,7 @@ mkdir "$W/clean";
 [ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
     "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad \
     "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
-TOTAL=$((pass + failn)); EXPECT=87
+TOTAL=$((pass + failn)); EXPECT=92
 echo "pass=$pass fail=$failn"
 if [ "$TOTAL" != "$EXPECT" ]; then echo "FAIL case count $TOTAL != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

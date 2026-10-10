@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC1 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC7 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
 # Written before the bind, items-apk and items-merge subcommands existed (tests before implementation, step 4); they are bin/chain_items.py now.
 #
 # The REAL chain-verify.py subcommands that bin/chain-test-harness.py only fakes. Needs: python3, ubuntu-24.04 or macOS. No network, no keys.
@@ -8,7 +8,7 @@
 # Every command runs from the repository root of a throw-away tree with RELATIVE paths, as the stage scripts do.
 #
 # THE CLI THIS TEST ASSUMES (the implementer matches it; anything else is a change to this header first):
-#   chain-verify.py bind --step apk|rapk --record REC.json --dir DIR --as PREFIX      (--dir and --as are relative paths)
+#   chain-verify.py bind --step apk|rapk|snapshot-apk|snapshot-rapk --record REC.json --dir DIR --as PREFIX      (--dir and --as are relative paths)
 #     REC.json   the Witness collection of the apk matrix job (step apk, Build) or of the Rebuild apk job (step rapk). Its Statement holds product
 #                subjects https://witness.dev/attestations/product/v0.1/file:PREFIX/<path relative to DIR> with digests {sha256, gitoid...}.
 #                Witness runs from the repo root, so the artifact DIR is the job's `out` and PREFIX is out (in-toto-witness
@@ -112,7 +112,7 @@ def bind(label, d, want_rc, cause=None, names=None, step="apk", **override):
     first = err.split("\n", 1)[0]
     ok = rc == want_rc and "Traceback" not in err
     if want_rc == 1:
-        ok = ok and first.startswith("refused at %s: %s: " % ("rebuild" if step == "rapk" else "build", cause))
+        ok = ok and first.startswith("refused at %s: %s: " % ("rebuild" if step in ("rapk", "snapshot-rapk") else "build", cause))
         ok = ok and (names is None or set(first.split(": ", 2)[2].split()) == set(names))
     check(label, ok, "exit %s, first line %r" % (rc, first[:160]))
 
@@ -175,7 +175,16 @@ record(d + "/rec.json", good_subjects(), name="snapshot-apk")
 bind("bind: a snapshot record given to the release step (--step apk) is refused as another step", d, 1, "step", ["snapshot-apk"])
 d = tree("snaprapk")
 record(d + "/rec.json", good_subjects(), name="snapshot-rapk")
-bind("bind: snapshot-rapk is not a step (Rebuild is never a snapshot): a usage error", d, 2, step="snapshot-rapk")
+bind("bind: the snapshot Rebuild step accepts its own record (snapshot-rapk)", d, 0, step="snapshot-rapk")
+d = tree("snaprapk2")
+record(d + "/rec.json", good_subjects(), name="snapshot-rapk")
+bind("bind: a snapshot-rapk record given to the release Rebuild step (--step rapk) is refused as another step", d, 1, "step", ["snapshot-rapk"], step="rapk")
+d = tree("snaprapk3")
+record(d + "/rec.json", good_subjects(), name="rapk")
+bind("bind: a release rapk record given to the snapshot Rebuild step is refused as another step", d, 1, "step", ["rapk"], step="snapshot-rapk")
+d = tree("snapevil")
+record(d + "/rec.json", good_subjects(), name="snapshot-evil")
+bind("bind: snapshot-evil is not a step (the snapshot names are a closed list): a usage error", d, 2, step="snapshot-evil")
 
 d = tree("prefix")
 record(d + "/rec.json", [subject("other/" + r, b) for r, b in FILES.items()])
@@ -356,7 +365,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 44
+EXPECT = 47
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

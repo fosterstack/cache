@@ -143,9 +143,13 @@ def expected(d, kind, which, tag):
 
 # ---- the fakes: what the real cache scripts and chain-verify.py would do, reduced to what a stage script can observe ----------------
 FAKE_ADMIT = '''#!/usr/bin/env python3
-import os, sys
+import os, subprocess, sys
 open("calls.log", "a").write("admit gh=%s\\n" % ("yes" if os.environ.get("GH_TOKEN") else "no"))
+subprocess.run(["gh", "api", "repos/fosterstack/cache/commits/0123/check-runs"])      # the admission reads (GET only); the fake gh logs the call to gh.log
 sys.exit(int(os.environ.get("FAKE_ADMIT_RC", "0")))
+'''
+FAKE_GH = '''#!/usr/bin/env bash
+echo "gh $*" >> gh.log
 '''
 FAKE_VERSION_CHECK = '''#!/usr/bin/env python3
 import glob, os, sys
@@ -287,7 +291,7 @@ sys.exit(2)
 def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
     for name, body in (("build-admit.py", FAKE_ADMIT), ("build-version-check.py", FAKE_VERSION_CHECK), ("build-archives.py", FAKE_ARCHIVES),
-                       ("apk-tool.py", FAKE_APKTOOL), ("git", FAKE_GIT), ("build-apk.sh", FAKE_BUILD_APK),
+                       ("apk-tool.py", FAKE_APKTOOL), ("git", FAKE_GIT), ("gh", FAKE_GH), ("build-apk.sh", FAKE_BUILD_APK),
                        ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
     shutil.copy(script, d + "/bin/build-stage-%s.sh" % kind); os.chmod(d + "/bin/build-stage-%s.sh" % kind, 0o755)
@@ -298,7 +302,9 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
     pre, rec, step = ("apk", "rec-apk", "apk") if kind == "assemble" else ("rapk", "rec-rapk", "rapk")
     if kind == "snapshot-assemble":
         pre, rec, step = "apk", "rec-apk", "snapshot-apk"      # a snapshot record is named snapshot-apk and sits next to the same artifacts
-    if kind in ("assemble", "rebuild-assemble", "snapshot-assemble"):
+    if kind == "snapshot-rebuild-assemble":
+        pre, rec, step = "rapk", "rec-rapk", "snapshot-rapk"
+    if kind in ("assemble", "rebuild-assemble", "snapshot-assemble", "snapshot-rebuild-assemble"):
         for r, arch, _ in RUNNERS:                   # the downloaded artifacts, laid out as upload-artifact rooted at `out` lays them out
             files = out_files(arch, tag)
             files["items-apk.json"] = json.dumps(fragment(arch, tag)).encode()
@@ -309,7 +315,10 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
     if kind in ("rebuild-apk", "rebuild-assemble"):
         write(d + "/witness-build/build-collection.json", "{}")
         write(d + "/build-in/digests.json", "{}")
-    if kind == "rebuild-assemble":
+    if kind in ("snapshot-rebuild-apk", "snapshot-rebuild-assemble"):
+        write(d + "/witness-build/snapshot-build-collection.json", "{}")
+        write(d + "/build-in/digests.json", "{}")
+    if kind in ("rebuild-assemble", "snapshot-rebuild-assemble"):
         write(d + "/build-in/items.json", json.dumps(expected(d, kind, "items", tag), sort_keys=True, indent=1))
     write(d + "/calls.log", "")
     return d
