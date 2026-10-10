@@ -377,7 +377,7 @@ class LiveNet:
         rule = _go_rule(item, version)
         paths = rule.paths if rule else [q["package"]["name"]]
         for copies in self._osv_records(q, paths).values():
-            v = copies[0]
+            v = dict(copies[0], aliases=sorted({a for c in copies for a in c.get("aliases", [])}))   # AC14: the aliases of every copy
             if rule:
                 says = any([self._go_says(c, rule, version) for c in copies])   # AC14: a copy that is unsettled or affected makes the record a hit
             else:
@@ -770,10 +770,10 @@ def ruling_for(item, dispute_ids, current, exceptions, net=None, osv_times=None,
     for e in exceptions:
         if e["package"] != package_of(item) or set(e["ids"]) != set(dispute_ids):
             continue
-        if log is not None:
-            log.matched.append(e)   # AC15: it names this dispute; whatever the checks below say, it is not dead
         if not _ruling_covers(e, item, vers):
             continue   # a ruling names the one version (or one series, "4.*") it covers and must cover EVERY tag at the commit: never a wildcard, never one tag speaking for another
+        if log is not None:
+            log.matched.append(e)   # AC15: it names this dispute and this held pin; a failure of the time or range checks below is a lapse, not a dead ruling
         if not all(e["modified"].get(i) and current.get(i) is not None and current.get(i) == e["modified"][i] for i in e["ids"]):
             continue  # an advisory changed since the ruling (or its time was never recorded): the ruling has lapsed
         # an id that BOTH databases hold has two records: this entry must also have recorded OSV's own time for it, unchanged
