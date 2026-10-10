@@ -154,34 +154,109 @@ func TestKnownEnvMatchesREADMETable(t *testing.T) {
 }
 
 // AC4: every FSCACHE_ name the code reads is in knownEnv, and every
-// knownEnv entry is read. The scan walks every non-test .go file under
-// cmd/ and internal/ with go/ast and takes every string literal that IS a
-// variable name (the whole literal matches FSCACHE_[A-Z0-9_]+) - not only
-// the ones passed to os.Getenv, so a name hidden behind any helper is
-// still found. Prose such as error messages is not a whole-literal match,
-// so there are no false positives today. The knownEnv declaration itself
-// is skipped so it cannot vouch for itself.
+// knownEnv entry is read. Two directions, two strictnesses:
+//   - "not in knownEnv" is checked against EVERY string literal that is a
+//     whole variable name (FSCACHE_[A-Z0-9_]+) in every non-test .go file
+//     under cmd/ and internal/ (go/ast; testdata, dot and underscore
+//     directories skipped like the go tool does), so a name hidden behind
+//     any helper is still found. Prose such as error messages is not a
+//     whole-literal match, so there are no false positives today.
+//   - "knownEnv entry is read" counts only a literal that is an argument
+//     of os.Getenv, os.LookupEnv, envOr or envSize, so a name that merely
+//     appears in a map or a comment-like literal does not count as read.
+//
+// Only the package-level knownEnv declaration in cmd/fscache/main.go is
+// skipped (it cannot vouch for itself); a knownEnv spec anywhere else is
+// scanned like any other code.
 func TestKnownEnvMatchesNamesReadInCode(t *testing.T) {
+	names, reads := scanEnvNames(t, "../../cmd", "../../internal")
+	if len(names) == 0 {
+		t.Fatal("scan found no FSCACHE_ names at all")
+	}
+	for name, file := range names {
+		if !slices.Contains(knownEnv, name) {
+			t.Errorf("%s mentions %s, which is not in knownEnv", file, name)
+		}
+	}
+	for _, k := range knownEnv {
+		if _, ok := reads[k]; !ok {
+			t.Errorf("knownEnv lists %s but no non-test code reads it", k)
+		}
+	}
+}
+
+var envReaders = map[string]bool{"os.Getenv": true, "os.LookupEnv": true, "envOr": true, "envSize": true}
+
+// scanEnvNames returns every whole-literal FSCACHE_ name by file, and the
+// subset that is an argument of an env-reading call.
+func scanEnvNames(t *testing.T, roots ...string) (names, reads map[string]string) {
+	t.Helper()
 	nameRE := regexp.MustCompile(`^FSCACHE_[A-Z0-9_]+$`)
-	used := map[string]string{}
+	names, reads = map[string]string{}, map[string]string{}
+	mainGo := filepath.Clean("../../cmd/fscache/main.go")
 	fset := token.NewFileSet()
-	for _, root := range []string{"../../cmd", "../../internal"} {
+	lit := func(e ast.Expr) (string, bool) {
+		bl, ok := e.(*ast.BasicLit)
+		if !ok || bl.Kind != token.STRING {
+			return "", false
+		}
+		v, err := strconv.Unquote(bl.Value)
+		return v, err == nil && nameRE.MatchString(v)
+	}
+	for _, root := range roots {
 		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+			if err != nil {
 				return err
+			}
+			if d.IsDir() {
+				if n := d.Name(); p != root && (n == "testdata" || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_")) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+				return nil
 			}
 			f, err := parser.ParseFile(fset, p, nil, 0)
 			if err != nil {
 				return err
 			}
+			skip := map[ast.Node]bool{}
+			if filepath.Clean(p) == mainGo {
+				for _, decl := range f.Decls { // package level only
+					if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.VAR {
+						for _, sp := range gd.Specs {
+							if vs := sp.(*ast.ValueSpec); len(vs.Names) == 1 && vs.Names[0].Name == "knownEnv" {
+								skip[vs] = true
+							}
+						}
+					}
+				}
+			}
 			ast.Inspect(f, func(n ast.Node) bool {
-				if vs, ok := n.(*ast.ValueSpec); ok && len(vs.Names) == 1 && vs.Names[0].Name == "knownEnv" {
+				if skip[n] {
 					return false
 				}
-				if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
-					if v, err := strconv.Unquote(lit.Value); err == nil && nameRE.MatchString(v) {
-						used[v] = p
+				if call, ok := n.(*ast.CallExpr); ok {
+					fn := ""
+					switch f := call.Fun.(type) {
+					case *ast.Ident:
+						fn = f.Name
+					case *ast.SelectorExpr:
+						if x, ok := f.X.(*ast.Ident); ok {
+							fn = x.Name + "." + f.Sel.Name
+						}
 					}
+					if envReaders[fn] {
+						for _, a := range call.Args {
+							if v, ok := lit(a); ok {
+								reads[v] = p
+							}
+						}
+					}
+				}
+				if v, ok := lit(exprOf(n)); ok {
+					names[v] = p
 				}
 				return true
 			})
@@ -191,19 +266,13 @@ func TestKnownEnvMatchesNamesReadInCode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(used) == 0 {
-		t.Fatal("scan found no FSCACHE_ names at all")
-	}
-	for name, file := range used {
-		if !slices.Contains(knownEnv, name) {
-			t.Errorf("%s reads %s, which is not in knownEnv", file, name)
-		}
-	}
-	for _, k := range knownEnv {
-		if _, ok := used[k]; !ok {
-			t.Errorf("knownEnv lists %s but no non-test code reads it", k)
-		}
-	}
+	return names, reads
+}
+
+// exprOf returns n as an expression, or nil.
+func exprOf(n ast.Node) ast.Expr {
+	e, _ := n.(ast.Expr)
+	return e
 }
 
 // AC5: known names are never warned about, whatever their value.
@@ -258,5 +327,78 @@ func TestUnknownEnvDidYouMeanTieAndNearest(t *testing.T) {
 	knownEnv = []string{"FSCACHE_AAXX", "FSCACHE_AAAB", "FSCACHE_ZZZZ"}
 	if got := nearestKnown("FSCACHE_AAAC"); got != "FSCACHE_AAAB" {
 		t.Errorf("nearest: got %q, want the nearer FSCACHE_AAAB over the earlier, farther FSCACHE_AAXX", got)
+	}
+}
+
+// A throwaway tree to prove the scan's rules: only main.go's package-level
+// knownEnv is skipped, testdata is skipped, and a name counts as read only
+// as an argument of an env-reading call.
+func TestScanEnvNamesRules(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, src string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a/a.go", "package a\nimport \"os\"\nvar knownEnv = os.Getenv(\"FSCACHE_HIDDEN\")\n")
+	write("a/testdata/x.go", "package x\nvar v = \"FSCACHE_IN_TESTDATA\"\n")
+	write("a/m.go", "package a\nvar m = map[string]bool{\"FSCACHE_ONLY_LISTED\": true}\nvar r = envOr(\"FSCACHE_READ\", \"\")\nfunc f() { var knownEnv = []string{\"FSCACHE_LOCAL\"}; _ = knownEnv }\n")
+	names, reads := scanEnvNames(t, root)
+	for _, want := range []string{"FSCACHE_HIDDEN", "FSCACHE_ONLY_LISTED", "FSCACHE_READ", "FSCACHE_LOCAL"} {
+		if _, ok := names[want]; !ok {
+			t.Errorf("scan missed %s", want)
+		}
+	}
+	if _, ok := names["FSCACHE_IN_TESTDATA"]; ok {
+		t.Error("testdata was scanned")
+	}
+	if _, ok := reads["FSCACHE_ONLY_LISTED"]; ok {
+		t.Error("a map literal counted as a read")
+	}
+	for _, want := range []string{"FSCACHE_HIDDEN", "FSCACHE_READ"} {
+		if _, ok := reads[want]; !ok {
+			t.Errorf("%s is read through an env call but not reported", want)
+		}
+	}
+}
+
+// Backlog (round 2): the "reconciled" line carries a duration, so an
+// operator can size a startupProbe from a copy of the volume.
+func TestReconciledLineCarriesDuration(t *testing.T) {
+	clearEnv(t)
+	dir := t.TempDir()
+	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
+		t.Fatal(err)
+	}
+	freshRegistry(t)
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	var buf bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&buf, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := serve(ctx, log, func() { cancel() }); err != nil {
+		t.Fatalf("serve: %v", err)
+	}
+	logs := buf.String()
+	var found bool
+	for _, line := range strings.Split(logs, "\n") {
+		var rec struct {
+			Msg      string `json:"msg"`
+			Duration string `json:"duration"`
+		}
+		if json.Unmarshal([]byte(line), &rec) == nil && rec.Msg == "fscache: reconciled" {
+			d, perr := time.ParseDuration(rec.Duration)
+			if perr != nil || d < 0 {
+				t.Errorf("duration %q is not a Go duration: %v", rec.Duration, perr)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no reconciled line:\n%s", logs)
 	}
 }

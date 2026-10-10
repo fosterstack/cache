@@ -137,6 +137,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesREADMETable" }
       - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesNamesReadInCode" }
+      - { type: go-test, ref: "cmd/fscache:TestScanEnvNamesRules" }
   - ac: REQ-CFG-005-AC5
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestKnownEnvNamesNeverWarned" }

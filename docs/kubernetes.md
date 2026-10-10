@@ -211,14 +211,17 @@ one fails and skews the hit ratio.
 
 ### Startup and reconcile
 
-After an unclean shutdown (and after a deleted or emptied `meta.db`) the
-server reconciles its stores before it serves. The listen socket is already
-open, so TCP connects succeed during that time, but `/healthz` does not answer
-until the reconcile finishes. On a large store that can outlast the liveness
-probe in the manifest above: with its defaults (`initialDelaySeconds: 3`,
-`periodSeconds: 10`, `timeoutSeconds: 1`, `failureThreshold: 3`) the kubelet
-kills the pod after about 33 seconds, the unclean marker is still there, and
-the next start reconciles again from the beginning: `CrashLoopBackOff`.
+After an unclean shutdown the server reconciles its stores before it serves.
+The listen socket is already open, so TCP connects succeed during that time,
+but `/healthz` does not answer until the reconcile finishes. On a large store
+that can outlast the liveness probe in the manifest above. The manifest sets
+`initialDelaySeconds: 3` and `periodSeconds: 10`; `timeoutSeconds: 1` and
+`failureThreshold: 3` are Kubernetes defaults, not manifest settings. The probe
+first fires about 3 seconds after the container starts, then every 10, so three
+failures land at roughly 3, 13 and 23 seconds; the kubelet staggers probe
+starts within a period, so the container is restarted within roughly 25 to 35
+seconds. The unclean marker is still there, so the next start reconciles again
+from the beginning: `CrashLoopBackOff`.
 
 Add a startup probe, which holds the liveness and readiness probes off until it
 first succeeds:
@@ -230,12 +233,20 @@ first succeeds:
       periodSeconds: 10
       failureThreshold: 60
 
-That allows up to ten minutes; size `failureThreshold` for your store. Do not
-use a `tcpSocket` probe or an L4 load-balancer health check for this: both
-report healthy during the reconcile because the socket accepts connections.
-Gradle and Maven clients that connect meanwhile wait up to their read timeout
-instead of getting connection-refused, and then treat the request as a cache
-miss.
+`failureThreshold` 60 times `periodSeconds` 10 is ten minutes. That is a
+starting point, not a measurement. To size it for your store, time a reconcile
+on a copy of the volume: the `duration` on the `fscache: reconciled` log line
+(and the gap between it and `fscache: unclean shutdown detected`) is the
+number. Then make `failureThreshold` x `periodSeconds` at least twice that
+time. An undersized startup probe restarts the container just as the liveness
+probe did, and the marker makes the next start reconcile from zero.
+
+Do not use a `tcpSocket` probe or an L4 load-balancer health check for this:
+both report healthy during the reconcile because the socket accepts
+connections. Clients that connect meanwhile wait up to their configured read
+timeout instead of getting connection-refused; what happens after that is
+client-specific (Gradle disables the remote cache for the rest of the build,
+see [the Gradle guide](gradle.md)).
 
 ## The data directory
 

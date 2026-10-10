@@ -340,11 +340,13 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 
 	if wasUnclean {
 		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
+		began := time.Now()
 		stats, err := cacheReconcile(c, context.Background())
 		if err != nil {
 			return fmt.Errorf("startup reconciliation: %w", err)
 		}
 		log.Info("fscache: reconciled",
+			"duration", time.Since(began).Round(time.Millisecond).String(),
 			"adopted_blobs", stats.AdoptedBlobs,
 			"dropped_records", stats.DroppedRecords,
 			"removed_temp_files", stats.RemovedTempFiles)
