@@ -1,4 +1,4 @@
-# proves: REQ-AUD-018-AC4
+# proves: REQ-AUD-018-AC4, REQ-SCAN-015-AC3
 """auditor-review-gate.py (REQ-AUD-18 AC3, option C): every reason a review record fails to clear
 the gate, and the CLI's argument and no-change paths, against a real temporary git repository."""
 import contextlib, datetime, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
@@ -222,7 +222,7 @@ class GuardFiles(Cli):
 
 
 class ScanGuardFile(GuardFiles):
-    """REQ-SCAN-015-AC2 (the scanner guard step unweakened; proposed AC3 names the script itself): the scanner guard
+    """REQ-SCAN-015-AC3 (a change to the scanner guard script needs a review record bound to its content): the scanner guard
     script is review-gated like the allowlist guard's files, so a PR cannot gut it without a review record."""
     SCAN = "bin/scan-no-workflow-call-test.sh"
 
@@ -629,7 +629,7 @@ class SubstituteCli(unittest.TestCase):
         self.assertEqual(sorted(G.ENFORCEMENT), sorted([
             ".github/agent/reviews/substitutes.json", ".github/workflows/agent-review-gate.yml",
             "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
-            "bin/scan-no-workflow-call-test.sh"]))   # REQ-SCAN-015 (round 4): the gate runs the scanner guard too
+            "bin/scan-no-workflow-call-test.sh"]))   # REQ-SCAN-015-AC3: the gate runs the scanner guard too
 
     def test_new_files_and_the_gate_s_other_inputs_need_a_real_codex_entry(self):
         for path in (".github/agent/bin/datetime.py", ".github/agent/bin/json.py", ".github/agent/bin/tests/new_test.py",
@@ -794,7 +794,7 @@ class ClockIsSystemOnly(unittest.TestCase):
 
 
 class GateRunsTheScanGuard(unittest.TestCase):
-    """REQ-SCAN-015-AC2 (proposed AC3): the trusted gate runs the DEFAULT branch's scanner guard (the checked-out
+    """REQ-SCAN-015-AC3: the trusted gate runs the DEFAULT branch's scanner guard (the checked-out
     bin/scan-no-workflow-call-test.sh) over the PR head read as git objects, in the judge and in the sweep, exactly
     one line each, unconditional and unswallowed, so a step of the PR's own CI cannot overwrite the guard it runs."""
     ROOT = os.path.dirname(os.path.dirname(os.path.dirname(BIN)))

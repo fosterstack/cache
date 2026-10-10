@@ -467,6 +467,11 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's pin-wiring judge over every PR head's ci.yml requires the scanner guard step, unweakened, in the allowlist job (required check auditor-review-gate)" }
+  - ac: REQ-SCAN-015-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the default branch's scanner guard over every PR head read as git objects (SCAN_GUARD_JUDGE_GIT); the guard script is review-gated (required check auditor-review-gate)" }
   - ac: REQ-SCAN-009-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }

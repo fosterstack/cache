@@ -1979,7 +1979,7 @@ requirements:
     source: [.github/workflows/scan.yml, .github/workflows/main-candidate-rescan.yml, bin/scan-no-workflow-call-test.sh]
     tier: community
     introduced: v0.3.0
-    origin: advisor-accepted, Oct 9; serves the 0345 hardening (ops#107 pins the Inspector role and the GCP provider to these two files by job_workflow_ref); AC2 advisor-ratified Oct 10 (lane AC)
+    origin: advisor-accepted, Oct 9; serves the 0345 hardening (ops#107 pins the Inspector role and the GCP provider to these two files by job_workflow_ref); AC2 and AC3 advisor-ratified Oct 10 (lane ACs)
     confidence: implementation-only
     acceptance_criteria:
       - id: REQ-SCAN-015-AC1
@@ -1992,6 +1992,12 @@ requirements:
         given: "a pull request that changes .github/workflows/ci.yml"
         when: "the trusted review gate judges its ci.yml"
         then: "the allowlist job carries exactly the scanner guard step (named, the single run line, unconditional and unweakened) or the gate fails"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-015-AC3
+        given: "a pull request into the default branch"
+        when: "the trusted review gate judges it"
+        then: "the review gate runs the default branch's guard over the pull request head read as git objects, so a pull request cannot weaken the guard on disk; any head the guard cannot read as regular workflow and action files fails; and a change to bin/scan-no-workflow-call-test.sh needs a review record bound to its content"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 

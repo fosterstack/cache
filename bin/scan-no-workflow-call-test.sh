@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-015-AC1
+# proves: REQ-SCAN-015-AC1, REQ-SCAN-015-AC3
 # The two workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml) can never be
 # called as reusable workflows: neither declares `on: workflow_call`, and no workflow or composite action names either
 # one in a `uses:`. The cloud trust is pinned to the FILE (job_workflow_ref), not to its caller, so a callable file
@@ -104,7 +104,7 @@ sys.exit(1 if bad else 0)
 PY
 }
 
-# git-object mode, for the trusted review gate (REQ-SCAN-015-AC2): SCAN_GUARD_JUDGE_GIT=<full commit sha> judges THAT
+# git-object mode, for the trusted review gate (REQ-SCAN-015-AC3): SCAN_GUARD_JUDGE_GIT=<full commit sha> judges THAT
 # commit's workflows and composite actions, read as git objects from the current repository (nothing checked out or
 # run), with this copy of the judge, and does nothing else. Fail closed: a revision that is not a full sha of a commit
 # here, or any entry under .github/workflows or .github/actions that is not a regular file (a symlink, a submodule).
@@ -231,7 +231,7 @@ expect ok "a neighbour that calls stage-build.yml and mentions scan.yml in a run
 # the real repository (green today)
 expect ok "the real repository: neither file is callable and nothing calls them" "$root"
 
-# 5. git-object mode (REQ-SCAN-015-AC2; proposed AC3): SCAN_GUARD_JUDGE_GIT=<full commit sha> judges THAT commit's
+# 5. git-object mode (REQ-SCAN-015-AC3): SCAN_GUARD_JUDGE_GIT=<full commit sha> judges THAT commit's
 # workflows and composite actions, read as git objects (nothing checked out or run), with THIS copy of the script. The
 # trusted review gate runs the default branch's copy this way over every pull request head, so a step of the PR's
 # own CI that overwrites the script on disk changes nothing.
