@@ -485,7 +485,11 @@ gd() { local t=$((T0+$1)); shift; GIT_AUTHOR_DATE="@$t +0000" GIT_COMMITTER_DATE
 # whichever base git would pick alone, one of the two bases has the other content: ensure the single-base pick
 # is the base whose content EQUALS the head's, so only checking every base can block
 PICK="$(cd "$R" && git merge-base HEAD origin/main)"
-( cd "$R" && git cat-file -p "$PICK:$PS" | cmp -s - "$PS" ) && gp "criss-cross: the single-base pick equals the head (only --all can block)" || gf "criss-cross pick" "pick differs from head; reorder the fixture"
+# Not dependent on which base git picks: make the head's file equal the PICKED base's content (the two bases
+# differ, so the head still differs from the other one), then check the pick really equals the head.
+( cd "$R" && git cat-file -p "$PICK:$PS" > "$PS" && g add "$PS" && { g diff --cached --quiet || gd 50 commit -qm sync-head-to-pick; } )
+[ "$(cd "$R" && git merge-base --all HEAD origin/main | wc -l | tr -d ' ')" = 2 ] || gf "criss-cross fixture" "the sync commit changed the merge bases"
+( cd "$R" && git cat-file -p "$PICK:$PS" | cmp -s - "$PS" ) && gp "criss-cross: the single-base pick equals the head (only --all can block)" || gf "criss-cross pick" "pick differs from head after syncing"
 trun fail "criss-cross: file equal to one merge base but not the other is blocked" "$R" feature/x "" "$PS"
 trun pass "criss-cross: a file identical in every merge base is allowed" "$R" feature/x "" .snyk
 
