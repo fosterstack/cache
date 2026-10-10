@@ -1211,7 +1211,11 @@ def judge(line):
         while c and c[0][1] == "!" and not c[0][2]: c = c[1:]
         if not c: raise Refused("an empty command")
         word, quoted = c[0][1], c[0][2]
-        if quoted or word not in VOCAB: raise Refused(f"the command word {word!r} is not grep, test, [ or cat (unquoted)")
+        if word == "exit" and not quoted:                  # exit with ONE literal digit 0-9, unquoted, and nothing else (advisor, Oct 10)
+            if len(c) != 2 or c[1][2] or not re.fullmatch(r"[0-9]", c[1][1]): raise Refused("exit takes exactly one unquoted literal digit 0-9")
+            if k and ops[k - 1] == "|": raise Refused("a pipe into 'exit' (pipes go only into grep)")
+            continue
+        if quoted or word not in VOCAB: raise Refused(f"the command word {word!r} is not grep, test, [, cat or exit <digit> (unquoted)")
         if k and ops[k - 1] == "|" and word != "grep": raise Refused(f"a pipe into {word!r} (pipes go only into grep)")
         if word == "[" and c[-1][1] != "]": raise Refused("[ without its closing ]")
         if word == "cat" and (len(c) != 2 or c[1][1].startswith("-")): raise Refused("cat of anything but one file")
@@ -1219,7 +1223,7 @@ try:
     judge(sys.argv[1])
 except Refused as e:
     print("refused: " + str(e)); sys.exit(1)
-print("harness assertion: runs nothing but grep, test and cat"); sys.exit(0)
+print("harness assertion: runs nothing but grep, test, cat and exit <digit>"); sys.exit(0)
 PY
 hf() { rc=0; python3 "$work/harness_form.py" "$1" >"$work/hf.out" 2>&1 || rc=$?; }
 while IFS=$'\t' read -r what line; do
@@ -1250,7 +1254,14 @@ eval	t "r" "x" bash -c "eval 'grep a f'"
 source	t "r" "x" bash -c "source 'f'"
 a second bash -c	t "r" "x" bash -c "bash -c 'grep a f'"
 a ;-separated extra command (wget)	t "r" "x" bash -c "grep a 'f'; wget https://e.example/x"
-exit (not in the vocabulary)	t "r" "x" bash -c "grep a 'f' && exit 1"
+exit with a variable status	t "r" "x" bash -c "grep a 'f' && exit \$x"
+exit with an outer variable status	t "r" "x" bash -c "grep a 'f' && exit $x"
+exit with no status	t "r" "x" bash -c "grep a 'f' && exit"
+exit with two arguments	t "r" "x" bash -c "grep a 'f' && exit 1 2"
+exit with a negative status	t "r" "x" bash -c "grep a 'f' && exit -1"
+exit with two digits	t "r" "x" bash -c "grep a 'f' && exit 10"
+exit with a quoted status	t "r" "x" bash -c "grep a 'f' && exit '1'"
+a quoted exit	t "r" "x" bash -c "grep a 'f' && 'exit' 1"
 a background &	t "r" "x" bash -c "grep a 'f' & curl https://e.example/x"
 a subshell	t "r" "x" bash -c "(curl https://e.example/x)"
 cat with an option	t "r" "x" bash -c "cat -v 'f'"
@@ -1269,6 +1280,7 @@ while IFS=$'\t' read -r what line; do
   check test "$rc" -eq 0; check grep -q '^harness assertion' "$work/hf.out"
 done <<'EOF'
 the whole vocabulary	t "r" "x" bash -c "grep -q a 'f' && ! grep -E 'b|c' 'f' || test \"\$(grep -c a 'f')\" -ge 3; [ \"\$(cat 'f')\" = 2 ] | grep -q ."
+exit with one literal digit	t "r" "x" bash -c "grep a 'f' | grep -vq b && exit 1; exit 0"
 the P3 line (bin/refresh-inputs-test.sh)	t "rule 32" "refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -E '^curl .*tzdata' '$CALLS'"
 EOF
 CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts"
@@ -1292,6 +1304,11 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
     # a harness assertion line (the second allowed form): t, a quoted rule and title, one bash -c body in the fixed vocabulary
     "b71ad6f34d750f1e": "t \"rule 32\" \"refresh: the url '$u' (a character outside the plain set) is refused (exit 2), never fetched\" bash -c \"test \\\"\\$(cat '$work/rc')\\\" = 2 && ! grep -E '^curl .*tzdata' '$CALLS'\"",
+    "3cc2fca98203f62a": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c \"grep '^curl ' '$CALLS' | grep -vq -- '--proto =https --tlsv1.2' && exit 1; test \\\"\\$(grep -c '^curl ' '$CALLS')\\\" -ge 3\"",
+    "789c91f5f3c20cc7": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c \"grep '^curl ' '$CALLS' | grep -vq -- '--proto =https --tlsv1.2' && exit 1; test \\\"\\$(grep -c '^curl ' '$CALLS')\\\" -ge 3\"",
+    "3e4580070a7cb0f0": "t \"rule 32\" \"refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)\" bash -c \"test \\\"\\$(cat '$work/rc')\\\" = 0 && grep -Eq '^curl .*https://packages\\.wolfi\\.dev/os/.*wolfi-signing\\.rsa\\.pub' '$CALLS'\"",
+    "6fc127ab64f06952": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c \"grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'\"",
+    "fab798246fb142d6": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c \"grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'\"",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = json.load(open(sys.argv[1]))["unmeasured_text"]
