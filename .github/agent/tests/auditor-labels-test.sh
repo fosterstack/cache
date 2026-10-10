@@ -208,6 +208,7 @@ L="$GH_STATE/labels"; mkdir -p "$L"
 case "$1 $2" in
   "label create") [ "${GH_DENY_LABELS:-}" = 1 ] && { echo "HTTP 403" >&2; exit 1; }; [ -e "$L/$3" ] && { echo "label with name \"$3\" already exists" >&2; exit 1; }; : >"$L/$3"; exit 0 ;;
   "issue list") exit 0 ;;
+  "api --paginate") echo '[]'; exit 0 ;;   # the tracking-issue lookup reads every page: an empty list
   "issue create") prev=""; for a in "$@"; do [ "$prev" = --label ] && [ ! -e "$L/$a" ] && { echo "could not add label: '$a' not found" >&2; exit 1; }; prev="$a"; done; echo created >"$GH_STATE/created"; exit 0 ;;
 esac
 exit 0
@@ -219,7 +220,7 @@ runbash() { # <name> <pre-existing labels...>; env GH_DENY_LABELS passes through
   sed "s#/tmp/panel-out#$work/panel-out#g" "$work/rescan-step.sh" >"$work/rescan-run.sh"
   for l in "$@"; do : >"$GH_STATE/labels/$l"; done
   printf 'finding body\n' >"$work/panel-out/issue.md"
-  rc=0; PATH="$work/ghbin:$PATH" GITHUB_SHA=abc RUN_URL=http://x bash -e "$work/rescan-run.sh" >/dev/null 2>"$GH_STATE/err" || rc=$?
+  rc=0; (cd "$root" && PATH="$work/ghbin:$PATH" GITHUB_REPOSITORY=o/r GITHUB_SHA=abc RUN_URL=http://x bash -e "$work/rescan-run.sh") >/dev/null 2>"$GH_STATE/err" || rc=$?
 }
 runbash none
 CASE="rescan workflow (gh step): starting from NO labels the tracking issue is created (the stateful gh refuses it unless daily-rescan and security exist first)"
@@ -237,8 +238,9 @@ const fs = require("fs");
 const [, , scriptPath, mode, outPath] = process.argv;
 const labels = new Set(mode === "both" ? ["daily-rescan", "security"] : []);
 const calls = [];
-const github = { rest: { issues: {
-  listForRepo: async () => ({ data: [] }),
+const listForRepo = async () => ({ data: [] });
+const github = { paginate: async (fn, p) => (await fn(p)).data, rest: { issues: {
+  listForRepo,
   createComment: async () => ({}),
   createLabel: async ({ name }) => {
     calls.push("createLabel:" + name);

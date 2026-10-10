@@ -1264,7 +1264,7 @@ requirements:
       pipeline rather than passing silently; main's latest candidate shall be
       rescanned daily; and the Go toolchain shall be kept on its latest patch
       by an automated bump.
-    source: [.github/workflows/scan.yml, bin/inspector-gate.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml]
+    source: [.github/workflows/scan.yml, bin/inspector-gate.py, .github/policy/required-checks.json, .github/workflows/main-candidate-rescan.yml, .github/workflows/go-freshness.yml, bin/rescan-statement.py]
     tier: community
     introduced: v0.2.1
     origin: audit-2026-09-15; v0.2.0 release-pipeline scan failure
@@ -1299,6 +1299,18 @@ requirements:
         when: "the daily rescan enumerates what to scan"
         then: "it enumerates exactly the current release (the latest published, non-draft, non-prerelease release by semantic version) and no superseded one; a release that stops being current is no longer scanned; the issues of superseded releases are not reopened or created"
         verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-REL-004-AC6
+        given: "a rescan scanner listed in .github/policy/scanners.json that cannot read the VEX itself (OSV-Scanner today; Grype and Trivy apply it themselves), and a finding for a CVE or alias that our published OpenVEX marks not_affected or fixed for this image's product"
+        when: "the rescan statement is merged"
+        then: "that finding is removed before it counts (it opens no tracking issue and raises no comment), is kept in the statement as vex_suppressed with the VEX document and statement that covered it, and every other finding still counts at any severity; a VEX document that is missing, cannot be read or does not parse stops the rescan as an operational error (never as 'no suppression'); the match is by CVE or alias for the image's product (the repository-wide product, or one scoped to this variant and architecture; the named package and version when the statement names subcomponents), never by CVE alone across products; and a scanner in scanners.json that is neither marked as reading the VEX natively nor covered by this filter fails a test, so a new scanner can never bypass the VEX by omission (advisor reading: ratified scanner-panel rule 4, the pipeline filter, applied to every scanner that cannot read the VEX)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-REL-004-AC7
+        given: "more open issues carry the daily-rescan label than one page holds"
+        when: "the daily rescan looks for its tracking issue"
+        then: "it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue'"
+        verification: { method: unit, release_blocking: false }
         status: approved
 
   - id: REQ-REL-005

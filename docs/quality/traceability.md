@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 75 |
-| Acceptance criteria | 221 |
+| Acceptance criteria | 223 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 205 |
+| ACs with mapped evidence | 207 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
@@ -569,7 +569,7 @@ No artifact shall be published with a known CVE at any severity unless a publish
 
 A newly disclosed vulnerability shall be caught before release, not on tag day: the full scanner set shall run as a required check on every pull request, every push to main, and every tag; scanner installers shall be pinned by checksum so a scanner that cannot run fails the pipeline rather than passing silently; main's latest candidate shall be rescanned daily; and the Go toolchain shall be kept on its latest patch by an automated bump.
 
-*Introduced v0.2.1 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; bin/inspector-gate.py; .github/policy/required-checks.json; .github/workflows/main-candidate-rescan.yml; .github/workflows/go-freshness.yml*
+*Introduced v0.2.1 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; bin/inspector-gate.py; .github/policy/required-checks.json; .github/workflows/main-candidate-rescan.yml; .github/workflows/go-freshness.yml; bin/rescan-statement.py*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
@@ -578,6 +578,8 @@ A newly disclosed vulnerability shall be caught before release, not on tag day: 
 | REQ-REL-004-AC3 | Given code already on main with no pull request open; when the daily main-candidate rescan runs; then main's latest candidate is built and scanned by the full scanner set; findings seen by two or more scanners open the tracking issue within 24 hours; single-scanner findings follow REQ-SCAN-008 and REQ-SCAN-009 (owner, Oct 2) | ci-workflow |  | approved | 2 item(s) |
 | REQ-REL-004-AC4 | Given a newer patch of a supported Go minor is released (a patch within the current line, or a newer supported minor); when the scheduled toolchain-freshness job runs; then it opens a pull request bumping the go directive in both modules to that release | ci-workflow |  | approved | 3 item(s) |
 | REQ-REL-004-AC5 | Given the published releases; when the daily rescan enumerates what to scan; then it enumerates exactly the current release (the latest published, non-draft, non-prerelease release by semantic version) and no superseded one; a release that stops being current is no longer scanned; the issues of superseded releases are not reopened or created | ci-workflow |  | approved | 1 item(s) |
+| REQ-REL-004-AC6 | Given a rescan scanner listed in .github/policy/scanners.json that cannot read the VEX itself (OSV-Scanner today; Grype and Trivy apply it themselves), and a finding for a CVE or alias that our published OpenVEX marks not_affected or fixed for this image's product; when the rescan statement is merged; then that finding is removed before it counts (it opens no tracking issue and raises no comment), is kept in the statement as vex_suppressed with the VEX document and statement that covered it, and every other finding still counts at any severity; a VEX document that is missing, cannot be read or does not parse stops the rescan as an operational error (never as 'no suppression'); the match is by CVE or alias for the image's product (the repository-wide product, or one scoped to this variant and architecture; the named package and version when the statement names subcomponents), never by CVE alone across products; and a scanner in scanners.json that is neither marked as reading the VEX natively nor covered by this filter fails a test, so a new scanner can never bypass the VEX by omission (advisor reading: ratified scanner-panel rule 4, the pipeline filter, applied to every scanner that cannot read the VEX) | unit |  | approved | 1 item(s) |
+| REQ-REL-004-AC7 | Given more open issues carry the daily-rescan label than one page holds; when the daily rescan looks for its tracking issue; then it reads every page of the open issues (pull requests excluded) before deciding that none exists, so a tracking issue on a later page is found and commented on instead of a second one being opened; a failure to read the list is an error, never 'no issue' | unit |  | approved | 1 item(s) |
 
 ### REQ-REL-005 — Every CI action pinned to a commit digest
 
