@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=59
+pass=0 failn=0 EXPECT=63
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -557,6 +557,8 @@ bad = {"WEIRD range": ent(n, ranges=[semver, {"type": "WEIRD", "events": INTRO0}
        "lowercase git": ent(n, ranges=[semver, {"type": "git", "events": INTRO0}]), "versions string": ent(n, ranges=[semver], versions="3.1.3"),
        "ranges dict": ent(n, ranges={"type": "SEMVER", "events": fixed("3.0.4")}),
        "event not a dict": ent(n, ranges=[{"type": "SEMVER", "events": ["introduced"]}]),
+       "package a string": {"package": n, "ranges": [semver]}, "package a list": {"package": [n], "ranges": [semver]},
+       "package null": {"package": None, "ranges": [semver]},
        "ranges null": ent(n, ranges=None), "events dict": ent(n, ranges=[{"type": "SEMVER", "events": {"introduced": "0"}}])}
 for what, a in bad.items():
     try: hit("3.1.3", [rec("GO-X-47", a)], none_ignored=True, sups=(True,))
@@ -583,6 +585,39 @@ PY
 py "clean() strips the Unicode line separators U+0085, U+2028 and U+2029 too" <<'PY'
 out = pa.clean("a\u0085b\u2028c\u2029d\x1be")
 assert not any(c in out for c in "\u0085\u2028\u2029\x1b"), repr(out)
+PY
+py "B6: a package name that is not a string (list, int) next to a good exact entry is unreadable: a HIT, not an ignored entry; the entry is not logged" <<'PY'
+n = BARE + "/v3"
+for name in (["x"], 7, {"a": 1}):
+    r = rec("GO-X-48", ent(n, fixed("3.0.4")), {"package": {"name": name, "ecosystem": "Go"}, "ranges": [{"type": "SEMVER", "events": INTRO0}]})
+    try: hit("3.1.3", [r], none_ignored=True, sups=(True,))
+    except AssertionError as e: raise AssertionError((repr(name),) + e.args)
+PY
+py "B6: a record whose affected is a string, a dict, null or a list with a non-object is unreadable: a HIT, not a traceback" <<'PY'
+base = {"id": "GO-X-49", "aliases": [], "modified": "2026-01-01T00:00:00Z"}
+members = [ent(BARE + "/v3", fixed("3.0.4")), "x"]
+for what, aff in (("string", "x"), ("dict", {"package": {"name": BARE + "/v3"}}), ("null", None), ("non-object member", members)):
+    try: hit("3.1.3", [dict(base, affected=aff)], none_ignored=True, sups=(True,))
+    except AssertionError as e: raise AssertionError((what,) + e.args)
+    except Exception as e: raise AssertionError((what, "traceback", repr(e)))
+PY
+py "B7: an event value written with a v prefix (fixed v3.5.0, introduced v0) cannot be read: a HIT, never a clean" <<'PY'
+n = BARE + "/v3"
+for events in (ev(("introduced", "0"), ("fixed", "v3.5.0")), ev(("introduced", "v3.0.0"), ("fixed", "3.0.4"))):
+    hit("3.1.3", [rec("GO-X-50", ent(n, events))], none_ignored=True, sups=(True,))
+PY
+py "B8: every event object has exactly one known key (introduced, fixed, last_affected, limit) with a string value: a typo key, {}, two keys in" \
+   " one event or a non-string value anywhere in the list is unreadable, a HIT" <<'PY'
+n = BARE + "/v3"
+good = ev(("introduced", "0"), ("fixed", "3.0.4"))
+bad = {"typo key": good + [{"introducd": "3.1.0"}], "empty event": good + [{}], "typo in the middle": [good[0], {"fixd": "3.0.4"}, {"fixed": "3.0.4"}],
+       "two keys": [{"introduced": "0", "fixed": "3.0.4"}], "int value": [{"introduced": "0"}, {"fixed": 304}], "null value": [{"introduced": "0"}, {"fixed": None}],
+       "list value": [{"introduced": ["0"]}, {"fixed": "3.0.4"}]}
+for what, events in bad.items():
+    try: hit("3.1.3", [rec("GO-X-51", ent(n, events))], none_ignored=True, sups=(True,))
+    except AssertionError as e: raise AssertionError((what,) + e.args)
+    except Exception as e: raise AssertionError((what, "traceback", repr(e)))
+clean("3.1.3", [rec("GO-X-52", ent(n, good + [{"limit": "3.2.0"}]))], sups=(True,))     # a limit event is a known key: still readable
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
