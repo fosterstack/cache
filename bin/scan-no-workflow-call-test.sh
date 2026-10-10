@@ -238,15 +238,17 @@ expect ok "the real repository: neither file is callable and nothing calls them"
 CALL_SCAN=$'name: scan\non:\n  pull_request:\n  workflow_call:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
 CLEAN_SCAN=$'name: scan\non:\n  pull_request:\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
 gitjudge() { # gitjudge ok|caught LABEL NAME 'edit in the repo before the commit' ['edit after the commit'] [revision]
+            #          ['command run in the repo that prints the revision'] ['text the refusal must contain']
   local r out rc=0 rev
   r=$(fixture "git-$3")
   ( cd "$r" && git init -q . && eval "$4" && git add -A \
       && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm head && eval "${5:-:}" ) >/dev/null 2>&1 \
     || { failn=$((failn + 1)); echo "FAIL git: $2 -> the fixture repository could not be built"; return; }
   rev=${6:-$(git -C "$r" rev-parse HEAD)}
+  [ -z "${7:-}" ] || rev=$(cd "$r" && eval "$7")
   out=$(cd "$r" && SCAN_GUARD_NESTED=1 SCAN_GUARD_JUDGE_GIT="$rev" bash "$root/bin/scan-no-workflow-call-test.sh" 2>&1) || rc=$?
   if [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   git: $2"
-  elif [ "$1" = caught ] && [ "$rc" = 1 ]; then pass=$((pass + 1)); echo "ok   git: $2 (caught: $out)"
+  elif [ "$1" = caught ] && [ "$rc" = 1 ] && [[ "$out" == *"${8:-}"* ]]; then pass=$((pass + 1)); echo "ok   git: $2 (caught: $out)"
   else failn=$((failn + 1)); echo "FAIL git: $2 -> rc=$rc $out"; fi
 }
 gitjudge ok     "a clean head passes" clean ':'
@@ -276,8 +278,16 @@ gitjudge caught "a revision that is not a full sha (HEAD) is refused" shortrev '
 gitjudge caught "a full sha that is not in the repository is refused" norev ':' '' "$(printf '0%.0s' {1..40})"
 gitjudge caught "a submodule entry under .github/actions is refused (fail closed)" submodule \
   "mkdir -p .github/actions/sub && git -C .github/actions/sub init -q && git -C .github/actions/sub -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -q --allow-empty -m s"
+# only a commit is judged (Codex round 5): a tag, tree or blob object, or a 64-hex name that is not here, is refused by
+# its object type; a lightweight tag names the commit itself, so its sha is a commit and passes
+TAGIT='git -c user.name=t -c user.email=t@t tag -a t1 -m t && git tag lt'
+gitjudge caught "an annotated tag object's sha is refused" tagobj ':' "$TAGIT" '' 'git rev-parse t1' 'is not a commit'
+gitjudge caught "a tree sha is refused" treeobj ':' '' '' 'git rev-parse "HEAD^{tree}"' 'is not a commit'
+gitjudge caught "a blob sha is refused" blobobj ':' '' '' 'git rev-parse HEAD:.github/workflows/scan.yml' 'is not a commit'
+gitjudge ok     "a lightweight tag's sha is the commit itself and passes" lighttag ':' "$TAGIT" '' 'git rev-parse lt'
+gitjudge caught "a 64-hex name that is not in the repository is refused" norev64 ':' '' "$(printf '0%.0s' {1..64})" '' 'is not a commit'
 
-EXPECT=58
+EXPECT=63
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

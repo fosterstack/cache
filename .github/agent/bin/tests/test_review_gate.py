@@ -839,6 +839,15 @@ class GateRunsTheScanGuard(unittest.TestCase):
     def test_the_real_gate_runs_the_default_branchs_scan_guard_over_the_head(self):
         self.assertEqual(self.problems(self.text()), [])
 
+    def test_the_published_failure_summary_names_every_check_the_judge_runs(self):
+        # Codex round 5: a failed scanner guard or pin-wiring judge is explained on the check run, not only in the log
+        import yaml
+        pub = [st["run"] for st in yaml.safe_load(self.text())["jobs"]["publish"]["steps"] if "conclusion=failure" in st.get("run", "")]
+        self.assertEqual(len(pub), 1, pub)
+        failure = [l for l in pub[0].splitlines() if "conclusion=failure" in l][0]
+        for words in ("review-loop record", "commit digest", "allowlist guard", "pin-wiring", "scanner guard", "judge did not finish"):
+            self.assertIn(words, failure, words)
+
     def test_the_scan_guard_is_an_enforcement_file_once_the_gate_runs_it(self):
         # what the gate runs is never cleared by a substitute (the derived-wiring test above asks the same of every path)
         self.assertTrue(G.enforces("bin/" + self.SCRIPT))
