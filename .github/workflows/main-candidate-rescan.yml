@@ -532,6 +532,12 @@ jobs:
           fi
           jq -e 'type == "array"' "$w/releases.json" >/dev/null \
             || { echo "::error::gh release list did not return a JSON array" >&2; exit 1; }
+          # gh returns at most --limit releases, newest-created first. A list that REACHES the limit may have cut the current
+          # release off (it can be the oldest by creation date), so it is an error, never a wrong or an empty day.
+          if [ "$(jq 'length' "$w/releases.json")" -ge 1000 ]; then
+            echo "::error::release list reached the limit of 1000: the current release may be hidden - refusing to pick from a truncated list" >&2
+            exit 1
+          fi
           current=$(jq -r '[.[] | select((.isDraft | not) and (.isPrerelease | not)
                                          and (.tagName | test("^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$")))
                             | .tagName]

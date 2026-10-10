@@ -176,5 +176,25 @@ run; t=$(targets)
 if [ "$rc" -eq 0 ] && [ "$(jq -c '[.[].release] | unique' <<<"${t:-[]}")" = '["v0.2.0"]' ] && ! grep -q 'v0\.02\.9\|v0.02.9' <(grep 'release \(view\|download\)' "$FIX/calls.log"); then ok "R3: a leading-zero tag is never current and never inspected"
 else bad "R3 leading zeros" "rc=$rc targets=${t:0:200}"; fi
 
+# 15. truncation: a list that reaches the limit may hide the current release - fail closed, never a wrong or empty day
+LIMMSG='release list reached the limit of 1000: the current release may be hidden'
+for spec in 'exactly 1000 entries, current oldest|[range(1;1000) | {tagName:("v0.0."+tostring),isDraft:false,isPrerelease:false}] + [{tagName:"v1.0.0",isDraft:false,isPrerelease:false}]' \
+            '1001 entries, current oldest|[range(1;1001) | {tagName:("v0.0."+tostring),isDraft:false,isPrerelease:false}] + [{tagName:"v1.0.0",isDraft:false,isPrerelease:false}]' \
+            '1000 drafts ahead of the current|[range(1;1001) | {tagName:("v0.9."+tostring),isDraft:true,isPrerelease:false}] + [{tagName:"v1.0.0",isDraft:false,isPrerelease:false}]'; do
+  setup "$(jq -n -c "${spec#*|}")" v1.0.0
+  run
+  if [ "$rc" -ne 0 ] && [ -z "$(targets)" ] && [ -z "$(anyv)" ] && grep -qF "$LIMMSG" <<<"$msg"; then ok "truncation: ${spec%%|*} fails closed with the limit message"
+  else bad "truncation: ${spec%%|*}" "rc=$rc targets=$(targets | head -c 100) msg=${msg:0:200}"; fi
+done
+
+# 16. the shape guard stops a malformed target BEFORE anything is written to GITHUB_OUTPUT
+for how in 'a missing digest|del(.images[0].digest)' 'a newline in the variant|.images[0].variant = "pro\nduction"' 'a bad digest|.images[0].digest = "sha256:xyz"'; do
+  setup '[{"tagName":"v0.2.2","isDraft":false,"isPrerelease":false}]' v0.2.2
+  jq -c "${how#*|}" "$FIX/m-v0.2.2.json" > "$FIX/m.tmp" && mv "$FIX/m.tmp" "$FIX/m-v0.2.2.json"
+  run
+  if [ "$rc" -ne 0 ] && ! grep -q 'targets=' "$work/out" && ! grep -q 'any=' "$work/out" && grep -q 'malformed' <<<"$msg"; then ok "shape guard: ${how%%|*} fails before any output is written"
+  else bad "shape guard: ${how%%|*}" "rc=$rc out=$(head -c 120 "$work/out") msg=${msg:0:200}"; fi
+done
+
 echo "passed: $pass failed: $failn"
 [ "$failn" -eq 0 ]
