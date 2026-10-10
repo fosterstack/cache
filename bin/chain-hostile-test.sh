@@ -601,6 +601,7 @@ t = open(sys.argv[1]).read(); assert sys.argv[2] in t, "mutation target not foun
 open(sys.argv[1], "w").write(t.replace(sys.argv[2], sys.argv[3], 1))
 PY
 }
+d=$(mk w_dupon); printf 'on: push\n' | cat - "$d/.github/workflows/stage-build.yml" > "$d/x" && mv "$d/x" "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: a duplicate top-level on: key in stage-build.yml is refused, never resolved to the last one (Codex #249 r4 B3a)" "$d"
 d=$(mk w_nogate); sed -i.bak 's/if: .*inputs.hostile.*/if: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step is not gated by inputs.hostile" "$d"
 d=$(mk w_noup); sed -i.bak 's/hostile-attempts/other/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
 d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
@@ -815,7 +816,7 @@ for words in ("PR 2 (Build) lands on the integration branch chain-v030", "before
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
 PY
-EXPECT=155
+EXPECT=156
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

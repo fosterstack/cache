@@ -55,8 +55,25 @@ cat > "$work/judge.py" <<'PY'
 import glob, json, os, re, sys, yaml
 SHA = r"[0-9a-f]{40}"
 TOKEN = r"ACTIONS_ID_TOKEN|ACTIONS_RUNTIME|id-token|getIDToken|oidc|/proc/\S*environ|\bprintenv\b|\benv\b\s*(\||>|$)|\bset\s+-\w*x"
+class DuplicateKey(Exception): pass
+class NoDuplicateKeys(yaml.BaseLoader):
+    """BaseLoader (plain strings) that refuses a mapping key repeating another key of the same mapping once both are trimmed and
+    case-folded, at any depth (Codex #249 r4 B3a): BaseLoader alone keeps only the LAST of two equal keys, so the judged value need
+    not be the one GitHub runs. A key that is not a plain scalar is refused for the same reason (as chain-verify.py load_yaml)."""
+    def construct_mapping(self, mnode, deep=False):
+        first = {}
+        for key, _value in mnode.value:
+            if not isinstance(key, yaml.ScalarNode):
+                raise DuplicateKey("a mapping key at line %d is not a plain scalar" % (key.start_mark.line + 1))
+            norm = key.value.strip().casefold()
+            if norm in first:
+                raise DuplicateKey("duplicate key %r at line %d repeats %r at line %d (a YAML reader keeps only one of them)"
+                                   % (key.value, key.start_mark.line + 1, first[norm].value, first[norm].start_mark.line + 1))
+            first[norm] = key
+        return super().construct_mapping(mnode, deep)
+def yload(text): return yaml.load(text, Loader=NoDuplicateKeys)
 def load(path):
-    return yaml.load(open(path).read(), Loader=yaml.BaseLoader), open(path).read()
+    return yload(open(path).read()), open(path).read()
 
 sys.path.insert(0, os.path.join(os.environ["CHAIN_ROOT"], "bin"))
 import importlib.util
@@ -71,7 +88,9 @@ R_INSTALL = r"bash bin/install-scanner\.sh cosign"
 R_SIGN = r"python3 -I -B bin/chain-verify\.py sign --check --signer cosign --digests digests\.json --build-record witness-build/build-collection\.json --template \.github/policy/release-policy\.template\.json --out provenance"
 def judge_sign(path):
     if not os.path.exists(path): return ["missing: " + path]
-    d, text = load(path); bad = []
+    try: d, text = load(path)
+    except Exception as ex: return ["AC1: %s cannot be judged (%s: %s)" % (os.path.basename(path), type(ex).__name__, ex)]
+    bad = []
     extra_top = set(d) - {"name", "on", "permissions", "jobs"}
     if extra_top: bad.append("AC3: top-level keys %s are not allowed (defaults.run.shell, concurrency, run-name, env can reroute every run step)" % sorted(extra_top))
     on = d.get("on")
@@ -145,7 +164,9 @@ def judge_sign(path):
 
 def judge_build(path):
     if not os.path.exists(path): return []
-    d, text = load(path); bad = []
+    try: d, text = load(path)
+    except Exception as ex: return ["AC1: %s cannot be judged (%s: %s)" % (os.path.basename(path), type(ex).__name__, ex)]
+    bad = []
     wf_env = d.get("env") or {}
     for jn, j in (d.get("jobs") or {}).items():
         steps = j.get("steps") or []
@@ -250,7 +271,7 @@ def goreleaser_keys(base, bad):
     env/flags from the closed sets: no signs, docker_signs, binary_signs, universal_binaries, upx, nfpms, publishers, gobinary, tool..."""
     g = os.path.join(base, ".goreleaser.yaml")
     if not os.path.exists(g): return
-    try: d = yaml.load(open(g).read(), Loader=yaml.BaseLoader)
+    try: d = yload(open(g).read())
     except Exception as ex: bad.append("AC1: .goreleaser.yaml does not parse (%s)" % ex); return
     if not isinstance(d, dict): bad.append("AC1: .goreleaser.yaml is not a mapping"); return
     for k in sorted(set(d) - GORELEASER_KEYS[""]): bad.append("AC1: .goreleaser.yaml has key `%s`, outside its closed key set" % k)
@@ -287,8 +308,12 @@ def merge_keys(base, files, bad):
             seen.add(id(n))
             if n.tag == MERGE_TAG: bad.append("AC1: %s%s uses a merge key (!!merge); write it out in full" % (os.path.relpath(f, base), path))
             if isinstance(n, yaml.MappingNode):
+                keys = set()
                 for k, v in n.value:
                     kv = k.value if isinstance(k, yaml.ScalarNode) else "?"
+                    if not isinstance(k, yaml.ScalarNode): bad.append("AC1: %s%s has a mapping key that is not a plain scalar" % (os.path.relpath(f, base), path))
+                    elif kv.strip().casefold() in keys: bad.append("AC1: %s%s repeats the key %r (a YAML reader keeps only one of them)" % (os.path.relpath(f, base), path, kv))
+                    else: keys.add(kv.strip().casefold())
                     if isinstance(k, yaml.ScalarNode) and k.value.strip() == "<<": bad.append("AC1: %s%s uses a merge key (<<); write it out in full" % (os.path.relpath(f, base), path))
                     todo += [(k, path + "/" + kv), (v, path + "/" + kv)]
             elif isinstance(n, yaml.SequenceNode):
@@ -310,7 +335,7 @@ def id_token_jobs(base, files, bad):
         return isinstance(perm, dict) and any(str(k).strip().lower() == "id-token" and str(v).strip().lower() == "write" for k, v in perm.items())
     held = set()
     for f in files:
-        try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
+        try: d = yload(open(f).read()) or {}
         except Exception as ex:
             bad.append("AC1: %s does not parse, so its id-token holders cannot be checked (%s)" % (os.path.basename(f), type(ex).__name__)); continue
         wf = os.path.basename(f)
@@ -367,7 +392,7 @@ def stage_grammars(base, files, frozen, rows, envn, bad):
     for f in files:
         rel = os.path.basename(f)
         if not rel.startswith("stage-"): continue
-        try: d = yaml.load(open(f).read(), Loader=yaml.BaseLoader) or {}
+        try: d = yload(open(f).read()) or {}
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
         e, r = _cts.stage_grammar(rel, d, rows, envn)
         if os.path.relpath(f, base) not in frozen: bad += ["AC1 grammar: " + x for x in e]
@@ -426,7 +451,7 @@ def judge_calls(root):
     wd = os.path.join(root, ".github/workflows")
     for fn in sorted(os.listdir(wd)):
         if not fn.endswith((".yml", ".yaml")) or fn == "release.yml": continue
-        try: d = yaml.load(open(os.path.join(wd, fn)).read(), Loader=yaml.BaseLoader) or {}
+        try: d = yload(open(os.path.join(wd, fn)).read()) or {}
         except Exception as e: bad.append("AC5: %s does not parse (%s)" % (fn, e)); continue
         for jn, j in (d.get("jobs") or {}).items():
             refs = [str(j.get("uses", ""))] + [str(s.get("uses", "")) for s in (j.get("steps") or [])]
