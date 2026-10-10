@@ -6,7 +6,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "cae48812fc7bb8cc4edf03fed5b228ede3a7475b62df995031d1449f1ee29996",
+      "sha256": "0b2e699ffbdb6a50dbe4e6a792b5bc9bf934f1a7bfd06fdb15dcf59273be3d31",
       "tools": [
         "make",
         "at"
@@ -46,7 +46,7 @@
     },
     {
       "path": "bin/chain_common.py",
-      "sha256": "75833438ce4b7b57ccc7750a55bc4bb6cd4058dc922f085530bd103b12306d70",
+      "sha256": "c6ae3f738900c141c24118b6acd8b8ee01bf51685ca62bc0ccf9019be7737e27",
       "tools": [],
       "runs": [],
       "signs": false,
@@ -54,11 +54,13 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "252fe755b8fdef76b03e5bd215e6ff03d92e6f88ed3e4783da7d6d489dc55a2b",
-      "tools": [],
+      "sha256": "62294dc8e4aa0084dd6d836971db3f07d09b70d459641f5ab6afbe73377b3492",
+      "tools": [
+        "at"
+      ],
       "runs": [],
       "signs": false,
-      "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict)"
+      "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
     }
   ]
 }

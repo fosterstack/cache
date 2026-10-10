@@ -742,7 +742,7 @@ def cmd_check_build_record(a):
 
 
 def provenance_statement(pol, obj, dry):
-    """The SLSA v1 provenance Sign signs: what was built (the digests), from which source and run (GitHub's own variables)."""
+    """The SLSA v1 provenance Sign signs: what was built (the digests), from which commit and run (GitHub's own variables)."""
     repo, ref = pol["repository"], pol.get("ref", "")
     run_url = "%s/%s/actions/runs/%s" % (os.environ.get("GITHUB_SERVER_URL", "https://github.com"), repo, os.environ.get("GITHUB_RUN_ID", "0"))
     commit = os.environ.get("GITHUB_SHA", "")
@@ -973,9 +973,9 @@ def load_yaml(path):
     yaml = import_yaml()
 
     class NoDuplicateKeys(yaml.BaseLoader):
-        def construct_mapping(self, node, deep=False):
+        def construct_mapping(self, mnode, deep=False):
             first = {}
-            for key, _value in node.value:
+            for key, _value in mnode.value:
                 if not isinstance(key, yaml.ScalarNode):
                     raise DuplicateKey("%s: a mapping key at line %d is not a plain scalar" % (path, key.start_mark.line + 1))
                 norm = key.value.strip().casefold()
@@ -983,7 +983,7 @@ def load_yaml(path):
                     raise DuplicateKey("%s: duplicate key %r at line %d repeats %r at line %d (a YAML reader keeps only one of them)"
                                        % (path, key.value, key.start_mark.line + 1, first[norm].value, first[norm].start_mark.line + 1))
                 first[norm] = key
-            return super().construct_mapping(node, deep)
+            return super().construct_mapping(mnode, deep)
 
     with open(path) as f:
         return yaml.load(f.read(), Loader=NoDuplicateKeys)

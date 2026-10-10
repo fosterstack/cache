@@ -1,4 +1,4 @@
-"""Small helpers shared by bin/chain-verify.py and bin/chain_hostile.py: the refusal, base64, the openssl call, strict JSON and
+"""Small helpers shared by the verifier and the dry run's judges: the refusal, base64, the openssl call, strict JSON and
 the clock. No policy lives here."""
 import base64
 import datetime as dt

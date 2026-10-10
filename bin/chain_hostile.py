@@ -1,4 +1,4 @@
-"""The dry run's judges (v0.3.0 rules 52a and 59; REQ-CHAIN-001-AC5), reached through `chain-verify.py hostile-*`: one row per
+"""The dry run's judges (v0.3.0 rules 52a and 59; REQ-CHAIN-001-AC5), reached through the verifier's hostile-* subcommands: one row per
 hostile attempt written from the verifier's OWN exit code, the merge of the rows, the grading of the token and key material the
 hostile step found, and the verdict. Specified in the header of bin/chain-hostile-test.sh."""
 import base64
