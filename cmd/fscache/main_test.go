@@ -217,3 +217,36 @@ func TestLoadConfigReadOnlyCredentials(t *testing.T) {
 		t.Fatalf("read-only pair not carried: %+v", cfg)
 	}
 }
+
+// REQ-HTTP-002-AC2 (fail-closed per REQ-CFG-003): an invalid
+// FSCACHE_MAX_CONCURRENT_UPLOADS fails startup with the variable and the
+// value named, and the message describes the setting truthfully - it is
+// a count of uploads, not a byte count (backlog item 17a).
+func TestInvalidUploadBoundFailsStartupNamingCount(t *testing.T) {
+	for _, value := range []string{"lots", "-1", "4x", "1.5", "92233720368547758080"} {
+		t.Run(value, func(t *testing.T) {
+			clearEnv(t)
+			t.Setenv("FSCACHE_MAX_CONCURRENT_UPLOADS", value)
+			_, err := loadConfig()
+			if err == nil {
+				t.Fatalf("value %q: expected startup to fail", value)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "FSCACHE_MAX_CONCURRENT_UPLOADS") || !strings.Contains(msg, value) {
+				t.Errorf("error %q must name the variable and the value %q", msg, value)
+			}
+			if strings.Contains(msg, "byte count") {
+				t.Errorf("error %q wrongly calls an upload count a byte count", msg)
+			}
+		})
+	}
+}
+
+// The byte-size variables keep their byte-count wording.
+func TestByteVariablesKeepByteCountWording(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("FSCACHE_MAX_BYTES", "20GiB")
+	if _, err := loadConfig(); err == nil || !strings.Contains(err.Error(), "byte count") {
+		t.Fatalf("error = %v, want the byte count wording", err)
+	}
+}
