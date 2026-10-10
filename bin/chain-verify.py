@@ -174,6 +174,8 @@ def policy_make(a):
     fulcio_p = a.fulcio_chain or os.path.join(d, "fulcio-chain.pem")
     tsa_p = a.tsa_chain or os.path.join(d, "tsa-chain.pem")
     rekor_p = a.rekor_key or os.path.join(d, "rekor.pub")
+    if re.match(r"(refs/tags/)?v0\.0\.0($|-)", a.tag or a.ref or ""):
+        refuse("policy", "snapshot version")      # no policy, hence no Sign or Release, can exist for a snapshot version (REQ-CHAIN-004-AC15)
     if a.tag:
         if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", a.tag):
             refuse("policy", "tag %r is not vX.Y.Z" % a.tag)
@@ -242,6 +244,7 @@ def read_record(stage, path):
         refuse(stage, "record is not a DSSE envelope (%s)" % (ex if isinstance(ex, ValueError) and "duplicate" in str(ex) else type(ex).__name__))
     if len(dsse["signatures"]) != 1:
         refuse(stage, "record must carry exactly one signature, it has %d" % len(dsse["signatures"]))
+    chain_items.check_record_names(stage, payload)       # a snapshot record or version, a name that is not the stage's: refused before any certificate
     return dsse, payload, ptype
 
 
@@ -597,6 +600,7 @@ STARTS_FROM = {"rebuild": ("build",), "check": ("build",), "sign": ("build",), "
 def cmd_stage_start(a):
     if a.previous not in STARTS_FROM.get(a.stage, ()):
         refuse(a.previous, "stage %s does not start from the %s stage's record (stage)" % (a.stage, a.previous))
+    chain_items.check_digest_names(a.previous, a.digests)
     pol = load_json(a.policy, "policy")
     now = parse_now(a.now)
     if pol.get("dry_run"):
@@ -640,6 +644,7 @@ def check_build_record(a):
     and the list has the right format. Returns (policy, digest-object). Signs nothing and calls no tool."""
     # two clearly named inputs: --template makes the per-tag policy here (the production Sign job), --policy is a finished one
     # (the dry run's own policy.json); exactly one is given
+    chain_items.check_digest_names("build", a.digests)
     pol = make_policy_from_template(a, a.template) if a.template else load_json(a.policy, "policy")
     if "roots" not in pol:
         refuse("sign", "--policy must be a finished policy; a template goes to --template")

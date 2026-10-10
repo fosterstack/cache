@@ -31,6 +31,54 @@ TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
                "GH_TOKEN", "GITHUB_TOKEN")
 
 
+# ---- the names a record may carry (REQ-CHAIN-004-AC13 and AC15; REQ-CHAIN-005-AC7) ----------------------------------------------------------
+# A snapshot build (the proof workflows' mode) is signed by Witness like a release build, so the verifiers must tell them apart. Two rules, both made BEFORE any
+# certificate, signature or timestamp is looked at, and both early protection against honest confusion and lookalikes: the security boundary is the Build Config URI
+# pin of check_identity (the calling workflow must be release.yml at the tag).
+SNAPSHOT_NAME = re.compile(r"snapshot-[a-z0-9_-]*")                    # exactly this is "a snapshot record"
+RELEASE_NAMES = {"build": ("apk", "build"), "rebuild": ("rapk", "rebuild")}      # the collection names a stage reads; other stages' records are not collections
+SNAPSHOT_VERSION_FILE = re.compile(r"fscache(-fips)?[-_]0\.0\.0[_-]")           # fscache-0.0.0_rc1-r0.apk, fscache_0.0.0-rc.1_linux_amd64.tar.gz; not 10.0.0 or 0.10.0
+
+
+def check_collection_name(stage, name):
+    """AC13, one rule: exactly snapshot-[a-z0-9_-]* is a snapshot record; any other name that is not a release name of this stage is refused by name."""
+    if isinstance(name, str) and SNAPSHOT_NAME.fullmatch(name):
+        refuse(stage, "snapshot record")
+    allowed = RELEASE_NAMES.get(stage)
+    if allowed and name not in allowed:
+        refuse(stage, "collection name %r is not a release name of this stage (%s)" % (name, " or ".join(allowed)))
+
+
+def check_snapshot_version(stage, names):
+    """AC15: a record, or a digests.json, that names a file of the snapshot version 0.0.0 is refused, whatever it is called. Names only, never digest values."""
+    if any(isinstance(n, str) and SNAPSHOT_VERSION_FILE.search(n) for n in names):
+        refuse(stage, "snapshot version")
+
+
+def check_record_names(stage, payload):
+    """Called by chain-verify.py for every record a stage reads: applies both rules to a Witness collection (a provenance statement is left alone)."""
+    try:
+        statement = strict_json(payload)
+    except ValueError:
+        return
+    if not isinstance(statement, dict) or statement.get("predicateType") != "https://witness.testifysec.com/attestation-collection/v0.1":
+        return
+    predicate = statement.get("predicate")
+    check_collection_name(stage, predicate.get("name") if isinstance(predicate, dict) else None)
+    subjects = statement.get("subject")
+    check_snapshot_version(stage, [s.get("name") for s in subjects if isinstance(s, dict)] if isinstance(subjects, list) else [])
+
+
+def check_digest_names(stage, path):
+    """AC15 for a digests.json: its keys (never its values) must not name a 0.0.0 file. An unreadable file is left to the schema check that follows."""
+    try:
+        with open(path, "rb") as f:
+            keys = list(strict_json(f.read()))
+    except (OSError, ValueError, TypeError):
+        return
+    check_snapshot_version(stage, keys)
+
+
 def usage(message):
     print("usage: " + message, file=sys.stderr)
     sys.exit(2)
@@ -79,11 +127,14 @@ def hidden_paths(root):
 
 
 # ---- bind -------------------------------------------------------------------------------------------------------------------------
+BIND_STAGE = {"apk": "build", "rapk": "rebuild", "snapshot-apk": "build", "snapshot-rapk": "rebuild"}     # --step -> the stage whose record it is
+
+
 def cmd_bind(a):
-    if a.step not in ("apk", "rapk"):
-        usage("--step must be apk or rapk")
+    if a.step not in BIND_STAGE:
+        usage("--step must be one of %s" % ", ".join(BIND_STAGE))
     check_relative(a.dir, a.prefix)
-    stage = "build" if a.step == "apk" else "rebuild"
+    stage = BIND_STAGE[a.step]
     name, subjects = read_collection(a.record)
     if name is None:
         refuse(stage, "record: not a DSSE envelope of a Witness collection")
@@ -284,24 +335,49 @@ def compare_problem(subjects, raw_expected, expected, actual, rows, both_ok):
     return None
 
 
+def snapshot_verdict(rows, identical):
+    """witness-rebuild/snapshot-verdict.json (agreed with cache-3f, approved by the advisor): the two image index digests of both builds, and every item that is
+    not the same. The verdict is differs if ANY item differs (an SBOM alone is enough), a missing image digest is null."""
+    by_name = {r["name"]: r for r in rows}
+    images = []
+    for image in ("production", "fips"):
+        row = by_name.get("image-" + image, {})
+        images.append({"image": image, "build_digest": row.get("expected"), "rebuild_digest": row.get("actual"), "equal": row.get("status") == "same"})
+    return {"verdict": "identical" if identical else "differs", "images": images,
+            "items_differing": sorted(r["name"] for r in rows if r["status"] != "same")}
+
+
+def check_compare_record_name(name, snapshot):
+    """Build's record for rebuild-compare is named build; with --snapshot it is named snapshot-build and nothing else (REQ-CHAIN-005-AC7)."""
+    if snapshot:
+        if name != "snapshot-build":
+            refuse("rebuild", "step: %s" % (name,))
+        return
+    if isinstance(name, str) and SNAPSHOT_NAME.fullmatch(name):
+        refuse("rebuild", "snapshot record")
+    if name != "build":
+        refuse("rebuild", "collection name %r is not build (Build's record)" % (name,))
+
+
 def cmd_rebuild_compare(a):
-    _, subjects = read_collection(a.build_record)
+    name, subjects = read_collection(a.build_record)
+    check_compare_record_name(name, a.snapshot)
     raw_expected, expected = load_items(a.expected, "--expected")
     _, actual = load_items(a.actual, "--actual")
     listed = committed_items()
     both_ok = isinstance(expected, dict) and isinstance(actual, dict)
-    names = sorted(set(listed) | (set(expected) | set(actual) if both_ok else set()))
     rows = []
     if both_ok:
-        for name in names:
-            row = {"name": name, "expected": expected.get(name), "actual": actual.get(name), "status": status_of(name, expected, actual)}
-            if name not in listed:
+        for item in sorted(set(listed) | set(expected) | set(actual)):
+            row = {"name": item, "expected": expected.get(item), "actual": actual.get(item), "status": status_of(item, expected, actual)}
+            if item not in listed:
                 row["status"] = "unexpected"
             rows.append(row)
     problem = compare_problem(subjects, raw_expected, expected, actual, rows, both_ok)
     os.makedirs(os.path.dirname(os.path.abspath(a.out)), exist_ok=True)
+    verdict = snapshot_verdict(rows, problem is None) if a.snapshot else {"equal": problem is None, "items": rows}
     with open(a.out, "w") as f:
-        json.dump({"equal": problem is None, "items": rows}, f, sort_keys=True, indent=1)
+        json.dump(verdict, f, sort_keys=True, indent=1)
         f.write("\n")
     if problem:
         refuse("rebuild", problem)
@@ -317,6 +393,14 @@ def cmd_record_env(a):
         usage("%s is not a readable JSON file" % a.record)
     if not isinstance(envelope, dict) or "payload" not in envelope:
         refuse("build", "env: the record is not a DSSE envelope (Witness -o writes {payloadType, payload, signatures})")
+    try:
+        statement = strict_json(b64d(envelope["payload"]))
+        predicate = statement.get("predicate") if isinstance(statement, dict) else None
+        name = predicate.get("name") if isinstance(predicate, dict) else None
+    except (ValueError, TypeError):
+        name = None
+    if isinstance(name, str) and SNAPSHOT_NAME.fullmatch(name):
+        refuse("build", "snapshot record")          # nothing can token-check a snapshot record; nothing consumes one (REQ-CHAIN-004-AC13)
     try:
         text = json.dumps(envelope) + "\n" + b64d(envelope["payload"]).decode("utf-8", "replace")
     except ValueError:
@@ -349,6 +433,7 @@ def add_parsers(sub):
     c = sub.add_parser("rebuild-compare")
     for name in ("build-record", "expected", "actual", "out"):
         c.add_argument("--" + name, required=True)
+    c.add_argument("--snapshot", action="store_true")
     e = sub.add_parser("record-env")
     e.add_argument("--record", required=True)
 
