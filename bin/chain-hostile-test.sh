@@ -334,9 +334,23 @@ def conj(cond):
 OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}
+class NoDuplicateKeys(yaml.BaseLoader):
+    """BaseLoader that refuses a repeated mapping key (trimmed, case-folded) at any depth, as the stage judge does (Codex #249 r4 B3a):
+    BaseLoader alone keeps only the LAST of two equal keys, so the wiring judged need not be the wiring GitHub runs."""
+    def construct_mapping(self, mnode, deep=False):
+        seen = set()
+        for key, _value in mnode.value:
+            norm = key.value.strip().casefold() if isinstance(key, yaml.ScalarNode) else None
+            if norm is None or norm in seen:
+                raise yaml.YAMLError("duplicate or non-scalar key at line %d" % (key.start_mark.line + 1))
+            seen.add(norm)
+        return super().construct_mapping(mnode, deep)
 def load(rel):
     p = os.path.join(root, rel)
-    return yaml.load(open(p).read(), Loader=yaml.BaseLoader) if os.path.exists(p) else None
+    if not os.path.exists(p): return None
+    try: return yaml.load(open(p).read(), Loader=NoDuplicateKeys)
+    except yaml.YAMLError as ex:
+        print("%s cannot be judged: %s" % (rel, ex)); sys.exit(1)
 sb, rl = load(".github/workflows/stage-build.yml"), load(".github/workflows/release.yml")
 if sb is None: bad.append("stage-build.yml missing")
 else:
