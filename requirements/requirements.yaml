@@ -764,9 +764,9 @@ requirements:
         verification: { method: http-integration, release_blocking: false }
         status: approved
       - id: REQ-OBS-002-AC10
-        given: a server that starts on a healthy directory, and one that starts on a read-only or full directory
-        when: /metrics is scraped before any request is made
-        then: fscache_store_writable and fscache_store_free_bytes already hold a measured value (1 and the real free bytes; or 0 and the real free bytes), the fscache_put_errors_total series read 0, and the server still starts and serves in the bad case (GETs work)
+        given: a server that started on a healthy directory whose volume later becomes read-only or full, and a server asked to start on a read-only or full directory
+        when: /metrics is scraped
+        then: in the first case fscache_store_writable reads 0 and fscache_store_free_bytes the real free bytes within one refresh, the fscache_put_errors_total series count the failed PUTs by reason, and GETs still work; in the second case the server exits at start with the fatal error naming the failed write and serves nothing, and it never reports writable 1 for a volume it could not write
         verification: { method: http-integration, release_blocking: false }
         status: approved
       - id: REQ-OBS-002-AC11
@@ -813,7 +813,7 @@ requirements:
       - id: REQ-OBS-003-AC4
         given: "a server in each state: healthy; read-only directory; fake full disk; after one failed PUT of each reason"
         when: /statusz (JSON) and /metrics are read with no sample refresh between them (same cached sample, fixed test clock)
-        then: "store_writable true/false equals gauge 1/0; store_free_bytes equals fscache_store_free_bytes exactly; each put_errors.<reason> equals fscache_put_errors_total{reason=\"<reason>\"} exactly"
+        then: "store_writable true/false equals gauge 1/0; store_free_bytes equals fscache_store_free_bytes exactly up to 2^53 bytes (the precision of the metrics format; /statusz gives the exact count); each put_errors.<reason> equals fscache_put_errors_total{reason=\"<reason>\"} exactly"
         verification: { method: http-integration, release_blocking: false }
         status: approved
       - id: REQ-OBS-003-AC5

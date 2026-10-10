@@ -12,6 +12,8 @@ package storesample
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -282,7 +284,9 @@ func (s *Sampler) probe() error {
 	path := filepath.Join(s.dir, probePrefix+hex.EncodeToString(b[:]))
 	f, err := s.d.OpenProbe(path)
 	if err != nil {
-		_ = s.d.Remove(path)
+		if !errors.Is(err, fs.ErrExist) { // the name was already taken: that file is not ours to delete
+			_ = s.d.Remove(path)
+		}
 		return err
 	}
 	var first error

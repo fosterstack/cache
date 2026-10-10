@@ -90,7 +90,7 @@ func New(reg prometheus.Registerer) *Metrics {
 		StoreFreeBytes: f.NewGauge(prometheus.GaugeOpts{
 			Namespace: "fscache",
 			Name:      "store_free_bytes",
-			Help:      "Bytes available to an unprivileged process on the filesystem that holds the data directory (what df shows as Avail); 0 if it could not be read.",
+			Help:      "Bytes available to an unprivileged process on the filesystem that holds the data directory (what df shows as Avail); 0 if it could not be read. A float64 gauge: exact up to 2^53 bytes (/statusz gives the exact count).",
 		}),
 		PutErrors: f.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "fscache",

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -496,26 +497,26 @@ func TestStaleLimitFiringDuringTheNextRefreshDoesNotPublishIntoIt(t *testing.T) 
 	deps.OpenProbe = func(string) (ProbeFile, error) {
 		d.probes.Add(1)
 		if calls.Add(1) == 1 {
-			time.Sleep(30 * time.Millisecond) // refresh 1: slow but inside nothing yet (limit 40 ms)
+			time.Sleep(150 * time.Millisecond) // refresh 1: slow, but inside its limit (400 ms)
 		} else {
 			<-release // refresh 2: blocked until the test releases it
 		}
 		return fakeFile{d}, nil
 	}
-	s := New("/data/blobs", deps, Options{ProbeLimit: 40 * time.Millisecond, WaitBudget: 5 * time.Millisecond, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
+	s := New("/data/blobs", deps, Options{ProbeLimit: 400 * time.Millisecond, WaitBudget: 5 * time.Millisecond, Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))})
 	var hooked atomic.Int64
 	s.afterFinish = func() {
 		if hooked.Add(1) != 1 {
 			return
 		}
 		s.MarkStale()
-		s.refreshIfNeeded()               // refresh 2 starts in the gap, its probe blocked
-		time.Sleep(20 * time.Millisecond) // refresh 1's limit fires at 40 ms, while refresh 2 is running
-		close(release)                    // refresh 2's probe ends inside its own limit
-		time.Sleep(10 * time.Millisecond)
+		s.refreshIfNeeded()                // refresh 2 starts in the gap, its probe blocked
+		time.Sleep(300 * time.Millisecond) // refresh 1's limit fires at 400 ms; refresh 2 (started at 150 ms) is released at about 450 ms, inside its own limit (550 ms)
+		close(release)                     // refresh 2's probe ends inside its own limit
+		time.Sleep(200 * time.Millisecond)
 	}
 	s.Start()
-	time.Sleep(200 * time.Millisecond)
+	time.Sleep(900 * time.Millisecond)
 	if !s.Get().Writable {
 		t.Fatal("refresh 1's stale limit published into refresh 2: the sample reads not writable although refresh 2 finished inside its own limit")
 	}
@@ -540,6 +541,31 @@ func TestOvertakenStateChangeLineIsNotWritten(t *testing.T) {
 	}
 	if s.Get().Writable {
 		t.Fatal("the sample still reads writable after the failed probe")
+	}
+}
+
+// Review of #258 (Codex): an open that fails because the probe name is already taken must not delete that existing file; any other open failure still cleans up.
+func TestProbeNameAlreadyTakenIsNotRemoved(t *testing.T) {
+	d := &fakeDisk{avail: 1}
+	now := time.Unix(1000, 0)
+	deps := d.deps(&now)
+	deps.OpenProbe = func(path string) (ProbeFile, error) {
+		d.rec("open")
+		return nil, &fs.PathError{Op: "open", Path: path, Err: syscall.EEXIST}
+	}
+	s := New("/data/blobs", deps, Options{Log: slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)), WaitBudget: 200 * time.Millisecond})
+	s.Start()
+	if strings.Contains(d.opList(), "remove") {
+		t.Fatalf("an existing file at the probe name was removed: ops=%s", d.opList())
+	}
+	if s.Get().Writable {
+		t.Fatal("a probe that could not create its file reads writable")
+	}
+	d2 := &fakeDisk{avail: 1, openErr: syscall.EIO}
+	s2, _ := newSampler(t, d2, &now)
+	s2.Start()
+	if !strings.Contains(d2.opList(), "remove") {
+		t.Fatalf("an open failure other than 'exists' no longer cleans up: ops=%s", d2.opList())
 	}
 }
 

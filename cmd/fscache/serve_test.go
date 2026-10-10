@@ -550,3 +550,114 @@ func (s *syncBuffer) Write(p []byte) (int, error) {
 	return s.b.Write(p)
 }
 func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// REQ-OBS-002-AC10, first case, on the REAL path: a server that started healthy and whose volume then stops accepting writes (here the blobs directory becomes
+// read-only for the process) reports fscache_store_writable 0 with the real free bytes within one refresh, counts the failed PUTs, and keeps serving GETs.
+func TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	addr := freePort(t)
+	t.Setenv("FSCACHE_ADDR", addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var putOK, putBad, getCode int
+	var body string
+	do := func(method, path, data string) (int, string) {
+		req, _ := http.NewRequest(method, "http://"+addr+path, strings.NewReader(data))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, ""
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode, string(b)
+	}
+	errc := make(chan error, 1)
+	go func() {
+		errc <- serve(ctx, quietLogger(), func() {
+			for i := 0; i < 100; i++ {
+				if c, _ := do(http.MethodGet, "/healthz", ""); c == 200 {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			putOK, _ = do(http.MethodPut, "/kgood", "good data")
+			_ = os.Chmod(filepath.Join(dir, "blobs"), 0o500) // the volume stops accepting writes
+			defer func() { _ = os.Chmod(filepath.Join(dir, "blobs"), 0o700) }()
+			putBad, _ = do(http.MethodPut, "/kbad", "bad data")
+			for i := 0; i < 100; i++ { // the failed PUT marked the sample stale: the next scrape measures again
+				_, body = do(http.MethodGet, "/metrics", "")
+				if strings.Contains(body, "fscache_store_writable 0\n") {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			getCode, _ = do(http.MethodGet, "/kgood", "")
+			cancel()
+		})
+	}()
+	select {
+	case <-errc:
+	case <-time.After(15 * time.Second):
+		t.Fatal("serve did not shut down")
+	}
+	if putOK != http.StatusCreated && putOK != http.StatusOK && putOK != http.StatusNoContent {
+		t.Fatalf("the healthy PUT answered %d", putOK)
+	}
+	if putBad < 400 {
+		t.Errorf("the PUT on the bad volume answered %d; want an error", putBad)
+	}
+	if !strings.Contains(body, "fscache_store_writable 0\n") {
+		t.Errorf("the gauge does not read 0 after the volume went bad:\n%s", body)
+	}
+	if strings.Contains(body, "fscache_store_free_bytes 0\n") || !strings.Contains(body, "fscache_store_free_bytes ") {
+		t.Errorf("fscache_store_free_bytes is 0 or absent (the real free bytes are expected):\n%s", body)
+	}
+	counted := 0
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, "fscache_put_errors_total{") && !strings.HasSuffix(l, " 0") {
+			counted++
+		}
+	}
+	if counted == 0 {
+		t.Errorf("the failed PUT is not counted in any fscache_put_errors_total series:\n%s", body)
+	}
+	if getCode != http.StatusOK {
+		t.Errorf("GET of a stored blob answered %d on the bad volume; want 200", getCode)
+	}
+}
+
+// REQ-OBS-002-AC10, second case, on the REAL path: a server asked to START on a read-only data directory exits at start with the fatal error naming the failed
+// write, serves nothing and never reports writable 1 for a volume it could not write.
+func TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	addr := freePort(t)
+	t.Setenv("FSCACHE_ADDR", addr)
+	ready := false
+	err := serve(context.Background(), quietLogger(), func() { ready = true })
+	if err == nil || !strings.Contains(err.Error(), "write shutdown marker") {
+		t.Fatalf("serve error = %v; want the fatal naming the failed write (write shutdown marker)", err)
+	}
+	if ready {
+		t.Error("the ready hook ran: the server started on a directory it could not write")
+	}
+	if c, cerr := net.DialTimeout("tcp", addr, 200*time.Millisecond); cerr == nil {
+		_ = c.Close()
+		t.Error("something listens on the address: the server served on a directory it could not write")
+	}
+}

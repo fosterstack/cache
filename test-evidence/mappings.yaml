@@ -726,6 +726,8 @@ mappings:
   - ac: REQ-OBS-002-AC10
     evidence:
       - { type: go-test, ref: "internal/server:TestGaugesSeededAtStartupHealthyAndBroken" }
+      - { type: go-test, ref: "cmd/fscache:TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets" }
+      - { type: go-test, ref: "cmd/fscache:TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing" }
   - ac: REQ-OBS-002-AC11
     evidence:
       - { type: go-test, ref: "internal/server:TestRouteSurfaceIsCachePlusReadOnlyEndpoints" }
