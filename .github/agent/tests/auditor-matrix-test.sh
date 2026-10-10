@@ -37,6 +37,7 @@ NOCALL="$F/adjudicator/fail-on-call.py"
 GH="$F/adjudicator/fake-github-api.py"
 YAML="$PY $F/testlib/yamlshape.py"
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
+export TMPDIR="$WORK"   # every tempfile/mktemp a case makes lands in the cleaned-up work dir (no fixed system temp path)
 LEDGER="$WORK/model.ledger"; export AUDITOR_MODEL_LEDGER="$LEDGER"
 # The live delivery path merges suppressions into GITHUB_WORKSPACE (default: cwd = this checkout).
 # Every case runs against a throwaway workspace instead, so the suite never rewrites the real
@@ -2035,11 +2036,11 @@ r7="$("$PY" -c '
 import sys,importlib.util
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 sys.path.insert(0,".github/agent/bin"); from auditorlib import policy
+import os,shutil,tempfile
 purl="pkg:deb/debian/lib@1"; sc=((policy.VEX_PRODUCT,),(purl,))
 env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},
-     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr1-7out","ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
+     "kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(tempfile.mkdtemp(),"out"),"ts":"2026-09-23T00:00:00Z","dry":True,"digest":"sha256:x",
      "carried_expiry":{("CVE-2099-1303",sc):"2026-09-23"},"today":"2026-09-23"}
-import os,shutil; shutil.rmtree("/tmp/refr1-7out",ignore_errors=True)
 f={"scanner":"grype","finding_id":"CVE-2099-1303","purl":purl,"aliases":["CVE-2099-1303"],"package":"lib","fixed_version":None,"severity":"Medium","extra":{}}
 row,_=R._dispose("CVE-2099-1303",[f],["CVE-2099-1303"],env,[])
 print("OK" if row["section"]==3 and row.get("reopened_expired")=="2026-09-23" else "BAD:%s"%(row["section"]))' 2>/dev/null)"
@@ -2230,9 +2231,9 @@ begin "refr3-6-pullable-fix-lifts-carried-suppression" "when a fix becomes pulla
 res="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
-shutil.rmtree("/tmp/refr3-6",ignore_errors=True)
+import os,tempfile; OUT3=os.path.join(tempfile.mkdtemp(),"out")
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
-env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr3-6","ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
+env={"gvc":None,"module":None,"gvc_usable":False,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":OUT3,"ts":"t","dry":True,"digest":"x","carried_expiry":{("CVE-2099-1801",sc):"2026-10-30"},"today":"2026-09-24"}
 f={"scanner":"grype","finding_id":"CVE-2099-1801","purl":purl,"aliases":["CVE-2099-1801"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 row,_=R._dispose("CVE-2099-1801",[f],["CVE-2099-1801"],env,[])
 print("OK" if row["section"]==1 and row.get("reopened_scope") else "BAD:%s"%row["section"])' 2>/dev/null | tail -1)"
@@ -2314,14 +2315,14 @@ r4="$("$PY" -c '
 import importlib.util,shutil
 spec=importlib.util.spec_from_file_location("r",".github/agent/bin/auditor-run.py"); R=importlib.util.module_from_spec(spec); spec.loader.exec_module(R)
 purl="pkg:golang/example.org/lib@v1.0.0"; sc=((R.policy.VEX_PRODUCT,),(purl,))
-gv="/tmp/refr4-4-gvc.json"
+import os,tempfile; T4=tempfile.mkdtemp(); gv=os.path.join(T4,"gvc.json")
 open(gv,"w").write("\n".join([
   "{\"config\":{\"scan_level\":\"symbol\"}}",
   "{\"SBOM\":{\"roots\":[\"example.org/lib\"],\"modules\":[{\"path\":\"example.org/lib\",\"version\":\"v1.0.0\"}]}}",
   "{\"finding\":{\"osv\":\"GO-2099-3004\",\"trace\":[{\"module\":\"example.org/lib\",\"version\":\"v1.0.0\",\"package\":\"example.org/lib/x\"}]}}"]))
 def env(cs):
-    shutil.rmtree("/tmp/refr4-4out",ignore_errors=True)
-    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":"/tmp/refr4-4out","ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
+    shutil.rmtree(os.path.join(T4,"out"),ignore_errors=True)
+    return {"gvc":gv,"module":"example.org/lib","gvc_usable":True,"idx":{},"logpath":None,"adjudicator":"stub","state":{"tokens":0,"iters":0},"kev_ids":set(),"kev_ok":True,"exp":"2026-10-24","out":os.path.join(T4,"out"),"ts":"t","dry":True,"digest":"x","carried_expiry":{},"carried_scopes":cs,"today":"2026-09-24"}
 f={"scanner":"osv-scanner-gomod","finding_id":"GO-2099-3004","purl":purl,"aliases":["GO-2099-3004","CVE-2099-3004"],"package":"example.org/lib","fixed_version":"v1.0.1","severity":"High","extra":{}}
 carried,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env({("CVE-2099-3004",sc)}),[])
 fresh,_=R._dispose("CVE-2099-3004",[f],["CVE-2099-3004","GO-2099-3004"],env(set()),[])

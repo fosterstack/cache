@@ -665,3 +665,12 @@ mappings:
   - ac: REQ-AUD-018-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+  - ac: REQ-AUD-019-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-AUD-019-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-AUD-019-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }

@@ -80,9 +80,11 @@ except AssertionError as e:
     ok = e
 check("the CSAF passes the checks Google's loader makes", ok is True, ok)
 try:                                # the real loader's own checks too, when the SDK is installed (not on CI runners)
-    import glob, ast, types
-    src = next(iter(glob.glob("/opt/homebrew/share/google-cloud-sdk/lib/googlecloudsdk/command_lib/artifacts/vex_util.py")
-                    + glob.glob("/usr/lib/google-cloud-sdk/lib/googlecloudsdk/command_lib/artifacts/vex_util.py")), None)
+    import ast, types
+    _sdk = os.environ.get("GCLOUD_SDK_LIB")          # opt-in: the SDK's lib dir (no probing of fixed system install locations)
+    src = os.path.join(_sdk, "googlecloudsdk/command_lib/artifacts/vex_util.py") if _sdk else None
+    if src and not os.path.isfile(src):
+        src = None
     if src:
         tree = ast.parse(open(src).read())
         fns = [n for n in tree.body if (isinstance(n, ast.FunctionDef) and n.name in ("_Validate", "_ValidateVulnerability"))
@@ -234,7 +236,8 @@ check("SEC-165-06 the guide renames exactly the chosen digest's branch", len(nam
       and DIG in named[0]["product"]["product_identification_helper"]["purl"], [b["name"] for b in mine["product_tree"]["branches"]][:3])
 check("SEC-165-06 the guide loads with --uri set to the image path at that digest", ("--uri=%s@%s" % (IMAGE, DIG)) in out.stdout, out.stdout)
 try:                                # the installed SDK's own parser, as gcloud runs it, when present (not on CI runners)
-    L = next((x for x in ("/opt/homebrew/share/google-cloud-sdk/lib", "/usr/lib/google-cloud-sdk/lib") if os.path.isdir(x)), None)
+    L = os.environ.get("GCLOUD_SDK_LIB")             # opt-in, as above
+    L = L if L and os.path.isdir(L) else None
     if L:
         sys.path[:0] = [L, L + "/third_party"]
         from googlecloudsdk.command_lib.artifacts import vex_util as VU

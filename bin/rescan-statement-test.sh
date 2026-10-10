@@ -35,8 +35,8 @@ child() { # manifest-file  childno  platform  exit  report-json
 # A child whose scanner produced NO file at all (operational crash).
 child_missing() { # manifest-file  childno  platform  exit
   local mf="$1" plat="$3" code="$4"
-  jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" \
-    '{platform:$p, ref:$r, exit:$e, report:"/tmp/does-not-exist-xyz.json"}' >> "$mf"
+  jq -nc --arg p "$plat" --arg r "$REPO@x" --argjson e "$code" --arg rp "$(dirname "$mf")/does-not-exist-xyz.json" \
+    '{platform:$p, ref:$r, exit:$e, report:$rp}' >> "$mf"
 }
 
 assert_stmt() { # desc scanner manifest want_verdict want_hasfindings want_count
