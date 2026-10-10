@@ -97,6 +97,14 @@ First run populates the cache; subsequent runs from a clean checkout (or
 `mvn clean install`) should show cache hits in the build log for
 unchanged modules.
 
+The extension also keeps a local cache folder, `~/.m2/build-cache`.
+Deleting the project's `target` or a project-level `build-cache` folder
+does not clear it, so a rebuild can be served from that local folder
+without touching the server. To force a restore from the server, delete
+`~/.m2/build-cache` (not the project's `target`). The proof that the
+server served a hit is its own counter, not the build log alone:
+`fscache_cache_hits_total` on `/metrics`, or the hit count on `/statusz`.
+
 ## Support boundary
 
 We maintain FosterStack Cache's server side: the `GET`/`PUT`/`HEAD`
