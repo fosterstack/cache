@@ -682,8 +682,9 @@ for what, entry in cases.items():
         try: hit("3.1.3", [rec("GO-X-60", honest, entry)], tables=tables, sups=(True,))
         except AssertionError as e: raise AssertionError((what, tables) + e.args)
         except Exception as e: raise AssertionError((what, tables, "traceback", repr(e)))
-fine = with_key(with_key(honest, "entry", "severity"), "entry", "ecosystem_specific")
-fine["database_specific"] = {"url": "x"}; fine["package"]["purl"] = "pkg:golang/" + n
+fine = copy.deepcopy(honest)
+fine.update(severity=[{"type": "CVSS_V3", "score": "x"}], ecosystem_specific={"imports": []}, database_specific={"url": "x"})
+fine["package"]["purl"] = "pkg:golang/" + n
 clean("3.1.3", [rec("GO-X-61", honest, fine)], tables=(None, BARE), sups=(True,))
 PY
 py "B12: an OSV answer that is not a record (a string, no id, an id that is not a string) is a HIT with a short reason, never an exception" <<'PY'

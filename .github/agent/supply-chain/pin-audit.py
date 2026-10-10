@@ -15,6 +15,7 @@ import argparse
 import base64
 import concurrent.futures
 import datetime as dt
+import functools
 import importlib.util
 import json
 import os
@@ -58,6 +59,17 @@ def _norm_name(n):
     return re.sub(r"[-_.]+", "-", str(n)).lower()
 
 
+SUBPROCESS_TIMEOUT = 120
+
+
+def _run(cmd, **kw):
+    """Every gh, git and curl call has a timeout; a hung one stops the run (a Fail: the day is never reported clean)."""
+    try:
+        return subprocess.run(cmd, **dict({"timeout": SUBPROCESS_TIMEOUT}, **kw))
+    except subprocess.TimeoutExpired:
+        raise Fail(f"{cmd[0]} {' '.join(map(str, cmd[1:3]))} did not answer in {SUBPROCESS_TIMEOUT}s")
+
+
 def _vt(v):
     """(release numbers without trailing zeros, class, suffix parts): class 0 = pre-release (before the final), 1 = final, 2 = post-release.
     1.0.0-rc.1 and 1.0.0rc1 are BEFORE 1.0.0; 1.0.post1 is AFTER 1.0; 1.2 equals 1.2.0. A suffix of any other kind raises ValueError (callers read it as affected)."""
@@ -96,19 +108,20 @@ def covered_by_events(version, events):
 
 
 def _covered_by_events(version, events):
-    """OSV range events: introduced / fixed / last_affected, in order."""
+    """OSV range events, evaluated as OSV does: sorted by version (introduced 0 first; at one version introduced comes before fixed, so the fixed wins),
+    then introduced switches affected on, fixed and last_affected (after it) switch it off, and a limit is an upper bound on the whole range."""
+    order = {"introduced": 0, "fixed": 1, "last_affected": 1}
+    kinds = [(k, e[k]) for e in events for k in order if k in e]
+    kinds.sort(key=lambda ke: (functools.cmp_to_key(_cmp)(ke[1]), order[ke[0]]))
     state = False
-    for e in events:
-        if "introduced" in e:
-            if e["introduced"] == "0" or _cmp(version, e["introduced"]) >= 0:
-                state = True
-        elif "fixed" in e:
-            if _cmp(version, e["fixed"]) >= 0:
-                state = False
-        elif "last_affected" in e:
-            if _cmp(version, e["last_affected"]) > 0:
-                state = False
-    return state
+    for kind, value in kinds:
+        if kind == "introduced":
+            state = state or value == "0" or _cmp(version, value) >= 0
+        elif kind == "fixed":
+            state = state and _cmp(version, value) < 0
+        else:
+            state = state and _cmp(version, value) <= 0
+    return state and all(_cmp(version, e["limit"]) < 0 for e in events if "limit" in e)
 
 
 def in_range(version, rng):
@@ -224,25 +237,34 @@ def _text(x):
     return isinstance(x, str) and x != ""
 
 
+def _readable_record(v):
+    """AC14: the metadata read from a record: an object with a string id; aliases a list of strings and modified a string, when present."""
+    return (isinstance(v, dict) and isinstance(v.get("id"), str) and isinstance(v.get("modified", ""), str)
+            and isinstance(v.get("aliases", []), list) and all(isinstance(a, str) for a in v.get("aliases", [])))
+
+
 def _well_formed_event(event):
     """One of the four event keys, alone, with a non-empty string value that has no v prefix (Go records have none)."""
     return (isinstance(event, dict) and len(event) == 1 and all(k in _EVENT_KEYS and _text(v) and not v.lower().startswith("v") for k, v in event.items()))
 
 
 def _well_formed_range(rg):
-    """SEMVER and ECOSYSTEM ranges list events starting with introduced; a GIT range names its repo (and is never read for a version)."""
-    if not (isinstance(rg, dict) and set(rg) <= _RANGE_KEYS and rg.get("type") in ("SEMVER", "ECOSYSTEM", "GIT")
-            and isinstance(rg.get("events"), list) and all(_well_formed_event(e) for e in rg["events"])):
-        return False
-    return _text(rg.get("repo")) if rg["type"] == "GIT" else bool(rg["events"]) and "introduced" in rg["events"][0]
+    """Every range lists events that start with introduced; a GIT range also names its repo (and is never read for a version)."""
+    return (isinstance(rg, dict) and set(rg) <= _RANGE_KEYS and rg.get("type") in ("SEMVER", "ECOSYSTEM", "GIT")
+            and isinstance(rg.get("events"), list) and bool(rg["events"]) and all(_well_formed_event(e) for e in rg["events"])
+            and "introduced" in rg["events"][0] and (rg["type"] != "GIT" or _text(rg.get("repo")))
+            and isinstance(rg.get("database_specific", {}), dict))
 
 
 def _well_formed_entry(entry):
     package = entry.get("package") if isinstance(entry, dict) else None
+    severity = entry.get("severity", []) if isinstance(entry, dict) else None
     return (isinstance(entry, dict) and set(entry) <= _ENTRY_KEYS and isinstance(package, dict) and set(package) <= _PACKAGE_KEYS
-            and _text(package.get("name")) and isinstance(package.get("ecosystem", ""), str)
+            and _text(package.get("name")) and isinstance(package.get("ecosystem", ""), str) and isinstance(package.get("purl", ""), str)
             and isinstance(entry.get("ranges", []), list) and all(_well_formed_range(rg) for rg in entry.get("ranges", []))
-            and isinstance(entry.get("versions", []), list) and all(_text(v) for v in entry.get("versions", [])))
+            and isinstance(entry.get("versions", []), list) and all(_text(v) for v in entry.get("versions", []))
+            and isinstance(severity, list) and all(isinstance(x, dict) and _text(x.get("type")) and _text(x.get("score")) for x in severity)
+            and all(isinstance(entry.get(k, {}), dict) for k in ("ecosystem_specific", "database_specific")))
 
 
 def _well_formed_record(record):
@@ -276,7 +298,7 @@ class LiveNet:
         with self._lock:
             if (path, strict) in self._memo:
                 return self._memo[(path, strict)]
-        r = subprocess.run([*self.gh, "api", path], capture_output=True, text=True)
+        r = _run([*self.gh, "api", path], capture_output=True, text=True)
         if r.returncode:
             try:
                 age._gh_failed(r)
@@ -465,7 +487,7 @@ class LiveNet:
         records = {}
         for p in paths:
             for v in self._osv_post(dict(q, package=dict(q["package"], name=p))):
-                if strict and not (isinstance(v, dict) and isinstance(v.get("id"), str)):
+                if strict and not _readable_record(v):
                     v = {"id": "UNREADABLE-OSV-RECORD", "affected": "not a record"}   # AC14: an answer that is not a record is a hit, with this id
                 copies = records.setdefault(v["id"], [])
                 if v not in copies:
@@ -538,12 +560,12 @@ class LiveNet:
     def upstream(self, item):
         if item.kind != "action" or not inv.SHA40.match(item.version):
             return None  # only a commit pin can be "not from the action's own repo"
-        r = subprocess.run([*self.gh, "api", f"repos/{item.name}", "--jq", ".default_branch"], capture_output=True, text=True)
+        r = _run([*self.gh, "api", f"repos/{item.name}", "--jq", ".default_branch"], capture_output=True, text=True)
         self._api_ok(r, item)
         branch = r.stdout.strip()
         if r.returncode or not branch:
             return False
-        c = subprocess.run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{branch}", "--jq", ".status"], capture_output=True, text=True)
+        c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{branch}", "--jq", ".status"], capture_output=True, text=True)
         self._api_ok(c, item)
         # compare/<pin>...<branch>: the branch is "ahead" of (or identical to) the pin exactly when the pin is an ancestor of the branch
         if c.stdout.strip() in ("identical", "ahead"):
@@ -552,7 +574,7 @@ class LiveNet:
             return True
         for br in (self._gh_json(f"repos/{item.name}/branches?per_page=100") or []):  # a release branch of the same repository
             if br.get("name") != branch:
-                c = subprocess.run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
+                c = _run([*self.gh, "api", f"repos/{item.name}/compare/{item.version}...{br['name']}", "--jq", ".status"], capture_output=True, text=True)
                 self._api_ok(c, item)
                 if c.stdout.strip() in ("identical", "ahead"):
                     return True
@@ -638,13 +660,13 @@ class LiveNet:
         for p in pulls:
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
-            f = subprocess.run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
+            f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", p["base"]["ref"]], capture_output=True, text=True)
             if f.returncode:
                 self.incomplete_prs.append(p["number"])
                 print(f"information: open pull request #{p['number']} could not be fetched: not audited")
                 continue
             try:
-                mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
+                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['base']['ref']}", p["head"]["sha"]], capture_output=True, text=True).stdout.strip()
                 if not mb:
                     self.incomplete_prs.append(p["number"])
                     print(f"information: open pull request #{p['number']} shares no history with its base: not audited")
@@ -660,19 +682,19 @@ class LiveNet:
         repo = os.environ.get("GITHUB_REPOSITORY")
         if not repo:
             raise Fail("GITHUB_REPOSITORY is not set")
-        r = subprocess.run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "1000"], capture_output=True, text=True)
+        r = _run([*self.gh, "pr", "list", "--state", "open", "--json", "number,title,headRefOid,baseRefName", "--limit", "1000"], capture_output=True, text=True)
         if r.returncode:
             raise Fail("could not list open pull requests: " + r.stderr.strip())
         out = []
         for p in json.loads(r.stdout or "[]"):
             tok = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
             hdr = ["-c", "http.https://github.com/.extraheader=AUTHORIZATION: basic " + base64.b64encode(f"x-access-token:{tok}".encode()).decode()] if tok else []
-            f = subprocess.run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
+            f = _run(["git", "-C", self.root, *hdr, "fetch", "-q", "origin", f"pull/{p['number']}/head", f"{p['baseRefName']}"], capture_output=True, text=True)
             if f.returncode:
                 continue
             try:
-                head = subprocess.run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True).stdout.strip()
-                mb = subprocess.run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]], capture_output=True, text=True).stdout.strip()
+                head = _run(["git", "-C", self.root, "rev-parse", "FETCH_HEAD"], capture_output=True, text=True).stdout.strip()
+                mb = _run(["git", "-C", self.root, "merge-base", f"origin/{p['baseRefName']}", p["headRefOid"]], capture_output=True, text=True).stdout.strip()
                 moved = inv.moved(inv.load_at(self.root, mb), inv.load_at(self.root, p["headRefOid"])) if mb else []
             except (RuntimeError, ValueError):
                 continue
@@ -1024,7 +1046,7 @@ class Gh:
         self.cmd = cmd if isinstance(cmd, list) else [cmd]
 
     def run(self, *args, ok_fail=False):
-        r = subprocess.run([*self.cmd, *args], capture_output=True, text=True)
+        r = _run([*self.cmd, *args], capture_output=True, text=True)
         if r.returncode and not ok_fail:
             raise Fail(f"gh {' '.join(args[:2])} failed: {r.stderr.strip()}")
         return r
