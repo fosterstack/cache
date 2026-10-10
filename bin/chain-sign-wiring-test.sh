@@ -227,9 +227,9 @@ def compiled_code(base, bad):
     for top in ("bin", ".github"):
         for dp, dirs, fs in os.walk(os.path.join(base, top)):
             for x in sorted(dirs):
-                if x == "__pycache__": bad.append("AC1: %s is a bytecode cache directory (only hashed source may run)" % os.path.relpath(os.path.join(dp, x), base))
+                if x.lower() == "__pycache__": bad.append("AC1: %s is a bytecode cache directory (only hashed source may run)" % os.path.relpath(os.path.join(dp, x), base))
             for x in sorted(fs):
-                if x.endswith(COMPILED): bad.append("AC1: %s is compiled or native code (only hashed source may run)" % os.path.relpath(os.path.join(dp, x), base))
+                if x.lower().endswith(COMPILED): bad.append("AC1: %s is compiled or native code (only hashed source may run)" % os.path.relpath(os.path.join(dp, x), base))
 
 def stdlib_shadows(base, bad):
     """No file or directory under bin/ or .github/ is named after a standard-library module (Opus #249 r4): Python puts a script's own
@@ -239,10 +239,10 @@ def stdlib_shadows(base, bad):
     for top in ("bin", ".github"):
         for dp, dirs, fs in os.walk(os.path.join(base, top)):
             for x in sorted(dirs):
-                if x in names: bad.append("AC1: %s is a directory named after the standard-library module %s" % (os.path.relpath(os.path.join(dp, x), base), x))
+                if x.lower() in names: bad.append("AC1: %s is a directory named after the standard-library module %s" % (os.path.relpath(os.path.join(dp, x), base), x))
             for x in sorted(fs):
-                stem = x.split(".")[0]
-                if x.endswith((".py", ".pyc")) and stem in names:
+                stem = x.split(".")[0].lower()
+                if x.lower().endswith((".py", ".pyc")) and stem in names:
                     bad.append("AC1: %s is named after the standard-library module %s (it would shadow it)" % (os.path.relpath(os.path.join(dp, x), base), stem))
 
 def goreleaser_keys(base, bad):
@@ -276,14 +276,15 @@ MERGE_TAG = "tag:yaml.org,2002:merge"
 def merge_keys(base, files, bad):
     """No YAML merge key anywhere in any workflow or composite action (Opus #249 r5; one structural rule for an open class): a `<<` key or a
     node tagged !!merge, at any depth, would supply keys that a reader which does not merge (BaseLoader) never sees."""
-    acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
-    for f in files + sorted(acts):
+    for f in files + action_files(base):
         try: root = yaml.compose(open(f).read(), Loader=yaml.BaseLoader)
-        except Exception: continue          # an unparsable file is reported by id_token_jobs and the grammar
-        todo = [(root, "")]
+        except Exception as ex:             # fail closed: a file that cannot be read as ONE YAML document cannot be judged
+            bad.append("AC1: %s does not parse as one YAML document (%s)" % (os.path.relpath(f, base), type(ex).__name__)); continue
+        todo, seen = [(root, "")], set()
         while todo:
             n, path = todo.pop()
-            if n is None: continue
+            if n is None or id(n) in seen: continue      # each node once: an alias bomb shares nodes and must not explode the walk
+            seen.add(id(n))
             if n.tag == MERGE_TAG: bad.append("AC1: %s%s uses a merge key (!!merge); write it out in full" % (os.path.relpath(f, base), path))
             if isinstance(n, yaml.MappingNode):
                 for k, v in n.value:
@@ -321,6 +322,13 @@ def id_token_jobs(base, files, bad):
     for wf, jn in sorted(held - listed): bad.append("AC1: %s job %s holds id-token: write but is not listed in id-token-jobs.json" % (wf, jn))
     for wf, jn in sorted(listed - held): bad.append("AC1: id-token-jobs.json lists %s job %s, which does not hold id-token: write (stale)" % (wf, jn))
 
+def action_files(base):
+    """Every composite action file (action.yml / action.yaml, any case) anywhere in the tree (Opus #249 r6), not only under .github/actions/."""
+    out = []
+    for dp, _dirs, fs in os.walk(base):
+        out += [os.path.join(dp, x) for x in fs if x.lower() in ("action.yml", "action.yaml")]
+    return sorted(out)
+
 V022_WORKFLOWS = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
 stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
@@ -345,8 +353,8 @@ def listed_signers(base, bad):
 def direct_signers(base, files, frozen, allowed, bad):
     """001-AC1: "no other workflow, composite action ... signs provenance" (each workflow and composite action matched by the signer table)."""
     wfdir = os.path.join(base, ".github/workflows")
-    acts = glob.glob(os.path.join(base, ".github/actions/**/action.y*ml"), recursive=True) + glob.glob(os.path.join(base, "action.y*ml"))
-    for f in files + sorted(acts):
+    acts = action_files(base)
+    for f in files + acts:
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
         for e, pv, line in signer_calls(open(f).read()):
