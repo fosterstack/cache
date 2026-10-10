@@ -1972,6 +1972,35 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
 
+  - id: REQ-SCAN-015
+    title: The scanner cloud identities cannot be reached through a caller
+    statement: >
+      The two workflow files that carry the scanner cloud identities (scan.yml and main-candidate-rescan.yml) shall never be callable as reusable workflows, because the cloud trust is pinned to the file and not to its caller: neither declares on: workflow_call, and no workflow or action references either one in a uses:.
+    source: [.github/workflows/scan.yml, .github/workflows/main-candidate-rescan.yml, bin/scan-no-workflow-call-test.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: advisor-accepted, Oct 9; serves the 0345 hardening (ops#107 pins the Inspector role and the GCP provider to these two files by job_workflow_ref); AC2 and AC3 advisor-ratified Oct 10 (lane ACs)
+    confidence: implementation-only
+    acceptance_criteria:
+      - id: REQ-SCAN-015-AC1
+        given: "the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml)"
+        when: "the repository's workflows are read"
+        then: "neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-015-AC2
+        given: "a pull request that changes .github/workflows/ci.yml"
+        when: "the trusted review gate judges its ci.yml"
+        then: "the allowlist job carries exactly the scanner guard step (named, the single run line, unconditional and unweakened) or the gate fails"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-SCAN-015-AC3
+        given: "a pull request into the default branch"
+        when: "the trusted review gate judges it"
+        then: "the review gate runs the default branch's guard over the pull request head read as git objects, so a pull request cannot weaken the guard on disk; any head the guard cannot read as regular workflow and action files fails; and a change to bin/scan-no-workflow-call-test.sh needs a review record bound to its content"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+
   - id: REQ-LIC-001
     title: MIT core, nothing withheld
     statement: >

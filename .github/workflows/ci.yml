@@ -277,6 +277,11 @@ jobs:
           pyyaml==6.0.2 --hash=sha256:80bab7bfc629882493af4aa31a4cfa43a4c57c83813253626916b8c7ada83476 --hash=sha256:1f71ea527786de97d1a0cc0eacd1defc0985dcf6b3f17bb77dcfc8c34bec4dc5
           REQ
           python3 bin/check-workflow-permissions.py
+      # REQ-SCAN-015 (advisor-accepted Oct 9; serves the 0345 hardening): the scanner cloud trust is pinned to scan.yml and
+      # main-candidate-rescan.yml by file, so neither may be callable as a reusable workflow. Runs here, in the required
+      # `allowlist` job, so a violation blocks the merge; it reads the checked-out workflow files with the PyYAML installed above.
+      - name: scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)
+        run: bash bin/scan-no-workflow-call-test.sh
 
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.

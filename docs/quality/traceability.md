@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 74 |
-| Acceptance criteria | 197 |
+| Active requirements | 75 |
+| Acceptance criteria | 200 |
 | Release-blocking ACs | 44 |
-| ACs with mapped evidence | 181 |
+| ACs with mapped evidence | 184 |
 | Release-blocking ACs with mapped evidence | 44 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
-| Confidence: implementation-only | 31 |
+| Confidence: implementation-only | 32 |
 
 ## Cache protocol
 
@@ -858,6 +858,18 @@ The primary auditor for single audits shall be vendor A by default; vendor B tak
 | REQ-SCAN-014-AC2 | Given a seat change; when it happens; then it is reported to the owner and handed to the lane as a pull request | ci-workflow |  | approved | 1 item(s) |
 | REQ-SCAN-014-AC3 | Given a seat change; when it happens; then the daily CVE auditor stays with its configured provider | unit |  | approved | 1 item(s) |
 | REQ-SCAN-014-AC4 | Given public text about audits, debates, scores and seats; when it is written (issues, PRs, evidence, logs, the score file); then it says primary/second auditor or vendor A/vendor B; vendor and model names come only from variables | unit |  | approved | 1 item(s) |
+
+### REQ-SCAN-015 — The scanner cloud identities cannot be reached through a caller
+
+The two workflow files that carry the scanner cloud identities (scan.yml and main-candidate-rescan.yml) shall never be callable as reusable workflows, because the cloud trust is pinned to the file and not to its caller: neither declares on: workflow_call, and no workflow or action references either one in a uses:.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; .github/workflows/main-candidate-rescan.yml; bin/scan-no-workflow-call-test.sh*
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-015-AC1 | Given the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml); when the repository's workflows are read; then neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-015-AC2 | Given a pull request that changes .github/workflows/ci.yml; when the trusted review gate judges its ci.yml; then the allowlist job carries exactly the scanner guard step (named, the single run line, unconditional and unweakened) or the gate fails | ci-workflow |  | approved | 2 item(s) |
+| REQ-SCAN-015-AC3 | Given a pull request into the default branch; when the trusted review gate judges it; then the review gate runs the default branch's guard over the pull request head read as git objects, so a pull request cannot weaken the guard on disk; any head the guard cannot read as regular workflow and action files fails; and a change to bin/scan-no-workflow-call-test.sh needs a review record bound to its content | ci-workflow |  | approved | 3 item(s) |
 
 ## Licensing
 

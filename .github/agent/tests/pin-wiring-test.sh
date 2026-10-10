@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-SCAN-015-AC2 — the scanner guard step is required, exactly, in the allowlist job (the scanguard cases)
 # REQ-REL-005-AC1 (register row 78): the hygiene check runs the pin checker on every pull request and
 # every push to main, and nothing can skip it or swallow its failure. (Mapped from the product matrix as
 # workflow-job evidence: REQ-AUD-18 AC1 keeps .github/agent/ paths out of files outside it.)
@@ -162,6 +163,16 @@ if idx["fetch"] != [1] or idx["check"] != [2]:
     bad.append("the allowlist job's first three steps are not exactly: checkout, base-ref fetch, check (nothing before or between)")
 for w in sorted(want - seen):
     bad.append(f"no step runs `{w}`")
+# REQ-SCAN-015-AC2: exactly one step runs the scanner guard, and it is exactly this name and run and nothing else
+# (no if, continue-on-error, env, shell, working-directory, timeout); its place after the PyYAML install is not
+# judged, since the guard run without PyYAML fails, which is red, not a bypass
+SCAN_STEP = {"name": "scan.yml and main-candidate-rescan.yml are never callable as reusable workflows (REQ-SCAN-015-AC1)",
+             "run": "bash bin/scan-no-workflow-call-test.sh"}
+sg = [st for st in steps_ if "scan-no-workflow-call-test.sh" in json.dumps(st)]
+if len(sg) != 1:
+    bad.append(f"the allowlist job has {len(sg)} scanner guard steps, not exactly one (REQ-SCAN-015-AC2)")
+elif sg[0] != SCAN_STEP:
+    bad.append(f"the scanner guard step is not exactly {SCAN_STEP} (REQ-SCAN-015-AC2)")
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -315,6 +326,25 @@ case_ ff-in-check            bad "$ck['run'] = '\\x0c# x\\n' + $ck['run']"
 case_ ctrl-in-fetch          bad "$fe['run'] = $fe['run'] + '\\x01'"
 case_ nbsp-inside-command    bad "$ck['run'] = $ck['run'].replace(' | ', '\\u00a0|\\u00a0')"
 case_ tab-comment-still-ok-shape bad "$ck['run'] = '\\t# note\\n' + $ck['run'] + ' || true'"
+
+# REQ-SCAN-015-AC2: the scanner guard step (scan.yml and main-candidate-rescan.yml never callable as reusable
+# workflows) is exactly one step of the allowlist job, with its exact name and run and nothing that skips,
+# swallows or redirects it; else a PR could pair a weakened step with `on: workflow_call`
+sg='[s for s in '"$steps"' if "scan-no-workflow-call-test.sh" in (s.get("run") or "")][0]'
+case_ scanguard-real-ci-ok      ok  ""
+case_ scanguard-step-removed    bad "$steps[:] = [s for s in $steps if 'scan-no-workflow-call-test.sh' not in (s.get('run') or '')]"
+case_ scanguard-if-false        bad "$sg['if'] = 'false'"
+case_ scanguard-continue        bad "$sg['continue-on-error'] = 'true'"
+case_ scanguard-run-echo        bad "$sg['run'] = 'echo bash bin/scan-no-workflow-call-test.sh'"
+case_ scanguard-or-true         bad "$sg['run'] = 'bash bin/scan-no-workflow-call-test.sh || true'"
+case_ scanguard-renamed         bad "$sg['name'] = 'scanner guard'"
+case_ scanguard-unnamed         bad "$sg.pop('name')"
+case_ scanguard-env             bad "$sg['env'] = {'SCAN_GUARD': 'off'}"
+case_ scanguard-shell           bad "$sg['shell'] = \"bash -c 'true' {0}\""
+case_ scanguard-workdir         bad "$sg['working-directory'] = 'bin'"
+case_ scanguard-duplicated      bad "$steps.append(dict($sg))"
+case_ scanguard-other-job       bad "s = $sg; $steps.remove(s); d['jobs']['requirements']['steps'].append(s)"
+gitcase scanguard-removed-at-a-commit bad "$steps[:] = [s for s in $steps if 'scan-no-workflow-call-test.sh' not in (s.get('run') or '')]"
 # duplicate keys can only be written as text, so these edit the YAML text of a copy
 textcase() {  # textcase <name> <expect> <python expression editing the text variable t>
   local f="$work/t-$1.yml"; cp "$here/.github/workflows/ci.yml" "$f"

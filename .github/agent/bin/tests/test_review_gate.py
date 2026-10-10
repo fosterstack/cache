@@ -1,4 +1,4 @@
-# proves: REQ-AUD-018-AC4
+# proves: REQ-AUD-018-AC4, REQ-SCAN-015-AC3
 """auditor-review-gate.py (REQ-AUD-18 AC3, option C): every reason a review record fails to clear
 the gate, and the CLI's argument and no-change paths, against a real temporary git repository."""
 import contextlib, datetime, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
@@ -219,6 +219,29 @@ class GuardFiles(Cli):
         t = self.run_main("--print-tree")[1].strip()
         self.write(".github/workflows/ci.yml", "ci3\n"); self.git("commit", "-qam", "ci again")
         self.assertEqual(self.run_main("--print-tree")[1].strip(), t)      # ci.yml is not part of the bound content
+
+
+class ScanGuardFile(GuardFiles):
+    """REQ-SCAN-015-AC3 (a change to the scanner guard script needs a review record bound to its content): the scanner guard
+    script is review-gated like the allowlist guard's files, so a PR cannot gut it without a review record."""
+    SCAN = "bin/scan-no-workflow-call-test.sh"
+
+    def setUp(self):
+        super().setUp()
+        self.write(self.SCAN, "#!/usr/bin/env bash\necho real guard\n")
+        self.git("add", "-A"); self.git("commit", "-qm", "scan guard")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def test_gutting_the_scan_guard_needs_a_record_and_a_record_clears_it(self):
+        self.write(self.SCAN, "#!/usr/bin/env bash\nexit 0\n"); self.git("commit", "-qam", "gut the guard")
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no valid review record", out)
+        self.assertIn(self.SCAN, out)
+        self.record()                                                      # control: the same PR with a valid record
+        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("clears the stop rule", out)
 
 
 # ---- REQ-AUD-018-AC4: a recorded second-seat substitute (the opus entry) -------------------------
@@ -605,7 +628,8 @@ class SubstituteCli(unittest.TestCase):
         self.assertEqual(sorted(G.ENFORCEMENT_PREFIXES), [".github/agent/bin/", ".github/agent/fixtures/testlib/"])
         self.assertEqual(sorted(G.ENFORCEMENT), sorted([
             ".github/agent/reviews/substitutes.json", ".github/workflows/agent-review-gate.yml",
-            "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh"]))
+            "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
+            "bin/scan-no-workflow-call-test.sh"]))   # REQ-SCAN-015-AC3: the gate runs the scanner guard too
 
     def test_new_files_and_the_gate_s_other_inputs_need_a_real_codex_entry(self):
         for path in (".github/agent/bin/datetime.py", ".github/agent/bin/json.py", ".github/agent/bin/tests/new_test.py",
@@ -769,6 +793,92 @@ class ClockIsSystemOnly(unittest.TestCase):
             self.assertIn("expired", r.stdout)
 
 
+class GateRunsTheScanGuard(unittest.TestCase):
+    """REQ-SCAN-015-AC3: the trusted gate runs the DEFAULT branch's scanner guard (the checked-out
+    bin/scan-no-workflow-call-test.sh) over the PR head read as git objects, in the judge and in the sweep, exactly
+    one line each, unconditional and unswallowed, so a step of the PR's own CI cannot overwrite the guard it runs."""
+    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(BIN)))
+    WF = os.path.join(ROOT, ".github", "workflows", "agent-review-gate.yml")
+    SCRIPT = "scan-no-workflow-call-test.sh"
+    LINES = {"judge": 'PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure',
+             "sweep": '&& PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh; then'}
+
+    def problems(self, text):
+        import yaml
+        wf = yaml.safe_load(text)
+        bad = []
+        for job_name, want in self.LINES.items():
+            job = wf["jobs"][job_name]
+            if "continue-on-error" in job:
+                bad.append(job_name + ": the job has continue-on-error")
+            steps = [st for st in job["steps"] if "auditor-review-gate.py" in st.get("run", "")]
+            if len(steps) != 1:
+                bad.append(job_name + ": not exactly one gate step"); continue
+            st = steps[0]
+            for k in ("if", "continue-on-error"):
+                if k in st:
+                    bad.append("%s: the gate step has `%s`" % (job_name, k))
+            lines = [l.strip() for l in st["run"].splitlines() if not l.lstrip().startswith("#")]
+            every = [l.strip() for s in job["steps"] for l in s.get("run", "").splitlines()
+                     if self.SCRIPT in l and not l.lstrip().startswith("#")]
+            if every != [want] or lines.count(want) != 1:
+                bad.append("%s: the scanner guard line is not exactly %r: %r" % (job_name, want, every)); continue
+            i = lines.index(want)
+            if job_name == "judge":
+                ends = [n for n, l in enumerate(lines) if l.startswith('echo "verdict=')]
+                if not ends or i > ends[0] or "verdict=success" not in lines[:i]:
+                    bad.append("judge: the scanner guard line is not between verdict=success and the verdict output")
+            elif i == 0 or not lines[i - 1].endswith("\\"):
+                bad.append("sweep: the scanner guard line is not the last condition of the verdict")
+        return bad
+
+    def text(self):
+        with open(self.WF) as fh:
+            return fh.read()
+
+    def test_the_real_gate_runs_the_default_branchs_scan_guard_over_the_head(self):
+        self.assertEqual(self.problems(self.text()), [])
+
+    def test_the_published_failure_summary_names_every_check_the_judge_runs(self):
+        # Codex round 5: a failed scanner guard or pin-wiring judge is explained on the check run, not only in the log
+        import yaml
+        pub = [st["run"] for st in yaml.safe_load(self.text())["jobs"]["publish"]["steps"] if "conclusion=failure" in st.get("run", "")]
+        self.assertEqual(len(pub), 1, pub)
+        failure = [l for l in pub[0].splitlines() if "conclusion=failure" in l][0]
+        for words in ("review-loop record", "commit digest", "allowlist guard", "pin-wiring", "scanner guard", "judge did not finish"):
+            self.assertIn(words, failure, words)
+
+    def test_the_scan_guard_is_an_enforcement_file_once_the_gate_runs_it(self):
+        # what the gate runs is never cleared by a substitute (the derived-wiring test above asks the same of every path)
+        self.assertTrue(G.enforces("bin/" + self.SCRIPT))
+
+    def test_mutants_of_the_gate_wiring_are_caught(self):
+        import yaml
+        t, j, s = self.text(), self.LINES["judge"], self.LINES["sweep"]
+        self.assertIn(j, t); self.assertIn(s, t)
+        text_mutants = {
+            "judge line removed": t.replace(j, "", 1),
+            "sweep line removed": t.replace(s, "; then", 1),
+            "judge || true": t.replace(j, j.replace("|| verdict=failure", "|| true"), 1),
+            "judge another sha": t.replace(j, j.replace('"$HEAD_SHA"', '"$GITHUB_SHA"'), 1),
+            "judge the PR's copy": t.replace(j, j.replace("bash bin/" + self.SCRIPT, 'bash <(git show "$HEAD_SHA":bin/' + self.SCRIPT + ")"), 1),
+            "judge a second, swallowed run": t.replace(j, j + "\n          bash bin/" + self.SCRIPT + " || true", 1),
+            "judge after the verdict output": t.replace("          " + j + "\n", "", 1).replace(
+                '          [ "$verdict" = success ]', "          " + j + '\n          [ "$verdict" = success ]', 1),
+        }
+        for name, m in text_mutants.items():
+            self.assertNotEqual(m, t, name)
+            self.assertNotEqual(self.problems(m), [], name)
+        def gate_step(wf, job):
+            return [st for st in wf["jobs"][job]["steps"] if "auditor-review-gate.py" in st.get("run", "")][0]
+        for name, edit in {"gate step if: false": lambda wf: gate_step(wf, "judge").__setitem__("if", False),
+                           "gate step continue-on-error": lambda wf: gate_step(wf, "judge").__setitem__("continue-on-error", True),
+                           "sweep step if: false": lambda wf: gate_step(wf, "sweep").__setitem__("if", False),
+                           "judge job continue-on-error": lambda wf: wf["jobs"]["judge"].__setitem__("continue-on-error", True)}.items():
+            wf = yaml.safe_load(t); edit(wf)
+            self.assertNotEqual(self.problems(yaml.safe_dump(wf, sort_keys=False)), [], name)
+
+
 class HarnessManifest(unittest.TestCase):
     """The reviewed harness manifest (.github/agent/supply-chain/harness-manifest.json, REQ-SUP-001 AC11) lies under .github/agent/, so a change to it needs a current review record, and any
     edit of it invalidates a record made before. It exempts files from the supply-chain checks, so an unreviewed change would silently hide a pin."""
@@ -851,7 +961,6 @@ class HarnessManifest(unittest.TestCase):
         self.git("add", "-A"); self.git("commit", "-qm", "siblings")
         rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
         self.assertEqual(rc, 0)
-
 
 
 if __name__ == "__main__":
