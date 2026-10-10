@@ -544,7 +544,7 @@ func TestOvertakenStateChangeLineIsNotWritten(t *testing.T) {
 	}
 }
 
-// Review of #258 (Codex): an open that fails because the probe name is already taken must not delete that existing file; any other open failure still cleans up.
+// Review of #258 (Codex): a failed open (the name taken, or any other error) never removes the path: the file there is not ours. Only after a SUCCESSFUL open does the probe clean up when a later step (write, sync) fails.
 func TestFailedOpenRemovesNothingButALaterFailureCleansUp(t *testing.T) {
 	now := time.Unix(1000, 0)
 	// a failed open (the name taken, or any other error) never removes the path: the file there is not ours
