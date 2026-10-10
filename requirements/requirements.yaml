@@ -2075,6 +2075,12 @@ requirements:
         then: "for the advisory record's OSV entries only, the entry for the exact path of the pinned major decides whether the version is affected, and OSV is queried by that /vMAJOR path as well as by the bare path (advisor-accepted at step 5, Oct 9); every other OSV entry of the record is ignored and each one is logged once by advisory id, module path and reason (naming the pinned major), never silently; GitHub's own ranges are not filtered by this rule and GitHub's package names are matched under both the bare path and the /vMAJOR path, because GitHub files cosign v3 ranges under the bare path; anything the rule cannot settle fails closed, so it is a hit: a non-empty version that is not plain MAJOR.MINOR.PATCH (for a tool in the table), a table path that is bare while the pinned major is 2 or more or that ends in a different /vN (the audit then queries bare and /vMAJOR and hits if any entry covers the version), a record with no entry for the exact path, and an entry that has no module path, also next to an exact entry; the old verdict stays, with nothing ignored, for a tool not in the table, other kinds of item, and a /v0 or /v1 path in a record for a major 0 or 1 pin; an empty version is not checked, as before (listed as unchecked); a path that merely resembles the exact one (/v30, /v3x, a sub-path, a different case, a trailing slash, another module ending in /v3) is another module and never counts as it; the log lines are printed sanitised and are not counted as exceptions; the existing exceptions keep working unchanged"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC15
+        given: "the checked-in exceptions file and a daily audit run over every pin"
+        when: "a ruling in the file applied to no finding in that same run (the advisories it names are in dispute for no pinned version)"
+        then: "the audit names the ruling as a dead exception (its advisory ids, package and version) and exits 1, so the ruling is removed in the change that made it dead; a ruling matched by a real dispute is alive; whether a ruling is dead is judged in the run, never from a list, and a ruling still verifies its copied ranges against the live ones before it applies"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-REPO-001
     title: Branch hygiene without a human
     statement: >

@@ -557,6 +557,9 @@ mappings:
   - ac: REQ-SUP-001-AC14
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
+  - ac: REQ-SUP-001-AC15
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }

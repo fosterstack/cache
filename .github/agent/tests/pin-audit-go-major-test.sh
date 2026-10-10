@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC14
+# proves: REQ-SUP-001-AC14, REQ-SUP-001-AC15
 # The Go-module major-path rule of the supply-chain audit (advisor-approved read-back Oct 9, "pin-audit Go major path"; tests first, RED until
 # .github/agent/supply-chain/pin-audit.py implements the rule; step-5 rulings, advisor-accepted Oct 9, are built in). Go's own module-path rule: a version
 # vN.x with N >= 2 belongs to the module path that ends in /vN; versions 0.x and 1.x belong to the bare path. An OSV `affected` entry for any other path
@@ -22,6 +22,8 @@
 #   * Logging is part of the interface (PROPOSED names): LiveNet.ignored_entries is a list of {"id", "path", "reason"}, one per ignored entry; judge()
 #     adds exactly one note per entry ("ignored advisory entry <id> <path>: <reason>"). An implementation that runs two queries (bare and /vMAJOR) must
 #     de-duplicate that list. The notes are printed sanitised and must not be counted in "N disputed hit(s) covered by a checked-in exception".
+# AC15 (advisor, Oct 9): the daily audit run over the checked-in exceptions file reports a ruling that applied to no finding in that same run as a
+# DEAD EXCEPTION (its advisory ids, package and version) and exits 1; a ruling matched by a real dispute is alive. Judged in the run, never hard-coded.
 # Finding recorded for the implementer: with the corrected GO_TOOLS paths the existing code already clears cosign 3.1.3 through the package-name filter of
 # LiveNet._osv_says. The real work is (1) the corrected table, (2) GitHub names matched under both paths so the five existing rulings keep working,
 # (3) the log of ignored entries, (4) the OSV /vMAJOR query.
@@ -32,7 +34,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=38
+pass=0 failn=0 EXPECT=42
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -358,14 +360,18 @@ PY
 # --- the printed output: the summary line counts exceptions only; paths are printed sanitised -----------------------------------------------------------------
 cat >>"$work/pre.py" <<'PY'
 import contextlib, io, subprocess, tempfile
-def main_out(recs, ghsas, cosign_ver="3.1.3"):
-    """Run pin-audit's main() on a one-file repository that pins cosign, with a LiveNet whose OSV and GitHub answers are the given ones."""
+CHECKED_IN = root + "/.github/supply-chain-exceptions.json"
+def cosign_rulings(): return [e for e in json.load(open(CHECKED_IN))["exceptions"] if e["package"] == "cosign"]
+def main_out(recs, ghsas, rulings=None, cosign_ver="3.1.3"):
+    """Run pin-audit's main() on a one-file repository that pins cosign, with a LiveNet whose OSV and GitHub answers are the given ones. The repository's
+    default exceptions file holds `rulings` (default: the checked-in rulings for cosign, the only package this repository pins)."""
     repo = tempfile.mkdtemp(prefix="pa-go-major-")
     env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@x", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@x")
     os.makedirs(repo + "/bin"); open(repo + "/bin/install-scanner.sh", "w").write("COSIGN_VER=%s\n" % cosign_ver)
     for c in (["init", "-q"], ["add", "-A"], ["commit", "-q", "-m", "pin"]):
         subprocess.run(["git", "-C", repo, *c], env=env, check=True, capture_output=True)
-    os.makedirs(repo + "/.github"); subprocess.run(["cp", root + "/.github/supply-chain-exceptions.json", repo + "/.github/"], check=True)
+    os.makedirs(repo + "/.github")
+    json.dump({"_format": "t", "exceptions": cosign_rulings() if rulings is None else rulings}, open(repo + "/.github/supply-chain-exceptions.json", "w"))
     net = mknet(recs, ghsas, True); net.open_pr_items = lambda: []
     pa.GO_TOOLS["cosign"] = BARE + "/v3"
     pa.LiveNet = lambda gh, r: net
@@ -391,11 +397,45 @@ assert any(l.startswith("audit: " + ADV) for l in out.splitlines()), "the ignore
 PY
 py "a hostile module path is printed sanitised: control characters and a '::error::' injection never start a log line" <<'PY'
 r = record("GO-X-30", [(BARE + "/v3", fixed("3.0.4")), (BARE + "/v3\n::error::boom", INTRO0)])
-rc, out = main_out([r], ())
+rc, out = main_out([r], (), [])
 assert rc == 0, (rc, out[-500:])
 lines = out.splitlines()
 assert not any(l.startswith("::error::") for l in lines), [l for l in lines if "::error::" in l]
 assert any(l.startswith("audit: " + ADV) and "boom" in l for l in lines), "the ignored entry is logged, on one line"
+PY
+
+# --- AC15: a ruling that applies to no finding is a dead exception -----------------------------------------------------------------------------------------
+py "AC15: a ruling for an advisory that is not hit is a DEAD EXCEPTION: named by ids, package and version, exit 1" <<'PY'
+dead = {"ids": ["GHSA-dead-0000-xxxx", "GO-DEAD-1"], "package": "cosign",
+        "authoritative": {"source": "GitHub", "id": "GHSA-dead-0000-xxxx", "ranges": ["< 3.0.0"]},
+        "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
+        "modified": {"GO-DEAD-1": "2026-01-01T00:00:00Z", "GHSA-dead-0000-xxxx": "2026-02-02T00:00:00Z"}}
+rc, out = main_out([G4309], GG, [dead])
+assert rc != 0, (rc, out[-500:])
+line = [l for l in out.splitlines() if "dead exception" in l.lower()]
+assert line and "GO-DEAD-1" in line[0] and "GHSA-dead-0000-xxxx" in line[0] and "cosign" in line[0] and "3.1.3" in line[0], out[-600:]
+PY
+py "AC15: a ruling matched by a real dispute is alive: exit 0, no dead exception" <<'PY'
+aff = rec("GO-SYN-1", ent(BARE + "/v3", ev(("introduced", "3.1.0"))), aliases=["GHSA-syn-0001-xxxx"])
+ruling = {"ids": ["GHSA-syn-0001-xxxx", "GO-SYN-1"], "package": "cosign",
+          "authoritative": {"source": "GitHub", "id": "GHSA-syn-0001-xxxx", "ranges": ["< 3.0.0"]},
+          "ruling": "t", "evidence": ["https://x"], "date": "2026-10-09", "version": "3.1.3",
+          "modified": {"GO-SYN-1": "2026-01-01T00:00:00Z", "GHSA-syn-0001-xxxx": "2026-02-02T00:00:00Z"}}
+rc, out = main_out([aff], {"GHSA-syn-0001-xxxx": ghsa("GHSA-syn-0001-xxxx", BARE + "/v3", "< 3.0.0")}, [ruling])
+assert rc == 0 and "dead exception" not in out.lower() and "(1 disputed hit(s) covered" in out, (rc, out[-600:])
+PY
+py "AC15: the checked-in cosign rulings are all alive against the recorded advisories under the new rule (none dead)" <<'PY'
+recs = [G4309]; ghs = list(GG)
+for go, gh in (("GO-2024-2718", "GHSA-88jx-383q-w4qc"), ("GO-2024-2719", "GHSA-95pr-fxf5-86gv"), ("GO-2023-2181", "GHSA-vfp6-jrw2-99g9"),
+               ("GO-2026-5694", "GHSA-w6c6-c85g-mmv6"), ("GO-2026-4529", "GHSA-wfqv-66vq-46rm")):
+    r = load("osv-%s.json" % go); r["aliases"] = sorted(set(r.get("aliases", [])) | {gh}); recs.append(r); ghs.append(gh)
+rc, out = main_out(recs, ghs)
+assert rc == 0 and "dead exception" not in out.lower(), (rc, out[-700:])
+PY
+py "AC15: the checked-in file holds no ruling for GO-2026-4529 or GO-2026-5694 (the /v3 entries agree with GitHub: no dispute, the rulings were dead)" <<'PY'
+ids = {i for e in json.load(open(CHECKED_IN))["exceptions"] for i in e["ids"]}
+assert not ids & {"GO-2026-4529", "GO-2026-5694", "GHSA-wfqv-66vq-46rm", "GHSA-w6c6-c85g-mmv6"}, sorted(ids)
+assert {i for e in cosign_rulings() for i in e["ids"]} >= {"GO-2023-2181", "GO-2024-2718", "GO-2024-2719"}
 PY
 
 # --- the table must be right for the versions we pin (advisor ruling, step 5) ---------------------------------------------------------------------------------
