@@ -248,3 +248,21 @@ func TestByteVariablesKeepByteCountWording(t *testing.T) {
 		t.Fatalf("error = %v, want the byte count wording", err)
 	}
 }
+
+// Backlog R7: the negative-number message reads as a sentence and uses the
+// right article: "an upload count cannot be negative".
+func TestNegativeMessageWording(t *testing.T) {
+	cases := map[string]string{
+		"FSCACHE_MAX_CONCURRENT_UPLOADS": "an upload count cannot be negative",
+		"FSCACHE_MAX_BYTES":              "a byte count cannot be negative",
+		"FSCACHE_MAX_BODY_BYTES":         "a byte count cannot be negative",
+	}
+	for name, want := range cases {
+		clearEnv(t)
+		t.Setenv(name, "-1")
+		_, err := loadConfig()
+		if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), `"-1"`) || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: error = %v, want it to name the variable, the value and %q", name, err, want)
+		}
+	}
+}

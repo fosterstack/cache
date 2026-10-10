@@ -4,10 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -148,31 +153,55 @@ func TestKnownEnvMatchesREADMETable(t *testing.T) {
 	}
 }
 
-// AC4: the code reads variables only by names that are in knownEnv, and
-// every knownEnv entry is read: no FSCACHE_ literal outside the list.
+// AC4: every FSCACHE_ name the code reads is in knownEnv, and every
+// knownEnv entry is read. The scan walks every non-test .go file under
+// cmd/ and internal/ with go/ast and takes every string literal that IS a
+// variable name (the whole literal matches FSCACHE_[A-Z0-9_]+) - not only
+// the ones passed to os.Getenv, so a name hidden behind any helper is
+// still found. Prose such as error messages is not a whole-literal match,
+// so there are no false positives today. The knownEnv declaration itself
+// is skipped so it cannot vouch for itself.
 func TestKnownEnvMatchesNamesReadInCode(t *testing.T) {
-	src, err := os.ReadFile("main.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(src)
-	// Drop the knownEnv declaration itself.
-	if i := strings.Index(text, "var knownEnv"); i >= 0 {
-		if j := strings.Index(text[i:], "\n}\n"); j >= 0 {
-			text = text[:i] + text[i+j:]
+	nameRE := regexp.MustCompile(`^FSCACHE_[A-Z0-9_]+$`)
+	used := map[string]string{}
+	fset := token.NewFileSet()
+	for _, root := range []string{"../../cmd", "../../internal"} {
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+				return err
+			}
+			f, err := parser.ParseFile(fset, p, nil, 0)
+			if err != nil {
+				return err
+			}
+			ast.Inspect(f, func(n ast.Node) bool {
+				if vs, ok := n.(*ast.ValueSpec); ok && len(vs.Names) == 1 && vs.Names[0].Name == "knownEnv" {
+					return false
+				}
+				if lit, ok := n.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					if v, err := strconv.Unquote(lit.Value); err == nil && nameRE.MatchString(v) {
+						used[v] = p
+					}
+				}
+				return true
+			})
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
 	}
-	re := regexp.MustCompile(`"(FSCACHE_[A-Z0-9_]+)"`)
-	used := map[string]bool{}
-	for _, m := range re.FindAllStringSubmatch(text, -1) {
-		used[m[1]] = true
-		if !slices.Contains(knownEnv, m[1]) {
-			t.Errorf("main.go reads %s, which is not in knownEnv", m[1])
+	if len(used) == 0 {
+		t.Fatal("scan found no FSCACHE_ names at all")
+	}
+	for name, file := range used {
+		if !slices.Contains(knownEnv, name) {
+			t.Errorf("%s reads %s, which is not in knownEnv", file, name)
 		}
 	}
 	for _, k := range knownEnv {
-		if !used[k] {
-			t.Errorf("knownEnv lists %s but main.go never reads it", k)
+		if _, ok := used[k]; !ok {
+			t.Errorf("knownEnv lists %s but no non-test code reads it", k)
 		}
 	}
 }
@@ -201,6 +230,8 @@ func TestUnknownEnvDidYouMean(t *testing.T) {
 		"FSCACHE_DATADIR":      "FSCACHE_DATA_DIR",
 		"FSCACHE_PASWORD":      "FSCACHE_PASSWORD",
 		"FSCACHE_ADRS":         "FSCACHE_ADDR",
+		"FSCACHE_AXXR":         "FSCACHE_ADDR", // two substitutions: distance 2, a hint
+		"FSCACHE_AXXXR":        "",             // distance 3 from FSCACHE_ADDR: the boundary, no hint
 		"FSCACHE_COMPLETELY_X": "",
 		"FSCACHE_":             "",
 	}
@@ -212,5 +243,20 @@ func TestUnknownEnvDidYouMean(t *testing.T) {
 		if recs[0].DidYouMean != want {
 			t.Errorf("%s: did_you_mean = %q, want %q", name, recs[0].DidYouMean, want)
 		}
+	}
+}
+
+// AC6 tie-break: at equal distance the name earlier in knownEnv wins, and
+// the nearer name wins over an earlier but farther one.
+func TestUnknownEnvDidYouMeanTieAndNearest(t *testing.T) {
+	orig := knownEnv
+	defer func() { knownEnv = orig }()
+	knownEnv = []string{"FSCACHE_AAAA", "FSCACHE_AAAB", "FSCACHE_ZZZZ"}
+	if got := nearestKnown("FSCACHE_AAAC"); got != "FSCACHE_AAAA" {
+		t.Errorf("tie: got %q, want the first of the equally near names, FSCACHE_AAAA", got)
+	}
+	knownEnv = []string{"FSCACHE_AAXX", "FSCACHE_AAAB", "FSCACHE_ZZZZ"}
+	if got := nearestKnown("FSCACHE_AAAC"); got != "FSCACHE_AAAB" {
+		t.Errorf("nearest: got %q, want the nearer FSCACHE_AAAB over the earlier, farther FSCACHE_AAXX", got)
 	}
 }
