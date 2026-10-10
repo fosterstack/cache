@@ -739,8 +739,9 @@ def cmd_sign(a):
     signing_config = os.path.join(os.path.dirname(os.path.abspath(a.template or a.policy)), "cosign-signing-config.json")
     with tempfile.TemporaryDirectory() as tmpd:
         sp = os.path.join(tmpd, "statement.json")
+        statement = provenance_statement(pol, obj, dry)
         with open(sp, "w") as f:
-            json.dump(provenance_statement(pol, obj, dry), f, sort_keys=True)
+            json.dump(statement, f, sort_keys=True)
         os.makedirs(a.out, exist_ok=True)
         bundle = os.path.join(os.path.abspath(a.out), "provenance.bundle.json")
         r = subprocess.run(["cosign", "attest-blob", "--yes", "--signing-config", signing_config, "--statement", sp, "--bundle", bundle], capture_output=True)
@@ -748,19 +749,24 @@ def cmd_sign(a):
             shutil.rmtree(a.out, ignore_errors=True)
             refuse("sign", "cosign failed: %s" % r.stderr.decode(errors="replace")[:200])
         try:
-            convert_and_verify(bundle, a.out, pol, parse_now(a.now), tmpd)
+            convert_and_verify(bundle, a.out, pol, statement, parse_now(a.now), tmpd)
         except Refuse as bad:
             shutil.rmtree(a.out, ignore_errors=True)   # a failed sign leaves no provenance behind (001-AC2)
             refuse("sign", bad.reason)
+        except Exception as ex:
+            # anything else in the self-check (openssl failing, a file that cannot be written) is a refusal too, never a traceback
+            shutil.rmtree(a.out, ignore_errors=True)
+            refuse("sign", "the check of the provenance Sign wrote could not run: %s" % str(ex)[:200])
         if dry:
             with open(os.path.join(a.out, "DRY-RUN"), "w") as f:
                 f.write("dry run: Release can never accept this record\n")
     print("ok")
 
 
-def convert_and_verify(bundle, out_dir, pol, now, tmpd):
-    """Write Release's two files from cosign's bundle, then verify them as stage sign exactly as Release will, before Sign says ok
-    (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3, Codex security r1 S1): Sign never reports success for provenance Release would refuse."""
+def convert_and_verify(bundle, out_dir, pol, statement, now, tmpd):
+    """Write Release's two files from cosign's bundle, then verify them as stage sign exactly as Release will, and require that the
+    payload cosign signed IS the statement Sign built, before Sign says ok (REQ-CHAIN-001-AC2, 002-AC1, 002-AC3; Codex security r1 S1,
+    Opus r1-verify F1): Sign never reports success for provenance Release would refuse, nor for a statement it did not make."""
     try:
         with open(bundle, "rb") as f:
             bun = strict_json(f.read())
@@ -769,7 +775,11 @@ def convert_and_verify(bundle, out_dir, pol, now, tmpd):
     bundle_to_outputs(bun, out_dir, pol)
     vdir = os.path.join(tmpd, "verify-own-output")
     os.makedirs(vdir)
-    verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), os.path.join(out_dir, "provenance.rekor.json"), now, vdir)
+    signed, _payload, _dsse = verify_record(pol, "sign", os.path.join(out_dir, "provenance.json"), os.path.join(out_dir, "provenance.rekor.json"), now, vdir)
+    # compared as parsed JSON, not as bytes: what matters is what the statement says, and cosign may re-serialise the statement file
+    # it was given (key order, spacing) without changing a single subject or field; the parse is strict (no duplicate key, no NaN)
+    if signed != statement:
+        refuse("sign", "the statement cosign signed is not the statement Sign built (subjects or predicate differ)")
 
 
 # ---- actions: every reference is a listed full digest ------------------------------------------------------------

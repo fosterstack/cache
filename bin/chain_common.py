@@ -63,13 +63,21 @@ def no_constants(name):
     raise ValueError("%s is not JSON" % name)
 
 
+def finite_float(text):
+    # a number too large for a float (1e400) parses to inf: refused like Infinity (Sonnet r1 info)
+    value = float(text)
+    if value in (float("inf"), float("-inf")):
+        raise ValueError("%s is not a finite number" % text)
+    return value
+
+
 def strict_json(raw):
     """JSON in which a repeated key is an error (Python keeps the last one, other readers the first) and bytes are UTF-8 only:
     json.loads on bytes would also guess UTF-16 or UTF-32 from the first bytes, which another reader would read differently.
-    NaN, Infinity and -Infinity are refused too."""
+    NaN, Infinity, -Infinity and numbers that overflow to infinity are refused too."""
     if isinstance(raw, (bytes, bytearray)):
         raw = bytes(raw).decode("utf-8")
-    return json.loads(raw, object_pairs_hook=no_duplicate_keys, parse_constant=no_constants)
+    return json.loads(raw, object_pairs_hook=no_duplicate_keys, parse_constant=no_constants, parse_float=finite_float)
 
 
 def load_json(path, what):

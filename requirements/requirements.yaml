@@ -2302,9 +2302,9 @@ requirements:
       - `actions` follows a listed local composite action wherever it is stored, including under .github/workflows/, and skips following only a reference that names a .yml/.yaml file (a reusable workflow, judged as a workflow of its own).
       - The token of the key and token attempts must name exactly <repo>/.github/workflows/stage-sign.yml@<ref> of this repository (GITHUB_REPOSITORY).
       - Codex security round 1 (Oct 10):
-      - (S1) after cosign, `sign` refuses a bundle with no or an empty timestamp list or Rekor entry list, naming each, and verifies the two files it wrote as stage sign before it prints ok; any refusal removes the output folder;
+      - (S1) after cosign, `sign` refuses a bundle with no or an empty timestamp list or Rekor entry list, naming each, verifies the two files it wrote as stage sign and requires the payload cosign signed to be, as parsed JSON, the statement Sign built (Opus round-1 verify F1) before it prints ok; any refusal, or any failure of that self-check, removes the output folder;
       - (S2) a Rekor entries file whose `entries` is not a list of objects is a refusal, never a traceback;
-      - (S3) base64 must be canonical (re-encoding gives the same text) and JSON readers refuse NaN, Infinity and -Infinity;
+      - (S3) base64 must be canonical (re-encoding gives the same text) and JSON readers refuse NaN, Infinity, -Infinity and numbers that overflow to infinity (1e400);
       - (S4) only `actions` imports PyYAML; the Sign path runs on the standard library.
       - Advisor reading, Oct 9 (handoff 0334; the ratified text is unchanged): a stage's identity in rules 52/52a/57 is the certificate whose SAN (Build Signer URI) is the stage file at the tag AND whose Build Config URI extension (OID 1.3.6.1.4.1.57264.1.18, the top-level workflow) is release.yml at the same tag, issued by GitHub's OIDC issuer; the policy pins all three.
       - Witness's own verify can check the issuer but not the Build Config URI (in-toto-witness options/verify.go:80-99), so bin/chain-verify.py checks it.
