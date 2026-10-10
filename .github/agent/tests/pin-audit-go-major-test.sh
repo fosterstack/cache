@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=63
+pass=0 failn=0 EXPECT=64
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -619,6 +619,26 @@ for what, events in bad.items():
     except AssertionError as e: raise AssertionError((what,) + e.args)
     except Exception as e: raise AssertionError((what, "traceback", repr(e)))
 clean("3.1.3", [rec("GO-X-52", ent(n, good + [{"limit": "3.2.0"}]))], sups=(True,))     # a limit event is a known key: still readable
+PY
+py "B9: the other branches read only readable entries too (table path for another major, /v0 or /v1 path in the record): a malformed range or event" \
+   " is a HIT, never a traceback, and an event with a typo key never reads clean; honest records keep the old verdict" <<'PY'
+n = BARE + "/v3"
+typo = fixed("3.0.4") + [{"introducd": "3.1.0"}]
+shapes = {"ranges string": ent(n, ranges="x"), "events int": ent(n, ranges=[{"type": "SEMVER", "events": [5]}]), "range not an object": ent(n, ranges=["x"]),
+          "typo key": ent(n, typo), "empty event": ent(n, fixed("3.0.4") + [{}])}
+for what, a in shapes.items():             # branch 1: the table says /v3 is wrong for this pin (a bare table path, pin 3.1.3)
+    try: hit("3.1.3", [rec("GO-X-53", a)], tables=(BARE,), sups=(True,))
+    except AssertionError as e: raise AssertionError((what, "table branch") + e.args)
+    except Exception as e: raise AssertionError((what, "table branch", "traceback", repr(e)))
+clean("3.1.3", [rec("GO-X-54", ent(n, fixed("3.0.4")))], tables=(BARE,), sups=(True,))           # honest control: the old verdict, clean
+base = "example.com/o/ytool"
+mk = lambda v, t=None: tool("ytool", v, base)
+for what, a in {"ranges string": ent(base, ranges="x"), "events int": ent(base, ranges=[{"type": "SEMVER", "events": [5]}]),
+                "typo key": ent(base, fixed("1.2.0") + [{"introducd": "1.4.0"}])}.items():   # branch 2: a /v1 path in the record for a major 1 pin
+    try: hit("1.5.0", [rec("GO-X-55", a, ent(base + "/v1", INTRO0))], mk=mk, sups=(True,))
+    except AssertionError as e: raise AssertionError((what, "/v1 branch") + e.args)
+    except Exception as e: raise AssertionError((what, "/v1 branch", "traceback", repr(e)))
+clean("1.5.0", [rec("GO-X-56", ent(base, fixed("1.2.0")), ent(base + "/v1", ev(("introduced", "0"), ("last_affected", "1.0.0"))))], mk=mk, sups=(True,))
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
