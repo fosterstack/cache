@@ -241,8 +241,9 @@ def _trusted_path(v, interp):
 def _meta_roots():
     """Directories the interpreter itself names, which coverage (TreeMatcher/abs_file) realpaths at startup: every path of every
     sysconfig scheme (scripts, include, data, ... for posix_prefix, posix_user ...) and the stdlib zip beside the stdlib directory. Metadata
-    of the directory only. The user base / user site and every sys.path entry (coverage stats those too) count only when they are under the
-    interpreter's own directories or a standard temp parent, like the environment roots."""
+    of the directory only. The *_user scheme paths and the user base / user site count only when _user_home_trusted() (HOME is the account's own
+    home or under a standard temp parent, PYTHONUSERBASE unset or under one); every sys.path entry (coverage stats those too) counts only when
+    it is under the interpreter's own directories or a standard temp parent, like the environment roots."""
     cand = set()
     user_ok = _user_home_trusted()
     for scheme in sysconfig.get_scheme_names():

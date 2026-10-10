@@ -338,7 +338,9 @@ def _arith_end(text, i):
 
 
 def _blank_arithmetic(s):
-    """Remove the arithmetic contexts where `<<` is a shift, not a heredoc: $(( )) and (( )) with nested parentheses, $[ ], and `let ...`."""
+    """Remove the arithmetic contexts where `<<` is a shift, not a heredoc: $(( )) and (( )) with nested parentheses, and $[ ]. An UNQUOTED
+    `let x=1<<EOF` is a heredoc to the shell and `let x=1>out` writes `out`, so `let` is not blanked; a QUOTED let argument (`let "a=1<<2"`)
+    is already dropped with the other quoted text."""
     out, i, n = [], 0, len(s)
     while i < n:
         if s.startswith("$((", i):
@@ -348,9 +350,6 @@ def _blank_arithmetic(s):
         elif s.startswith("$[", i):
             j = s.find("]", i)
             i = (j + 1) if j >= 0 else n
-        elif re.match(r"let\s", s[i:]) and (i == 0 or s[i - 1] in " \t;&|({"):
-            j = re.search(r"[;&|]", s[i:])
-            i = i + j.start() if j else n
         else:
             out.append(s[i])
             i += 1
@@ -511,8 +510,6 @@ def shell_file_creation(text):
         cmd, args = _command_word(words)
         made = redirect or cmd in _CREATORS or (cmd == "dd" and any(a.startswith("of=") and a != "of=/dev/null" for a in args)) \
             or (cmd == "sed" and any(re.match(r"^-[A-Za-z]*i", a) for a in args)) or (cmd == "git" and args[:1] in (["init"], ["clone"]))
-        if cmd == "let":
-            continue                                                         # let evaluates arithmetic: `let a=b>c` compares, it does not redirect
         if cmd == "mktemp":
             mk = True
         elif made:
@@ -1226,6 +1223,8 @@ class AuditRows(unittest.TestCase):
         self.refused(G._hook, "open", ("/dev/urandom", "wb", 0)); self.refused(G._hook, "open", ("/dev/urandom", None, os.O_RDWR))
         os.stat("/dev/null"); os.stat("/dev/urandom"); os.path.exists("/dev/null")
         self.refused(os.stat, "/dev/null/x"); self.refused(open, "/dev/null/x", "w"); self.refused(open, "/dev/nullx")
+        os.stat("/dev"); os.path.isdir("/dev"); os.lstat("/dev")                                                  # /dev is an allowed ancestor: metadata only
+        self.refused(open, "/dev"); self.refused(os.listdir, "/dev"); self.refused(os.scandir, "/dev"); self.refused(G._hook, "os.listdir", ("/dev",))
     def test_unix_sockets_and_sqlite_extensions_are_judged_and_unknown_events_fail_closed(self):
         import pathlib, socket, sqlite3
         T = Tables(self)
@@ -1657,7 +1656,8 @@ class Scope(unittest.TestCase):
                     "/bin/mkdir d", "/usr/bin/touch f", "command /bin/cp a b", "sudo -E /bin/mv a b",
                     # the heredoc opener is not recognised inside a comment, double quotes, single quotes or $(( )): the commands after it are code
                     "# cat <<EOF\ntouch f", "echo \"<<EOF\"\ntouch f", "echo '<<EOF'\ntouch f", "echo $((1<<EOF))\ntouch f", "x=1 # <<EOF\nmkdir d",
-                    "x=$(( (1<<n) ))\ntouch f", "x=$(( (1<<n) + (2<<m) ))\nmkdir d", "(( x = 1<<n ))\ntouch f", "((x=1<<n))\ntouch f", "let x=1<<n\ntouch f", "let \"x=1<<n\"\nmkdir d",
+                    "x=$(( (1<<n) ))\ntouch f", "x=$(( (1<<n) + (2<<m) ))\nmkdir d", "(( x = 1<<n ))\ntouch f", "((x=1<<n))\ntouch f", "let \"x=1<<n\"\nmkdir d", "let 'a=1<<2'\ntouch f", "let \"a=b>c\" x=1>out", "let x=1>out", "let x=1>>out", "let x=2>&out",
+                    "let x=1<<EOF\n$(mktemp -d)\nEOF\ntouch f", "let x=1<<'EOF'\nmktemp -d\nEOF\nmkdir d",
                     "x=$[1<<n]\ntouch f", "echo \"a \\\" <<EOF\"\ntouch f", "echo 'a' \"b\\\"c <<EOF\"\nmkdir d", "echo $(( 1 << 2 )) && touch f", "if (( a < b )); then touch f; fi",
                     # `>&word` is a file redirect; only >&N / >&- are descriptors
                     "echo hi >&out", "echo hi >&out.txt", "echo hi 2>&logfile", "echo hi >>&out",
@@ -1667,7 +1667,7 @@ class Scope(unittest.TestCase):
             self.assertTrue(makes_files_without_temp(text + "\n"), text)
         clean = ["w=$(mktemp -d)\nmkdir -p \"$w/out\"", "w=`mktemp -d`\ntouch \"$w/f\"", "w=$(mktemp)\necho hi > \"$w\"", "w=\"$(mktemp -d)\"; mkdir \"$w/x\"", "mktemp -d >/dev/null\ntouch f",
                  "echo hi >&2\ncmd >/dev/null 2>&1\n[ $a -gt 3 ]\nif [ $a -gt 3 ]; then echo ok; fi", "echo hi\n", "python3 -c 'import tempfile; tempfile.mkdtemp()'\ntouch f",
-                 "x=$((a>b))\necho $x", "(( a > b ))\necho $x", "let a=b>c\necho $x", "x=$(( (a>b) ? 1 : 0 ))\necho $x", "x=$(( ((a)) > 1 ))\necho $x", "x=$(( ((a+b)*(c)) > 1 ))\necho $x", "x=$[a>b]\necho $x", "cat <<'EOF'\ntouch f > out\nEOF\necho done", "echo \"touch f\"; echo 'mkdir d'", "# touch f\n# mkdir d", "echo hi | grep x", "cmd 2>&1 | head",
+                 "x=$((a>b))\necho $x", "(( a > b ))\necho $x", "let \"a=b>c\"\necho $x", "let 'a=b>c'\necho $x", "let x=1>&2\necho $x", "let x=1>/dev/null\necho $x", "x=$(( (a>b) ? 1 : 0 ))\necho $x", "x=$(( ((a)) > 1 ))\necho $x", "x=$(( ((a+b)*(c)) > 1 ))\necho $x", "x=$[a>b]\necho $x", "cat <<'EOF'\ntouch f > out\nEOF\necho done", "echo \"touch f\"; echo 'mkdir d'", "# touch f\n# mkdir d", "echo hi | grep x", "cmd 2>&1 | head",
                  "cmd > /dev/null", "cmd &>/dev/null", "echo hi >&2", "echo hi >&-", "echo hi 2>&1", "echo hi >&10", "echo hi 2>&-", "diff <(echo a) <(echo b)",
                  "cat <<EOF\ntouch f\nEOF\necho done", "cat <<-EOF\n\ttouch f\n\tEOF\necho done", "x=$(cat <<'EOF'\nmkdir d\nEOF\n)", "touch f\nx = 1  # tempfile.mkdtemp(\nw=$(mktemp -d)", "a=$(echo hi)", "[[ $a == b ]] && echo yes", "git status", "sed s/a/b/ f", "dd if=a of=/dev/null"]
         for text in clean:
