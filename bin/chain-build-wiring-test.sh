@@ -1479,8 +1479,41 @@ cl c10 "AC14 a call of stage-promote.yml (a proof workflow never releases)" "  s
 cl c11 "AC14 a call of stage-reproducibility.yml in a file that is not scan.yml's shape (a bare call: no mode, no needs)" "  scanners:" \
     "  rebuild:\n    needs: build\n    uses: ./.github/workflows/stage-reproducibility.yml\n  scanners:" "rebuild must pass"
 cl c12 "AC14 a second call of stage-build.yml" "  scanners:" \
-    "  build2:\n    uses: ./.github/workflows/stage-build.yml\n    with:\n      mode: snapshot\n  scanners:" "also calls"
+    "  build2:\n    uses: ./.github/workflows/stage-build.yml\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
 cl c13 "AC14 the workflow can be called (REQ-SCAN-015)" "  pull_request:\n" "  pull_request:\n  workflow_call:\n" "workflow_call"
+# THE ALLOWLIST (step-6 round 1): any other job-level `uses` is refused whatever its form
+SB="fosterstack/cache/.github/workflows"
+cl a1 "AC14 allowlist: build calls stage-build.yml with an @ref" "uses: ./.github/workflows/stage-build.yml" \
+    "uses: ./.github/workflows/stage-build.yml@main" "must call exactly"
+cl a2  "AC14 allowlist: build calls the repository-qualified stage-build.yml" "uses: ./.github/workflows/stage-build.yml" \
+       "uses: $SB/stage-build.yml@1111111111111111111111111111111111111111" "must call exactly"
+cl a3  "AC14 allowlist: a second job build2 calls stage-build.yml in release mode" "  scanners:" \
+       "  build2:\n    uses: ./.github/workflows/stage-build.yml\n    with:\n      mode: release\n  scanners:" "allowlist"
+cl a4  "AC14 allowlist: a repository-qualified stage-build.yml under another job name" "  scanners:" \
+       "  other:\n    uses: $SB/stage-build.yml@1111111111111111111111111111111111111111\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
+cl a5  "AC14 allowlist: a repository-qualified stage-sign.yml" "  scanners:" "  other:\n    uses: $SB/stage-sign.yml@main\n  scanners:" "allowlist"
+cl a6  "AC14 allowlist: release.yml itself" "  scanners:" "  other:\n    uses: ./.github/workflows/release.yml\n  scanners:" "allowlist"
+cl a7  "AC14 allowlist: stage-authorize.yml" "  scanners:" "  other:\n    uses: ./.github/workflows/stage-authorize.yml\n  scanners:" "allowlist"
+cl a8  "AC14 allowlist: stage-verify.yml" "  scanners:" "  other:\n    uses: ./.github/workflows/stage-verify.yml\n  scanners:" "allowlist"
+cl a9 "AC14 allowlist: stage-acceptance-predicate.yml" "  scanners:" \
+    "  other:\n    uses: ./.github/workflows/stage-acceptance-predicate.yml\n  scanners:" "allowlist"
+cl a10 "AC14 allowlist: stage-promote.yml with an @ref" "  scanners:" "  other:\n    uses: ./.github/workflows/stage-promote.yml@v1\n  scanners:" "allowlist"
+cl a11 "AC14 allowlist: stage-reproducibility.yml under a name that is not rebuild" "  scanners:" \
+       "  reproducibility:\n    uses: ./.github/workflows/stage-reproducibility.yml\n    with:\n      mode: snapshot\n  scanners:" "allowlist"
+cl a12 "AC14 allowlist: a job-level uses of an action-like reference" "  scanners:" \
+    "  other:\n    uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1\n  scanners:" "allowlist"
+printf '' > "$work/empty.yml"
+expect caught "AC14 an empty file is refused, not read as having no calls" "not a YAML mapping" callers "$work/empty.yml"
+printf 'on:\n  pull_request:\njobs:\n  - build\n' > "$work/jobslist.yml"
+expect caught "AC14 jobs as a list is refused with a clear message" "jobs must be a non-empty mapping" callers "$work/jobslist.yml"
+printf 'on:\n  pull_request:\njobs:\n' > "$work/jobsnull.yml"
+expect caught "AC14 an empty jobs key is refused" "jobs must be a non-empty mapping" callers "$work/jobsnull.yml"
+printf 'on:\n  pull_request:\njobs:\n  build: nonsense\n' > "$work/jobscalar.yml"
+expect caught "AC14 a job that is not a mapping is refused" "is not a mapping" callers "$work/jobscalar.yml"
+replace "$work/caller.yml" "$work/a13.yml" "  scanners:" "  artifact-acceptance:\n    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n  scanners:" \
+  && expect ok "AC14 allowlist: artifact-acceptance (what scan.yml calls today that is not Release; PR 3 moves it) is accepted" "" callers "$work/a13.yml"
+mkdir -p "$work/a14"; cp "$work/a13.yml" "$work/a14/main-candidate-rescan.yml"
+expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-acceptance call" "allowlist" callers "$work/a14/main-candidate-rescan.yml"
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
@@ -1532,7 +1565,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=514
+EXPECT=532
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

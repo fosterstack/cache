@@ -578,7 +578,12 @@ def graph(path):
 # publishes (stage-sign, stage-reproducibility, stage-promote), or the deleted stage-image.yml. THE JUDGE READS ONLY `on` AND THE JOBS THAT CALL A STAGE
 # FILE: the scanner steps and the other jobs (`manifests` of main-candidate-rescan.yml, edited by cache's REQ-REL-004-AC5) are cache's and not read here.
 SNAPSHOT_CALLER_PERMISSIONS = dict(PERM_ADMIT)       # the union of what the apk job (PERM_ADMIT) and the assemble job (PERM_PLAIN) of stage-build.yml request
-NEVER_FROM_A_PROOF_WORKFLOW = ("stage-sign.yml", "stage-promote.yml", "stage-image.yml", "stage-admission.yml")
+# THE ALLOWLIST (step-6 round 1, both seats: a deny-list of stage-file names is bypassed by `@ref`, `owner/repo/...` forms and by release.yml): in a proof
+# workflow the only jobs that carry a job-level `uses` are these, each calling EXACTLY the file named, whatever the form. artifact-acceptance is what
+# scan.yml legitimately calls today that is not Release (cache's job; PR 3, Check, moves it); main-candidate-rescan.yml calls Build only.
+CALLER_ALLOWLIST = {"build": "./.github/workflows/stage-build.yml", "rebuild": "./.github/workflows/stage-reproducibility.yml",
+                    "artifact-acceptance": "./.github/workflows/stage-acceptance-artifacts.yml"}
+NOT_IN_FILE = {"main-candidate-rescan.yml": ("rebuild", "artifact-acceptance")}
 # scan.yml (the PR gate keeps rule 31's two-assembly reproducibility check) also calls Rebuild in snapshot mode after Build; main-candidate-rescan.yml does not
 SNAPSHOT_REBUILD_PERMISSIONS = dict(PERM_PLAIN)
 
@@ -594,20 +599,28 @@ def ceiling(job_name, perm):
 
 def callers(path):
     d = yaml.load(read_exact(path), Loader=yaml.BaseLoader)
-    bad, on = [], d.get("on") if isinstance(d, dict) else None
+    if not isinstance(d, dict):
+        return ["%s is not a YAML mapping (an empty or malformed workflow file is refused, never read as having no calls)" % path]
+    bad, on = [], d.get("on")
     if not isinstance(on, dict) or "workflow_call" in on:
         bad.append("%s: on: must be a mapping without workflow_call (REQ-SCAN-015: nothing may call a scanner workflow), got %s" % (path, on))
-    jobs = d.get("jobs") or {}
-    calls = {n: j for n, j in jobs.items() if isinstance(j, dict) and "uses" in j}
-    for n, j in calls.items():
-        for stage_file in NEVER_FROM_A_PROOF_WORKFLOW:
-            if str(j["uses"]).endswith("/" + stage_file):
-                bad.append("job %s calls %s: a proof workflow never reaches %s" % (n, stage_file, stage_file))
+    jobs = d.get("jobs")
+    if not isinstance(jobs, dict) or not jobs:
+        return bad + ["%s: jobs must be a non-empty mapping, got %s" % (path, type(jobs).__name__)]
+    name, nope = os.path.basename(path), NOT_IN_FILE.get(os.path.basename(path), ())
+    for n, j in jobs.items():
+        if not isinstance(j, dict):
+            bad.append("job %s is not a mapping" % n)
+        elif "uses" in j and (n not in CALLER_ALLOWLIST or n in nope):
+            bad.append("job %s has a job-level uses (%s), which is not in the allowlist of this proof workflow (build; rebuild and artifact-acceptance "
+                       "in scan.yml only): a proof workflow reaches no other workflow, in any form" % (n, j["uses"]))
+        elif "uses" in j and j["uses"] != CALLER_ALLOWLIST[n]:
+            bad.append("job %s must call exactly %s, got %r" % (n, CALLER_ALLOWLIST[n], j["uses"]))
     build = jobs.get("build")
     if not isinstance(build, dict):
         return bad + ["job build is missing (the proof workflow's one call of stage-build.yml)"]
-    if build.get("uses") != "./.github/workflows/stage-build.yml":
-        bad.append("job build must call exactly ./.github/workflows/stage-build.yml, got %r" % build.get("uses"))
+    if "uses" not in build:
+        bad.append("job build must call exactly %s, got nothing" % CALLER_ALLOWLIST["build"])
     if build.get("with") != {"mode": "snapshot"}:
         bad.append("job build must pass exactly with: mode: snapshot (no other input, so no hostile hook), got %s" % build.get("with"))
     bad += ceiling("build", build.get("permissions"))
@@ -616,17 +629,14 @@ def callers(path):
     extra = set(build) - {"uses", "with", "permissions"}
     if extra:
         bad.append("job build: keys outside {uses, with, permissions}: %s (no secrets, if, needs, strategy)" % sorted(extra))
-    for n, j in calls.items():
-        if n != "build" and str(j["uses"]).endswith("/stage-build.yml"):
-            bad.append("job %s also calls stage-build.yml (the one call is job build)" % n)
-    rebuild, name = jobs.get("rebuild"), os.path.basename(path)
+    rebuild = jobs.get("rebuild")
     if name == "scan.yml" and rebuild is None:
         bad.append("scan.yml must also call Rebuild in snapshot mode (job rebuild): the PR gate keeps the two-assembly reproducibility check (rule 31)")
     if name == "main-candidate-rescan.yml" and rebuild is not None:
         bad.append("main-candidate-rescan.yml calls Build only: it needs no Rebuild")
     if isinstance(rebuild, dict) and name != "main-candidate-rescan.yml":
-        if rebuild.get("uses") != "./.github/workflows/stage-reproducibility.yml":
-            bad.append("job rebuild must call exactly ./.github/workflows/stage-reproducibility.yml, got %r" % rebuild.get("uses"))
+        if "uses" not in rebuild:
+            bad.append("job rebuild must call exactly %s, got nothing" % CALLER_ALLOWLIST["rebuild"])
         if rebuild.get("with") != {"mode": "snapshot"}:
             bad.append("job rebuild must pass exactly with: mode: snapshot, got %s" % rebuild.get("with"))
         if needs_of(rebuild) != ["build"]:
