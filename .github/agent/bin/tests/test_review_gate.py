@@ -232,6 +232,12 @@ SUBS = {"schema": "review-substitutes/v1", "substitutes": [
      "owner_quote": Q0317, "scope": "all"},
     {"id": "pr210", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": EXPIRY,
      "owner_quote": Q210, "scope": "pr:210"}]}
+# entry 0350 (owner, Oct 9 ~23:10 EDT, to the advisor): TWO spaces after "reviewer." and a lower-case start, verbatim
+Q0350 = ("the plan is we use up the full 24% then switch back to opus as reviewer.  but when you switch to opus "
+         "you need to scream at me - at that point I will hit the reset button.")
+X0350 = "2026-10-17T05:00:00Z"      # Sat Oct 17 01:00 EDT
+E0350 = {"id": "0350", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": X0350,
+         "owner_quote": Q0350, "scope": "all"}
 
 
 def dt(s):
@@ -450,7 +456,7 @@ class Substitute(unittest.TestCase):
         path = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
         with open(path) as fh:
             text = fh.read()
-        self.assertEqual(json.loads(text), SUBS)
+        self.assertEqual(json.loads(text), dict(SUBS, substitutes=SUBS["substitutes"] + [E0350]))
         self.assertEqual(problems(sub_rec(), subs=text), [])
         self.assertEqual(problems(sub_rec(opus(substitute_id="pr210")), subs=text, pr=210), [])
 
@@ -631,6 +637,217 @@ class SubstituteCli(unittest.TestCase):
         rc, out, _ = self.judge()
         self.assertEqual(rc, 1)
         self.assertIn("completed_at", out)
+
+
+REAL_SUBS = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
+D0350 = "2026-10-16T12:00:00Z"      # a completed_at inside 0350's window
+ONE_BEFORE_X0350 = "2026-10-17T04:59:59Z"
+
+
+def real_subs_text():
+    with open(REAL_SUBS, "rb") as fh:
+        return fh.read().decode("utf-8")
+
+
+def rec0350(completed=D0350, tree=TREE, **over):
+    return sub_rec(opus(substitute_id="0350", **over), completed, tree)
+
+
+class Substitute0350(unittest.TestCase):
+    """REQ-AUD-018-AC4: entry 0350 of the REAL reviews/substitutes.json, judged by the gate as shipped."""
+
+    def test_the_real_file_pins_entry_0350_field_by_field(self):
+        text = real_subs_text()
+        doc = json.loads(text)
+        self.assertEqual(doc["schema"], "review-substitutes/v1")
+        ids = [e["id"] for e in doc["substitutes"]]
+        self.assertEqual(ids, ["0317", "pr210", "0350"])                 # exactly these three, in this order
+        self.assertEqual(len(ids), len(set(ids)))                         # ids are unique
+        e = [x for x in doc["substitutes"] if x["id"] == "0350"]
+        self.assertEqual(len(e), 1); e = e[0]
+        self.assertEqual(list(e), ["id", "for", "by", "vendor", "effective_until", "owner_quote", "scope"])
+        self.assertEqual(e["id"], "0350")
+        self.assertEqual(e["for"], "codex")
+        self.assertEqual(e["by"], "opus")
+        self.assertEqual(e["vendor"], "anthropic")
+        self.assertEqual(e["scope"], "all")
+        self.assertEqual(e["effective_until"], "2026-10-17T05:00:00Z")
+        self.assertEqual(e["owner_quote"], Q0350)
+        self.assertEqual(e["owner_quote"].encode("utf-8"), Q0350.encode("utf-8"))
+        self.assertIn("reviewer.  but", e["owner_quote"])                 # the double space survives
+        self.assertTrue(e["owner_quote"].startswith("the plan"))           # the lower-case start survives
+        self.assertIn('"owner_quote": %s' % json.dumps(Q0350), text)      # byte for byte in the raw file too
+        self.assertEqual(text, json.dumps(doc, indent=2) + "\n")         # the file keeps its formatting
+
+    def test_0350_accepted_before_expiry_for_a_change_outside_the_enforcement_set(self):
+        text = real_subs_text()
+        self.assertEqual(problems(rec0350(), subs=text, now="2026-10-16T13:00:00Z"), [])
+        self.assertEqual(problems(rec0350(), subs=text, now="2026-10-16T13:00:00Z", pr=999), [])   # scope all: any PR
+
+    def test_0350_one_second_before_expiry_accepted_and_at_expiry_rejected_naming_it(self):
+        text = real_subs_text()
+        self.assertEqual(problems(rec0350(completed="2026-10-17T04:59:58Z"), subs=text, now=ONE_BEFORE_X0350), [])
+        for clock in (X0350, "2026-10-17T05:00:01Z", "2026-10-18T00:00:00Z"):
+            ps = problems(rec0350(), subs=text, now=clock)
+            self.assertTrue(named(ps, "opus substitute 0350 expired at 2026-10-17T05:00:00Z"), (clock, ps))
+        ps = problems(rec0350(completed=X0350), subs=text, now=ONE_BEFORE_X0350)     # completed_at at the expiry
+        self.assertTrue(named(ps, "completed_at"), ps)
+
+    def test_0350_after_expiry_rejected_by_the_system_clock_function(self):
+        text = real_subs_text()
+        with mock.patch.object(G, "_utcnow", return_value=dt(ONE_BEFORE_X0350)):
+            self.assertEqual(G.record_problems(rec0350(), TREE, subs=text), [])
+        with mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
+            self.assertTrue(named(G.record_problems(rec0350(), TREE, subs=text), "expired at 2026-10-17T05:00:00Z"))
+
+    def test_a_scope_other_than_all_or_pr_n_without_pr_fails(self):
+        for scope in ("pr:1", "pr:350"):
+            o = json.loads(real_subs_text()); o["substitutes"][2]["scope"] = scope
+            self.assertTrue(named(problems(rec0350(), subs=json.dumps(o), now=D0350), "needs --pr"), scope)
+        for scope in ("everything", "", "pr:", "ALL", None):
+            o = json.loads(real_subs_text()); o["substitutes"][2]["scope"] = scope
+            self.assertTrue(named(problems(rec0350(), subs=json.dumps(o), now=D0350), "scope"), scope)
+
+    def test_a_copy_without_an_owner_quote_is_rejected_naming_it(self):
+        for q in ("", "   ", None, ...):
+            o = json.loads(real_subs_text()); e = o["substitutes"][2]
+            if q is ...:
+                del e["owner_quote"]
+            else:
+                e["owner_quote"] = q
+            ps = problems(rec0350(), subs=json.dumps(o), now=D0350)
+            self.assertTrue(named(ps, "entry 0350 owner_quote"), (q, ps))
+
+    def test_a_sonnet_substitution_is_still_refused(self):
+        text = real_subs_text()
+        r = rec0350(); r["rounds"][0]["reviewers"]["sonnet"] = opus(substitute_id="0350", substitute_for="sonnet")
+        self.assertNotEqual(problems(r, subs=text, now=D0350), [])
+        r = rec0350(); del r["rounds"][0]["reviewers"]["sonnet"]
+        self.assertTrue(named(problems(r, subs=text, now=D0350), "no sonnet review"))
+        r = good(); del r["rounds"][0]["reviewers"]["sonnet"]
+        r["rounds"][0]["reviewers"]["opus"] = opus(substitute_id="0350", substitute_for="sonnet")
+        r["rounds"][0]["completed_at"] = D0350
+        self.assertNotEqual(problems(r, subs=text, now=D0350), [])
+
+    def test_the_gate_clock_ignores_environment_and_options(self):
+        text = real_subs_text()
+        with mock.patch.dict(os.environ, {"GATE_NOW": D0350, "TZ": "Pacific/Kiritimati", "FAKETIME": "@2026-10-16 00:00:00"}), \
+                mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
+            self.assertTrue(named(G.record_problems(rec0350(), TREE, subs=text), "expired"))
+
+
+class Substitute0350Cli(unittest.TestCase):
+    """The gate's CLI on a temporary repository whose TRUSTED (base) revision carries the REAL substitutes.json."""
+    git, write, run_main = Cli.git, Cli.write, Cli.run_main
+    SUBPATH = SubstituteCli.SUBPATH
+    touch = SubstituteCli.touch
+    SCRIPT = os.path.join(BIN, "auditor-review-gate.py")
+
+    def setUp(self):
+        self.real = real_subs_text()
+        self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d)
+        self.cwd = os.getcwd(); os.chdir(self.d); self.addCleanup(os.chdir, self.cwd)
+        self.clock = mock.patch.object(G, "_utcnow", return_value=dt("2026-10-16T13:00:00Z"))
+        self.clock.start(); self.addCleanup(self.clock.stop)
+        self.git("init", "-q", "-b", "main")
+        os.makedirs(".github/agent/prompts"); os.makedirs(".github/agent/reviews")
+        self.write(".github/agent/prompts/x.py", "a\n"); self.write(self.SUBPATH, self.real)
+        self.git("add", "-A"); self.git("commit", "-qm", "base")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def propose(self, completed=D0350, record=None):
+        self.write(".github/agent/prompts/x.py", "b\n"); self.git("commit", "-qam", "change")
+        tree = self.run_main("--print-tree")[1].strip()
+        rec = rec0350(completed, tree) if record is None else record(tree)
+        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        return tree
+
+    def judge(self, *extra):
+        return self.run_main("--base", self.base, "--head", "HEAD", *extra)
+
+    def test_an_ordinary_change_clears_with_0350_before_expiry(self):
+        self.propose()
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("clears the stop rule", out)
+
+    def test_one_second_before_clears_and_the_expiry_instant_fails_naming_it(self):
+        self.propose(completed="2026-10-17T04:59:58Z")
+        with mock.patch.object(G, "_utcnow", return_value=dt(ONE_BEFORE_X0350)):
+            self.assertEqual(self.judge()[0], 0)
+        for clock in (X0350, "2026-10-17T05:00:01Z"):
+            with mock.patch.object(G, "_utcnow", return_value=dt(clock)):
+                rc, out, _ = self.judge()
+            self.assertEqual(rc, 1, clock)
+            self.assertIn("0350 expired at 2026-10-17T05:00:00Z", out)
+
+    def test_no_option_moves_the_clock(self):
+        self.propose()
+        with mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
+            for opt in (("--now", D0350), ("--clock", D0350), ("--time", D0350), ("--as-of", D0350)):
+                rc, out, _ = self.judge(*opt)
+                self.assertEqual(rc, 1, opt)
+                self.assertIn("expired", out)
+
+    def test_this_very_pr_with_a_substitute_only_record_fails(self):
+        # base: main WITHOUT 0350; head: the real file WITH 0350 (this PR's diff), a substitute-only record
+        o = json.loads(self.real); o["substitutes"] = [e for e in o["substitutes"] if e["id"] != "0350"]
+        self.write(self.SUBPATH, json.dumps(o, indent=2) + "\n"); self.git("commit", "-qam", "main before this PR")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.write(self.SUBPATH, self.real); self.git("commit", "-qam", "this PR: add 0350")
+        self.propose()
+        for extra in ((), ("--subs-rev", "HEAD")):          # even if the trusted copy already had 0350
+            rc, out, _ = self.judge(*extra)
+            self.assertEqual(rc, 1, (extra, out))
+            self.assertIn("this change edits .github/agent/reviews/substitutes.json, so a substitute never applies", out)
+            self.assertIn("real codex entry is required", out)
+
+    def test_this_very_pr_clears_with_a_real_codex_entry(self):
+        o = json.loads(self.real); o["substitutes"] = [e for e in o["substitutes"] if e["id"] != "0350"]
+        self.write(self.SUBPATH, json.dumps(o, indent=2) + "\n"); self.git("commit", "-qam", "main before this PR")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.write(self.SUBPATH, self.real); self.git("commit", "-qam", "this PR: add 0350")
+        self.propose(record=lambda tree: dict(good(), tree=tree))
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 0, out)
+
+    def test_any_enforcement_file_edit_is_never_cleared_by_0350(self):
+        for path in SubstituteCli.ENFORCEMENT + ("bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
+                                                 ".github/agent/fixtures/testlib/new.py"):
+            with self.subTest(path=path):
+                self.git("reset", "-q", "--hard", self.base)
+                self.touch(path)
+                self.propose()
+                rc, out, _ = self.judge()
+                self.assertEqual(rc, 1, (path, out))
+                self.assertIn(path, out)
+                self.assertIn("real codex entry is required", out)
+
+    def test_the_pr_s_own_copy_is_never_trusted(self):
+        o = json.loads(self.real); o["substitutes"] = [e for e in o["substitutes"] if e["id"] != "0350"]
+        self.write(self.SUBPATH, json.dumps(o, indent=2) + "\n"); self.git("commit", "-qam", "main without 0350")
+        self.base = self.git("rev-parse", "HEAD").strip()
+        self.write(self.SUBPATH, self.real); self.git("commit", "-qam", "the PR's own copy has 0350")
+        self.propose()
+        rc, out, _ = self.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("substitutes.json", out)
+
+    def test_the_environment_cannot_move_the_subprocess_gate_s_clock(self):
+        # a real subprocess on the system clock: the verdict follows the real UTC time, whatever the environment says
+        self.clock.stop(); self.addCleanup(self.clock.start)
+        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        done = min(now - datetime.timedelta(minutes=1), dt(X0350) - datetime.timedelta(seconds=1))
+        tree = self.propose(completed=done.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        expired = now >= dt(X0350)
+        for env in ({}, {"GATE_NOW": "2026-10-16T00:00:00Z"}, {"GATE_NOW": "2027-01-01T00:00:00Z"},
+                    {"TZ": "Etc/GMT+12"}, {"TZ": "Etc/GMT-14"}, {"FAKETIME": "@2027-01-01 00:00:00"}):
+            r = subprocess.run([sys.executable, "-I", self.SCRIPT, "--base", self.base, "--head", "HEAD"],
+                               capture_output=True, text=True, env=dict(os.environ, **env), stdin=subprocess.DEVNULL)
+            self.assertEqual(r.returncode, 1 if expired else 0, (env, r.stdout, r.stderr))
+            self.assertEqual("0350 expired" in r.stdout, expired, env)
+        self.assertTrue(tree)
 
 
 class ClockIsSystemOnly(unittest.TestCase):
