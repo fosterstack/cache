@@ -89,6 +89,7 @@ ALLOW_PATTERNS=(
   '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'
   '^bin/rescan-statement-test\.sh$'
+  '^bin/rescan-current-only-test\.sh$'
   '^bin/analyze-egress-trace\.py$'
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
