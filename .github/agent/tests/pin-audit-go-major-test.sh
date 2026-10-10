@@ -19,7 +19,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=28
+pass=0 failn=0 EXPECT=30
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 CASE=""
@@ -65,7 +65,18 @@ def run(item, net, exceptions=()):
     notes = []
     finds = pa.judge(item, net, list(exceptions), notes)
     return finds, notes
-def cosign(v): return pa.inv.Item("tool", "cosign", v, "")
+def right_path(base, v):
+    """The module path Go gives the major of version v for a module whose bare path is base, or None when v is not a plain MAJOR.MINOR.PATCH."""
+    import re
+    m = re.fullmatch(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)", v)
+    if not m: return None
+    return base if int(m.group(1)) <= 1 else base + "/v" + m.group(1)
+def cosign(v):
+    """A cosign pin whose table entry is CORRECT for its major (the table-correctness case below proves the real table is); the cases that
+    test a WRONG table entry set pa.GO_TOOLS themselves."""
+    rp = right_path(BARE, v)
+    pa.GO_TOOLS["cosign"] = rp or BARE
+    return pa.inv.Item("tool", "cosign", v, "")
 def ids(finds): return sorted({i for f in finds for i in f.ids})
 def ignored(net, strict=False):
     """The log of ignored entries. strict=True: the audit MUST provide it (a rule that applies logs what it skipped); otherwise an audit that does not
@@ -236,7 +247,7 @@ assert "GO-X-9" in ids(finds) and "GO-2026-4309" not in ids(finds), [(f.kind, f.
 PY
 
 # --- what must keep working -----------------------------------------------------------------------------------------------------------------------------------
-CASE="the five existing cosign 3.1.3 rulings in .github/supply-chain-exceptions.json keep working with the live records: every one of the five advisories yields no finding"
+CASE="the five existing cosign 3.1.3 rulings in .github/supply-chain-exceptions.json keep working with the live records, with the table as it is today AND as corrected to /v3: every one of the five advisories yields no finding"
 check python3 - "$aud" "$work" "$root" <<'PY'
 import sys; exec(open(sys.argv[2] + "/pre.py").read())
 exc = pa.load_exceptions(root + "/.github/supply-chain-exceptions.json", True)
@@ -245,9 +256,11 @@ pairs = [("GO-2024-2718", "GHSA-88jx-383q-w4qc"), ("GO-2024-2719", "GHSA-95pr-fx
 for go, gh in pairs:
     for sup in (True, False):
         rec = load("osv-%s.json" % go); rec["aliases"] = sorted(set(rec.get("aliases", [])) | {gh})
-        net = mknet([rec], [gh], superset=sup)
-        finds, notes = run(cosign("3.1.3"), net, exc)
-        assert finds == [], (go, sup, [(f.kind, f.ids) for f in finds])
+        for table in (BARE, BARE + "/v3"):      # the table as it is today (bare) and as step 7 corrects it for the pinned 3.x (the rulings are about the bare path's GitHub ranges: they must still bind)
+            net = mknet([rec], [gh], superset=sup)
+            it = cosign("3.1.3"); pa.GO_TOOLS["cosign"] = table
+            finds, notes = run(it, net, exc)
+            assert finds == [], (go, sup, table, [(f.kind, f.ids) for f in finds])
 PY
 CASE="a hit on another tool's real advisory is untouched: trivy 0.69.4 vs a record that lists the bare path affected is still a hit (major 0 tool, bare path counts)"
 check python3 - "$aud" "$work" "$root" <<'PY'
@@ -257,11 +270,53 @@ finds, _ = run(pa.inv.Item("tool", "trivy", "0.69.4", ""), mknet([rec]))
 assert finds, "an ordinary affected version is a hit"
 PY
 
-# --- the program itself: the table is the one in the source and pin-audit.py still runs --------------------------------------------------------------------
-CASE="GO_TOOLS (the committed table) still names cosign at its bare module path, and the audit has no second, hidden table of Go tools"
+# --- the table must be right for the versions we pin (advisor ruling, step 5) -----------------------------------------------------------------------------
+CASE="TABLE CORRECTNESS: for every tool in GO_TOOLS that the tree pins (tool: items from bin/install-scanner.sh and the installer inputs; gotool: items by module path), the table path is the bare path for major 0/1 and ends in /vMAJOR for major >= 2"
+check python3 - "$aud" "$work" "$root" <<'PY'
+import re, sys; exec(open(sys.argv[2] + "/pre.py").read())
+items = pa.inv.inventory(pa.inv.tree_files(root, None))     # the tree as the audit reads it (working tree)
+plain = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
+pinned = {}                                                   # tool -> set of (version, where)
+for it in items.values():
+    if it.kind == "tool" and it.name in pa.GO_TOOLS and plain.fullmatch(it.version):
+        pinned.setdefault(it.name, set()).add((it.version, "tool " + it.key))
+    if it.kind == "gotool" and plain.fullmatch(it.version):   # go install module/path/cmd/x@vN.M.P: the module path itself names the major
+        for name, tp in pa.GO_TOOLS.items():
+            bare = re.sub(r"/v[0-9]+$", "", tp)
+            if it.name == bare or it.name.startswith(bare + "/"):
+                pinned.setdefault(name, set()).add((it.version, "gotool " + it.key))
+assert {"trivy", "grype", "syft", "osv", "gitsign", "scout", "goreleaser", "golangci-lint"} <= set(pinned), ("the check would be vacuous; found only", sorted(pinned))
+wrong = []
+for name, vs in sorted(pinned.items()):
+    tp = pa.GO_TOOLS[name]
+    bare = re.sub(r"/v[0-9]+$", "", tp)
+    for v, where in sorted(vs):
+        want = right_path(bare, v)
+        if tp != want:
+            wrong.append("%s pinned %s (%s): table path %s, correct path %s" % (name, v, where.split()[0], tp, want))
+assert not wrong, "GO_TOOLS entries wrong for the pinned major:\n  " + "\n  ".join(wrong)
+PY
+CASE="a table entry that does NOT match the pinned major stays a HIT even when the record would otherwise be ignorable: cosign 3.1.3 with the table at the bare path, at /v2 or at /v30 is a hit in both OSV answer modes and nothing is ignored; with the right path it is clean"
 check python3 - "$aud" "$work" "$root" <<'PY'
 import sys; exec(open(sys.argv[2] + "/pre.py").read())
-assert pa.GO_TOOLS["cosign"] == BARE
+for wrong in (BARE, BARE + "/v2", BARE + "/v30", BARE + "/v3x"):
+    for sup in (True, False):
+        net = mknet([G4309], ["GHSA-whqx-f9j3-ch6m"], superset=sup)
+        it = cosign("3.1.3"); pa.GO_TOOLS["cosign"] = wrong      # after cosign(): the table is now wrong for 3.x
+        finds, _ = run(it, net)
+        assert finds, ("a mismatching table entry must stay a hit", wrong, sup)
+        assert ignored(net) == [], (wrong, sup, ignored(net))
+net = mknet([G4309], ["GHSA-whqx-f9j3-ch6m"], superset=True)
+it = cosign("3.1.3")                                           # the right entry
+finds, _ = run(it, net)
+assert finds == [], [(f.kind, f.ids) for f in finds]
+PY
+
+# --- the program itself: the table is the one in the source and pin-audit.py still runs --------------------------------------------------------------------
+CASE="GO_TOOLS is the one committed table of Go tools (cosign is in it, rooted at its module), and the audit has no second, hidden table"
+check python3 - "$aud" "$work" "$root" <<'PY'
+import sys; exec(open(sys.argv[2] + "/pre.py").read())
+assert "cosign" in pa.GO_TOOLS and pa.GO_TOOLS["cosign"].startswith(BARE)
 src = open(sys.argv[1]).read()
 import re
 assert len(re.findall(r"^GO_TOOLS\s*=", src, re.M)) == 1
