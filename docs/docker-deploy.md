@@ -184,10 +184,13 @@ already-taken `FSCACHE_ADDR` stops the start with a message naming
 `FSCACHE_ADDR` and the address, and leaves `FSCACHE_DATA_DIR` exactly as it
 was (nothing created, no marker written). The listen socket is opened first
 and answers only once the stores are ready, so after a crash, when the server
-reconciles the stores before serving, connections that arrive meanwhile wait in
-the listen backlog and are answered when it finishes. A readiness probe on a
-large store may time out during that window; give it a generous
-`initialDelaySeconds` or `failureThreshold`.
+reconciles the stores before serving, connections that arrive meanwhile are
+accepted by the kernel and wait in the listen backlog until it finishes. A
+build client waits up to its read timeout instead of getting
+connection-refused. Docker has no probe of its own here (the image ships no
+`HEALTHCHECK`), so nothing restarts the container during that window. On
+Kubernetes it is the liveness probe that can restart the pod; see
+[Kubernetes](kubernetes.md#startup-and-reconcile).
 
 Configuration is flags and environment only, on purpose. There is no settings
 page and no runtime reconfiguration, which means the running server always
