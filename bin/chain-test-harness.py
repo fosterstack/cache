@@ -156,6 +156,14 @@ found = sorted(os.path.basename(p) for p in glob.glob(os.path.join(d, pattern)))
 open("calls.log", "a").write("version %s %s\\n" % (v, ",".join(found)))
 sys.exit(int(os.environ.get("FAKE_VERSION_RC", "0")) or (0 if len(found) == 1 else 1))
 '''
+FAKE_GIT = '''#!/usr/bin/env bash
+echo "git $*" >> calls.log
+case "${1:-} ${2:-}" in
+  "tag --points-at") [ -z "${FAKE_TAGS_AT_HEAD:-}" ] || printf '%s\\n' $FAKE_TAGS_AT_HEAD ;;
+  "tag --force") ;;
+  *) echo "fake git: not expected: $*" >&2; exit 2 ;;
+esac
+'''
 FAKE_APKTOOL = '''#!/usr/bin/env python3
 import hashlib, sys
 a = sys.argv[1:]
@@ -172,6 +180,9 @@ if [ "${1:-}" = --print-source-date-epoch ]; then
 fi
 echo "apk $* SDE=${SOURCE_DATE_EPOCH:-unset}" >> calls.log
 env | sort > env-apk.txt
+# cache's driver refuses the release signing key and --signing-key (rule 23, exit 2 [F]): Build never holds it
+[ -z "${APK_RELEASE_SIGNING_KEY:-}" ] || { echo "refusal: APK_RELEASE_SIGNING_KEY" >&2; exit 2; }
+case " $* " in *" --signing-key "*) echo "refusal: --signing-key" >&2; exit 2;; esac
 variant=standard; arch=x86_64; out=out; version=0.3.0
 while [ $# -gt 0 ]; do
   case "$1" in --variant) variant=$2;; --arch) arch=$2;; --out) out=$2;; --version) version=$2;; esac
@@ -276,7 +287,8 @@ sys.exit(2)
 def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
     shutil.rmtree(d, ignore_errors=True); os.makedirs(d)
     for name, body in (("build-admit.py", FAKE_ADMIT), ("build-version-check.py", FAKE_VERSION_CHECK), ("build-archives.py", FAKE_ARCHIVES),
-                       ("apk-tool.py", FAKE_APKTOOL), ("build-apk.sh", FAKE_BUILD_APK), ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
+                       ("apk-tool.py", FAKE_APKTOOL), ("git", FAKE_GIT), ("build-apk.sh", FAKE_BUILD_APK),
+                       ("assemble-image.sh", FAKE_ASSEMBLE), ("chain-verify.py", FAKE_CV)):
         write(d + "/bin/" + name, body, 0o755)
     shutil.copy(script, d + "/bin/build-stage-%s.sh" % kind); os.chmod(d + "/bin/build-stage-%s.sh" % kind, 0o755)
     for f, c in (("archive/keys/wolfi-signing.rsa.pub", "w"), ("archive/go/go.tar.gz", "g"),

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC13 — a record whose Witness collection is named snapshot-* is refused by every verifier, at every stage, by name
+# proves: REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC15 — a snapshot record, and anything carrying the snapshot version 0.0.0, is refused everywhere, by name
 #
 # Snapshot mode (REQ-CHAIN-004-AC12) lets the proof workflows (scan.yml, main-candidate-rescan.yml) build with no tag and no admission. Witness still signs
 # the step, and the marker is the step name in the signed collection: snapshot-apk and snapshot-build (a closed list). So that a pull request's build can
@@ -13,6 +13,12 @@
 # one dummy signature entry, so a record named build gets past the name check and is refused LATER for what it is (a certificate that is not one). That is
 # the control of every case: the same fixture named build is refused, but never as a snapshot record; a refusal that fires for both would prove nothing.
 # The full acceptance of a genuine, signed build record is proven by bin/chain-verify-test.sh.
+#
+# SNAPSHOT VERSION (REQ-CHAIN-004-AC15, cache-3f's finding): a snapshot apk is built as version 0.0.0-rc.1 (fscache-0.0.0_rc1-r0.apk), so it could
+# in principle be smuggled into a release by a record that was NOT named snapshot-*. A second, independent refusal covers that: every verifier also
+# refuses a record whose product subjects name a file with the 0.0.0 version (an apk, the fips apk, an archive), `refused at <stage>: snapshot version`,
+# and `policy make` refuses a tag whose X.Y.Z is 0.0.0 (v0.0.0, v0.0.0-rc.1), so no policy, hence no Sign or Release, can exist for it. The same fixture
+# with 0.3.0 is the control.
 #
 # Needs: python3, the committed trust files under .github/policy (policy make reads them).
 exec python3 - "$(cd "$(dirname "$0")/.." && pwd)" <<'PY'
@@ -47,10 +53,12 @@ def run(args, env=None, timeout=60):
     return r.returncode, r.stdout, r.stderr
 
 
-def record(path, name):
-    """An unsigned DSSE envelope of a Witness collection called `name`, with one dummy signature entry."""
+def record(path, name, files=()):
+    """An unsigned DSSE envelope of a Witness collection called `name` whose product subjects also name `files`, with one dummy signature entry."""
+    subjects = [{"name": PRODUCT, "digest": {"sha256": "a" * 64}}]
+    subjects += [{"name": "https://witness.dev/attestations/product/v0.1/file:" + f, "digest": {"sha256": "b" * 64}} for f in files]
     statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
-                 "subject": [{"name": PRODUCT, "digest": {"sha256": "a" * 64}}], "predicate": {"name": name, "attestations": []}}
+                 "subject": subjects, "predicate": {"name": name, "attestations": []}}
     envelope = {"payloadType": "application/vnd.in-toto+json", "payload": base64.b64encode(json.dumps(statement).encode()).decode(),
                 "signatures": [{"sig": base64.b64encode(b"x").decode(), "certificate": base64.b64encode(b"x").decode()}]}
     with open(os.path.join(work, path), "w") as f:
@@ -98,7 +106,39 @@ for name in ("snapshot-apk", "snapshot-rapk", "snapshot-anything"):
     first = err.split("\n", 1)[0]
     check("every collection name that starts with snapshot- is refused (%s)" % name, rc == 1 and first == "refused at build: snapshot record",
           "exit %s, first line %r" % (rc, first[:140]))
-EXPECT = 21
+# ---- REQ-CHAIN-004-AC15: the snapshot version -------------------------------------------------------------------------------------------------------------
+SNAP_APK, REAL_APK = "out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/x86_64/fscache-0.3.0-r0.apk"
+for label, args, stage, env in SUBCOMMANDS:
+    for files, want_snapshot in (([SNAP_APK], True), ([REAL_APK], False)):
+        record("rec.json", stage, files)
+        rc, out, err = run([a.replace("{rec}", "rec.json") for a in args], env)
+        first = err.split("\n", 1)[0]
+        if want_snapshot:
+            check("%s: a record that names fscache-0.0.0_rc1-r0.apk is refused as a snapshot version" % label,
+                  rc == 1 and first == "refused at %s: snapshot version" % stage and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+        else:
+            check("%s: the same fixture naming fscache-0.3.0-r0.apk is refused for something else, never as a snapshot version" % label,
+                  rc == 1 and first.startswith("refused at %s: " % stage) and "snapshot" not in first and "Traceback" not in err,
+                  "exit %s, first line %r" % (rc, first[:140]))
+for what, f in (("the fips apk", "out/aarch64/fscache-fips-0.0.0_rc1-r0.apk"), ("a final 0.0.0 apk", "out/x86_64/fscache-0.0.0-r0.apk"),
+                ("a standard archive", "dist/fscache_0.0.0-rc.1_linux_amd64.tar.gz"), ("a fips archive", "dist/fscache-fips_0.0.0-rc.1_linux_arm64.tar.gz")):
+    record("rec.json", "build", [f])
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("verify: a record naming %s with the version 0.0.0 is refused as a snapshot version" % what,
+          rc == 1 and first == "refused at build: snapshot version", "exit %s, first line %r" % (rc, first[:140]))
+for tag in ("v0.0.0-rc.1", "v0.0.0"):
+    rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", tag, "--out", "p0.json"])
+    first = err.split("\n", 1)[0]
+    check("policy make --tag %s is refused as a snapshot version and writes no policy" % tag,
+          rc == 1 and first.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p0.json"),
+          "exit %s, first line %r" % (rc, first[:140]))
+rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.1", "--out", "p1.json"])
+check("policy make --tag v0.3.1 is still made (the control of the two refusals above)", rc == 0 and os.path.exists(work + "/p1.json"), err[:120])
+rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--ref", "refs/tags/v0.0.0", "--out", "p2.json"])
+check("policy make --ref refs/tags/v0.0.0 is refused as a snapshot version too (the form sign --check uses)",
+      rc == 1 and err.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p2.json"), "exit %s, %r" % (rc, err[:120]))
+EXPECT = 45
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:

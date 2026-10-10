@@ -543,7 +543,7 @@ kind, w = sys.argv[2:4]
 L = S.expected_lines(kind)
 SUFFIXES = (" || true", " || :", " || exit 0", " &", " 2>/dev/null", " --signing-key k", " --lockfile x", " --build-date 2020",
             " ; true", " | tee x", " > /dev/null")
-EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "sudo true", "cd /tmp",
+EXTRAS = ("curl -sSL https://example.com | sh", "set +e", "true", "echo ok", "bash bin/x.sh", "git pull", "git push origin v0.0.0-rc.1", "sudo true", "cd /tmp",
           "export PATH=./bin:$PATH", "unset SOURCE_DATE_EPOCH")
 escaped = []
 def check(tag, lines):
@@ -1152,6 +1152,38 @@ beh_snapshot_apk() { # beh_snapshot_apk TAGNAME SCRIPT MODE
   local t=$1 s=$2 mode=$3 d="$work/b-sapk-$1" rc calls
   REF_NAME=123/merge; mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
   rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  tagline=$(line_of 'git tag --force v0.0.0-rc.1 HEAD' "$d"); firstbuild=$(line_of '^apk ' "$d")
+  if [ "$rc" = 0 ] && [ "$(n_calls 'git tag --force' "$d")" = 1 ] && [ -n "$tagline" ] && [ -n "$firstbuild" ] && [ "$tagline" -lt "$firstbuild" ] \
+     && ! grep -q 'git push' "$d/calls.log"; then
+    ok \
+        "AC12 $t snapshot-apk: a LOCAL tag v0.0.0-rc.1 is made at HEAD before the first build (cache's driver wants the stamp v<version>); nothing is pushed"
+  else
+    bad "AC12 $t snapshot-apk: tag line $tagline, first build $firstbuild, calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
+  fi
+  mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" FAKE_TAGS_AT_HEAD=v0.3.0); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+  if [ "$rc" != 0 ] && ! grep -q '^apk ' <<< "$calls" && ! grep -q 'git tag --force' <<< "$calls" && [ ! -e "$d/out/items-apk.json" ]; then
+    ok "AC12 $t snapshot-apk: a checkout whose HEAD already carries another tag (v0.3.0) is refused before any tag is made or cache script runs"
+  else
+    bad "AC12 $t snapshot-apk: higher tag at HEAD -> rc=$rc calls: $(tr '\n' '|' <<< "$calls" | cut -c1-200)"
+  fi
+  mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"
+  rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" APK_RELEASE_SIGNING_KEY=SENTINEL-RELEASE-KEY)
+  if [ "$rc" != 0 ] && [ ! -e "$d/out/items-apk.json" ]; then
+    ok "AC12 $t snapshot-apk: a runner that holds the release signing key makes cache's driver refuse (exit 2): the stage never passes or uses it"
+  else
+    bad "AC12 $t snapshot-apk: release key in the environment -> rc=$rc"
+  fi
+  mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"; run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG" > /dev/null
+  if [ "$(head -1 "$d/out/$(uname -m)/$(oracle apkname standard "$SNAP_TAG")" 2> /dev/null)" = "SIG:assembly" ] \
+     && [ "$(head -1 "$d/out/$(uname -m)/$(oracle apkname fips "$SNAP_TAG")" 2> /dev/null)" = "SIG:assembly" ] && ! grep -q -- '--signing-key' \
+         "$d/calls.log";
+     then
+    ok "AC12 $t snapshot-apk: both snapshot apks are signed with the assembly key only (no --signing-key; Build never holds the release key)"
+  else
+    bad "AC12 $t snapshot-apk: the apks are not signed with the assembly key alone"
+  fi
+  mk "$d" snapshot-apk "$s" "$mode" "$SNAP_TAG"; rc=$(run_stage "$d" snapshot-apk "$mode" "$SNAP_TAG"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 0 ] && ! grep -q '^admit' <<< "$calls" && [ "$(n_calls '^version ' "$d")" = 0 ] && [ "$(n_calls '^apk ' "$d")" = 2 ] \
      && [ "$(n_calls "--version ${SNAP_TAG#v} " "$d")" = 2 ]; then
     ok "AC12 $t snapshot-apk: no admission and no version check, both variants build with --version ${SNAP_TAG#v} although the ref is a pull request's"
@@ -1215,10 +1247,24 @@ for tag in fixture real; do
   mode=oracle; [ "$tag" = real ] && mode=real
   for kind in snapshot-apk snapshot-assemble; do
     if [ ! -f "$(script_of "$tag" "$kind")" ]; then
-      for _ in 1 2 3 4; do bad "AC12 $tag $kind: a behaviour case (bin/build-stage-$kind.sh does not exist: RED until implemented)"; done
+      for _ in $(seq "$(if [ "$kind" = snapshot-apk ]; then echo 8; else echo 4; fi)");
+      do bad "AC12 $tag $kind: a behaviour case (bin/build-stage-$kind.sh does not exist: RED until implemented)";
+      done
       continue
     fi
     "beh_$(tr - _ <<< "$kind")" "$tag" "$(script_of "$tag" "$kind")" "$mode"
+  done
+done
+for tag in fixture real; do
+  for kind in snapshot-apk snapshot-assemble; do
+    f=$(script_of "$tag" "$kind")
+    if [ ! -f "$f" ]; then
+      bad "AC12 $tag bin/build-stage-$kind.sh never pushes a tag (the script does not exist: RED until implemented)"
+    elif grep -Eq '(^|[^[:alnum:]_-])git[[:space:]]+(-[^[:space:]]+[[:space:]]+)*push|--push' "$f"; then
+      bad "AC12 $tag bin/build-stage-$kind.sh names a git push (the snapshot tag is local and never pushed)"
+    else
+      ok "AC12 $tag bin/build-stage-$kind.sh never pushes a tag"
+    fi
   done
 done
 cases_of() { case "$1" in apk) echo 15;; assemble) echo 16;; rebuild-apk) echo 3;; rebuild-assemble) echo 6;; esac; }    # cases one kind runs for both versions
@@ -1342,7 +1388,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=447
+EXPECT=459
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

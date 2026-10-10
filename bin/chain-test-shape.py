@@ -51,6 +51,13 @@ START = ("python3 bin/chain-verify.py stage-start --stage rebuild --previous bui
 # one; the snapshot scripts pass this fixed release-candidate-shaped version to cache's scripts (PROPOSED/UNVERIFIED: cache confirms that
 # build-apk.sh and assemble-image.sh accept it). Nothing built in snapshot mode is ever published, signed by Sign or accepted by a verifier.
 SNAPSHOT_VERSION = "0.0.0-rc.1"
+SNAPSHOT_TAG = "v" + SNAPSHOT_VERSION
+# cache's driver (rule 24) accepts a binary only when its Go build stamp is exactly v<version> and vcs.revision is the source HEAD, so an untagged commit
+# (a pseudo-version) is refused. The snapshot apk script therefore makes a LOCAL lightweight tag at HEAD in the job's own checkout and never pushes it,
+# and refuses to run when HEAD already carries any other tag (a release commit is not a snapshot; a higher tag would stamp the wrong version).
+SNAPSHOT_TAG_GUARD = ("if git tag --points-at HEAD | grep -qvx '%s'; then echo \"::error::HEAD carries another tag: not a snapshot\" >&2; exit 1; fi"
+                      % SNAPSHOT_TAG)
+SNAPSHOT_TAG_LINE = "git tag --force %s HEAD" % SNAPSHOT_TAG
 
 
 def apk_cmd(variant, ver=VER):
@@ -105,7 +112,8 @@ def expected_lines(kind):
                 + melange_repo("apk") + SDE + [image_cmd("production"), image_cmd("fips"), archives(),
                 merge("apk", "--digests digests.json --items items.json")])
     if kind == "snapshot-apk":       # no admission, no version check, no tag: the version is the fixed snapshot one
-        return [H] + SDE + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION), items_apk()]
+        return ([H, SNAPSHOT_TAG_GUARD, SNAPSHOT_TAG_LINE] + SDE
+                + [apk_cmd("standard", SNAPSHOT_VERSION), apk_cmd("fips", SNAPSHOT_VERSION), items_apk()])
     if kind == "snapshot-assemble":  # no policy and no verify (a snapshot record is refused by every verifier): the bind is the only link to the record
         return ([H] + bind_files("snapshot-apk", "rec-apk", "snapshot-apk-collection.json", "apk") + melange_repo("apk") + SDE
                 + [image_cmd("production", SNAPSHOT_VERSION), image_cmd("fips", SNAPSHOT_VERSION), archives(SNAPSHOT_VERSION),
