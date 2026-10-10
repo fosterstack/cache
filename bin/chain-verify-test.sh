@@ -308,9 +308,19 @@ _n = [0]
 STMT = {"v0.1": "https://in-toto.io/Statement/v0.1", "v1": "https://in-toto.io/Statement/v1"}
 DSSE = "application/vnd.in-toto+json"
 PROV_URI = "https://slsa.dev/provenance/v1"
+# A minimal VALID SLSA v1 provenance predicate (Codex #249 r4 B4): every provenance fixture carries it, so a record is refused only for
+# what its case names; a case's own predicate fields are laid over it, and raw_predicate=True signs the predicate exactly as given.
+SLSA_OK = {"buildDefinition": {"buildType": "https://github.com/fosterstack/cache/release-chain/v0.3.0",
+                               "externalParameters": {"ref": "refs/tags/v0.3.0", "workflow": "https://github.com/fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0"},
+                               "internalParameters": {}, "resolvedDependencies": [{"uri": "git+https://github.com/fosterstack/cache@refs/tags/v0.3.0", "digest": {"gitCommit": "f" * 40}}]},
+           "runDetails": {"builder": {"id": "https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"},
+                          "metadata": {"invocationId": "https://github.com/fosterstack/cache/actions/runs/1"}}}
+def prov_predicate(ptype, predicate, raw=False):
+    if raw or ptype != PROV_URI: return predicate if predicate is not None else {}
+    return dict(json.loads(json.dumps(SLSA_OK)), **(predicate or {}))
 def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, tsa="tsa", signed=True, repo=REPO, issuer=ISSUER,
            stmt="v1", dsse=DSSE, payload=None, config_wf="release.yml", config_ref=None, config_repo=None, no_config=False, no_issuer=False,
-           coll_file=None, coll_variant=None, predicate=None, san_der=None, issuer_der=None, config_der=None):
+           coll_file=None, coll_variant=None, predicate=None, san_der=None, issuer_der=None, config_der=None, raw_predicate=False):
     _n[0] += 1; leaf = "leaf%d" % _n[0]
     ext = "subjectAltName = critical," + ("DER:" + san_der if san_der else "URI:" + uri(wf, ref, repo))
     if issuer_der: ext += "\n1.3.6.1.4.1.57264.1.8 = DER:" + issuer_der          # the extension's raw bytes, for the DER-shape cases
@@ -347,7 +357,7 @@ def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, ts
         att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("environment", "git", "product", "command-run")]
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": "build", "attestations": att}, "subject": subj}).encode()
     if payload is None:
-        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": predicate or {},
+        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": prov_predicate(ptype, predicate, raw_predicate),
                               "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1] if v.startswith("sha256:") else v}} for k, v in subjects.items()]}).encode()
     open(p("pae.bin"), "wb").write(pae(dsse, payload))
     sh("openssl", "dgst", "-sha256", "-sign", p(leaf + ".key"), "-out", p("sig.bin"), p("pae.bin"))
@@ -690,6 +700,25 @@ _vb = dsse_body("sign_pad"); _vb["spec"]["signatures"][0]["verifier"] = noncanon
 dj("rekor-nc-verifier.json", {"entries": [tlog_entry(_vb, 21)]})                  # the log signs the body as it is
 add("sign_nan", STAGES["sign"], T, PROV, D, predicate={"x": float("nan")})       # json.dumps writes NaN: a signed payload that is not JSON
 dj("rekor-nan.json", {"entries": [entry("sign_nan", 22)]})
+# (Codex #249 r4 B4, 001-AC4) a signed, logged provenance statement whose predicate is not a standard SLSA v1 record
+def _drop(path):
+    *head, last = path
+    o = json.loads(json.dumps(SLSA_OK)); t = o
+    for k in head: t = t[k]
+    del t[last]; return o
+def _set(path, v):
+    o = json.loads(json.dumps(SLSA_OK)); t = o
+    for k in path[:-1]: t = t[k]
+    t[path[-1]] = v; return o
+SLSA_BAD = {"slsa_empty": {}, "slsa_list": [], "slsa_nobd": _drop(["buildDefinition"]), "slsa_nord": _drop(["runDetails"]),
+            "slsa_bdlist": _set(["buildDefinition"], []), "slsa_rdstr": _set(["runDetails"], "x"),
+            "slsa_nobt": _drop(["buildDefinition", "buildType"]), "slsa_noext": _drop(["buildDefinition", "externalParameters"]),
+            "slsa_nobuilder": _drop(["runDetails", "builder"]), "slsa_noid": _set(["runDetails", "builder"], {}),
+            "slsa_emptyid": _set(["runDetails", "builder", "id"], ""), "slsa_numid": _set(["runDetails", "builder", "id"], 5)}
+for _i, (_nm, _pr) in enumerate(sorted(SLSA_BAD.items())):
+    add("sign_" + _nm, STAGES["sign"], T, PROV, D, predicate=_pr, raw_predicate=True)
+dj("rekor-slsa.json", {"entries": [entry("sign_" + _nm, 60 + _i) for _i, _nm in enumerate(sorted(SLSA_BAD))]})
+open(p("slsa-bad.txt"), "w").write(" ".join(sorted(SLSA_BAD)))
 open(p("sign_envinf.json"), "w").write(open(p("sign_prov.json")).read().replace('"payloadType"', '"x": Infinity, "payloadType"', 1))
 open(p("rekor-neginf.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -Infinity, "entries"', 1))
 # a number too large for a float parses to inf in Python: a non-finite value is refused like Infinity (Sonnet r1 info)
@@ -711,7 +740,7 @@ def gentime(resp_b64):
     whole = dt.datetime.strptime(m.group(1) + " " + m.group(3), "%b %d %H:%M:%S %Y").replace(tzinfo=dt.timezone.utc)
     return whole, (m.group(2) or "").strip(".")
 sh("openssl", "req", "-new", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", p("fracedge.key"), "-out", p("fracedge.csr"), "-subj", "/CN=fracedge")
-_fp = json.dumps({"_type": STMT["v1"], "predicateType": PROV, "predicate": {}, "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1]}} for k, v in D.items()]}).encode()
+_fp = json.dumps({"_type": STMT["v1"], "predicateType": PROV, "predicate": prov_predicate(PROV, None), "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1]}} for k, v in D.items()]}).encode()
 open(p("pae.bin"), "wb").write(pae(DSSE, _fp)); sh("openssl", "dgst", "-sha256", "-sign", p("fracedge.key"), "-out", p("sig.bin"), p("pae.bin"))
 _fsig = open(p("sig.bin"), "rb").read()
 for _try in range(40):
@@ -740,7 +769,7 @@ for _nm, _field, _val in (("idxnum", "logIndex", 7), ("idxplus", "logIndex", "+7
 dj("digests-foobar.json", {"foo": "bar"})
 add("build_coll_foobar", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests-foobar.json")
 # (R2-4, 003-AC1) subjects with the wrong field types are refusals, never tracebacks
-def _stmt(pt, subj, st="v1"): return json.dumps({"_type": STMT[st], "predicateType": pt, "predicate": {}, "subject": subj}).encode()
+def _stmt(pt, subj, st="v1"): return json.dumps({"_type": STMT[st], "predicateType": pt, "predicate": prov_predicate(pt, None), "subject": subj}).encode()
 add("sign_badname", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": [], "digest": {"sha256": "a" * 64}}]))
 add("sign_baddigest", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
 dj("rekor-badsubj.json", {"entries": [entry("sign_badname", 50), entry("sign_baddigest", 51)]})
@@ -990,6 +1019,11 @@ for s in rebuild check release; do
 done
 expect_refuse "001-AC4 a Witness collection signed by Sign is refused (Sign signs provenance only)" "predicate" verify $(V) --stage sign $(rec sign_coll)
 expect_refuse "001-AC4 SLSA provenance v0.2 is not the allowed type" "predicate" verify $(V) --stage sign $(rec sign_prov_v0.2) $(R)
+# (Codex #249 r4 B4) the provenance must be a standard SLSA v1 record: a signed, logged statement of the right type whose predicate is {},
+# a list, or lacks buildDefinition (+ buildType, externalParameters) or runDetails.builder.id (a non-empty string) is refused at sign
+for _c in $(cat "$work/slsa-bad.txt"); do
+  expect_refuse "001-AC4 a signed, logged provenance whose predicate is not SLSA v1 ($_c) is refused at sign" "sign|predicate|slsa v1" verify $(V) --stage sign $(rec sign_$_c) $(R rekor-slsa.json)
+done
 
 # ---- REQ-CHAIN-002-AC1: timestamps, checked 16 minutes after the certificate expired, offline ----------------------
 expect_ok     "002-AC1 expired certificate + valid stamp from the policy's authority, verified 16 min after expiry" verify $(V) --stage sign $(rec sign_prov) $(R)
@@ -1687,7 +1721,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=506
+EXPECT=518
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
