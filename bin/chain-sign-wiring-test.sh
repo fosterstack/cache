@@ -1256,6 +1256,11 @@ probe mergejob  "merge key" "a job whose permissions use a << merge key carrying
 probe mergewf   "merge key" "workflow-level permissions with a << merge key carrying id-token: write" \
   "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"permissions:\n  contents: read\n\",\"permissions:\n  contents: read\n  <<: {id-token: write}\n\",1);open(p,\"w\").write(t)'"
 # Sonnet r3: build flags/env that run a tool, and the dockers / nfpms / includes sections, are outside the closed key set (hash re-edited)
+# Sonnet r4 S1: a merge key at job or workflow level can supply permissions a reader that does not merge never sees
+probe mergeanchorjob "merge key" "an anchor x-d: &d {permissions: {id-token: write}} merged into ci.yml job test with <<: *d" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\nx-d: &d {permissions: {id-token: write}}\njobs:\n\",1);t=t.replace(\"\n  test:\n\",\"\n  test:\n    <<: *d\n\",1);open(p,\"w\").write(t)'"
+probe mergewfkey "merge key" "a workflow-level << merge key that supplies permissions to ci.yml" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"\njobs:\n\",\"\nx-p: &p {permissions: {id-token: write}}\n<<: *p\njobs:\n\",1);open(p,\"w\").write(t)'"
 probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
 probe gorelenv0  "env" "a build with env: [] in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    env:\n      - CGO_ENABLED=0\n    goos\",\"    env: []\n    goos\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
@@ -1299,7 +1304,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=302
+EXPECT=304
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
