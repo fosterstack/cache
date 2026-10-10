@@ -1,10 +1,16 @@
-# The Rebuild stage of the v0.3.0 release chain (rules 54, 62, 64; REQ-CHAIN-005). Called only from release.yml, after Build.
-# `rapk` rebuilds the apks on fresh runners, `rebuild` rebuilds the images and archives and compares EVERY item with Build's items.json.
-# The only output is the verdict (witness-rebuild/verdict.json, a product of Rebuild's own record); nothing is published.
+# The Rebuild stage of the v0.3.0 release chain (rules 54, 62, 64; REQ-CHAIN-005). Called only from release.yml, after Build, and, in snapshot mode, from scan.yml
+# (the PR gate keeps rule 31's two-assembly reproducibility check). `rapk` rebuilds the apks on fresh runners, `rebuild` rebuilds the images and archives and
+# compares EVERY item with Build's items.json. The only output is the verdict (witness-rebuild/verdict.json, or snapshot-verdict.json in snapshot mode, a product
+# of Rebuild's own record); nothing is published. `mode` works as in stage-build.yml (REQ-CHAIN-005-AC7).
 # The shape of this file is judged by bin/chain-build-wiring-test.sh (an exact grammar).
 name: 'Stage: rebuild'
 on:
   workflow_call:
+    inputs:
+      mode:
+        description: release or snapshot
+        type: string
+        default: release
 permissions:
   contents: read
 jobs:
@@ -22,6 +28,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+        run: case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac
       - name: install Witness (pinned by checksum)
         run: ./bin/install-scanner.sh witness
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -33,7 +43,11 @@ jobs:
           name: digests
           path: build-in
       - name: rapk under Witness
+        if: ${{ inputs.mode == 'release' }}
         run: bash bin/witnessed.sh rapk bin/build-stage-rebuild-apk.sh
+      - name: snapshot-rapk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rapk-${{ matrix.runner }}
@@ -54,6 +68,10 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           fetch-tags: true
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+        run: case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac
       - name: install Witness (pinned by checksum)
         run: ./bin/install-scanner.sh witness
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -85,7 +103,11 @@ jobs:
           name: witness-rapk-ubuntu-24.04-arm
           path: rec-rapk/ubuntu-24.04-arm
       - name: rebuild under Witness
+        if: ${{ inputs.mode == 'release' }}
         run: bash bin/witnessed.sh rebuild bin/build-stage-rebuild-assemble.sh
+      - name: snapshot-rebuild under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed.sh snapshot-rebuild bin/build-stage-snapshot-rebuild-assemble.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: witness-rebuild

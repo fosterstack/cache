@@ -6,7 +6,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "058227a559dcc30a88f5464d2390446d3c7ef80d9fc4735da9e6126d0d513946",
+      "sha256": "c0677b3c9f3ca3398170f14a706638b282e1d50d02b8bacd7b0b82cb492754b8",
       "tools": [
         "make",
         "at"
@@ -66,7 +66,7 @@
       "runs": [],
       "signs": false,
       "reason": "the one Witness wrapper (rule 68): fetches the identity token, runs witness once under timeout 540",
-      "sha256": "376b6f9a93e2f3a47aca1132f5f73adfa08a011737d72f1658bdbc4d92e8ac24"
+      "sha256": "1973b8bb2d459c39f06a982607fe340472fc9b9c5ca8cb362326f4e599a00221"
     },
     {
       "path": "bin/build-stage-apk.sh",
@@ -74,7 +74,7 @@
       "runs": [],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "b9f1a11c7882948599a1ed2b4cd96a8f1896143f121730a4ced4f03d2bbe290c"
+      "sha256": "3c7315296fe843b96aed848c3507680e22ffeeb9cea9ffaef46b7a2405a8d470"
     },
     {
       "path": "bin/build-stage-assemble.sh",
@@ -82,7 +82,7 @@
       "runs": [],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
-      "sha256": "cf66ad448f42e0887a3ba317112643ff88eb2ffd08a755317cf3c23678bdb805"
+      "sha256": "5fa22e9865bd996bbec13cf203f91949a3fc3f47ec7ab2507743d19ac5563cdc"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -90,7 +90,7 @@
       "runs": [],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
-      "sha256": "5ba8c14ab7d74f55fd44c0b3d749bf6b55dd7f527893ae4f1b4013d53ee66e6d"
+      "sha256": "54324ab757e81752da108e53eb4eb9de4a483705b801199f8f1794785d8b9e3d"
     },
     {
       "path": "bin/build-stage-rebuild-assemble.sh",
@@ -98,7 +98,7 @@
       "runs": [],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
-      "sha256": "ef78e6250a27e97e22bcdb950632b3fdea8a3f498e7e213c7b960aaaada4cec4"
+      "sha256": "40b3b9f45e6de916583f85c537ada153e6cc6b4d54d97a69609281e34b99f82e"
     },
     {
       "path": "bin/build-admit.py",
@@ -130,7 +130,45 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "6a51f01c1637b5315e290eba66c945cc4ee36780ede116da2656cf179b86888d"
+      "sha256": "427546e5f58484ac0a4d270afcd86a48171fde1c885ff91e80f6598cc3b16bd8"
+    },
+    {
+      "path": "bin/build-stage-snapshot-apk.sh",
+      "tools": [
+        "git",
+        "grep"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
+      "sha256": "7b72a29cda313ec846a94f95ea638fc26dcdc6cf78bcd1921b905ba1b849d81a"
+    },
+    {
+      "path": "bin/build-stage-snapshot-assemble.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify)",
+      "sha256": "b1437012bd97d644eeb530b207b6bf9bcc378b952fd2729ba9b67bdebe8279ed"
+    },
+    {
+      "path": "bin/build-stage-snapshot-rebuild-apk.sh",
+      "tools": [
+        "git",
+        "grep"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
+      "sha256": "1dfce5c4c3e1ce3840c94ac8053e5c605244786043e0a547b1619767e624e3df"
+    },
+    {
+      "path": "bin/build-stage-snapshot-rebuild-assemble.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot)",
+      "sha256": "388378561dd203bfef362990ee2efba517ba1d22d0b3d9da1898faf457219d1f"
     }
   ]
 }
