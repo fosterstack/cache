@@ -190,10 +190,10 @@ bad()  { failn=$((failn + 1)); echo "FAIL $1"; }
 
 # ---- tools ------------------------------------------------------------------------------------------------------
 OPENSSL=openssl
-if ! openssl version 2> /dev/null | grep -q '^OpenSSL 3'; then
+if ! grep -q '^OpenSSL 3' <<< "$(openssl version 2> /dev/null)"; then
   for c in /opt/homebrew/opt/openssl@3/bin/openssl /usr/local/opt/openssl@3/bin/openssl; do [ -x "$c" ] && OPENSSL=$c && break; done
 fi
-$OPENSSL version 2> /dev/null | grep -q '^OpenSSL 3' || { echo "FAIL fixtures need OpenSSL 3 (macOS: brew install openssl@3)"; exit 1; }
+grep -q '^OpenSSL 3' <<< "$($OPENSSL version 2> /dev/null)" || { echo "FAIL fixtures need OpenSSL 3 (macOS: brew install openssl@3)"; exit 1; }
 export OPENSSL
 python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
 netcut=()
@@ -760,9 +760,9 @@ NOW=$(cat "$work/now.txt"); NOWIN=$(cat "$work/now-in.txt"); NOWMID=$(cat "$work
 O=$OPENSSL
 $O verify -CAfile "$work/root.pem" -untrusted "$work/interm.pem" "$work/leaf1.pem" > /dev/null 2>&1 && ok "fixture: leaf chains root -> intermediate -> leaf" || bad "fixture: leaf chain"
 $O verify -CAfile "$work/otherroot.pem" -untrusted "$work/interm.pem" "$work/leaf1.pem" > /dev/null 2>&1 && bad "fixture: leaf must NOT chain to the other root" || ok "fixture: other root does not verify the leaf"
-$O x509 -in "$work/leaf1.pem" -noout -ext subjectAltName 2> /dev/null | grep -F -q 'stage-sign.yml@refs/tags/v0.3.0' && ok "fixture: leaf SAN is the Sign file at the tag" || bad "fixture: leaf SAN"
-$O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null | grep -F -q '1.3.6.1.4.1.57264.1.8' && ok "fixture: leaf carries the Fulcio OIDC-issuer extension" || bad "fixture: issuer extension"
-$O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null | grep -F -q '1.3.6.1.4.1.57264.1.18' && ok "fixture: leaf carries the Build Config URI extension (.1.18)" || bad "fixture: Build Config URI extension"
+grep -F -q 'stage-sign.yml@refs/tags/v0.3.0' <<< "$($O x509 -in "$work/leaf1.pem" -noout -ext subjectAltName 2> /dev/null)" && ok "fixture: leaf SAN is the Sign file at the tag" || bad "fixture: leaf SAN"
+grep -F -q '1.3.6.1.4.1.57264.1.8' <<< "$($O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null)" && ok "fixture: leaf carries the Fulcio OIDC-issuer extension" || bad "fixture: issuer extension"
+grep -F -q '1.3.6.1.4.1.57264.1.18' <<< "$($O x509 -in "$work/leaf1.pem" -noout -text 2> /dev/null)" && ok "fixture: leaf carries the Build Config URI extension (.1.18)" || bad "fixture: Build Config URI extension"
 grep -F -q "fixtures ok" "$work/fx.log" && ok "fixture: the timestamp token verifies against the TSA root (openssl ts -verify)" || bad "fixture: timestamp token"
 python3 - "$work" <<'PY' && ok "fixture: the real envelope shape (base64 PEM certificate, intermediates, Statement v0.1 collection, policy payloadType)" || bad "fixture: envelope shape"
 import base64, json, sys

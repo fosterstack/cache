@@ -1074,7 +1074,8 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 # parallel may write to (bin/__pycache__).
 tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .github/ and bin/ of REPO (default: the real tree)
   local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
-  ( cd "${2:-$root}" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+  # .github/ and bin/, plus the build configuration the build tooling reads outside them (pinned in .github/policy/build-config-files.json)
+  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .goreleaser.yaml .grype.yaml .ko.yaml .gremlins.yaml build .githooks | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
 # a tracked file deleted in the working tree would make the copy silently partial: fail clearly instead (CI checks out every tracked file)
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
@@ -1124,6 +1125,40 @@ probe extra    "not list exactly the eleven" "a twelfth path in the legacy list"
 probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"path\"]=\"bin/chain-verify.py\";json.dump(d,open(p,\"w\"))'"
 probe missing  "legacy file missing: .github/workflows/stage-image.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-image.yml"
+# ---- Opus #249 r-final: the signer rule is a CLOSED ALLOW-LIST, not a scan ----
+# (B1) build configuration outside bin/ and .github/ is pinned by sha256, and .goreleaser.yaml may not sign or grow hooks
+probe gorel     .goreleaser.yaml "a before.hooks entry in .goreleaser.yaml that signs provenance (stage-build.yml's build job has id-token: write)" \
+  "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    - git diff --exit-code go.mod go.sum\n\",\"    - git diff --exit-code go.mod go.sum\n    - cosign attest-blob --yes --type slsaprovenance --predicate p.json x\n\",1);open(p,\"w\").write(t)'"
+probe gorelsigns .goreleaser.yaml "a signs: block in .goreleaser.yaml (cmd cosign, an args array)" "printf 'signs:\n  - cmd: cosign\n    args: [\"sign-blob\", \"--yes\", \"--bundle\", \"x\"]\n' >> .goreleaser.yaml"
+probe cfgchanged build/docker/Dockerfile.production "a byte change in a pinned build file (Dockerfile.production)" "printf '# x\n' >> build/docker/Dockerfile.production"
+probe cfgnew    build/docker/Dockerfile.evil "a new, unlisted build file (build/docker/Dockerfile.evil)" "printf 'FROM scratch\n' > build/docker/Dockerfile.evil"
+# (B2) a job may hold id-token: write only if .github/policy/id-token-jobs.json lists it (workflow, job): remote reusable-workflow signers and
+# in-process libraries need the token, so the list covers them structurally
+IDJ='  probe-job:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      contents: read\n'
+probe remote    "ci.yml job probe-job" "a ci.yml job calling a remote reusable workflow with id-token: write" \
+  "printf '  probe-job:\n    permissions:\n      id-token: write\n    uses: evilorg/prov-gen/.github/workflows/generator.yml@0123456789abcdef0123456789abcdef01234567\n' >> .github/workflows/ci.yml"
+probe ghscript  "ci.yml job probe-job" "actions/github-script calling @actions/attest attestProvenance with id-token: write" \
+  "printf '$IDJ    steps:\n      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n        with:\n          script: require(\"@actions/attest\").attestProvenance({})\n' >> .github/workflows/ci.yml"
+probe newjob    "ci.yml job probe-job" "a new ci.yml job holding id-token: write" "printf '$IDJ    steps:\n      - run: true\n' >> .github/workflows/ci.yml"
+probe compcall  "ci.yml job probe-job" "a ci.yml job with id-token: write that runs a local composite action" \
+  "mkdir -p .github/actions/plain; printf 'name: plain\nruns:\n  using: composite\n  steps:\n    - run: true\n      shell: bash\n' > .github/actions/plain/action.yml; printf '$IDJ    steps:\n      - uses: ./.github/actions/plain\n' >> .github/workflows/ci.yml"
+probe wfperm    "ci.yml job" "workflow-level permissions id-token: write added to ci.yml (every job without its own permissions inherits it)" \
+  "python3 -c 'p=\".github/workflows/ci.yml\";t=open(p).read();t=t.replace(\"permissions:\n  contents: read\n\",\"permissions:\n  contents: read\n  id-token: write\n\",1);open(p,\"w\").write(t)'"
+# Sonnet verify of b89b783: a signer OUTSIDE the scanned directories, and one in another repository: keyless signing needs the job's OIDC
+# token, so both are closed by the id-token list (the job that would run them is not on it)
+probe scriptsq  "ci.yml job probe-job" "a ci.yml job with id-token: write running scripts/q.sh (outside bin/ and .github/) that signs provenance" \
+  "mkdir -p scripts; printf 'cosign attest --type slsaprovenance --predicate p.json x\n' > scripts/q.sh; printf '$IDJ    steps:\n      - run: bash scripts/q.sh\n' >> .github/workflows/ci.yml"
+probe otherrepo "ci.yml job probe-job" "a ci.yml job with id-token: write calling other/repo/.github/workflows/sign.yml@<sha>" \
+  "printf '  probe-job:\n    permissions:\n      id-token: write\n    uses: other/repo/.github/workflows/sign.yml@0123456789abcdef0123456789abcdef01234567\n' >> .github/workflows/ci.yml"
+probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
+# no `X | grep -q` pipeline in a chain suite: under pipefail grep's early exit can SIGPIPE the writer and fail a case that matched
+if python3 - "$root" <<'PYQ'
+import glob, re, sys
+hits = [f"{f}:{i}" for f in sorted(glob.glob(sys.argv[1] + "/bin/chain-*-test.sh")) for i, l in enumerate(open(f), 1)
+        if not l.lstrip().startswith("#") and re.search(r"(?<!\|)\|(?!\|)\s*grep\b[^|\n]*\s-[A-Za-z]*q", l)]
+print(" ".join(hits)); sys.exit(1 if hits else 0)
+PYQ
+then pass=$((pass + 1)); echo "ok   no chain suite pipes into grep -q (pipefail + SIGPIPE)"; else failn=$((failn + 1)); echo "FAIL a chain suite pipes into grep -q"; fi
 # the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
 [ "$rc" != 0 ] && grep -F -q "stage-build.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
@@ -1132,7 +1167,7 @@ if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-EXPECT=268
+EXPECT=281
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

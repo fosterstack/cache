@@ -169,7 +169,7 @@ expect() { # ok|refuse LABEL FILE [word]
   local rc=0; run "$3" || rc=$?
   if [ "$1" = ok ]; then if [ "$rc" = 0 ]; then ok "$2"; else bad "$2 (exit $rc; $(head -c 160 "$work/err" | tr '\n' ' '))"; fi
   else
-    if [ "$rc" = 1 ] && ! grep -F -q Traceback "$work/err" && tr 'A-Z' 'a-z' < "$work/err" | grep -F -q -- "${4:-}"; then ok "$2"
+    if [ "$rc" = 1 ] && ! grep -F -q Traceback "$work/err" && grep -F -q -- "${4:-}" <<< "$(tr 'A-Z' 'a-z' < "$work/err")"; then ok "$2"
     else bad "$2 (exit $rc, wanted 1 with '${4:-}'; $(head -c 160 "$work/err" | tr '\n' ' '))"; fi
   fi
 }
@@ -214,7 +214,7 @@ cvx() { local rc=0; python3 "$cv" "$@" 2> "$work/xerr" > "$work/xout" || rc=$?; 
 xexpect() { # ok|refuse LABEL word -- args...
   local k=$1 l=$2 w=$3; shift 4; local rc=0; cvx "$@" || rc=$?
   if [ "$k" = ok ]; then if [ "$rc" = 0 ]; then ok "$l"; else bad "$l (exit $rc; $(head -c 160 "$work/xerr" | tr '\n' ' '))"; fi
-  elif [ "$rc" = 1 ] && ! grep -F -q Traceback "$work/xerr" && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q -- "$w"; then ok "$l"
+  elif [ "$rc" = 1 ] && ! grep -F -q Traceback "$work/xerr" && grep -F -q -- "$w" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "$l"
   else bad "$l (exit $rc, wanted 1 with '$w'; $(head -c 160 "$work/xerr" | tr '\n' ' '))"; fi
 }
 mkdir -p "$work/rows"
@@ -278,7 +278,7 @@ for n in TX:"a file whose name only ends like Sign's (xstage-sign.yml)" TO:"Sign
   xexpect refuse "hostile-material: a token whose job_workflow_ref is ${n#*:} is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind token --file "$work/tok_$v.txt"
 done
 mrc=0; GITHUB_REPOSITORY=other/repo cvx hostile-material --kind token --file "$work/tok_yes.txt" || mrc=$?
-if [ "$mrc" = 1 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "refused at runner"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
+if [ "$mrc" = 1 ] && grep -F -q "refused at runner" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: the repository is read from GITHUB_REPOSITORY: Sign's file of another repository is not this repository's Sign"; else bad "hostile-material: GITHUB_REPOSITORY=other/repo must refuse fosterstack/cache's Sign token, got $mrc"; fi
 xexpect ok "hostile-material: a key found on the runner whose public key IS the key in Sign's certificate means the attempt got Sign's key" - -- hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a key found on the runner that is NOT Sign's key is nothing usable for Sign: refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_other.txt" --sign-record "$work/signrec.json"
 xexpect refuse "hostile-material: a search that looked at files and found no key is refused at runner" "refused at runner" -- hostile-material --kind key --file "$work/key_none.txt" --sign-record "$work/signrec.json"
@@ -286,18 +286,18 @@ xexpect refuse "hostile-material: the TEXT 'PRIVATE KEY' proves nothing: text of
 xexpect refuse "hostile-material: an unknown kind" kind -- hostile-material --kind password --file "$work/tok_none.txt"
 for f in mat_empty tok_notranscript tok_noclaim tok_shorttr tok_tronly tok_none; do
   mrc=0; cvx hostile-material --kind token --file "$work/$f.txt" || mrc=$?
-  if [ "$mrc" = 2 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "error" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (empty, no transcript, a one-word transcript, a transcript with no output, no claims line, or a JWT without job_workflow_ref) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: $f (empty, no transcript, a one-word transcript, a transcript with no output, no claims line, or a JWT without job_workflow_ref) is an ERROR (exit 2), never isolation"; else bad "hostile-material: $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 done
 for f in key_zero key_nocount mat_empty; do
   mrc=0; cvx hostile-material --kind key --file "$work/$f.txt" --sign-record "$work/signrec.json" || mrc=$?
-  if [ "$mrc" = 2 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "error" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: key file $f (a search of zero files, no count of files searched, or an empty file) is an ERROR (exit 2): an empty search proves nothing"; else bad "hostile-material: key file $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
+  if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: key file $f (a search of zero files, no count of files searched, or an empty file) is an ERROR (exit 2): an empty search proves nothing"; else bad "hostile-material: key file $f must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 done
 mrc=0; cvx hostile-material --kind key --file "$work/key_yes.txt" || mrc=$?
-if [ "$mrc" = 2 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "sign-record"; then ok "hostile-material: a key cannot be graded without Sign's record (--sign-record): an error, exit 2"; else bad "hostile-material: key without --sign-record must exit 2, got $mrc"; fi
+if [ "$mrc" = 2 ] && grep -F -q "sign-record" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: a key cannot be graded without Sign's record (--sign-record): an error, exit 2"; else bad "hostile-material: key without --sign-record must exit 2, got $mrc"; fi
 mrc=0; cvx hostile-material --kind key --file "$work/key_yes.txt" --sign-record "$work/does-not-exist.json" || mrc=$?
-if [ "$mrc" = 2 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "error"; then ok "hostile-material: an unreadable Sign record is an error (exit 2), never a refusal"; else bad "hostile-material: unreadable sign record must exit 2, got $mrc"; fi
+if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")"; then ok "hostile-material: an unreadable Sign record is an error (exit 2), never a refusal"; else bad "hostile-material: unreadable sign record must exit 2, got $mrc"; fi
 mrc=0; cvx hostile-material --kind token --file "$work/does-not-exist.txt" || mrc=$?
-if [ "$mrc" = 2 ] && tr 'A-Z' 'a-z' < "$work/xerr" | grep -F -q "error" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: a MISSING file is an error (exit 2, no 'refused at' line), never a refusal"; else bad "hostile-material: missing file must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
+if [ "$mrc" = 2 ] && grep -F -q "error" <<< "$(tr 'A-Z' 'a-z' < "$work/xerr")" && ! grep -F -q "refused at" "$work/xerr"; then ok "hostile-material: a MISSING file is an error (exit 2, no 'refused at' line), never a refusal"; else bad "hostile-material: missing file must exit 2 with error:, got $mrc: $(head -c 120 "$work/xerr" | tr '\n' ' ')"; fi
 printf 'error: cannot read attempts/read_sign_token.txt\n' > "$work/e_err.txt"; printf 'usage: chain-verify.py hostile-material [-h] --kind {token,key} --file FILE\n' > "$work/e_usage.txt"
 xexpect refuse "hostile-row: exit 2 with an 'error:' first line writes no row (an attempt that never ran is not isolation)" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_err.txt" --out "$work/rows/x9.json"
 xexpect refuse "hostile-row: exit 2 with a 'usage:' message (argparse) writes no row" "refused at" -- hostile-row --attempt read_sign_token --exit-code 2 --stderr "$work/e_usage.txt" --out "$work/rows/x10.json"
