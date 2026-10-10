@@ -102,18 +102,21 @@ def _cmp(a, b):
     return (kx > ky) - (kx < ky)
 
 
-_SEMVER = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?")
+_SEMVER = re.compile(r"v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?")
 
 
 def _semver_key(v):
     """Strict semver 2.0 ordering key (Go versions, pseudo-versions and +incompatible included): a pre-release is below its release, its identifiers
-    compare numerically when numeric and lexically otherwise (numeric below alphanumeric), build metadata is ignored. The OSV value "0" is the minimum."""
+    compare numerically when numeric and lexically otherwise (numeric below alphanumeric), build metadata is ignored. Identifiers that
+    SemVer 2.0.0 forbids (empty, or numeric with a leading zero) make the value unparsable, which callers read as affected. The OSV value "0" is the minimum."""
     if str(v) == "0":
         return (-1,)
     m = _SEMVER.fullmatch(str(v))
     if not m:
         raise ValueError(f"not a semver version: {v}")
     pre = m.group(4)
+    if pre and any(x.isdigit() and len(x) > 1 and x[0] == "0" for x in pre.split(".")):
+        raise ValueError(f"SemVer forbids a numeric pre-release identifier with a leading zero: {v}")
     ids = tuple((0, int(x), "") if x.isdigit() else (1, 0, x) for x in pre.split(".")) if pre else ()
     return (int(m.group(1)), int(m.group(2)), int(m.group(3)), 0 if pre else 1, ids)
 
