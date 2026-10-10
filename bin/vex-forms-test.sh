@@ -337,9 +337,11 @@ esac
 '''
 STUB_CURL = r'''#!/usr/bin/env bash
 # test stub: serves the "published release" from $STUB_PUB by the URL's last path part, as curl -O would save it
-for a in "$@"; do case "$a" in -*) ;; *) url=$a;; esac; done
+out= prev=; for a in "$@"; do [ "$prev" = -o ] && out=$a; case "$a" in -*) ;; *) url=$a;; esac; prev=$a; done
 printf '%s\n' "$url" >> "$STUB_URLS"
+printf '%s\n' "$*" >> "$STUB_URLS.argv"
 f=${url##*/}; [ "$f" = "${STUB_CURL_404:-}" ] && exit 22     # STUB_CURL_404: that asset is not (yet) served
+if [ -n "$out" ]; then [ "${out##*/}" = "$f" ] && cd "${out%/*}" || exit 2; fi     # -o <dir>/<name>: saved there
 [ -f "$STUB_PUB/$f" ] || exit 22
 cp "$STUB_PUB/$f" "./$f"
 [ "$f" = "${STUB_CURL_CHANGE:-}" ] && printf x >> "./$f"     # STUB_CURL_CHANGE: that asset is served with a byte added
@@ -446,9 +448,10 @@ def rel_judge(steps):
         if pst.get("env") != {"GH_TOKEN": "", "RETRY_SLEEP": "10"} or set(pst) - {"name", "env", "run"} \
                 or "secrets." in prun or "github.token" in prun:
             bad.append("the published check is not credential-free (GH_TOKEN empty, no secret, no token): %s" % pst.get("env"))
-        if not prun.startswith("set -euo pipefail\n") or "base=" in prun or "${base}" in prun \
-                or 'if (cd "$pub" && curl -fsSLO --connect-timeout 20 --max-time 120 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"); then ok=1; break; fi' not in pc:
+        if not prun.startswith("set -euo pipefail\n") or "base=" in prun or "${base}" in prun:
             bad.append("the published check does not download anonymously from the published release as the docs do")
+        if not any("--connect-timeout 20 --max-time 120" in l and '"https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"' in l for l in prun.splitlines()):
+            bad.append("the published download is not time-bounded or does not name this release's host on its own line")
         if "for _ in 1 2 3 4 5 6; do" not in pc or 'sleep "${RETRY_SLEEP}"' not in pc:
             bad.append("the published download retry is not bounded (6 tries, injectable sleep)")
         if "release-files-draft" in prun or 'pub=$(mktemp -d)' not in pc:
@@ -591,6 +594,11 @@ def rel_behaviour(steps):
         bad.append("a missing public asset is not retried exactly 6 times and then failed")
     elif not all(u.startswith("https://github.com/fosterstack/cache/releases/download/v9.9.9/") for u in open(urls5).read().splitlines()):
         bad.append("the published check downloads from somewhere other than this release")
+    argv5 = open(urls5 + ".argv").read().splitlines() if os.path.exists(urls5 + ".argv") else []
+    want_argv = re.compile(r"-fsSL --connect-timeout 20 --max-time 120 -o (\S+)/([^/\s]+) https://github\.com/fosterstack/cache/releases/download/v9\.9\.9/\2")
+    dirs = {m.group(1) for m in map(want_argv.fullmatch, argv5) if m}
+    if not argv5 or not all(want_argv.fullmatch(a) for a in argv5) or len(dirs) != 1 or dirs & {os.path.join(c5, "work")}:
+        bad.append("the published download is not -fsSL with both time bounds, -o into one fresh directory, from this release: %s" % argv5[:2])
     return bad
 def rel_pipeline_urls(steps, c, env, pub_extra):
     """the pipeline on a given case dir (so the caller can read the stub curl's URL log)"""

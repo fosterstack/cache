@@ -537,7 +537,7 @@ jobs:
                    "fosterstack-cache-${ver}.csaf.json" "fosterstack-cache-${ver}.inspector-filters.json"; do
             ok=0
             for _ in 1 2 3 4 5 6; do
-              if (cd "$pub" && curl -fsSLO --connect-timeout 20 --max-time 120 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"); then ok=1; break; fi
+              if curl -fsSL --connect-timeout 20 --max-time 120 -o "$pub/${f}" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi
               sleep "${RETRY_SLEEP}"
             done
             [ "$ok" = 1 ] || fail "${f} was not downloadable after 6 tries"
