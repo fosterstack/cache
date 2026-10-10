@@ -274,10 +274,61 @@ for tag in ("v0.0.0-rc.1", "v0.0.0"):
           "exit %s, first line %r" % (rc, first[:140]))
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", "v0.3.1", "--out", "p1.json"])
 check("policy make --tag v0.3.1 is still made (the control of the two refusals above)", rc == 0 and os.path.exists(work + "/p1.json"), err[:120])
+rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--ref", "refs/tags/v0.0.0-rc.1", "--out", "p2b.json"])
+check("policy make --ref refs/tags/v0.0.0-rc.1 is refused as a snapshot version and writes no policy",
+      rc == 1 and err.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p2b.json"), "exit %s, %r" % (rc, err[:120]))
 rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--ref", "refs/tags/v0.0.0", "--out", "p2.json"])
 check("policy make --ref refs/tags/v0.0.0 is refused as a snapshot version too (the form sign --check uses)",
       rc == 1 and err.startswith("refused at policy: snapshot version") and not os.path.exists(work + "/p2.json"), "exit %s, %r" % (rc, err[:120]))
-EXPECT = 120
+# ---- the 0.0.0 check must not over-reach (step-6 round 2, S3): versions that merely CONTAIN the digits are not snapshot versions -----------
+for what, f in (("fscache-10.0.0-r0.apk (version 10.0.0)", "out/x86_64/fscache-10.0.0-r0.apk"),
+                ("fscache-0.10.0-r0.apk (version 0.10.0)", "out/x86_64/fscache-0.10.0-r0.apk"),
+                ("fscache-1.0.0_rc1-r0.apk", "out/x86_64/fscache-1.0.0_rc1-r0.apk"),
+                ("fscache_10.0.0_linux_amd64.tar.gz", "dist/fscache_10.0.0_linux_amd64.tar.gz")):
+    record("rec.json", "build", [f])
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("verify: a record naming %s is NOT refused as a snapshot version" % what,
+          rc == 1 and first.startswith("refused at build: ") and "snapshot" not in first and "Traceback" not in err,
+          "exit %s, first line %r" % (rc, first[:140]))
+for tag in ("v10.0.0", "v0.0.1", "v0.10.0", "v1.0.0"):
+    rc, out, err = run(["policy", "make", "--template", TEMPLATE, "--tag", tag, "--out", "p3.json"])
+    check("policy make --tag %s is made (it is not a 0.0.0 tag)" % tag, rc == 0 and os.path.exists(work + "/p3.json"), "exit %s, %r" % (rc, err[:120]))
+    if os.path.exists(work + "/p3.json"):
+        os.remove(work + "/p3.json")
+# ---- odd subject shapes end cleanly: no traceback, never as a snapshot (step-6 round 2, S3) -------------------------------------------
+ODD_SUBJECTS = [("subject is the number 5", 5), ("subject is a list of a bare string", ["x"]), ("a subject whose name is the number 5", [{"name": 5}]),
+                ("subject is null", None), ("a subject that is a list", [[]]), ("a subject whose digest is a string", [{"name": "a", "digest": "x"}])]
+for what, subject in ODD_SUBJECTS:
+    raw_record("rec.json", {"_type": STMT, "predicateType": COLLECTION, "subject": subject, "predicate": {"name": "build", "attestations": []}})
+    rc, out, err = run(["verify", "--policy", "policy.json", "--stage", "build", "--record", "rec.json"])
+    first = err.split("\n", 1)[0]
+    check("verify --stage build: %s is refused cleanly (never as a snapshot, no traceback)" % what,
+          rc == 1 and first.startswith("refused at build: ") and "snapshot" not in first and "Traceback" not in err,
+          "exit %s, first line %r" % (rc, first[:140]))
+    rc, out, err = run(["record-env", "--record", "rec.json"])
+    check("record-env: %s ends cleanly (no traceback, never as a snapshot)" % what, rc in (0, 1, 2) and "snapshot" not in err and "Traceback" not in err,
+          "exit %s, %r" % (rc, err[:140]))
+# ---- AC15 reaches digests.json too, by NAME only (never its values): a digests.json that names a 0.0.0 file is refused before any certificate -----------
+for label, args, stage, env in SUBCOMMANDS:
+    if label not in ("stage-start rebuild from build", "check-build-record", "sign --check"):
+        continue
+    for name, want_snapshot in (("fscache-0.0.0_rc1-r0.apk", True), ("fscache-0.3.0-r0.apk", False)):
+        record("rec.json", "build")
+        with open(work + "/digests.json", "w") as f:
+            json.dump({name: "sha256:" + "a" * 64}, f)
+        rc, out, err = run([a.replace("{rec}", "rec.json") for a in args], env)
+        first = err.split("\n", 1)[0]
+        if want_snapshot:
+            check("%s: a digests.json that names fscache-0.0.0_rc1-r0.apk is refused as a snapshot version before any certificate" % label,
+                  rc == 1 and first == "refused at build: snapshot version" and "Traceback" not in err, "exit %s, first line %r" % (rc, first[:140]))
+        else:
+            check("%s: the same digests.json naming 0.3.0 is refused for something else, never as a snapshot version" % label,
+                  rc == 1 and first.startswith("refused at build: ") and "snapshot" not in first and "Traceback" not in err,
+                  "exit %s, first line %r" % (rc, first[:140]))
+with open(work + "/digests.json", "w") as f:
+    json.dump({"image-production": "sha256:" + "a" * 64}, f)
+EXPECT = 147
 total = passed + failed
 print("pass=%d fail=%d" % (passed, failed))
 if total != EXPECT:

@@ -73,7 +73,13 @@ def subj(h, name="https://witness.dev/attestations/product/v0.1/file:items.json"
     return {"name": name, "digest": {"sha256": h, "gitoid:sha1": "gitoid:blob:sha1:" + "0" * 40, "gitoid:sha256": "gitoid:blob:sha256:" + "1" * 64}}
 h = dump("exp.json", exp); dump("act.json", exp)
 record("rec.json", [subj(h), {"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "a" * 64}}])
-record("rec-snap.json", [subj(h)], "snapshot-build")      # Build's record in snapshot mode: the collection is named snapshot-build
+record("rec-snap.json", [subj(h)], "snapshot-build")
+# a real snapshot-build record also names 0.0.0 products (the apks, the melange repository, the archives): rebuild-compare --snapshot must ACCEPT it,
+# because the version refusal belongs to the verifiers only (a refusal in the shared reader would break every snapshot run, every refusal test green)
+record("rec-snap0.json", [subj(h)] + [subj(h, "https://witness.dev/attestations/product/v0.1/file:" + f) for f in
+       ("out/x86_64/fscache-0.0.0_rc1-r0.apk", "out/aarch64/fscache-fips-0.0.0_rc1-r0.apk", "melange-repo/x86_64/fscache-0.0.0_rc1-r0.apk",
+        "dist/fscache_0.0.0-rc.1_linux_amd64.tar.gz", "dist/fscache-fips_0.0.0-rc.1_linux_arm64.tar.gz")],
+       "snapshot-build")
 record("rec-none.json", [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "a" * 64}}])
 record("rec-two.json", [subj(h), subj("b" * 64)])
 record("rec-wrongname.json", [subj(h, "https://witness.dev/attestations/product/v0.1/file:items.json.bak")])
@@ -201,6 +207,12 @@ snap_verdict "005-AC7 only a binary differs: verdict differs, exit 1" "act-diff-
 snap_verdict "005-AC7 only an apk differs: verdict differs, exit 1" "act-diff-apk-fips-aarch64.json" differs 1 true true '["apk-fips-aarch64"]'
 snap_verdict "005-AC7 three items differ (image-fips, sbom-fips, apkindex-x86_64): all are named, sorted, exit 1" "act-diff-snap3.json" differs 1 false true \
   '["apkindex-x86_64","image-fips","sbom-fips"]'
+snap_run --snapshot rec-snap0.json exp.json act.json
+if [ "$RC" = 0 ] && jq -e '.verdict == "identical"' "$W/verdict.json" > /dev/null 2>&1; then
+  ok "005-AC7 --snapshot accepts a snapshot-build record that names 0.0.0 products (the version refusal belongs to the verifiers only)"
+else
+  bad "005-AC7 --snapshot with a record naming 0.0.0 products -> exit $RC: $(head -c 160 "$W/err" | tr '\n' ' ')"
+fi
 snap_run --snapshot rec.json exp.json act.json
 if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: step: build$'; then
   ok "005-AC7 --snapshot refuses a release record named build (a snapshot compare never trusts a release record)"
@@ -237,7 +249,7 @@ mkdir "$W/clean";
 [ -f "$CV" ] && [ "$(ls "$W/clean" | tr '\n' ' ')" = "verdict.json " ] && ok \
     "005-AC4 rebuild-compare writes nothing but its verdict (no artifact for Release to pick up)" || bad \
     "005-AC4 files written by rebuild-compare: '$(ls "$W/clean" 2> /dev/null | tr '\n' ' ')'"
-TOTAL=$((pass + failn)); EXPECT=98
+TOTAL=$((pass + failn)); EXPECT=99
 echo "pass=$pass fail=$failn"
 if [ "$TOTAL" != "$EXPECT" ]; then echo "FAIL case count $TOTAL != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

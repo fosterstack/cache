@@ -1351,7 +1351,8 @@ for tag in fixture real; do
   for kind in snapshot-apk snapshot-assemble snapshot-rebuild-apk snapshot-rebuild-assemble; do
     if [ ! -f "$(script_of "$tag" "$kind")" ]; then
       for _ in $(seq "$(snap_cases_of "$kind")");
-      do bad "AC12 $tag $kind: a behaviour case (bin/build-stage-$kind.sh does not exist: RED until implemented)";
+      do bad "$(case "$kind" in snapshot-rebuild-*) echo 005-AC7;; *) echo AC12;; esac) $tag $kind: a behaviour case" \
+             "(bin/build-stage-$kind.sh does not exist: RED until implemented)";
       done
       continue
     fi
@@ -1520,10 +1521,25 @@ printf 'on:\n  pull_request:\njobs:\n' > "$work/jobsnull.yml"
 expect caught "AC14 an empty jobs key is refused" "jobs must be a non-empty mapping" callers "$work/jobsnull.yml"
 printf 'on:\n  pull_request:\njobs:\n  build: nonsense\n' > "$work/jobscalar.yml"
 expect caught "AC14 a job that is not a mapping is refused" "is not a mapping" callers "$work/jobscalar.yml"
-replace "$work/caller.yml" "$work/a13.yml" "  scanners:" "  artifact-acceptance:\n    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n  scanners:" \
+ACC="  artifact-acceptance:\n    needs: build\n    permissions:\n      contents: read\n      packages: read\n"
+ACC="$ACC    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n"
+replace "$work/caller.yml" "$work/a13.yml" "  scanners:" "${ACC}  scanners:" \
   && expect ok "AC14 allowlist: artifact-acceptance (what scan.yml calls today that is not Release; PR 3 moves it) is accepted" "" callers "$work/a13.yml"
 mkdir -p "$work/a14"; cp "$work/a13.yml" "$work/a14/main-candidate-rescan.yml"
 expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-acceptance call" "allowlist" callers "$work/a14/main-candidate-rescan.yml"
+# artifact-acceptance gets the same ceiling and key check as the other calls (step-6 round 2, S4)
+cla() { replace "$work/a13.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" callers "$work/$1.yml"; return 0; }
+cla b1 "AC14 artifact-acceptance with packages: write" "      packages: read\n" "      packages: write\n" "static ceiling"
+cla b2 "AC14 artifact-acceptance with contents: write" "      contents: read\n      packages: read\n    uses: ./.github/workflows/stage-acceptance" \
+       "      contents: write\n      packages: read\n    uses: ./.github/workflows/stage-acceptance" "static ceiling"
+cla b3 "AC14 artifact-acceptance with an extra read grant (not exactly contents and packages read)" "      packages: read\n" \
+       "      packages: read\n      issues: read\n" "exactly the permissions"
+cla b4 "AC14 artifact-acceptance with secrets: inherit" "stage-acceptance-artifacts.yml\n" \
+       "stage-acceptance-artifacts.yml\n    secrets: inherit\n" "keys outside"
+cla b5 "AC14 artifact-acceptance with a with: block (the inputs of the old Build do not exist)" "stage-acceptance-artifacts.yml\n" \
+       "stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist-snapshot\n" "keys outside"
+cla b6 "AC14 artifact-acceptance with an if" "stage-acceptance-artifacts.yml\n" "stage-acceptance-artifacts.yml\n    if: always()\n" "keys outside"
+cla b7 "AC14 artifact-acceptance that needs nothing" "  artifact-acceptance:\n    needs: build\n" "  artifact-acceptance:\n" "must need exactly build"
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
@@ -1575,7 +1591,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=535
+EXPECT=542
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

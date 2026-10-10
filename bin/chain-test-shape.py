@@ -587,6 +587,7 @@ CALLER_ALLOWLIST = {"build": "./.github/workflows/stage-build.yml", "rebuild": "
 NOT_IN_FILE = {"main-candidate-rescan.yml": ("rebuild", "artifact-acceptance")}
 # scan.yml (the PR gate keeps rule 31's two-assembly reproducibility check) also calls Rebuild in snapshot mode after Build; main-candidate-rescan.yml does not
 SNAPSHOT_REBUILD_PERMISSIONS = dict(PERM_PLAIN)
+ACCEPTANCE_PERMISSIONS = {"contents": "read", "packages": "read"}       # scan.yml's artifact-acceptance grants at origin/chain-v030
 
 
 def ceiling(job_name, perm):
@@ -648,6 +649,17 @@ def callers(path):
                        % (SNAPSHOT_REBUILD_PERMISSIONS, rebuild.get("permissions")))
         if set(rebuild) - {"uses", "with", "permissions", "needs"}:
             bad.append("job rebuild: keys outside {uses, with, permissions, needs}: %s" % sorted(set(rebuild) - {"uses", "with", "permissions", "needs"}))
+    acceptance = jobs.get("artifact-acceptance")
+    if isinstance(acceptance, dict) and "uses" in acceptance and name != "main-candidate-rescan.yml":
+        # what scan.yml calls today that is not Release (cache's job; PR 3, Check, moves it): the same ceiling and key check as the other calls
+        if acceptance.get("permissions") != ACCEPTANCE_PERMISSIONS:
+            bad.append("job artifact-acceptance must hold exactly the permissions %s, got %s" % (ACCEPTANCE_PERMISSIONS, acceptance.get("permissions")))
+        bad += ceiling("artifact-acceptance", acceptance.get("permissions"))
+        if needs_of(acceptance) != ["build"]:
+            bad.append("job artifact-acceptance must need exactly build, got %s" % needs_of(acceptance))
+        if set(acceptance) - {"uses", "permissions", "needs"}:
+            extra = sorted(set(acceptance) - {"uses", "permissions", "needs"})
+            bad.append("job artifact-acceptance: keys outside {uses, permissions, needs} (no secrets, with, if): %s" % extra)
     return bad
 
 

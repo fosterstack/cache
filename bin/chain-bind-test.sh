@@ -163,10 +163,19 @@ d = tree("rapk")
 record(d + "/rec.json", good_subjects(), name="rapk")
 bind("bind: the Rebuild step accepts its own record", d, 0, step="rapk")
 
-# REQ-CHAIN-004-AC12: a snapshot build's record is named snapshot-apk, and bind takes it under --step snapshot-apk only (Rebuild is never a snapshot)
+# REQ-CHAIN-004-AC12 / REQ-CHAIN-005-AC7: a snapshot build's record is named snapshot-apk, a snapshot Rebuild's snapshot-rapk; bind takes each
+# under its own step only
 d = tree("snapok")
 record(d + "/rec.json", good_subjects(), name="snapshot-apk")
 bind("bind: the snapshot step accepts its own record (snapshot-apk)", d, 0, step="snapshot-apk")
+# the 0.0.0 refusal belongs to the VERIFIERS only: bind must ACCEPT the files of a real snapshot run, which are all 0.0.0 (a wrong implementation
+# that refused the version in the shared record reader would break every snapshot run while every refusal test stayed green)
+FILES_SNAP = {"x86_64/fscache-0.0.0_rc1-r0.apk": b"SIG:assembly\napk-s", "x86_64/fscache-fips-0.0.0_rc1-r0.apk": b"SIG:assembly\napk-sf",
+              "x86_64/APKINDEX.tar.gz": b"index", "items-apk.json": b"{}"}
+for step, name in (("snapshot-apk", "snapok0"), ("snapshot-rapk", "snaprapk0")):
+    d = tree(name, FILES_SNAP)
+    record(d + "/rec.json", good_subjects(FILES_SNAP), name=step)
+    bind("bind: --step %s accepts a record whose files are fscache-0.0.0_rc1-r0.apk (the version refusal is the verifiers')" % step, d, 0, step=step)
 d = tree("snapwrong1")
 record(d + "/rec.json", good_subjects(), name="apk")
 bind("bind: a release apk record given to the snapshot step is refused as another step", d, 1, "step", ["apk"], step="snapshot-apk")
@@ -365,7 +374,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 47
+EXPECT = 49
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
