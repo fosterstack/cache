@@ -14,7 +14,7 @@ t "rule 21" "gen-recipes --check passes on a pair the generator wrote" $GRX pyth
 t "rule 21" "the pair differs ONLY in the name, the description and the FIPS lines (the whole diff, character for character)" bash -c "d=\$(diff '$ga' '$gb' | grep '^[<>]' | sed 's/^[<>] //' | sort); e=\$(printf '%s\n' '  name: fscache' '  name: fscache-fips' '  description: the cache server' '  description: the cache server, built with the Go FIPS 140-3 module' '      export GOFIPS140=v1.0.0' '      go version -m \${{targets.destdir}}/usr/bin/fscache > /tmp/fscache-gobuildinfo.txt' \"      grep -q 'GOFIPS140=v1.0.0-c2097c7c' /tmp/fscache-gobuildinfo.txt\" | sort); test \"\$d\" = \"\$e\""
 t "rule 21" "the standard recipe holds no GOFIPS140 at all" bash -c "! grep -q GOFIPS140 '$ga'"
 t "rule 21" "the FIPS proof reads a file, not a pipe (no SIGPIPE under pipefail)" bash -c "grep -q 'go version -m .* > /tmp/fscache-gobuildinfo.txt' '$gb' && ! grep -q 'fscache | grep' '$gb'"
-rm -rf "$work/gr"; mkdir -p "$work/gr"
+gr=$(mktemp -d "$work/gr.XXXXXX"); mv "$gr" "$work/gr"   # this file's own scratch, made by mktemp; kept at the fixed name the fixture lines use
 variant() { cp "$ga" "$work/gr/a.yaml"; cp "$gb" "$work/gr/b.yaml"; }
 chk() { $GRX python3 "$GR" $GRD --template "$gt" --regular "$work/gr/a.yaml" --fips "$work/gr/b.yaml" --check; }
 variant; printf '  - runs: echo extra-step\n' >>"$work/gr/b.yaml"
@@ -120,18 +120,14 @@ for tool in melange apko; do
   done
 done
 # REQ-SUP-001-AC18: every tool download in install-build-tools.sh is a literal command carrying its exact release version and the
-# sha256 it is verified against, so the pin-age check measures it like any pin. This text names no downloader word and no release
-# address of its own (the pin checks read this file too): the downloader pattern and the address are assembled below.
+# sha256 it is verified against, so the pin-age check measures it like any pin (the real inventory's reading of the file is tested in the
+# pin-age check's own tests). This text names no downloader word and no release address of its own (the pin checks read this file too).
 cat >"$work/ibt.py" <<'PY'
-import importlib.util, os, re, sys
-SC = os.path.join(os.environ["ROOT"], ".github/agent/supply-chain")
+import re, sys
 DL = re.compile(r"\b(?:cu)rl\b|\bwg(?:et)\b")
 HOST = "https://github" + ".com/"
 TOOLS = {"melange": "chainguard-dev/melange", "apko": "chainguard-dev/apko"}
 ARCHES = ("amd64", "arm64")
-def load(name):
-    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(SC, name + ".py"))
-    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
 def die(msg):
     print("install-build-tools: " + msg); sys.exit(1)
 def struct(path):
@@ -183,28 +179,6 @@ def struct(path):
         if re.search(r"\bpinned\s+\S", ln) and not ln.lstrip().startswith("#"):
             die("line %d calls pinned outside a download line" % n)
     print("ok: " + ", ".join("%s v%s" % kv for kv in sorted(vers.items())))
-def inventory(path):
-    inv = load("pin-inventory"); age = load("pin-age-check")
-    text = open(path).read(); f = {"bin/install-build-tools.sh": text}
-    um = inv.unmeasured(f)
-    if um:
-        die("unmeasured: " + "; ".join("%s: %s" % (w, l) for (_, w, l) in sorted(um)))
-    vers = {}
-    for t in TOOLS:
-        m = re.search(re.escape(HOST + TOOLS[t]) + r"/releases/download/v(\d+\.\d+\.\d+)/", text)
-        if not m:
-            die("no literal release address for " + t)
-        vers[t] = m.group(1)
-    want = {(TOOLS[t], "v" + vers[t], "%s_%s_linux_%s.tar.gz" % (t, vers[t], a)) for t in TOOLS for a in ARCHES}
-    got = set()
-    for it in inv.inventory(f).values():
-        repo = age.TOOL_REPOS.get(it.name) or (it.name if re.fullmatch(r"[\w.-]+/[\w.-]+", it.name) else None)
-        if it.kind != "tool" or not repo or not age.is_pin(it.version) or re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", it.name) or "#" not in it.path:
-            die("not a measurable pin with its checksum bound: " + it.key)
-        got.add((it.name, it.version, it.path.split("#")[0]))
-    if got != want:
-        die("measured %s, wanted %s" % (sorted(got), sorted(want)))
-    print("measured: " + ", ".join(sorted("%s@%s %s" % g for g in got)))
 def mutate(src, out, kind):
     lines = open(src).read().split("\n")
     def edit(label, rx, rep):
@@ -235,18 +209,14 @@ def mutate(src, out, kind):
     else:
         print("unknown mutant " + kind); sys.exit(2)
     open(out, "w").write("\n".join(lines))
-{"struct": lambda: struct(sys.argv[2]), "inventory": lambda: inventory(sys.argv[2]), "mutate": lambda: mutate(sys.argv[2], sys.argv[3], sys.argv[4])}[sys.argv[1]]()
+{"struct": lambda: struct(sys.argv[2]), "mutate": lambda: mutate(sys.argv[2], sys.argv[3], sys.argv[4])}[sys.argv[1]]()
 PY
-ibt() { ROOT="$root" python3 "$work/ibt.py" "$@"; }
+ibt() { python3 "$work/ibt.py" "$@"; }
 t "REQ-SUP-001-AC18" "install-build-tools.sh: every download line is a literal release address with an exact vX.Y.Z, its asset and its sha256 on the same line, one per tool and arch" ibt struct "$IT"
-t "REQ-SUP-001-AC18" "install-build-tools.sh: the real pin inventory measures a pin per tool and arch (owner/repo@vX.Y.Z, checksum bound) and finds nothing unmeasured" ibt inventory "$IT"
 for mut in "variable:not literal" "repovar:not literal" "mismatch:versions do not match" "nosum:no sha256" "noline:missing a download line for: apko-amd64" "table:repeats the apko version"; do
   kind=${mut%%:*} kw=${mut#*:}
-  fails "REQ-SUP-001-AC18" "install-build-tools structure: the $kind mutant is refused" "$kw" bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-$kind.sh' $kind && ROOT='$root' python3 '$work/ibt.py' struct '$work/ibt-$kind.sh'"
+  fails "REQ-SUP-001-AC18" "install-build-tools structure: the $kind mutant is refused" "$kw" bash -c "python3 '$work/ibt.py' mutate '$IT' '$work/ibt-$kind.sh' $kind && python3 '$work/ibt.py' struct '$work/ibt-$kind.sh'"
 done
-fails "REQ-SUP-001-AC18" "the real pin inventory: a variable version in the address is read as a placeholder, not a pin (the pin-age check refuses it)" 'not a measurable pin.*v[$][{]var[}]' bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-v.sh' variable && ROOT='$root' python3 '$work/ibt.py' inventory '$work/ibt-v.sh'"
-fails "REQ-SUP-001-AC18" "the real pin inventory: a variable repository in the address is unmeasured (the form the pin-age check refuses)" 'unmeasured: a download' bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-r.sh' repovar && ROOT='$root' python3 '$work/ibt.py' inventory '$work/ibt-r.sh'"
-fails "REQ-SUP-001-AC18" "the real pin inventory: the mismatch mutant measures a version outside the pinned set" 'wanted' bash -c "ROOT='$root' python3 '$work/ibt.py' mutate '$IT' '$work/ibt-m.sh' mismatch && ROOT='$root' python3 '$work/ibt.py' inventory '$work/ibt-m.sh'"
 
 # ===== apko-lock.sh: compare / arch-check / verify-archive / evidence (rules 28 29 33 37) ================================
 BL="$fx/base.lock.json" FL="$fx/full.lock.json"

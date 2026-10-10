@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -1248,6 +1248,72 @@ check test "$rc" -eq 2; check grep -qi 'rate limit' "$work/live.out"
 live notfound
 CASE="live: a 404 (no release for that commit) is 'age not provable': exit 1"
 check test "$rc" -eq 1; check grep -qi 'not provable' "$work/live.out"
+
+# --- REQ-SUP-001-AC18: bin/install-build-tools.sh, read by the REAL inventory, yields one measured pin per tool and arch (owner/repo@vX.Y.Z with
+# its checksum bound) and nothing unmeasured; the variable-address forms it replaced are refused (a placeholder that is not a pin, or unmeasured) -------
+cat >"$work/ibt-inv.py" <<'PY'
+import importlib.util, os, re, sys
+SC = sys.argv[1]
+HOST = "https://github.com/"
+TOOLS = {"melange": "chainguard-dev/melange", "apko": "chainguard-dev/apko"}
+ARCHES = ("amd64", "arm64")
+def load(name):
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), os.path.join(SC, name + ".py"))
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); return m
+def die(msg):
+    print("install-build-tools: " + msg); sys.exit(1)
+def inventory(path):
+    inv = load("pin-inventory"); age = load("pin-age-check")
+    text = open(path).read(); f = {"bin/install-build-tools.sh": text}
+    um = inv.unmeasured(f)
+    if um:
+        die("unmeasured: " + "; ".join("%s: %s" % (w, l) for (_, w, l) in sorted(um)))
+    vers = {}
+    for t in TOOLS:
+        m = re.search(re.escape(HOST + TOOLS[t]) + r"/releases/download/v(\d+\.\d+\.\d+)/", text)
+        if not m:
+            die("no literal release address for " + t)
+        vers[t] = m.group(1)
+    want = {(TOOLS[t], "v" + vers[t], "%s_%s_linux_%s.tar.gz" % (t, vers[t], a)) for t in TOOLS for a in ARCHES}
+    got = set()
+    for it in inv.inventory(f).values():
+        repo = age.TOOL_REPOS.get(it.name) or (it.name if re.fullmatch(r"[\w.-]+/[\w.-]+", it.name) else None)
+        if it.kind != "tool" or not repo or not age.is_pin(it.version) or re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", it.name) or "#" not in it.path:
+            die("not a measurable pin with its checksum bound: " + it.key)
+        got.add((it.name, it.version, it.path.split("#")[0]))
+    if got != want:
+        die("measured %s, wanted %s" % (sorted(got), sorted(want)))
+    print("measured: " + ", ".join(sorted("%s@%s %s" % g for g in got)))
+def mutate(src, out, kind):
+    lines = open(src).read().split("\n")
+    def edit(label, rx, rep):
+        for i, ln in enumerate(lines):
+            if re.match(r"^\s*%s\)" % re.escape(label), ln):
+                new, k = re.subn(rx, rep, ln, count=1)
+                if k == 1:
+                    lines[i] = new; return
+        print("mutant %s did not apply" % kind); sys.exit(3)
+    if kind == "variable":
+        edit("melange-amd64", r"/download/v[^/]+/", "/download/v$ver/")
+    elif kind == "repovar":
+        edit("apko-amd64", re.escape(HOST) + r"[\w.-]+/[\w.-]+/", lambda m: HOST + "$repo/")
+    elif kind == "mismatch":
+        edit("apko-arm64", r"/download/v(\d+)\.(\d+)\.(\d+)/apko_\d+\.\d+\.\d+_", lambda m: "/download/v{0}.{1}.{2}/apko_{0}.{1}.{2}_".format(m.group(1), m.group(2), int(m.group(3)) + 1))
+    else:
+        print("unknown mutant " + kind); sys.exit(2)
+    open(out, "w").write("\n".join(lines))
+{"inventory": lambda: inventory(sys.argv[3]), "mutate": lambda: mutate(sys.argv[3], sys.argv[4], sys.argv[5])}[sys.argv[2]]()
+PY
+ibt() { python3 "$work/ibt-inv.py" "$here/../supply-chain" "$@" </dev/null >"$work/ibt.out" 2>&1; }
+ibt_refused() { local kind=$1 kw=$2; ibt mutate "$root/bin/install-build-tools.sh" "$work/ibt-$kind.sh" "$kind" || return 1; ! ibt inventory "$work/ibt-$kind.sh" && grep -Eq -- "$kw" "$work/ibt.out"; }
+CASE="REQ-SUP-001-AC18: the real inventory measures install-build-tools.sh as 4 pins (melange and apko x amd64 and arm64, owner/repo@vX.Y.Z, checksum bound), nothing unmeasured"
+check ibt inventory "$root/bin/install-build-tools.sh"
+CASE="REQ-SUP-001-AC18: a variable version in the release address is read as a placeholder, not a pin (pin-age refuses it)"
+check ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
+CASE="REQ-SUP-001-AC18: a variable repository in the release address is unmeasured (pin-age refuses it)"
+check ibt_refused repovar 'unmeasured: a download'
+CASE="REQ-SUP-001-AC18: a URL version that differs from the pinned set is measured as a version outside it"
+check ibt_refused mismatch 'wanted'
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
