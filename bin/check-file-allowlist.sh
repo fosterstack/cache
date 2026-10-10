@@ -234,6 +234,11 @@ ALLOW_PATTERNS=(
   # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/release-identity.json must
   # pin its content (an exact-content test) and add it to the guarded list.
   '^\.github/release-identity\.json$'
+  # The v0.3.0 customer verification guide (docs/verify-release.md), its list of commands that cannot run on a
+  # candidate (docs/verify-release.cannot-run.json) and its page checker (bin/verify-release-guide-test.sh), REQ-GUIDE-001.
+  '^docs/verify-release\.md$'
+  '^docs/verify-release\.cannot-run\.json$'
+  '^bin/verify-release-guide-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'

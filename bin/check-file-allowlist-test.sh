@@ -58,7 +58,7 @@ case "$anch" in *UNANCHORED*) gf "every pattern is anchored with ^ and \$" "$anc
 # (A) every pattern line is exactly  two-space-indent, single-quoted, one pattern, optional trailing comment; the
 #     number of such lines equals ${#ALLOW_PATTERNS[@]}+${#SUPPRESSION_PATTERNS[@]} as bash loads them; no
 #     pattern has a top-level '|'; the only ALLOW_PATTERNS+= is the known suppression append.
-# (B) the v0.3.0 region admits an EXACT, declared set of 39 paths: only literals, \. , (a|b) groups and (x)?
+# (B) the v0.3.0 region admits an EXACT, declared set of 46 paths: only literals, \. , (a|b) groups and (x)?
 #     groups; no * + [ ] { } or bare '.'; the union of every pattern's finite expansion equals the declared list.
 struct_check() {
   local f="$1" loaded
@@ -99,8 +99,9 @@ bin/archive-push.sh bin/archive-pull.sh bin/archive-verify.py
 .github/secret_scanning.yml
 .github/agent/supply-chain/harness-manifest.json
 .github/release-identity.json
+docs/verify-release.md docs/verify-release.cannot-run.json bin/verify-release-guide-test.sh
 """.split())
-if len(DECLARED) != 43: errs.append("declared list is not 43 paths: %d" % len(DECLARED))
+if len(DECLARED) != 46: errs.append("declared list is not 46 paths: %d" % len(DECLARED))
 # Every non-comment line outside the array blocks that may mention PATTERNS (stripped), one per real line:
 ALLOWED_MENTIONS = {
     'ALLOW_PATTERNS+=("${SUPPRESSION_PATTERNS[@]}")',                    # the suppression append (main/auditor/* only)
@@ -110,7 +111,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 137, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 140, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -751,6 +752,17 @@ runeach fail "feature/x" "v030: harness-manifest other extension refused"     ".
 runeach fail "feature/x" "v030: Harness-Manifest.json uppercase refused"      ".github/agent/supply-chain/Harness-Manifest.json"
 runeach fail "feature/x" "v030: harness-manifest.json one directory up refused" ".github/agent/harness-manifest.json"
 runeach fail "feature/x" "v030: supply-chain/../ traversal refused"           ".github/agent/supply-chain/../harness-manifest.json"
+
+# REQ-GUIDE-001: the v0.3.0 customer verification guide, its cannot-run list and its page checker. The page and the
+# list are ALSO admitted by the older generic '^docs/[A-Za-z0-9._-]+\.(md|json)$' patterns, so their near-misses that
+# stay inside docs/*.md or docs/*.json (a case variant, a '-' or '.' replaced) are admitted by those patterns and are
+# not listed here; the exact lines pin the names in the region.
+run pass "feature/x" "REQ-GUIDE-001: the customer guide page" "docs/verify-release.md"
+runeach fail "feature/x" "REQ-GUIDE-001: verify-release.md near-miss refused" "docs/verify-release.md.bak" "docs/verify-release.mdx" "docs/x/verify-release.md" "./docs/verify-release.md" "verify-release.md" "docs/verify-releaseXmd" "docs/verify-release.md/" "x/docs/verify-release.md" "docs/../verify-release.md" "docs/verify-release.md "
+run pass "feature/x" "REQ-GUIDE-001: the cannot-run list" "docs/verify-release.cannot-run.json"
+runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-miss refused" "docs/verify-release.cannot-run.json.bak" "docs/verify-release.cannot-run.jsonx" "docs/verify-release.cannot-run.yaml" "docs/x/verify-release.cannot-run.json" "./docs/verify-release.cannot-run.json" "verify-release.cannot-run.json" "docs/verify-release.cannot-runXjson" "docs/verify-release.cannot-run.json/" "x/docs/verify-release.cannot-run.json" "docs/../verify-release.cannot-run.json" "docs/verify-release.cannot-run.json "
+passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
+runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 runeach fail "feature/x" "v030: vendor/ files are NOT admitted yet" "vendor/modules.txt" "vendor/golang.org/x/text/a.go"
