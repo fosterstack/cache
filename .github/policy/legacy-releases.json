@@ -1,12 +1,11 @@
 {
   "comment": [
-    "Published releases that predate release-manifest.json and must stay",
-    "in the daily rescan's inventory until the supported-release policy",
-    "retires them (audit F12). Each lists the exact published digests -",
+    "Published releases that predate release-manifest.json. An entry matters",
+    "only while that version is the CURRENT release (the daily rescan covers",
+    "the current release only); it is then rescanned from this inventory (audit F12). Each lists the exact published digests -",
     "never tags. v0.1.0 was built by the pre-remediation pipeline; its",
-    "digests were resolved once (Sep 8 2026) and pinned. Remove an entry",
-    "only when that version is formally out of support, not when a newer",
-    "release ships."
+    "digests were resolved once (Sep 8 2026) and pinned. Keep the entry",
+    "while the version is supported; a newer release only stops it being scanned."
   ],
   "releases": [
     {

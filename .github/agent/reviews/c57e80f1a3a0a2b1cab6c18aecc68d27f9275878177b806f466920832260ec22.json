@@ -1,0 +1,51 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "c57e80f1a3a0a2b1cab6c18aecc68d27f9275878177b806f466920832260ec22",
+ "change": "Allowlist: the daily-rescan current-release test (REQ-REL-004-AC5): one exact anchored pattern for bin/rescan-current-only-test.sh, the test's count (133), the script-digest pin, a content-anchored logic-line mutant, and a direct passfam assertion with near misses -- PR #260",
+ "reviewed_commit": "e088731fdb2d06d25fe0a49b6d8b2ca735b060dd",
+ "closed_commit": "e088731fdb2d06d25fe0a49b6d8b2ca735b060dd",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "head cef23ad: real Codex (no confirmed defect; one Low test-coverage gap: no direct passfam assertion for the new path) + Sonnet (0 blockers; suite 504/0; 12 mutants killed)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "73a8f311de17e34ccfbfb39d20abaf89b35d9ca5e0304856814c270c1b3022b7"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "4f8cd153a0c10556bbae26537e0a7b1aa8f1585b2e871803d82971692ec4df99"
+    }
+   }
+  },
+  {
+   "round": 2,
+   "label": "final head e088731: real Codex (no confirmed defect or suspected risk; 14 near misses refused in direct probes) + Sonnet confirmation (0 blockers; suite 519/0; new-pattern removal, widened pattern and vacuous near-miss mutants all fail)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ff2ebc9101f406410206546839aa5c1c517f25b7b2e302445cab7e64167ac648"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "e6d54819c712add8776d92f8a3fe2a90735aaeab3a42e7c1f190c3ed74038937"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX COULD NOT RUN THE SUITE (read-only sandbox denies mktemp): the full allowlist test, its mutant executions and the temporary git/hook cases are NOT VERIFIED BY CODEX and are not a Codex pass; covered by the Sonnet runs: round 1 on cef23ad 504 passed/0 failed with 12 mutants killed, round 2 on e088731 519 passed/0 failed with 3 mutants failing as required; and the helper's own runs",
+  "Codex verified directly: the pattern is exactly ^bin/rescan-current-only-test\\.sh$, 133 ALLOW + 6 suppression, the digest outside the v0.3.0 region equals the pin, 14 near misses refused, only the allowlist script and its test touched, no trailer",
+  "the pattern admits a path that arrives in the separate PR #252 (the repository's ordering: allowlist PR first)",
+  "the real Codex seat is openai; no Opus substitute is used in this record"
+ ]
+}

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-AUD-018-AC2 — KNOWN GAP (owner question pending): the gate honours the reasoned exclusion list in coverage-exclusions.txt, which the AC text ("100% coverage") does not mention, and it measures only the auditor bin directory; widening it is a follow-up.
 # REQ-AUD-18 AC2: the auditor's Python is held to the 100% coverage gate, the same as the Go
 # (bin/coverage-gate.sh): ZERO uncovered eligible statements under .github/agent/bin/, measured
 # over the parser unit tests AND the matrix suite (every `python3` the suite spawns is measured

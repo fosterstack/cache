@@ -5,6 +5,7 @@
 # the next tag is vX.Y.(Z+1); the daily rule cuts at most once a day; release notes list each fix and name no vendor or
 # model; floating tags move :X.Y always and :X / :latest only for the highest version.
 set -euo pipefail
+TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd)
 python3 - "$here/patch-decide.py" <<'PY'
 import importlib.util, re, sys

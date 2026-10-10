@@ -214,10 +214,12 @@ exit 0
 SH
 chmod +x "$work/ghbin/gh"
 runbash() { # <name> <pre-existing labels...>; env GH_DENY_LABELS passes through
-  local n=$1; shift; export GH_STATE="$work/gs-$n"; rm -rf "$GH_STATE"; mkdir -p "$GH_STATE/labels" /tmp/panel-out
+  local n=$1; shift; export GH_STATE="$work/gs-$n"; rm -rf "$GH_STATE"; mkdir -p "$GH_STATE/labels" "$work/panel-out"
+  # the workflow step hard-codes the runner's panel directory; run a copy pointed at the temp dir (the original stays for the drift checks)
+  sed "s#/tmp/panel-out#$work/panel-out#g" "$work/rescan-step.sh" >"$work/rescan-run.sh"
   for l in "$@"; do : >"$GH_STATE/labels/$l"; done
-  printf 'finding body\n' >/tmp/panel-out/issue.md
-  rc=0; PATH="$work/ghbin:$PATH" GITHUB_SHA=abc RUN_URL=http://x bash -e "$work/rescan-step.sh" >/dev/null 2>"$GH_STATE/err" || rc=$?
+  printf 'finding body\n' >"$work/panel-out/issue.md"
+  rc=0; PATH="$work/ghbin:$PATH" GITHUB_SHA=abc RUN_URL=http://x bash -e "$work/rescan-run.sh" >/dev/null 2>"$GH_STATE/err" || rc=$?
 }
 runbash none
 CASE="rescan workflow (gh step): starting from NO labels the tracking issue is created (the stateful gh refuses it unless daily-rescan and security exist first)"
