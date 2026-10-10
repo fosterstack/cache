@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=72
+pass=0 failn=0 EXPECT=77
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -618,7 +618,9 @@ for what, events in bad.items():
     try: hit("3.1.3", [rec("GO-X-51", ent(n, events))], none_ignored=True, sups=(True,))
     except AssertionError as e: raise AssertionError((what,) + e.args)
     except Exception as e: raise AssertionError((what, "traceback", repr(e)))
-clean("3.1.3", [rec("GO-X-52", ent(n, good + [{"limit": "3.2.0"}]))], sups=(True,))     # a limit event is a known key: still readable
+hit("3.1.3", [rec("GO-X-52", ent(n, good + [{"limit": "3.2.0"}]))], sups=(True,))     # limit is only for GIT ranges: refused in a SEMVER range (B18)
+clean("3.1.3", [rec("GO-X-52b", ent(BARE, ranges=[{"type": "GIT", "repo": "https://x", "events": good + [{"limit": "3.2.0"}]}]), ent(n, good))],
+      sups=(True,))                                                                      # a GIT range may carry a limit
 PY
 py "B9: the other branches read only readable entries too (table path for another major, /v0 or /v1 path in the record): a malformed range or event" \
    " is a HIT, never a traceback, and an event with a typo key never reads clean; honest records keep the old verdict" <<'PY'
@@ -719,21 +721,26 @@ assert aff("3.1.2", (I, "0"), (X, "3.1.3")) and not aff("3.1.3", (I, "0"), (X, "
 assert aff("3.1.3", (I, "0"), (X, "4.0.0")) and not aff("3.1.3", (I, "0"), (X, "3.0.4"))
 n = BARE + "/v3"
 hit("3.1.3", [rec("GO-X-70", ent(n, two))], sups=(True,))                                          # the Codex pair, through a record
-clean("3.1.3", [rec("GO-X-71", ent(BARE, INTRO0), ent(n, ev(("introduced", "0"), ("limit", "3.0.4"))))], sups=(True,))   # the exact entry decides
+hit("3.1.3", [rec("GO-X-71", ent(BARE, INTRO0), ent(n, ev(("introduced", "0"), ("limit", "3.0.4"))))], sups=(True,))   # limit in a SEMVER range: refused (B18)
 PY
-py "B15: copy metadata is validated before merging: aliases null, a non-list, non-strings, a non-string modified or id is an unreadable record," \
+py "B15: copy metadata is validated before merging: a non-list or non-string aliases, a non-string modified or id is an unreadable record," \
    " a HIT, never an exception" <<'PY'
 good = rec("GO-X-72", ent(BARE + "/v3", fixed("3.0.4")))
-for what, change in (("aliases null", {"aliases": None}), ("aliases string", {"aliases": "GHSA-x"}), ("aliases ints", {"aliases": [1, 2]}),
+for what, change in (("aliases string", {"aliases": "GHSA-x"}), ("aliases ints", {"aliases": [1, 2]}),
                      ("modified int", {"modified": 5}), ("id list", {"id": ["x"]})):
     net = mknet([], (), True)
     net._osv_post = lambda q, c=change: [dict(copy.deepcopy(good), **c)]
     try: finds, _ = run(cosign("3.1.3"), net)
     except Exception as e: raise AssertionError((what, "exception", repr(e)))
     assert finds, (what, "expected a HIT")
-r = copy.deepcopy(good); r.pop("aliases"); r.pop("modified")                               # absent aliases and modified are fine
+for aliases in ("absent", None):                                  # the schema permits aliases absent or null: no aliases
+    r = copy.deepcopy(good); r.pop("aliases")
+    if aliases is None: r["aliases"] = None
+    net = mknet([], (), True); net._osv_post = lambda q, r=r: [copy.deepcopy(r)]
+    assert run(cosign("3.1.3"), net)[0] == [], aliases
+r = copy.deepcopy(good); r.pop("modified")                          # modified is required by the schema
 net = mknet([], (), True); net._osv_post = lambda q: [copy.deepcopy(r)]
-assert run(cosign("3.1.3"), net)[0] == []
+assert run(cosign("3.1.3"), net)[0], "a record without modified is unreadable: a HIT"
 PY
 py "B16: value types of the schema: a numeric purl, severity that is not a list of {type, score} strings, ecosystem_specific or database_specific that is" \
    " not an object, or a GIT range without introduced is a HIT; real shapes stay clean" <<'PY'
@@ -767,8 +774,105 @@ except pa.Fail: pass
 try: pa.Gh("gh").run("api", "x"); raise AssertionError("no Fail")
 except pa.Fail: pass
 assert seen and all(t for t in seen), seen
-src = open(sys.argv[1]).read()
-assert src.count("subprocess.run(") == 1, "a subprocess call without the timeout wrapper _run"
+import ast
+for path in (sys.argv[1], os.path.dirname(sys.argv[1]) + "/pin-age-check.py"):
+    tree = ast.parse(open(path).read())
+    wrapped = [(f.lineno, f.end_lineno) for f in ast.walk(tree) if isinstance(f, ast.FunctionDef) and f.name in ("_run", "_gh_run")]   # add the timeout themselves
+    for call in [c for c in ast.walk(tree) if isinstance(c, ast.Call) and ast.unparse(c.func) == "subprocess.run"]:
+        assert any(a <= call.lineno <= b for a, b in wrapped) or any(k.arg == "timeout" for k in call.keywords), (path, call.lineno, "no timeout")
+PY
+py "B18: OSV events: limit is refused in SEMVER ranges (a HIT); the evaluator (below ANY limit, introduced 0 the minimum) agrees with an" \\
+   " independent interval oracle on a generated grid of records, orders and versions" <<'PY'
+import itertools, random
+A, V = "github.com/sigstore/cosign/v3", None
+hit("3.1.3", [rec("GO-X-80", ent(A, ev(("introduced", "0"), ("limit", "3.0.0"), ("limit", "4.0.0"))))], sups=(True,))   # the Codex probe
+hit("3.1.3", [rec("GO-X-81", ent(A, ev(("introduced", "0"), ("limit", "3.0.0"))))], sups=(True,))   # limit belongs to GIT ranges: refused in SEMVER ones
+assert pa.covered_by_events("3.1.3", ev(("introduced", "0"), ("limit", "3.0.0"), ("limit", "4.0.0"))), "evaluator level: below ANY limit is affected"
+for sv in (True, False):               # introduced 0 is the minimum element: a pre-release of 0.0.0 cannot sort before it
+    for order in (ev(("introduced", "0"), ("fixed", "0.0.0-rc.1")), ev(("fixed", "0.0.0-rc.1"), ("introduced", "0"))):
+        assert not pa.covered_by_events("0.0.0", order, semver=sv) and pa.covered_by_events("0.0.0-beta", order, semver=sv), (sv, order)
+def key(x): return (-1,) if x == "0" else tuple(int(p) for p in x.split("."))
+def oracle(v, events, limits):
+    """The OSV evaluation read as intervals: [introduced, fixed), [introduced, last_affected], or [introduced, infinity), cut at the largest limit."""
+    inside = any(key(a) <= key(v) and (b is None or key(v) < key(b) if kind == "fixed" else key(v) <= key(b)) for a, b, kind in events)
+    return inside and (not limits or key(v) < max(key(x) for x in limits))
+bounds = ["0", "1.0.0", "2.0.0", "3.0.0", "4.0.0", "5.0.0"]
+pins = ["0.5.0", "1.0.0", "1.5.0", "2.0.0", "2.5.0", "3.0.0", "3.5.0", "4.0.0", "5.0.0", "6.0.0", "7.0.0"]
+rnd = random.Random(80); checked = 0
+for k in (1, 2, 3):
+    for cuts in itertools.combinations(range(len(bounds)), 2 * k):
+        for kinds in itertools.product(("fixed", "last_affected"), repeat=k):
+            for limits in ([], ["1.5.0"], ["3.5.0", "6.0.0"], ["1.5.0", "3.5.0"]):
+                for open_end in (False, True):
+                    pts = [bounds[c] for c in cuts]
+                    ivs = [(pts[2 * i], pts[2 * i + 1], kinds[i]) for i in range(k)]
+                    if open_end: ivs[-1] = (ivs[-1][0], None, "fixed")
+                    evs = [e for a, b, kd in ivs for e in ([("introduced", a)] + ([] if b is None else [(kd, b)]))] + [("limit", x) for x in limits]
+                    for _ in range(2):
+                        rnd.shuffle(evs)
+                        for p in pins:
+                            want = oracle(p, ivs, limits)
+                            for semver in (True, False):
+                                got = pa.covered_by_events(p, [dict([e]) for e in evs], semver=semver)
+                                assert got == want, (evs, p, semver, got, want)
+                            checked += 1
+assert checked > 20000, checked
+PY
+py "B19: required fields: a record without modified, an ignored entry without package.ecosystem, a non-string repo, a range with both fixed and" \\
+   " last_affected are unreadable: a HIT, never a clean beside a clean exact entry" <<'PY'
+n = BARE + "/v3"
+honest = ent(n, fixed("3.0.4"))
+no_modified = rec("GO-X-82", honest); no_modified.pop("modified")
+hit("3.1.3", [no_modified], sups=(True,))
+cases = {"ignored entry without ecosystem": {"package": {"name": BARE}, "ranges": [{"type": "SEMVER", "events": INTRO0}]},
+         "repo an int (GIT)": ent(BARE, ranges=[{"type": "GIT", "repo": 5, "events": INTRO0}]),
+         "repo an int (SEMVER)": ent(BARE, ranges=[{"type": "SEMVER", "repo": 5, "events": INTRO0}]),
+         "both fixed and last_affected": ent(BARE, ev(("introduced", "0"), ("fixed", "1.0.0"), ("last_affected", "0.9.0")))}
+for what, entry in cases.items():
+    for tables in ((None,), (BARE,)):
+        try: hit("3.1.3", [rec("GO-X-83", honest, entry)], tables=tables, sups=(True,))
+        except AssertionError as e: raise AssertionError((what, tables) + e.args)
+        except Exception as e: raise AssertionError((what, tables, "traceback", repr(e)))
+hit("3.1.3", [rec("GO-X-84", ent(n, ev(("introduced", "0"), ("fixed", "3.0.4"), ("last_affected", "3.0.3"))))], sups=(True,))
+PY
+py "B20: no over-refusal: event order in the file is free (fixed before introduced is fine, the evaluator sorts); an introduced event must exist" <<'PY'
+n = BARE + "/v3"
+clean("3.1.3", [rec("GO-X-85", ent(n, ev(("fixed", "3.0.4"), ("introduced", "0"))))], tables=(None, BARE), sups=(True,))
+hit("3.1.3", [rec("GO-X-86", ent(n, ev(("fixed", "3.2.0"), ("introduced", "3.1.0"))))], sups=(True,))
+hit("3.1.3", [rec("GO-X-87", ent(n, ev(("fixed", "3.0.4"))))], sups=(True,))      # no introduced at all: unreadable
+PY
+py "B21: versions compare as semver: Go pseudo-versions and numeric pre-releases are valid, identifiers compare numeric < alphanumeric, build is ignored," \\
+   " r1/p1/post1/rev1 are pre-release suffixes" <<'PY'
+c = pa._semver_cmp
+pseudo = "0.0.0-20230101000000-abcdef123456"
+assert c("9.9.9", pseudo) > 0 and c("v0.0.0-20230101000000-abcdef123456", "v0.0.0-20240101000000-abcdef123456") < 0
+assert c("1.2.4-0.20230101000000-abcdef123456", "1.2.4") < 0 and c("1.2.4-0.20230101000000-abcdef123456", "1.2.3") > 0
+assert c("1.0.0-0.3.7", "1.0.0") < 0 and c("1.0.0-0.3.7", "1.0.0-0.3.8") < 0 and c("1.0.0-2", "1.0.0-10") < 0
+assert c("1.0.0-alpha", "1.0.0-alpha.1") < 0 and c("1.0.0-alpha.1", "1.0.0-alpha.beta") < 0 and c("1.0.0-2", "1.0.0-a") < 0
+assert c("1.0.0-rc.2", "1.0.0-rc1") < 0 and c("1.0.0+a", "1.0.0+b") == 0 and c("3.1.3+incompatible", "3.1.3") == 0
+for post in ("r1", "p1", "post1", "rev1"):
+    assert c("1.0.0-" + post, "1.0.0") < 0, post
+try: c("latest", "1.0.0"); raise AssertionError("an unparsable value must raise")
+except ValueError: pass
+n = BARE + "/v3"
+clean("3.1.3", [rec("GO-X-88", ent(n, ev(("introduced", "0"), ("fixed", "3.0.0-20230101000000-abcdef123456"))))], sups=(True,))   # pin above the pseudo-version
+hit("3.0.0", [rec("GO-X-89", ent(n, ev(("introduced", "0"), ("fixed", "3.0.0-20230101000000-abcdef123456"), ("introduced", "3.0.0"))))], sups=(True,))
+hit("1.0.0", [rec("GO-X-90", ent(BARE, ev(("introduced", "1.0.0-r1"), ("fixed", "2.0.0"))))], mk=lambda v, t=None: cosign(v), sups=(True,))
+PY
+py "B22: the shared gh helpers of pin-age-check.py have a timeout too: a hanging gh is CouldNotLook (the run stops, exit 2), never clean" <<'PY'
+import tempfile, time
+age = pa.age
+d = tempfile.mkdtemp(prefix="pa-hang-")
+open(d + "/gh", "w").write("#!/bin/sh\nexec sleep 30\n"); os.chmod(d + "/gh", 0o755)
+os.environ["PATH"] = d + os.pathsep + os.environ["PATH"]
+assert getattr(age, "GH_TIMEOUT", 0) > 0
+age.GH_TIMEOUT = 1
+t0 = time.time()
+for fn in (age._gh_pages, age._gh_api, age._gh_bytes):
+    try: fn("repos/x/y"); raise AssertionError(fn.__name__ + ": no CouldNotLook")
+    except age.CouldNotLook: pass
+assert time.time() - t0 < 20, "the helpers waited for the hanging gh"
+os.remove(d + "/gh"); os.rmdir(d)
 PY
 py "I1: the aliases of every copy of one OSV id are merged: an alias that only the second copy carries still finds its GitHub advisory (a dispute)" <<'PY'
 a = rec("GO-X-45", ent(BARE + "/v3", fixed("3.0.4")))
