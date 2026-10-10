@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# proves: REQ-REL-005-AC2
 # Proves .github/agent/bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -1009,6 +1010,98 @@ case_ ro-reusable-call-ok      ok  "on: push
 jobs:
   j:
     uses: ./.github/workflows/w2.yml" "printf 'on: workflow_call\\njobs:\\n  x:\\n    runs-on: ubuntu-latest\\n    steps:\\n      - run: true\\n' > .github/workflows/w2.yml"
+
+# --- REQ-REL-005-AC2 (advisor-approved read-back Oct 9, pin matrix): `runs-on: ${{ matrix.<key> }}` over a literal matrix of
+# ubuntu-24.04 / ubuntu-24.04-arm is the one expression runner the check accepts, judged under bash; every other form is a
+# runs-on finding and never a silent choice of shell. case_out also asserts WHICH finding was printed.
+# case_out <name> <ok|bad> <workflow text> <regex the output must match, or ''> [regex it must NOT match]
+case_out() {
+  local name=$1 expect=$2 d="$work/$1" out got
+  mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
+  printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
+  cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
+  : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"
+  if out=$(python3 "$here/../bin/check-action-pins.py" "$d" 2>&1); then got=ok; else got=bad; fi
+  local why=""
+  [ "$got" = "$expect" ] || why="exit $got, want $expect"
+  if [ -z "$why" ] && [ -n "${4:-}" ] && ! grep -Eq -- "$4" <<<"$out"; then why="output lacks /$4/"; fi
+  if [ -z "$why" ] && [ -n "${5:-}" ] && grep -Eq -- "$5" <<<"$out"; then why="output has /$5/"; fi
+  if [ -z "$why" ]; then pass=$((pass+1)); echo "PASS $name → $got"
+  else failn=$((failn+1)); echo "FAIL $name → $why"; [ -z "${VERBOSE:-}" ] || printf '%s\n' "$out" | head -3 | sed 's#^#     #'; fi
+}
+# a job `apk` on a matrix runner; $2 is the strategy block, $3 the run: line of its last step
+mx() { printf 'on: push\njobs:\n  apk:\n    runs-on: %s\n%s\n    steps:\n      - uses: actions/checkout@%s # v7.0.1\n      - run: %s' "$1" "$2" "$SHA" "${3:-bash bin/build.sh}"; }
+st() { printf '    strategy:\n      matrix:\n        runner: %s\n' "$1"; }
+M='${{ matrix.runner }}'
+BOTH='[ubuntu-24.04, ubuntu-24.04-arm]'
+# the accepted forms: no runs-on finding, no pwsh finding
+case_out pm-real-build-apk       ok  "$(mx "$M" "$(st "$BOTH")" 'bash bin/witnessed.sh apk bin/build-stage-apk.sh')" '0 finding' 'pwsh|runs-on'
+case_out pm-real-rebuild-apk     ok  "$(mx "$M" "$(st "$BOTH")" 'bash bin/witnessed.sh rapk bin/build-stage-rebuild-apk.sh')" '0 finding' 'pwsh|runs-on'
+case_out pm-one-label            ok  "$(mx "$M" "$(st '[ubuntu-24.04]')")" '0 finding' 'pwsh|runs-on'
+case_out pm-arm-only             ok  "$(mx "$M" "$(st '[ubuntu-24.04-arm]')")" '0 finding' 'pwsh|runs-on'
+case_out pm-block-list           ok  "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner:\n          - ubuntu-24.04\n          - ubuntu-24.04-arm\n')")" '0 finding' 'pwsh|runs-on'
+case_out pm-fail-fast-false      ok  "$(mx "$M" "$(printf '    strategy:\n      fail-fast: false\n      matrix:\n        runner: [ubuntu-24.04]\n')")" '0 finding' 'pwsh|runs-on'
+case_out pm-other-key-name       ok  "$(mx '${{ matrix.os }}' "$(printf '    strategy:\n      matrix:\n        os: [ubuntu-24.04]\n')")" '0 finding' 'pwsh|runs-on'
+case_out pm-clean-docker-step    ok  "$(mx "$M" "$(st "$BOTH")" "docker run alpine@$DIG true")" '0 finding' 'pwsh|runs-on'
+# the steps are judged under bash: an unpinned image is a finding of its own, not a pwsh refusal
+case_out pm-judged-as-bash       bad "$(mx "$M" "$(st "$BOTH")" 'docker pull alpine:latest')" 'alpine' 'pwsh|runs-on'
+# every refused variant: a finding that names the runner
+case_out pm-no-strategy          bad "$(mx "$M" '')" 'runs-on'
+case_out pm-extra-matrix-key     bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        os: [ubuntu-24.04-arm]\n')")" 'runs-on'
+case_out pm-fromjson             bad "$(mx "$M" "$(st "\${{ fromJSON('[\"ubuntu-24.04\"]') }}")")" 'runs-on'
+case_out pm-matrix-expression    bad "$(mx "$M" "$(printf '    strategy:\n      matrix: ${{ fromJSON(needs.x.outputs.m) }}\n')")" 'runs-on'
+case_out pm-include              bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        include:\n          - runner: ubuntu-24.04\n')")" 'runs-on'
+case_out pm-exclude              bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n        exclude:\n          - runner: ubuntu-24.04-arm\n')")" 'runs-on'
+case_out pm-self-hosted          bad "$(mx "$M" "$(st '[ubuntu-24.04, self-hosted]')")" 'runs-on'
+case_out pm-runner-from-input    bad "$(mx '${{ inputs.runner }}' "$(st "$BOTH")")" 'runs-on'
+case_out pm-runner-from-env      bad "$(mx '${{ env.RUNNER }}' "$(st "$BOTH")")" 'runs-on'
+case_out pm-one-bad-label        bad "$(mx "$M" "$(st '[macos-14]')")" 'runs-on'
+case_out pm-ubuntu-latest        bad "$(mx "$M" "$(st '[ubuntu-latest]')")" 'runs-on'
+case_out pm-other-version        bad "$(mx "$M" "$(st '[ubuntu-22.04]')")" 'runs-on'
+case_out pm-different-case       bad "$(mx "$M" "$(st '[Ubuntu-24.04]')")" 'runs-on'
+case_out pm-trailing-space       bad "$(mx "$M" "$(st "['ubuntu-24.04 ']")")" 'runs-on'
+case_out pm-nested-list          bad "$(mx "$M" "$(st '[[ubuntu-24.04]]')")" 'runs-on'
+case_out pm-non-string-label     bad "$(mx "$M" "$(st '[24.04]')")" 'runs-on'
+case_out pm-empty-list           bad "$(mx "$M" "$(st '[]')")" 'runs-on'
+case_out pm-scalar-not-list      bad "$(mx "$M" "$(st 'ubuntu-24.04')")" 'runs-on'
+case_out pm-duplicate-key        bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        runner: [ubuntu-24.04-arm]\n')")" 'runs-on'
+case_out pm-key-typo             bad "$(mx '${{ matrix.runnr }}' "$(st "$BOTH")")" 'runs-on'
+case_out pm-runs-on-list         bad "$(mx '["${{ matrix.runner }}"]' "$(st "$BOTH")")" 'runs-on'
+case_out pm-text-around          bad "$(mx 'ubuntu-${{ matrix.runner }}' "$(st "$BOTH")")" 'runs-on'
+case_out pm-other-job-matrix     bad "on: push
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04]
+    steps:
+      - run: true
+  b:
+    runs-on: \${{ matrix.runner }}
+    steps:
+      - run: true" 'jobs.b.runs-on'
+case_out pm-workflow-level       bad "on: push
+strategy:
+  matrix:
+    runner: [ubuntu-24.04]
+jobs:
+  a:
+    runs-on: \${{ matrix.runner }}
+    steps:
+      - run: true" 'runs-on'
+case_out pm-anchored-matrix      bad "on: push
+x-m: &m
+  runner: [ubuntu-24.04]
+jobs:
+  a:
+    runs-on: \${{ matrix.runner }}
+    strategy:
+      matrix: *m
+    steps:
+      - run: true" 'anchor'
+# an unresolved runs-on is a finding about the runner, never only a pwsh misreading of the steps
+case_out pm-unresolved-names-the-runner bad "$(mx '${{ inputs.runner }}' "$(st "$BOTH")")" "jobs\\.apk\\.runs-on: .* is not an ubuntu runner"
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
 case_ n11-fused-docker         bad "$(rb 'd$()ocker run alpine')"
 case_ n11-fused-pip            bad "$(rb 'pi$()p install requests')"
