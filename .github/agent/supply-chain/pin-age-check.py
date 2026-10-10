@@ -462,27 +462,39 @@ def _line_hash(flat):
     return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+def _occurrences(root, rev):
+    """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
+    a group no row can name ('unruled:' + its hash)."""
+    out = {}
+    for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
+        lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
+        per = out.setdefault(k, {})
+        per[lh] = per.get(lh, 0) + 1
+    return out
+
+
 def _unmeasured_counts(root, base, head):
-    """(base counts, head counts, {head key: {whole-line hash: occurrences}}): the line hashes bind a ruled-text row to the whole line (REQ-SUP-001-AC16)."""
-    b = inv.unmeasured({**inv.tree_files(root, base), **inv.tree_scripts(root, base)})   # a read error propagates: the check cannot run (exit 2), never "nothing found"
-    lines = {}
-    for k, flat in inv.unmeasured_occurrences({**inv.tree_files(root, head), **inv.tree_scripts(root, head)}):
-        per = lines.setdefault(k, {})
-        per[_line_hash(flat)] = per.get(_line_hash(flat), 0) + 1
-    h = {k: sum(per.values()) for k, per in lines.items()}
-    return b, h, lines
+    """{key: {whole-line hash: head occurrences}} for every (key, whole line) the head has MORE of than the base: an occurrence is identified by its key
+    AND the whole line it sits in, so an edited line that keeps its download segment is an addition, like a new one (REQ-SUP-001-AC16)."""
+    b, h = _occurrences(root, base), _occurrences(root, head)
+    added = {}
+    for k, per in h.items():
+        for lh, n in per.items():
+            if n > b.get(k, {}).get(lh, 0):
+                added.setdefault(k, {})[lh] = n
+    return added
 
 
-def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command line): an in-place swap of one line for another is an ADDITION
-    """Install forms this check cannot measure that the head has MORE of than the base (per file and form): a PR that adds one is refused."""
-    b, h, _ = _unmeasured_counts(root, base, head)
-    return sorted(k for k, n in h.items() if n > b.get(k, 0))
+def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised command): an in-place swap or an edit of the line around it is an ADDITION
+    """Install forms this check cannot measure that the head has MORE of than the base (per file, form and whole line): a PR that adds one is refused."""
+    return sorted(_unmeasured_counts(root, base, head))
 
 
 # REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub written as data). They are read from
 # the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
+MAX_RULED_COUNT = 100
 
 
 def _no_duplicate_keys(pairs):
@@ -519,8 +531,8 @@ def load_ruled_text(path, required=False):
         if not re.fullmatch(r"[0-9a-f]{16}", r["line"]):
             raise bad("line is not the 16 lowercase hex hash of the whole flattened line")
         count = r.get("count", 1)
-        if type(count) is not int or count < 1:
-            raise bad("count is not a whole number of at least 1")
+        if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
+            raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
@@ -530,11 +542,11 @@ def load_ruled_text(path, required=False):
 
 def _run(a, moved, fx, now):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
-    b, h, lines = _unmeasured_counts(a.root, a.base, a.head)
+    lines = _unmeasured_counts(a.root, a.base, a.head)
     added, ruled = [], []
-    for k in sorted(k for k, n in h.items() if n > b.get(k, 0)):
-        # ruled only when EVERY occurrence in the head sits in a whole line that a row names, within that row's count (1 unless it says more): the
-        # same segment inside any other line, or one copy too many, leaves the item refused
+    for k in sorted(lines):
+        # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
+        # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
