@@ -289,6 +289,12 @@ _n = [0]
 STMT = {"v0.1": "https://in-toto.io/Statement/v0.1", "v1": "https://in-toto.io/Statement/v1"}
 DSSE = "application/vnd.in-toto+json"
 PROV_URI = "https://slsa.dev/provenance/v1"
+# A Witness collection is named for the step that made it, and the verifier refuses a name that is not a release name of the stage that reads it
+# (REQ-CHAIN-004-AC13, closed names: build/apk for Build, rebuild/rapk for Rebuild). Every fixture is named for its stage; the Check fixtures keep
+# build, the one name that tests the identity refusals of a record presented to the wrong stage (the name check does not apply to the Check stage).
+COLLECTION_NAME = {"stage-reproducibility.yml": "rebuild"}
+
+
 def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, tsa="tsa", signed=True, repo=REPO, issuer=ISSUER,
            stmt="v1", dsse=DSSE, payload=None, config_wf="release.yml", config_ref=None, config_repo=None, no_config=False, no_issuer=False,
            coll_file=None, coll_variant=None, predicate=None, san_der=None):
@@ -324,7 +330,7 @@ def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, ts
                     # the right file name but its digest set has only a gitoid, no sha256 key
                     "gitoidonly": [dict(subj[0], digest={k: v for k, v in subj[0]["digest"].items() if k != "sha256"}), subj[1]]}[coll_variant]
         att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("environment", "git", "product", "command-run")]
-        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": "build", "attestations": att}, "subject": subj}).encode()
+        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": COLLECTION_NAME.get(wf, "build"), "attestations": att}, "subject": subj}).encode()
     if payload is None:
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": predicate or {},
                               "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1] if v.startswith("sha256:") else v}} for k, v in subjects.items()]}).encode()
@@ -444,7 +450,7 @@ add("build_coll", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digest
 _t = open(p("sign_prov.json")).read(); open(p("sign_dupkey.json"), "w").write(_t.replace('"payloadType"', '"payloadType": "x", "payloadType"', 1))
 _j = json.load(open(p("sign_prov.json"))); _j["signatures"] = _j["signatures"] * 2; json.dump(_j, open(p("sign_2sig.json"), "w"))
 add("sign_utf8", STAGES["sign"], T, PROV, D, san_der="30048602ff41")
-add("build_badsubj", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {}, "subject": ["x", 5]}).encode())
+add("build_badsubj", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": ["x", 5]}).encode())
 add("build_coll_v1", STAGES["build"], T, COLL, None, stmt="v1", coll_file="digests.json")
 add("build_coll_scan", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml")   # stage-build.yml called from scan.yml, not release.yml
 add("build_coll_nostamp", STAGES["build"], T, COLL, None, tsa=None, stmt="v0.1", coll_file="digests.json")

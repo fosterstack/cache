@@ -2,15 +2,17 @@
 # proves: REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC15 — a snapshot record, and anything carrying the snapshot version 0.0.0, is refused everywhere, by name
 #
 # Snapshot mode (REQ-CHAIN-004-AC12) lets the proof workflows (scan.yml, main-candidate-rescan.yml) build with no tag and no admission. Witness still signs
-# the step, and the marker is the step name in the signed collection: snapshot-apk and snapshot-build (a closed list). So that a pull request's build can
-# never be mistaken for a release build, EVERY subcommand of bin/chain-verify.py that reads a stage's record applies ONE RULE to the collection name,
+# the step, and the marker is the step name in the signed collection: snapshot-apk and snapshot-build (Build), snapshot-rapk and snapshot-rebuild (Rebuild),
+# a closed list. So that a pull request's build can never be mistaken for a release build, EVERY reader of a record in bin/chain-verify.py (verify,
+# stage-start, check-build-record, sign --check, record-env, and rebuild-compare through its --build-record) applies ONE RULE to the collection name,
 # BEFORE it looks at a certificate, a signature or a timestamp: a name that is EXACTLY `snapshot-` followed by [a-z0-9_-]* (possibly nothing) is refused as
 # a snapshot record; any other name that is not exactly a release name of that stage is refused by `collection name ...` (see the closed-name section below).
 # The first says:
 #
 #     refused at <stage>: snapshot record
 #
-# where <stage> is the stage whose record it was (verify --stage S: S; stage-start: --previous; check-build-record and sign --check: build). Nothing in
+# where <stage> is the stage whose record it was (verify --stage S: S; stage-start: --previous; check-build-record, sign --check and record-env: build;
+# rebuild-compare: rebuild). The stages and (stage, previous) pairs are read from chain-verify.py's own tables, so a new one needs a case. Nothing in
 # this test needs a key, a network or OpenSSL beyond what `policy make` uses for the committed trust files: the fixtures are unsigned DSSE envelopes with
 # one dummy signature entry, so a record named build gets past the name check and is refused LATER for what it is (a certificate that is not one). That is
 # the control of every case: the same fixture named build is refused, but never as a snapshot record; a refusal that fires for both would prove nothing.
