@@ -36,7 +36,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(cd "$here/../../.." && pwd)
 aud="$here/../supply-chain/pin-audit.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
-pass=0 failn=0 EXPECT=77
+pass=0 failn=0 EXPECT=78
 ok()  { pass=$((pass+1)); echo "ok   $1"; }
 bad() { failn=$((failn+1)); echo "FAIL $1"; }
 check() { if "$@" >"$work/out" 2>&1; then ok "$CASE"; else bad "$CASE"; sed 's/^/       /' "$work/out" | tail -4; fi; }
@@ -859,6 +859,27 @@ n = BARE + "/v3"
 clean("3.1.3", [rec("GO-X-88", ent(n, ev(("introduced", "0"), ("fixed", "3.0.0-20230101000000-abcdef123456"))))], sups=(True,))   # pin above the pseudo-version
 hit("3.0.0", [rec("GO-X-89", ent(n, ev(("introduced", "0"), ("fixed", "3.0.0-20230101000000-abcdef123456"), ("introduced", "3.0.0"))))], sups=(True,))
 hit("1.0.0", [rec("GO-X-90", ent(BARE, ev(("introduced", "1.0.0-r1"), ("fixed", "2.0.0"))))], mk=lambda v, t=None: cosign(v), sups=(True,))
+PY
+py "B23: semver bounds that SemVer 2.0.0 forbids are unparsable and fail closed: a numeric pre-release identifier with a leading zero, an empty" \
+   " identifier in the pre-release or the build metadata; valid forms (0, 0a, pseudo-versions) still parse and order" <<'PY'
+n = BARE + "/v3"
+invalid = ["3.0.0-01", "3.0.0-1.01", "3.0.0-00", "3.0.0+foo..bar", "3.0.0+.", "3.0.0+", "3.0.0-", "3.0.0-.a", "3.0.0-a..b", "3.0.0+a.", "3.0.0-01+build"]
+for bound in invalid:
+    for what, events in (("fixed", ev(("introduced", "0"), ("fixed", bound))), ("introduced", ev(("introduced", bound), ("fixed", "9.0.0"))),
+                         ("last_affected", ev(("introduced", "0"), ("last_affected", bound)))):
+        try: hit("3.1.3", [rec("GO-X-91", ent(n, events))], sups=(True,))
+        except AssertionError as e: raise AssertionError((bound, what) + e.args)
+        try: pa._semver_key(bound); raise AssertionError((bound, "parsed"))
+        except ValueError: pass
+valid = ("3.0.0-0", "3.0.0-0a", "3.0.0-alpha.1", "3.0.0-20230101000000-abcdef123456", "3.0.0-00010101000000-000000000000",
+         "3.0.0-0.00010101000000-000000000000")
+for bound in valid:
+    clean("3.1.3", [rec("GO-X-92", ent(n, ev(("introduced", "0"), ("fixed", bound))))], sups=(True,))     # valid bounds below the pin
+    pa._semver_key(bound)
+c = pa._semver_cmp
+assert c("1.0.0-0", "1.0.0-0a") < 0 and c("1.0.0-alpha", "1.0.0-alpha.1") < 0 and c("1.0.0-0", "1.0.0") < 0
+assert c("v0.0.0-20230101000000-abcdef123456", "v0.0.0-20240101000000-abcdef123456") < 0
+assert c("v0.0.0-00010101000000-000000000000", "v0.0.0-20230101000000-abcdef123456") < 0      # the zero-time pseudo-version is one valid identifier
 PY
 py "B22: the shared gh helpers of pin-age-check.py have a timeout too: a hanging gh is CouldNotLook (the run stops, exit 2), never clean" <<'PY'
 import tempfile, time
