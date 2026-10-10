@@ -1178,6 +1178,10 @@ case_out pm-tag-binary-label     bad "$(mx "$M" "$(st '[!!binary ubuntu-24.04]')
 for IX in include exclude; do
   case_out pm-only-key-$IX bad "$(mx '${{ matrix.'$IX' }}' "$(printf '    strategy:\n      matrix:\n        %s: [ubuntu-24.04]\n' $IX)")" 'runs-on'
 done
+# the keyword is refused in any letter case (fail closed: whether GitHub reads it case-insensitively is not relied on)
+for IX in Include EXCLUDE iNcLuDe; do
+  case_out pm-only-key-$IX bad "$(mx '${{ matrix.'$IX' }}' "$(printf '    strategy:\n      matrix:\n        %s: [ubuntu-24.04]\n' $IX)")" 'runs-on'
+done
 # an explicit !!str tag resolves to the plain string tag, so the checker accepts it (the notes refuse any explicit tag other than str)
 case_out pm-tag-str-label        ok  "$(mx "$M" "$(st '[!!str ubuntu-24.04]')")" '0 finding' 'pwsh|runs-on'
 case_out pm-tag-unknown-label    bad "$(mx "$M" "$(st '[!x ubuntu-24.04]')")" 'runs-on'
@@ -1275,7 +1279,7 @@ case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
 OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
 case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
-PM_EXPECT=81
+PM_EXPECT=84
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed

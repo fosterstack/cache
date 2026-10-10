@@ -633,7 +633,7 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
     def test_a_matrix_of_only_include_or_exclude_is_refused(self):
         """include and exclude are not label keys: a matrix of only one of them, read as `${{ matrix.include }}`, is refused."""
-        for key in ("include", "exclude"):
+        for key in ("include", "exclude", "Include", "EXCLUDE", "iNcLuDe"):   # in any letter case
             with self.subTest(key):
                 self.refused("    runs-on: ${{ matrix.%s }}\n    strategy:\n      matrix:\n        %s: [ubuntu-24.04]\n" % (key, key))
 
