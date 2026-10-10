@@ -250,6 +250,10 @@ def _well_formed_record(record):
     return isinstance(record.get("affected"), list) and all(_well_formed_entry(a) for a in record["affected"])
 
 
+def _reads_git(entry):
+    return any(rg["type"] == "GIT" for rg in entry.get("ranges", []))
+
+
 def _decidable(entry):
     """AC14: an exact-path entry may clear a version only if it is Go and its ranges are all SEMVER or ECOSYSTEM (a GIT range cannot be judged by version)."""
     return entry["package"].get("ecosystem") == "Go" and bool(entry.get("ranges")) and all(rg["type"] != "GIT" for rg in entry["ranges"])
@@ -406,7 +410,7 @@ class LiveNet:
         osv, ghs = [], []
         rule = _go_rule(item, version)
         paths = rule.paths if rule else [q["package"]["name"]]
-        for copies in self._osv_records(q, paths).values():
+        for copies in self._osv_records(q, paths, strict=bool(rule)).values():
             v = dict(copies[0], aliases=sorted({a for c in copies for a in c.get("aliases", [])}))   # AC14: the aliases of every copy
             if rule:
                 says = any([self._go_says(c, rule, version) for c in copies])   # AC14: a copy that is unsettled or affected makes the record a hit
@@ -456,11 +460,13 @@ class LiveNet:
                                     "modified": rec.get("modified"), "malicious": rec["id"].startswith("MAL-")})
         return ghs, osv
 
-    def _osv_records(self, q, paths):
+    def _osv_records(self, q, paths, strict=False):
         """The OSV records for the query, asked once per module path (AC14): {id: [the distinct copies returned]}. Copies of one id can differ by path."""
         records = {}
         for p in paths:
             for v in self._osv_post(dict(q, package=dict(q["package"], name=p))):
+                if strict and not (isinstance(v, dict) and isinstance(v.get("id"), str)):
+                    v = {"id": "UNREADABLE-OSV-RECORD", "affected": "not a record"}   # AC14: an answer that is not a record is a hit, with this id
                 copies = records.setdefault(v["id"], [])
                 if v not in copies:
                     copies.append(v)
@@ -473,10 +479,13 @@ class LiveNet:
         if not _well_formed_record(v):
             return True                              # AC14: one strict schema for every entry the rule reads, before any branch
         entries = v["affected"]
+        path = lambda a: a["package"]["name"]
+        ambiguous = rule.major <= 1 and any(path(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries)
+        if (rule.table != rule.right or ambiguous) and any(_reads_git(a) for a in entries):
+            return True                              # AC14: the two branches below skip GIT ranges, so an entry that has one is a hit
         if rule.table != rule.right:                 # AC14: the table path is for another major: any entry of any path that covers the version is a hit
             return self._osv_says(_without_paths(v), "", version, versioned=True)
-        path = lambda a: a["package"]["name"]
-        if rule.major <= 1 and any(path(a) in (rule.bare + "/v0", rule.bare + "/v1") for a in entries):
+        if ambiguous:
             return self._osv_says(v, rule.right, version, versioned=True)   # AC14: a /v0 or /v1 path is ambiguous: the old verdict
         exact = [a for a in entries if path(a) == rule.right]
         if not exact or not all(_decidable(a) for a in exact):
