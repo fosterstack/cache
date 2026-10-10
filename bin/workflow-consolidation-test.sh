@@ -9,7 +9,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
 judge() { python3 - "$1" "$root" <<'PY'
-import os, sys, yaml
+import os, subprocess, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
 root = sys.argv[2]
 bad = []
@@ -356,13 +356,15 @@ rb = jobs.get("rebuild") or {}
 if rb.get("uses") != "./.github/workflows/stage-reproducibility.yml" or rb.get("needs") != "build" or rb.get("with") != {"mode": "snapshot"}:
     bad.append("rebuild is not the snapshot Rebuild of the one build: %s" % rb)
 r = jobs.get("reproducibility") or {}
-if r.get("name") != "reproducibility" or r.get("if") or r.get("needs") != "rebuild":
-    bad.append("reproducibility changed: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
+# `if: always()` and nothing else: when `rebuild` FAILS, GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as passing, so
+# the required check must run in every case and fail unless rebuild succeeded (the pattern of the `scan` aggregate below; step-8 B1, Opus)
+if r.get("name") != "reproducibility" or r.get("if") != "always()" or r.get("needs") != "rebuild":
+    bad.append("reproducibility must be named reproducibility, need rebuild and carry exactly `if: always()`: %s" % {k: r.get(k) for k in ("name", "if", "needs")})
 if r.get("permissions") not in (None, {"contents": "read"}):
     bad.append("reproducibility's token is wider than contents read: %s" % r.get("permissions"))
 # fail closed (continue-on-error also hides a failure): the jobs the check rests on carry exactly the keys reviewed here
 KEYS = {"build": {"permissions", "uses", "with"}, "rebuild": {"needs", "permissions", "uses", "with"},
-        "reproducibility": {"name", "needs", "runs-on", "steps"}}
+        "reproducibility": {"name", "needs", "if", "runs-on", "steps"}}
 for j, keys in KEYS.items():
     if set(jobs.get(j) or {}) - keys:
         bad.append("%s carries a key that can skip or soften it: %s" % (j, sorted(set(jobs.get(j) or {}) - keys)))
@@ -372,8 +374,22 @@ if d.get("permissions") != {"contents": "read"} or set(d) != {"name", "on", "per
 if (jobs.get("reproducibility") or {}).get("runs-on") != "ubuntu-latest":
     bad.append("reproducibility runs elsewhere than a GitHub-hosted ubuntu runner: %s" % (jobs.get("reproducibility") or {}).get("runs-on"))
 steps = r.get("steps") or []
-if len(steps) != 1 or set(steps[0]) != {"run"} or "${{" in steps[0].get("run", ""):
-    bad.append("the reproducibility job is not one plain step with no expression: %s" % [sorted(st) for st in steps])
+RESULT = "${{ needs.rebuild.result }}"
+if len(steps) != 1 or set(steps[0]) != {"name", "run"}:
+    bad.append("the reproducibility job is not one plain step (name + run): %s" % [sorted(st) for st in steps])
+else:
+    run = steps[0]["run"]
+    if run.count(RESULT) != 1 or "${{" in run.replace(RESULT, ""):
+        bad.append("the reproducibility step must test ${{ needs.rebuild.result }} once and carry no other expression")
+    else:
+        # proven by running it: only the result `success` passes; failure, skipped and cancelled (and an empty result) fail
+        def verdict(result):
+            return subprocess.run(["bash", "-c", run.replace(RESULT, result)], capture_output=True, text=True).returncode
+        if verdict("success") != 0:
+            bad.append("the reproducibility step fails when rebuild succeeded")
+        for result in ("failure", "skipped", "cancelled", ""):
+            if verdict(result) == 0:
+                bad.append("the reproducibility step passes when rebuild's result is %r" % result)
 a = jobs.get("artifact-acceptance") or {}
 if a.get("uses") != "./.github/workflows/stage-acceptance-artifacts.yml" or a.get("needs") != "build" or \
         (a.get("with") or {}) != {"dist-artifact": "dist", "expected-checksums": "${{ needs.build.outputs.digests }}"}:
@@ -413,10 +429,17 @@ case_scan rebuild-gone           bad "d['jobs'].pop('rebuild')"
 case_scan rebuild-ungated        bad "d['jobs']['rebuild'].pop('needs')"
 case_scan rebuild-coe            bad "d['jobs']['rebuild']['continue-on-error'] = 'true'"
 case_scan repro-skippable        bad "d['jobs']['reproducibility']['if'] = \"github.event_name == 'pull_request'\""
+case_scan repro-if-removed       bad "d['jobs']['reproducibility'].pop('if')"
+case_scan repro-if-success       bad "d['jobs']['reproducibility']['if'] = \"\${{ success() }}\""
+case_scan repro-only-echoes      bad "d['jobs']['reproducibility']['steps'][0]['run'] = 'echo identical'"
+case_scan repro-tests-build      bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('needs.rebuild.result', 'needs.build.result')"
+case_scan repro-ignores-result   bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] += ' || true'"
+case_scan repro-accepts-skipped  bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] = s['run'].replace('= \"success\" ]', '!= \"failure\" ]')"
+case_scan repro-result-twice     bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] += '; echo \${{ needs.rebuild.result }}'"
+case_scan repro-extra-expression bad "s = d['jobs']['reproducibility']['steps'][0]; s['run'] += '; echo \${{ github.sha }}'"
 case_scan repro-renamed          bad "d['jobs']['reproducibility']['name'] = 'reproducible'"
 case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'] = {'contents': 'read', 'packages': 'write'}"
 case_scan repro-not-after-rebuild bad "d['jobs']['reproducibility']['needs'] = 'build'"
-case_scan repro-expression       bad "d['jobs']['reproducibility']['steps'][0]['run'] = 'exit \${{ 0 }}'"
 case_scan acceptance-lost        bad "d['jobs'].pop('artifact-acceptance')"
 case_scan acceptance-old-inputs  bad "d['jobs']['artifact-acceptance']['with'] = {'dist-artifact': 'dist-snapshot', 'expected-checksums': '\${{ needs.build.outputs.checksums }}'}"
 case_scan pr-types-closed        bad "d['on']['pull_request'] = {'types': ['closed']}"
