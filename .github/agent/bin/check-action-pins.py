@@ -72,8 +72,12 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
 
 Scope (advisor 0080): ubuntu runners only. Every job that runs steps must name an ubuntu runner literally
 (ubuntu-latest, ubuntu-<version>, ubuntu-<version>-arm); any other runs-on — Windows, macOS, self-hosted labels, a
-group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal. Inside
-the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options,
+group, an expression, none — is a finding, so a bypass that needs another runner OS is closed by that refusal.
+ONE expression runner is accepted (REQ-REL-005-AC2, advisor-approved read-back Oct 9, pin matrix): `runs-on: ${{ matrix.<key> }}`
+over a strategy that is a matrix of exactly that one key, a literal non-empty list of plain-string labels from the closed set
+{ubuntu-24.04, ubuntu-24.04-arm} (and, beside it, only `fail-fast: true|false`). Such a job reads as bash like any ubuntu job;
+every other form (see literal_matrix_runner) is a runs-on finding, and a key given twice in a job, its strategy or its matrix is
+a finding with the key named. Inside the scope, anything the parser cannot fully resolve fails closed (forwarded arguments, substitutions, unknown options,
 a program name built by a substitution — d$()ocker). A program named only through a shell variable ("$gosec") is
 outside the check today: the repository uses it (ci.yml, go-freshness.yml), so failing it closed is an outbox question.
 
@@ -2643,7 +2647,7 @@ def run_scripts(doc):
                 inherited = _default_shell(j) or _default_shell(doc)
                 ro = {key_of(kk): vv for kk, vv in j.value}.get("runs-on")
                 ro_text = yaml.serialize(ro) if ro is not None else ""
-                if inherited is None and ("windows" in ro_text.lower() or "${{" in ro_text):
+                if inherited is None and not literal_matrix_runner(j) and ("windows" in ro_text.lower() or "${{" in ro_text):
                     inherited = "pwsh"   # NEW-10: a Windows (or not statically known) runner's default shell is pwsh
                 inherited_wd = _default_wd(j) or _default_wd(doc)
                 for kk, vv in j.value:
@@ -2659,6 +2663,66 @@ def run_scripts(doc):
 
 UBUNTU_RUNNER = re.compile(r"^ubuntu-(latest|[0-9]+\.[0-9]+)(-arm)?$")
 
+# ---- REQ-REL-005-AC2: the literal-label runner matrix (advisor-approved read-back Oct 9, pin matrix) ----
+# The v0.3.0 Build and Rebuild run their per-architecture jobs as a matrix of the two native GitHub-hosted labels. That one form is
+# accepted, and nothing looser (the owner's pin-checker scope: plain forms only). The label set is closed on purpose: adding a
+# runner is a reviewed edit of this file.
+MATRIX_RUNNER_LABELS = frozenset({"ubuntu-24.04", "ubuntu-24.04-arm"})
+MATRIX_RUNS_ON = re.compile(r"\$\{\{ matrix\.([A-Za-z_][A-Za-z0-9_-]*) \}\}")
+STR_TAG = "tag:yaml.org,2002:str"          # the tag of a plain scalar here (every scalar is read as a string; an explicit tag changes it)
+
+
+def repeated_keys(node):
+    """AC2: the keys a mapping names more than once, in file order (YAML keeps the last copy; GitHub rejects the file)."""
+    seen, repeated = set(), []
+    for k, _ in node.value if isinstance(node, yaml.MappingNode) else []:
+        name = key_of(k)
+        if name is not None and name in seen and name not in repeated:
+            repeated.append(name)
+        seen.add(name)
+    return repeated
+
+
+def plain_str(node):
+    return isinstance(node, yaml.ScalarNode) and node.tag == STR_TAG
+
+
+def exact_map(node):
+    """A mapping's entries by their exact key text, or None if it is not a mapping or a key is not a plain string."""
+    if not isinstance(node, yaml.MappingNode) or not all(plain_str(k) for k, _ in node.value):
+        return None
+    return {k.value: v for k, v in node.value}
+
+
+def literal_label_matrix(matrix, key):
+    """AC2: `matrix` is a mapping of exactly the one `key`, a non-empty list of plain-string labels from MATRIX_RUNNER_LABELS."""
+    entries = exact_map(matrix)
+    if entries is None or repeated_keys(matrix) or list(entries) != [key]:
+        return False
+    labels = entries[key]
+    return (isinstance(labels, yaml.SequenceNode) and bool(labels.value)
+            and all(plain_str(label) and label.value in MATRIX_RUNNER_LABELS for label in labels.value))
+
+
+def literal_matrix_runner(job):
+    """AC2: True only when the job's runs-on is exactly one `${{ matrix.<key> }}` (a full match: no text or second expression
+    around it, no index or property) and its strategy is only a matrix of that key (see literal_label_matrix) plus, optionally,
+    `fail-fast` with the literal value true or false. A key given twice anywhere in the job, its strategy or its matrix is never
+    accepted. Anything else is False, which leaves the job to the ordinary runs-on rule (a finding) and its steps read as pwsh."""
+    entries = exact_map(job)
+    if entries is None or repeated_keys(job):
+        return False
+    runs_on, strategy = entries.get("runs-on"), exact_map(entries.get("strategy"))
+    named = MATRIX_RUNS_ON.fullmatch(runs_on.value) if plain_str(runs_on) else None
+    if not named or strategy is None or repeated_keys(entries["strategy"]) or "matrix" not in strategy:
+        return False
+    if set(strategy) - {"matrix", "fail-fast"}:
+        return False
+    fail_fast = strategy.get("fail-fast")
+    if fail_fast is not None and not (plain_str(fail_fast) and fail_fast.value in ("true", "false")):
+        return False
+    return literal_label_matrix(strategy["matrix"], named.group(1))
+
 
 def check_runners(where, doc, bad):
     """The checker's scope is ubuntu runners (advisor 0080, closing the open-ended OS classes fail-closed): every job
@@ -2670,8 +2734,16 @@ def check_runners(where, doc, bad):
         return
     for k, j in jobs.value:
         jm = {key_of(kk): vv for kk, vv in j.value} if isinstance(j, yaml.MappingNode) else {}
+        strategy = jm.get("strategy")
+        matrix = {key_of(kk): vv for kk, vv in strategy.value}.get("matrix") if isinstance(strategy, yaml.MappingNode) else None
+        for part, node in ((f"{where}.jobs.{k.value}", j), (f"{where}.jobs.{k.value}.strategy", strategy),
+                           (f"{where}.jobs.{k.value}.strategy.matrix", matrix)):
+            for key in repeated_keys(node):           # AC2: YAML keeps the last copy and GitHub rejects the file
+                bad.append(f"{part}: duplicate key {key!r}; a key is given once")
         if "uses" in jm:
             continue                                  # a reusable-workflow call has no runner of its own
+        if literal_matrix_runner(j):
+            continue                                  # AC2: the one accepted expression runner
         ro = jm.get("runs-on")
         if not (isinstance(ro, yaml.ScalarNode) and UBUNTU_RUNNER.fullmatch(ro.value.strip())):
             shown = ro.value if isinstance(ro, yaml.ScalarNode) else ("missing" if ro is None else "not a plain label")
