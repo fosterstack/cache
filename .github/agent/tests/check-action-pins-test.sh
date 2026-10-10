@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-005-AC2
+# proves: REQ-REL-005-AC2, REQ-REL-005-AC3
 # Proves .github/agent/bin/check-action-pins.py (row 78): one throwaway repo per case, each with one fixture workflow.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -1282,6 +1282,134 @@ case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` ste
 PM_EXPECT=84
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
+
+# --- REQ-REL-005-AC3 (the advisor's AC2b): a key given twice in one mapping of a workflow file is a finding that names the key
+# and the path of its mapping (`<file>.jobs.j.steps[0]: duplicate key 'run'`), whatever the second value is. Keys are compared as
+# YAML reads them, so quoting and escapes do not make two keys different. Every fixture is otherwise clean, so the repeated key
+# is the only thing that can turn a case. `rk` writes a plain job `j` with the lines given after its runs-on.
+rk_start=$pm_run
+rk() { printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-24.04\n%s' "$1"; }
+STEPS='    steps:
+      - run: true'
+# one case per mapping level
+case_out rk-top-level-key    bad "name: one
+name: two
+$(rk "$STEPS")" "w\\.yml: duplicate key 'name'"
+case_out rk-job-id           bad "$(rk "$STEPS")
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: true" "w\\.yml\\.jobs: duplicate key 'j'"
+case_out rk-step-run         bad "$(rk '    steps:
+      - run: true
+        run: bash bin/build.sh')" "w\\.yml\\.jobs\\.j\\.steps\\[0\\]: duplicate key 'run'"
+case_out rk-step-shell       bad "$(rk '    steps:
+      - run: true
+        shell: pwsh
+        shell: bash')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'shell'"
+case_out rk-defaults-shell   bad "$(rk '    defaults:
+      run:
+        shell: pwsh
+        shell: bash
+'"$STEPS")" "jobs\\.j\\.defaults\\.run: duplicate key 'shell'"
+case_out rk-workflow-env     bad "env:
+  GREETING: hello
+  GREETING: bye
+$(rk "$STEPS")" "w\\.yml\\.env: duplicate key 'GREETING'"
+case_out rk-step-env         bad "$(rk '    steps:
+      - run: true
+        env:
+          GREETING: hello
+          GREETING: bye')" "jobs\\.j\\.steps\\[0\\]\\.env: duplicate key 'GREETING'"
+case_out rk-with-input       bad "$(rk "    steps:
+      - uses: actions/checkout@$SHA # v7.0.1
+        with:
+          fetch-depth: 1
+          fetch-depth: 0")" "jobs\\.j\\.steps\\[0\\]\\.with: duplicate key 'fetch-depth'"
+case_out rk-permissions      bad "$(rk '    permissions:
+      contents: read
+      contents: write
+'"$STEPS")" "jobs\\.j\\.permissions: duplicate key 'contents'"
+case_out rk-service-name     bad "$(rk "    services:
+      db: postgres@$DIG
+      db: postgres@$DIG
+$STEPS")" "jobs\\.j\\.services: duplicate key 'db'"
+case_out rk-service-key      bad "$(rk "    services:
+      db:
+        image: postgres@$DIG
+        image: postgres@$DIG
+$STEPS")" "jobs\\.j\\.services\\.db: duplicate key 'image'"
+case_out rk-container-key    bad "$(rk "    container:
+      image: alpine@$DIG
+      image: alpine@$DIG
+$STEPS")" "jobs\\.j\\.container: duplicate key 'image'"
+case_out rk-trigger          bad "on:
+  push:
+  push:
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+$STEPS" "w\\.yml\\.on: duplicate key 'push'"
+case_out rk-trigger-filter   bad "on:
+  push:
+    branches: [main]
+    branches: [dev]
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+$STEPS" "w\\.yml\\.on\\.push: duplicate key 'branches'"
+case_out rk-job-outputs      bad "$(rk '    outputs:
+      digest: one
+      digest: two
+'"$STEPS")" "jobs\\.j\\.outputs: duplicate key 'digest'"
+# the same key in other spellings: plain, single-quoted, double-quoted and escaped are one key once YAML has read them
+case_out rk-jobs-quoted      bad "$(rk "$STEPS")
+\"jobs\":
+  k:
+    runs-on: ubuntu-24.04
+$STEPS" "w\\.yml: duplicate key 'jobs'"
+case_out rk-name-quote-styles bad "$(rk "    steps:
+      - 'name': one
+        \"name\": two
+        run: true")" "jobs\\.j\\.steps\\[0\\]: duplicate key 'name'"
+case_out rk-on-quoted        bad "\"on\": push
+$(rk "$STEPS")" "w\\.yml: duplicate key 'on'"
+case_out rk-escaped-key      bad "$(rk '    steps:
+      - run: true
+        "ru\x6e": bash bin/build.sh')" "jobs\\.j\\.steps\\[0\\]: duplicate key 'run'"
+# controls: keys that differ, or the same key in different mappings, stay accepted
+case_out rk-same-key-other-mappings ok "env:
+  GREETING: hello
+$(rk '    env:
+      GREETING: hello
+    steps:
+      - name: one
+        run: true
+        env:
+          GREETING: hello
+      - name: two
+        run: true')" '0 finding' 'duplicate key'
+case_out rk-letter-case      ok  "$(rk '    steps:
+      - run: true
+        env:
+          TARGET: one
+          target: two')" '0 finding' 'duplicate key'
+case_out rk-include-lookalike ok "$(rk '    strategy:
+      matrix:
+        include:
+          - arch: amd64
+        my-include: [one]
+'"$STEPS")" '0 finding' 'duplicate key'
+# an anchor keeps its file-wide refusal (the file is not read further); a repeated key in a YAML file outside .github/workflows/
+# is not this check's finding
+case_out rk-anchor-file-wide bad "x-a: &a one
+$(rk '    steps:
+      - run: true
+        run: true')" 'anchor' 'duplicate key'
+case_out rk-scope-other-file ok  "$(rk "$STEPS")" '0 finding' 'duplicate key' "printf 'name: one\\nname: two\\n' > .github/other.yml"
+RK_EXPECT=24
+if [ $((pm_run - rk_start)) = "$RK_EXPECT" ]; then pass=$((pass+1)); echo "PASS rk-case-count → $RK_EXPECT"
+else failn=$((failn+1)); echo "FAIL rk-case-count → $((pm_run - rk_start)) cases ran, want $RK_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
 case_ n11-fused-docker         bad "$(rb 'd$()ocker run alpine')"
 case_ n11-fused-pip            bad "$(rb 'pi$()p install requests')"
