@@ -208,7 +208,8 @@ class GoRule:
 
 
 def _entry_path(entry):
-    return (entry.get("package") or {}).get("name")
+    package = entry.get("package")
+    return package.get("name") if isinstance(package, dict) else None
 
 
 def _without_paths(record):
@@ -216,13 +217,18 @@ def _without_paths(record):
     return dict(record, affected=[dict(a, package={}) for a in record.get("affected", [])])
 
 
+def _readable_range(rg):
+    """AC14: a range of exactly the type SEMVER or ECOSYSTEM whose events are a non-empty list of objects that starts with introduced."""
+    events = rg.get("events") if isinstance(rg, dict) else None
+    return (isinstance(rg, dict) and rg.get("type") in ("SEMVER", "ECOSYSTEM") and isinstance(events, list) and bool(events)
+            and all(isinstance(e, dict) for e in events) and "introduced" in events[0])
+
+
 def _unreadable(entry):
-    """AC14: an affected entry is not trusted to clear a version unless it has at least one SEMVER or ECOSYSTEM range, every such range lists events
-    that start with introduced, and it has no GIT range (a commit range cannot be judged by version)."""
-    ranges = entry.get("ranges") or []
-    versioned = [rg for rg in ranges if rg.get("type") in ("SEMVER", "ECOSYSTEM")]
-    starts_ok = lambda rg: isinstance(rg.get("events"), list) and rg["events"] and isinstance(rg["events"][0], dict) and "introduced" in rg["events"][0]
-    return not versioned or not all(starts_ok(rg) for rg in versioned) or any(rg.get("type") == "GIT" for rg in ranges)
+    """AC14: an affected entry is not trusted to clear a version unless it has a list of ranges that are ALL readable (so no GIT range, no other type,
+    no malformed events) and any versions it lists are a list."""
+    ranges, versions = entry.get("ranges"), entry.get("versions", [])
+    return not (isinstance(ranges, list) and ranges and all(_readable_range(rg) for rg in ranges) and isinstance(versions, list))
 
 
 def _go_rule(item, version):
@@ -719,11 +725,22 @@ def undecided_exceptions(exceptions, log, held, net):
             continue
         if any(e is m for m in log.matched):
             lapsed.append(e)
-        elif any(package_of(it) == e["package"] and _ruling_covers(e, it, _pin_versions(it, net)) for it in held):
+        elif any(package_of(it) == e["package"] and _ruling_covers(e, it, _pin_versions(it, net), every=False) for it in held):
             dead.append(e)
         else:
             dormant.append(e)
     return lapsed, dead, dormant
+
+
+def dead_message(e, held, net):
+    """The DEAD EXCEPTION text; when the ruling names only some of a held pin's versions (tags v3 and v3.37.8) it says how to write the series."""
+    msg = f"the ruling for {_ruling_label(e)} decided no dispute while its pin is held: remove it from the exceptions file"
+    for it in held:
+        vers = _pin_versions(it, net)
+        if package_of(it) == e["package"] and _ruling_covers(e, it, vers, every=False) and not _ruling_covers(e, it, vers):
+            series = str(e["version"]).lstrip("v").split(".")[0] + ".*"
+            return msg + f" (it names only some of the versions of the held pin {', '.join(vers)}; to cover the pin write the ruling as {series})"
+    return msg
 
 
 def _ruling_label(e):
@@ -749,11 +766,13 @@ def _pin_versions(item, net):
     return [v for v in vers if v]
 
 
-def _ruling_covers(e, item, vers):
-    """Does the ruling name this pin: its one version, or its one series ("4.*"), for EVERY version the pin stands for?"""
+def _ruling_covers(e, item, vers, every=True):
+    """Does the ruling name this pin: its one version, or its one series ("4.*"), for EVERY version the pin stands for (to apply a ruling) or for ANY of
+    them (to tell a dead ruling from a dormant one)?"""
     covered = {str(x).lstrip("v") for x in [*vers, item.label] if x} or {str(item.version).lstrip("v")}
     want = str(e.get("version", "")).lstrip("v")
-    return bool(want) and all(c == want or (want.endswith(".*") and (c == want[:-2] or c.startswith(want[:-1]))) for c in covered)
+    names = lambda c: c == want or (want.endswith(".*") and (c == want[:-2] or c.startswith(want[:-1])))
+    return bool(want) and (all if every else any)(names(c) for c in covered)
 
 
 def excepted(item, dispute_ids, current, exceptions, net=None, osv_times=None):
@@ -908,7 +927,7 @@ def rollback(item, net, now):
 
 def clean(text):
     """Untrusted text (a PR title, a ref read from someone's action.yml) is printed without control characters: no log-command injection."""
-    return re.sub(r"[\x00-\x1f\x7f]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
+    return re.sub(r"[\x00-\x1f\x7f\x85\u2028\u2029]", " ", inv._hide(str(text)))  # control characters out, and an expression (a secret's name) never printed
 
 
 def _safe(text, limit=64):
@@ -1215,7 +1234,7 @@ def main(argv=None):
         for e in lapsed:
             print(f"audit: LAPSED EXCEPTION: the ruling for {_ruling_label(e)} no longer matches the live advisory; write a fresh ruling")
         for e in dead:
-            print(f"audit: DEAD EXCEPTION: the ruling for {_ruling_label(e)} decided no dispute while its pin is held: remove it from the exceptions file")
+            print(f"audit: DEAD EXCEPTION: {dead_message(e, held, net)}")
         for e in dormant:
             print(f"information: dormant exception: the ruling for {_ruling_label(e)} waits for its pin; nobody holds it")
         plan, disputes, per_item, pending = [], {}, {}, []
