@@ -316,7 +316,8 @@ SLSA_OK = {"buildDefinition": {"buildType": "https://github.com/fosterstack/cach
            "runDetails": {"builder": {"id": "https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"},
                           "metadata": {"invocationId": "https://github.com/fosterstack/cache/actions/runs/1"}}}
 def prov_predicate(ptype, predicate, raw=False):
-    if raw or ptype != PROV_URI: return predicate if predicate is not None else {}
+    if raw: return predicate                                   # exactly as given, null included
+    if ptype != PROV_URI: return predicate if predicate is not None else {}
     return dict(json.loads(json.dumps(SLSA_OK)), **(predicate or {}))
 def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, tsa="tsa", signed=True, repo=REPO, issuer=ISSUER,
            stmt="v1", dsse=DSSE, payload=None, config_wf="release.yml", config_ref=None, config_repo=None, no_config=False, no_issuer=False,
@@ -715,9 +716,39 @@ SLSA_BAD = {"slsa_empty": {}, "slsa_list": [], "slsa_nobd": _drop(["buildDefinit
             "slsa_nobt": _drop(["buildDefinition", "buildType"]), "slsa_noext": _drop(["buildDefinition", "externalParameters"]),
             "slsa_nobuilder": _drop(["runDetails", "builder"]), "slsa_noid": _set(["runDetails", "builder"], {}),
             "slsa_emptyid": _set(["runDetails", "builder", "id"], ""), "slsa_numid": _set(["runDetails", "builder", "id"], 5)}
+# (Codex #249 r5 B5 + Sonnet, the class closed) every SLSA v1 field Release reads has its type: TypeURI strings, objects, lists of objects
+_DEP = {"uri": "git+https://github.com/fosterstack/cache@refs/tags/v0.3.0", "digest": {"gitCommit": "f" * 40}}
+for _k, _v in (("null", None), ("empty", ""), ("num", 5), ("list", []), ("bool", True), ("noscheme", "x"), ("space", "https://a b"),
+               ("nbsp", "https://a\u00a0b"), ("zw", "https://a\u200bb"), ("ctl", "https://a\x07b"), ("lead", " https://a")):
+    SLSA_BAD["slsa_bt_" + _k] = _set(["buildDefinition", "buildType"], _v)
+for _k, _v in (("notauri", "not a uri"), ("blank", " "), ("zw", "\u200b"), ("noscheme", "b"), ("nbsp", "https://a\u00a0b"),
+               ("zwin", "https://a\u200bb"), ("nl", "https://a\nb"), ("bool", True), ("list", []), ("null", None), ("colon", "https:")):
+    SLSA_BAD["slsa_id_" + _k] = _set(["runDetails", "builder", "id"], _v)
+for _k, _v in (("str", "code"), ("null", None), ("list", []), ("num", 5), ("bool", True)):
+    SLSA_BAD["slsa_ext_" + _k] = _set(["buildDefinition", "externalParameters"], _v)
+for _k, _v in (("str", "x"), ("list", []), ("null", None)):
+    SLSA_BAD["slsa_int_" + _k] = _set(["buildDefinition", "internalParameters"], _v)
+for _k, _v in (("str", "x"), ("dict", {}), ("null", None), ("item_str", ["x"]), ("item_null", [None]), ("uri_num", [dict(_DEP, uri=5)]),
+               ("uri_null", [dict(_DEP, uri=None)]), ("digest_list", [dict(_DEP, digest=[])]), ("digest_str", [dict(_DEP, digest="x")]),
+               ("digest_val_num", [dict(_DEP, digest={"gitCommit": 5})]), ("digest_val_null", [dict(_DEP, digest={"gitCommit": None})])):
+    SLSA_BAD["slsa_dep_" + _k] = _set(["buildDefinition", "resolvedDependencies"], _v)
+for _k, _v in (("str", "x"), ("null", None), ("list", [])):
+    SLSA_BAD["slsa_builder_" + _k] = _set(["runDetails", "builder"], _v)
+for _k, _v in (("str", "1"), ("list", []), ("val_num", {"cosign": 5}), ("val_null", {"cosign": None})):
+    SLSA_BAD["slsa_ver_" + _k] = _set(["runDetails", "builder", "version"], _v)
+for _k, _v in (("str", "x"), ("list", []), ("null", None), ("inv_num", {"invocationId": 5}), ("inv_null", {"invocationId": None}),
+               ("start_num", {"startedOn": 5}), ("finish_list", {"finishedOn": []})):
+    SLSA_BAD["slsa_meta_" + _k] = _set(["runDetails", "metadata"], _v)
+for _k, _v in (("str", "x"), ("dict", {}), ("item_str", ["x"]), ("item_num", [5])):
+    SLSA_BAD["slsa_byp_" + _k] = _set(["runDetails", "byproducts"], _v)
+for _k, _v in (("null", None), ("bool", True), ("str", "x"), ("num", 5)):
+    SLSA_BAD["slsa_pred_" + _k] = _v
+# the smallest valid SLSA v1 record (control): buildType, externalParameters {}, builder.id, nothing else
+add("sign_slsa_min", STAGES["sign"], T, PROV, D, predicate={"buildDefinition": {"buildType": "https://example.com/bt/v1", "externalParameters": {}},
+                                                           "runDetails": {"builder": {"id": "https://example.com/builder"}}}, raw_predicate=True)
 for _i, (_nm, _pr) in enumerate(sorted(SLSA_BAD.items())):
     add("sign_" + _nm, STAGES["sign"], T, PROV, D, predicate=_pr, raw_predicate=True)
-dj("rekor-slsa.json", {"entries": [entry("sign_" + _nm, 60 + _i) for _i, _nm in enumerate(sorted(SLSA_BAD))]})
+dj("rekor-slsa.json", {"entries": [entry("sign_" + _nm, 200 + _i) for _i, _nm in enumerate(sorted(SLSA_BAD))] + [entry("sign_slsa_min", 199)]})
 open(p("slsa-bad.txt"), "w").write(" ".join(sorted(SLSA_BAD)))
 open(p("sign_envinf.json"), "w").write(open(p("sign_prov.json")).read().replace('"payloadType"', '"x": Infinity, "payloadType"', 1))
 open(p("rekor-neginf.json"), "w").write(open(p("rekor.json")).read().replace('"entries"', '"n": -Infinity, "entries"', 1))
@@ -1021,6 +1052,8 @@ expect_refuse "001-AC4 a Witness collection signed by Sign is refused (Sign sign
 expect_refuse "001-AC4 SLSA provenance v0.2 is not the allowed type" "predicate" verify $(V) --stage sign $(rec sign_prov_v0.2) $(R)
 # (Codex #249 r4 B4) the provenance must be a standard SLSA v1 record: a signed, logged statement of the right type whose predicate is {},
 # a list, or lacks buildDefinition (+ buildType, externalParameters) or runDetails.builder.id (a non-empty string) is refused at sign
+expect_ok "001-AC4 control: the smallest valid SLSA v1 record (buildType, externalParameters {}, builder.id) is accepted" verify $(V) --stage sign $(rec sign_slsa_min) $(R rekor-slsa.json)
+expect_ok "001-AC4 control: the genuine provenance fixture is accepted" verify $(V) --stage sign $(rec sign_prov) $(R)
 for _c in $(cat "$work/slsa-bad.txt"); do
   expect_refuse "001-AC4 a signed, logged provenance whose predicate is not SLSA v1 ($_c) is refused at sign" "sign|predicate|slsa v1" verify $(V) --stage sign $(rec sign_$_c) $(R rekor-slsa.json)
 done
@@ -1721,7 +1754,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=518
+EXPECT=583
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
