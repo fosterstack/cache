@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import urllib.parse
@@ -462,21 +463,26 @@ def _line_hash(flat):
     return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def _occurrences(root, rev):
+def _occurrences(root, rev, flats=None):
     """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
-    a group no row can name ('unruled:' + its hash)."""
+    a group no row can name ('unruled:' + its hash). flats (optional) receives {(key, whole-line hash): the flattened line} for the lines a row can name."""
     out = {}
     for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
         per = out.setdefault(k, {})
         per[lh] = per.get(lh, 0) + 1
+        if flats is not None and bashlike:
+            flats[(k, lh)] = flat
     return out
 
 
-def _unmeasured_counts(root, base, head):
+def _unmeasured_counts(root, base, head, held=None, flats=None):
     """{key: {whole-line hash: head occurrences}} for every (key, whole line) the head has MORE of than the base: an occurrence is identified by its key
-    AND the whole line it sits in, so an edited line that keeps its download segment is an addition, like a new one (REQ-SUP-001-AC16)."""
-    b, h = _occurrences(root, base), _occurrences(root, head)
+    AND the whole line it sits in, so an edited line that keeps its download segment is an addition, like a new one (REQ-SUP-001-AC16).
+    held (optional) receives every head occurrence and flats the head's flattened lines (REQ-SUP-001-AC19 re-checks a ruled fetch still in the head)."""
+    b, h = _occurrences(root, base), _occurrences(root, head, flats)
+    if held is not None:
+        held.update(h)
     added = {}
     for k, per in h.items():
         for lh, n in per.items():
@@ -492,8 +498,12 @@ def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised
 
 # REQ-SUP-001-AC16: the advisor's rulings on lines that only MENTION a download tool (a comment, an echo string, a stub written as data). They are read from
 # the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the pull request's tree (--root).
+# REQ-SUP-001-AC19: the advisor's rulings on INPUT FETCHES (a download whose address comes from a lock or the registry), read the same way and bound the
+# same way, each also naming its host, the step that verifies the bytes and the test that proves failing bytes are rejected before use.
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
+_FETCH_FIELDS = _RULED_FIELDS + ("host", "verifier", "test")
+_LISTS = "unmeasured_text, unmeasured_input_fetch"
 MAX_RULED_COUNT = 100
 
 
@@ -508,26 +518,26 @@ def _no_constant(name):
     raise ValueError(f"{name} is not JSON (Python's reader accepts NaN, Infinity and -Infinity; this file must not hold them)")
 
 
-def load_ruled_text(path, required=False):
-    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
-    raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
+def _load_rows(path, name, fields, required=False, check=None):
+    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count, row)} from the file's list NAME (one reader for AC16 and AC19). A missing
+    default file is no rows; anything malformed raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
-            raise RuntimeError(f"the exceptions file {path} (unmeasured_text) does not exist")
+            raise RuntimeError(f"the exceptions file {path} ({_LISTS}) does not exist")
         return {}
     try:
         with open(path) as f:
             d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)   # a repeated key would let a later copy silently win
     except (OSError, ValueError) as e:
-        raise RuntimeError(f"the exceptions file {path} (unmeasured_text) is unreadable: {e}")
-    rows = d.get("unmeasured_text", []) if isinstance(d, dict) else None
+        raise RuntimeError(f"the exceptions file {path} ({_LISTS}) is unreadable: {e}")
+    rows = d.get(name, []) if isinstance(d, dict) else None
     if not isinstance(rows, list):
-        raise RuntimeError(f"{path}: unmeasured_text is not a list")
+        raise RuntimeError(f"{path}: {name} is not a list")
     out = {}
     for i, r in enumerate(rows):
-        bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count"} or not set(_RULED_FIELDS) <= set(r):
-            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count)")
+        bad = lambda why, i=i: RuntimeError(f"{path}: {name} row {i} {why}")
+        if not isinstance(r, dict) or set(r) - set(fields) - {"count"} or not set(fields) <= set(r):
+            raise bad(f"must be an object with exactly {', '.join(fields)} (and an optional count)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{16}", r["key"]):
@@ -537,25 +547,344 @@ def load_ruled_text(path, required=False):
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
+        if check:
+            check(r, bad)
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
-        out[k] = (r["ruling"].strip(), count)
+        out[k] = (r["ruling"].strip(), count, r)
     return out
 
 
-def _run(a, moved, fx, now):
-    rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
-    lines = _unmeasured_counts(a.root, a.base, a.head)
-    added, ruled = [], []
-    for k in sorted(lines):
-        # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
-        # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
-        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
-        if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
-            ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
+def load_ruled_text(path, required=False):
+    """The unmeasured_text rows (REQ-SUP-001-AC16)."""
+    return _load_rows(path, "unmeasured_text", _RULED_FIELDS, required)
+
+
+REPO_SELF = "repo:self"
+GH_FORM = "a gh release or extension download"
+_HOST = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_FUNC = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
+_TEST_FILE = re.compile(r"(?:^|/)(?:[^/]+-test\.sh|[^/]+_test\.go|[^/]+_test\.py|test_[^/]+\.py)$")
+MIN_CASE = 12
+
+
+def _rel_path(p):
+    """A relative path inside the repository: no leading /, no empty, . or .. component, no backslash, whitespace or control character."""
+    return (isinstance(p, str) and 0 < len(p) <= 512 and not p.startswith("/") and "\\" not in p
+            and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in p) and all(c not in ("", ".", "..") for c in p.split("/")))
+
+
+def _check_fetch_row(r, bad):
+    """The AC19 fields, beyond AC16's: form, host, verifier and test, each strict."""
+    h = r["host"]
+    if h == REPO_SELF:
+        if r["form"] != GH_FORM or r["key"] != r["line"]:
+            raise bad(f"host {REPO_SELF} is only for the form '{GH_FORM}' (whose key is the whole-line hash, so key equals line)")
+    elif r["form"] != "a download":
+        raise bad(f"form is not 'a download' (a curl or wget download), nor '{GH_FORM}' with host {REPO_SELF}")
+    elif not isinstance(h, str) or not (_rel_path(h[5:]) if h.startswith("lock:") else _HOST.fullmatch(h)):
+        raise bad(f"host is neither a lower-case DNS name with a dot (no scheme, port, path or user), nor lock:<relative path of a committed lock>, nor {REPO_SELF}")
+    v = r["verifier"]
+    if not isinstance(v, dict) or set(v) not in ({"file", "function"}, {"file", "line"}):
+        raise bad("verifier must be an object with file and exactly one of function or line")
+    if not _rel_path(v["file"]):
+        raise bad("verifier file is not a relative path in the repository")
+    if "function" in v and not (isinstance(v["function"], str) and _FUNC.fullmatch(v["function"])):
+        raise bad("verifier function is not a function name")
+    if "line" in v and not (isinstance(v["line"], str) and v["line"].strip() and not any(c in v["line"] for c in "\r\n")):
+        raise bad("verifier line is not one non-empty line of text")
+    t = r["test"]
+    if not isinstance(t, dict) or set(t) != {"file", "case"}:
+        raise bad("test must be an object with exactly file and case")
+    if not _rel_path(t["file"]) or not _TEST_FILE.search(t["file"]):
+        raise bad("test file is not a relative path to a test (*-test.sh, *_test.go, *_test.py or test_*.py)")
+    if not isinstance(t["case"], str) or len(t["case"].strip()) < MIN_CASE or any(c in t["case"] for c in "\r\n"):
+        raise bad(f"test case is not one line naming a case (at least {MIN_CASE} characters)")
+
+
+def load_input_fetch(path, required=False):
+    """The unmeasured_input_fetch rows (REQ-SUP-001-AC19): AC16's row plus host, verifier and test."""
+    return _load_rows(path, "unmeasured_input_fetch", _FETCH_FIELDS, required, _check_fetch_row)
+
+
+def _covered(rows, k, per):
+    """The rows of one list that rule item k: one per added whole line, when EVERY added (key, whole line) is named by a row and its head occurrences are
+    within that row's count (1 unless it says more); else None. The same segment inside any other line, an edited line, or one copy too many leaves the
+    item refused (REQ-SUP-001-AC16; the same rule for AC19)."""
+    rs = [rows.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
+    return rs if all(r and n <= r[1] for r, n in zip(rs, per.values())) else None
+
+
+# --- REQ-SUP-001-AC19: what the head must hold for a ruled input fetch ---------------------------------------------------------------------------------
+_SEGMENTS = re.compile(r"\s*(?:;|&&|\|\||\|)\s*")      # the scan's own split of a line into commands (pin-inventory.unmeasured_occurrences)
+_LEAD = {"if", "!", "then", "do", "else", "elif", "while", "until"}
+_TOOLS = {   # the only words a ruled download may hold: flags, and options whose value is a number, =https or an output file
+    "curl": {"letters": set("fsSLq"), "flags": {"--fail", "--fail-with-body", "--silent", "--show-error", "--location", "--compressed", "--create-dirs",
+                                                 "--retry-all-errors", "--retry-connrefused", "--disable", "--http1.1", "--http2", "--tlsv1.2", "--tlsv1.3"},
+             "output": {"-o", "--output"}, "number": {"--retry", "--retry-delay", "--retry-max-time", "--max-time", "-m", "--connect-timeout"},
+             "proto": {"--proto", "--proto-redir"}},
+    "wget": {"letters": set("q"), "flags": {"--quiet", "--no-verbose", "-nv", "--https-only"}, "output": {"-O", "--output-document"},
+             "number": {"-t", "--tries", "-T", "--timeout"}, "proto": set()},
+}
+_REDIR = re.compile(r"(?:[12]?>>?|&>>?)")
+_DUP = re.compile(r"[12]?>&[12]")
+
+
+def _plain(w):
+    """A word that names no address and expands nothing but $NAME or ${NAME}."""
+    return "://" not in w and not re.search(r"[{}\\<>|&;()`]", re.sub(r"\$\{[A-Za-z_]\w*\}", "", w))
+
+
+def _address_unruled(seg, host):
+    """None when the download command takes its address only as the row allows (REQ-SUP-001-AC19 (b)), else why not. Fail closed: a word this reader does
+    not know is refused, never skipped."""
+    if re.search(r"\$\(|`|<\(|>\(", seg):
+        return "a command substitution in the download command"
+    try:
+        lex = shlex.shlex(seg, posix=True)
+        lex.whitespace_split, lex.commenters = True, ""
+        words = list(lex)
+    except ValueError:
+        return "the download command cannot be read as words"
+    i = 0
+    while i < len(words) and words[i] in _LEAD:
+        i += 1
+    if i == len(words) or words[i] not in _TOOLS:
+        return "the download command does not start with curl or wget (an assignment, a wrapper or a path in front of it)"
+    tool, i, urls = _TOOLS[words[i]], i + 1, []
+    while i < len(words):
+        w = words[i]
+        i += 1
+        if _DUP.fullmatch(w):
+            continue
+        m = re.match(_REDIR.pattern + r"(.*)$", w)
+        if m:
+            target = m.group(1)
+            if not target:
+                if i == len(words):
+                    return "an output redirect with no target"
+                target, i = words[i], i + 1
+            if target.startswith("-") or not _plain(target):
+                return f"an output redirect to {target[:60]!r}"
+            continue
+        name, eq, val = w.partition("=") if w.startswith("--") else (w, "", "")
+        if not eq and (w in tool["flags"] or re.fullmatch(r"-[A-Za-z]+", w) and set(w[1:]) <= tool["letters"]):
+            continue
+        if name in tool["output"] | tool["number"] | tool["proto"]:
+            if not eq:
+                if i == len(words):
+                    return f"{name} has no value"
+                val, i = words[i], i + 1
+            if name in tool["number"] and not re.fullmatch(r"\d{1,5}", val):
+                return f"{name} takes a number"
+            if name in tool["proto"] and val != "=https":
+                return f"{name} must be =https"
+            if name in tool["output"] and (not val or val.startswith("-") or not _plain(val)):
+                return f"{name} names {val[:60]!r}, not an output file"
+            continue
+        if w.startswith("-") or w[:1] in "<>|&;(){}":
+            return f"the word {w[:40]!r} is not one this check reads in a ruled download (a flag, --retry N, --proto =https, an output file)"
+        urls.append(w)
+    if not urls:
+        return "the download command names no address"
+    if host.startswith("lock:") and len(urls) != 1:
+        return f"a lock row's download takes exactly ONE address, the variable read from {host[5:]}: it names {len(urls)}"
+    for u in urls:
+        if host.startswith("lock:"):
+            if not re.fullmatch(r"\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}", u):
+                return f"a lock row's address must be ONE variable read from {host[5:]} ($url), with no host on the line: {u[:80]!r}"
         else:
-            added.append(k)
+            pre = f"https://{host}/"
+            if not u.startswith(pre) or not _plain(u[len(pre):]):
+                return f"every address must start with {pre} and expand only $NAME in its path (no variable host, no other host, no http://): {u[:80]!r}"
+    return None
+
+
+# --- the authenticated draft download (host repo:self; the AC19 amendment, advisor Oct 10 step 5) ---------------------------------------------------------
+_GH_PREFIX = 'gh release download "$ver" '
+_GH_REPO = '"$GITHUB_REPOSITORY"'
+_ASSET = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")     # a literal exact asset name: no glob (* ? [ ] { }), no variable, no quote
+_ASSET_VER = re.compile(r'"(?:[A-Za-z0-9._+-]|\$\{ver\})*\$\{ver\}(?:[A-Za-z0-9._+-]|\$\{ver\})*"')   # "...${ver}...": ${ver} the ONLY expansion
+_LITPATH = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/-]*")  # a literal path: no glob, no variable, no quote, no ~
+_TAG_RES = (r"^v[0-9]+\.[0-9]+\.[0-9]+$", r"^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$")
+_TAG_RE = "(?:" + "|".join(re.escape(x) for x in _TAG_RES) + ")"
+_VER = r'(?:"\$ver"|\$ver)'
+_MSG = r"(?:(?:echo|printf) [^;{}|&`()<>\\]*(?: >&2)?; )?"
+_VER_CHECK = re.compile(rf"\[\[ {_VER} =~ {_TAG_RE} \]\] \|\| (?:exit [1-9][0-9]?|\{{ {_MSG}exit [1-9][0-9]?; \}})"
+                        rf"|if \[\[ ! {_VER} =~ {_TAG_RE} \]\]; then {_MSG}exit [1-9][0-9]?; fi")
+
+
+def _gh_unruled(flat):
+    """None when the line is EXACTLY gh release download "$ver" --repo "$GITHUB_REPOSITORY" with one or more -p NAME and at most one -D PATH (literal), else why
+    not. The words it accepts hold no space or quote but the repository's, so the flattened line splits into them exactly."""
+    if not flat.startswith(_GH_PREFIX):
+        return 'the line is not gh release download "$ver" ... (another tag variable, an unquoted tag or another command)'
+    words, i, n = flat[len(_GH_PREFIX):].split(" "), 0, {"--repo": 0, "-p": 0, "-D": 0}
+    while i < len(words):
+        w, v = words[i], (words[i + 1] if i + 1 < len(words) else "")
+        if w not in n:
+            return f"the word {w[:40]!r} is not one of --repo \"$GITHUB_REPOSITORY\", -p NAME, -D PATH"
+        if w == "--repo" and v != _GH_REPO:
+            return f'--repo must be the literal text "$GITHUB_REPOSITORY" (this repository), not {v[:60]!r}'
+        if w == "-p" and not (_ASSET.fullmatch(v) or v[:1] == v[-1:] == '"' and _ASSET.fullmatch(v[1:-1]) or _ASSET_VER.fullmatch(v) and not v.startswith('"-')):
+            return f'-p takes a literal exact asset name, or one whose only expansion is ${{ver}} inside double quotes (no glob, other variable or substitution), not {v[:60]!r}'
+        if w == "-D" and not _LITPATH.fullmatch(v):
+            return f"-D takes a literal path (no glob, variable or quote), not {v[:60]!r}"
+        n[w] += 1
+        i += 2
+    if n["--repo"] != 1 or n["-p"] < 1 or n["-D"] > 1:
+        return f'the line needs exactly one --repo "$GITHUB_REPOSITORY", at least one -p and at most one -D (has {n["--repo"]}, {n["-p"]}, {n["-D"]})'
+    return None
+
+
+def _run_texts(doc):
+    """Every run: script in a parsed workflow or action (the steps)."""
+    if isinstance(doc, dict):
+        for k, v in doc.items():
+            if k == "run" and isinstance(v, str):
+                yield v
+            else:
+                yield from _run_texts(v)
+    elif isinstance(doc, list):
+        for v in doc:
+            yield from _run_texts(v)
+
+
+def _ver_unchecked(root, head, path, flat):
+    """None when, in every step that holds the line (the file for a .sh script, the run: block for a workflow or action), the line IMMEDIATELY before it is
+    a check of $ver against the release tag pattern that exits on a mismatch, that check line continues no line, and the step text before it holds no
+    heredoc and no unbalanced quote; else why not."""
+    text = _head_text(root, head, path)
+    if text is None:
+        return f"{path} is not a file in the head tree"
+    if path.endswith(".sh"):
+        steps = [text]
+    elif path.endswith((".yml", ".yaml")):
+        try:
+            steps = list(_run_texts(inv.yaml.safe_load(text)))
+        except inv.yaml.YAMLError:
+            return f"{path} does not parse"
+    else:
+        return f"{path} is neither a shell script nor a workflow or action"
+    seen = 0
+    for step in steps:
+        lines = step.split("\n")
+        for pos, line in enumerate(lines):
+            if " ".join(line.split()) != flat:
+                continue
+            seen += 1
+            if pos == 0 or not _VER_CHECK.fullmatch(" ".join(lines[pos - 1].split())):
+                return "the line before the download is not a check of $ver against the release tag pattern that exits on a mismatch"
+            if pos >= 2 and lines[pos - 2].rstrip().endswith("\\"):
+                return "the tag check continues the line before it"
+            before = "\n".join(lines[:pos - 1])
+            if "<<" in before:
+                return "the step holds a heredoc before the tag check (the check could be data)"
+            try:
+                lex = shlex.shlex(before, posix=True)
+                lex.whitespace_split = True
+                list(lex)
+            except ValueError:
+                return "the step text before the tag check does not read as shell words (an unbalanced quote)"
+    return None if seen else f"the line is not in a run: step of {path}"
+
+
+def _head_text(root, head, path):
+    """The text of a regular file in the head tree, or None (missing, a link, a directory, unreadable or too large: never a pass)."""
+    try:
+        r = subprocess.run(["git", "-C", root, "ls-tree", "-z", head, "--", path], capture_output=True, text=True, timeout=GH_TIMEOUT)
+        meta, _, name = r.stdout.rstrip("\0").partition("\t")
+        if r.returncode or name != path or "\0" in name or meta.split()[:2] not in (["100644", "blob"], ["100755", "blob"]):
+            return None
+        b = subprocess.run(["git", "-C", root, "cat-file", "blob", meta.split()[2]], capture_output=True, text=True, errors="replace", timeout=GH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        return None
+    return None if b.returncode or len(b.stdout) > inv.MAX_FILE else b.stdout
+
+
+def _defines(text, name):
+    """True when TEXT defines function NAME: shell (name() or function name), Python (def name() or Go (func name( / func (r T) name()."""
+    n = re.escape(name)
+    return bool(re.search(rf"(?m)^[ \t]*(?:function[ \t]+{n}(?![\w-])|{n}[ \t]*\([ \t]*\)|(?:async[ \t]+)?def[ \t]+{n}[ \t]*\(|"
+                          rf"func[ \t]+(?:\([^)\n]*\)[ \t]*)?{n}[ \t]*[\[(])", text))
+
+
+def _fetch_unverified(root, head, row, flat):
+    """None when the head satisfies an input-fetch row (REQ-SUP-001-AC19), else why not: the address rule (b) on the download command and on the whole
+    line, the lock (a lock row), the verifier and the test (a), all read from the head tree."""
+    seg = next((s for s in _SEGMENTS.split(flat) if hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16] == row["key"]), None)
+    if not flat or seg is None:
+        return "the ruled download command is not on the line"
+    host = row["host"]
+    for m in re.finditer(r"([A-Za-z0-9+.-]*)://", flat):
+        if host.startswith(("lock:", "repo:")) or m.group(1) != "https" or not flat[m.end():].startswith(host + "/"):
+            return f"the line names an address other than https://{host}/" if not host.startswith(("lock:", "repo:")) else f"a {host.split(':')[0]} row's line names an address"
+    why = (_gh_unruled(flat) or _ver_unchecked(root, head, row["file"], flat)) if host == REPO_SELF else _address_unruled(seg, host)
+    if why:
+        return why
+    if host.startswith("lock:"):
+        lock = _head_text(root, head, host[5:])
+        if lock is None:
+            return f"the lock {host[5:]} is not a file in the head tree"
+        schemes = re.findall(r"([A-Za-z0-9+.-]*)://", lock)
+        if not schemes or any(s != "https" for s in schemes):
+            return f"the lock {host[5:]} holds an address that is not https:// (or none)"
+    v, t = row["verifier"], row["test"]
+    vt = _head_text(root, head, v["file"])
+    if vt is None:
+        return f"the verifier file {v['file']} is not a file in the head tree"
+    if "function" in v and not _defines(vt, v["function"]):
+        return f"the verifier file {v['file']} does not define {v['function']}"
+    if "line" in v and " ".join(v["line"].split()) not in {" ".join(x.split()) for x in vt.split("\n")}:
+        return f"the verifier file {v['file']} holds no line {v['line'][:80]!r}"
+    tt = _head_text(root, head, t["file"])
+    if tt is None:
+        return f"the test file {t['file']} is not a file in the head tree"
+    if t["case"] not in tt:
+        return f"the test file {t['file']} has no case {t['case'][:80]!r}"
+    return None
+
+
+def _verifier_label(row):
+    v = row["verifier"]
+    return f"{v['file']}:{v.get('function') or v.get('line', '')[:60]}"
+
+
+def _run(a, moved, fx, now):
+    path = a.exceptions or DEFAULT_EXCEPTIONS
+    rulings = load_ruled_text(path, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
+    fetches = load_input_fetch(path, required=bool(a.exceptions))
+    both = sorted(set(rulings) & set(fetches))
+    if both:
+        raise RuntimeError(f"{path}: the row {both[0]} is in both unmeasured_text and unmeasured_input_fetch: an item is ruled by exactly one list")
+    held, flats = {}, {}
+    lines = _unmeasured_counts(a.root, a.base, a.head, held, flats)
+    added, ruled, fetched = [], [], []
+    for k in sorted(lines):
+        text = _covered(rulings, k, lines[k])
+        fetch = None if text else _covered(fetches, k, lines[k])    # an item is ruled by ONE list: lines split between the two lists are not ruled
+        if text:
+            ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in text))))
+        elif fetch:
+            why = next((w for w in (_fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), "")) for lh, r in zip(lines[k], fetch)) if w), None)
+            if why:
+                added.append((k, why))
+            else:
+                fetched.append((k, "; ".join(dict.fromkeys(r[0] for r in fetch)), ", ".join(dict.fromkeys(_verifier_label(r[2]) for r in fetch))))
+        else:
+            added.append((k, None))
+    # a ruled fetch the head still holds must still be verified, though this pull request adds nothing to it (one that removes its verifier or test fails)
+    named = {k for k, _ in added}
+    for k, per in sorted(held.items()):
+        for lh in per:
+            r = fetches.get((k[0], k[1], k[2].split(":", 1)[0], lh))
+            if k in named or lh in lines.get(k, {}) or not r:
+                continue
+            why = _fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), ""))
+            if why:
+                added.append((k, why))
+                named.add(k)
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
@@ -564,14 +893,23 @@ def _run(a, moved, fx, now):
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
-    for path, what, line in added:
-        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
-                     "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
-        print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+    for (path, what, line), why in added:
+        if why is None:
+            rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
+                         "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
+            print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+        else:
+            rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
+                         "reason": f"{what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_input_fetch, but the head does not hold what the row requires: {why}"})
+            print(f"  FAIL unmeasured:{path}: {what} ({line[:60]}): input fetch not verified (REQ-SUP-001-AC19): {why}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
         print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
+    for (path, what, line), ruling, verifier in fetched:
+        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
+                     "reason": f"ruled input fetch: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_input_fetch, verified by {verifier}: {ruling[:200]}"})
+        print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled input fetch (REQ-SUP-001-AC19), verified by {verifier}: {ruling[:200]}")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
         json.dump({"min_days": a.min_days, "moved": rows}, open(a.json, "w"), indent=1)

