@@ -391,22 +391,27 @@ def attimes(when):
 def check_identity(stage, pol, leaf):
     """The certificate must be the stage's workflow file at the ref, called by release.yml at the same ref, from GitHub's issuer."""
     want_id = pol["stages"][stage]["identity"]
+    # REQ-CHAIN-001-AC4 (Codex #249 r6 B6): every refusal here names the identity found, the certificate's SAN(s) or "(none)"
     try:
         uris = san_uris(leaf)
+        found = ", ".join(uris) or "(none)"
+    except (UnicodeDecodeError, IndexError, ValueError):
+        refuse(stage, "certificate identity fields are malformed (identity found: unreadable SAN)")
+    try:
         cfg = ext_string(leaf, OID_CONFIG)
         iss = ext_string(leaf, OID_ISSUER)
     except (UnicodeDecodeError, IndexError, ValueError):
-        refuse(stage, "certificate identity fields are malformed")
+        refuse(stage, "certificate identity fields are malformed (identity found: %s)" % found)
     if uris != [want_id]:
-        refuse(stage, "certificate identity %s is not %s" % (", ".join(uris) or "(none)", want_id))
+        refuse(stage, "certificate identity %s is not %s" % (found, want_id))
     if cfg is None:
-        refuse(stage, "certificate has no build config URI extension (the calling workflow)")
+        refuse(stage, "certificate has no build config URI extension (the calling workflow); identity found: %s" % found)
     if cfg != pol["caller_identity"]:
-        refuse(stage, "certificate build config URI %s is not %s" % (cfg, pol["caller_identity"]))
+        refuse(stage, "certificate build config URI %s is not %s; identity found: %s" % (cfg, pol["caller_identity"], found))
     if iss is None:
-        refuse(stage, "certificate has no OIDC issuer extension")
+        refuse(stage, "certificate has no OIDC issuer extension; identity found: %s" % found)
     if iss != pol["oidc_issuer"]:
-        refuse(stage, "certificate issuer %s is not %s" % (iss, pol["oidc_issuer"]))
+        refuse(stage, "certificate issuer %s is not %s; identity found: %s" % (iss, pol["oidc_issuer"], found))
 
 
 def check_chain(stage, pol, cert_pem, intermediates, tmp):

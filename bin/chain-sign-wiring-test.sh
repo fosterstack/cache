@@ -142,6 +142,8 @@ def judge_sign(path):
                 else:
                     bad.append("AC2: step %r uses %s, which Sign may not" % (sn, act))
             else:
+                if not isinstance(run, str) or "\\\n" in run or re.search(r"[^\x20-\x7e\n]", run):
+                    bad.append("AC1 run line: step %r has a backslash-newline or a control, non-ASCII or invisible character (str.strip() and bash would read different words)" % sn); continue
                 line = run.strip()
                 if "\n" not in line and re.fullmatch(R_PRINTF, line):
                     order.append("printf")

@@ -352,6 +352,19 @@ def load(rel):
     except yaml.YAMLError as ex:
         print("%s cannot be judged: %s" % (rel, ex)); sys.exit(1)
 sb, rl = load(".github/workflows/stage-build.yml"), load(".github/workflows/release.yml")
+# Run lines the judge reads are judged as bash reads them (Sonnet #249 continuation; advisor: refuse, never model): a backslash-newline, or
+# any character outside printable ASCII (CR, tab, other controls, NBSP, U+200B, ...), would let str.strip() or a line split see text
+# that bash does not run. Checked on every step this judge reads: the hostile step in stage-build.yml and the hostile-* jobs of release.yml.
+def run_chars(where, steps):
+    for st in steps or []:
+        r = st.get("run") if isinstance(st, dict) else None
+        if not isinstance(r, str): continue
+        if "\\\n" in r: bad.append("%s has a run line with a backslash-newline continuation: %r" % (where, r[:80]))
+        if re.search(r"[^\x20-\x7e\n]", r): bad.append("%s has a run line with a control, non-ASCII or invisible character: %r" % (where, r[:80]))
+for _jn, _j in ((sb or {}).get("jobs") or {}).items():
+    run_chars("stage-build.yml job " + _jn, [x for x in (_j or {}).get("steps") or [] if isinstance(x, dict) and "chain-hostile-step" in str(x.get("run", ""))])
+for _jn in ("hostile-verify", "hostile-verdict"):
+    run_chars("release.yml job " + _jn, (((rl or {}).get("jobs") or {}).get(_jn) or {}).get("steps"))
 if sb is None: bad.append("stage-build.yml missing")
 else:
     found = False

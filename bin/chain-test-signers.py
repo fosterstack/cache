@@ -52,7 +52,9 @@ def strip(text):
     return "\n".join(strip_line(l) for l in text.splitlines())
 
 def logical(text):
-    return re.sub(r"\\\n\s*", " ", text)
+    """Join backslash-newline continuations exactly as bash does: the two characters are removed and NOTHING is inserted
+    (Sonnet #249: `cos\\<newline>ign sign` is `cosign sign` to bash; joining with a space would hide it from the signer scan)."""
+    return text.replace("\\\n", "")
 
 STEP_START = re.compile(r"^\s*-\s")
 FLAG_START = re.compile(r"^\s*--?[A-Za-z]")
@@ -131,12 +133,19 @@ def is_prov(e, ctx):
 def calls(text, table, strip_comments=True):
     """[(entry, ctx)] for every signing call, ctx = the command context. Comments are stripped unless strip_comments is False (a
     LISTED script is scanned raw: a signer name inside a comment, quote or heredoc counts, the scan over-reports by design)."""
-    lines = logical(strip(text) if strip_comments else text).splitlines()
-    res = []
-    for i, line in enumerate(lines):
-        for e in table:
-            if re.search(e["regex"], line):
-                res.append((e, context(lines, i, e.get("kind", "shell"))))
+    base = strip(text) if strip_comments else text
+    # A continuation is joined three ways and every reading is scanned (the scan over-reports by design; Sonnet #249): as bash joins a
+    # script (nothing inserted), as bash joins a YAML block scalar read from the raw file (the next line's indentation is YAML's, so it
+    # goes too), and with a space (the reading before this fix). A signer split across a continuation is seen whichever file it is in.
+    res, seen = [], set()
+    for joined in (logical(base), re.sub(r"\\\n[ \t]*", "", base), re.sub(r"\\\n\s*", " ", base)):
+        lines = joined.splitlines()
+        for i, line in enumerate(lines):
+            for e in table:
+                if re.search(e["regex"], line):
+                    ctx = context(lines, i, e.get("kind", "shell"))
+                    if (e["name"], ctx.strip()) not in seen:
+                        seen.add((e["name"], ctx.strip())); res.append((e, ctx))
     return res
 
 def signer_calls(text, table, strip_comments=True):
@@ -148,7 +157,7 @@ import hashlib
 
 SCRIPT_EXTS = (".sh", ".bash", ".py", ".js", ".mjs", ".cjs", ".rb", ".pl")
 LITERAL_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
-LIT_WORD = re.compile(r"[A-Za-z0-9_./:=@%+,-]+")
+LIT_WORD = re.compile(r"[A-Za-z0-9_./-]+")                       # closed to what a stage line needs (Codex #249 r6 sweep); quote the rest
 FORBID_ENV = re.compile(r"(BASH_ENV|ENV|PATH|LD_[A-Z0-9_]*|PYTHON[A-Z0-9_]*|NODE_[A-Z_]*|IFS|SHELL|SHELLOPTS|BASHOPTS|BASH_[A-Z_]*|CDPATH|"
                         r"PS4|PROMPT_COMMAND|HOME|TMPDIR|GIT_[A-Z_]*|GITHUB_[A-Z_]*|RUNNER_[A-Z_]*|LC_[A-Z_]*|LANG|USER|"
                         r"RUBY[A-Z_]*|PERL[A-Z0-9_]*|CLASSPATH|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS)")
@@ -163,7 +172,7 @@ DENY = INTERPRETERS | {"curl", "wget", "nc", "ncat", "netcat", "telnet", "ssh", 
 STAGE_WF_KEYS = {"name", "on", "permissions", "jobs"}
 STAGE_JOB_KEYS = {"name", "needs", "if", "runs-on", "permissions", "steps", "outputs", "timeout-minutes", "strategy", "environment"}
 STAGE_STEP_KEYS = {"name", "id", "uses", "with", "run", "env", "if", "timeout-minutes"}
-HOSTED = re.compile(r"ubuntu-[0-9.]+(-arm)?|ubuntu-latest")      # a GitHub-hosted ubuntu runner label, the ONLY runner a stage job may use
+HOSTED = re.compile(r"ubuntu-(22\.04|24\.04)(-arm)?|ubuntu-latest")  # CLOSED set of GitHub-hosted labels (Codex #249 r6 B5); extend only by a reviewed edit
 MATRIX_READ = re.compile(r"\$\{\{ ?matrix\.([A-Za-z_][\w-]*) ?\}\}")  # the one expression runs-on may hold: a whole read of one matrix key
 MATRIX_LIT = re.compile(r"[A-Za-z0-9_.-]+")
 USES_OK = re.compile(r"actions/(checkout|download-artifact|upload-artifact)@([0-9a-f]{40})")
@@ -267,6 +276,15 @@ PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > digests\.json")
 def check_run(run, envnames, rows):
     """Grammar errors (list of 'line N: ...') for one stage-file `run:` text; also returns the listed paths it runs."""
     errs, ran = [], []
+    # Sonnet #249 continuation (advisor: refuse, never model how bash joins or splits): a backslash-newline anywhere, and any character
+    # outside printable ASCII and the newline (CR, tab, VT, FF, NUL, other controls, NBSP, U+200B, U+2028, ...), are refused before the
+    # line is read, so the judge's words are bash's words. A backslash outside a single-quoted literal is refused by _words.
+    if "\\\n" in run:
+        errs.append("a backslash-newline continuation in a run line (bash joins the lines with no space; write one line)")
+    bad_ch = sorted({"U+%04X" % ord(c) for c in run if c != "\n" and not (" " <= c <= "~")})
+    if bad_ch:
+        errs.append("a run line holds %s: only printable ASCII and newlines are allowed (a control, non-ASCII whitespace or invisible character changes how bash splits words)" % ", ".join(bad_ch))
+    if errs: return errs, ran
     if re.search(r"GITHUB_(ENV|PATH|OUTPUT|STEP_SUMMARY)", run):
         errs.append("a stage run step names GITHUB_ENV, GITHUB_PATH, GITHUB_OUTPUT or GITHUB_STEP_SUMMARY (nothing may be written into the job's environment, path or outputs)")
     lines = logical(strip(run)).splitlines()
