@@ -312,7 +312,7 @@ When the server starts and the metadata index holds no records while the blob st
 | REQ-STORE-006-AC3 | Given N adopted blobs whose total exceeds FSCACHE_MAX_BYTES; when the server starts and a PUT arrives; then the adopted blobs count against the cap and are evicted until the store is within it, the index total equals the bytes on disk | component |  | approved | 1 item(s) |
 | REQ-STORE-006-AC4 | Given a non-empty index, no unclean marker, and a blob the index does not list; when the server starts; then the blob store is not walked, no rebuild line is logged, and the unlisted blob is not adopted (partial index loss is out of scope) | component |  | approved | 1 item(s) |
 | REQ-STORE-006-AC5 | Given a fresh data directory (no blobs, no meta.db); when the server starts; then no rebuild line is logged and no reconciliation runs | component |  | approved | 1 item(s) |
-| REQ-STORE-006-AC6 | Given an empty index over existing blobs and a walk that fails; when the server starts; then it refuses to start with an error naming the reconciliation step and serves nothing; and with both an unclean marker and an empty index over blobs, reconciliation runs once, not twice | component |  | approved | 2 item(s) |
+| REQ-STORE-006-AC6 | Given an empty index over existing blobs and a walk that fails; when the server starts; then it refuses to start with an error naming the reconciliation step and serves nothing; and with both an unclean marker and an empty index over blobs, reconciliation runs once, not twice | component |  | approved | 4 item(s) |
 
 ## Eviction
 

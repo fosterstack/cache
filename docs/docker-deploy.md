@@ -192,6 +192,12 @@ connection-refused. Docker has no probe of its own here (the image ships no
 Kubernetes it is the liveness probe that can restart the pod; see
 [Kubernetes](kubernetes.md#startup-and-reconcile).
 
+If `meta.db` is deleted or emptied while the blobs are still on disk, the
+server notices at the next start (empty index, blobs present), logs
+`fscache: index empty over existing blobs, rebuilding`, adopts every blob
+(access time restarts at now) and logs the counts when it is done, before it
+serves. A partly lost index is not detected this way.
+
 Configuration is flags and environment only, on purpose. There is no settings
 page and no runtime reconfiguration, which means the running server always
 matches the deployment manifest in your git repository — diffable, reviewable,

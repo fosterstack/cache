@@ -323,3 +323,60 @@ func TestUncleanMarkerAndEmptyIndexReconcileOnce(t *testing.T) {
 		t.Errorf("index entries = %d, want 2", n)
 	}
 }
+
+// indexEmptyOverBlobs: the decision, and both of its failure modes
+// (a closed index and a closed blob store both surface as errors).
+func TestIndexEmptyOverBlobsDecision(t *testing.T) {
+	dir := t.TempDir()
+	blobs, err := blobstore.New(filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta, err := metadata.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := indexEmptyOverBlobs(blobs, meta); err != nil || got {
+		t.Fatalf("empty index, no blobs = %v, %v; want false", got, err)
+	}
+	if _, err := blobs.Put("k-1", strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := indexEmptyOverBlobs(blobs, meta); err != nil || !got {
+		t.Fatalf("empty index, one blob = %v, %v; want true", got, err)
+	}
+	if err := meta.Record("k-1", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := indexEmptyOverBlobs(blobs, meta); err != nil || got {
+		t.Fatalf("non-empty index = %v, %v; want false", got, err)
+	}
+	if err := meta.Delete("k-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := blobs.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := indexEmptyOverBlobs(blobs, meta); err == nil {
+		t.Error("a closed blob store must surface an error")
+	}
+	if err := meta.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := indexEmptyOverBlobs(blobs, meta); err == nil {
+		t.Error("a closed index must surface an error")
+	}
+}
+
+// A failure of the check itself refuses the start (fail closed: the
+// server does not guess whether blobs sit behind an empty index).
+func TestIndexCheckFailureRefusesStart(t *testing.T) {
+	clearEnv(t)
+	orig := indexCheck
+	indexCheck = func(*blobstore.Store, *metadata.Store) (bool, error) { return false, errTestReconcile }
+	defer func() { indexCheck = orig }()
+	err, _ := runServe(t, t.TempDir(), nil)
+	if err == nil || !strings.Contains(err.Error(), "check index against blobs") {
+		t.Fatalf("serve error = %v, want the index check error", err)
+	}
+}

@@ -166,6 +166,8 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestRebuildWalkFailureRefusesStart" }
       - { type: go-test, ref: "cmd/fscache:TestUncleanMarkerAndEmptyIndexReconcileOnce" }
+      - { type: go-test, ref: "cmd/fscache:TestIndexCheckFailureRefusesStart" }
+      - { type: go-test, ref: "cmd/fscache:TestIndexEmptyOverBlobsDecision" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }

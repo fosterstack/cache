@@ -160,6 +160,28 @@ func levenshtein(a, b string) int {
 // duration attribute on the reconciled line.
 func reconcileDuration(d time.Duration) string { return d.Round(time.Millisecond).String() }
 
+// errFoundBlob stops a walk at the first blob.
+var errFoundBlob = errors.New("found a blob")
+
+// indexEmptyOverBlobs reports whether the metadata index holds no records
+// while the blob store holds at least one blob (REQ-STORE-006). The blob
+// store is consulted only when the index is empty, and the walk stops at
+// the first blob.
+func indexEmptyOverBlobs(blobs *blobstore.Store, meta *metadata.Store) (bool, error) {
+	n, err := meta.Count()
+	if err != nil {
+		return false, err
+	}
+	if n > 0 {
+		return false, nil
+	}
+	_, err = blobs.Walk(func(string, int64) error { return errFoundBlob })
+	if errors.Is(err, errFoundBlob) {
+		return true, nil
+	}
+	return false, err
+}
+
 // uncleanMarkerPath is the marker's location inside the data directory —
 // beside the stores it speaks for, so it travels with the volume.
 func uncleanMarkerPath(dataDir string) string {
@@ -249,6 +271,7 @@ var (
 	cacheReconcile = (*cache.Cache).Reconcile
 	httpShutdown   = (*http.Server).Shutdown
 	httpServe      = (*http.Server).Serve
+	indexCheck     = indexEmptyOverBlobs
 	clearMarkerFn  = clearMarker
 )
 
@@ -343,6 +366,19 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 		}
 	}()
 
+	// REQ-STORE-006: an empty index over existing blobs (meta.db deleted
+	// or emptied after a clean shutdown) is invisible to the marker, so it
+	// is checked here, cheaply: only when the index is empty is the blob
+	// store looked at, and only to find one blob. A non-empty index never
+	// triggers a walk; a marker already reconciles, so it is not done twice.
+	rebuild := false
+	if !wasUnclean {
+		rebuild, err = indexCheck(blobs, meta)
+		if err != nil {
+			return fmt.Errorf("check index against blobs: %w", err)
+		}
+	}
+
 	if wasUnclean {
 		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
 		began := time.Now()
@@ -352,6 +388,16 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 		}
 		log.Info("fscache: reconciled",
 			"duration", reconcileDuration(time.Since(began)),
+			"adopted_blobs", stats.AdoptedBlobs,
+			"dropped_records", stats.DroppedRecords,
+			"removed_temp_files", stats.RemovedTempFiles)
+	} else if rebuild {
+		log.Info("fscache: index empty over existing blobs, rebuilding")
+		stats, err := cacheReconcile(c, context.Background())
+		if err != nil {
+			return fmt.Errorf("startup reconciliation: %w", err)
+		}
+		log.Info("fscache: index empty over existing blobs, rebuilt",
 			"adopted_blobs", stats.AdoptedBlobs,
 			"dropped_records", stats.DroppedRecords,
 			"removed_temp_files", stats.RemovedTempFiles)
