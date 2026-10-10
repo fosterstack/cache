@@ -532,13 +532,12 @@ jobs:
           ver="${GITHUB_REF_NAME}"
           fail() { echo "::error::published release failed the anonymous release-files check: investigate - $1" >&2; exit 1; }
           pub=$(mktemp -d)
-          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}"
           # public assets can take seconds to appear: 6 tries per file, RETRY_SLEEP seconds apart, then fail
           for f in release-files.sha256 release-files.sha256.bundle release-manifest.json fosterstack-cache.openvex.json \
                    "fosterstack-cache-${ver}.csaf.json" "fosterstack-cache-${ver}.inspector-filters.json"; do
             ok=0
             for _ in 1 2 3 4 5 6; do
-              if (cd "$pub" && curl -fsSLO --connect-timeout 20 --max-time 120 "${base}/${f}"); then ok=1; break; fi
+              if (cd "$pub" && curl -fsSLO --connect-timeout 20 --max-time 120 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"); then ok=1; break; fi
               sleep "${RETRY_SLEEP}"
             done
             [ "$ok" = 1 ] || fail "${f} was not downloadable after 6 tries"

@@ -446,8 +446,8 @@ def rel_judge(steps):
         if pst.get("env") != {"GH_TOKEN": "", "RETRY_SLEEP": "10"} or set(pst) - {"name", "env", "run"} \
                 or "secrets." in prun or "github.token" in prun:
             bad.append("the published check is not credential-free (GH_TOKEN empty, no secret, no token): %s" % pst.get("env"))
-        if not prun.startswith("set -euo pipefail\n") or 'base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}"' not in pc \
-                or 'if (cd "$pub" && curl -fsSLO --connect-timeout 20 --max-time 120 "${base}/${f}"); then ok=1; break; fi' not in pc:
+        if not prun.startswith("set -euo pipefail\n") or "base=" in prun or "${base}" in prun \
+                or 'if (cd "$pub" && curl -fsSLO --connect-timeout 20 --max-time 120 "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"); then ok=1; break; fi' not in pc:
             bad.append("the published check does not download anonymously from the published release as the docs do")
         if "for _ in 1 2 3 4 5 6; do" not in pc or 'sleep "${RETRY_SLEEP}"' not in pc:
             bad.append("the published download retry is not bounded (6 tries, injectable sleep)")
@@ -640,6 +640,11 @@ def m_pub_drop_neg(st):
     x = next(y for y in st if is_pub(y.get("run") or ""))
     L = x["run"].splitlines(True); a = next(i for i, l in enumerate(L) if l.startswith('if cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$neg/'))
     x["run"] = "".join(L[:a] + L[a + 3:])
+def m_pub_host_var(st):            # the advisor's ruling: the host is written on the download line, never taken from a variable
+    x = next(y for y in st if is_pub(y.get("run") or ""))
+    u = '"https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"'
+    assert u in x["run"], "mutation does not apply: %r" % u
+    x["run"] = x["run"].replace("pub=$(mktemp -d)\n", 'pub=$(mktemp -d)\nbase="https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}"\n', 1).replace(u, '"${base}/${f}"', 1)
 def m_pub_token(st):
     next(y for y in st if is_pub(y.get("run") or ""))["env"]["GH_TOKEN"] = "${{ github.token }}"
 MUTANTS = [
@@ -672,6 +677,7 @@ MUTANTS = [
     ("the published check without its negative control", m_pub_drop_neg),
     ("the published check verifies the draft copies", mut_run(is_pub, "\ncosign verify-blob", "\npub=/tmp/release-files-draft\ncosign verify-blob")),
     ("the published check retries without bound", mut_run(is_pub, "for _ in 1 2 3 4 5 6; do", "while :; do")),
+    ("the published download takes its host from a variable", m_pub_host_var),
     ("the published download without a time bound", mut_run(is_pub, " --connect-timeout 20 --max-time 120", "")),
     ("the published check with a token", m_pub_token),
     ("the published check verifies a loose identity", mut_run(is_pub, '--certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"',
