@@ -1,7 +1,7 @@
 {
  "schema": "auditor-review-record/v1",
- "tree": "95ba014fed537dbb5c8c5e8cfe50a2b6fb60f63bb45c7bd9c43273941abf48ec",
- "change": "REQ-REL-005-AC2 the action-pin checker accepts a literal runner matrix (runs-on: ${{ matrix.<key> }} over exactly ubuntu-24.04 / ubuntu-24.04-arm), judges its steps as bash, refuses every other runner expression with a finding that names the runner, and refuses a repeated job/strategy/matrix key -- PR #259",
+ "tree": "cf9f351bc4d6c52c7546b1b59813d072a99439826e5a064e0d1483971474fb12",
+ "change": "REQ-REL-005-AC2 the action-pin checker accepts a literal runner matrix (runs-on: ${{ matrix.<key> }} over exactly ubuntu-24.04 / ubuntu-24.04-arm), judges its steps as bash, refuses every other runner expression with a finding that names the runner, and refuses a repeated job/strategy/matrix key -- PR #259 (rebased onto main 9e8bc56 after the reviews; the reviewed content is unchanged, only main's later auditor changes joined the tree; advisor: Codex re-checks only the delta if enforcement files change)",
  "reviewed_commit": "46a7790ee9fb99a89bb493a12276656f2f3ec915",
  "closed_commit": "46a7790ee9fb99a89bb493a12276656f2f3ec915",
  "rounds": [
