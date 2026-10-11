@@ -115,6 +115,11 @@
    "workflow": "stage-verify.yml",
    "job": "check",
    "reason": "Check: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-006); signs no provenance"
+  },
+  {
+   "workflow": "stage-verify.yml",
+   "job": "check-arm64",
+   "reason": "Check, arm64 leg: the Witness wrapper fetches the identity token for the keyless record of the arm64 artifact checks (REQ-CHAIN-006-AC17); signs no provenance"
   }
  ]
 }

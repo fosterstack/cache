@@ -93,7 +93,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout 540; a Witness collection is not a provenance statement",
-      "sha256": "c9cce45f20b4b12511dc72629833dbafd6caf0b97496a1bbd29fdddefb936eb3",
+      "sha256": "54eaa1d076a78ec886bc92614399d768bb697bf2e34acaa869fd97b37070f469",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -108,7 +108,8 @@
         "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
-        "runtime": "bin/check-phase-runtime.sh"
+        "runtime": "bin/check-phase-runtime.sh",
+        "arm64": "bin/check-phase-arm64.sh"
       },
       "exceptions": [
         {
@@ -854,7 +855,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "bcfe9152cb5cc42817212118b406dee7bf5ebc590179eb7bc3eef607acdf6399",
+      "sha256": "2501123e8a17a1a45b814f28522832fd5bf84dd6dfc277a309167333066ebe59",
       "tools": [
         "at",
         "curl",
@@ -881,6 +882,18 @@
       "runs": [],
       "signs": false,
       "reason": "lists the platforms an OCI image archive carries (REQ-PLAT-002-AC1)"
+    },
+    {
+      "path": "bin/check-phase-arm64.sh",
+      "sha256": "9b8617cefcfea08c49664cdf5a852d8842214921a621bd6bbb9456fdfaf296c2",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-artifacts.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)"
     }
   ],
   "ambient_env": [

@@ -48,7 +48,7 @@ UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifa
 KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
-STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime"   # PR 2's + PR 3's three
+STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64"   # PR 2's + PR 3's three
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # PR 2's; never github or slsa
 
 
@@ -123,7 +123,7 @@ PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed comman
                 r"bash bin/check-artifacts\.sh --digests witness-build/digests\.json --images images --archives dist --out check-results",
                 r"bash bin/check-guide\.sh --guide docs/verify-release\.md --digests witness-build/digests\.json --images images --out check-results"],
 }
-SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-scan.sh", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
+SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-phase-arm64.sh", "bin/check-scan.sh", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
            "bin/acceptance-gradle.sh", "bin/acceptance-gradle-capped.sh", "bin/acceptance-maven.sh", "bin/acceptance-maven-capped.sh",
            "bin/acceptance-egress.sh", "bin/acceptance-k8s.sh", "bin/acceptance-serve.sh", "bin/install-kind.sh"]
 # REQ-CHAIN-006-AC14 (advisor ruling Q8; kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0, 2026-08-26)
@@ -159,6 +159,50 @@ def load(path):
     return yaml.load(open(path), Loader=yaml.BaseLoader)
 
 
+ARM_STEP = "arm64"
+ARM_TARGET = "bin/check-phase-arm64.sh"
+ARM_LINE = "bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"
+ARM_DOWNLOADS = [("digests", "witness-build"), ("dist", "dist"), ("images", "images")]
+
+
+def arm_job(j):
+    """REQ-CHAIN-006-AC1 (advisor 0385): the one second job, check-arm64: runs-on the literal ubuntu-24.04-arm, permissions exactly contents read +
+    id-token write, no other key (no if, needs, env, strategy, container), and EXACTLY these steps in this order: a digest-pinned checkout without
+    persisted credentials, the checksum-pinned Witness install, the digest-pinned downloads of digests (into witness-build), dist and images, the one
+    witnessed step `bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh`, and the digest-pinned upload of witness-check-arm64 carrying witness-arm64."""
+    bad = []
+    if not isinstance(j, dict):
+        return ["check-arm64 is not a job"]
+    if set(j) != {"runs-on", "permissions", "steps"}:
+        bad.append("check-arm64 may hold exactly runs-on, permissions and steps (no if, needs, env, strategy, container, name): %s" % sorted(j))
+    if j.get("runs-on") != "ubuntu-24.04-arm":
+        bad.append("check-arm64 must run on the literal GitHub-hosted label ubuntu-24.04-arm, got %r" % j.get("runs-on"))
+    if j.get("permissions") != {"contents": "read", "id-token": "write"}:
+        bad.append("check-arm64 permissions must be exactly contents read + id-token write: %s" % j.get("permissions"))
+    steps = j.get("steps") or []
+    want = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("down", x) for x in ARM_DOWNLOADS] + \
+           [("run", "bash bin/witnessed.sh %s %s" % (ARM_STEP, ARM_TARGET)), ("up", ("witness-check-arm64", "witness-arm64"))]
+    if len(steps) != len(want):
+        bad.append("check-arm64 must have exactly its %d listed steps (checkout, Witness install, three downloads, the arm64 witnessed step, the upload), found %d" % (len(want), len(steps)))
+    for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
+        if not isinstance(s, dict) or set(s) - {"name", "uses", "with", "run"}:
+            bad.append("check-arm64 step %d: keys not allowed (an if, env or shell would change what runs): %s" % (i, sorted(s) if isinstance(s, dict) else s)); continue
+        u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
+        if kind == "checkout":
+            if not u.startswith("actions/checkout@") or not PIN.match(u.split(" ")[0]) or w != {"persist-credentials": "false"} or "run" in s:
+                bad.append("check-arm64 step %d must be a digest-pinned checkout with persist-credentials: false only" % i)
+        elif kind == "run":
+            if u or r != arg:
+                bad.append("check-arm64 step %d must be exactly `run: %s`, found %r" % (i, arg, (r or u)[:80]))
+        elif kind == "down":
+            if not u.startswith("actions/download-artifact@") or not PIN.match(u.split(" ")[0]) or w != {"name": arg[0], "path": arg[1]} or "run" in s:
+                bad.append("check-arm64 step %d must be a digest-pinned download of %s into %s only" % (i, arg[0], arg[1]))
+        elif kind == "up":
+            if not u.startswith("actions/upload-artifact@") or not PIN.match(u.split(" ")[0]) or w != {"name": arg[0], "path": arg[1]} or "run" in s:
+                bad.append("check-arm64 step %d must be a digest-pinned upload of %s carrying %s only" % (i, arg[0], arg[1]))
+    return bad
+
+
 def stage(path):
     d, bad = load(path), []
     on = d.get("on") or {}
@@ -167,9 +211,10 @@ def stage(path):
     if set(d) - {"name", "on", "permissions", "jobs"}:
         bad.append("workflow keys not allowed: %s" % sorted(set(d) - {"name", "on", "permissions", "jobs"}))
     jobs = d.get("jobs") or {}
-    if list(jobs) != ["check"]:
-        bad.append("exactly one job named check is required, found %s" % list(jobs))
+    if list(jobs) != ["check", "check-arm64"]:
+        bad.append("exactly two jobs, check and check-arm64, are required (advisor 0385), found %s" % list(jobs))
         return bad
+    bad += arm_job(jobs["check-arm64"])
     j = jobs["check"]
     if set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes"}:
         bad.append("job keys not allowed: %s" % sorted(set(j) - {"runs-on", "permissions", "steps", "name", "timeout-minutes"}))
@@ -302,15 +347,16 @@ def script(path):
 
 def phase(path, step):
     """REQ-CHAIN-006-AC1/AC3 (ruling 0384): the thin target of a witnessed step is ONE command line, `bash bin/check-stage.sh STEP`, and nothing else."""
-    if step not in STEPS:
+    if step not in STEPS + [ARM_STEP]:
         return ["unknown phase %r" % step]
     raw = open(path, newline="").read()
     lines = [l for l in raw.split("\n") if l.strip() and not l.strip().startswith("#")]
     bad = ["control character %s in the target" % c for c in control_chars(raw)]
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
-    if lines != ["bash bin/check-stage.sh %s" % step]:
-        bad.append("the target must be exactly the one line `bash bin/check-stage.sh %s`, found %s" % (step, [l[:80] for l in lines]))
+    one = ARM_LINE if step == ARM_STEP else "bash bin/check-stage.sh %s" % step
+    if lines != [one]:
+        bad.append("the target must be exactly the one line `%s`, found %s" % (one, [l[:80] for l in lines]))
     return bad
 
 
