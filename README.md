@@ -270,7 +270,7 @@ buildCache {
 
 ## Maven setup
 
-Basic Auth credentials come from `settings.xml` `server` conventions, the
+Basic Auth credentials come from a `server` entry in `settings.xml`, the
 Apache extension's standard pattern. See [Maven setup in 10 minutes](docs/maven.md)
 for the full walkthrough.
 
