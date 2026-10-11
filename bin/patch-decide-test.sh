@@ -585,6 +585,33 @@ check("AC8 VEX: a second statement added for a CVE is named as added, by its pro
 vc_ = P.vex_changes(vd(VS), vd(vs(timestamp="2026-10-11T00:00:00Z")))
 check("AC8 VEX: a change to any other statement field is named too (fail closed)",
       [v["change"] for v in vc_] == ["changed: timestamp"], vc_)
+# AC8 (advisor ruling on 0389 (d), the reading of rule 0254 "every change to our published VEX"): a change only to
+# document-level fields is still a VEX change; the notes say which document fields changed, never "no change"
+def vdd(st=(VS,), **kw):
+    d = {"@id": "https://example.invalid/vex", "author": "a", "timestamp": "t1", "version": 6, "statements": list(st)}
+    d.update(kw); return d
+def vex_part(n):
+    return n.split("### VEX\n", 1)[1].split("\n\n", 1)[0]
+for label, kw, want in (("document-version-only", {"version": 7}, "version"), ("timestamp-only", {"timestamp": "t2"}, "timestamp"),
+                        ("version and timestamp together", {"version": 7, "timestamp": "t2"}, "timestamp, version")):
+    nt_ = P.notes("v0.2.3", [], P.vex_changes(vdd(), vdd(**kw)))
+    check("AC8 VEX doc: a %s change prints the document-fields line, not 'no change'" % label,
+          vex_part(nt_) == "- document fields changed (%s); no statement changed" % want, vex_part(nt_))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(vdd(), vdd(st=(vs(status_notes="n2"),), version=7)))
+check("AC8 VEX doc: a statement change and a document change: the statement line and the document-fields line",
+      vex_part(nt_) == "- CVE-7: not_affected (changed: status_notes)\n- document fields changed (version)", vex_part(nt_))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(vdd(), vdd(author="b")))
+check("AC8 VEX doc: any document field is named (author)", vex_part(nt_) == "- document fields changed (author); no statement changed", vex_part(nt_))
+check("AC8 VEX doc: nothing changed is still 'no change'", vex_part(P.notes("v0.2.3", [], P.vex_changes(vdd(), vdd()))) == "- no change")
+check("AC8 VEX doc: a reordered statement list with the same document is still 'no change'",
+      vex_part(P.notes("v0.2.3", [], P.vex_changes(vdd(st=(VS, vs(vulnerability={"name": "CVE-8"}))),
+                                                    vdd(st=(vs(vulnerability={"name": "CVE-8"}), VS))))) == "- no change")
+real_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".vex", "fosterstack-cache.openvex.json")))
+bump_ = json.loads(json.dumps(real_)); bump_["version"] = real_["version"] + 1
+check("AC8 VEX doc: the real OpenVEX file with only its version bumped (6 -> 7 today) prints the document-fields line",
+      vex_part(P.notes("v0.2.3", [], P.vex_changes(real_, bump_))) == "- document fields changed (version); no statement changed")
+check("AC8 VEX doc: the real OpenVEX file unchanged is 'no change'",
+      vex_part(P.notes("v0.2.3", [], P.vex_changes(real_, json.loads(json.dumps(real_))))) == "- no change")
 pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
