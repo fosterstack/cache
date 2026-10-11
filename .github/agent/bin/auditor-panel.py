@@ -690,7 +690,7 @@ class Bundles:
         if img not in self.cache:
             variant, _, arch = img.rpartition("-")
             try:
-                facts = self.read(os.path.join(self.oci_dir, variant + ".oci"), arch)
+                facts = self.read(os.path.join(self.oci_dir, variant + ".tar"), arch)
                 self.cache[img] = (facts, self.buildinfo(facts["gobins"]))
             except (OSError, ValueError, KeyError, tarfile.TarError) as e:
                 self.cache[img] = None
@@ -948,7 +948,7 @@ def rescan_binding(path, oci_dir):
         return None, "no rescan binding (run, scanned head, main's head, conclusion) in %s" % path
     digests = {}
     for name in sorted(os.listdir(oci_dir)) if os.path.isdir(oci_dir) else []:
-        if not name.endswith(".oci"):
+        if not name.endswith(".tar"):
             continue
         try:
             with tarfile.open(os.path.join(oci_dir, name)) as t:
@@ -996,7 +996,7 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
             unreadable.append(img)
             continue
         try:
-            read_image(os.path.join(a.oci, variant + ".oci"), arch)
+            read_image(os.path.join(a.oci, variant + ".tar"), arch)
         except (OSError, ValueError, KeyError, tarfile.TarError):
             unreadable.append(img)
     if unreadable:

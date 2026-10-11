@@ -319,10 +319,10 @@ def _archives(rescan_dir, test_image, oci, tar):
         ok1 = _skopeo(ref, "oci-archive:%s:%s" % (oci, TAG))
         ok2 = _skopeo(ref, "docker-archive:%s:%s" % (tar, TAG))
         return (("test_image=%s" % test_image, None) if (ok1 or ok2) else (None, "skopeo could not pull %s" % ref))
-    named = glob.glob(os.path.join(rescan_dir, "**", "production.oci"), recursive=True)
+    named = glob.glob(os.path.join(rescan_dir, "**", "production.tar"), recursive=True)
     if not named:
-        return None, "no production.oci in the rescan artifacts"
-    # production.oci is a multi-arch index; select amd64 into a single-arch OCI archive that
+        return None, "no production.tar in the rescan artifacts"
+    # production.tar (Build's images artifact) is a multi-arch index; select amd64 into a single-arch OCI archive that
     # grype can catalogue, and a docker-save tar for trivy/osv.
     src = "oci-archive:%s" % named[0]
     ok1 = _skopeo(src, "oci-archive:%s:%s" % (oci, TAG))

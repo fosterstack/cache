@@ -157,7 +157,7 @@ class Image(Tmp):
         B = P.Bundles(self.d, read=read, buildinfo=lambda g: {})
         f = {"image": "fips-arm64", "package": "tzdata", "version": "1", "seen_by": ["scout"]}
         B(f); B(f)
-        self.assertEqual(calls, [("fips.oci", "arm64")])
+        self.assertEqual(calls, [("fips.tar", "arm64")])
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertIn("could not be read", B(dict(f, image="debug-amd64")))
         self.assertIn("no evidence from image debug-amd64", err.getvalue())
@@ -324,7 +324,7 @@ def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readab
     read_image() for `arch` (Codex #177 r2, B2: a present member alone proves nothing; the evidence must actually
     parse the same way Bundles() reads it), unless blob=False (no blob at all) or readable=False (present but not a
     real manifest — the getmember-only check of r1's fix passed this, r2 correctly still refuses it)."""
-    path = os.path.join(d, variant + ".oci")
+    path = os.path.join(d, variant + ".tar")
     if not readable:
         with tarfile.open(path, "w") as t:
             ti = tarfile.TarInfo("index.json")
@@ -401,7 +401,7 @@ class Judge(Tmp):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=empty)), 2)
         self.assertIn("no image digest", err.getvalue())
-        bad_oci = os.path.join(self.d, "bad"); os.makedirs(bad_oci); open(os.path.join(bad_oci, "x.oci"), "w").write("junk")
+        bad_oci = os.path.join(self.d, "bad"); os.makedirs(bad_oci); open(os.path.join(bad_oci, "x.tar"), "w").write("junk")
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=bad_oci)), 2)
         self.assertIn("no image digest", err.getvalue())

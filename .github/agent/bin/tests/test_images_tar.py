@@ -41,6 +41,28 @@ class ImagesTar(unittest.TestCase):
             self.assertIsNone(why)
             self.assertEqual(got["digests"], {"production": d1, "fips": d2})
 
+    def test_old_oci_names_and_other_suffixes_are_not_evidence(self):
+        with tempfile.TemporaryDirectory() as w:
+            images = os.path.join(w, "images"); os.makedirs(images)
+            image_tar(os.path.join(images, "production.oci")); image_tar(os.path.join(images, "fips.tar.gz"))
+            b = os.path.join(w, "binding.json")
+            json.dump({"run_id": "1", "head": "a" * 40, "main_head": "a" * 40, "conclusion": "success"}, open(b, "w"))
+            got, why = P.rescan_binding(b, images)
+            self.assertIsNone(got)
+            self.assertIn("no image digest", why)
+
+    def test_missing_variant_archive_has_no_evidence(self):
+        with tempfile.TemporaryDirectory() as w:
+            got = P.Bundles(w)({"image": "fips-amd64"})
+            self.assertIn("could not be read", got)
+
+    def test_manifest_without_production_tar_fails_closed(self):
+        with tempfile.TemporaryDirectory() as w:
+            open(os.path.join(w, "production.oci"), "w").write("x")
+            got, why = M._archives(w, "", os.path.join(w, "c.oci"), os.path.join(w, "c.tar"))
+            self.assertIsNone(got)
+            self.assertIn("production.tar", why)
+
     def test_bundles_read_variant_dot_tar(self):
         seen = []
         def read(path, arch):
