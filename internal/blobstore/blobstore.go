@@ -43,6 +43,12 @@ const maxSegments = 16
 // dotLeafShard is the shard directory for a leaf that starts with "..".
 const dotLeafShard = "__"
 
+// tempDirName is the directory, at the top of the store, that holds the
+// temporary files of writes in flight. '+' is outside segmentRE, so no
+// key's path can contain this name: temporary files no longer share a
+// name space with keys (REQ-PROTO-003-AC4).
+const tempDirName = "+tmp"
+
 // dirPerm/filePerm are deliberately tight: this store holds build-artifact
 // bytes with no need for group/other access, and a compliance-tier buyer's
 // assessor will check exactly this kind of default.
@@ -134,8 +140,9 @@ func relPath(key string) (string, error) {
 }
 
 // Put stores the bytes read from r under key, atomically: write to a
-// randomly-named temp file in the same shard directory, fsync, then
-// rename over the destination. Every path passed to the OS is resolved
+// randomly-named temp file in the store's temporary directory (inside the
+// same root, so on the same filesystem), fsync, then rename over the
+// destination. Every path passed to the OS is resolved
 // through s.root, so nothing can land outside the store even if a caller
 // somehow got a validated-looking key that resolves to a symlink.
 func (s *Store) Put(key string, r io.Reader) (int64, error) {
@@ -148,11 +155,15 @@ func (s *Store) Put(key string, r io.Reader) (int64, error) {
 		return 0, fmt.Errorf("blobstore: create dir: %w", err)
 	}
 
+	if err := s.root.MkdirAll(tempDirName, dirPerm); err != nil {
+		return 0, fmt.Errorf("blobstore: create temp dir: %w", err)
+	}
+
 	tmpName, err := randomTempName()
 	if err != nil {
 		return 0, fmt.Errorf("blobstore: generate temp name: %w", err)
 	}
-	tmpRel := path.Join(dir, tmpName)
+	tmpRel := path.Join(tempDirName, tmpName)
 
 	tmp, err := s.root.OpenFile(tmpRel, os.O_CREATE|os.O_EXCL|os.O_WRONLY, filePerm)
 	if err != nil {
@@ -251,32 +262,49 @@ func randomTempName() (string, error) {
 // truth, the metadata index is rebuildable, and this is how the truth is
 // enumerated. The on-disk layout is <parent dirs>/<shard>/<leaf>, so a
 // key is the file's path with the shard directory (the leaf's first two
-// characters, or dotLeafShard) removed.
+// characters, or dotLeafShard) removed; a file is a blob only when it lies
+// at exactly that key's path.
+//
+// Stale temporary files are the files in tempDirName and the ".tmp-"
+// files directly at the top of the store; no key's path lies at either
+// place (every key's path has at least two parts). Nothing in a shard
+// directory is ever reported, so a key whose leaf starts with ".tmp-" is
+// a blob like any other (REQ-PROTO-003-AC4), and files earlier versions
+// left next to blobs are left alone.
 func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string, err error) {
 	var walk func(rel string) error
 	walk = func(rel string) error {
-		f, err := s.root.Open(path.Join(".", rel))
+		entries, err := s.readDir(rel)
 		if err != nil {
-			return fmt.Errorf("blobstore: walk open %q: %w", rel, err)
+			return err
 		}
-		entries, err := readDirAll(f)
-		closeErr := dirClose(f)
-		if err != nil {
-			return fmt.Errorf("blobstore: walk read %q: %w", rel, err)
-		}
-		if closeErr != nil {
-			return closeErr
-		}
+		top := rel == "."
 		for _, e := range entries {
 			child := path.Join(rel, e.Name())
+			if top && e.Name() == tempDirName && e.IsDir() {
+				temps, err := s.readDir(child)
+				if err != nil {
+					return err
+				}
+				for _, te := range temps {
+					if !te.IsDir() {
+						staleTemp = append(staleTemp, path.Join(child, te.Name()))
+					}
+				}
+				continue
+			}
 			if e.IsDir() {
 				if err := walk(child); err != nil {
 					return err
 				}
 				continue
 			}
-			if strings.HasPrefix(e.Name(), ".tmp-") {
-				staleTemp = append(staleTemp, child)
+			if top {
+				// A file at the root is not a blob this store wrote; a
+				// .tmp- one is a leftover temporary file.
+				if strings.HasPrefix(e.Name(), ".tmp-") {
+					staleTemp = append(staleTemp, child)
+				}
 				continue
 			}
 			info, err := dirEntryInfo(e)
@@ -285,13 +313,10 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 			}
 			// Invert relPath: drop the shard directory (parent of the leaf).
 			parts := strings.Split(child, "/")
-			if len(parts) < 2 {
-				continue // a file at the root is not a blob this store wrote
-			}
 			keyParts := append(append([]string{}, parts[:len(parts)-2]...), parts[len(parts)-1])
 			key := path.Join(keyParts...)
-			if ValidateKey(key) != nil {
-				continue // not a shape this store produces; leave it alone
+			if want, err := relPath(key); err != nil || want != child {
+				continue // not at the path of the key it names; leave it alone
 			}
 			if err := fn(key, info.Size()); err != nil {
 				return err
@@ -303,6 +328,23 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 		return staleTemp, err
 	}
 	return staleTemp, nil
+}
+
+// readDir lists the directory rel inside the store root.
+func (s *Store) readDir(rel string) ([]os.DirEntry, error) {
+	f, err := s.root.Open(path.Join(".", rel))
+	if err != nil {
+		return nil, fmt.Errorf("blobstore: walk open %q: %w", rel, err)
+	}
+	entries, err := readDirAll(f)
+	closeErr := dirClose(f)
+	if err != nil {
+		return nil, fmt.Errorf("blobstore: walk read %q: %w", rel, err)
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	return entries, nil
 }
 
 // RemoveStaleTemp deletes a stale temporary file found by Walk.

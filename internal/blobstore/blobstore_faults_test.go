@@ -404,6 +404,20 @@ func TestWalkFailsOnUnreadableSubdirectory(t *testing.T) {
 	}
 }
 
+func TestWalkFailsOnUnreadableTempDir(t *testing.T) {
+	skipIfRoot(t)
+	s := newTestStore(t)
+	locked := filepath.Join(s.Root(), storeTempDir)
+	if err := os.MkdirAll(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) })
+	_, err := s.Walk(func(string, int64) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "walk open") {
+		t.Fatalf("Walk over unreadable temporary directory: err = %v, want walk open failure", err)
+	}
+}
+
 func TestWalkFailsWhenReadDirFails(t *testing.T) {
 	s := newTestStore(t)
 	setSeam(t, &readDirAll, func(*os.File) ([]os.DirEntry, error) {

@@ -226,7 +226,7 @@ func TestWalkKeepsTmpLeafKeysAndReportsOnlyTempDirFiles(t *testing.T) {
 		t.Fatalf("Walk: %v", err)
 	}
 	slices.Sort(stale)
-	want := []string{".tmp-probe-0001", storeTempDir + "/.tmp-cafecafecafecafecafecafecafecafe", storeTempDir + "/other"}
+	want := []string{storeTempDir + "/.tmp-cafecafecafecafecafecafecafecafe", storeTempDir + "/other", ".tmp-probe-0001"}
 	if !slices.Equal(stale, want) {
 		t.Fatalf("Walk stale = %v, want %v", stale, want)
 	}
