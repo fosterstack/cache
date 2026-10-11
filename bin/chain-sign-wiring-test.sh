@@ -425,7 +425,7 @@ def stage_grammars(base, files, frozen, rows, envn, bad):
         if not rel.startswith("stage-"): continue
         try: d = yload(open(f).read()) or {}
         except Exception as e: bad.append("AC1: %s does not parse (%s)" % (rel, e)); continue
-        e, r = _cts.stage_grammar(rel, d, rows, envn)
+        e, r = _cts.stage_grammar(rel, d, rows, envn, os.path.relpath(f, base))
         if os.path.relpath(f, base) not in frozen: bad += ["AC1 grammar: " + x for x in e]
         ran[rel] = set(r)                      # the LISTED scripts a frozen file runs are still followed (unlisted ones are never scanned)
     return ran

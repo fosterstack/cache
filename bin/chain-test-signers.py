@@ -203,6 +203,8 @@ FORBID_ENV = re.compile(r"(?:GIT.*|GITHUB.*|RUNNER.*|NODE.*|PYTHON.*|LD_.*|BASH_
                         re.IGNORECASE | re.DOTALL)
 SIGNS = (False, "provenance", "other")
 # PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
+# Round 2 (2): the ONE shape a pinned step may have (REQ-CHAIN-004-AC2): echo "NAME=$(jq -c . FILE)" >> "$GITHUB_OUTPUT"
+PINNED_SHAPE = re.compile(r'echo "[a-z][a-z0-9_]*=\$\(jq -c \. ([A-Za-z0-9_][A-Za-z0-9_./-]*)\)" >> "\$GITHUB_OUTPUT"')
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution
@@ -445,6 +447,9 @@ def load_scripts(base):
                 errs.append("chain-scripts.json: pinned_steps job/id %r/%r must be plain names" % (j, i)); continue
             if not run.strip() or run != run.strip() or any(not (" " <= c <= "~") for c in run):
                 errs.append("chain-scripts.json: pinned_steps %s %s %s: run must be one line of printable ASCII with no edge space" % (f, j, i)); continue
+            pm = PINNED_SHAPE.fullmatch(run)
+            if not pm or ".." in pm.group(1).split("/") or "//" in pm.group(1):
+                errs.append("chain-scripts.json: pinned_steps %s %s %s: run must be exactly echo \"NAME=$(jq -c . FILE)\" >> \"$GITHUB_OUTPUT\" (NAME [a-z][a-z0-9_]*, FILE a plain relative path with no ..)" % (f, j, i)); continue
             if not why.strip():
                 errs.append("chain-scripts.json: pinned_steps %s %s %s has no reason (why)" % (f, j, i)); continue
             if (f, j, i) in env_names.pinned:
@@ -625,11 +630,12 @@ def _reach(paths, rows):
         if isinstance(r, list): todo += [q for q in r if isinstance(q, str)]
     return seen
 
-def stage_grammar(rel, d, rows, env_names=frozenset()):
+def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
     """(errors, listed paths run) for a parsed stage workflow file (YAML via the caller). The grammar is FINITE over keys:
     workflow, job and step keys come from closed sets; step `uses` from a closed list; env names from a closed set; the run
     lines from the grammar of check_run."""
     errs, ran = [], []
+    full = path or ".github/workflows/" + rel      # round 2 (2): a pin binds the FULL repo path of the file
     pins = getattr(env_names, "pinned", {})        # round 1 (5): (file, job, id) -> the reviewed pinned step
     found = set()
     amb = getattr(env_names, "ambient", {})        # PR 1b (B): name -> listed scripts that read it from their own environment
@@ -641,10 +647,10 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
         if extra: errs.append("%s: job keys %s are not allowed (container, services, defaults, env, uses, secrets, with run other code or reroute steps)" % (pre, sorted(extra)))
         errs += _runner_errors(pre, j)
         for s in (j.get("steps") or []):
-            pin = pins.get((".github/workflows/" + rel, jn, s.get("id"))) if isinstance(s.get("id"), str) else None
+            pin = pins.get((full, jn, s.get("id"))) if isinstance(s.get("id"), str) else None
             if pin is not None:
                 # round 1 (5), a REVIEWED PINNED STEP: exactly name/id/run, and the run text equal to the entry's; nothing else about it is relaxed
-                found.add((".github/workflows/" + rel, jn, s.get("id")))
+                found.add((full, jn, s.get("id")))
                 if set(s) - {"name", "id", "run"}: errs.append("%s: pinned step %r has keys %s; a pinned step has only name, id and run" % (pre, s.get("id"), sorted(set(s) - {"name", "id", "run"})))
                 elif s.get("run") != pin["run"]: errs.append("%s: pinned step %r has a run text that differs from its pinned_steps entry" % (pre, s.get("id")))
                 continue
@@ -696,7 +702,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
                     errs.append("%s: env %s is not read whole (\"$%s\") by the step's run line" % (sp, k, k))
             errs += ["%s: %s" % (sp, x) for x in e]; ran += r
     for key in pins:
-        if key[0] == ".github/workflows/" + rel and key not in found:
+        if key[0] == full and key not in found:
             errs.append("%s: pinned_steps entry %s job %s id %s matches no step in the file (stale)" % (rel, key[0], key[1], key[2]))
     return errs, ran
 
