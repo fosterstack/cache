@@ -148,6 +148,34 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMean" }
       - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMeanTieAndNearest" }
+  - ac: REQ-TLS-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSRoundTripAndPlainHTTPRefused" }
+  - ac: REQ-TLS-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSRefusesOldVersionsAndWeakSuites" }
+      - { type: go-test, ref: "internal/server:TestTLSFloorHoldsUnderTLS10ServerGODEBUG" }
+  - ac: REQ-TLS-001-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSBadPairRefusedAndDataDirNotCreated" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSBadPairLeavesExistingDataDirIdentical" }
+  - ac: REQ-TLS-001-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSKeyNeverAppearsInOutput" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSKeyParserPanicIsContained" }
+  - ac: REQ-TLS-001-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSFIPSModeNarrowsSuites" }
+  - ac: REQ-TLS-001-AC6
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSCertificateReadOnceAtStartup" }
+  - ac: REQ-TLS-001-AC7
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSDocsDescribeBothOptions" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSDocsBannedWordingIsCaught" }
+  - ac: REQ-TLS-001-AC8
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestStartupLineCarriesTLSState" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }
