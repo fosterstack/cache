@@ -1702,7 +1702,25 @@ def rows(out, mode):
     json.dump({"exceptions": [], "unmeasured_text": R}, open(out, "w"))
 def key(which):
     print(hashlib.sha256({"call": CALL, "asrt": ASRT, "com": COM}[which].encode()).hexdigest()[:16])
-{"build": build, "rows": rows, "key": key}[sys.argv[1]](*sys.argv[2:])
+def held(root, mode):
+    """The HELD case: the test file, the library and (in the rules file) the pinned rows are all in the BASE; the head changes per MODE without adding a line."""
+    r = pathlib.Path(root)
+    g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+    (r / "bin").mkdir(exist_ok=True); (r / "bin/lib.sh").write_bytes(LIB); (r / "bin/x-test.sh").write_bytes(TEST)
+    (r / "bin/other.sh").write_bytes(b"#!/usr/bin/env bash\necho other\n")
+    g("add", "-A"); g("commit", "-q", "-m", "base2")
+    if mode == "libedit":                                   # the Sonnet reproduction (pull request 297 round 2): the library's harness changed, no line added
+        (r / "bin/lib.sh").write_bytes(LIB + b't() { eval "$d"; }\n')
+    elif mode == "testcomment":
+        (r / "bin/x-test.sh").write_bytes(TEST + b"# a new comment\n")
+    elif mode == "same":
+        (r / "bin/other.sh").write_bytes(b"#!/usr/bin/env bash\necho other two\n")
+    elif mode == "testdeleted":
+        (r / "bin/x-test.sh").unlink()
+    elif mode == "libdeleted":
+        (r / "bin/lib.sh").unlink()
+    g("add", "-A"); g("commit", "-q", "-m", "head")
+{"build": build, "rows": rows, "key": key, "held": held}[sys.argv[1]](*sys.argv[2:])
 PY
 ccrepo() { rm -rf "$work/$1"; cp -R "$base" "$work/$1"; python3 "$work/cc.py" build "$work/$1" "$2"; }
 cccase() {   # cccase REPO-MODE ROWS-MODE WANT-RC WHAT [ITEM: call (default), asrt or com: the item that must NOT be ruled when WANT-RC is 1]
@@ -1737,6 +1755,26 @@ for m in B1-redefine-y B1-redefine-t B1-alias B2-command-source B2-builtin-sourc
   CASE="AC16 check call: Sonnet reproduction $m: the shape check alone still accepts the line (the hash, not a parser, is the control)"
   check test "$rc" -eq 0
 done
+# HELD rows (Sonnet, pull request 297 round 2): a pinned row whose line is already in the base is re-checked on EVERY run, added or not, moved pin or not:
+# an edit of the pinned library or test file that adds no line must still fail, naming the row; a row whose line is gone from the head is ignored.
+heldcase() {   # heldcase MODE WANT-RC WHAT
+  rm -rf "$work/held-$1"; cp -R "$base" "$work/held-$1"; python3 "$work/cc.py" held "$work/held-$1" "$1"
+  python3 "$work/cc.py" rows "$work/held-rows.json" ok; edck "held-$1" "$work/held-rows.json"
+  CASE="AC16 check call (held rows): $3: exit $2"
+  check test "$rc" -eq "$2"
+  if test "$2" = 1; then
+    CASE="AC16 check call (held rows): $3: the failure names the pinned row and its file"
+    check grep -q 'FAIL unmeasured:bin/x-test.sh: .*pins' "$work/rt.out"
+  fi
+}
+heldcase libedit 1 "Sonnet reproduction: the pinned library edited (t becomes eval), no line added, no pin moved"
+check test "$(grep -c 'no pin moved' "$work/rt.out")" -eq 0
+heldcase testcomment 1 "the pinned test file gains a comment line (no download line added)"
+heldcase libdeleted 1 "the pinned library deleted while the call line still occurs"
+heldcase same 0 "both pinned files unchanged (another file edited): the held rows hold"
+CASE="AC16 check call (held rows): both pinned files unchanged: still 'no pin moved' when nothing else moved"
+check grep -q 'no pin moved' "$work/rt.out"
+heldcase testdeleted 0 "the test file deleted: its line is gone, so its rows are ignored"
 for m in onlycontext onlycallee contextshort contextupper contextint calleenotobject calleeextrakey calleenosha calleeabspath calleedotdot calleedotseg calleeempty; do
   cccase ok "$m" 2 "a malformed pin ($m) stops the check fail-closed"
 done
@@ -2040,6 +2078,10 @@ for w in WORDS:
 for v in VARS + ["Mx", "MFF", "m", "X"]:
     if v not in W["call_vars"]:
         ccase("check call: a variable outside call_vars", CB(var=v))
+for fn, chk, var in (("y;x", "mel-go", "M"), ("y", "mel-go;x", "M"), ("y", "mel-go", "M;x"), ("y", "mel-go", "{M}"), ("y x", "mel-go", "M")):
+    ccase("check call: a separator or brace inside a word (Sonnet residual 2)", CB(fn=fn, chk=chk, var=var))
+for tail in ("  x", "   x", "\tx"):
+    ccase("check call: trailing text after spaces with no # (Sonnet residual 2)", CB(tail=tail))
 for sp in SEPS:
     if sp not in " \t" and sp != W["call_comment"]:
         ccase("check call: a separator or operator after the call", CB(tail=" " + sp + " curl -s https://e.example/x"))
@@ -2183,6 +2225,11 @@ call_vars + HOME	HARNESS_WHITELIST["call_vars"].append("HOME")
 call_vars + Mx	HARNESS_WHITELIST["call_vars"].append("Mx")
 call_comment empty (any trailing text)	HARNESS_WHITELIST["call_comment"] = ""
 call_comment ; (a second command)	HARNESS_WHITELIST["call_comment"] = ";"
+call_comment a space (two spaces open any text)	HARNESS_WHITELIST["call_comment"] = " "
+call_callees + y;x	HARNESS_WHITELIST["call_callees"].append("y;x")
+call_checks + mel-go;x	HARNESS_WHITELIST["call_checks"].append("mel-go;x")
+call_vars + M;x	HARNESS_WHITELIST["call_vars"].append("M;x")
+call_vars + {M}	HARNESS_WHITELIST["call_vars"].append("{M}")
 EOF
 hfm=$(mktemp -d "$work/hfmut.XXXXXX")
 while IFS=$'\t' read -r what patch; do
