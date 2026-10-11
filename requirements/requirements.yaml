@@ -116,6 +116,10 @@ requirements:
       percent-encoded) with 400 before ServeMux can redirect; verified by
       TestMalformedPathsRejectedNoRedirect with redirect-following
       disabled. A weaker check must not certify the stronger promise.
+      AC3 (origin: advisor step 5 Oct 10): keys whose leaf starts with
+      '..' are stored under a fixed shard; before this they failed with
+      500 or shared a path. No other key's on-disk path changes, so an
+      existing store needs no migration.
     acceptance_criteria:
       - id: REQ-PROTO-003-AC1
         given: a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects
@@ -128,6 +132,12 @@ requirements:
         when: a client PUTs to /
         then: the server returns 400
         verification: { method: http-integration, release_blocking: false }
+        status: approved
+      - id: REQ-PROTO-003-AC3
+        given: a key whose leaf segment starts with two dots
+        when: it is stored and read
+        then: it is kept under the fixed shard `__` of its directory, two different keys that differ only in their directory part stay different, and the result stays inside the store root; every key whose leaf does not start with two dots keeps exactly its previous path
+        verification: { method: component, release_blocking: true }
         status: approved
 
   - id: REQ-PROTO-004
