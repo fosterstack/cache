@@ -538,6 +538,53 @@ check("AC8w VEX: added, changed and removed statements, unchanged ones left out"
     {"cve": "CVE-9", "status": "not_affected", "change": "removed"}], vc)
 check("AC8w VEX: no old document (first patch) lists every statement as added",
       [v["change"] for v in P.vex_changes(None, vdoc(("CVE-1", "affected")))] == ["added"])
+# AC8 (handoff 0389 (d); rule 0254 "names the statements that changed"): a statement changed in any field, not only its
+# status, is a changed statement; the notes name the CVE and which fields changed; two statements for one CVE stay two
+VS = {"vulnerability": {"name": "CVE-7"}, "status": "not_affected", "justification": "component_not_present",
+      "impact_statement": "absent", "action_statement": "none", "status_notes": "n1",
+      "products": [{"@id": "pkg:oci/cache?tag=debug"}]}
+def vs(drop=(), **kw):
+    s = json.loads(json.dumps(VS)); s.update(kw)
+    for k in drop:
+        s.pop(k)
+    return s
+def vd(*st):
+    return {"statements": list(st)}
+for field, val in (("products", [{"@id": "pkg:oci/cache@sha256:" + "d" * 64}]), ("justification", "vulnerable_code_not_present"),
+                   ("impact_statement", "absent, rechecked"), ("action_statement", "none, rechecked"), ("status_notes", "n2")):
+    vc_ = P.vex_changes(vd(VS), vd(vs(**{field: val})))
+    check("AC8 VEX: a %s-only change is a changed statement naming the field" % field,
+          len(vc_) == 1 and vc_[0]["cve"] == "CVE-7" and vc_[0]["change"] == "changed: %s" % field, vc_)
+    nt_ = P.notes("v0.2.3", [], vc_)
+    check("AC8 VEX notes: a %s-only change is listed, not 'no change'" % field,
+          "- no change" not in nt_ and "- CVE-7: not_affected (changed: %s)" % field in nt_, nt_)
+vc_ = P.vex_changes(vd(VS), vd(vs(drop=("status_notes",), status="affected", justification="")))
+check("AC8 VEX: a status change with other fields names the old status and every other field (a dropped field too)",
+      [v["change"] for v in vc_] == ["changed from not_affected; also justification, status_notes"], vc_)
+check("AC8 VEX: an unchanged statement is left out", P.vex_changes(vd(VS), vd(vs())) == [])
+check("AC8 VEX: a reordered statement list is no change", P.vex_changes(vd(VS, vs(vulnerability={"name": "CVE-8"})),
+      vd(vs(vulnerability={"name": "CVE-8"}), VS)) == [])
+D1, D2 = [{"@id": "pkg:oci/cache@sha256:" + "1" * 64}], [{"@id": "pkg:oci/cache@sha256:" + "2" * 64}]
+two = vd(vs(products=D1), vs(products=D2, status_notes="for v0.2.2"))
+vc_ = P.vex_changes(vd(VS), two)
+check("AC8 VEX: one statement split into two for one CVE does not collapse: the old one removed, both new ones added",
+      sorted((v["change"], " ".join(v.get("products", []))) for v in vc_) == [
+          ("added", D1[0]["@id"]), ("added", D2[0]["@id"]), ("removed", VS["products"][0]["@id"])], vc_)
+vc_ = P.vex_changes(two, vd(vs(products=D1), vs(products=D2, status_notes="for v0.2.2, rechecked")))
+check("AC8 VEX: one CVE, two statements, only one changed: exactly that one is named, by its products",
+      len(vc_) == 1 and vc_[0]["change"] == "changed: status_notes" and vc_[0].get("products") == [D2[0]["@id"]], vc_)
+nt_ = P.notes("v0.2.3", [], vc_)
+check("AC8 VEX notes: a CVE with several statements names the statement's products",
+      "- CVE-7 [%s]: not_affected (changed: status_notes)" % D2[0]["@id"] in nt_ and "1" * 64 not in nt_, nt_)
+vc_ = P.vex_changes(two, vd(vs(products=D1)))
+check("AC8 VEX: one of two statements for a CVE removed is named as removed, by its products",
+      len(vc_) == 1 and vc_[0]["change"] == "removed" and vc_[0].get("products") == [D2[0]["@id"]], vc_)
+vc_ = P.vex_changes(vd(vs(products=D1)), two)
+check("AC8 VEX: a second statement added for a CVE is named as added, by its products",
+      len(vc_) == 1 and vc_[0]["change"] == "added" and vc_[0].get("products") == [D2[0]["@id"]], vc_)
+vc_ = P.vex_changes(vd(VS), vd(vs(timestamp="2026-10-11T00:00:00Z")))
+check("AC8 VEX: a change to any other statement field is named too (fail closed)",
+      [v["change"] for v in vc_] == ["changed: timestamp"], vc_)
 pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
