@@ -2497,9 +2497,9 @@ ifrepo ifb1 "${SUPPORT[@]}" base .github/workflows/f.yml "$B1BASE" head .github/
 ifx "$work/if-b1.json" plain "$(ifrow "$work/ifb1" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifb1 "$work/if-b1.json"
 CASE="AC19' (held) Codex round 4 B1: the row's line moved into an action's with.script, the step's run: inline: exit 1, never 'no pin moved'"
 refused 0; check test "$(grep -c 'no pin moved' "$work/if.out")" -eq 0
-ifrepo ifb1c "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "      - name: fetch"$'\n'"        run: $L4W")"$'\n'
+ifrepo ifb1c "${SUPPORT[@]}" head .github/workflows/f.yml "$B1HEAD"
 ifx "$work/if-b1c.json" plain "$(ifrow "$work/ifb1c" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifb1c "$work/if-b1c.json"
-CASE="AC19' (2) Codex round 4 B1: a fetch line in an inline (not literal block) run: cannot be bound to its physical line: exit 1"
+CASE="AC19' (2) Codex round 4 B1: the same shape added by one pull request: an inline (not literal block) run: cannot be bound to its physical line: exit 1"
 refused 0; check grep -q 'literal block' "$work/if.out"
 ifrepo ifb1k "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "      - name: fetch"$'\n'"        run: |-"$'\n'"          $L4W")"$'\n'
 ifx "$work/if-b1k.json" plain "$(ifrow "$work/ifb1k" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifb1k "$work/if-b1k.json"

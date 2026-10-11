@@ -687,58 +687,111 @@ def _steps(text, path):
     return [s for s in runs["steps"] if isinstance(s, dict)] if isinstance(runs, dict) and isinstance(runs.get("steps"), list) else []
 
 
+def _run_nodes(text):
+    """The run: value node (or None) of each step, in the order _steps lists them (the same filters, on the composed nodes)."""
+    Map, Seq = inv.yaml.MappingNode, inv.yaml.SequenceNode
+    get = lambda m, key: next((v for k, v in m.value if k.value == key), None) if isinstance(m, Map) else None
+    root = inv.yaml.compose(text, Loader=inv.yaml.BaseLoader)
+    jobs, runs = get(root, "jobs"), get(root, "runs")
+    groups = [get(j, "steps") for _, j in jobs.value if isinstance(j, Map)] if isinstance(jobs, Map) else [get(runs, "steps")]
+    return [get(s, "run") for g in groups if isinstance(g, Seq) for s in g.value if isinstance(s, Map)]
+
+
 def _context(data, path, flat):
     """(context hash, copies of the line inside the block) or a str why the block cannot be isolated in exactly one way. A .sh file: the sha256 of the whole
-    file (its first line a bash shebang); a workflow or action: the sha256 of the ONE step whose run: holds the line, as canonical JSON."""
+    file (its first line a bash shebang), the copies counted over the whole file; a workflow or action: the sha256 of the ONE step whose run: holds the
+    line, as canonical JSON, and that run: a literal block (run: |) holding EVERY physical copy of the line in the file, so the row is bound to physical
+    lines, not to a parsed value another place in the file can repeat (Codex round 4: an inline run:, or a copy in env:, with: or after a continuation,
+    is refused)."""
     text, why = _text(data, path)
     if why:
         return why
+    physical = [i for i, x in enumerate(text.split("\n")) if _flat(x) == flat]
     if path.endswith(".sh"):
         if text.split("\n", 1)[0] not in _SHEBANGS:
             return f"{path} does not start with #!/bin/bash or #!/usr/bin/env bash"
-        return hashlib.sha256(data).hexdigest(), sum(1 for x in text.split("\n") if _flat(x) == flat)
+        return hashlib.sha256(data).hexdigest(), len(physical)
     if _WORKFLOW.search(path):
         steps = _steps(text, path)
         if isinstance(steps, str):
             return steps
-        hits = [(s, n) for s in steps if isinstance(s.get("run"), str) for n in [sum(1 for x in s["run"].split("\n") if _flat(x) == flat)] if n]
+        nodes = _run_nodes(text)
+        if len(nodes) != len(steps):
+            return f"the steps of {path} cannot be paired with their source lines"
+        hits = [(s, n, node) for s, node in zip(steps, nodes) if isinstance(s.get("run"), str) for n in [sum(1 for x in s["run"].split("\n") if _flat(x) == flat)] if n]
         if len(hits) != 1:
             return f"the line is in the run: of {len(hits)} steps of {path} (exactly one is needed)"
-        return hashlib.sha256(json.dumps(hits[0][0], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(), hits[0][1]
+        step, n, node = hits[0]
+        if not (isinstance(node, inv.yaml.ScalarNode) and node.style == "|"):
+            return f"the step's run: in {path} is not a literal block (run: |): its lines cannot be bound to the file's lines"
+        a, b = node.start_mark, node.end_mark
+        inside = [i for i in physical if a.line < i and (i < b.line or (i == b.line and b.column > 0))]
+        if not (len(inside) == len(physical) == n):
+            return (f"a copy of the line lies outside its enclosing step's run: ({len(physical)} in {path}, {len(inside)} in the run: block's lines, "
+                    f"{n} in its value)")
+        return hashlib.sha256(json.dumps(step, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(), n
     return f"{path} is neither a .sh file nor a workflow or action"
 
 
 _DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")    # the inventory's own recogniser of "a download" (pin-inventory.unmeasured_occurrences)
-_LIST_NEXT = re.compile(r'" ?[,\]]')                  # after curl: the closing quote, then , or ]: the element is exactly the str "curl"
 _STR_PREFIX = re.compile(r"^[bBrRuUfFtT]{1,2}(?=[\"'])")
-# Fail closed (Codex round 3, advisor 0080): a downloader is NOT redirect-following only in one of two plain forms, each positively recognised; any shape
-# this reader cannot resolve (a subscript, a slice, a comprehension, an attribute, an operator, a splat, a backslash, a triple quote) is redirect-following.
+# Fail closed (Codex rounds 3 and 4, advisor 0080): a downloader is NOT redirect-following only in one of two plain forms, each positively recognised word by
+# word; any shape this reader cannot resolve (a subscript, a slice, a comprehension, an attribute, an operator, a splat, an unclosed call, a backslash, a
+# quote or an expansion inside an option word, a redirection) is redirect-following: a false positive only asks for the cosign verifier line.
 _SHELL_PREFIX = re.compile(r"[A-Za-z0-9_ ./;&|!=-]*")    # before a shell command word: plain words only (no quote, $, bracket, brace, backtick, #, <, >)
 _SHELL_PREV = {"", "if", "then", "do", "else", "elif", "while", "until", "!", "&&", "||", ";", "|", "time"}
-_LIST_AFTER = ("", ",", ")", "]")                      # what may follow a list (or a grouping parenthesis) around the plain "curl": nothing that reads it
 _PY_WORDS = {"and", "or", "not", "is", "in", "if", "else", "for", "as", "lambda"}   # after curl, a Python operator word: curl is a name, not a command
 # a curl option that follows redirects or reads options it does not show (a config file): any word that is or abbreviates one of these long options
 _REDIRECT_LONG = ("--location", "--location-trusted", "--follow", "--config")
+# the words of a plain shell command after curl, each one of: an option spelled literally; a literal word (never starting with -, ?, * or a quote); a
+# single-quoted word not starting with -; a double-quoted word not starting with - whose only expansions are $name or ${name}, and which starts with $ only
+# as the value of -o or --output. A separator (; && || |, or a word ending in ;) ends the command.
+_SH_OPT = re.compile(r"-[A-Za-z0-9#]+|--[a-z0-9][a-z0-9-]*(?:=[A-Za-z0-9_./:%+@,~-]*)?")
+_SH_LIT = re.compile(r"[A-Za-z0-9_./:%+@,~=][A-Za-z0-9_./:%+@,~=?-]*")
+_SH_SQ = re.compile(r"'(?:[^'-][^']*)?'")
+_SH_DQ = re.compile(r'"((?:[^"\\`$]|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)*)"')
+_SH_SEP, _OUT = {";", "&&", "||", "|"}, ("-o", "--output")
+# the Python form: "curl" first in the list that is the FIRST argument of a subprocess call closed on the line, each later element a plain string literal
+# (or a name right after "-o"/"--output"), the list followed only by plain keyword arguments that cannot change the program or its arguments
+_PY_RUN = re.compile(r"(?:^|[^\w.])subprocess\.(?:run|call|check_call|check_output|Popen) ?$")
+_PY_STR = re.compile(r"""\s*[rRbBuU]{0,2}("[^"\\]*"|'[^'\\]*')\s*(?:,|$)""")
+_PY_NAME = re.compile(r"\s*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*(?:,|$)")
+_PY_KWARGS = re.compile(r"(?:\s*,\s*(?:stdout|stderr|check|timeout|capture_output|text)\s*=\s*[A-Za-z0-9_.]+)*\s*,?\s*")
 
 
 def _shell_command_curl(flat, s, e):
     """True when curl at [s, e) is the command word of a plain shell line: a whole word, only plain words before it, the word before it none, a command
-    keyword or a separator (or ending in ;), and a word after it that is an argument: not an operator, an assignment or a Python operator word (curl = x,
-    curl .x, curl -= 1, if curl and x: and a curl with no argument are not plain commands)."""
-    pre, nxt = flat[:s], flat[e:].split()[:1]
+    keyword or a separator (or ending in ;), the line outside quotes holding no bracket, brace, backtick, backslash, $( or redirection, and EVERY word
+    after it up to a separator positively resolved (_SH_OPT, _SH_LIT, _SH_SQ, _SH_DQ): curl = x, curl .x, curl - 1, if curl -x: f(), curl --lo"cation",
+    curl "$opt", curl $FLAGS, curl > f and a curl with no argument are not plain commands."""
+    pre, nxt = flat[:s], re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"'])+""", flat[e:])   # the words after curl, a quoted part kept in its word
     if not ((s == 0 or flat[s - 1] == " ") and e < len(flat) and flat[e] == " " and nxt and _SHELL_PREFIX.fullmatch(pre)):
         return False
+    if any(x in flat for x in ("$(", "`", "\\")) or any(c in re.sub(r'"[^"]*"|\'[^\']*\'', "", flat) for c in "()[]{}<>\"'"):
+        return False                                    # an unbalanced quote, a bracket, a brace or a redirection outside quotes: not read as shell
     prev = (pre.split() or [""])[-1]
-    return ((prev in _SHELL_PREV or prev.endswith(";")) and nxt[0][0] not in "=.([)],+*:<>%/&|^@!~"
-            and nxt[0] not in _PY_WORDS and not re.fullmatch(r"[-+*/%&|^@<>!:]*=+", nxt[0]))
+    if not (prev in _SHELL_PREV or prev.endswith(";")) or nxt[0] in _PY_WORDS or nxt[0][0] in "=.([)],+*:<>%/&|^@!~" or re.fullmatch(r"[-+*/%&|^@<>!:]*=+", nxt[0]):
+        return False
+    before = "curl"
+    for w in nxt:
+        if w in _SH_SEP:
+            return before != "curl"
+        last = w.endswith(";")
+        w = w[:-1] if last else w
+        dq = _SH_DQ.fullmatch(w)
+        if not (_SH_OPT.fullmatch(w) or _SH_LIT.fullmatch(w) or _SH_SQ.fullmatch(w)
+                or (dq and not dq.group(1).startswith("-") and (not dq.group(1).startswith("$") or before in _OUT))):
+            return False
+        if last:
+            return True
+        before = w
+    return True
 
 
 def _brackets(flat):
-    """The brackets of a line read as Python: {open index: [char, kind, close index or None, parent open index or None]}, strings skipped, a # outside a
-    string ends the line. A [ is a "list" literal only after the line start, (, a plain = (never ==, +=, := or another operator's =), a comma, return or
-    a list's [; any other [ is a "sub" (a subscript or worse); a ( after a name, ) or ] is a "call", any other ( a "group"; a { is a "brace". None when
-    the line cannot be read that simply (a backslash, a triple quote, an f- or t-string, which can hold quotes and brackets, an unterminated string, a
-    mismatched bracket)."""
+    """The brackets of a line read as Python: {open index: (char, close index or None, parent open index or None)}, strings skipped, a # outside a string
+    ends the line. None when the line cannot be read that simply (a backslash, a triple quote, an f- or t-string, which can hold quotes and brackets, an
+    unterminated string, a mismatched bracket)."""
     out, stack, i = {}, [], 0
     while i < len(flat):
         c = flat[i]
@@ -753,58 +806,63 @@ def _brackets(flat):
         if c == "#":
             break
         if c in "([{":
-            prev = flat[:i].rstrip()
-            if c == "[":
-                listy = (prev == "" or prev[-1] in "(," or re.search(r"(?:^|[^\w.])return$", prev)
-                         or (prev[-1] == "=" and (len(prev) == 1 or prev[-2] not in "=!<>+-*/%&|^:@~"))
-                         or (prev[-1] == "[" and bool(stack) and out[stack[-1]][:2] == ["[", "list"]))
-                kind = "list" if listy else "sub"
-            elif c == "(":
-                kind = "call" if prev and (prev[-1].isalnum() or prev[-1] in "_)]") else "group"
-            else:
-                kind = "brace"
-            out[i] = [c, kind, None, stack[-1] if stack else None]
+            out[i] = [c, None, stack[-1] if stack else None]
             stack.append(i)
         elif c in ")]}":
             if not stack or out[stack[-1]][0] != "([{"[")]}".index(c)]:
                 return None
-            out[stack.pop()][2] = i
+            out[stack.pop()][1] = i
         i += 1
     return out
 
 
 def _listed_curl(flat, s, e, br):
-    """True when "curl" at [s, e) is the WHOLE first element of a Python list literal that nothing reads: its [ is a list literal (one optional space
-    before the quote), the list closes on the line, holds no * element and is followed only by , ) ] or the end; every bracket around it is a list, a
-    call or a group (never a subscript or a brace), each enclosing list or group closed on the line and followed the same way."""
-    if br is None or not (s >= 2 and flat[s - 1] == '"' and _LIST_NEXT.match(flat, e)):
+    """True when "curl" at [s, e) is the WHOLE first element of the list that is the FIRST argument of subprocess.run, call, check_call, check_output or
+    Popen: the list and the call both close on the line (a call left open can be extended on the next line), every later element a plain string literal
+    or a name right after "-o"/"--output", and nothing between the list and the call's ) but plain keyword arguments (stdout, stderr, check, timeout,
+    capture_output, text). A list assigned, returned, grouped, nested, subscripted or passed to any other callee is not plain."""
+    if br is None or not (s >= 1 and flat[s - 1] == '"' and flat[e:e + 1] == '"'):
         return False
-    b = s - 2 if flat[s - 2] == "[" else s - 3 if s >= 3 and flat[s - 2] == " " and flat[s - 3] == "[" else None
-    if b is None or b not in br or br[b][1] != "list" or br[b][2] is None or re.search(r"[\[,] ?\*", flat[b:br[b][2]]):
+    j = len(flat[:s - 1].rstrip()) - 1
+    if j < 0 or j not in br or br[j][0] != "[" or br[j][1] is None:
         return False
-    while b is not None:
-        _, kind, close, parent = br[b]
-        if kind in ("sub", "brace"):
+    p, close = br[j][2], br[j][1]
+    if p is None or br[p][0] != "(" or br[p][1] is None or flat[p + 1:j].strip() or not _PY_RUN.search(flat[:p]):
+        return False
+    if not _PY_KWARGS.fullmatch(flat[close + 1:br[p][1]]):
+        return False
+    rest, prev = flat[e + 1:close], "curl"
+    if rest.strip():
+        first = re.match(r"\s*,", rest)
+        if not first:
             return False
-        if kind in ("list", "group") and (close is None or flat[close + 1:].lstrip()[:1] not in _LIST_AFTER):
-            return False
-        b = parent
+        rest = rest[first.end():]
+    while rest.strip():
+        m = _PY_STR.match(rest)
+        if m:
+            prev = m.group(1)[1:-1]
+        else:
+            m, prev = _PY_NAME.match(rest) if prev in _OUT else None, None
+            if not m:
+                return False
+        rest = rest[m.end():]
     return True
 
 
 def _follows_redirects(flat):
-    """False ONLY when every downloader word the inventory recognises is curl in a plain form (the command word of a plain shell line, or the WHOLE first
-    element "curl" of a Python list literal that nothing subscripts, slices, reads or extends) and no word holds an L or a K (-K: a config file) after a
-    single - or is, begins with or abbreviates --location, --follow or --config (a Python string prefix such as b"-L" or rb'-L' is read through).
-    Everything else (wget in any spelling, which follows redirects by default, /usr/bin/curl, curl.exe, b"curl", 'curl', TOOLS["curl"],
-    TOOLS[["curl"][0]], ["curl"][0:1], a comprehension, an f-string, -L, -fsSL, -4fsSL, -#L, -fsSLo"$out", --location*, --loc, --follow, -K, --config)
-    counts as following redirects, fail closed: a false positive only asks for the cosign verifier line."""
+    """False ONLY when every downloader word the inventory recognises is curl in a plain form (the command word of a plain shell line whose every word is
+    resolved, or the WHOLE first element "curl" of the list that is the first argument of a subprocess call closed on the line) and no word holds an L or a
+    K (-K: a config file) after a single - or is, begins with or abbreviates --location, --follow or --config (a Python string prefix such as b"-L" or
+    rb'-L' is read through; ; | & end a word). Everything else (wget in any spelling, which follows redirects by default, /usr/bin/curl, curl.exe,
+    b"curl", 'curl', TOOLS["curl"], ["curl"][0:1], a comprehension, an f-string, an unclosed call, a list assigned or passed to another callee, -L, -fsSL,
+    -4fsSL, -#L, --location*, --loc, --follow, -K, --config, --lo"cation", "$opt", $FLAGS) counts as following redirects, fail closed: a false positive
+    only asks for the cosign verifier line."""
     br = _brackets(flat)
     for m in _DOWNLOADER.finditer(flat):
         s, e = m.span()
         if not (m.group() == "curl" and (_shell_command_curl(flat, s, e) or _listed_curl(flat, s, e, br))):
             return True
-    words = [_STR_PREFIX.sub("", x).strip("\"'") for x in re.split(r"[\s,\[\]()]+", flat)]
+    words = [_STR_PREFIX.sub("", x).strip("\"'") for x in re.split(r"[\s,\[\]();|&]+", flat)]
     long = lambda w: w.split("=", 1)[0]
     return any((w.startswith("-") and not w.startswith("--") and ("L" in w or "K" in w))
                or (w.startswith("--") and len(long(w)) > 2 and any(o.startswith(long(w)) or long(w).startswith(o) for o in _REDIRECT_LONG)) for w in words)
@@ -886,8 +944,8 @@ def print_context(path, line, count="1"):
         text = data.decode("utf-8")
         per = {}
         try:
-            for k, f, bashlike in inv.unmeasured_occurrences({path: text}):    # the scanner's own count, as the check counts it
-                if f == flat and bashlike:
+            for k, f, _ in inv.unmeasured_occurrences({path: text}):    # EVERY scanner copy of the line, a continuation-joined one too (Codex round 4)
+                if f == flat:
                     per[k] = per.get(k, 0) + 1
         except RuntimeError as e:
             per = {None: -1}
