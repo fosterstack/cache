@@ -494,7 +494,8 @@ NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"
 GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 RELEASE_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
-BUILD_WITH = {"hostile": "${{ inputs.dry-run == true && github.ref_type == 'branch' }}"}
+RC_PUSH = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
+BUILD_WITH = {"hostile": "${{ %s }}" % RC_PUSH}      # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
 # PR 1's stage-sign.yml takes exactly ONE input, digests (Build's record is downloaded by the fixed artifact name witness-build, not passed). PR 1's
 # placeholder needs.build.outputs.checksums (raw checksums.txt text) is replaced at the cutover by Build's digests output, the digests.json text.
@@ -548,7 +549,7 @@ def graph(path):
         if name == "rebuild" and "with" in job:
             bad.append("rebuild may not pass inputs (stage-reproducibility.yml takes none; a mode there would make a snapshot Rebuild), got %s" % job["with"])
         if name == "build" and job.get("with") != BUILD_WITH:
-            bad.append("build must pass exactly with: %s (the hostile Build step runs only in a dry run on a branch), got %s" % (BUILD_WITH, job.get("with")))
+            bad.append("build must pass exactly with: %s (the hostile Build step runs only on a push of an rc tag), got %s" % (BUILD_WITH, job.get("with")))
         if name == "sign":
             if job.get("permissions") != SIGN_PERMISSIONS:
                 bad.append("sign must hold exactly the permissions %s, got %s" % (SIGN_PERMISSIONS, job.get("permissions")))

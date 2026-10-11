@@ -182,7 +182,7 @@ jobs:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
     with:
-      hostile: ${{ inputs.dry-run == true && github.ref_type == 'branch' }}
+      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
   sign:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     needs: build
@@ -754,7 +754,7 @@ gr g39 "005-AC5 sign passing an extra input" "      digests: \${{ needs.build.ou
 gr g40 "005-AC5 sign taking the digests from another job" "needs.build.outputs.digests" "needs.rebuild.outputs.digests" "sign must pass exactly with"
 gr g41 "005-AC5 sign taking PR 1's placeholder (raw checksums.txt text) instead of the digests.json text" "needs.build.outputs.digests" \
        "needs.build.outputs.checksums" "sign must pass exactly with"
-BHOST="hostile: \${{ inputs.dry-run == true && github.ref_type == 'branch' }}"
+BHOST="hostile: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
 gr g48 "005-AC5 build also passes mode: snapshot (a dry run builds the same way as a release)" "      $BHOST" "      $BHOST\n      mode: snapshot" \
        "build must pass exactly with"
 gr g49 "005-AC5 build passes no hostile input (the dry run's hostile step would never run)" "    with:\n      $BHOST\n" "" \
@@ -1493,6 +1493,37 @@ for kind in assemble rebuild-assemble; do
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
+# Codex A r2 blocker 1: an rc tag FAILS CLOSED at Release until PR 4's verify-and-stop exists. A job rc-refusal runs on an rc-tag push and exits 1; the old
+# publishing path (the five jobs that start it, and promotion) is skipped on an rc tag, so nothing reaches a registry credential step (advisor 0383)
+cat > "$work/rcgate.py" <<'PY'
+import sys, yaml
+d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
+RC = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
+bad = []
+r = jobs.get("rc-refusal")
+if not r: bad.append("rc-refusal job missing")
+else:
+    if str(r.get("if", "")).strip() != "${{ %s && !inputs.dry-run }}" % RC: bad.append("rc-refusal if is not the rc-tag push condition: %r" % r.get("if"))
+    if r.get("needs") or r.get("uses") or r.get("environment") or r.get("permissions") != {"contents": "read"}: bad.append("rc-refusal has needs, uses, environment or other permissions")
+    steps = r.get("steps") or []
+    if len(steps) != 1 or "exit 1" not in str(steps[0].get("run", "")) or steps[0].get("uses") or "continue-on-error" in steps[0] or "continue-on-error" in r:
+        bad.append("rc-refusal is not exactly one run step that exits 1")
+for jn in ("scans", "acceptance-artifacts", "acceptance", "acceptance-egress", "acceptance-k8s", "acceptance-predicate", "authorization", "promotion"):
+    c = str((jobs.get(jn) or {}).get("if", ""))
+    if "!inputs.dry-run" not in c or "!contains(github.ref_name, '-rc')" not in c: bad.append("%s does not skip an rc tag: %r" % (jn, c))
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+PY
+rcg() { # rcg ok|caught LABEL [sed-expr]
+  local f="$work/rcg-$$.yml" out rc=0
+  if [ -n "${3:-}" ]; then sed -e "$3" "$root/.github/workflows/release.yml" > "$f"; else cp "$root/.github/workflows/release.yml" "$f"; fi
+  out=$(python3 "$work/rcgate.py" "$f") || rc=$?
+  if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
+rcg ok "the real release.yml refuses an rc tag (rc-refusal) and skips the old publishing path on it"
+rcg caught "promotion that does not skip an rc tag is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
+rcg caught "scans that does not skip an rc tag is caught" '/^  scans:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
+rcg caught "an rc-refusal that no longer exits 1 is caught" '/^  rc-refusal:/,/^  [a-z]/ s/exit 1/true/'
+rcg caught "an rc-refusal that also runs on a final tag is caught" "/^  rc-refusal:/,/^  [a-z]/ s/ \&\& contains(github.ref_name, '-rc')//"
+rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-gone:/'
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
@@ -1705,7 +1736,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=584
+EXPECT=590
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
