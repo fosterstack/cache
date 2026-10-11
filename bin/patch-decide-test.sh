@@ -673,10 +673,12 @@ vc_ = P.vex_changes(vd(dict(Sa, **{"@id": "urn:x"}), dict(Sb, **{"@id": "urn:y"}
 check("AC8 VEX dup-scope: an @id on both sides pairs its statement whatever the order",
       [v["change"] for v in vc_] == ["changed: status_notes"] and "urn:y" in vc_[0].get("statement", ""), vc_)
 vc_ = P.vex_changes(vd(dict(VS, **{"@id": "urn:x"})), vd(VS))
-check("AC8 VEX: @id dropped from the only statement of a CVE: 'changed: @id'", [v["change"] for v in vc_] == ["changed: @id"], vc_)
+# r4 (A R3-5): '@' is never bare (a mention of the user "id" otherwise), so the field name prints as its quoted literal
+AT_ = lambda f: '`"%s"`' % f if f.startswith("@") else f
+check("AC8 VEX: @id dropped from the only statement of a CVE: 'changed: @id'", [v["change"] for v in vc_] == ["changed: " + AT_("@id")], vc_)
 vc_ = P.vex_changes(vd(vs(products=D1, **{"@id": "urn:x"}), vs(products=D2)), vd(vs(products=D2), vs(products=D1)))
 check("AC8 VEX: @id on one side only, distinct scopes: paired by its unique scope, 'changed: @id'",
-      [v["change"] for v in vc_] == ["changed: @id"] and vc_[0].get("products") == [D1[0]["@id"]], vc_)
+      [v["change"] for v in vc_] == ["changed: " + AT_("@id")] and vc_[0].get("products") == [D1[0]["@id"]], vc_)
 # B F3: output order does not follow input order
 F3 = (vs(products=sub("urn:a"), status="fixed"), vs(products=sub("urn:b"), status="under_investigation"))
 check("AC8 VEX order (B F3): first patch, one scope, two subcomponents: the same entries in the same order either way",
@@ -704,7 +706,7 @@ for field, val in (("@id", "urn:s2"), ("version", 2), ("timestamp", "t2"), ("las
             continue
         vc_ = P.vex_changes(vd(o_), vd(n_))
         check("AC8 VEX field %s %s (%r): 'changed: %s'" % (field, label, val, field) if label == "changed" else
-              "AC8 VEX field %s %s: 'changed: %s'" % (field, label, field), [v["change"] for v in vc_] == ["changed: " + field], vc_)
+              "AC8 VEX field %s %s: 'changed: %s'" % (field, label, field), [v["change"] for v in vc_] == ["changed: " + AT_(field)], vc_)
 vc_ = P.vex_changes(vd(FULL), vd(dict(FULL, status="affected")))
 check("AC8 VEX field status changed: 'changed from <old>'", [v["change"] for v in vc_] == ["changed from not_affected"], vc_)
 for label, n_ in (("vulnerability.description", dict(FULL, vulnerability={"name": "CVE-7", "description": "new"})),
@@ -730,7 +732,7 @@ for field in ("@context", "@id", "author", "role", "timestamp", "last_updated", 
                           ("added", {k: v for k, v in DOC.items() if k != field}, DOC)):
         got_ = vex_part(P.notes("v0.2.3", [], P.vex_changes(o_, n_)))
         check("AC8 VEX doc field %s %s: one document-fields line naming it" % (field, label),
-              got_ == "- document fields changed (%s); no statement changed" % field, got_)
+              got_ == "- document fields changed (%s); no statement changed" % AT_(field), got_)
 got_ = vex_part(P.notes("v0.2.3", [], P.vex_changes(DOC, dict(DOC, version=True))))
 check("AC8 VEX doc: version 1 -> true is a change (type-sensitive)", got_ == "- document fields changed (version); no statement changed", got_)
 got_ = vex_part(P.notes("v0.2.3", [], P.vex_changes(DOC, dict(DOC, **{"x-extension": {"k": 1}}))))
