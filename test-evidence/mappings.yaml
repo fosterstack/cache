@@ -797,11 +797,24 @@ mappings:
   - ac: REQ-AUD-018-AC3
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
-      - { type: inspection, ref: ".github/agent/bin/tests/test_review_gate.py covers every failing reason of the review gate; it still carries only the AC4 proves header because a change to it needs a real codex entry (header follow-up) (re-verified 2026-10-09)" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml: the auditor-review-gate check on pull_request_target" }
   - ac: REQ-AUD-018-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+  - ac: REQ-AUD-018-AC5
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+  - ac: REQ-AUD-018-AC6
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+  - ac: REQ-AUD-018-AC7
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+  - ac: REQ-AUD-018-AC8
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
   - ac: REQ-AUD-019-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
