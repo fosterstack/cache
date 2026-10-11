@@ -539,6 +539,15 @@ func releaseArchives(text string, lineBuilds []relBuild) (archives []releaseArch
 	return archives, problems
 }
 
+// contentProblems is a stub until the guard lands (red commit).
+func contentProblems(_, _ string) []string { return nil }
+
+// releaseOutputs is a stub until the binary output paths are resolved (red commit).
+func releaseOutputs(text string, lineBuilds []relBuild) ([]releaseArchive, map[string]string, []string) {
+	a, p := releaseArchives(text, lineBuilds)
+	return a, map[string]string{}, p
+}
+
 // checksumName is the checksum file name of the committed .goreleaser.yaml, pinned: it is a literal (no
 // template), and it is the name RELEASING.md, docs/install.md and docs/verify-images.md tell users to verify.
 const checksumName = "checksums.txt"
@@ -684,6 +693,18 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"checksum section removed":       edit("checksum:\n  name_template: \"checksums.txt\"\n", ""),
 		"checksum without a name":        edit("checksum:\n  name_template: \"checksums.txt\"\n", "checksum: {}\n"),
 		"second sbom definition":         edit("  - artifacts: archive\n", "  - artifacts: archive\n  - artifacts: archive\n"),
+		// Round-5 regressions (B1): every build's binary output path is resolved (dist/<id>_<os>_<arch>_<level>/<binary>)
+		// and enters the collision check; a binary name that leaves its build directory, holds a path separator or a
+		// template, or is missing is refused.
+		"binary escapes onto an archive path": edit("    binary: fscache\n", "    binary: ../fscache_{{ .Version }}_linux_amd64.tar.gz\n"),
+		"binary climbs out of its directory":  edit("    binary: fscache\n", "    binary: ../fscache\n"),
+		"binary is dot-dot":                   edit("    binary: fscache\n", "    binary: ..\n"),
+		"binary holds a path separator":       edit("    binary: fscache\n", "    binary: bin/fscache\n"),
+		"binary holds a backslash":            edit("    binary: fscache\n", "    binary: bin\\\\fscache\n"),
+		"binary is templated":                 edit("    binary: fscache\n", "    binary: \"{{ .ProjectName }}\"\n"),
+		"binary is absolute":                  edit("    binary: fscache\n", "    binary: /tmp/fscache\n"),
+		"binary missing":                      edit("    binary: fscache\n", ""),
+		"binary empty":                        edit("    binary: fscache\n", "    binary: \"\"\n"),
 	}
 	for name, text := range archiveMutants {
 		if _, dup := mutants[name]; dup {
@@ -697,6 +718,15 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 			t.Errorf("mutant %q passes the release-config check", name)
 		}
 		t.Logf("%s: refused: %v", name, ps)
+	}
+	// Round-5 regression (B1): the binary output paths of the real configuration are resolved, one per build and
+	// platform, each inside its own build directory.
+	builds, _ := parseBuilds(real)
+	_, outputs, _ := releaseOutputs(real, builds)
+	for _, want := range []string{"fscache_linux_amd64_v1/fscache", "fscache_linux_arm64_v8.0/fscache", "fscache-fips_linux_amd64_v1/fscache-fips", "fscache-fips_linux_arm64_v8.0/fscache-fips"} {
+		if _, ok := outputs[want]; !ok {
+			t.Errorf("the release outputs do not hold the binary %s: %v", want, outputs)
+		}
 	}
 }
 
@@ -1242,6 +1272,29 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"two counts before the noun":             install + "\nEvery release ships six or four archives.\n",
 		"link title interrupts a count":          install + "\nEvery release ships [six](https://example.com/a \"4\") archives.\n",
 		"bare URL interrupts a count":            install + "\nEvery release ships six https://example.com/4 archives.\n",
+		// Round-5 regressions (A3, B2, B4): a shipping claim with a partitive count is a total; a label and its value
+		// across a colon are one clause; a link destination with balanced parentheses is read whole; a link this
+		// check does not read is refused; a platform name in a link destination is refused.
+		"ships three of the four archives":         install + "\nEach release ships three of the four archives.\n",
+		"three of the four archives are shipped":   install + "\nThree of the four archives are shipped with each release.\n",
+		"label and value across a colon":           install + "\nRelease archives: six.\n",
+		"total label and value across a colon":     install + "\nTotal release archives: six.\n",
+		"nested destination splits Windows":        install + "\nNative binaries for Win[do](https://example.com/a(b))ws are attached.\n",
+		"nested destination splits a count":        install + "\nEvery release ships si[x](https://example.com/a(b)) archives.\n",
+		"nested destination hides a wrong count":   install + "\nEvery release ships [six](https://example.com/a(4)) archives.\n",
+		"title with a parenthesis hides a count":   install + "\nEvery release ships [six](https://example.com/a \"x)\") archives.\n",
+		"unclosed link destination":                install + "\nEvery release ships [four](https://example.com/a(b archives.\n",
+		"destination names windows":                install + "\nNative binaries are [here](https://example.com/windows).\n",
+		"nested destination names macOS":           install + "\nNative binaries are [here](https://example.com/a(macos)).\n",
+		"reference label names darwin":             install + "\nNative binaries are [here][darwin].\n",
+		"inline html is refused outright":          install + "\nEvery release ships <b>four</b> archives.\n",
+		"inline html in a word is refused":         install + "\nEvery release ships fo<b>ur</b> archives.\n",
+		"autolink is refused outright":             install + "\nSee <https://example.com/linux> for the archives.\n",
+		"unpinned comment is refused outright":     install + "\nThe four archives are signed; <!-- a comment --> each is a tar.gz.\n",
+		"image tag splits Windows":                 install + "\nNative binaries for Win<img alt=\"\" width=\"0\" height=\"0\">dows are attached.\n",
+		"combining grapheme joiner splits Windows": install + "\nNative binaries for Win͏dows are attached.\n",
+		"combining grapheme joiner splits six":     install + "\nEvery release ships si͏x archives.\n",
+		"entity for a joiner splits Windows":       install + "\nNative binaries for Win&#x034F;dows are attached.\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -1258,8 +1311,6 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"There is no archive for this machine.",
 		"All **four** Linux archives are signed.",
 		"Every release ships a `checksums.txt` covering all four Linux archives.",
-		"Every release ships <b>four</b> archives.",
-		"Every release ships fo<b>ur</b> archives.",
 		"All four of the release archives are signed.",
 		"Two of the four archives are FIPS builds.",
 		"Pick one of the archives; two of them are arm64 builds.",
@@ -1268,7 +1319,15 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"Every release ships four [archives](https://example.com/v2/4).",
 		"See https://example.com/v6 for the four archives.",
 		"All of the four archives are signed.",
-		"The four archives are signed; <!-- a comment --> each is a tar.gz.",
+		// Round-5 precision (A4, B2): a link destination or title is not visible text, so a count in it is not read;
+		// a destination with balanced parentheses ends at its own closing parenthesis.
+		"Every release ships [four](six-archives.md) archives.",
+		"Every release ships [four](https://example.com/a(6)) archives.",
+		"Every release ships [four](https://example.com/a \"six)\") archives.",
+		"Release archives: four.",
+		"Two of the four archives are FIPS builds; each release ships all four archives.",
+		"Run `kubectl exec -it <pod> -- sh` to look inside the four archives' container.",
+		"The version is pinned <!-- pinned: upstream --> for all four archives.",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
@@ -1366,6 +1425,17 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"character reference inside Windows": notes + "- A signed installer for Win&#100;ows ships with this release.\n",
 		"comment inside Windows":             notes + "- A signed installer for Win<!--x-->dows ships with this release.\n",
 		"all six of the four archives":       notes + "- All six of the four archives are signed.\n",
+		// Round-5 regressions (B5, B2, A2): the sentence counts only as the start of a notes entry that ends with
+		// the 0390 citation; anywhere else (a paragraph, a prefixed or emphasized bullet, another citation) it is
+		// refused. A nested link destination splitting a name, and invisible characters, are refused.
+		"sentence as an uncited paragraph":  strings.Replace(notes, "- "+notesSentence+" The release archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).\n", "\n"+notesSentence+"\n", 1),
+		"sentence in a prefixed bullet":     strings.Replace(notes, "- "+notesSentence, "- Note: "+notesSentence, 1),
+		"sentence in an emphasized bullet":  strings.Replace(notes, "- "+notesSentence, "- **"+notesSentence+"**", 1),
+		"sentence with another citation":    strings.Replace(notes, "(owner decision, Oct 9; advisor 0390)", "(advisor 0130)", 1),
+		"sentence entry without a citation": strings.Replace(notes, " (owner decision, Oct 9; advisor 0390)", "", 1),
+		"nested destination splits Windows": notes + "- A signed installer for Win[do](https://example.com/a(b))ws ships with this release (advisor 0130).\n",
+		"joiner splits Windows":             notes + "- A signed installer for Win͏dows ships with this release (advisor 0130).\n",
+		"image tag splits Windows":          notes + "- A signed installer for Win<img alt=\"\">dows ships with this release (advisor 0130).\n",
 	}
 	for name, text := range mutants {
 		if text == notes {
@@ -1405,6 +1475,19 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 	}
 	if ps := checkNotes(notes, published, archives); len(ps) > 0 {
 		t.Errorf("the notes and the changelog both carrying the sentence are refused: %v", ps)
+	}
+	// Round-5 regression (B5): the changelog carries the sentence only as a published entry that ends with the
+	// 0390 citation; an uncited paragraph or an entry with another citation does not count.
+	for name, cl := range map[string]string{
+		"an uncited changelog paragraph":       "# Changelog\n\n## v0.3.1 — patch release\n\n" + notesSentence + "\n",
+		"a changelog entry with another cite":  "# Changelog\n\n## v0.3.1 — patch release\n\n### Behavior changes\n- " + notesSentence + " (advisor 0130).\n",
+		"a prefixed changelog entry":           "# Changelog\n\n## v0.3.1 — patch release\n\n### Behavior changes\n- Note: " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
+		"a changelog entry split by a joiner":  strings.Replace(published, "macOS", "mac͏OS", 1),
+		"a changelog entry with no line start": "# Changelog\n\nSee: - " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
+	} {
+		if ps := checkNotes(cleared, cl, archives); len(ps) == 0 {
+			t.Errorf("the cleared notes pass with %s", name)
+		}
 	}
 }
 
@@ -1620,20 +1703,30 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		{"comment names Windows", edit(lastRef, lastRef+"      # Windows is a documented equivalent\n"), "Windows"},
 		{"second document", real + "---\nnote: darwin is a documented equivalent\n", "darwin"},
 		// Round-3 regressions (both seats): inline HTML inside a word, a bracketed name, comments wrapped.
-		{"html tag inside Windows", edit(plat2, "so a missing variant/arch fails; Win<b>dows</b> is the documented equivalent\" }\n"), "Windows"},
-		{"html tag starts Windows", edit(plat2, "so a missing variant/arch fails; <b>Win</b>dows is the documented equivalent\" }\n"), "Windows"},
+		{"html tag inside Windows", edit(plat2, "so a missing variant/arch fails; Win<b>dows</b> is the documented equivalent\" }\n"), "inline HTML"},
+		{"html tag starts Windows", edit(plat2, "so a missing variant/arch fails; <b>Win</b>dows is the documented equivalent\" }\n"), "inline HTML"},
 		{"bracketed windows", edit(plat2, "so a missing variant/arch fails; <windows> is the documented equivalent\" }\n"), "windows"},
 		{"comment wraps Apple Silicon", edit(lastRef, lastRef+"      # Apple\n      # Silicon binaries are available.\n"), "Apple"},
 		{"comment wraps OS X", edit(lastRef, lastRef+"      # runs on OS\n      # X hosts\n"), "OS"},
 		{"line comment wraps Apple Silicon", edit(lastRef, lastRef+"      - { type: inspection, ref: x } # Apple\n      # Silicon binaries\n"), "Apple"},
 		// Round-4 regressions (A1, B3): character references, unlisted elements, comments and a quoted ">" inside
 		// an attribute, each inside a name.
-		{"character reference inside Windows", edit(plat2, "so a missing variant/arch fails; Win&#100;ows is the documented equivalent\" }\n"), "Windows"},
-		{"named reference inside Apple Silicon", edit(plat2, "so a missing variant/arch fails; Apple&nbsp;Silicon is the documented equivalent\" }\n"), "Apple"},
-		{"unlisted element inside Windows", edit(plat2, "so a missing variant/arch fails; Win<label>dows</label> is the documented equivalent\" }\n"), "Windows"},
-		{"comment inside Windows", edit(plat2, "so a missing variant/arch fails; Win<!--x-->dows is the documented equivalent\" }\n"), "Windows"},
-		{"quoted > in an attribute", edit(plat2, "so a missing variant/arch fails; Win<span title='>'>dows</span> is the documented equivalent\" }\n"), "Windows"},
-		{"character reference in a comment", edit(lastRef, lastRef+"      # Win&#x64;ows is a documented equivalent\n"), "Windows"},
+		{"character reference inside Windows", edit(plat2, "so a missing variant/arch fails; Win&#100;ows is the documented equivalent\" }\n"), "character reference"},
+		{"named reference inside Apple Silicon", edit(plat2, "so a missing variant/arch fails; Apple&nbsp;Silicon is the documented equivalent\" }\n"), "character reference"},
+		{"unlisted element inside Windows", edit(plat2, "so a missing variant/arch fails; Win<label>dows</label> is the documented equivalent\" }\n"), "inline HTML"},
+		{"comment inside Windows", edit(plat2, "so a missing variant/arch fails; Win<!--x-->dows is the documented equivalent\" }\n"), "inline HTML"},
+		{"quoted > in an attribute", edit(plat2, "so a missing variant/arch fails; Win<span title='>'>dows</span> is the documented equivalent\" }\n"), "inline HTML"},
+		{"character reference in a comment", edit(lastRef, lastRef+"      # Win&#x64;ows is a documented equivalent\n"), "character reference"},
+		// Round-5 regressions (B2, A2, B3): a nested link destination splitting a name; an invisible character
+		// (raw, or written as a YAML escape the loader decodes, or as an entity) and inline HTML anywhere are
+		// refused outright, naming the line.
+		{"nested destination splits Windows", edit(plat2, "so a missing variant/arch fails; Win[do](https://example.com/a(b))ws is the documented equivalent\" }\n"), "Windows"},
+		{"joiner splits Windows", edit(plat2, "so a missing variant/arch fails; Win͏dows is the documented equivalent\" }\n"), "invisible"},
+		{"YAML escape decodes to a joiner", edit(plat2, "so a missing variant/arch fails; Win\\u034Fdows is the documented equivalent\" }\n"), "invisible"},
+		{"YAML escape decodes to a zero-width space", edit(plat2, "so a missing variant/arch fails; Win\\u200Bdows is the documented equivalent\" }\n"), "invisible"},
+		{"YAML escape decodes to a tag", edit(plat2, "so a missing variant/arch fails; Win\\x3Cb>dows is the documented equivalent\" }\n"), "inline HTML"},
+		{"entity for a joiner", edit(plat2, "so a missing variant/arch fails; Win&#x034F;dows is the documented equivalent\" }\n"), "character reference"},
+		{"image tag splits Windows", edit(plat2, "so a missing variant/arch fails; Win<img alt=''>dows is the documented equivalent\" }\n"), "inline HTML"},
 	}
 	// A test function that is commented out, or that is not a top-level test, does not authorize a reference.
 	const fake = "package platforms\n\nimport \"testing\"\n\n/*\nfunc TestDarwin(t *testing.T) {\n}\n*/\n\n// func TestMacOS(t *testing.T) {\n\nvar s = `\nfunc TestWindows(t *testing.T) {\n`\n\nfunc TestReal(t *testing.T) {}\n"
@@ -1661,14 +1754,23 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		"amd64_only_test.go":     "//go:build linux && amd64\n\npackage fake\n\nimport \"testing\"\n\nfunc TestAmd64Only(t *testing.T) {}\n",
 		"legacy_ignore_test.go":  "// +build ignore\n\npackage fake\n\nimport \"testing\"\n\nfunc TestOSX(t *testing.T) {}\n",
 		"other_external_test.go": "package fake_test\n\nimport \"testing\"\n\nfunc TestExternal(t *testing.T) {}\n",
+		// Round-5 regressions (A5, B7, B6): a name go test does not run (a lower-case letter after Test) is not a
+		// test; an architecture feature tag is the target's, not the host's (amd64.v1 holds for amd64 only,
+		// arm64.v8.0 for arm64 only), so a file for one of them declares nothing.
+		"helper_test.go":      "package fake\n\nimport \"testing\"\n\nfunc Testdarwin(t *testing.T) {}\n",
+		"amd64_level_test.go": "//go:build amd64.v1\n\npackage fake\n\nimport \"testing\"\n\nfunc TestAmd64Level(t *testing.T) {}\n",
+		"arm64_level_test.go": "//go:build arm64.v8.0\n\npackage fake\n\nimport \"testing\"\n\nfunc TestArm64Level(t *testing.T) {}\n",
+		"both_levels_test.go": "//go:build amd64.v1 || arm64.v8.0\n\npackage fake\n\nimport \"testing\"\n\nfunc TestBothLevels(t *testing.T) {}\n",
+		"amd64_v3_test.go":    "//go:build amd64.v3\n\npackage fake\n\nimport \"testing\"\n\nfunc TestAmd64V3(t *testing.T) {}\n",
+		"underscore_test.go":  "package fake\n\nimport \"testing\"\n\nfunc Test_linux(t *testing.T) {}\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	selected := testsInDir(t, dir)
-	if len(selected) != 2 || !selected["TestReal"] || !selected["TestExternal"] {
-		t.Errorf("the tests declared in build-selected files are %v, want only TestReal and TestExternal", selected)
+	if len(selected) != 4 || !selected["TestReal"] || !selected["TestExternal"] || !selected["TestBothLevels"] || !selected["Test_linux"] {
+		t.Errorf("the tests declared in build-selected files are %v, want only TestReal, TestExternal, TestBothLevels and Test_linux", selected)
 	}
 	withSelected := map[string]bool{}
 	for k := range tests {
@@ -1679,6 +1781,9 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 	}
 	if ps := checkEvidenceMappings(edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/platforms:TestDarwin\" }\n"), withSelected); !strings.Contains(strings.Join(ps, "\n"), "Darwin") {
 		t.Errorf("a test declared only in an ignored file authorizes a ref: %v", ps)
+	}
+	if ps := checkEvidenceMappings(edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/platforms:Testdarwin\" }\n"), withSelected); !strings.Contains(strings.Join(ps, "\n"), "darwin") {
+		t.Errorf("a function go test does not run (Testdarwin) authorizes a ref: %v", ps)
 	}
 	for _, m := range mutants {
 		ps := checkEvidenceMappings(m.text, withFake)
@@ -1716,5 +1821,127 @@ func TestNotScannedListIsCurrent(t *testing.T) {
 		if !flagged {
 			t.Errorf("%s: nothing in it names a non-Linux platform any more; remove it from notScanned", path)
 		}
+	}
+}
+
+// allowedMarkup are the only pieces of angle-bracket markup the guard lets through outside a Markdown code span or
+// code fence, each matched exactly with its reason. A new entry is reviewed; each must still be used (a stale entry
+// fails). files is the files it applies to ("*.md": every Markdown file the guard reads).
+var allowedMarkup = []struct{ files, text, why string }{
+	{"*.md", "<!-- pinned: upstream -->", "the version-literals marker bin/check-version-literals.sh reads (an upstream version, not ours); renders nothing"},
+	{"*.md", "<!-- pinned: historical -->", "the version-literals marker bin/check-version-literals.sh reads (a historical version); renders nothing"},
+	{mappingsFile, "\"<package dir>:<TestName>\"", "the placeholder form of a go-test ref, in a YAML comment; the mappings file is never rendered as HTML"},
+}
+
+// contentFiles are the files the content guard reads: the scanned docs, the next release notes and the evidence
+// mappings, the documents this project writes and reviews.
+func contentFiles() []string {
+	return append(append([]string{}, docsScanned...), notesFile, mappingsFile)
+}
+
+// proves: REQ-PLAT-001-AC1
+// TestDocsHoldNoInlineHTMLOrInvisibleCharacters: the scanned docs, the next release notes and the evidence
+// mappings hold no inline HTML (outside Markdown code spans and code fences, other than the listed exceptions), no
+// character reference and no invisible or non-printing character; each listed exception is still used.
+func TestDocsHoldNoInlineHTMLOrInvisibleCharacters(t *testing.T) {
+	used := map[string]bool{}
+	for _, f := range contentFiles() {
+		text := readOptional(t, f) // the release flow may remove the notes file
+		for _, p := range contentProblems(f, text) {
+			t.Error(p)
+		}
+		for _, m := range allowedMarkup {
+			if (m.files == f || (m.files == "*.md" && strings.HasSuffix(f, ".md"))) && strings.Contains(text, m.text) {
+				used[m.text] = true
+			}
+		}
+	}
+	for _, m := range allowedMarkup {
+		if m.why == "" {
+			t.Errorf("allowed markup %q has no reason", m.text)
+		}
+		if !used[m.text] {
+			t.Errorf("allowed markup %q is no longer used (remove it from allowedMarkup)", m.text)
+		}
+	}
+}
+
+// proves: REQ-PLAT-001-AC1
+// TestContentGuardRefusesMutants: the content guard refuses outright, naming file and line, every invisible or
+// non-printing character (Unicode Cc other than tab, Cf, Mn, Me, Mc, Zl, Zp, every space other than the ASCII
+// space, the default-ignorable letters, unassigned and private-use code points, invalid UTF-8), every form of inline
+// HTML (open and closing tags, comments other than the listed markers, processing instructions, declarations,
+// CDATA, autolinks, a backslash-escaped tag) outside a Markdown code span or fence, and every character reference;
+// placeholders inside code spans (also across a soft line break) and code fences, the listed markers and visible
+// punctuation pass. In the mappings file (YAML, not Markdown) angle-bracket markup is refused everywhere but the
+// listed placeholder.
+func TestContentGuardRefusesMutants(t *testing.T) {
+	const md = "docs/install.md"
+	invisible := map[string]string{
+		"soft hyphen": "\u00ad", "zero-width space": "\u200b", "zero-width joiner": "\u200d", "word joiner": "\u2060",
+		"byte order mark": "\ufeff", "left-to-right mark": "\u200e", "bidi override": "\u202e",
+		"combining grapheme joiner": "\u034f", "combining acute accent": "\u0301", "enclosing circle": "\u20dd",
+		"spacing mark": "\u0903", "variation selector": "\ufe0f", "mongolian vowel separator": "\u180e",
+		"tag letter": "\U000e0041", "line separator": "\u2028", "paragraph separator": "\u2029", "next line": "\u0085",
+		"null": "\x00", "escape": "\x1b", "carriage return": "\r", "delete": "\x7f", "no-break space": "\u00a0",
+		"ideographic space": "\u3000", "hangul filler": "\u3164", "hangul choseong filler": "\u115f",
+		"halfwidth hangul filler": "\uffa0", "braille blank": "\u2800", "private use": "\ue000",
+		"khmer inherent vowel": "\u17b4", "unassigned": "\u0378", "invalid UTF-8": "\xff",
+	}
+	for _, f := range []string{md, notesFile, mappingsFile} {
+		for name, ch := range invisible {
+			ps := contentProblems(f, "a first line\nNative binaries for Win"+ch+"dows are attached.\n")
+			if !strings.Contains(strings.Join(ps, "\n"), f+":2: invisible") {
+				t.Errorf("%s: %s is not refused at line 2 as invisible: %v", f, name, ps)
+			}
+		}
+	}
+	html := map[string]string{
+		"open tag": "Win<b>dows</b>", "closing tag": "Windows</b>", "image": "Win<img alt=\"\" width=\"0\">dows",
+		"break": "six<br>archives", "comment": "Win<!--x-->dows", "unpinned comment": "four <!-- a comment --> archives",
+		"processing instruction": "Win<?x?>dows", "declaration": "Win<!X y>dows", "CDATA": "Win<![CDATA[x]]>dows",
+		"autolink": "see <https://example.com/linux>", "e-mail autolink": "mail <a@example.com>",
+		"unknown element": "Win<foo-bar x=1>dows", "bracketed name": "<windows>", "escaped tag": "Win\\<b>dows",
+		"tag open at a line end": "Win<span", "quoted > in an attribute": "Win<span title=\">\">dows</span>",
+		"tag after an unmatched backtick": "a ` b <b>x</b>", "tag after an escaped backtick": "a \\`<b>x</b>`",
+	}
+	for _, f := range []string{md, notesFile, mappingsFile} {
+		for name, s := range html {
+			ps := contentProblems(f, "a first line\n"+s+"\n")
+			if !strings.Contains(strings.Join(ps, "\n"), f+":2: inline HTML") {
+				t.Errorf("%s: %s is not refused at line 2 as inline HTML: %v", f, name, ps)
+			}
+		}
+	}
+	for _, f := range []string{md, notesFile, mappingsFile} {
+		for _, s := range []string{"Win&#100;ows", "Win&#x64;ows", "Apple&nbsp;Silicon", "Win&shy;dows", "a &amp; b", "Win&#x034F;dows"} {
+			ps := contentProblems(f, "a first line\n"+s+"\n")
+			if !strings.Contains(strings.Join(ps, "\n"), f+":2: character reference") {
+				t.Errorf("%s: %q is not refused at line 2 as a character reference: %v", f, s, ps)
+			}
+		}
+	}
+	for _, s := range []string{
+		"Run `kubectl exec -it <pod> -- sh`.",
+		"use `kubectl debug <pod> -it --copy-to=<new-name>\n--image=...`, and more",
+		"```sh\nkubectl debug -it <pod> --target=<container> -- sh\n```",
+		"~~~\nremote<HttpBuildCache> {\n~~~",
+		"Built with `GOFIPS140=v1.0.0` <!-- pinned: upstream -->, selecting the module.",
+		"Cut four times. <!-- pinned: historical -->",
+		"Visible punctuation: a — b – c · d → e × f ✓ g § h, x < y and y > x.",
+		"\tan indented line with a tab",
+	} {
+		if ps := contentProblems(md, s+"\n"); len(ps) > 0 {
+			t.Errorf("%q is refused: %v", s, ps)
+		}
+	}
+	if ps := contentProblems(mappingsFile, "# go-test refs are \"<package dir>:<TestName>\" and the validator fails\n"); len(ps) > 0 {
+		t.Errorf("the listed mappings placeholder is refused: %v", ps)
+	}
+	if ps := contentProblems(mappingsFile, "# run `kubectl exec <pod>` first\n"); !strings.Contains(strings.Join(ps, "\n"), mappingsFile+":1: inline HTML") {
+		t.Errorf("a placeholder in the mappings file (YAML, not Markdown: no code span) is not refused: %v", ps)
+	}
+	if ps := contentProblems(notesFile, "Cut four times. <!-- pinned: upstream -->\n"); len(ps) > 0 {
+		t.Errorf("a listed marker in the notes is refused: %v", ps)
 	}
 }

@@ -537,6 +537,15 @@ check("0390 the cleared notes pass the Linux-only assertion (the entry is gone, 
 check("0390 an uncited Linux-only entry fails the Linux-only assertion",
       not linux_only_ok(["No macOS or Windows binaries are shipped; use the container image (advisor 0130)."]))
 check("0390 a repeated Linux-only entry fails the Linux-only assertion", not linux_only_ok([LO_ENTRY, LO_ENTRY]))
+# Codex #293 r5 B5: the sentence counts only as the start of a notes entry ending with the 0390 citation; an uncited
+# paragraph, a prefixed or emphasized bullet and an entry with another citation each fail the Linux-only assertion
+LO_SENT = "No macOS or Windows binaries are shipped; use the container image."
+for name, bad in [("an uncited paragraph", NRN + "\n" + LO_SENT + "\n"),
+                  ("a prefixed bullet", NRN + "- Note: " + LO_ENTRY + "\n"),
+                  ("an emphasized bullet", NRN + "- **" + LO_SENT + "**" + LO_ENTRY[len(LO_SENT):] + "\n"),
+                  ("another citation", NRN + "- " + LO_SENT + " (advisor 0130).\n")]:
+    check("0390 %s carrying the Linux-only sentence fails the Linux-only assertion" % name,
+          not linux_only_ok(P.behavior_entries(bad)), bad)
 check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
 for bad in ["- A change nobody judged.\n", "- A change (owner said so).\n", "- A change (advisor 15).\n"]:
     try:
