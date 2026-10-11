@@ -162,13 +162,13 @@ def load(path):
 ARM_STEP = "arm64"
 ARM_TARGET = "bin/check-phase-arm64.sh"
 ARM_LINE = "bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"
-ARM_DOWNLOADS = [("digests", "witness-build"), ("dist", "dist"), ("images", "images")]
+ARM_DOWNLOADS = [("witness-build", "witness-build"), ("digests", "witness-build"), ("provenance", "provenance"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
 
 
 def arm_job(j):
     """REQ-CHAIN-006-AC1 (advisor 0385): the one second job, check-arm64: runs-on the literal ubuntu-24.04-arm, permissions exactly contents read +
     id-token write, no other key (no if, needs, env, strategy, container), and EXACTLY these steps in this order: a digest-pinned checkout without
-    persisted credentials, the checksum-pinned Witness install, the digest-pinned downloads of digests (into witness-build), dist and images, the one
+    persisted credentials, the checksum-pinned Witness install, the digest-pinned downloads of witness-build, digests (into witness-build), provenance, dist and images, the one
     witnessed step `bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh`, and the digest-pinned upload of witness-check-arm64 carrying witness-arm64."""
     bad = []
     if not isinstance(j, dict):
@@ -183,7 +183,7 @@ def arm_job(j):
     want = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("down", x) for x in ARM_DOWNLOADS] + \
            [("run", "bash bin/witnessed.sh %s %s" % (ARM_STEP, ARM_TARGET)), ("up", ("witness-check-arm64", "witness-arm64"))]
     if len(steps) != len(want):
-        bad.append("check-arm64 must have exactly its %d listed steps (checkout, Witness install, three downloads, the arm64 witnessed step, the upload), found %d" % (len(want), len(steps)))
+        bad.append("check-arm64 must have exactly its %d listed steps (checkout, Witness install, five downloads, the arm64 witnessed step, the upload), found %d" % (len(want), len(steps)))
     for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
         if not isinstance(s, dict) or set(s) - {"name", "uses", "with", "run"}:
             bad.append("check-arm64 step %d: keys not allowed (an if, env or shell would change what runs): %s" % (i, sorted(s) if isinstance(s, dict) else s)); continue
@@ -354,7 +354,17 @@ def phase(path, step):
     bad = ["control character %s in the target" % c for c in control_chars(raw)]
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
-    one = ARM_LINE if step == ARM_STEP else "bash bin/check-stage.sh %s" % step
+    if step == ARM_STEP:
+        # rule 58: set -euo pipefail, the policy line, the two verifications (isolated), THEN the artifact checks on the digest file verified
+        want = [("lit", "set -euo pipefail"), ("rx", POLICY)] + [("rx", r) for r in VERIFY] + [("lit", ARM_LINE)]
+        if len(lines) != len(want):
+            bad.append("the arm64 target must be exactly set -euo pipefail, the policy line, the two verifications and the artifact checks (%d lines), found %d" % (len(want), len(lines)))
+        for i, (k, w) in enumerate(want):
+            got = lines[i] if i < len(lines) else "<missing>"
+            if (k == "lit" and got != w) or (k == "rx" and not re.fullmatch(w, got)):
+                bad.append("the arm64 target is not exactly the pinned form at line %d: %s" % (i + 1, got[:100])); break
+        return bad
+    one = "bash bin/check-stage.sh %s" % step
     if lines != [one]:
         bad.append("the target must be exactly the one line `%s`, found %s" % (one, [l[:80] for l in lines]))
     return bad

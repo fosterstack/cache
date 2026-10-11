@@ -885,15 +885,35 @@
     },
     {
       "path": "bin/check-phase-arm64.sh",
-      "sha256": "9b8617cefcfea08c49664cdf5a852d8842214921a621bd6bbb9456fdfaf296c2",
+      "sha256": "5bad5e479e109f5a9136bfe78319ed6f3db13f2ccabfdeda50ceb84274badf1e",
       "tools": [
-        "bash"
+        "bash",
+        "make",
+        "python3"
       ],
       "runs": [
+        "bin/chain-verify.py",
         "bin/check-artifacts.sh"
       ],
       "signs": false,
-      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)"
+      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        }
+      ]
     }
   ],
   "ambient_env": [
