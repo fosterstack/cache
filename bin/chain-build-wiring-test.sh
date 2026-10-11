@@ -1532,6 +1532,54 @@ rcg caught "scans that does not skip an rc tag is caught" '/^  scans:/,/^  [a-z]
 rcg caught "an rc-refusal that no longer exits 1 is caught" '/^  rc-refusal:/,/^  [a-z]/ s/exit 1/true/'
 rcg caught "an rc-refusal that also runs on a final tag is caught" "/^  rc-refusal:/,/^  [a-z]/ s/ \&\& contains(github.ref_name, '-rc')//"
 rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-gone:/'
+# ---- the known-red list (advisor, #299): test-evidence/known-red.json and bin/chain-known-red.py -------------------------------------------------------
+# The two chain suites whose red cases are expected (this one and bin/chain-sign-wiring-test.sh) judge their own output against the list: the CI step
+# passes only when the set of red cases EQUALS the list. The helper is proven here on synthetic output and a throw-away git repository.
+KR="$root/bin/chain-known-red.py"
+krj() { # krj WANT-EXIT LABEL FILE-LIST SUITE-OUTPUT-TEXT [FRAGMENT]
+  local rc=0 out; out=$(printf '%s\n' "$5" | python3 "$KR" judge --suite s.sh --list "$3" 2>&1) || rc=$?
+  if [ "$rc" = "$1" ] && { [ -z "${6:-}" ] || grep -F -q -- "$6" <<< "$out"; }; then ok "known-red $2"; else bad "known-red $2 (exit $rc: ${out:0:160})"; fi; }
+mkdir -p "$work/kr"
+printf '{"entries":[{"id":"KR-1","suite":"s.sh","case":"the real tree: a","reason":"r","green_by":"PR 3"},{"id":"KR-2","suite":"s.sh","case":"shrink: b","reason":"r","green_by":"P4"},{"id":"KR-9","suite":"other.sh","case":"x","reason":"r","green_by":"P5"}]}\n' > "$work/kr/list.json"
+SUM=$'pass=5 fail=2'
+krj 0 "the red set equals the list (a case with ' -> ' and one with ': ' details)" "$work/kr/list.json" $'ok   a\nFAIL the real tree: a -> details\nFAIL shrink: b: AC1: more\npass=5 fail=2'
+krj 1 "a red case that is not on the list fails and is named" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\nFAIL a new one -> d\npass=5 fail=3' "a new one"
+krj 1 "a listed case that now passes fails and is named" "$work/kr/list.json" $'FAIL the real tree: a -> d\npass=5 fail=1' "KR-2"
+krj 1 "a suite that printed no summary fails closed" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x' "no \`pass="
+krj 1 "an entry of another suite does not cover a red case" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\nFAIL x -> d\npass=1 fail=3' "x"
+printf '{"entries":[{"id":"K","suite":"s.sh","case":"c"}]}\n' > "$work/kr/bad.json"
+krj 1 "an entry without a reason or green_by is refused" "$work/kr/bad.json" $'pass=1 fail=0' "exactly"
+printf '{"entries":[{"id":"K","suite":"s.sh","case":"c","reason":"r","green_by":"g"},{"id":"K","suite":"s.sh","case":"d","reason":"r","green_by":"g"}]}\n' > "$work/kr/dup.json"
+krj 1 "a duplicate entry id is refused" "$work/kr/dup.json" $'pass=1 fail=0' "twice"
+rc=0; python3 "$KR" empty --list "$work/kr/list.json" > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] && ok "known-red cutover: a non-empty list fails" || bad "known-red cutover: non-empty list gave exit $rc"
+printf '{"entries":[]}\n' > "$work/kr/empty.json"
+rc=0; python3 "$KR" empty --list "$work/kr/empty.json" > /dev/null 2>&1 || rc=$?; [ "$rc" = 0 ] && ok "known-red cutover: an empty list passes" || bad "known-red cutover: empty list gave exit $rc"
+# an entry added since the merge base is refused unless the PR body names it
+kg="$work/kr/repo"; rm -rf "$kg"; mkdir -p "$kg/test-evidence"
+( cd "$kg" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
+  && printf '{"entries":[]}\n' > test-evidence/known-red.json && git add -A && git commit -qm base && git tag base \
+  && cp "$work/kr/list.json" test-evidence/known-red.json && git add -A && git commit -qm add )
+printf '{"pull_request":{"body":"text\\nknown-red-add: KR-1\\nknown-red-add: KR-2\\nknown-red-add: KR-9\\n"}}' > "$work/kr/ev-ok.json"
+printf '{"pull_request":{"body":"known-red-add: KR-1\\n"}}' > "$work/kr/ev-part.json"
+printf '{"pull_request":{"body":"nothing"}}' > "$work/kr/ev-none.json"
+for c in "ok:ev-ok:0" "part:ev-part:1" "none:ev-none:1"; do
+  IFS=: read -r nm evf want <<< "$c"; rc=0
+  ( cd "$kg" && python3 "$KR" base-check --base base --event "$work/kr/$evf.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = "$want" ] && ok "known-red base-check ($nm): entries added since the merge base need the PR body to name them" || bad "known-red base-check ($nm): exit $rc, wanted $want"
+done
+rc=0; ( cd "$kg" && python3 "$KR" base-check --base HEAD --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: no entry added since the base passes without a PR body" || bad "known-red base-check: unchanged list gave exit $rc"
+rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789abcdef01234567 --event "$work/kr/ev-ok.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 1 ] && ok "known-red base-check: an unresolvable base fails closed" || bad "known-red base-check: unresolvable base gave exit $rc"
+# the committed list and the two suites' own wrapper
+rc=0; python3 "$KR" base-check --base "${KNOWN_RED_BASE:-HEAD}" --event /nonexistent > /dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "known-red: the committed list is well formed and compares with the base" || bad "known-red: the committed test-evidence/known-red.json (exit $rc)"
+for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh; do
+  if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null; then ok "known-red: $sfile judges its own output against the list"; else bad "known-red: $sfile does not judge its output against the list"; fi
+done
+# the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
+rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
@@ -1744,7 +1792,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=596
+EXPECT=614
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
