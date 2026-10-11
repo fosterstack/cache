@@ -679,6 +679,8 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 	const stdFormats = "    formats:\n      - tar.gz\n    name_template: >-\n      {{ .ProjectName }}_{{"
 	const fipsFormats = "    formats:\n      - tar.gz\n    name_template: >-\n      {{ .ProjectName }}-fips_{{"
 	const fipsIDs = "    ids:\n      - fscache-fips\n"
+	const stdLdflags = "    ldflags:\n      - -s -w\n    mod_timestamp: \"{{ .CommitTimestamp }}\"\n\n  # GOFIPS140"
+	const fipsTail = "    flags:\n      - -trimpath\n    ldflags:\n      - -s -w\n    mod_timestamp: \"{{ .CommitTimestamp }}\"\n\narchives:"
 	// Archive mutants: each could add, drop or reshape an archive file while the builds stay Linux-only.
 	archiveMutants := map[string]string{
 		"zip format beside tar.gz":           edit(stdFormats, "    formats:\n      - tar.gz\n      - zip\n    name_template: >-\n      {{ .ProjectName }}_{{"),
@@ -737,6 +739,33 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"binary is absolute":                  edit("    binary: fscache\n", "    binary: /tmp/fscache\n"),
 		"binary missing":                      edit("    binary: fscache\n", ""),
 		"binary empty":                        edit("    binary: fscache\n", "    binary: \"\"\n"),
+		// Round-6 regressions (B1): every admitted field is validated by value against the committed configuration's
+		// pinned literal; a template is refused unless the pinned value is that template. The linker can write a file
+		// (-memprofile), an ellipsis main renames the binary, GOFLAGS or flags can redirect the output, a hook can write
+		// into dist/.
+		"ldflags write a linker profile":    edit(stdLdflags, "    ldflags:\n      - -s -w -memprofile=/tmp/fscache-link.pprof\n"+stdLdflags[len("    ldflags:\n      - -s -w\n"):]),
+		"fips ldflags write a profile":      edit(fipsTail, strings.Replace(fipsTail, "      - -s -w\n", "      - -s -w -memprofile=/tmp/fscache-link.pprof\n", 1)),
+		"ldflags missing":                   edit(stdLdflags, stdLdflags[len("    ldflags:\n      - -s -w\n"):]),
+		"ldflags templated":                 edit(fipsTail, strings.Replace(fipsTail, "      - -s -w\n", "      - \"{{ .Env.LDFLAGS }}\"\n", 1)),
+		"fips main with an ellipsis":        edit("  - id: fscache-fips\n    main: ./cmd/fscache\n", "  - id: fscache-fips\n    main: ./cmd/fscache/...\n"),
+		"main templated":                    edit("  - id: fscache\n    main: ./cmd/fscache\n", "  - id: fscache\n    main: \"{{ .Env.MAIN }}\"\n"),
+		"main missing":                      edit("  - id: fscache\n    main: ./cmd/fscache\n", "  - id: fscache\n"),
+		"env redirects the output":          edit(fipsGoos, "      - GOFIPS140=v1.0.0\n      - GOFLAGS=-o=/tmp/fscache\n    goos:\n      - linux\n"),
+		"env enables cgo":                   edit("    env:\n      - CGO_ENABLED=0\n    goos:", "    env:\n      - CGO_ENABLED=1\n    goos:"),
+		"env missing":                       edit("    env:\n      - CGO_ENABLED=0\n    goos:", "    goos:"),
+		"env templated":                     edit(fipsGoos, "      - GOFIPS140=v1.0.0\n      - \"{{ .Env.EXTRA }}\"\n    goos:\n      - linux\n"),
+		"flags redirect the output":         edit("    flags:\n      - -trimpath\n    # Version", "    flags:\n      - -trimpath\n      - -o=../fscache_x_linux_amd64.tar.gz\n    # Version"),
+		"flags missing":                     edit("    flags:\n      - -trimpath\n    # Version", "    # Version"),
+		"mod_timestamp templated otherwise": edit(stdLdflags, strings.Replace(stdLdflags, "{{ .CommitTimestamp }}", "{{ .Env.TS }}", 1)),
+		"mod_timestamp missing":             edit(fipsTail, strings.Replace(fipsTail, "    mod_timestamp: \"{{ .CommitTimestamp }}\"\n", "", 1)),
+		"binary renamed plainly":            edit("    binary: fscache-fips\n", "    binary: fscache-x\n"),
+		"hook writes into dist":             edit("    - git diff --exit-code go.mod go.sum\n", "    - git diff --exit-code go.mod go.sum\n    - touch dist/fscache_x_linux_amd64.tar.gz\n"),
+		"hooks removed":                     edit("    - go mod verify\n    - git diff --exit-code go.mod go.sum\n", ""),
+		"release owner changed":             edit("    owner: fosterstack\n", "    owner: someone\n"),
+		"release not a draft":               edit("  draft: true\n", "  draft: false\n"),
+		"release draft as a string":         edit("  draft: true\n", "  draft: \"true\"\n"),
+		"changelog filter dropped":          edit("      - \"^ci:\"\n", ""),
+		"config version 1":                  edit("version: 2\n", "version: 1\n"),
 	}
 	for name, text := range archiveMutants {
 		if _, dup := mutants[name]; dup {
@@ -1500,6 +1529,30 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"combining grapheme joiner splits Windows": install + "\nNative binaries for Win͏dows are attached.\n",
 		"combining grapheme joiner splits six":     install + "\nEvery release ships si͏x archives.\n",
 		"entity for a joiner splits Windows":       install + "\nNative binaries for Win&#x034F;dows are attached.\n",
+		// Round-6 regressions (A1, B3, A2, B4, B2, A3): a fence is a fence only as CommonMark reads it (indented 0-3
+		// spaces; a backtick fence's info string holds no backtick), so a pseudo-fence hides nothing; an exception
+		// marker may only end its line, never sit inside a line of prose; an angle-bracket link destination is a link
+		// form the check does not read; "no archives" is a count of zero and a comparison is not resolved.
+		"indented pseudo-fence hides html":         install + "\n    ```\n\nNative binaries for Win<b>dows</b> are attached.\n",
+		"indented pseudo-fence hides a count":      install + "\n    ```\n\nEvery release ships si<b>x</b> archives.\n",
+		"backtick info string hides html":          install + "\n```bad`\nEvery release ships si<b>x</b> archives.\n",
+		"backtick info string hides Windows html":  install + "\n```bad`\nNative binaries for Win<b>dows</b> are attached.\n",
+		"marker splits Windows":                    install + "\nNative binaries for Win<!-- pinned: upstream -->dows are attached.\n",
+		"marker splits six":                        install + "\nEvery release ships si<!-- pinned: upstream -->x archives.\n",
+		"historical marker splits Windows":         install + "\nNative binaries for Win<!-- pinned: historical -->dows are attached.\n",
+		"marker inside a line of prose":            install + "\nThe version is pinned <!-- pinned: upstream --> for all four archives.\n",
+		"angle-bracket destination splits Windows": install + "\nNative binaries for Win[do](<./a)b>)ws are attached.\n",
+		"angle-bracket destination splits six":     install + "\nEvery release ships si[x](<./a)b>) archives.\n",
+		"ships no archives":                        install + "\nThe release ships no archives.\n",
+		"no archives are shipped":                  install + "\nNo release archives are shipped.\n",
+		"ships no archive":                         install + "\nThe release ships no archive.\n",
+		"more than four archives":                  install + "\nThe release ships more than four archives.\n",
+		"fewer than six archives":                  install + "\nThe release ships fewer than six archives.\n",
+		"at least four archives":                   install + "\nThe release ships at least four archives.\n",
+		"at most four archives":                    install + "\nThe release ships at most four archives.\n",
+		"up to four archives":                      install + "\nThe release ships up to four archives.\n",
+		"over four archives":                       install + "\nThe release ships over four archives.\n",
+		"about four archives":                      install + "\nThe release ships about four archives.\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -1531,7 +1584,13 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"Release archives: four.",
 		"Two of the four archives are FIPS builds; each release ships all four archives.",
 		"Run `kubectl exec -it <pod> -- sh` to look inside the four archives' container.",
-		"The version is pinned <!-- pinned: upstream --> for all four archives.",
+		// Round-6 precision (A1, A2, A3): an exception marker ending its line, or on a line of its own, passes; a real
+		// fence indented up to three spaces still holds a placeholder; "no archive for this machine" is not a count.
+		"The version is pinned for all four archives. <!-- pinned: upstream -->",
+		"The version is pinned for all four archives.\n<!-- pinned: historical -->",
+		"   ```sh\n   kubectl exec -it <pod> -- sh\n   ```",
+		"````\n```\nkubectl exec -it <pod> -- sh\n````",
+		"~~~ sh `x`\nkubectl exec -it <pod> -- sh\n~~~",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
@@ -1674,6 +1733,12 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"nested destination splits Windows": notes + "- A signed installer for Win[do](https://example.com/a(b))ws ships with this release (advisor 0130).\n",
 		"joiner splits Windows":             notes + "- A signed installer for Win͏dows ships with this release (advisor 0130).\n",
 		"image tag splits Windows":          notes + "- A signed installer for Win<img alt=\"\">dows ships with this release (advisor 0130).\n",
+		// Round-6 regressions (A2, B4, A4, A1): an exception marker inside a line splits nothing; a fenced line is not
+		// an entry; a pseudo-fence hides nothing.
+		"marker splits Windows":            notes + "- A signed installer for Win<!-- pinned: upstream -->dows ships with this release (advisor 0130).\n",
+		"marker splits six":                notes + "- The release ships si<!-- pinned: upstream -->x archives (advisor 0130).\n",
+		"entry inside a code fence":        strings.Replace(notes, "- "+notesSentence, "```\n- "+notesSentence, 1) + "```\n",
+		"indented pseudo-fence hides html": notes + "\n    ```\n\n- A signed installer for Win<b>dows</b> ships with this release (advisor 0130).\n",
 	}
 	for name, text := range mutants {
 		if text == notes {
@@ -1722,6 +1787,9 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"a prefixed changelog entry":           "# Changelog\n\n## v0.3.1 — patch release\n\n### Behavior changes\n- Note: " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
 		"a changelog entry split by a joiner":  strings.Replace(published, "macOS", "mac͏OS", 1),
 		"a changelog entry with no line start": "# Changelog\n\nSee: - " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
+		// Round-6 regression (A4): a line inside a code fence is not a Markdown list entry.
+		"a fenced changelog entry":       "# Changelog\n\n## v0.3.1 — patch release\n\n```\n" + strings.TrimRight(entry, "\n") + "\n```\n",
+		"a tilde-fenced changelog entry": "# Changelog\n\n~~~text\n" + strings.TrimRight(entry, "\n") + "\n~~~\n",
 	} {
 		if ps := checkNotes(cleared, cl, archives); len(ps) == 0 {
 			t.Errorf("the cleared notes pass with %s", name)
@@ -2192,8 +2260,14 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 		"use `kubectl debug <pod> -it --copy-to=<new-name>\n--image=...`, and more",
 		"```sh\nkubectl debug -it <pod> --target=<container> -- sh\n```",
 		"~~~\nremote<HttpBuildCache> {\n~~~",
-		"Built with `GOFIPS140=v1.0.0` <!-- pinned: upstream -->, selecting the module.",
+		"Built with `GOFIPS140=v1.0.0`, selecting the module. <!-- pinned: upstream -->",
 		"Cut four times. <!-- pinned: historical -->",
+		"<!-- pinned: historical -->",
+		"| a | b | <!-- pinned: upstream -->",
+		"   ```sh\n   kubectl exec <pod>\n   ```",
+		"````md\n```\n<pod>\n```\n````",
+		"~~~ `info` with backticks\n<pod>\n~~~",
+		"```sh\n<pod>\n    ```\n<container>\n```",
 		"Visible punctuation: a — b – c · d → e × f ✓ g § h, x < y and y > x.",
 		"\tan indented line with a tab",
 	} {
@@ -2209,5 +2283,28 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 	}
 	if ps := contentProblems(notesFile, "Cut four times. <!-- pinned: upstream -->\n"); len(ps) > 0 {
 		t.Errorf("a listed marker in the notes is refused: %v", ps)
+	}
+	// Round-6 regressions (A1, B3, A2, B4): a fence is recognised as CommonMark reads it - an opening fence indented
+	// 0-3 spaces, a backtick fence whose info string holds no backtick, closed by a run of its own character at least
+	// as long, indented 0-3 spaces, with nothing after it; an unclosed fence masks nothing. An exception marker is
+	// allowed only where it ends its line (after a space, or alone on the line), never inside a line of prose.
+	for _, f := range []string{md, notesFile} {
+		for name, s := range map[string]string{
+			"indented pseudo-fence":              "    ```\n\nWin<b>dows</b>",
+			"tab-indented pseudo-fence":          "\t```\n\nWin<b>dows</b>",
+			"backtick in a backtick info":        "```bad`\nsi<b>x</b> archives",
+			"short closing fence":                "````\nx\n```\n````x\nWin<b>dows</b>",
+			"closing fence with text after":      "```\nx\n``` y\n```\n\nWin<b>dows</b>\n```z",
+			"unclosed fence":                     "```\nWin<b>dows</b>",
+			"marker splits Windows":              "Win<!-- pinned: upstream -->dows",
+			"marker splits six":                  "si<!-- pinned: historical -->x archives",
+			"marker inside a line of prose":      "The version is pinned <!-- pinned: upstream --> for all four archives.",
+			"marker joined to a word at the end": "Windows<!-- pinned: upstream -->",
+		} {
+			ps := contentProblems(f, "a first line\n\n"+s+"\n")
+			if !strings.Contains(strings.Join(ps, "\n"), f+":") || len(ps) == 0 {
+				t.Errorf("%s: %s is not refused: %v", f, name, ps)
+			}
+		}
 	}
 }

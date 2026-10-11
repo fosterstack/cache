@@ -548,7 +548,11 @@ check("0390 a repeated Linux-only entry fails the Linux-only assertion", not lin
 for name, bad in [("an uncited paragraph", NRN + "\n" + LO_SENT + "\n"),
                   ("a prefixed bullet", NRN + "- Note: " + LO_ENTRY + "\n"),
                   ("an emphasized bullet", NRN + "- **" + LO_SENT + "**" + LO_ENTRY[len(LO_SENT):] + "\n"),
-                  ("another citation", NRN + "- " + LO_SENT + " (advisor 0130).\n")]:
+                  ("another citation", NRN + "- " + LO_SENT + " (advisor 0130).\n"),
+                  # Codex #293 r6 B6: a platform name in an uncited paragraph, also behind emphasis, fails the assertion
+                  # beside the exact entry (mentions are counted in text with the Markdown marks removed)
+                  ("an emphasized uncited paragraph", NRN + "- " + LO_ENTRY + "\n\nNo **macOS** or Windows binaries are shipped; use the container image.\n"),
+                  ("an uncited paragraph beside the entry", NRN + "- " + LO_ENTRY + "\n\nWindows users: run the container image.\n")]:
     check("0390 %s carrying the Linux-only sentence fails the Linux-only assertion" % name,
           not linux_only_ok(bad), bad)
 check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
