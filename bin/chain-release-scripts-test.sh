@@ -145,6 +145,9 @@ def tree(extra_env=None):
     for extra in ("release-postverify.py", "release-metadata.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
+    os.makedirs(os.path.join(t, "requirements/releases")); os.makedirs(os.path.join(t, "test-evidence"))
+    for tg in ("v0.3.0", "v0.3.1"): open(os.path.join(t, "requirements/releases/%s.yaml" % tg), "w").write("baseline " + tg + "\n")
+    open(os.path.join(t, "test-evidence/mappings.yaml"), "w").write("evidence\n")
     digs = dict(DIG)
     for top in ("apks", "rapks"):                      # Build's apk-<runner> and Rebuild's rapk-<runner> artifacts, downloaded to apks/<runner> and rapks/<runner>
         for runner, archdir, short in RUNNERS:
@@ -358,6 +361,9 @@ check([x.get("file") for x in mj.get("vex", [])] == ["fosterstack-cache.openvex.
 vi = json.load(open(os.path.join(t, "release-metadata/vex-images.json"))) if os.path.exists(os.path.join(t, "release-metadata/vex-images.json")) else {}
 check(sorted(vi) == ["fips", "production"] and sorted(vi["production"]) == ["children", "index"] and sorted(vi["production"]["children"]) == ["linux/amd64", "linux/arm64"] and "debug" not in vi, "AC13 the vex-forms input is exactly {production: {index, children {linux/amd64, linux/arm64}}, fips: {...}}, no debug key", str(vi))
 t2 = tree(); os.remove(os.path.join(t2, "witness-build/items.json")); rc2, so2, se2 = run(t2, "release-sign", creds=REG); check(rc2 != 0 and "items.json" in se2 and not signs(t2), "AC13 without Build's verified items Release does not check the digests it publishes in the VEX forms: it stops before anything is signed", "rc=%s %s" % (rc2, first(se2)))
+check(mj.get("requirements_baseline", {}).get("path") == "requirements/releases/v0.3.0.yaml" and mj.get("requirements_baseline", {}).get("sha256") == hashlib.sha256(b"baseline v0.3.0\n").hexdigest() and mj.get("test_evidence", {}).get("path") == "test-evidence/mappings.yaml", "AC19 the manifest records the requirements baseline of the tag and the test-evidence hash (REL-009-AC13 note)", str({k: mj.get(k) for k in ("requirements_baseline", "test_evidence")}))
+t2 = tree(); os.remove(os.path.join(t2, "requirements/releases/v0.3.0.yaml")); rc2, so2, se2 = run(t2, "release-sign", creds=REG)
+check(rc2 != 0 and "v0.3.0.yaml" in se2 and not signs(t2), "AC19 a tag with no baseline file stops before anything is signed, naming it", "rc=%s %s" % (rc2, first(se2)))
 first_sig = next((i for i, l in enumerate(L) if l.startswith("cosign")), 99)
 check(L.index(vf[0]) < first_sig if vf else False, "AC13 the metadata is made before the first signature")
 check(any(l.startswith("cosign sign-blob") and "release-files.sha256.bundle" in l and l.endswith("release-metadata/release-files.sha256") for l in L), "AC13 release-files.sha256 is signed keyless with a bundle in release-evidence/", str([l for l in L if "release-files" in l]))
@@ -484,7 +490,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "229"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "231"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

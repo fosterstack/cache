@@ -73,8 +73,12 @@ def vexdir(t, version=V):
     v = t + "/vex"; os.makedirs(v, exist_ok=True)
     for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % version, "fosterstack-cache-%s.inspector-filters.json" % version): open(os.path.join(v, n), "w").write("content of " + n)
     return v
-def manifest(t, out, version=V, commit="a" * 40, extra=()):
-    return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--vex-dir", vexdir(t, version), "--version", version, "--commit", commit,
+def repo(t, base=V):
+    r = t + "/repo"; os.makedirs(r + "/requirements/releases", exist_ok=True); os.makedirs(r + "/test-evidence", exist_ok=True)
+    open("%s/requirements/releases/%s.yaml" % (r, base), "w").write("baseline of " + base + "\n"); open(r + "/test-evidence/mappings.yaml", "w").write("evidence\n")
+    return r
+def manifest(t, out, version=V, commit="a" * 40, extra=(), base=None, root=None):
+    return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--vex-dir", vexdir(t, version), "--version", version, "--commit", commit, "--baseline-version", base or version, "--repo-root", root or repo(t, base or version),
                "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out, *extra)
 t, d = tree(); m1, m2 = t + "/m1.json", t + "/m2.json"; rc, so, se = manifest(t, m1); rc2, _, _ = manifest(t, m2)
 mj = json.load(open(m1)) if os.path.exists(m1) else {}
@@ -85,11 +89,27 @@ check({a["name"]: a["digest"] for a in mj.get("archives", [])} == {k: v for k, v
 hexs = lambda n: hashlib.sha256(open(t + "/vex/" + n, "rb").read()).hexdigest()
 check([(x.get("form"), x.get("file"), x.get("sha256")) for x in mj.get("vex", [])] == [("openvex", "fosterstack-cache.openvex.json", hexs("fosterstack-cache.openvex.json")), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % V, hexs("fosterstack-cache-%s.inspector-filters.json" % V)), ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % V, hexs("fosterstack-cache-%s.csaf.json" % V))], "manifest: records the sha256 of the OpenVEX, inspector-filters and CSAF files it was made after (generated before the manifest)", str(mj.get("vex")))
 for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % V, "fosterstack-cache-%s.inspector-filters.json" % V):
-    t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n); rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--vex-dir", t + "/vex", "--version", V, "--commit", "a" * 40, "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json")
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n); rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--vex-dir", t + "/vex", "--version", V, "--commit", "a" * 40, "--baseline-version", V, "--repo-root", t + "/repo", "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json")
     check(rc == 1 and n in se and not os.path.exists(t + "/m2.json"), "manifest: a missing %s (not generated before the manifest) is refused, naming it" % n, se[:160])
 for label, ver, com in (("a version that is not vX.Y.Z", "v0.3", "a" * 40), ("a release candidate (no release is made for one)", "v0.3.0-rc1", "a" * 40), ("a commit that is not 40 hex", V, "abc")):
     t, d = tree(); rc, so, se = manifest(t, t + "/m.json", ver, com); check(rc == 1 and not os.path.exists(t + "/m.json"), "manifest: " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
 t, d = tree(); d.pop("apk-fips-arm64"); setd(t, d); rc, so, se = manifest(t, t + "/m.json"); check(rc == 1 and "apk-fips-arm64" in se, "manifest: a digest list without one of the four apks is refused, naming it", se[:160])
+# ---- the baseline travels with the manifest (REQ-REL-009-AC13 note; AC19): requirements/releases/<baseline>.yaml and test-evidence/mappings.yaml, by sha256 ----------------
+t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); mj = json.load(open(t + "/m.json")) if os.path.exists(t + "/m.json") else {}
+hx = lambda f: hashlib.sha256(open(f, "rb").read()).hexdigest()
+check(mj.get("requirements_baseline") == {"path": "requirements/releases/%s.yaml" % V, "version": V, "sha256": hx(t + "/repo/requirements/releases/%s.yaml" % V)}, "baseline: the manifest records the baseline file admission chose (path, version, sha256)", str(mj.get("requirements_baseline")))
+check(mj.get("test_evidence") == {"path": "test-evidence/mappings.yaml", "sha256": hx(t + "/repo/test-evidence/mappings.yaml")}, "baseline: the manifest records the test-evidence hash", str(mj.get("test_evidence")))
+t, d = tree(); rc, so, se = manifest(t, t + "/m.json", base="v0.2.9"); mj = json.load(open(t + "/m.json")) if rc == 0 else {}
+check(rc == 0 and mj.get("requirements_baseline", {}).get("version") == "v0.2.9" and mj["requirements_baseline"]["path"] == "requirements/releases/v0.2.9.yaml", "baseline: a CI patch's baseline is another version's file (admission's choice), recorded as that", se[:160])
+t, d = tree(); r = repo(t); os.remove(r + "/requirements/releases/%s.yaml" % V); rc, so, se = manifest(t, t + "/m.json", root=r)
+check(rc == 1 and "requirements/releases/%s.yaml" % V in se and not os.path.exists(t + "/m.json"), "baseline: a missing baseline file is refused, naming it", se[:160])
+t, d = tree(); r = repo(t); os.remove(r + "/test-evidence/mappings.yaml"); rc, so, se = manifest(t, t + "/m.json", root=r)
+check(rc == 1 and "mappings.yaml" in se, "baseline: missing test evidence is refused, naming it", se[:160])
+for bad_base in ("main", "0.3.0", "v0.3", "../v0.3.0", "v0.3.0/x", ""):
+    t, d = tree(); r = repo(t); rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--vex-dir", vexdir(t), "--version", V, "--commit", "a" * 40, "--baseline-version", bad_base, "--repo-root", r, "--ci-url", "u", "--workflow", "w", "--out", t + "/m.json")
+    check(rc == 1 and not os.path.exists(t + "/m.json"), "baseline: the version %r is not vX.Y.Z and is refused" % bad_base, se[:120])
+t, d = tree(); r = repo(t); f = r + "/requirements/releases/%s.yaml" % V; os.remove(f); os.symlink(r + "/test-evidence/mappings.yaml", f); rc, so, se = manifest(t, t + "/m.json", root=r)
+check(rc == 1 and "symlink" in se, "baseline: a symlinked baseline file is refused", se[:120])
 # ---- list: release-files.sha256 ---------------------------------------------------------------------------------------------------------
 NAMES = lambda v: ["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % v, "fosterstack-cache-%s.inspector-filters.json" % v]
 def assets():
@@ -134,7 +154,7 @@ gate("a file with its own bundle (the SBOM) is covered by it", lambda a: None)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "50"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "62"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
