@@ -534,7 +534,14 @@ def _head_bytes(root, rev, f):
     return None if b.returncode else b.stdout
 
 
-def _text_file(data):
+_BOM = b"\xef\xbb\xbf"
+
+
+def _text_file(data, what):
+    """The pinned file as text, or None (not ruled) when it is missing, holds a CR or is not UTF-8. A leading UTF-8 byte order mark stops the check
+    (RuntimeError, exit 2) whatever the pins say: a pinned file is plain UTF-8 with no mark (pull request 297, review)."""
+    if data is not None and data.startswith(_BOM):
+        raise RuntimeError(f"{what} starts with a UTF-8 byte order mark (EF BB BF): a check-call row's pinned files must not")
     if data is None or b"\r" in data:
         return None
     try:
@@ -558,9 +565,9 @@ def _row_applies(root, rev, path, lh, row):
     if not m or callee["file"] == path:
         return False
     own, lib = _head_bytes(root, rev, path), _head_bytes(root, rev, callee["file"])
-    if _text_file(own) is None or not own.startswith(_SHEBANGS) or hashlib.sha256(own).hexdigest() != context:
+    if _text_file(own, f"the context file {path}") is None or not own.startswith(_SHEBANGS) or hashlib.sha256(own).hexdigest() != context:
         return False
-    lib_text = _text_file(lib)
+    lib_text = _text_file(lib, f"the callee file {callee['file']}")
     if lib_text is None or hashlib.sha256(lib).hexdigest() != callee["sha256"]:
         return False
     return lib_text.split("\n").count(CALL_FORM["call_callee_defs"][m.group(1)]) == 1
