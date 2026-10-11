@@ -2573,6 +2573,22 @@ for L in "$GHD -R evil/x" "$GHD --repo evil/x" "$GHD --rep evil/x" "$GHD --r evi
   CASE="AC19'' (0) OPEN-1: the repo:self line $L: exit 1, not a listed plain form"
   refused 0; check grep -q 'listed plain form' "$work/if.out"
 done
+# Codex round 6 (A P1, B P2; OPEN-2): the repo:self restriction holds in EVERY command segment of the line, not only the first: a second gh after ; && ||
+# or | naming another repository (-R, --repo, glued or abbreviated) or any later gh is refused by (0), with a checksum AND with a cosign verifier line
+ghrefused() {
+  one ifg6 "$FETCH$1"$'\n' "$1" repo:self
+  CASE="AC19'' (0) round 6: the repo:self line $1 with a checksum verifier line: exit 1, not a listed plain form"
+  refused 0; check grep -q 'listed plain form' "$work/if.out"
+  ifrepo ifg6c "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$1"$'\n' head bin/verify.sh $'#!/bin/bash\n'"$COS"$'\n'
+  ifx "$work/if-1.json" plain "$(ifrow "$work/ifg6c" bin/fetch.sh "$1" repo:self "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}")"; ifck ifg6c "$work/if-1.json"
+  CASE="AC19'' (0) round 6: the repo:self line $1 with a cosign verify-blob verifier line: exit 1, not a listed plain form"
+  refused 0; check grep -q 'listed plain form' "$work/if.out"
+}
+G0='gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+for S in ' ;' ' &&' ' ||' ' |'; do
+  ghrefused "$G0$S gh release download v1.0.0 -R foreign/repo"
+  ghrefused "$G0$S gh release download v1.0.0 --repo foreign/repo"
+done
 CASE="AC19'' (0): the listed plain forms, unit (whole line, every word positively plain; the curl option list; the repo:self names)"
 check python3 - "$chk" <<'PYC6'
 import importlib.util, sys
@@ -2583,7 +2599,14 @@ LISTED = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsSL -o x https://h.e
           'if curl -fsS -o x https://h.example.dev/a; then ok=1; break; fi', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/a"', 'curl -fsS https://h.example.dev/a || exit 1',
           "curl -fsS -o 'a b' https://h.example.dev/a", 'curl -fsS https://h.example.dev/a;', 'for u in a b; do curl -fsS -o x https://h.example.dev/a; done',
           'r = subprocess.run(["curl", "-fsSL", "-o", part, %s], stdout=sys.stderr)' % U, 'subprocess.check_call(["curl", "--fail", %s])' % U,
-          'r = subprocess.run(["curl", "--retry", "3", %s], check=True)' % U, 'r = subprocess.run([ "curl" , "-fsS", %s])' % U]
+          'r = subprocess.run(["curl", "--retry", "3", %s], check=True)' % U, 'r = subprocess.run([ "curl" , "-fsS", %s])' % U,
+          # Codex round 6 B P3: N digits, any number of them (the notes set no limit); an optional ONE-letter r, b or u prefix; a name as FILE
+          'curl --retry 100000 https://h.example.dev/a', 'curl --max-time 100000 https://h.example.dev/a', 'curl --retry 0 --max-time 1234567890 -o x https://h.example.dev/a',
+          'r = subprocess.run(["curl", "--retry", "100000", %s])' % U, 'r = subprocess.run(["curl", "--max-time", "100000", %s])' % U,
+          'r = subprocess.run(["curl", r"-fsS", %s])' % U, 'r = subprocess.run(["curl", R"-fsS", %s])' % U, 'r = subprocess.run(["curl", b"-fsS", %s])' % U,
+          'r = subprocess.run(["curl", B"-fsS", %s])' % U, 'r = subprocess.run(["curl", u"-fsS", %s])' % U, 'r = subprocess.run(["curl", U"-fsS", %s])' % U,
+          'r = subprocess.run(["curl", "-fsS", u"https://h.example.dev/a"])', 'r = subprocess.run(["curl", "-o", part_2, %s])' % U,
+          'r = subprocess.run(["curl", "--output", out, %s])' % U]
 UNLISTED = ['curl -fsS ~ https://h.example.dev/a', 'curl -fsS -o ~/x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo ~', 'curl -fsS https://h.example.dev/~a',
             'curl -fsS -o x https://h.example.dev/a; bash $x', 'curl -fsS -o x https://h.example.dev/a; bash "$x"', 'curl -fsS -o x https://h.example.dev/a && echo $HOME', 'curl -fsS -o x https://h.example.dev/a; echo `id`',
             'curl -fsS "https://h.example.dev/{a,b}"', "curl -fsS 'https://h.example.dev/[1-2]'", 'curl -fsS -o x https://h.example.dev/a; [ -s x ]',
@@ -2598,11 +2621,38 @@ UNLISTED = ['curl -fsS ~ https://h.example.dev/a', 'curl -fsS -o ~/x https://h.e
             'r = subprocess.run(["curl", "--expand-config", "c", %s])' % U, 'r = subprocess.run(["curl", "-K", "c", %s])' % U, 'r = subprocess.run(["curl", "-o"])',
             'out = subprocess.check_output(["curl", "-fsS", %s]).decode()' % U, 'r = obj. subprocess.run(["curl", %s])' % U, 'x.y = subprocess.run(["curl", %s])' % U,
             'r = subprocess.run(["curl", %s]) or 1' % U, 'r = subprocess.run(["curl", "https://h.example.dev/[1-2]"])', 'r = subprocess.run(["curl", "--connect-timeout", "5", %s])' % U,
-            'r = subprocess.run(["curl", "-o", "-L", %s])' % U, 'r = subprocess.run(["curl", %s]) # c' % U]
+            'r = subprocess.run(["curl", "-o", "-L", %s])' % U, 'r = subprocess.run(["curl", %s]) # c' % U,
+            # Codex round 6 A P2: the FILE after "-o" or "--output" is a NAME, never an attribute (or a subscript, a call, an operator)
+            'r = subprocess.run(["curl", "-o", obj.path, %s])' % U, 'r = subprocess.run(["curl", "--output", obj.path, %s])' % U,
+            'r = subprocess.run(["curl", "-o", a.b.c, %s])' % U, 'r = subprocess.run(["curl", "-o", obj .path, %s])' % U, 'r = subprocess.run(["curl", "-o", d[k], %s])' % U,
+            'r = subprocess.run(["curl", "-o", f(), %s])' % U, 'r = subprocess.run(["curl", "-o", a+b, %s])' % U, 'r = subprocess.run(["curl", "-o", 9x, %s])' % U,
+            'r = subprocess.run(["curl", obj.path, %s])' % U,
+            # Codex round 6 A P3, B P3: a string prefix other than ONE r, b or u letter (rr, bb, bu are syntax errors; rb, br, f, t are not listed)
+            'subprocess.run(["curl", rr"https://h.example.dev/a"])', 'subprocess.run(["curl", bu"https://h.example.dev/a"])', 'subprocess.run(["curl", bb"https://h.example.dev/a"])',
+            'subprocess.run(["curl", uu"https://h.example.dev/a"])', 'subprocess.run(["curl", ur"https://h.example.dev/a"])', 'subprocess.run(["curl", rb"https://h.example.dev/a"])',
+            'subprocess.run(["curl", Br"https://h.example.dev/a"])', 'subprocess.run(["curl", rr"-fsS", %s])' % U, 'subprocess.run(["curl", x"-fsS", %s])' % U,
+            'subprocess.run(["curl", "--retry", "1x", %s])' % U, 'curl --retry -1 https://h.example.dev/a', 'curl --max-time 1.5 https://h.example.dev/a']
 GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
-GH_LISTED = [GHD, GHD + ' -p manifest.json -D dist', GHD + ' --pattern "*.json" --dir dist', GHD + ' -D "$out"', GHD + ' --clobber']
+GH_LISTED = [GHD, GHD + ' -p manifest.json -D dist', GHD + ' --pattern "*.json" --dir dist', GHD + ' -D "$out"', GHD + ' --clobber',
+             # controls (round 6): plain later segments with no repository selector and no gh stay listed
+             GHD + ' -p a.json && echo done', GHD + ' -D dist; ls dist', GHD + ' -p a.json || exit 1', GHD + ' -p a.json | tee log', GHD + ' -p a.json; sha256sum -c a.sha256']
 GH_UNLISTED = [GHD + ' -R evil/x', GHD + ' --repo evil/x', GHD + ' --rep evil/x', GHD + ' --r evil/x', GHD + ' --repo=evil/x', GHD + ' -Revil/x', GHD + ' -R=evil/x',
                GHD + ' -pR x', GHD + '; bash $x', GHD + ' > f', GHD + ' -D ~/d', GHD + ' -p *.json', GHD + ' "-R" x', GHD + 'x', 'gh release download "$tag" --repo "$GITHUB_REPOSITORY"']
+# Codex round 6 (A P1, B P2; OPEN-2): every command segment of the line is held to the list; -R and --repo (any spelling) are refused by name in EVERY
+# segment, and no later segment runs gh (the only listed gh is the prefix: a later gh is not pinned to the repository itself)
+for sep in [' ;', ' &&', ' ||', ' |', ';']:
+    for sel in ['-R foreign/repo', '--repo foreign/repo', '-Rforeign/repo', '--repo=foreign/repo', '--rep foreign/repo', '--r foreign/repo', '-R "foreign/repo"']:
+        GH_UNLISTED.append(GHD + sep + ' gh release download v1.0.0 ' + sel)
+GH_UNLISTED += [
+    GHD + ' ; gh release download v1.0.0', GHD + ' && gh release download v1.0.0 -p x -D dist --clobber', GHD + ' ; gh api repos/foreign/repo/releases/latest',
+    GHD + ' && gh api -H x repos/foreign/repo/releases/assets/1', GHD + ' ; GH_REPO=foreign/repo gh release download v1', GHD + ' ; env GH_REPO=foreign/repo gh release download v1',
+    GHD + " ; bash -c 'gh release download v1 -R foreign/repo'", GHD + ' ; bash -c "gh release download v1"', GHD + ' ; echo ok; gh release download v1 -R foreign/repo',
+    GHD + ' -p a.json; cd dist && gh release download v1 -R foreign/repo', GHD + ' -p a.json;gh release download v1 -R foreign/repo',
+    GHD + ' ; if true; then gh release download v1 -R foreign/repo; fi', GHD + ' ; time gh release download v1 -R foreign/repo', GHD + ' ; xargs gh',
+    GHD + ' ; echo -R foreign/repo', GHD + ' ; mkdir --repo x', GHD + ' ; tar --repo=x', GHD + " ; gh release download v1 '-R' foreign/repo",
+    GHD + ' ; gh release download v1 "--repo" foreign/repo', GHD + ' --clobber; gh release download v1 --pattern x -R foreign/repo',
+    GHD + ' -p "a\nb" -R foreign/repo', GHD + ' -p "a\n-R foreign/repo"', GHD + ' -p "a b" -R foreign/repo', GHD + ' -p a.json & gh release download v1 -R foreign/repo',
+    GHD + ' ; /usr/bin/gh release download v1 -R foreign/repo', GHD + ' ; command gh release download v1', GHD + ' ; ! gh release download v1 -R foreign/repo']
 bad = []
 for line in LISTED + UNLISTED:
     flat = " ".join(line.split())
@@ -2871,6 +2921,12 @@ spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib
 d = json.load(open(sys.argv[2]))
 assert d["unmeasured_input_fetch"] == [] and ac.load_input_fetch(sys.argv[2], required=True) == {}, d.get("unmeasured_input_fetch")
 assert "REQ-SUP-001-AC19" in d["_format_unmeasured_input_fetch"]
+# Codex round 6 (A P3, B info): the note states AC19'': only a listed plain form is ruled (no verifier admits another form, wget or /usr/bin/curl included);
+# the ruled and the verifier line are physical lines of a literal-block run:; -R and --repo refused in every segment of a repo:self line
+note = d["_format_unmeasured_input_fetch"]
+for want in ["AC19''", "listed plain form", "no verifier admits", "literal-block run:", "every command segment"]:
+    assert want in note, want
+assert "for any line that is not the bare curl without L" not in note
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
