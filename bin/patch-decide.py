@@ -276,14 +276,38 @@ def _clean_md(s):
     return _visible(_clean(s))
 
 
+PUNCT = r"!-/:-@\[-`{-~"                         # every ASCII punctuation character (CommonMark: each may be escaped)
+ESC = re.compile(r"([%s])" % PUNCT)
+ESCAPED = re.compile(r"(?:\\[%s]|[^%s])*\Z" % (PUNCT, PUNCT))
+UNESC = re.compile(r"\\([%s])" % PUNCT)
+
+
+def _clean_free(line):
+    """one line of free text (a fix line, a behavior entry, any line of a tag's own text) for Markdown output. A line
+    holding the redaction marker is written with every ASCII punctuation character backslash-escaped, the marker as
+    '\\(redacted\\)': no link, image, HTML tag, comment, code span or other construct of the text around it can take
+    the marker into its syntax and hide it (Codex #300 r5, A R4-4 / B F3; fail closed: no list of constructs to keep
+    up). A line already in that escaped form is read unescaped, cleaned and escaped again, so cleaning twice changes
+    nothing (a tag of the notes reads back as the notes; the changelog's history stays clean). A line without a marker
+    is _clean's, unchanged. A leading '- ' bullet stays a bullet."""
+    pre = "- " if line.startswith("- ") else ""
+    body = line[len(pre):]
+    own = bool(ESCAPED.match(body)) and "\\" in body       # this function's own escaped form
+    raw = UNESC.sub(r"\1", body) if own else body
+    c = _clean(raw)
+    if "<redacted>" in c or own:
+        return pre + ESC.sub(r"\\\1", c).replace("\\<redacted\\>", "\\(redacted\\)")
+    return pre + c
+
+
 def _clean_lines(s):
-    """_clean_md one line at a time, split at every line boundary str.splitlines() knows (LF, CR, CRLF, VT, FF, FS, GS,
-    RS, NEL, LS, PS), each written back as LF: no redaction ever matches across a line break and merges two lines
+    """_clean_free one line at a time, split at every line boundary str.splitlines() knows (LF, CR, CRLF, VT, FF, FS,
+    GS, RS, NEL, LS, PS), each written back as LF: no redaction ever matches across a line break and merges two lines
     (Codex #300 r3 B1; r4 A R3-4, B low)"""
     out = []
     for ln in str(s).splitlines(True):
         body = ln.splitlines()[0]
-        out.append(_clean_md(body) + ("\n" if len(body) < len(ln) else ""))
+        out.append(_clean_free(body) + ("\n" if len(body) < len(ln) else ""))
     return "".join(out)
 
 
@@ -304,7 +328,9 @@ def _oneline(s):
 # autolink), no '#' (an issue reference), no GH- or GHSA- reference, no '//', no www., an underscore only inside a word,
 # no emoji-shortcode shape, no SHA-like hex run of 7 or more. Anything else (a control character, a space, Markdown or
 # HTML, an empty name, text shaped like a position label) prints as its JSON string in a code span: one line, shown
-# literally by every renderer, decoding back to exactly that value (fail closed).
+# literally by every renderer, decoding back to exactly that value (fail closed). The guarantee covers the renderers'
+# built-in forms; an autolink a repository configures in its own settings (a custom prefix such as "TICKET-") is a
+# repository setting outside this code and is not covered (Codex #300 r5, A R4-2: documented, not handled).
 BARE = re.compile(r"(?:(?:pkg|urn|cpe):)?[A-Za-z][A-Za-z0-9._/-]*\Z")
 NOT_BARE = re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|//|(?i:www)\.|(?i:(?<![A-Za-z0-9])gh(?:sa)?-)|"
                       r"(?<![A-Za-z0-9])[0-9a-fA-F]{7,}(?![A-Za-z0-9])")
@@ -363,30 +389,39 @@ def _vex_line(v):
         _oneline(v["status"]), _oneline(v["change"]), " — %s" % _oneline(v["statement"]) if v.get("statement") else "")
 
 
+def _entry_line(e):
+    """the notes line of one behavior entry, exactly as notes() prints it (and so as the tag and changelog carry it)"""
+    return _clean_free("- %s" % _oneline(e))
+
+
 def notes(version, fixes, vex_changes, behavior=()):
-    lines = ["## %s — patch release" % _oneline(version), "", "### Fixes"]
+    """every line is one line (_oneline) cleaned on its own: a VEX line as _clean_md (its document values are bare
+    identifier text or code spans; vex_changes checked that final form), every other line as free text (_clean_free:
+    a line holding the marker is written escaped, Codex #300 r5)"""
+    lines = [_clean_free("## %s — patch release" % _oneline(version)), "", "### Fixes"]
     for f in fixes:
-        lines.append(_oneline("- %s in %s: %s → %s (severity %s; variants: %s)" % (
-            f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or []))))
+        lines.append(_clean_free(_oneline("- %s in %s: %s → %s (severity %s; variants: %s)" % (
+            f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))))
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
     stmts = [v for v in vex_changes if "document" not in v]
-    vl = [_vex_line(v) for v in stmts]
-    if len({_clean_md(x) for x in vl}) != len(vl):  # every published statement line is its own (Codex #300 r3)
+    vl = [_clean_md(_vex_line(v)) for v in stmts]
+    if len(set(vl)) != len(vl):  # every published statement line is its own (Codex #300 r3)
         raise ValueError("VEX notes: two statement lines read alike")
     lines += vl
-    lines += ["- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]), "" if stmts else "; no statement changed")
+    lines += [_clean_md("- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]),
+                                                             "" if stmts else "; no statement changed"))
               for v in vex_changes if "document" in v]
     if not vex_changes:
         lines.append("- no change")
     for b in behavior:
         _check_entry(b)
     if behavior:
-        lines += ["", "### Behavior changes"] + ["- %s" % _oneline(b) for b in behavior]
+        lines += ["", "### Behavior changes"] + [_entry_line(b) for b in behavior]
     else:
         lines += ["", "No behavior change: this release contains fixes only."]
-    return _clean_lines("\n".join(lines)) + "\n"
+    return "\n".join(lines) + "\n"
 
 
 def _precedence(tag):
@@ -552,8 +587,8 @@ def vex_changes(old_doc, new_doc):
 
     def products(s_):
         """(raw labels, scope key or None when there is no scope, printed labels), or None when products is present but
-        unreadable; both label lists in the order of the raw values, so how a value prints never reorders anything
-        (Codex #300 r4, B)"""
+        unreadable; both label lists in the order of the raw values, equal ones by their source content, so how a value
+        prints never reorders anything (Codex #300 r4, B; r5, B F4)"""
         ps = s_.get("products", [])
         if not isinstance(ps, list):
             return None
@@ -564,12 +599,15 @@ def vex_changes(old_doc, new_doc):
             sub_labels = [component(c) for c in subs] if isinstance(subs, list) else [None]
             if label is None or None in sub_labels:
                 return None
-            sub_labels.sort()
+            sub_labels = [x + (canon(c),) for x, c in zip(sub_labels, subs)]
+            sub_labels.sort(key=lambda x: (x[0], x[2]))
+            key = canon(dict(p, subcomponents=sorted(subs, key=canon)) if "subcomponents" in p else p)
             labels.append((label[0] + (" (subcomponents: %s)" % ", ".join(x[0] for x in sub_labels) if sub_labels else ""),
+                           key,
                            label[1] + (" (subcomponents: %s)" % ", ".join(x[1] for x in sub_labels) if sub_labels else "")))
-            keys.append(canon(dict(p, subcomponents=sorted(subs, key=canon)) if "subcomponents" in p else p))
-        labels.sort()
-        return [x[0] for x in labels], (tuple(sorted(keys)) if keys else None), [x[1] for x in labels]
+            keys.append(key)
+        labels.sort(key=lambda x: (x[0], x[1]))     # raw label, then the source content: never the printed form (r5, B F4)
+        return [x[0] for x in labels], (tuple(sorted(keys)) if keys else None), [x[2] for x in labels]
 
     def match(ro, rn, key, unique):
         """pair the statements of ro and rn whose key (not None; key(statement, side)) is equal; with unique, only a key
@@ -612,7 +650,8 @@ def vex_changes(old_doc, new_doc):
         if lone and olds and news and products(olds[0][1]) is not None and products(news[0][1]) is not None:
             pairs.append((olds.pop(), news.pop()))
 
-        def entry(x, side, change):
+        def entry(x, side, change, raw):
+            """raw: the change with the raw field names, the sort key (how a field name prints never reorders, r5 B F4)"""
             pos, s_ = x
             e = {"cve": cve, "status": s_["status"], "change": change}
             prod = products(s_)
@@ -624,7 +663,7 @@ def vex_changes(old_doc, new_doc):
                 sid = own_id(s_, side) if cve != "" else None
                 e["statement"] = ("statement %s" % _lit(sid) if sid is not None
                                   else "statement %d of the %s document" % (pos, side))
-            return (e.get("products", []), "products_unreadable" in e, change, e["status"], canon(s_)), (e, pos, side)
+            return (e.get("products", []), "products_unreadable" in e, raw, e["status"], canon(s_)), (e, pos, side)
 
         found = []
         for (_, o), n in ((p[0], p[1]) for p in pairs):
@@ -632,10 +671,11 @@ def vex_changes(old_doc, new_doc):
             others = [k for k in fields if k != "status"]
             if "status" in fields:
                 found.append(entry(n, "new", "changed from %s" % o["status"]
-                                   + ("; also " + ", ".join(_lit(k) for k in others) if others else "")))
+                                   + ("; also " + ", ".join(_lit(k) for k in others) if others else ""),
+                                   "changed from %s" % o["status"] + ("; also " + ", ".join(others) if others else "")))
             elif fields:
-                found.append(entry(n, "new", "changed: " + ", ".join(_lit(k) for k in fields)))
-        found += [entry(x, "new", "added") for x in news] + [entry(x, "old", "removed") for x in olds]
+                found.append(entry(n, "new", "changed: " + ", ".join(_lit(k) for k in fields), "changed: " + ", ".join(fields)))
+        found += [entry(x, "new", "added", "added") for x in news] + [entry(x, "old", "removed", "removed") for x in olds]
         recs += [r for _, r in sorted(found, key=lambda f: f[0])]
 
     # r2 (A1/B), r3: the published lines are the redacted ones, cleaned line by line exactly as notes() prints them; each
@@ -681,8 +721,10 @@ def vex_changes(old_doc, new_doc):
 def unpublished(entries, published_text):
     """Advisor 0135: an entry an earlier patch already published (any v* tag message, CHANGELOG.md) is not published
     again — the clear-and-changelog PR may not have merged when the next patch is decided."""
-    published_text = _visible(published_text)      # an older text's "<redacted>" reads as today's marker (r4)
-    return [e for e in entries if ("- %s" % _clean_md(_oneline(e))) not in published_text]
+    def forms(e):
+        legacy = "- %s" % _clean(_oneline(e))         # an older text's "<redacted>", and round 4's "(redacted)" (r4)
+        return (_entry_line(e), legacy, _visible(legacy))
+    return [e for e in entries if not any(f in published_text for f in forms(e))]
 
 
 PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
@@ -709,17 +751,26 @@ def tag_notes(raw):
     # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
         return None
-    m = PATCH_HEAD.match((body.splitlines() or [""])[0])
+    # the generated heading ends in LF and nothing else: CR, CRLF, VT, FF, FS, GS, RS, NEL, LS or PS after it is refused
+    # (as in round 3; Codex #300 r5, B low)
+    head_, lf_, _ = body.partition("\n")
+    m = PATCH_HEAD.fullmatch(head_) if lf_ else None
     return _clean_lines(body) if m and m.group(1) == tag else None
 
 
 def changelog(notes_text, changelog_text, next_notes_text):
     """AC8 + advisor 0130: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
-    entries these notes published — an entry added since stays)."""
+    entries these notes published — an entry added since stays). The new notes are cleaned line by line; the existing
+    history is copied unchanged, never rewritten — and is refused (ValueError, nothing written) unless it is exactly
+    what this function writes, so cleaning it would change nothing: LF line ends only, no name, no unescaped marker
+    (Codex #300 r5, A R4-1 / B low; fail closed)."""
     notes_text = _clean_lines(notes_text)
     title = "# Changelog\n"
     rest = (changelog_text or title)
     rest = rest[len(title):].lstrip("\n") if rest.startswith(title) else rest
+    if _clean_lines(rest) != rest:
+        raise ValueError("CHANGELOG.md history is not clean (a line end other than LF, a name, or an unescaped marker): "
+                         "refused, not rewritten")
     new_cl = title + "\n" + notes_text.rstrip("\n") + "\n" + ("\n" + rest if rest.strip() else "")
     lines, keep, i = next_notes_text.splitlines(keepends=True), [], 0
     while i < len(lines):
@@ -728,7 +779,7 @@ def changelog(notes_text, changelog_text, next_notes_text):
             while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
                 j += 1
             entry = " ".join(ln.strip() for ln in lines[i:j])[2:]
-            if ("- %s" % _clean_md(_oneline(entry))) in notes_text:
+            if _entry_line(entry) in notes_text:
                 i = j
                 continue
         keep += lines[i:j]
@@ -925,9 +976,13 @@ def main(argv=None):
         return 0
     if a.cmd == "changelog":
         cl_path = a.changelog
-        old_cl = open(cl_path).read() if os.path.exists(cl_path) else None
+        old_cl = open(cl_path, newline="").read() if os.path.exists(cl_path) else None    # line ends as stored (r5)
         has_nn = os.path.exists(a.next_notes)
-        new_cl, new_nn = changelog(open(a.notes).read(), old_cl, open(a.next_notes).read() if has_nn else "")
+        try:
+            new_cl, new_nn = changelog(open(a.notes).read(), old_cl, open(a.next_notes).read() if has_nn else "")
+        except ValueError as e:
+            print("changelog: %s — nothing written" % _clean(str(e)), file=sys.stderr)
+            return 2
         with open(cl_path, "w") as fh:
             fh.write(new_cl)
         if has_nn:
