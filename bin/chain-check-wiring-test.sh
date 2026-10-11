@@ -92,13 +92,20 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents:
          + wit("scanners") + wit("acceptance") + wit("runtime")
          + f"      - uses: {UPL}\n        with:\n          name: witness-check\n          path: |\n            witness-scanners\n            witness-acceptance\n            witness-runtime\n"
          + up("check-results", "check-results"))
+# REQ-CHAIN-006-AC1 (advisor 0385): the second job, check-arm64, on a hosted arm64 runner, artifact checks only, its own Witness record
+stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
+          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
+          "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
+          + dn("digests", "witness-build") + dn("dist", "dist") + dn("images", "images")
+          + "      - name: arm64 under Witness\n        run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh\n"
+          + up("witness-check-arm64", "witness-arm64"))
 open(w + "/stage.yml", "w").write(stage)
 open(w + "/witnessed.sh", "w").write("""#!/usr/bin/env bash
 # PR 2's helper (origin/pipeline-chain-build-rebuild) with PR 3's three steps in the closed list.
 set -euo pipefail
 step="$1"
 shift
-case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
+case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
 tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
 echo "::add-mask::$tok"
@@ -191,7 +198,7 @@ jobs:
         run: bash bin/acceptance-maven-capped.sh
 """)
 os.makedirs(w + "/plain", exist_ok=True)
-for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
     open(f"{w}/plain/{n}.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
@@ -207,6 +214,12 @@ expect caught "AC3 a phase target with a second command" "exactly the one line" 
 printf '#!/usr/bin/env bash\nbash bin/check-stage.sh scanners || true\n' > "$work/ph_swallow.sh"
 expect caught "AC3 a phase target that swallows a failure" "exactly the one line" phase "$work/ph_swallow.sh" scanners
 expect caught "AC3 a phase outside the closed list" "unknown phase" phase "$work/ph_scanners.sh" checks
+printf '#!/usr/bin/env bash\nbash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results\n' > "$work/ph_arm64.sh"
+expect ok "fixture: the arm64 target passes the phase judge" "" phase "$work/ph_arm64.sh" arm64
+printf '#!/usr/bin/env bash\nbash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results\n' > "$work/ph_arm64b.sh"
+expect caught "AC17 an arm64 target without --arch arm64" "exactly the one line" phase "$work/ph_arm64b.sh" arm64
+printf '#!/usr/bin/env bash\nbash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results || true\n' > "$work/ph_arm64c.sh"
+expect caught "AC17 an arm64 target that swallows a failure" "exactly the one line" phase "$work/ph_arm64c.sh" arm64
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
 expect ok "fixture: plain scripts that only use scanners, docker and curl pass the plain judge" "" plain "$work"/plain/check-*.sh
@@ -217,7 +230,7 @@ expect ok "fixture: the known-good acceptance.yml passes the suites judge (AC5)"
 m() { # m NAME REGEX REPL WORD LABEL
   if mutate "$work/stage.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" stage "$work/$1.yml"; fi
 }
-m s_job2   'jobs:\n  check:'                                  'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  check:'  'exactly one job'   "AC1 a second job"
+m s_job2   'jobs:\n  check:'                                  'jobs:\n  extra:\n    runs-on: ubuntu-24.04\n    steps: []\n  check:'  'exactly two jobs'  "AC1 a third job"
 m s_selfh  'runs-on: ubuntu-24.04'                             'runs-on: self-hosted'                                  'ubuntu-24.04'      "AC1 a self-hosted runner"
 m s_cont   '    runs-on: ubuntu-24.04\n'                       '    runs-on: ubuntu-24.04\n    container: alpine\n'       'job keys'          "AC1 a job container"
 m s_serv   '    runs-on: ubuntu-24.04\n'                       '    runs-on: ubuntu-24.04\n    services: {db: {image: x}}\n' 'job keys'        "AC1 job services"
@@ -252,6 +265,26 @@ m s_imgno  '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8
 m s_imgother 'name: images\n          path: images' 'name: image-cache\n          path: images' 'download-artifact' "AC1 another artifact name in place of images (Q4)"
 m s_kindact '        run: bash bin/install-kind.sh\n' '        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0\n' 'uses not allowed' "AC14 helm/kind-action in place of the pinned install"
 m s_kindform 'run: bash bin/install-kind.sh' 'run: bash bin/install-kind.sh \&\& kind create cluster' 'witnessed.sh' "AC14 the install step in another form"
+# the arm64 job (advisor 0385): exactly this job, this label, these steps, and nothing else
+m a_name   '  check-arm64:'                                    '  check-arm:'                                              'two jobs'          "AC1 the second job under another name"
+m a_label  'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-24.04'                                  'ubuntu-24.04-arm'  "AC1 the arm64 job on the amd64 label"
+m a_label2 'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-latest-arm'                             'ubuntu-24.04-arm'  "AC1 the arm64 job on another arm label"
+m a_self   'runs-on: ubuntu-24.04-arm'                         'runs-on: self-hosted'                                   'ubuntu-24.04-arm'  "AC1 the arm64 job on a self-hosted runner"
+m a_if     '  check-arm64:\n    runs-on'                       '  check-arm64:\n    if: always()\n    runs-on'             'check-arm64'       "AC1 an if on the arm64 job"
+m a_needs  '  check-arm64:\n    runs-on'                       '  check-arm64:\n    needs: check\n    runs-on'         'check-arm64'       "AC1 a needs on the arm64 job"
+m a_idoff  'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write' 'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: none' 'check-arm64' "AC1 a different id-token setting on the arm64 job"
+m a_idread 'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write' 'ubuntu-24.04-arm\n    permissions:\n      contents: read' 'check-arm64' "AC1 no id-token on the arm64 job"
+m a_pkg    'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write' 'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write\n      packages: read' 'check-arm64' "AC1 packages: read on the arm64 job"
+m a_sec    'name: arm64 under Witness\n'                       'name: arm64 under Witness\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}\n' 'secret'  "AC1 a secret in the arm64 job"
+m a_extra  'name: arm64 under Witness\n'                       'name: extra\n        run: bash bin/install-kind.sh\n      - name: arm64 under Witness\n' 'check-arm64' "AC1 an extra step in the arm64 job"
+m a_nokind 'name: arm64 under Witness\n        run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh\n' '' 'check-arm64' "AC1 the arm64 job without its witnessed step"
+m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "AC1 the arm64 job without the Witness install"
+m a_stepwhat 'run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed.sh arm64 bin/check-phase-runtime.sh' 'check-arm64' "AC1 the arm64 step with another target"
+m a_stepname 'run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh' 'check-arm64' "AC1 the arm64 job running another step"
+m a_upname 'name: witness-check-arm64'                         'name: check-results'                                    'check-arm64'       "AC1 the arm64 upload under another artifact name"
+m a_uppath 'path: witness-arm64'                               'path: witness-scanners'                                 'check-arm64'       "AC1 the arm64 upload of another directory"
+m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
+m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
 m s_kindno '      - name: install kind and kubectl \(pinned by sha256\)\n        run: bash bin/install-kind.sh\n' '' 'install kind' "AC14 no kind install step"
 # ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
 hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
@@ -271,9 +304,9 @@ hm h_mask    'echo "::add-mask::\$tok"'                        'echo hi'        
 hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
 hm h_tokfile '<\(printf %s "\$tok"\)'                         '"$RUNNER_TEMP/tok"'                                     'the helper'        "AC9 the token passed through a file (PR 2: one-read process substitution)"
 hm h_noset   'set -euo pipefail\n'                              ''                                                       'the helper'        "AC11 the helper without set -euo pipefail"
-hm h_nostep  '\|scanners\|acceptance\|runtime\)'              ')'                                                      'the helper'        "AC11 PR 3's steps missing from the closed list"
+hm h_nostep  '\|scanners\|acceptance\|runtime\|arm64\)'              ')'                                                      'the helper'        "AC11 PR 3's steps missing from the closed list"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
-hm h_extra   '\|runtime\)'                                     '|runtime|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
+hm h_extra   '\|arm64\)'                                       '|arm64|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
 # ---- AC14: the kind install and the cluster ------------------------------------------------------------------------------
 km() { if mutate "$work/install-kind.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" kind "$work/$1.sh"; fi; }
 km k_ver     'v0.33.0/kind-linux-amd64'                         'v0.32.0/kind-linux-amd64'                                'the kind installer' "AC14 another kind version"
@@ -349,14 +382,14 @@ import hashlib, json, os, sys
 w = sys.argv[1]
 os.makedirs(w + "/bin", exist_ok=True)
 rows = []
-for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
           "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve", "install-kind"):
     p = f"bin/{n}.sh"; open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
     rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 os.makedirs(w + "/.github/policy", exist_ok=True)
 json.dump({"env_names": [], "scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"))
 PY
-expect ok "fixture: all seventeen Check scripts listed with their sha256 and signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
+expect ok "fixture: all eighteen Check scripts listed with their sha256 and signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
 cp -r "$work/l" "$work/l2"; python3 - "$work/l2" <<'PY'
 import json, sys
 p = sys.argv[1] + "/.github/policy/chain-scripts.json"; d = json.load(open(p)); d["scripts"] = d["scripts"][1:]; json.dump(d, open(p, "w"))
@@ -417,7 +450,7 @@ expect caught "AC10 ci.yml still runs the custom authorization verifier's test (
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
 expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
-for s in scanners acceptance runtime; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
+for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build and sign, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
@@ -428,7 +461,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=161
+EXPECT=184
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
