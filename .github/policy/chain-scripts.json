@@ -93,7 +93,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout 540; a Witness collection is not a provenance statement",
-      "sha256": "ac06a940daddb2774becc5db742b56b09e58c49c66f2633458ee02d200b063f0",
+      "sha256": "5e99e8581588170605c6d6f5190a661087a13b6753b41a1511a19b62e39f19ab",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -109,15 +109,16 @@
         "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
         "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
         "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
-        "scanners": "bin/check-stage.sh",
-        "acceptance": "bin/check-stage.sh",
-        "runtime": "bin/check-stage.sh",
+        "scanners": "bin/check-phase-scanners.sh",
+        "acceptance": "bin/check-phase-acceptance.sh",
+        "runtime": "bin/check-phase-runtime.sh",
         "release-verify": "bin/release-verify.sh",
         "release-apks": "bin/release-apks.sh",
         "release-publish": "bin/release-publish.sh",
         "release-sign": "bin/release-sign.sh",
         "release-assets": "bin/release-assets.sh",
-        "release-postverify": "bin/release-postverify.sh"
+        "release-postverify": "bin/release-postverify.sh",
+        "arm64": "bin/check-phase-arm64.sh"
       },
       "exceptions": [
         {
@@ -360,7 +361,7 @@
     },
     {
       "path": "bin/check-stage.sh",
-      "sha256": "00b7ca4314190dfaa02cb0425637f1f77ac932d1f4419f24e55fbcde617c0c6e",
+      "sha256": "7b2c4d398fca956428ca1e6eb40b605c0fd328d8a5650d59897b75a98874c37b",
       "tools": [
         "bash",
         "make",
@@ -372,7 +373,8 @@
         "bin/check-scan.sh",
         "bin/check-acceptance.sh",
         "bin/check-fips.sh",
-        "bin/check-guide.sh"
+        "bin/check-guide.sh",
+        "bin/check-artifacts.sh"
       ],
       "signs": false,
       "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)",
@@ -983,6 +985,104 @@
           "line_sha256": "67b70aee004b9d32aeb202d7ddc726f137ae53b5fe08c950c9ae528a8ae6265c",
           "count": 1,
           "why": "a comment quoting the purl pkg:golang/github.com/acme/busybox as the example of a namespaced component the forms refuse; it is text, not a command (cache's REQ-SCAN-010 code)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-phase-scanners.sh",
+      "sha256": "0eba74a24fcaefc173a068e6bd97f03493e8988ec6109b3a2c14f0601c7bf04c",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's scanners step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-acceptance.sh",
+      "sha256": "113c2da8fa43264754f1f4158b245583f8b9aa9a464653697de5f70c5da2831e",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's acceptance step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-runtime.sh",
+      "sha256": "7abe1474108348e53b56066422e51220b81db9ec387817c638331cfa6ea0067d",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's runtime step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-artifacts.sh",
+      "sha256": "2501123e8a17a1a45b814f28522832fd5bf84dd6dfc277a309167333066ebe59",
+      "tools": [
+        "at",
+        "curl",
+        "docker",
+        "go",
+        "python3",
+        "sed",
+        "sh",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-image-platforms.py"
+      ],
+      "signs": false,
+      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)"
+    },
+    {
+      "path": "bin/check-image-platforms.py",
+      "sha256": "d0403bf764fc978c051ab8f469fd8df869d1c777139f3e312986980da960f100",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "lists the platforms an OCI image archive carries (REQ-PLAT-002-AC1)"
+    },
+    {
+      "path": "bin/check-phase-arm64.sh",
+      "sha256": "5bad5e479e109f5a9136bfe78319ed6f3db13f2ccabfdeda50ceb84274badf1e",
+      "tools": [
+        "bash",
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/check-artifacts.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
         }
       ]
     }

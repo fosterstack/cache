@@ -34,11 +34,5 @@ unmapped:
     reason: "proven by the first real patch release; the customer suppression files depend on scanner-panel rule 10, a later PR"
   - ac: REQ-REL-009-AC12
     reason: "the lane's process rule (both step-8 records say no behavior change before it applies patch-fix): CI cannot tell the owner's label from the lane's, since both act through the owner's account; each application is recorded in the lane's report with both reviewers' findings"
-  - ac: REQ-PLAT-002-AC1
-    reason: its only evidence was stage-acceptance-artifacts.yml (per-architecture serving of the three images under QEMU), removed by REQ-CHAIN-006-AC10 (PR 3); no REQ-CHAIN-006 AC carries it over to a listed script; the owner decides
-  - ac: REQ-PLAT-003-AC1
-    reason: its only evidence was stage-acceptance-artifacts.yml (no shell in the production and fips images), removed by REQ-CHAIN-006-AC10 (PR 3); no REQ-CHAIN-006 AC carries it over to a listed script; the owner decides
-  - ac: REQ-FIPS-001-AC1
-    reason: its only evidence was stage-acceptance-artifacts.yml (the validated-module selection read from the released binary's build info), removed by REQ-CHAIN-006-AC10 (PR 3); no REQ-CHAIN-006 AC carries it over to a listed script; the owner decides
-  - ac: REQ-FIPS-001-AC2
-    reason: its only evidence was stage-acceptance-artifacts.yml (the standard binary embeds no module selection), removed by REQ-CHAIN-006-AC10 (PR 3); no REQ-CHAIN-006 AC carries it over to a listed script; the owner decides
+# The -debug clauses of REQ-PLAT-002-AC1 and REQ-PLAT-003-AC1 have no subject - owner Oct 9: drop debug; AC text is in the owner wording batch.
+# They cannot be listed above: the validator refuses a residual that is also mapped, and both ACs are mapped for production and -fips (Check, PR 3).

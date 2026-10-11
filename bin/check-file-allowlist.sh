@@ -147,8 +147,9 @@ ALLOW_PATTERNS=(
   '^bin/chain-test-(harness|shape)\.py$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
   # suite), the kind installer, and the Check suites with their shape judge
-  '^bin/check-(stage|scan|fips|acceptance|guide)\.sh$'
-  '^bin/check-(guide-plan|osv-db)\.py$'
+  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
+  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/check-(guide-plan|osv-db|image-platforms)\.py$'
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/install-kind\.sh$'
