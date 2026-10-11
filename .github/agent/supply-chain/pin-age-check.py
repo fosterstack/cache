@@ -565,9 +565,10 @@ def _row_applies(root, rev, path, lh, row):
     if not m or callee["file"] == path:
         return False
     own, lib = _head_bytes(root, rev, path), _head_bytes(root, rev, callee["file"])
-    if _text_file(own, f"the context file {path}") is None or not own.startswith(_SHEBANGS) or hashlib.sha256(own).hexdigest() != context:
+    # both pinned files are read (a byte order mark in either stops the check) before EITHER hash is compared: the refusal does not depend on the pins
+    own_text, lib_text = _text_file(own, f"the context file {path}"), _text_file(lib, f"the callee file {callee['file']}")
+    if own_text is None or not own.startswith(_SHEBANGS) or hashlib.sha256(own).hexdigest() != context:
         return False
-    lib_text = _text_file(lib, f"the callee file {callee['file']}")
     if lib_text is None or hashlib.sha256(lib).hexdigest() != callee["sha256"]:
         return False
     return lib_text.split("\n").count(CALL_FORM["call_callee_defs"][m.group(1)]) == 1

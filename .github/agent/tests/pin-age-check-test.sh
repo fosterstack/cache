@@ -1680,12 +1680,13 @@ def build(root, mode):
         (r / "bin/real-lib.sh").write_bytes(LIB); (r / "bin/lib.sh").unlink(); os.symlink("real-lib.sh", r / "bin/lib.sh")
     g("add", "-A"); g("commit", "-q", "-m", "head")
 def rows(out, mode):
+    mode, _, twist = mode.partition("+")   # MODE+wrongcontext, MODE+wrongcallee: the pins of MODE with the OTHER pin mismatched (Codex B round 2, pull request 297)
     H = lambda s: hashlib.sha256(s.encode()).hexdigest()[:16]; S = lambda b: hashlib.sha256(b).hexdigest()
     test = TESTS[mode] if mode in ("tcr", "tnoshebang", "tnotutf8", "tbom", "twocopies", "twocopies2") else TEST     # tcr .. tbom: the pin MATCHES the head; the file property refuses
     lib = LIBS.get(mode, LIB)
     pins = {"context": S(test), "callee": {"file": "bin/libdir" if mode == "dir" else "bin/lib.sh", "sha256": S(lib)}}
-    if mode == "wrongcontext": pins["context"] = S(TEST + b"\n")
-    if mode == "wrongcallee": pins["callee"]["sha256"] = S(LIB + b"\n")
+    if mode == "wrongcontext" or twist == "wrongcontext": pins["context"] = S(TEST + b"\n")
+    if mode == "wrongcallee" or twist == "wrongcallee": pins["callee"]["sha256"] = S(LIB + b"\n")
     if mode == "calleeother": pins["callee"] = {"file": "bin/other.sh", "sha256": S(b"#!/usr/bin/env bash\necho other\n")}
     if mode == "calleeself": pins["callee"] = {"file": "bin/x-test.sh", "sha256": S(test)}
     row = lambda line, key, ruling: {"file": "bin/x-test.sh", "form": "a download", "key": key, "line": H(line), "ruling": ruling}
@@ -1722,6 +1723,10 @@ def held(root, mode):
         (r / "bin/x-test.sh").unlink()
     elif mode == "libdeleted":
         (r / "bin/lib.sh").unlink()
+    elif mode == "libbom":                                  # a byte order mark put on the pinned library (Codex B round 2, pull request 297)
+        (r / "bin/lib.sh").write_bytes(LIBS["libbom"])
+    elif mode == "tbom":                                    # a byte order mark put on the pinned test file
+        (r / "bin/x-test.sh").write_bytes(TESTS["tbom"])
     g("add", "-A"); g("commit", "-q", "-m", "head")
 {"build": build, "rows": rows, "key": key, "held": held}[sys.argv[1]](*sys.argv[2:])
 PY
@@ -1761,6 +1766,18 @@ for m in libbom tbom; do
   CASE="AC16 check call (enforcement): $m: nothing is ruled"
   check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
 done
+# Codex B round 2 (pull request 297): the byte order mark refusal does not depend on the OTHER pin: a BOM-bearing file with its matching pin and the
+# other pin mismatched still stops the check (exit 2), naming the mark and the file, rules nothing, for an ADDED row and for a HELD row
+bomcheck() {   # bomcheck FILE WHAT
+  CASE="AC16 check call (enforcement): $2: the refusal names the byte order mark and $1"
+  check grep -q "byte order mark.*$1\|$1.*byte order mark" "$work/rt.out"
+  CASE="AC16 check call (enforcement): $2: nothing is ruled"
+  check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+}
+cccase libbom libbom+wrongcontext 2 "the library starts with a byte order mark (its callee pin MATCHES), the context pin mismatches (added row)"
+bomcheck bin/lib.sh "library BOM, context mismatch (added row)"
+cccase tbom tbom+wrongcallee 2 "the test file starts with a byte order mark (its context pin MATCHES), the callee pin mismatches (added row)"
+bomcheck bin/x-test.sh "test file BOM, callee mismatch (added row)"
 for m in B1-redefine-y B1-redefine-t B1-alias B2-command-source B2-builtin-source B2-command-eval B3-arith-shift B4-ansi-c; do
   cccase "$m" ok 1 "Sonnet reproduction $m (pull request 297): the call line itself is unchanged and its shape still passes, but the test file is not the pinned one, so the row is void"
   hf 't "r" "x wget" y mel-go "$M"'
@@ -1787,6 +1804,10 @@ heldcase same 0 "both pinned files unchanged (another file edited): the held row
 CASE="AC16 check call (held rows): both pinned files unchanged: still 'no pin moved' when nothing else moved"
 check grep -q 'no pin moved' "$work/rt.out"
 heldcase testdeleted 0 "the test file deleted: its line is gone, so its rows are ignored"
+heldcase libbom 2 "the pinned library gains a byte order mark (its callee pin MATCHES), the context pin mismatches (held row)" libbom+wrongcontext
+bomcheck bin/lib.sh "library BOM, context mismatch (held row)"
+heldcase tbom 2 "the pinned test file gains a byte order mark (its context pin MATCHES), the callee pin mismatches (held row)" tbom+wrongcallee
+bomcheck bin/x-test.sh "test file BOM, callee mismatch (held row)"
 heldcase twocopies 1 "base and head both hold TWO copies of the pinned call, the row's count is 1 (pins right): over the count, never a pass" twocopies
 CASE="AC16 check call (held rows): two held copies over a count of 1: 'no pin moved' is not printed"
 check test "$(grep -c 'no pin moved' "$work/rt.out")" -eq 0
