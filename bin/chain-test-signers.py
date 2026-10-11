@@ -31,7 +31,7 @@ Two small things, and nothing else:
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
-import json, os, re
+import fnmatch, json, os, re
 
 def jload(path):
     """json.load that REFUSES a repeated object key at any depth (round 1 (6)): a plain reader keeps only the last of two equal keys, so the
@@ -728,122 +728,206 @@ LAUNCH_OUTRIGHT = {"env", "command", "exec", "builtin", "nohup", "sudo", "doas",
                    "chroot", "unshare", "nsenter", "flock", "time", "strace", "chrt", "taskset", "eval", "source", ".", "busybox", "setpriv"}
 EVALUATORS = {"awk", "gawk", "mawk", "nawk", "sed", "perl", "ruby", "php", "lua", "node", "tar", "find", "ssh", "openssl"}
 SHELL_INTERP = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3"}
-CMDPOS = re.compile(r"(?:^|[;&|(){}!`]|\$\(|\b(?:then|do|else|elif|time|if|while|until)\b)[ \t]*"
-                    r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()]*)[ \t]+)*(?P<w>[^\s;&|(){}<>`\"'=!]+)", re.M)
-CMD_AT = re.compile(r"[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()]*)[ \t]+)*(?P<w>[^\s;&|(){}<>`\"'=!]+)")
-RESERVED = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until", "case", "esac", "in", "time", "function", "select", "coproc"}
-
 def _is_python(path, text):
     return path.endswith(".py") or bool(re.match(r"#!\S*(?:/|\s)python", text))
 
-def _mask(line):
-    """The line with every single-quoted string, every ${...} and every double-quoted string reduced to a placeholder OF THE SAME LENGTH
-    (PR 1b: a position in the masked line is the same position in the original, so the original text of a word can be read back), so
-    their contents are never read as command positions; the $( ) and backtick substitutions INSIDE a double-quoted string are returned
-    (as original text) as extra segments (they are command positions)."""
-    extra = []
-    cur, prev = line, None
-    while prev != cur:
-        prev = cur; cur = re.sub(r"\$\{[^{}]*\}", lambda m: "X" * len(m.group(0)), cur)
-    cur = re.sub(r"'[^']*'", lambda m: "Q" * len(m.group(0)), cur)
-    def dq(m):
-        for mm in re.finditer(r"\$\(([^()]*)\)|`([^`]*)`", m.group(0)):
-            g = 1 if mm.group(1) is not None else 2
-            extra.append(line[m.start() + mm.start(g):m.start() + mm.end(g)])
-        return "Q" * len(m.group(0))
-    cur = re.sub(r'"(?:[^"\\]|\\.)*"', dq, cur)
-    return cur, extra
+# ---- the shell reader (round 2 (9), (5), (6)): ONE left-to-right pass per logical line over single quotes, double quotes, $'..', $".." backticks,
+# ${..}, $(..) and <( ) / >( ), producing the simple commands. An UNTERMINATED quote, brace or backtick leaves the rest of the line UNMASKED (the
+# quote character is dropped and the rest is read as ordinary text), so a quote that is never closed can hide nothing (this is the construct that
+# failed open in the reverted attempt 3bac826 of PR 1). A quote that spans lines is read as unterminated on each line (fail closed, over-reports).
+# Each simple command: leading assignments and redirections (any order and repetition: NAME=v, N>f, >f, &>f, >|f, <<<w, <<EOF, N>&M, {fd}>f) are
+# skipped before the command word; keywords (if then elif else fi do done while until case esac in function select coproc ! { }) are skipped.
+_REDIR_RE = re.compile(r"(?:[0-9]+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:&>>|&>|<<<|<<-?|>>|>\||>&|<&|<>|>|<)")
+_ASSIGN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]\s]*\])?\+?=")
+_SKIP_WORDS = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until", "case", "esac", "in", "function", "select", "coproc", "!", "{", "}"}
 
-def _cmd_end(line, i):
-    """Index where the simple command that continues at line[i:] ends (round 1 (3)): at the next ; & | (but not 2>&1, &>, >|), a backtick, a closing
-    ) or } that does not close a ( opened inside it (so <( ) and $( ) belong to the command), or the end of the line."""
-    depth, n = 0, len(line)
+class Cmd:
+    """One simple command: `text` as written from its first assignment or redirection (or its command word) to the separator; `cw` its command
+    word (quotes removed, None when there is none); `operands` the other words (quotes removed); `redirs` [(operator, target)]."""
+    def __init__(self, text, cw, operands, redirs): self.text, self.cw, self.operands, self.redirs = text, cw, operands, redirs
+
+def _flush(s, items, end, cmds):
+    if not items: return
+    cw, ops, redirs = None, [], []
+    for kind, _st, _en, _raw, val in items:
+        if kind == "redir": redirs.append(val)
+        elif kind == "word":
+            if cw is None: cw = val
+            else: ops.append(val)
+    cmds.append(Cmd(s[items[0][1]:end].rstrip(), cw, ops, redirs))
+    del items[:]
+
+def _brace(s, j, cmds):
+    """Index after the ${...} that starts at s[j:j+2] == '${', or None when it is never closed."""
+    n, k, depth = len(s), j + 2, 1
+    while k < n:
+        c = s[k]
+        if c == "\\": k += 2; continue
+        if c == "'":
+            e = s.find("'", k + 1)
+            if e < 0: return None
+            k = e + 1; continue
+        if c == '"':
+            r = _dq(s, k, cmds)
+            if r is None: return None
+            k = r[0]; continue
+        if c == "$" and s.startswith("$(", k): k = _lex(s, k + 2, ")", cmds); continue
+        if c == "`": k = _lex(s, k + 1, "`", cmds); continue
+        if c == "$" and s.startswith("${", k): depth += 1; k += 2; continue
+        if c == "}":
+            depth -= 1; k += 1
+            if depth == 0: return k
+            continue
+        k += 1
+    return None
+
+def _dq(s, j, cmds):
+    """(index after the closing quote, value) of the double-quoted string at s[j], or None when it is never closed. Commands found inside it
+    ($( ), backticks, ${ }) are appended to `cmds` only when the string closes."""
+    n, k, parts, tmp = len(s), j + 1, [], []
+    while k < n:
+        c = s[k]
+        if c == '"':
+            cmds.extend(tmp); return k + 1, "".join(parts)
+        if c == "\\":
+            nxt = s[k + 1] if k + 1 < n else ""
+            parts.append(nxt if nxt in '$`"\\' else "\\" + nxt); k += 2; continue
+        if c == "$" and s.startswith("$(", k): k = _lex(s, k + 2, ")", tmp); parts.append("$(..)"); continue
+        if c == "$" and s.startswith("${", k):
+            e = _brace(s, k, tmp)
+            if e is None: parts.append("$"); k += 1; continue
+            parts.append(s[k:e]); k = e; continue
+        if c == "`": k = _lex(s, k + 1, "`", tmp); parts.append("`..`"); continue
+        parts.append(c); k += 1
+    return None
+
+def _word(s, i, cmds):
+    """(end, raw text, value with quotes and escapes removed) of the word starting at s[i]."""
+    n, j, parts = len(s), i, []
+    while j < n:
+        c = s[j]
+        if c in " \t;&|()": break
+        if c in "<>":
+            if j + 1 < n and s[j + 1] == "(": j = _lex(s, j + 2, ")", cmds); parts.append("<(..)"); continue
+            break
+        if c == "\\":
+            if j + 1 < n: parts.append(s[j + 1]); j += 2
+            else: j += 1
+            continue
+        if c == "'":
+            e = s.find("'", j + 1)
+            if e < 0: j += 1; continue                     # unterminated: the quote is dropped, the rest stays unmasked
+            parts.append(s[j + 1:e]); j = e + 1; continue
+        if c == '"':
+            r = _dq(s, j, cmds)
+            if r is None: j += 1; continue
+            parts.append(r[1]); j = r[0]; continue
+        if c == "$":
+            if s.startswith("$'", j):
+                k = j + 2
+                while k < n and s[k] != "'": k += 2 if s[k] == "\\" else 1
+                if k >= n: j += 1; parts.append("$"); continue
+                parts.append(re.sub(r"\\(.)", r"\1", s[j + 2:k])); j = k + 1; continue
+            if s.startswith('$"', j):
+                r = _dq(s, j + 1, cmds)
+                if r is None: j += 1; parts.append("$"); continue
+                parts.append(r[1]); j = r[0]; continue
+            if s.startswith("$(", j): j = _lex(s, j + 2, ")", cmds); parts.append("$(..)"); continue
+            if s.startswith("${", j):
+                e = _brace(s, j, cmds)
+                if e is None: parts.append("$"); j += 1; continue
+                parts.append(s[j:e]); j = e; continue
+        if c == "`": j = _lex(s, j + 1, "`", cmds); parts.append("`..`"); continue
+        parts.append(c); j += 1
+    return j, s[i:j], "".join(parts)
+
+def _lex(s, i, closer, cmds):
+    n, items = len(s), []
     while i < n:
-        c = line[i]
-        if c == "(": depth += 1
-        elif c == ")":
-            if depth == 0: return i
-            depth -= 1
-        elif depth == 0:
-            if c in ";`}": return i
-            if c == "|" and not (i > 0 and line[i - 1] == ">"): return i
-            if c == "&" and not ((i > 0 and line[i - 1] in "<>") or (i + 1 < n and line[i + 1] == ">")): return i
-        i += 1
+        c = s[i]
+        if c in " \t": i += 1; continue
+        if (closer == ")" and c == ")") or (closer == "`" and c == "`"):
+            _flush(s, items, i, cmds); return i + 1
+        m = _REDIR_RE.match(s, i)
+        if m and not (m.end() < n and s[m.end()] == "(" and m.group(0) in ("<", ">")):
+            j = m.end()
+            while j < n and s[j] in " \t": j += 1
+            e, val = j, ""
+            if j < n and s[j] not in ";|&()":
+                e, _raw, val = _word(s, j, cmds)
+            items.append(("redir", i, e, s[i:e], (m.group(0), val))); i = e; continue
+        if c in ";|&()": _flush(s, items, i, cmds); i += 1; continue
+        e, raw, val = _word(s, i, cmds)
+        if e == i: i += 1; continue
+        if not any(k == "word" for k, *_ in items):
+            if _ASSIGN_RE.match(raw): items.append(("assign", i, e, raw, val)); i = e; continue
+            if raw == val and val in _SKIP_WORDS:
+                if val == "}": _flush(s, items, i, cmds)
+                i = e; continue
+        items.append(("word", i, e, raw, val)); i = e
+    _flush(s, items, n, cmds)
     return n
 
-def command_items(text):
-    """(word, rest-of-command, original word, WHOLE command text) at every command position of comment-stripped, continuation-joined
-    shell text (quotes and ${...} masked; substitutions inside double quotes scanned as their own segments). The last two are the text as
-    written (quotes and spacing kept): the command word through the end of the simple command (_cmd_end), for a finding to name its exact
-    span; an exception entry must equal it, so a changed tail makes the finding reappear."""
-    out = []
-    todo = list(logical(strip(text)).splitlines())
-    while todo:
-        orig = todo.pop(0)
-        line, extra = _mask(orig)
-        todo += extra
-        for m in CMDPOS.finditer(line):
-            w, end, ws = m.group("w"), m.end(), m.start("w")
-            while w in RESERVED:                  # a reserved word is not the command: the next word is (`elif setsid`, `time setsid`)
-                if w == "time": out.append((w, "", w, ""))
-                n2 = CMD_AT.match(line, end)
-                if not n2: w = None; break
-                w, end, ws = n2.group("w"), n2.end(), n2.start("w")
-            if w is None: continue
-            rest = re.split(r"[;&|)`]", line[end:], 1)[0]
-            out.append((w, rest, orig[ws:ws + len(w)], orig[ws:_cmd_end(line, end)].rstrip()))
-    return out
+def shell_commands(text):
+    """The simple commands (Cmd) of comment-stripped, continuation-joined shell text, every logical line read on its own."""
+    cmds = []
+    for line in logical(strip(text)).splitlines():
+        _lex(line, 0, None, cmds)
+    return cmds
 
-# Round 1 (4), fail closed by default: a path-like word (it holds a /) whose LAST component is a deny-class command is refused wherever it appears,
-# unless it is an OPERAND (not the command word) of (a) an interpreter run on an exact listed path of `runs` (bash|python3 LISTED ...), (b) a
-# listed script invoked by its exact path, or (c) a closed list of data-only commands with no option that runs a program. That covers the
-# command word after a leading redirection or an assignment, find -exec/-execdir/-ok, xargs, trap, env/command/exec/nohup/time operands,
-# bash -c strings, here-document bodies and eval, none of which the command-position reader can follow.
-DENYCLASS = DENY | LAUNCH_OUTRIGHT | EVALUATORS
+# Round 1 (4) + round 2 (8): fail closed by default for a path-like word whose LAST component is a deny-class command (or a glob that could be one).
+# It is refused wherever it appears unless it is an OPERAND (not the command word) of (a) an interpreter run on an exact listed path of `runs`,
+# (b) a listed script invoked by its exact path, or (c) a closed list of data-only commands none of whose options runs a program.
+VERSIONED = re.compile(r"(?:python|perl|ruby|lua|php|node|bash|sh|dash|zsh|ksh|awk|gawk|mawk|nawk|sed|gsed)[0-9][0-9.]*")
+ALT_ANY = {"nodejs", "rbash", "gsed", "tcsh", "csh", "emacs", "nvi"}                       # denied wherever the word appears
+ALT_CMD = {"ash", "fish", "vi", "vim", "view", "ex", "ed", "man", "less", "more", "pdksh", "mksh"}   # common English words: judged at command position and as a path's last component only
+_INTERP_BASES = {"python", "bash", "sh", "dash", "zsh", "ksh", "rbash", "ash", "csh", "tcsh", "fish", "pdksh", "mksh"}
+
+def family_kind(name):
+    """'interp' or 'eval' for a versioned or alternate name of an interpreter or evaluator (python3.11, perl5.38, rbash, gsed, vi, ex ...), else None."""
+    if name in ALT_ANY or name in ALT_CMD or VERSIONED.fullmatch(name):
+        return "interp" if re.sub(r"[0-9][0-9.]*$", "", name) in _INTERP_BASES else "eval"
+    return None
+
+def is_deny_token(n):
+    return n in DENY or n in ALT_ANY or VERSIONED.fullmatch(n) is not None
+
+DENYCLASS = DENY | LAUNCH_OUTRIGHT | EVALUATORS | ALT_ANY | ALT_CMD
+GLOBCH = re.compile(r"[*?\[\]]")
+def deny_class_last(last):
+    """Is this path component a deny-class command, or a glob pattern that could match one?"""
+    if last in DENYCLASS or VERSIONED.fullmatch(last): return True
+    return bool(GLOBCH.search(last)) and any(fnmatch.fnmatchcase(c, last) for c in DENYCLASS)
+
 DATA_ONLY = {"cp", "mv", "rm", "mkdir", "rmdir", "ls", "cat", "echo", "printf", "test", "[", "[[", "sha256sum", "shasum", "tar", "mktemp", "touch",
              "chmod", "ln", "readlink", "basename", "dirname", "head", "tail", "wc", "sort", "grep", "cut", "tr", "diff", "cmp", "install", "du",
              "stat", "date", "sleep", "true", "false"}
-EXECY = ("-exec", "-execdir", "-ok", "-okdir", "--exec", "--to-command", "--use-compress-program", "--compress-program", "--checkpoint-action",
-         "--rsh-command", "--info-script", "--new-volume-script", "-I", "-F", "--use-compress")
+RUNNY_OPT = ("program", "command", "exec", "action", "filter", "rsh", "shell")
+def runs_a_program(operands):
+    """An option whose name says it runs a program (--use-compress-program, --to-command, --checkpoint-action, -exec, -I ...)."""
+    for o in operands:
+        if not o.startswith("-") or o == "-": continue
+        opt = o.lstrip("-").split("=")[0].lower()
+        if any(k in opt for k in RUNNY_OPT) or o in ("-I", "-F", "-ok", "-okdir"): return True
+    return False
 TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
 
-def pathlike_deny(text, rows, runs):
-    """The path-like words (see above) of comment-stripped, continuation-joined shell text that are neither the command word of their command
-    (judged by the command-word rule) nor an admitted operand. Every observed line is judged on its own (a substitution inside a double-quoted
-    string is its own line); a word no command claims is refused."""
+def pathlike_deny(cmds, rows, runs):
+    """The path-like words (see above) of the commands that are neither the command word of their command (judged by the command-word rule)
+    nor an admitted operand."""
     out = []
-    todo = list(logical(strip(text)).splitlines())
-    while todo:
-        orig = todo.pop(0)
-        line, extra = _mask(orig); todo += extra
-        segs = []
-        for m in CMDPOS.finditer(line):
-            w, end, ws = m.group("w"), m.end(), m.start("w")
-            while w in RESERVED:
-                n2 = CMD_AT.match(line, end)
-                if not n2: w = None; break
-                w, end, ws = n2.group("w"), n2.end(), n2.start("w")
-            if w is not None: segs.append((ws, end, _cmd_end(line, end), w))
-        for tm in TOKEN.finditer(orig):
-            t = tm.group(0); n = t[2:] if t.startswith("./") else t
-            if "/" not in n or n.startswith(("-", "$")) or "://" in n or n.rsplit("/", 1)[-1] not in DENYCLASS: continue
-            p = tm.start()
-            inner = [g for g in segs if g[0] <= p < g[2]]
-            if inner:
-                ws, end, cend, w = max(inner, key=lambda g: g[0])
-                if p < ws + len(w): continue                     # the command word itself
-                cw = w[2:] if w.startswith("./") else w
-                words = [x.strip("\"'") for x in orig[end:cend].split()]
-                first = words[0] if words else ""
-                if cw in rows: continue                          # (b) a listed script invoked by its exact path
-                if cw in SHELL_INTERP and (first[2:] if first.startswith("./") else first) in runs: continue      # (a)
-                if w in DATA_ONLY and not any(x.startswith(EXECY) for x in TOKEN.findall(orig[end:cend])): continue   # (c)
-            out.append(t)
+    for c in cmds:
+        if c.cw is None: continue
+        cw = c.cw[2:] if c.cw.startswith("./") else c.cw
+        admitted = (cw in rows or (cw in SHELL_INTERP and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs)
+                    or family_kind(cw) == "interp" and bool(c.operands) and (c.operands[0][2:] if c.operands[0].startswith("./") else c.operands[0]) in runs
+                    or (c.cw in DATA_ONLY and not runs_a_program(c.operands)))
+        if admitted: continue
+        for o in c.operands:
+            for t in TOKEN.findall(o):
+                n = t[2:] if t.startswith("./") else t
+                if "/" in n and not n.startswith(("-", "$")) and "://" not in n and deny_class_last(n.rsplit("/", 1)[-1]): out.append(t)
     return out
-
-def command_words(text):
-    """(word, rest-of-command) at every command position (see command_items)."""
-    return [(w, rest) for w, rest, _ow, _on in command_items(text)]
 
 # REQ-CHAIN-001-AC1 "sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS" (final batch B1, the class closed): a listed script may
 # mention one of these names ONLY as a pure read: $NAME / ${NAME} in shell; os.environ.get("NAME"), os.getenv("NAME") or an
@@ -901,7 +985,19 @@ def scan_script(path, text, row, rows, base):
     # Codex #249 r7 B3 (the class closed): a script token is compared to the manifest EXACTLY (only a leading ./ is normalised; no
     # basename match), a command named by ANY path is refused even when its bare name is in `tools` (the row governs the bare name only),
     # and a launcher prefix (env, command, exec, builtin, nohup, sudo, timeout, nice, xargs, ...) followed by another program is refused.
-    tok_script = set()                             # script tokens already reported (a command-position report of the same word is the same finding)
+    cmds = [] if py else shell_commands(body)
+    cw_budget = {}                                 # round 2 (1): a script path at a COMMAND POSITION is judged once, as the whole command (below),
+    for c in cmds:                                 # never by its token: the token pass skips as many occurrences as there are commands named by it
+        if c.cw is not None: cw_budget[c.cw] = cw_budget.get(c.cw, 0) + 1
+    def script_like(t):
+        n = t[2:] if t.startswith("./") else t
+        pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
+        ok = n.endswith(SCRIPT_EXTS) or n in rows or n.rsplit("/", 1)[-1] in listed_base
+        if not ok and (pathlike or t.startswith("./")):
+            full = os.path.join(base, n)
+            if os.path.isfile(full):          # Sonnet 1: the existence, shebang and executable tests run on the normalised path
+                with open(full, "rb") as fh: ok = fh.read(2) == b"#!" or os.access(full, os.X_OK)
+        return ok
     for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", body):
         t = tm.group(0)
         n = t[2:] if t.startswith("./") else t
@@ -911,40 +1007,38 @@ def scan_script(path, text, row, rows, base):
             # PR 1b: in a SHELL script a path-like word is judged as a command only at command position (below); an argument such as
             # archive/go is judged by the script rule alone. A Python script has no command position, so it keeps the word-level test.
             if py: add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
-        elif n in DENY and n not in tools:
+        elif is_deny_token(n) and n not in tools:
             add("deny", t, "%s: names the command %r, which is not in this script's `tools` list" % (path, t))
-        is_script = n.endswith(SCRIPT_EXTS) or n in rows or name in listed_base
-        if not is_script and (pathlike or t.startswith("./")):
-            full = os.path.join(base, n)
-            if os.path.isfile(full):          # Sonnet 1: the existence, shebang and executable tests run on the normalised path
-                with open(full, "rb") as fh: is_script = fh.read(2) == b"#!" or os.access(full, os.X_OK)
-        if is_script and n != path and n not in runs and not (n == selfbase):
-            add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t)); tok_script.add(t)
+        if script_like(t) and n != path and n not in runs and not (n == selfbase):
+            if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
+            add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
     if not py:
-        for t in pathlike_deny(body, rows, runs):
+        for t in pathlike_deny(cmds, rows, runs):
             add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t))
-        for w, rest, ow, on in command_items(body):
+        for c in cmds:
+            if c.cw is None: continue
+            w = c.cw
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
-            span = on                              # the whole simple command, as written
-            dq = ow.strip("\"'")                  # a COMMAND named by a path is refused whatever `tools` says (the row governs the bare name only)
-            dn = dq[2:] if dq.startswith("./") else dq
-            if "/" in dn and not dn.startswith(("-", "$")) and "://" not in dn and dn.rsplit("/", 1)[-1] in DENYCLASS:
-                add("deny", dq, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, dq))
+            span = c.text                          # the whole simple command, from its first assignment or redirection, as written
+            if "/" in n and not n.startswith(("-", "$")) and "://" not in n and deny_class_last(name):
+                add("deny", w, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, w))
+            elif "/" not in n and GLOBCH.search(n) and re.search(r"[A-Za-z]", n) and deny_class_last(n):      # a bare * or ? is a case pattern, not a command name
+                add("deny", w, "%s: names the command %r by a pattern that could match a denied command (a path or pattern: name it bare)" % (path, w))
+            kind = family_kind(name)
             if name in LAUNCH_OUTRIGHT:
                 add("launcher", span, "%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
-            if name in EVALUATORS and not (name == "openssl" and not re.match(r"\s*s_client\b", rest)):
+            if (name in EVALUATORS and not (name == "openssl" and not (c.operands and c.operands[0] == "s_client"))) or kind == "eval":
                 if name not in tools: add("evaluator", span, "%s: %r at command position is an evaluator not in this script's `tools` list" % (path, w))
                 continue
-            if name in SHELL_INTERP:
-                args = [x.strip("\"'") for x in rest.split()]
-                first = args[0] if args else ""
+            if name in SHELL_INTERP or kind == "interp":
+                first = c.operands[0] if c.operands else ""
                 fn = first[2:] if first.startswith("./") else first
-                if "<" in rest or not first or first.startswith("-") or fn not in runs:
+                if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
                 continue
             in_tree = ("/" in w or w.startswith("./")) and os.path.isfile(os.path.join(base, n))
-            if (w.startswith("./") or in_tree) and n != path and n not in runs and w not in tok_script:
+            if (w.startswith("./") or in_tree or script_like(w)) and n != path and n not in runs and n != selfbase:
                 add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
