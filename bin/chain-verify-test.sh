@@ -835,6 +835,16 @@ add("sign_badname", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name":
 add("sign_baddigest", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
 dj("rekor-badsubj.json", {"entries": [entry("sign_badname", 50), entry("sign_baddigest", 51)]})
 add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}]}).encode())
+# AC8 (Codex A/B r2): a SIGNED collection whose environment record names a token variable is refused by the next stage's verifier (verify and stage-start),
+# whichever ACTIONS_ID_TOKEN_REQUEST_ name it is, not from a fixed list; the same record without the variable is accepted
+def _envrec(var):
+    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"variables": {var: "x"}}}]
+    return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build", "attestations": att},
+                       "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "1" * 64}}]}).encode()
+add("build_env_custom", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_ID_TOKEN_REQUEST_CUSTOM"))
+add("build_env_gh", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("GH_TOKEN"))
+add("build_env_runtime", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_RUNTIME_URL"))
+add("build_env_clean", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("HOSTNAME"))
 # ---- Codex security round 3 ----
 # (X2) every envelope field has its JSON type; a wrong one is a refusal ("envelope"), never a traceback
 for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("ptype_null", lambda r: r.__setitem__("payloadType", None)),
@@ -1144,6 +1154,11 @@ expect_ok     "002-AC3 a Witness stage record needs no Rekor entry" verify $(V) 
 expect_refuse "002-AC3 a Witness record is checked for the timestamp instead" "timestamp" verify $(V) --stage build $(rec build_coll_nostamp)
 
 # ---- REQ-CHAIN-003-AC2: only the standard record types, exact strings ------------------------------------------------
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_ID_TOKEN_REQUEST_CUSTOM (the whole prefix, not a fixed list)" "build|ACTIONS_ID_TOKEN_REQUEST_CUSTOM" verify $(V) --stage build $(rec build_env_custom)
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names GH_TOKEN" "build|GH_TOKEN" verify $(V) --stage build $(rec build_env_gh)
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_RUNTIME_URL" "build|ACTIONS_RUNTIME_URL" verify $(V) --stage build $(rec build_env_runtime)
+expect_ok "004-AC8 control: a signed Build record with an ordinary environment variable passes verify" verify $(V) --stage build $(rec build_env_clean)
+expect_refuse "004-AC8 stage-start refuses the same record as the previous stage's" "build|ACTIONS_ID_TOKEN_REQUEST_CUSTOM" $(ST rebuild build) $(rec build_env_custom) --digests "$work/digests.json"
 expect_ok     "003-AC2 the Witness collection type (Statement v0.1, as Witness writes it) is allowed" verify $(V) --stage build $(rec build_coll)
 expect_ok     "003-AC2 the Witness collection type in a Statement v1 is allowed" verify $(V) --stage build $(rec build_coll_v1)
 expect_ok     "003-AC2 SLSA provenance v1 is allowed" verify $(V) --stage sign $(rec sign_prov) $(R)
@@ -1801,7 +1816,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=640
+EXPECT=645
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
