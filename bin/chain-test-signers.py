@@ -210,7 +210,7 @@ class EnvNames(set):
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
     whole is allowed only through this map."""
     def __init__(self, *a):
-        super().__init__(*a); self.ambient = {}
+        super().__init__(*a); self.ambient = {}; self.pinned = {}
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node", "ruby", "perl", "source", "eval", "exec",
                 "make", "gmake", "xargs", "run-parts", "npm", "yarn", "pnpm", "just", "task", "parallel", "env", "sudo", "nohup",
                 "timeout", "nice", "command", "builtin", "watch", "at", "find"}
@@ -418,6 +418,28 @@ def load_scripts(base):
             if (nm, sc) in seen:
                 errs.append("chain-scripts.json: ambient_env %s for %s is listed twice" % (nm, sc)); continue
             seen.add((nm, sc)); env_names.ambient.setdefault(nm, set()).add(sc)
+    pins = doc.get("pinned_steps", [])
+    if not isinstance(pins, list): errs.append("chain-scripts.json: pinned_steps must be a list of {file, job, id, run, why}")
+    else:
+        for e in pins:
+            if not isinstance(e, dict) or set(e) != {"file", "job", "id", "run", "why"} or not all(isinstance(v, str) for v in e.values()):
+                errs.append("chain-scripts.json: pinned_steps entry %r must be an object with exactly file, job, id, run and why (strings)" % (e,)); continue
+            f, j, i, run, why = e["file"], e["job"], e["id"], e["run"], e["why"]
+            if not re.fullmatch(r"\.github/workflows/stage-[A-Za-z0-9_.-]+\.ya?ml", f) or ".." in f:
+                errs.append("chain-scripts.json: pinned_steps file %r is not a stage file (.github/workflows/stage-*.yml)" % f); continue
+            if not os.path.isfile(os.path.join(base, f)):
+                errs.append("chain-scripts.json: pinned_steps file %s is not in the tree" % f); continue
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", j) or not re.fullmatch(r"[A-Za-z0-9_-]+", i):
+                errs.append("chain-scripts.json: pinned_steps job/id %r/%r must be plain names" % (j, i)); continue
+            if not run.strip() or run != run.strip() or any(not (" " <= c <= "~") for c in run):
+                errs.append("chain-scripts.json: pinned_steps %s %s %s: run must be one line of printable ASCII with no edge space" % (f, j, i)); continue
+            if not why.strip():
+                errs.append("chain-scripts.json: pinned_steps %s %s %s has no reason (why)" % (f, j, i)); continue
+            if (f, j, i) in env_names.pinned:
+                errs.append("chain-scripts.json: pinned_steps %s %s %s is listed twice (at most one pinned step per file, job and id)" % (f, j, i)); continue
+            if run not in open(os.path.join(base, f), errors="replace").read():
+                errs.append("chain-scripts.json: pinned_steps %s %s %s: the run text is not in the file (stale)" % (f, j, i)); continue
+            env_names.pinned[(f, j, i)] = e
     return rows, errs, env_names
 
 def _words(line):
@@ -596,6 +618,8 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
     workflow, job and step keys come from closed sets; step `uses` from a closed list; env names from a closed set; the run
     lines from the grammar of check_run."""
     errs, ran = [], []
+    pins = getattr(env_names, "pinned", {})        # round 1 (5): (file, job, id) -> the reviewed pinned step
+    found = set()
     amb = getattr(env_names, "ambient", {})        # PR 1b (B): name -> listed scripts that read it from their own environment
     extra = set(d) - STAGE_WF_KEYS
     if extra: errs.append("%s: workflow keys %s are not allowed in a stage file (env, defaults, concurrency, run-name can reroute every step)" % (rel, sorted(extra)))
@@ -605,6 +629,13 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
         if extra: errs.append("%s: job keys %s are not allowed (container, services, defaults, env, uses, secrets, with run other code or reroute steps)" % (pre, sorted(extra)))
         errs += _runner_errors(pre, j)
         for s in (j.get("steps") or []):
+            pin = pins.get((".github/workflows/" + rel, jn, s.get("id"))) if isinstance(s.get("id"), str) else None
+            if pin is not None:
+                # round 1 (5), a REVIEWED PINNED STEP: exactly name/id/run, and the run text equal to the entry's; nothing else about it is relaxed
+                found.add((".github/workflows/" + rel, jn, s.get("id")))
+                if set(s) - {"name", "id", "run"}: errs.append("%s: pinned step %r has keys %s; a pinned step has only name, id and run" % (pre, s.get("id"), sorted(set(s) - {"name", "id", "run"})))
+                elif s.get("run") != pin["run"]: errs.append("%s: pinned step %r has a run text that differs from its pinned_steps entry" % (pre, s.get("id")))
+                continue
             nm = s.get("name") or str(s.get("run") or s.get("uses") or "").strip().splitlines()[0][:40]
             sp = "%s step %r" % (pre, nm)
             extra = set(s) - STAGE_STEP_KEYS
@@ -650,6 +681,9 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
                 else:
                     errs.append("%s: env %s is not read whole (\"$%s\") by the step's run line" % (sp, k, k))
             errs += ["%s: %s" % (sp, x) for x in e]; ran += r
+    for key in pins:
+        if key[0] == ".github/workflows/" + rel and key not in found:
+            errs.append("%s: pinned_steps entry %s job %s id %s matches no step in the file (stale)" % (rel, key[0], key[1], key[2]))
     return errs, ran
 
 ENV_SET = re.compile(r"(?<![\w$])(?:(?:export|local|readonly|typeset)\s+|declare\s+(?:-\w+\s+)?)?(PATH|BASH_ENV|ENV|LD_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|NODE_OPTIONS|IFS|CDPATH|PROMPT_COMMAND|PS4|SHELLOPTS|BASHOPTS)\+?=")
