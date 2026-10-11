@@ -514,28 +514,65 @@ LAUNCH_OUTRIGHT = {"env", "command", "exec", "builtin", "nohup", "sudo", "doas",
                    "chroot", "unshare", "nsenter", "flock", "time", "strace", "chrt", "taskset", "eval", "source", ".", "busybox", "setpriv"}
 EVALUATORS = {"awk", "gawk", "mawk", "nawk", "sed", "perl", "ruby", "php", "lua", "node", "tar", "find", "ssh", "openssl"}
 SHELL_INTERP = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3"}
-CMDPOS = re.compile(r"(?:^|[;&|(){}!`]|\$\(|\b(?:then|do|else|elif|time|if|while|until)\b)[ \t]*"
-                    r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()]*)[ \t]+)*(?P<w>[^\s;&|(){}<>`\"'=!]+)", re.M)
-CMD_AT = re.compile(r"[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()]*)[ \t]+)*(?P<w>[^\s;&|(){}<>`\"'=!]+)")
+_PREFIX = (r"(?:(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()]*)"            # a VAR=val assignment, or
+           r"|\d*(?:&>>?|<<<|<<-?|>>|>&|<&|<>|[<>])[ \t]*[^\s;&|()<>]+)[ \t]+)*")        # a leading redirection (final batch R-a)
+CMDPOS = re.compile(r"(?:^|[;&|(){}!`]|\$\(|\b(?:then|do|else|elif|time|if|while|until)\b)[ \t]*" + _PREFIX +
+                    r"(?P<w>[^\s;&|(){}<>`\"'=!]+)", re.M)
+CMD_AT = re.compile(r"[ \t]*" + _PREFIX + r"(?P<w>[^\s;&|(){}<>`\"'=!]+)")
 RESERVED = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until", "case", "esac", "in", "time", "function", "select", "coproc"}
 
 def _is_python(path, text):
     return path.endswith(".py") or bool(re.match(r"#!\S*(?:/|\s)python", text))
 
+def _close(line, i, open_c, close_c):
+    """Index of the bracket closing the one at line[i] (quotes inside skipped); len(line) when unclosed (fail closed: the rest is the segment)."""
+    depth, j, n = 0, i, len(line)
+    while j < n:
+        c = line[j]
+        if c == "\\": j += 2; continue
+        if c == "'" :
+            k = line.find("'", j + 1); j = n if k < 0 else k + 1; continue
+        if c == open_c: depth += 1
+        elif c == close_c:
+            depth -= 1
+            if depth == 0: return j
+        j += 1
+    return n
+
 def _mask(line):
-    """The line with every single-quoted string, every ${...} and every double-quoted string reduced to a placeholder, so their
-    contents are never read as command positions; the $( ) and backtick substitutions INSIDE a double-quoted string are returned as
-    extra segments (they are command positions)."""
-    extra = []
-    prev = None
-    while prev != line:
-        prev = line; line = re.sub(r"\$\{[^{}]*\}", "X", line)
-    line = re.sub(r"'[^']*'", "Q", line)
-    def dq(m):
-        extra.extend(re.findall(r"\$\(([^()]*)\)|`([^`]*)`", m.group(0)))
-        return "Q"
-    line = re.sub(r'"(?:[^"\\]|\\.)*"', dq, line)
-    return line, [a or b for a, b in extra]
+    """ONE left-to-right pass (final batch R-b, R-c): single-quoted strings, double-quoted strings and ${...} become placeholders, so
+    their text is never read as a command position; every $( ) and backtick substitution found INSIDE a double-quoted string or a
+    ${...} is returned as an extra segment to scan (it is a command position)."""
+    out, extra, i, n = [], [], 0, len(line)
+    def inner(seg):                      # collect the substitutions inside a quoted or ${...} region
+        j = 0
+        while j < len(seg):
+            if seg.startswith("$(", j):
+                k = _close(seg, j + 1, "(", ")"); extra.append(seg[j + 2:k]); j = k + 1; continue
+            if seg[j] == "`":
+                k = seg.find("`", j + 1); k = len(seg) if k < 0 else k; extra.append(seg[j + 1:k]); j = k + 1; continue
+            if seg[j] == "\\": j += 2; continue
+            j += 1
+    while i < n:
+        c = line[i]
+        if c == "\\": out.append(line[i:i + 2]); i += 2; continue
+        if c == "'":
+            k = line.find("'", i + 1); k = n if k < 0 else k
+            out.append("Q"); i = k + 1; continue
+        if c == '"':
+            j = i + 1
+            while j < n and line[j] != '"':
+                if line[j] == "\\": j += 2; continue
+                if line.startswith("$(", j): j = _close(line, j + 1, "(", ")") + 1; continue
+                if line[j] == "`":
+                    k = line.find("`", j + 1); j = n if k < 0 else k + 1; continue
+                j += 1
+            inner(line[i + 1:j]); out.append("Q"); i = j + 1; continue
+        if line.startswith("${", i):
+            k = _close(line, i + 1, "{", "}")
+            inner(line[i + 2:k]); out.append("X"); i = k + 1; continue
+        out.append(c); i += 1
+    return "".join(out), extra
 
 def command_words(text):
     """(word, rest-of-command) at every command position of comment-stripped, continuation-joined shell text (quotes and ${...}
