@@ -417,8 +417,12 @@ requirements:
     source: [issue 278 (gap X2), cmd/fscache/main.go loadConfig and loadKeyPair and serve, internal/server/tls.go TLSConfig, internal/server/server.go NewHTTPServer, README.md, docs/kubernetes.md, docs/docker-deploy.md, docs/gradle.md]
     tier: community
     introduced: v0.3.0
-    origin: advisor step 5 Oct 11; register row 99; map row P1-F (AC8 ruled in; CipherSuites stays nil)
+    origin: advisor step 5 Oct 11; register row 99; map row P1-F (AC8 ruled in; CipherSuites stays nil; AC9 added at advisor step 5 Oct 11)
     confidence: documented
+    notes: >
+      AC9 (HTTP/1.1 only with TLS on) was added at advisor step 5 on Oct 11,
+      after the read-back: with TLS on the server negotiates only HTTP/1.1; a
+      client offering only h2 by ALPN gets no h2 connection.
     acceptance_criteria:
       - id: REQ-TLS-001-AC1
         given: FSCACHE_TLS_CERT and FSCACHE_TLS_KEY set to a matching certificate and key, generated in the test (ECDSA P-256)
@@ -467,6 +471,12 @@ requirements:
         when: the first log line is emitted
         then: it carries tls = enabled or disabled beside auth and fips140. This extends REQ-OBS-004-AC1, whose field list is additive ("contains")
         verification: { method: component, release_blocking: false }
+        status: approved
+      - id: REQ-TLS-001-AC9
+        given: a server started with TLS
+        when: a client offers only h2 by ALPN, and a client offers h2 and http/1.1
+        then: no h2 connection is made; the first gets a failed ALPN negotiation (no h2), the second negotiates http/1.1, and requests behave as on the plain listener (the same header size bound, body limit and upload concurrency bound)
+        verification: { method: http-integration, release_blocking: true }
         status: approved
 
   # ── Authentication ────────────────────────────────────────────────────

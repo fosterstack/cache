@@ -10,9 +10,11 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"log"
 	"log/slog"
 	"math/big"
 	"net"
@@ -325,7 +327,80 @@ func TestTLSBadPairLeavesExistingDataDirIdentical(t *testing.T) {
 	}
 }
 
-// proves: REQ-TLS-001-AC4 — neither the key's marker nor any 16-byte window of its body appears in the logs, the startup error, /metrics or /statusz, in a valid start or a refused one
+// captureStderr sends everything written to os.Stderr, and the standard
+// logger (where an http.Server with no ErrorLog writes its TLS handshake
+// errors), to a file for the rest of the test, and returns a reader of
+// what was captured so far.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	f, err := os.Create(filepath.Join(t.TempDir(), "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr, origLog := os.Stderr, log.Writer()
+	os.Stderr = f
+	log.SetOutput(f)
+	t.Cleanup(func() {
+		os.Stderr = origStderr
+		log.SetOutput(origLog)
+		_ = f.Close()
+	})
+	return func() string {
+		b, err := os.ReadFile(f.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+}
+
+// clientHello is a hand-built TLS ClientHello record offering exactly
+// version and suites.
+func clientHello(version uint16, suites ...uint16) []byte {
+	u16 := func(b []byte, v int) []byte { return binary.BigEndian.AppendUint16(b, uint16(v)) }
+	body := u16(nil, int(version))
+	body = append(body, make([]byte, 32)...) // random
+	body = append(body, 0)                   // no session id
+	body = u16(body, 2*len(suites))
+	for _, s := range suites {
+		body = u16(body, int(s))
+	}
+	body = append(body, 1, 0) // null compression
+	exts := []byte{0x00, 0x0a, 0, 4, 0, 2, 0x00, 0x17, 0x00, 0x0d, 0, 4, 0, 2, 0x04, 0x03}
+	body = append(u16(body, len(exts)), exts...)
+	hs := append([]byte{1, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
+	return append(u16([]byte{0x16, 0x03, 0x01}, len(hs)), hs...)
+}
+
+// induceHandshakeErrors makes the TLS server at addr log four handshake
+// errors: a hello offering nothing it accepts (3DES only), a plain-HTTP
+// request, a truncated ClientHello, and a client that closes before
+// sending anything.
+func induceHandshakeErrors(t *testing.T, addr string) {
+	t.Helper()
+	exchange := func(payload []byte, read bool) {
+		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = conn.Close() }()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		if len(payload) > 0 {
+			if _, err := conn.Write(payload); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if read {
+			_, _ = io.ReadAll(conn)
+		}
+	}
+	exchange(clientHello(tls.VersionTLS12, 0x000a), true) // TLS_RSA_WITH_3DES_EDE_CBC_SHA only
+	exchange([]byte("GET / HTTP/1.1\r\nHost: x\r\n\r\n"), true)
+	exchange(clientHello(tls.VersionTLS12, 0xc02b)[:20], false)
+	exchange(nil, false)
+}
+
+// proves: REQ-TLS-001-AC4 — neither the key's marker nor any 16-byte window of its body appears in the logs, stderr (Go's TLS handshake-error log included), the startup error, /metrics or /statusz, in a valid start or a refused one
 func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 	dir := t.TempDir()
 	p := writePair(t, dir, "valid", "MARKER-KEY-c41d0e")
@@ -338,6 +413,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		t.Setenv("FSCACHE_ADDR", addr)
 		t.Setenv("FSCACHE_TLS_CERT", p.certPath)
 		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+		stderr := captureStderr(t)
 		var logs bytes.Buffer
 		var surfaces []string
 		ctx, cancel := context.WithCancel(context.Background())
@@ -351,6 +427,12 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 				}
 				surfaces = append(surfaces, path+"\n"+body)
 			}
+			induceHandshakeErrors(t, addr)
+			// The server logs handshake errors from its connection
+			// goroutines; wait for all four before shutting it down.
+			for deadline := time.Now().Add(5 * time.Second); strings.Count(stderr(), "TLS handshake error") < 4 && time.Now().Before(deadline); {
+				time.Sleep(20 * time.Millisecond)
+			}
 		})
 		if err != nil {
 			t.Fatalf("serve: %v", err)
@@ -358,7 +440,12 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		if len(surfaces) != 3 {
 			t.Fatalf("captured %d surfaces, want 3", len(surfaces))
 		}
-		for _, s := range append(surfaces, logs.String()) {
+		errLog := stderr()
+		if n := strings.Count(errLog, "http: TLS handshake error"); n < 4 {
+			t.Fatalf("captured stderr holds %d TLS handshake-error lines, want at least 4 (one per induced error):\n%s", n, errLog)
+		}
+		t.Logf("captured stderr:\n%s", errLog)
+		for _, s := range append(surfaces, logs.String(), errLog) {
 			if leak := p.leaks(s); leak != "" {
 				t.Errorf("%s appears in:\n%s", leak, s)
 			}
@@ -373,6 +460,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		t.Setenv("FSCACHE_ADDR", freePort(t))
 		t.Setenv("FSCACHE_TLS_CERT", other.certPath)
 		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+		stderr := captureStderr(t)
 		var logs bytes.Buffer
 		err := serve(context.Background(), slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), nil)
 		if err == nil {
@@ -382,7 +470,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		if code == 0 {
 			t.Fatal("runMain exited 0 for a mismatched pair")
 		}
-		for _, s := range []string{err.Error(), logs.String(), out} {
+		for _, s := range []string{err.Error(), logs.String(), out, stderr()} {
 			if leak := p.leaks(s); leak != "" {
 				t.Errorf("%s appears in %q", leak, s)
 			}
@@ -581,5 +669,45 @@ func TestTLSKeyEncodingsAccepted(t *testing.T) {
 				t.Errorf("loaded a different certificate")
 			}
 		})
+	}
+}
+
+// proves: REQ-TLS-001-AC9 — the server as started by serve negotiates only HTTP/1.1: an h2-only ALPN offer fails, h2 + http/1.1 gets http/1.1
+func TestTLSServeOffersOnlyHTTP11(t *testing.T) {
+	p := writePair(t, t.TempDir(), "alpn", "MARKER-ALPN-77aa01")
+	clearEnv(t)
+	freshRegistry(t)
+	addr := freePort(t)
+	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+	t.Setenv("FSCACHE_ADDR", addr)
+	t.Setenv("FSCACHE_TLS_CERT", p.certPath)
+	t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+	pool := x509.NewCertPool()
+	pool.AddCert(p.leaf)
+	dial := func(protos ...string) (tls.ConnectionState, error) {
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
+			&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, NextProtos: protos})
+		if err != nil {
+			return tls.ConnectionState{}, err
+		}
+		defer func() { _ = conn.Close() }()
+		return conn.ConnectionState(), nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := serve(ctx, quietLogger(), func() {
+		defer cancel()
+		if st, err := dial("h2"); err == nil {
+			t.Errorf("an h2-only ALPN offer completed a handshake (negotiated %q), want a failed ALPN negotiation", st.NegotiatedProtocol)
+		}
+		st, err := dial("h2", "http/1.1")
+		if err != nil {
+			t.Fatalf("h2 + http/1.1 offer: %v", err)
+		}
+		if st.NegotiatedProtocol != "http/1.1" {
+			t.Errorf("h2 + http/1.1 offer negotiated %q, want http/1.1", st.NegotiatedProtocol)
+		}
+	})
+	if err != nil {
+		t.Fatalf("serve: %v", err)
 	}
 }

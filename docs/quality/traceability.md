@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 80 |
-| Acceptance criteria | 260 |
-| Release-blocking ACs | 50 |
-| ACs with mapped evidence | 244 |
-| Release-blocking ACs with mapped evidence | 50 |
+| Acceptance criteria | 261 |
+| Release-blocking ACs | 51 |
+| ACs with mapped evidence | 245 |
+| Release-blocking ACs with mapped evidence | 51 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
 | Confidence: implementation-only | 34 |
@@ -176,6 +176,8 @@ When both FSCACHE_TLS_CERT and FSCACHE_TLS_KEY name a PEM certificate file and i
 
 *Introduced v0.3.0 · tier community · confidence documented · source: issue 278 (gap X2); cmd/fscache/main.go loadConfig and loadKeyPair and serve; internal/server/tls.go TLSConfig; internal/server/server.go NewHTTPServer; README.md; docs/kubernetes.md; docs/docker-deploy.md; docs/gradle.md*
 
+> AC9 (HTTP/1.1 only with TLS on) was added at advisor step 5 on Oct 11, after the read-back: with TLS on the server negotiates only HTTP/1.1; a client offering only h2 by ALPN gets no h2 connection.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-TLS-001-AC1 | Given FSCACHE_TLS_CERT and FSCACHE_TLS_KEY set to a matching certificate and key, generated in the test (ECDSA P-256); when the server starts and a client connects with TLS 1.2, with TLS 1.3, and with plain HTTP; then the TLS 1.2 and TLS 1.3 clients complete a handshake and an authenticated PUT/GET round trip. The plain-HTTP request gets no cache response and stores nothing (Go answers 400) | http-integration | yes | approved | 1 item(s) |
@@ -186,6 +188,7 @@ When both FSCACHE_TLS_CERT and FSCACHE_TLS_KEY name a PEM certificate file and i
 | REQ-TLS-001-AC6 | Given a running TLS server; the certificate file is then replaced on disk; when a new connection is made, then the server is restarted and another connection is made; then before the restart the old certificate is presented; after it the new one is. The docs say "replace the files, then restart" | http-integration |  | approved | 1 item(s) |
 | REQ-TLS-001-AC7 | Given README.md, docs/kubernetes.md, docs/docker-deploy.md, docs/gradle.md; when they are read; then the README configuration table lists both variables, "required together", default unset. kubernetes.md no longer says "no certificate handling of its own" and shows both options (TLS in front, or the certificate in a Secret mounted read-only, with probes using scheme HTTPS). Each page says the files are read at startup only, so a rotation needs a restart | unit |  | approved | 2 item(s) |
 | REQ-TLS-001-AC8 | Given a starting server; when the first log line is emitted; then it carries tls = enabled or disabled beside auth and fips140. This extends REQ-OBS-004-AC1, whose field list is additive ("contains") | component |  | approved | 1 item(s) |
+| REQ-TLS-001-AC9 | Given a server started with TLS; when a client offers only h2 by ALPN, and a client offers h2 and http/1.1; then no h2 connection is made; the first gets a failed ALPN negotiation (no h2), the second negotiates http/1.1, and requests behave as on the plain listener (the same header size bound, body limit and upload concurrency bound) | http-integration | yes | approved | 3 item(s) |
 
 ## Authentication
 

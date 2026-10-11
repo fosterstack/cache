@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/fips140"
@@ -18,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -331,5 +333,186 @@ func TestTLSFIPSModeNarrowsSuites(t *testing.T) {
 		if s := resp.TLS.CipherSuite; s != tls.TLS_AES_128_GCM_SHA256 && s != tls.TLS_AES_256_GCM_SHA384 {
 			t.Errorf("FIPS mode: TLS 1.3 negotiated %s, want an AES-GCM suite", tls.CipherSuiteName(s))
 		}
+	}
+}
+
+// proves: REQ-TLS-001-AC9 — with TLS on only HTTP/1.1 is negotiated: an h2-only ALPN offer fails, an h2 + http/1.1 offer gets http/1.1
+func TestTLSOffersOnlyHTTP11(t *testing.T) {
+	cert := newTestCert(t, "alpn", false)
+	cfg := TLSConfig(cert)
+	if len(cfg.NextProtos) != 1 || cfg.NextProtos[0] != "http/1.1" {
+		t.Fatalf("NextProtos = %v, want [http/1.1]", cfg.NextProtos)
+	}
+	for _, c := range []*tls.Config{cfg, nil} {
+		srv := NewHTTPServer(":0", http.NewServeMux(), c)
+		if srv.Protocols == nil || !srv.Protocols.HTTP1() || srv.Protocols.HTTP2() || srv.Protocols.UnencryptedHTTP2() {
+			t.Fatalf("Protocols = %v, want HTTP/1 only", srv.Protocols)
+		}
+	}
+
+	addr := startTLSServer(t, newTestHandler(t, Credentials{}), cert)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	dial := func(protos ...string) (tls.ConnectionState, error) {
+		conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
+			&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, NextProtos: protos})
+		if err != nil {
+			return tls.ConnectionState{}, err
+		}
+		defer func() { _ = conn.Close() }()
+		return conn.ConnectionState(), nil
+	}
+	if st, err := dial("h2"); err == nil {
+		t.Errorf("an h2-only ALPN offer completed a handshake (negotiated %q), want a failed ALPN negotiation", st.NegotiatedProtocol)
+	}
+	st, err := dial("h2", "http/1.1")
+	if err != nil {
+		t.Fatalf("h2 + http/1.1 offer: %v", err)
+	}
+	if st.NegotiatedProtocol != "http/1.1" {
+		t.Errorf("h2 + http/1.1 offer negotiated %q, want http/1.1", st.NegotiatedProtocol)
+	}
+
+	// A Go client that tries HTTP/2 first still talks HTTP/1.1.
+	c := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}}
+	resp, _ := send(t, c, http.MethodGet, "https://"+addr+"/healthz", "", false)
+	if resp.StatusCode != http.StatusOK || resp.ProtoMajor != 1 || resp.ProtoMinor != 1 {
+		t.Errorf("/healthz = %d over %s, want 200 over HTTP/1.1", resp.StatusCode, resp.Proto)
+	}
+}
+
+// listener is one way of serving: plain HTTP or TLS, through the
+// production http.Server.
+type listener struct {
+	name   string
+	tls    bool
+	cert   tls.Certificate
+	client *http.Client
+}
+
+func (l listener) start(t *testing.T, h http.Handler) string {
+	t.Helper()
+	if l.tls {
+		return "https://" + startTLSServer(t, h, l.cert)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewHTTPServer(ln.Addr().String(), h, nil)
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(ln) }()
+	t.Cleanup(func() {
+		_ = srv.Close()
+		if err := <-done; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("Serve: %v", err)
+		}
+	})
+	return "http://" + ln.Addr().String()
+}
+
+// rawStatus writes raw request bytes on a fresh connection (TLS when
+// base is https) while reading the response, and returns its status code.
+// Writing and reading run side by side because the server answers an
+// oversized header before it has read all of it.
+func (l listener) rawStatus(t *testing.T, base string, req []byte) int {
+	t.Helper()
+	addr := strings.TrimPrefix(strings.TrimPrefix(base, "https://"), "http://")
+	var conn net.Conn
+	var err error
+	if l.tls {
+		pool := x509.NewCertPool()
+		pool.AddCert(l.cert.Leaf)
+		conn, err = tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
+			&tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12, NextProtos: []string{"http/1.1"}})
+	} else {
+		conn, err = net.DialTimeout("tcp", addr, 5*time.Second)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	go func() { _, _ = conn.Write(req) }()
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("%s: reading the response: %v", l.name, err)
+	}
+	_ = resp.Body.Close()
+	return resp.StatusCode
+}
+
+// proves: REQ-TLS-001-AC9 — the TLS listener has the plain listener's request bounds: header size, body limit, upload concurrency, timeouts
+func TestTLSListenerHasPlainListenerBounds(t *testing.T) {
+	cert := newTestCert(t, "bounds", false)
+	pool := x509.NewCertPool()
+	pool.AddCert(cert.Leaf)
+	tlsClient := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+		ForceAttemptHTTP2: true,
+		TLSClientConfig:   &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12},
+	}}
+	listeners := []listener{
+		{name: "plain", client: &http.Client{Timeout: 10 * time.Second}},
+		{name: "tls", tls: true, cert: cert, client: tlsClient},
+	}
+
+	plainSrv, tlsSrv := NewHTTPServer(":0", http.NewServeMux(), nil), NewHTTPServer(":0", http.NewServeMux(), TLSConfig(cert))
+	if plainSrv.ReadHeaderTimeout != tlsSrv.ReadHeaderTimeout || plainSrv.ReadTimeout != tlsSrv.ReadTimeout ||
+		plainSrv.WriteTimeout != tlsSrv.WriteTimeout || plainSrv.IdleTimeout != tlsSrv.IdleTimeout ||
+		plainSrv.MaxHeaderBytes != tlsSrv.MaxHeaderBytes {
+		t.Errorf("timeouts or header bound differ between the plain and the TLS server")
+	}
+
+	for _, l := range listeners {
+		t.Run(l.name, func(t *testing.T) {
+			// Header size: a header block past Go's 1 MiB default gets 431.
+			base := l.start(t, newTestHandlerWithUploadLimit(t, 1))
+			big := "PUT /hdr-key HTTP/1.1\r\nHost: x\r\nX-Big: " + strings.Repeat("a", http.DefaultMaxHeaderBytes+8192) + "\r\nContent-Length: 1\r\n\r\nx"
+			if got := l.rawStatus(t, base, []byte(big)); got != http.StatusRequestHeaderFieldsTooLarge {
+				t.Errorf("oversized header: %d, want 431", got)
+			}
+			if resp, _ := send(t, l.client, http.MethodGet, base+"/hdr-key", "", false); resp.StatusCode != http.StatusNotFound {
+				t.Errorf("the refused PUT stored something: GET = %d", resp.StatusCode)
+			}
+
+			// Body limit: past MaxBodyBytes is 413 and stores nothing.
+			bodyBase := l.start(t, newTestHandlerWithMaxBody(t, Credentials{}, 16))
+			if resp, _ := send(t, l.client, http.MethodPut, bodyBase+"/body-key", strings.Repeat("b", 17), false); resp.StatusCode != http.StatusRequestEntityTooLarge {
+				t.Errorf("oversized body: %d, want 413", resp.StatusCode)
+			}
+			if resp, _ := send(t, l.client, http.MethodGet, bodyBase+"/body-key", "", false); resp.StatusCode != http.StatusNotFound {
+				t.Errorf("the refused body was stored: GET = %d", resp.StatusCode)
+			}
+
+			// Upload concurrency: with a bound of 1 and one slow upload in
+			// flight, the next PUT gets 429 with Retry-After.
+			slow := &slowBody{release: make(chan struct{})}
+			var once sync.Once
+			release := func() { once.Do(func() { close(slow.release) }) }
+			t.Cleanup(release)
+			first := make(chan int, 1)
+			go func() {
+				req, _ := http.NewRequest(http.MethodPut, base+"/slow-key", slow)
+				resp, err := l.client.Do(req)
+				if err != nil {
+					first <- 0
+					return
+				}
+				_ = resp.Body.Close()
+				first <- resp.StatusCode
+			}()
+			time.Sleep(300 * time.Millisecond)
+			resp, _ := send(t, l.client, http.MethodPut, base+"/refused-key", "body", false)
+			if resp.StatusCode != http.StatusTooManyRequests || resp.Header.Get("Retry-After") == "" {
+				t.Errorf("second PUT while the slot is busy: %d (Retry-After %q), want 429 with Retry-After", resp.StatusCode, resp.Header.Get("Retry-After"))
+			}
+			release()
+			if got := <-first; got != http.StatusCreated {
+				t.Errorf("the slow upload ended with %d, want 201", got)
+			}
+		})
 	}
 }

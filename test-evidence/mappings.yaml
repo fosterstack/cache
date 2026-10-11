@@ -177,6 +177,11 @@ mappings:
   - ac: REQ-TLS-001-AC8
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestStartupLineCarriesTLSState" }
+  - ac: REQ-TLS-001-AC9
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSOffersOnlyHTTP11" }
+      - { type: go-test, ref: "internal/server:TestTLSListenerHasPlainListenerBounds" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSServeOffersOnlyHTTP11" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }
