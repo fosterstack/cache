@@ -335,9 +335,10 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 			m.EvictedTotal.Inc()
 		}),
 	)
-	// keepMarker is set when the startup reconcile fails: the stores may be
-	// half repaired, so the marker stays and the next start reconciles
-	// again (REQ-STORE-005-AC4).
+	// keepMarker is set while the startup reconcile runs and released only
+	// when it succeeds: after an error or a panic the stores may be half
+	// repaired, so the marker stays and the next start reconciles again
+	// (REQ-STORE-005-AC4).
 	keepMarker := false
 	defer func() {
 		if err := cacheClose(c); err != nil {
@@ -345,7 +346,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 			return
 		}
 		if keepMarker {
-			log.Warn("fscache: reconciliation failed; unclean marker kept, next start reconciles again")
+			log.Warn("fscache: reconciliation did not finish; unclean marker kept, next start reconciles again")
 			return
 		}
 		if err := clearMarkerFn(marker); err != nil {
@@ -356,11 +357,12 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	if wasUnclean {
 		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
 		began := time.Now()
+		keepMarker = true
 		stats, err := cacheReconcile(c, context.Background())
 		if err != nil {
-			keepMarker = true
 			return fmt.Errorf("startup reconciliation: %w", err)
 		}
+		keepMarker = false
 		log.Info("fscache: reconciled",
 			"duration", reconcileDuration(time.Since(began)),
 			"adopted_blobs", stats.AdoptedBlobs,
