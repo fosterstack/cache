@@ -219,6 +219,11 @@ AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|ma
 #  - an exception waives ONE occurrence of exactly its rule and text; repeated invocations of one listed script belong in a `runs` row, not in
 #    exceptions (a second occurrence of an excepted text stays a finding by design).
 #  - a command text that crosses a backslash-newline is named by its JOINED text (bash joins with nothing inserted).
+#  - reads_env is satisfied by any mention outside comments and docstrings, so a string that merely contains the name counts: it is a staleness
+#    tripwire, not proof that the script reads the variable.
+#  - the AC8 `unset GH_TOKEN` after admission cannot be judged by a text judge; the review of the script and the Witness record are what show it.
+#  - AC1 wording residual: the English of REQ-CHAIN-001-AC1 predates the reviewed mechanisms (exceptions, ambient_env, pinned_steps); REQ-CHAIN-004-AC2
+#    (ratified) is their basis; the owner is asked to add the clause.
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
