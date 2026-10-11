@@ -27,7 +27,7 @@ import base64, hashlib, json, os, re, sys, yaml
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
-DOWN = {"witness-build", "witness-rebuild", "witness-check", "provenance", "digests", "items", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
+DOWN = {"witness-build", "witness-rebuild", "witness-check", "witness-check-arm64", "provenance", "digests", "items", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
 UP = {"release-evidence", "witness-release"}
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
@@ -133,6 +133,13 @@ def stage(path):
         bad.append("steps must start with checkout and the installs of witness, cosign, crane: got %s" % kinds[:4])
     if not ds or ds != list(range(4, 4 + len(ds))):
         bad.append("the downloads must follow the installs directly and all come before Witness starts (rule 68)")
+    # REQ-CHAIN-007-AC16: Check's two uploads meet where bin/chain-verify.py check-list reads them: witness-check/ holds witness-scanners, witness-acceptance and
+    # witness-runtime (artifact witness-check), and the arm64 leg's separate artifact witness-check-arm64 lands in witness-check/witness-arm64/
+    dl = {(x.get("with") or {}).get("name"): (x.get("with") or {}).get("path") for x in j.get("steps") or [] if str(x.get("uses", "")).startswith("actions/download-artifact@")}
+    if dl.get("witness-check") != "witness-check":
+        bad.append("artifact witness-check must be downloaded to witness-check, got %r" % dl.get("witness-check"))
+    if dl.get("witness-check-arm64") != "witness-check/witness-arm64":
+        bad.append("artifact witness-check-arm64 must be downloaded to witness-check/witness-arm64 (where check-list reads the arm64 record), got %r" % dl.get("witness-check-arm64"))
     if ws != ["W:" + s for s in STEPS]:
         bad.append("the witnessed steps must be exactly %s, in this order, found %s" % (STEPS, [w[2:] for w in ws]))
     last_w = max((i for i, k in enumerate(kinds) if k.startswith("W:")), default=-1)
