@@ -248,10 +248,18 @@ def image_items(images_dir):
     items = {}
     for image in IMAGES:
         items["image-" + image] = read_bytes(images_dir, image + ".digest").decode().strip()
+        seen = {}
         for line in read_bytes(images_dir, image + ".manifests").decode().split("\n"):
             if line.strip():
-                arch, digest = line.split()
-                items["image-%s-manifest-%s" % (image, arch)] = digest
+                parts = line.split()
+                # exactly one `<arch> sha256:<hex>` line per architecture, arch amd64 or arm64: a repeated line would silently overwrite the first digest
+                if len(parts) != 2 or parts[0] not in ARCHES.values() or parts[0] in seen or not DIGEST.fullmatch(parts[1]):
+                    refuse("build", "manifests: malformed, unknown or repeated line in %s.manifests" % image)
+                seen[parts[0]] = parts[1]
+        if sorted(seen) != sorted(ARCHES.values()):
+            refuse("build", "manifests: an architecture is missing in %s.manifests" % image)
+        for arch, digest in seen.items():
+            items["image-%s-manifest-%s" % (image, arch)] = digest
         items["lock-" + image] = "sha256:" + hashlib.sha256(read_bytes(images_dir, image + ".full.lock.json")).hexdigest()
         items["sbom-" + image] = "sha256:" + hashlib.sha256(read_bytes(images_dir, image + "-sbom/sbom.json")).hexdigest()
     return items
