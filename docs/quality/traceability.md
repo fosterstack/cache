@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 77 |
-| Acceptance criteria | 241 |
-| Release-blocking ACs | 45 |
-| ACs with mapped evidence | 225 |
-| Release-blocking ACs with mapped evidence | 45 |
+| Acceptance criteria | 242 |
+| Release-blocking ACs | 46 |
+| ACs with mapped evidence | 226 |
+| Release-blocking ACs with mapped evidence | 46 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 42 |
 | Confidence: implementation-only | 34 |
@@ -56,13 +56,14 @@ The server shall reject, with HTTP 400, any key whose segments are not 1-255 cha
 
 *Introduced v0.1.0 · tier community · confidence documented · source: docs/docker-deploy.md "Verify it is working"; internal/blobstore/blobstore.go ValidateKey*
 
-> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP 400 through the real router — never normalized, no redirects. IMPLEMENTED (v0.2.0): a front controller ahead of ServeMux (internal/server.go newFrontController/rawPathIsMalformed) rejects a raw path with an empty, ".", or ".." segment (literal or percent-encoded) with 400 before ServeMux can redirect; verified by TestMalformedPathsRejectedNoRedirect with redirect-following disabled. A weaker check must not certify the stronger promise. AC3 (origin: advisor step 5 Oct 10): keys whose leaf starts with '..' are stored under a fixed shard; before this they failed with 500 or shared a path. No other key's on-disk path changes, so an existing store needs no migration.
+> Recorded at review (Sep 10): Go's HTTP router redirects some dot-segment and repeated-slash paths (e.g. /a/../b, /a//b, /a/./b answer 307 to the normalized path) BEFORE key validation runs, so a helper-level test cannot stand in for this HTTP contract, and a redirect-following client may resubmit to the normalized key. DECIDED (owner, 2026-09-11): malformed keys are REJECTED with HTTP 400 through the real router — never normalized, no redirects. IMPLEMENTED (v0.2.0): a front controller ahead of ServeMux (internal/server.go newFrontController/rawPathIsMalformed) rejects a raw path with an empty, ".", or ".." segment (literal or percent-encoded) with 400 before ServeMux can redirect; verified by TestMalformedPathsRejectedNoRedirect with redirect-following disabled. A weaker check must not certify the stronger promise. AC3 (origin: advisor step 5 Oct 10): keys whose leaf starts with '..' are stored under a fixed shard; before this they failed with 500 or shared a path. No other key's on-disk path changes, so an existing store needs no migration. AC4 (origin: advisor ruling Oct 10): temporary files no longer share a name space with keys. A write goes through a temporary file in the directory `+tmp` at the top of the store; '+' is outside the segment alphabet, so no key's path can contain that name. Reconciliation removes files only there, plus leftover `.tmp-` files directly at the top of the store, where no key's path can lie (every key's path has at least two parts). Trade-off for stores written by earlier versions: files they left in shard directories are never removed. One that does not lie at its own key's path is not indexed; one that does (possible only in the shard `.t`) cannot be told apart from a stored key and is kept as that key. Such files keep using disk until removed by hand.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-PROTO-003-AC1 | Given a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects; when the client requests keys containing a space, a "..", an empty segment, a 17th segment, or a 256-character segment - each in raw and percent-encoded form; then every such request receives HTTP 400 - a 307 redirect is a failure of this criterion, not proof - and no request mutates the store or creates a file outside the store root | http-integration | yes | approved | 3 item(s) |
 | REQ-PROTO-003-AC2 | Given the bare root path (empty key) via PUT; when a client PUTs to /; then the server returns 400 | http-integration |  | approved | none mapped |
 | REQ-PROTO-003-AC3 | Given a key whose leaf segment starts with two dots; when it is stored and read; then it is kept under the fixed shard `__` of its directory, two different keys that differ only in their directory part stay different, and the result stays inside the store root; every key whose leaf does not start with two dots keeps exactly its previous path | component | yes | approved | 8 item(s) |
+| REQ-PROTO-003-AC4 | Given a key whose leaf starts with `.tmp-` stored before an unclean shutdown, at the top level or in a nested directory, including a leaf shaped exactly like a generated temporary name, and stray files in the store's temporary directory; when the store is reconciled at startup; then the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path | component | yes | approved | 11 item(s) |
 
 ### REQ-PROTO-004 — Method surface
 

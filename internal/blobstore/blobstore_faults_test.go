@@ -129,7 +129,7 @@ func TestPutFailsOnTempFileCollision(t *testing.T) {
 		clear(b)
 		return len(b), nil
 	})
-	shard := filepath.Join(s.Root(), "ab")
+	shard := filepath.Join(s.Root(), storeTempDir) // temporary files live in the temporary directory (REQ-PROTO-003-AC4)
 	if err := os.MkdirAll(shard, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestWalkReportsStaleTempAndRemoveStaleTempDeletesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleName := ".tmp-cafecafecafecafecafecafecafecafe"
-	stalePath := filepath.Join(s.Root(), "ab", staleName)
+	stalePath := filepath.Join(s.Root(), storeTempDir, staleName) // REQ-PROTO-003-AC4: the temporary directory
 	if err := os.WriteFile(stalePath, []byte("interrupted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -356,8 +356,8 @@ func TestWalkReportsStaleTempAndRemoveStaleTempDeletesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	if len(stale) != 1 || stale[0] != "ab/"+staleName {
-		t.Fatalf("Walk stale = %v, want [ab/%s]", stale, staleName)
+	if len(stale) != 1 || stale[0] != storeTempDir+"/"+staleName {
+		t.Fatalf("Walk stale = %v, want [%s/%s]", stale, storeTempDir, staleName)
 	}
 	if len(keys) != 1 || keys[0] != "abc" {
 		t.Fatalf("Walk keys = %v, want [abc]; temp files must not be visited as blobs", keys)
