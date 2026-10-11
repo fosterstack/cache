@@ -2973,25 +2973,25 @@ requirements:
       - id: REQ-CHAIN-006-AC2
         given: "release.yml"
         when: "its job graph is read"
-        then: "the check job needs exactly build and sign, the rebuild job does not need check and check does not need rebuild (they run side by side), and the release job needs exactly check, rebuild and sign (it reaches build through check)"
+        then: "the check job needs exactly build and sign, the rebuild job does not need check and check does not need rebuild (they run side by side), and the release job needs exactly check, rebuild and sign (it reaches build through check); the check job carries no if of its own: it runs whenever build ran, in a release and in a dry run"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC3
         given: "bin/check-stage.sh"
         when: "its commands are read"
-        then: "it is set -euo pipefail, then it makes the release policy for the run's tag (chain-verify.py policy make --tag \"$GITHUB_REF_NAME\"), then the two verifications, each run isolated as python3 -I -B (bin/chain-verify.py stage-start for Build's Witness record and verify for Sign's provenance, for the digests it was given; a failure stops the script naming the stage), then ONE fixed case on the phase with exactly three phases and nothing else (the phase arrives as the one argument of bin/check-stage.sh, from the three listed targets bin/check-phase-scanners.sh, bin/check-phase-acceptance.sh and bin/check-phase-runtime.sh, each the single line bash bin/check-stage.sh PHASE): scanners runs the scan; acceptance runs Gradle then Maven; runtime runs the no-phone-home suite, the Kubernetes suite, the FIPS check and the guide commands; each check a listed script run by literal path; an unknown phase exits 2 naming it; every phase re-verifies, so each witnessed record shows it"
+        then: "it is set -euo pipefail, then it makes the release policy for the run's tag (chain-verify.py policy make --tag \"$GITHUB_REF_NAME\"), then the two verifications, each run isolated as python3 -I -B (bin/chain-verify.py stage-start for Build's Witness record and verify for Sign's provenance, for the digests it was given; a failure stops the script naming the stage), then ONE fixed case on the phase with exactly three phases and nothing else (the phase arrives as the one argument of bin/check-stage.sh, from the three listed targets bin/check-phase-scanners.sh, bin/check-phase-acceptance.sh and bin/check-phase-runtime.sh, each the single line bash bin/check-stage.sh PHASE): scanners runs the scan; acceptance runs Gradle then Maven; runtime runs the no-phone-home suite, the Kubernetes suite, the FIPS check, the artifact checks (bin/check-artifacts.sh) and the guide commands; each check a listed script run by literal path; an unknown phase exits 2 naming it; every phase re-verifies, so each witnessed record shows it"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC4
         given: "the scanner list in .github/policy/scanners.json and the candidate images and archives"
         when: "bin/check-scan.sh runs"
-        then: "every listed scanner runs against every candidate image (by the digest in the digest list) and the release archives and Go modules where it is meant to (grype the archives, osv-scanner the Go modules), no unlisted scanner runs, the number of scanners that ran equals the number listed, each reports, in its own machine output, a package count above zero and a version and database, any scanner that is missing, cannot run, finds a vulnerability not excepted by the published VEX document or reports zero packages fails the script, and the results file names each scanner, its version, the digest of each subject scanned and its verdict"
+        then: "every listed scanner runs against every candidate image (by the digest in the digest list) and the release archives and Go modules where it is meant to (grype the archives, osv-scanner the Go modules), no unlisted scanner runs, the number of scanners that ran equals the number listed, each reports, in its own machine output, a package count above zero and a version and database, any scanner that is missing, cannot run, finds a vulnerability not excepted by the published VEX document or reports zero packages fails the script, and the results file names each scanner, its version, the digest of each subject scanned and its verdict; before it scans, the script requires the archive directory to hold exactly the four Linux archives fscache_V_linux_amd64.tar.gz, fscache_V_linux_arm64.tar.gz, fscache-fips_V_linux_amd64.tar.gz and fscache-fips_V_linux_arm64.tar.gz of one version V, and no file whose name contains darwin or windows in any case; a fifth, a missing, a mixed-version or a darwin or windows file fails the script naming the archive set"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC5
         given: "the Gradle and Maven acceptance suites, the no-phone-home test and the Kubernetes suite, each one plain script shared with the workflow that runs it today"
         when: "bin/check-acceptance.sh runs each against the production candidate"
-        then: "each runs the existing suite unchanged against the candidate from Build's artifacts, a failing suite fails the script, a suite that ran no test fails it, and a results file per suite names the candidate digest"
+        then: "each runs the existing suite unchanged against the candidate from Build's artifacts, a failing suite fails the script, a suite that ran no test fails it, and a results file per suite names the candidate digest; each suite script is run as a plain command without a redirected standard input"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC6
@@ -3009,7 +3009,7 @@ requirements:
       - id: REQ-CHAIN-006-AC8
         given: "the scripts bin/check-stage.sh, bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh and bin/check-guide.sh"
         when: "they are read"
-        then: "they are plain scripts that know nothing about signing: no signing tool, attestation, registry login, secret or token appears in bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh or bin/check-guide.sh (which alone may name the verify-only commands cosign verify, verify-attestation, verify-blob, verify-blob-attestation and gh attestation verify), and bin/check-stage.sh is exactly its fixed grammar (AC3); each, with the suite scripts and bin/install-kind.sh, is listed in .github/policy/chain-scripts.json with its sha256 and calls only the tools it lists"
+        then: "they are plain scripts that know nothing about signing: no signing tool, attestation, registry login, secret or token appears in bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh or bin/check-guide.sh (which alone may name the verify-only commands cosign verify, verify-attestation, verify-blob, verify-blob-attestation and gh attestation verify), and bin/check-stage.sh is exactly its fixed grammar (AC3); each, with the suite scripts and bin/install-kind.sh, is listed in .github/policy/chain-scripts.json with its sha256 and calls only the tools it lists; every finding of the listed-script judge that a script keeps is an exact reviewed exception in chain-scripts.json (a deny exception bound to the exact physical line and its count; the others to the exact command text), each with its reason; the Python and shell helpers a script runs are listed rows, not heredocs; no script sets PATH or IFS"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC9
@@ -3052,5 +3052,11 @@ requirements:
         given: "the Check stage scans the candidate"
         when: "a scanner needs its vulnerability database"
         then: "the database is fetched fresh from the scanner's own database host only, and the Check collection records, for each database, its source URL and whether that URL was observed or is documented, its build or publish date (for osv-scanner: the newest record `modified` in the downloaded database, not a database build date) and its digest as downloaded; the scan fails closed if a database cannot be fetched, or is older than 48 hours, and never runs against a missing or stale database silently"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-006-AC16
+        given: "the four Linux archives and the production and -fips candidate images"
+        when: "bin/check-artifacts.sh runs"
+        then: "the linux/amd64 fscache and fscache-fips binaries of the archives each start, answer /healthz and round-trip a key; fscache-fips embeds GOFIPS140=v1.0.0 in its build info and fscache embeds no GOFIPS140 selection; the -fips build reports the validated module v1.0.0 active, the standard build reports off, and the standard build with GODEBUG=fips140=on reports a mode-forced state and never claims the validated module or a certificate; the production and the -fips image run no shell at /busybox/sh, /busybox/ash, /bin/sh, /bin/ash, /bin/bash, /bin/dash, /usr/bin/sh, /usr/bin/bash or /sbin/sh; each image archive carries a linux/amd64 and a linux/arm64 platform entry and the loaded image serves cache traffic; any other result fails the script naming the check; the result file names both candidate digests and the ACs asserted (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1) and never the certificate number"
         verification: { method: unit, release_blocking: true }
         status: approved
