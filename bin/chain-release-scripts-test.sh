@@ -13,7 +13,7 @@
 # because the stage runs them as `bash bin/witnessed.sh STEP bin/STEP.sh`):
 #   in : Build's REAL interface (REQ-CHAIN-007-AC17, the fixed table; Build is the reviewed source of truth): witness-build/digests.json with the keys
 #        image-production, image-fips, apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64 (bin/chain_items.py digests_of),
-#        witness-build/build-collection.json, witness-rebuild/..., witness-check/..., provenance/provenance.json, images/<variant>.tar + .digest,
+#        witness-build/build-collection.json, witness-rebuild/..., witness-check/..., provenance/provenance.json, images/<variant>/ (an OCI layout directory) + images/<variant>.digest,
 #        images/<variant>.full.lock.json and images/<variant>-sbom/sbom.json, apks/<runner>/<apk arch>/fscache[-fips]-0.3.0-r0.apk (the artifacts
 #        apk-ubuntu-24.04 -> x86_64 and apk-ubuntu-24.04-arm -> aarch64), rapks/<runner>/... (Rebuild's, same layout), dist/*, policy.json
 #   out: release-apks/<apk arch>/*.apk, release-evidence/ (bundles, vendor-evidence.json, release-policy.bundle)
@@ -39,7 +39,10 @@ echo "crane $*" >> "$LOG"
 case "$1" in
   auth) cat > /dev/null; mkdir -p "$REG/.login"; : > "$REG/.login/$3" ;;
   push) host=${3%%/*}; [ -e "$REG/.login/$host" ] || { echo "UNAUTHORIZED $host" >&2; exit 1; }
-        d=$(cat "${2%.tar}.digest"); p="$REG/${3/://}"; mkdir -p "$(dirname "$p")"
+        # PROPOSED/UNVERIFIED layout (cache-3f / #299): images/<variant>/ is an OCI image layout DIRECTORY. MEASURED with crane 0.22.1: pushing a
+        # docker-format tarball re-creates the manifest (the digest changes), pushing an OCI layout directory keeps the digest. A tarball is refused here.
+        [ -d "$2" ] && [ -f "$2/oci-layout" ] && [ -f "$2/index.json" ] || { echo "crane: $2 is not an OCI image layout directory" >&2; exit 1; }
+        d=$(cat "${2}.digest"); p="$REG/${3/://}"; mkdir -p "$(dirname "$p")"
         [ "${REG_CORRUPT:-}" = "$host" ] && d="sha256:$(printf 'f%.0s' $(seq 64))"; echo "$d" > "$p" ;;
   digest) p="$REG/${2/://}"; [ -e "$p" ] && cat "$p" || { echo "NAME_UNKNOWN $2" >&2; exit 1; } ;;
   ls) [ -z "${LS_FAIL:-}" ] || { echo "connection refused" >&2; exit 1; }
@@ -151,7 +154,7 @@ def tree(extra_env=None):
                 digs["apk-%s-%s" % (variant, short)] = "sha256:" + hashlib.sha256(apk_data(variant, short).encode()).hexdigest()
     for v in ("production", "fips"):
         os.makedirs(os.path.join(t, "images", v + "-sbom"), exist_ok=True)
-        open(os.path.join(t, "images", v + ".tar"), "w").write("tar-" + v)
+        os.makedirs(os.path.join(t, "images", v)); open(os.path.join(t, "images", v, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}'); open(os.path.join(t, "images", v, "index.json"), "w").write("{}")
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
         open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
         open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("lock " + v); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("sbom " + v)
@@ -318,7 +321,11 @@ for tag in ("v0.3.0-rc1", "v10.20.30-rc7"):
     check(rc != 0 and not pushes(t), "AC14 the release candidate %s moves no floating tag and pushes nothing" % tag, "rc=%s" % rc)
 t, rc, so, se = float_run(tag, ["0.2.2"]); x = {y for _, y in tagset(t)}
 t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.startswith("crane push")]
-check(L and all(re.search(r" images/(production|fips)\.tar ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
+check(L and all(re.search(r" images/(production|fips) ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
+t = tree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
+rc, so, se = run(t, "release-publish", creds=REG); check(rc != 0 and "production" in se and not pushes(t), "AC7 an image that is not an OCI layout directory (a tarball) is refused before any push, naming it", "rc=%s %s" % (rc, first(se)))
+t = tree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = run(t, "release-publish", creds=REG)
+check(rc != 0 and "fips" in se and not pushes(t), "AC7 a layout directory without index.json is refused before any push", "rc=%s %s" % (rc, first(se)))
 # ---- AC8: release-sign.sh -------------------------------------------------------------------------------------------------------------------
 def signs(t): return [l for l in log(t) if l.startswith("cosign")]
 t = tree(); os.makedirs(os.path.join(t, "reg"), exist_ok=True); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)
@@ -477,7 +484,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "227"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "229"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
