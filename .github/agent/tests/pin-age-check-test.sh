@@ -2335,9 +2335,11 @@ CASE="AC19' (6) helper review: a subscript, a concatenated first element or a pr
 check python3 - "$chk" <<'PYC2'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-PLAIN = ['cmd = ["curl", "-fsS", "-o", p, "https://h.example.dev/a"]', 'cmd = [ "curl" , "-fsS", "https://h.example.dev/a"]', 'r = run([["curl", "-fsS", "https://h.example.dev/a"]])',
-         'r = run(x, ["curl", "-fsS", "https://h.example.dev/a"])', 'r = run(["curl"])', 'r = run(["curl", "-fsS", "https://h.example.dev/a?CurlLocation=1"])']
-OTHER = ['r = subprocess.run([TOOLS["curl"], "-fsS", "-o", p, "https://h.example.dev/a"])', 'r = subprocess.run([TOOLS ["curl"], "-fsS", "https://h.example.dev/a"])',
+PLAIN = ['r = subprocess.run(["curl", "-fsS", "-o", p, "https://h.example.dev/a"])', 'r = subprocess.run([ "curl" , "-fsS", "https://h.example.dev/a"])',
+         'r = subprocess.run(["curl"])', 'r = subprocess.run(["curl", "-fsS", "https://h.example.dev/a?CurlLocation=1"])']
+OTHER = ['cmd = ["curl", "-fsS", "-o", p, "https://h.example.dev/a"]', 'cmd = [ "curl" , "-fsS", "https://h.example.dev/a"]', 'r = run([["curl", "-fsS", "https://h.example.dev/a"]])',
+         'r = run(x, ["curl", "-fsS", "https://h.example.dev/a"])', 'r = run(["curl"])',   # round 4 (fail closed): only the first argument of a subprocess call
+         'r = subprocess.run([TOOLS["curl"], "-fsS", "-o", p, "https://h.example.dev/a"])', 'r = subprocess.run([TOOLS ["curl"], "-fsS", "https://h.example.dev/a"])',
          'r = subprocess.run([f()["curl"], "-fsS", "https://h.example.dev/a"])', 'r = subprocess.run([x[0]["curl"], "-fsS", "https://h.example.dev/a"])',
          'r = subprocess.run(["curl" "-impersonate", "-fsS", "https://h.example.dev/a"])', 'r = subprocess.run(["curl"+SUFFIX, "-fsS", "https://h.example.dev/a"])',
          'r = subprocess.run(["curl".replace("c", "c"), "-fsS", "https://h.example.dev/a"])', 'r = subprocess.run(["curl" if a else "wget2", "https://h.example.dev/a"])',
@@ -2371,10 +2373,10 @@ spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib
 U = '"https://h.example.dev/a"'
 PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'if curl -fsS -o x https://h.example.dev/a; then ok=1; fi', 'export X=1; curl -fsS https://h.example.dev/a',
          'for u in a b; do curl -fsS -o x https://h.example.dev/a; done', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/APKINDEX.tar.gz"',
-         'r = subprocess.run(["curl", "-fsS", %s], stdout=sys.stderr)' % U, 'r = subprocess.run(["curl", "-fsS", %s],' % U, 'return ["curl", "-fsS", %s]' % U,
-         'cmd = ["curl", "-fsS", %s]' % U, 'r = run([["curl", "-fsS", %s]])' % U, 'r = run(x, ["curl", "-fsS", %s])' % U,
-         'r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", %s])' % U]
-OTHER = ['r = subprocess.run([TOOLS[["curl"][0]], %s])' % U,                     # the reproducer
+         'r = subprocess.run(["curl", "-fsS", %s], stdout=sys.stderr)' % U, 'r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", %s])' % U]
+OTHER = ['r = subprocess.run(["curl", "-fsS", %s],' % U, 'return ["curl", "-fsS", %s]' % U,      # round 4 (fail closed): an unclosed call, a returned,
+         'cmd = ["curl", "-fsS", %s]' % U, 'r = run([["curl", "-fsS", %s]])' % U, 'r = run(x, ["curl", "-fsS", %s])' % U,   # assigned or nested list
+         'r = subprocess.run([TOOLS[["curl"][0]], %s])' % U,                     # the reproducer
          'r = subprocess.run([TOOLS[ ["curl"][0] ], %s])' % U, 'r = subprocess.run([TOOLS [ ["curl"] [0] ], %s])' % U,
          'r = subprocess.run([T[["curl", "-fsS"][0]], %s])' % U, 'r = subprocess.run([TOOLS[["curl"][0]][0], %s])' % U,
          'r = subprocess.run([(T)[["curl"][0]], %s])' % U, 'r = subprocess.run([T()[["curl"][0]], %s])' % U, 'r = subprocess.run([T["[", ["curl"][0]], %s])' % U,
@@ -2407,8 +2409,9 @@ spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib
 U = '"https://h.example.dev/a"'
 PLAIN = ['curl --fail --silent --show-error --output x https://h.example.dev/a', 'curl --retry 3 --connect-timeout 5 -o x https://h.example.dev/a',
          'curl --compressed --create-dirs --cacert ca.pem -o x https://h.example.dev/a', 'curl --limit-rate 1M -o x https://h.example.dev/a',
-         'r = run(args=["curl", "--fail", %s])' % U, 'x = (["curl", "-fsS", %s])' % U, 'r = run(["curl", "-fsS", %s], check=True)' % U]
-OTHER = ['ok = cmd == ["curl", %s]' % U, 'cmd += ["curl", %s]' % U, 'if (cmd := ["curl", %s]): run(cmd)' % U, 'ok = cmd != ["curl", %s]' % U,
+         'r = subprocess.run(["curl", "--fail", %s], check=True)' % U]
+OTHER = ['r = run(args=["curl", "--fail", %s])' % U, 'x = (["curl", "-fsS", %s])' % U, 'r = run(["curl", "-fsS", %s], check=True)' % U,   # round 4: not subprocess
+         'ok = cmd == ["curl", %s]' % U, 'cmd += ["curl", %s]' % U, 'if (cmd := ["curl", %s]): run(cmd)' % U, 'ok = cmd != ["curl", %s]' % U,
          'r = subprocess.run(["curl", f"{T["x"]}", %s])' % U, 'r = subprocess.run([f"{x}", "curl", %s])' % U, 'r = subprocess.run(["curl", rf"{a}", %s])' % U,
          'r = subprocess.run(["curl", t"{a}", %s])' % U, 'r = subprocess.run(["curl", F"x", %s])' % U,
          'if curl and run(T[0], %s): pass' % U, 'x = a if b else curl', 'if curl is not None: run(%s)' % U, 'curl -= 1; run(%s)' % U, 'curl += 1; run(%s)' % U,
@@ -2425,6 +2428,83 @@ for line in PLAIN + OTHER:
         bad.append((line, ac._follows_redirects(flat)))
 assert not bad, bad
 PYC4
+# Codex round 4 (d461692), closed FAIL-CLOSED (advisor 0080): every word of a plain form must be positively resolved, else the line follows redirects.
+# (A1) a list whose call does not close on the line (a later line can add -L); (B2) a ( after a keyword is not a call; (B3) curl - 1 is Python subtraction;
+# (B5) an option glued to ; | && || ; (A P3) an option word holding a quote, an expansion ($x, "$x", $'..'), a backslash or an unquoted $ word. The Python
+# form is now only "curl" first in the list that is the FIRST argument of subprocess.run/call/check_call/check_output/Popen, closed on the line, followed
+# only by plain keyword arguments; a name element only after "-o"/"--output". A shell line holds no bracket, brace, backtick, $(, backslash or redirection.
+A1L='    r = subprocess.run(["curl", "-fsS", "-o", part, "https://packages.example.dev/a.tgz"]'
+one ifr8 "$FETCH$A1L"$'\n''        + ["-L"])'$'\n' "$A1L"
+CASE="AC19' (6) Codex round 4 A1: a subprocess call continued on the next line (+ [\"-L\"])) counts as following redirects; a checksum verifier line fails: exit 1"
+refused 0; check grep -q 'redirect' "$work/if.out"
+for L in '    return (["curl", "https://packages.example.dev/a.tgz"],)[0]' 'if curl - 1: run(T[0], "https://packages.example.dev/a.tgz")' \
+         'curl -fsS -o x https://packages.example.dev/a.tgz --fol; echo done' 'curl --lo"cation" -fsS -o x https://packages.example.dev/a.tgz'; do
+  one ifr8 "$FETCH$L"$'\n' "$L"
+  CASE="AC19' (6) Codex round 4: $L counts as following redirects; a checksum verifier line fails: exit 1"
+  refused 0; check grep -q 'redirect' "$work/if.out"
+done
+CASE="AC19' (6) Codex round 4: unclosed calls, keyword parentheses, Python subtraction, glued separators and unresolved option words follow redirects"
+check python3 - "$chk" <<'PYC5'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+U = '"https://h.example.dev/a"'
+PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo done', 'curl -fsS https://h.example.dev/a || exit 1',
+         'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/a"', 'curl -fsS --output "$out" https://h.example.dev/a && echo ok',
+         "curl -fsS -o 'a b' https://h.example.dev/a", 'r = subprocess.run(["curl", "-fsS", "-o", part, %s], stdout=sys.stderr)' % U,
+         'subprocess.check_call(["curl", "--fail", %s])' % U, 'r = subprocess.run(["curl", "-fsS", %s], check=True, timeout=30)' % U,
+         'out = subprocess.check_output(["curl", "-fsS", %s]).decode()' % U]
+OTHER = ['r = subprocess.run(["curl", %s]' % U, 'r = subprocess.run(["curl", %s],' % U, 'r = subprocess.run(["curl", %s], stdout=x,' % U,   # A1
+         'return (["curl", %s],)[0]' % U, 'if (["curl"],)[0]: run(T[0], %s)' % U, 'x = not (["curl", %s],)[0]' % U,                         # B2
+         'r = subprocess.run(x, ["curl", %s])' % U, 'cmd.extend(["curl", %s])' % U, 'r = subprocess.run(["curl", %s], executable=E)' % U,
+         'r = subprocess.run(["curl", %s], **kw)' % U, 'r = subprocess.run(["curl", p, %s])' % U, 'r = subprocess.run(["curl", %s, f(x)])' % U,
+         'r = subprocess.run(["curl", %s], timeout=f(x))' % U, 'r = mysubprocess.run(["curl", %s])' % U,
+         'if curl - 1: run(T[0], %s)' % U, 'if curl -offset: run(T[0], %s)' % U, 'if curl --offset: run(T[0], %s)' % U,                     # B3
+         'curl -x; run(T[0], %s)' % U, 'if curl --x or y: run(T[0], %s)' % U,
+         'curl https://h.example.dev/a --fol; echo done', 'curl https://h.example.dev/a --loc| tee x', 'curl https://h.example.dev/a --loc&& echo',   # B5
+         'curl https://h.example.dev/a --fol|| true', 'curl https://h.example.dev/a --fol;',
+         'curl --lo"cation" https://h.example.dev/a', 'curl --con"fig" cfg https://h.example.dev/a', 'curl -"L" https://h.example.dev/a',     # A P3
+         'curl "-L" https://h.example.dev/a', "curl '-L' https://h.example.dev/a", "curl $'-L' https://h.example.dev/a", 'curl "$opt" https://h.example.dev/a',
+         'curl $FLAGS https://h.example.dev/a', 'curl -o $out https://h.example.dev/a', 'curl -fsS https://h.example.dev/$x', 'curl -o"$out" https://h.example.dev/a',
+         'curl -fsS "$(f)" https://h.example.dev/a', 'curl -fsS https://h.example.dev/a > out', 'curl -fsS https://h.example.dev/a || { exit 1; }',
+         'x = "[\\"curl\\", \\"https://h.example.dev/a\\"]"', 'curl -fsS ?L https://h.example.dev/a', 'curl -fsS * https://h.example.dev/a']
+bad = []
+for line in PLAIN + OTHER:
+    flat = " ".join(line.split())
+    if not [k for k, f, b in ac.inv.unmeasured_occurrences({"bin/x.sh": line + "\n"}) if k[1] == "a download"]:
+        bad.append(("the inventory does not see a download in", line))
+    elif ac._follows_redirects(flat) != (line in OTHER):
+        bad.append((line, ac._follows_redirects(flat)))
+assert not bad, bad
+PYC5
+# Codex round 4 (A2): a physical copy outside run: that the scanner joins to an earlier line (an env: value after echo \) escapes the scanner's count: the
+# block binds only when EVERY physical copy of the line in the file lies inside the step's run: block; --print-context and the checker both refuse
+L4W='curl -fsS -o x https://packages.example.dev/a.tgz'
+A2BASE="$(wfs "      - name: fetch"$'\n'"        run: |"$'\n'"          set -eu"$'\n'"      - name: s"$'\n'"        env:"$'\n'"          X: |"$'\n'"            echo \\"$'\n'"            $L4W"$'\n'"        run: echo x")"$'\n'
+A2HEAD="$(wfs "      - name: fetch"$'\n'"        run: |"$'\n'"          set -eu"$'\n'"          $L4W"$'\n'"      - name: s"$'\n'"        env:"$'\n'"          X: |"$'\n'"            echo \\"$'\n'"            $L4W"$'\n'"        run: echo x")"$'\n'
+ifrepo ifa2 "${SUPPORT[@]}" base .github/workflows/f.yml "$A2BASE" head .github/workflows/f.yml "$A2HEAD"
+rc=0; out=$(cd "$work/ifa2" && python3 "$chk" --print-context .github/workflows/f.yml "$L4W" 2>/dev/null) || rc=$?
+CASE="AC19' --print-context (Codex round 4 A2): a physical copy in env: after echo \\ (joined by the scanner): exit 2, nothing on stdout"
+check test "$rc" -eq 2; check test -z "$out"
+ifx "$work/if-a2.json" plain "$(ifrow "$work/ifa2" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifa2 "$work/if-a2.json"
+CASE="AC19' (2) Codex round 4 A2: the same added run: copy with a row: the env: copy lies outside the step's run: block: exit 1"
+refused 0; check grep -q 'outside its enclosing step' "$work/if.out"
+# Codex round 4 (B1): a live row TRANSFERS to an occurrence outside run: when the step's run: changes style (|- to inline) and an action's with.script gains
+# the line: the step's parsed content is unchanged, the occurrence multiset too. The run: must be a literal block (run: |) holding every physical copy.
+B1S="      - uses: actions/github-script@0000000000000000000000000000000000000000"$'\n'"        with:"$'\n'"          script: |"
+B1BASE="$(wfs "      - name: fetch"$'\n'"        run: |-"$'\n'"          $L4W"$'\n'"$B1S"$'\n'"            run: $L4W")"$'\n'
+B1HEAD="$(wfs "      - name: fetch"$'\n'"        run: $L4W"$'\n'"$B1S"$'\n'"            $L4W")"$'\n'
+ifrepo ifb1 "${SUPPORT[@]}" base .github/workflows/f.yml "$B1BASE" head .github/workflows/f.yml "$B1HEAD"
+ifx "$work/if-b1.json" plain "$(ifrow "$work/ifb1" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifb1 "$work/if-b1.json"
+CASE="AC19' (held) Codex round 4 B1: the row's line moved into an action's with.script, the step's run: inline: exit 1, never 'no pin moved'"
+refused 0; check test "$(grep -c 'no pin moved' "$work/if.out")" -eq 0
+ifrepo ifb1c "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "      - name: fetch"$'\n'"        run: $L4W")"$'\n'
+ifx "$work/if-b1c.json" plain "$(ifrow "$work/ifb1c" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifb1c "$work/if-b1c.json"
+CASE="AC19' (2) Codex round 4 B1: a fetch line in an inline (not literal block) run: cannot be bound to its physical line: exit 1"
+refused 0; check grep -q 'literal block' "$work/if.out"
+ifrepo ifb1k "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "      - name: fetch"$'\n'"        run: |-"$'\n'"          $L4W")"$'\n'
+ifx "$work/if-b1k.json" plain "$(ifrow "$work/ifb1k" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifb1k "$work/if-b1k.json"
+CASE="AC19' (2) Codex round 4 B1 control: the same line in a literal block run: |- passes: exit 0"
+check test "$rc" -eq 0
 # rows from the pull request itself, the trusted copy, malformed lists, both lists
 ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
 rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
@@ -2560,6 +2640,8 @@ L2="$R3A; $R3B"
 mkdir -p "$work/pcmix-ok/bin"; printf '%s\n' '#!/bin/bash' "$L2" "$L2" >"$work/pcmix-ok/bin/x.sh"
 CASE="AC19' --print-context (Codex round 3 P3) control: two keys each counted 2, the block 2, COUNT 2: prints the whole file's hash"
 check test "$(cd "$work/pcmix-ok" && python3 "$chk" --print-context bin/x.sh "$L2" 2)" = "$(shasum -a 256 "$work/pcmix-ok/bin/x.sh" | cut -d' ' -f1)"
+# Codex round 4 (B4): --print-context counts EVERY scanner occurrence of the line, a continuation-joined copy too (the checker refuses it as unruled)
+pcmix b4 "$L2" 1 'one plain copy and one continuation-joined copy of a two-key line' "$L2" "$R3A; \\" "  $R3B"
 # the checker refuses the same shape: a line that repeats its download segment counts each copy twice, so its row's count is not a count of lines and a
 # repeat could stand in for a copy the scanner does not count; such a line's row fails on the repeat itself (fail closed); a continued echo copy is never ruled
 LR='curl -fsS -o "$tmp/i" https://packages.example.dev/a.tgz; curl -fsS -o "$tmp/i" https://packages.example.dev/a.tgz'
