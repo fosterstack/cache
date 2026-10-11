@@ -764,6 +764,15 @@ def _flush(s, items, end, cmds):
     cmds.append(Cmd(s[items[0][1]:end].rstrip(), cw, ops, redirs))
     del items[:]
 
+def _bt(s, j, cmds):
+    """Index after the backtick substitution that opens at s[j]: it ends at the next UNESCAPED backtick (round 3 (6)); its body, with \\`, \\\\ and \\$
+    unescaped (nesting by escaped backticks), is read as commands of its own. A substitution that is never closed reads the rest of the line."""
+    n, k = len(s), j + 1
+    while k < n and s[k] != "`": k += 2 if s[k] == "\\" else 1
+    body = re.sub(r"\\([`\\$])", r"\1", s[j + 1:min(k, n)])
+    _lex(body, 0, None, cmds)
+    return min(k + 1, n)
+
 def _brace(s, j, cmds):
     """Index after the ${...} that starts at s[j:j+2] == '${', or None when it is never closed."""
     n, k, depth = len(s), j + 2, 1
@@ -779,7 +788,7 @@ def _brace(s, j, cmds):
             if r is None: return None
             k = r[0]; continue
         if c == "$" and s.startswith("$(", k): k = _lex(s, k + 2, ")", cmds); continue
-        if c == "`": k = _lex(s, k + 1, "`", cmds); continue
+        if c == "`": k = _bt(s, k, cmds); continue
         if c == "$" and s.startswith("${", k): depth += 1; k += 2; continue
         if c == "}":
             depth -= 1; k += 1
@@ -804,7 +813,7 @@ def _dq(s, j, cmds):
             e = _brace(s, k, tmp)
             if e is None: parts.append("$"); k += 1; continue
             parts.append(s[k:e]); k = e; continue
-        if c == "`": k = _lex(s, k + 1, "`", tmp); parts.append("`..`"); continue
+        if c == "`": k = _bt(s, k, tmp); parts.append("`..`"); continue
         parts.append(c); k += 1
     return None
 
@@ -844,16 +853,16 @@ def _word(s, i, cmds):
                 e = _brace(s, j, cmds)
                 if e is None: parts.append("$"); j += 1; continue
                 parts.append(s[j:e]); j = e; continue
-        if c == "`": j = _lex(s, j + 1, "`", cmds); parts.append("`..`"); continue
+        if c == "`": j = _bt(s, j, cmds); parts.append("`..`"); continue
         parts.append(c); j += 1
     return j, s[i:j], "".join(parts)
 
 def _lex(s, i, closer, cmds):
-    n, items = len(s), []
+    n, items, kw = len(s), [], None
     while i < n:
         c = s[i]
         if c in " \t": i += 1; continue
-        if (closer == ")" and c == ")") or (closer == "`" and c == "`"):
+        if closer == ")" and c == ")":
             _flush(s, items, i, cmds); return i + 1
         m = _REDIR_RE.match(s, i)
         if m and not (m.end() < n and s[m.end()] == "(" and m.group(0) in ("<", ">")):
@@ -866,10 +875,14 @@ def _lex(s, i, closer, cmds):
         if c in ";|&()": _flush(s, items, i, cmds); i += 1; continue
         e, raw, val = _word(s, i, cmds)
         if e == i: i += 1; continue
+        if kw is not None:                   # round 3 (7): the NAME after `function` / `coproc NAME {` is not a command; the body that follows is
+            skip, kw = (kw == "function" or re.match(r"[ \t]*[({]", s[e:]) is not None), None
+            if skip and not items: i = e; continue
         if not any(k == "word" for k, *_ in items):
             if _ASSIGN_RE.match(raw): items.append(("assign", i, e, raw, val)); i = e; continue
             if raw == val and val in _SKIP_WORDS:
                 if val == "}": _flush(s, items, i, cmds)
+                if val in ("function", "coproc"): kw = val
                 i = e; continue
         items.append(("word", i, e, raw, val)); i = e
     _flush(s, items, n, cmds)
