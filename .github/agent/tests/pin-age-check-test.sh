@@ -2353,6 +2353,50 @@ for line in PLAIN + OTHER:
         bad.append((line, ac._follows_redirects(flat)))
 assert not bad, bad
 PYC2
+# Codex round 3 (ed7f236) P2, closed FAIL-CLOSED: a download is "not following redirects" ONLY in two plain forms: (1) curl the command word of a plain shell
+# line (a whole word; before it only plain words, the word before it none, a command keyword or a separator); (2) "curl" the FIRST element of a Python list
+# literal whose [ provably starts a list (line start, or after (, =, ,, return or a list's [), inside no subscript, brace or unclosed grouping, the list
+# closed on the line and followed by nothing but , ) ] or the end, with no * element. Every other shape (a subscript, a slice, a comprehension, an
+# attribute, an operator, a backslash, a triple quote) counts as following redirects: a false positive only asks for the cosign verifier line.
+for L in '    r = subprocess.run([TOOLS[["curl"][0]], "https://packages.example.dev/a.tgz"])' \
+         '    r = subprocess.run(["curl"][0:1] + ["-fsS", "-o", part, "https://packages.example.dev/a.tgz"])'; do
+  one ifr5 "$FETCH$L"$'\n' "$L"
+  CASE="AC19' (6) Codex round 3 P2: $L (curl inside a subscript or a sliced list) counts as following redirects; a checksum verifier line fails: exit 1"
+  refused 0; check grep -q 'redirect' "$work/if.out"
+done
+CASE="AC19' (6) Codex round 3 P2: nested, subscript, slice, comprehension and attribute shapes all count as following redirects; the plain forms do not"
+check python3 - "$chk" <<'PYC3'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+U = '"https://h.example.dev/a"'
+PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'if curl -fsS -o x https://h.example.dev/a; then ok=1; fi', 'export X=1; curl -fsS https://h.example.dev/a',
+         'for u in a b; do curl -fsS -o x https://h.example.dev/a; done', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/APKINDEX.tar.gz"',
+         'r = subprocess.run(["curl", "-fsS", %s], stdout=sys.stderr)' % U, 'r = subprocess.run(["curl", "-fsS", %s],' % U, 'return ["curl", "-fsS", %s]' % U,
+         'cmd = ["curl", "-fsS", %s]' % U, 'r = run([["curl", "-fsS", %s]])' % U, 'r = run(x, ["curl", "-fsS", %s])' % U,
+         'r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", %s])' % U]
+OTHER = ['r = subprocess.run([TOOLS[["curl"][0]], %s])' % U,                     # the reproducer
+         'r = subprocess.run([TOOLS[ ["curl"][0] ], %s])' % U, 'r = subprocess.run([TOOLS [ ["curl"] [0] ], %s])' % U,
+         'r = subprocess.run([T[["curl", "-fsS"][0]], %s])' % U, 'r = subprocess.run([TOOLS[["curl"][0]][0], %s])' % U,
+         'r = subprocess.run([(T)[["curl"][0]], %s])' % U, 'r = subprocess.run([T()[["curl"][0]], %s])' % U, 'r = subprocess.run([T["[", ["curl"][0]], %s])' % U,
+         'r = subprocess.run([T["\\"", ["curl"][0]], %s])' % U, 'r = subprocess.run([TOOLS.get(["curl"][0]), %s])' % U,
+         'r = subprocess.run(["curl"][0:1] + [%s])' % U, 'r = subprocess.run(["curl"][::-1] + [%s])' % U, 'r = subprocess.run(["curl", W][1:] + [%s])' % U,
+         'r = subprocess.run([["curl"], "-fsS"][0] + [%s])' % U, 'r = subprocess.run((["curl", "-fsS"])[0:1] + [%s])' % U,
+         'r = subprocess.run([x for x in ["curl", "-fsS", %s]])' % U, 'r = subprocess.run([t.upper() for t in ["curl", %s]])' % U,
+         'r = subprocess.run(["curl"].copy() + [%s])' % U, 'r = subprocess.run(["curl"] * 1 + [%s])' % U, 'r = subprocess.run(["curl", %s] + FLAGS)' % U,
+         'r = subprocess.run(["curl", *FLAGS, %s])' % U, 'r = subprocess.run([*["curl"], %s])' % U, 'r = subprocess.run({"x": ["curl", %s]}[k])' % U,
+         'r = subprocess.run(a if b else ["curl", %s])' % U, 'f = lambda: ["curl", %s]' % U, 'cmd = ["curl", %s]; cmd[0] = W' % U,
+         'cmd = ["curl", "-fsS",', 'r = subprocess.run([TOOLS[ curl ], %s])' % U, 'x = curl -fsS https://h.example.dev/a', 'a=b curl -fsS https://h.example.dev/a',
+         'x=$( curl -fsS https://h.example.dev/a)', 'echo "a; curl -fsS https://h.example.dev/a"', 'r = subprocess.run("""["curl", %s]""")' % U,
+         'curl = f(https://h.example.dev/a)', 'curl.get(https://h.example.dev/a)']
+bad = []
+for line in PLAIN + OTHER:
+    flat = " ".join(line.split())
+    if not [k for k, f, b in ac.inv.unmeasured_occurrences({"bin/x.sh": line + "\n"}) if k[1] == "a download"]:
+        bad.append(("the inventory does not see a download in", line))
+    elif ac._follows_redirects(flat) != (line in OTHER):
+        bad.append((line, ac._follows_redirects(flat)))
+assert not bad, bad
+PYC3
 # rows from the pull request itself, the trusted copy, malformed lists, both lists
 ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
 rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
@@ -2467,6 +2511,33 @@ check test "$rc" -eq 2; check test -z "$out"
 rc=0; out=$(cd "$work/ifwc" && python3 "$chk" --print-context .github/workflows/f.yml "$LIT" 2 2>/dev/null) || rc=$?
 CASE="AC19' --print-context (Codex P3): the same with COUNT 2 (one copy outside the block): exit 2, nothing on stdout"
 check test "$rc" -eq 2; check test -z "$out"
+# Codex round 3 (ed7f236) P3: EVERY per-key count the scanner gives the line, the block count and COUNT must all agree; the largest count is not enough.
+# A segment repeated on the line raises its key's count and can compensate for a physical copy the scanner excludes (a continued echo line).
+R3A='curl https://h.example.dev/a'; R3B='curl https://h.example.dev/b'; R3C='curl https://h.example.dev/c'
+pcmix() { # NAME LINE COUNT WHY FILE-LINES...
+  local n=$1 l=$2 c=$3 why=$4; shift 4; mkdir -p "$work/pcmix-$n/bin"; printf '%s\n' '#!/bin/bash' "$@" >"$work/pcmix-$n/bin/x.sh"
+  rc=0; out=$(cd "$work/pcmix-$n" && python3 "$chk" --print-context bin/x.sh "$l" "$c" 2>"$work/pc.err") || rc=$?
+  CASE="AC19' --print-context (Codex round 3 P3): $why (COUNT $c): exit 2, nothing on stdout, the disagreeing counts named"
+  check test "$rc" -eq 2; check test -z "$out"; check grep -q 'per-key' "$work/pc.err"
+}
+L3="$R3A; $R3A; $R3B"
+pcmix rep "$L3" 2 'the reproducer: one key twice and one once on the line, a continued echo copy outside the scanner' "$L3" 'echo \' "$L3"
+pcmix rep1 "$L3" 1 'the reproducer line alone, its keys counted 2 and 1' "$L3"
+L4="$R3A; $R3B; $R3C; $R3A"
+pcmix three "$L4" 2 'three keys counted 2, 1 and 1, a continued echo copy outside the scanner' "$L4" 'echo \' "$L4"
+pcmix ws "$L3" 2 'a whitespace-collapsed copy behind a continuation' "$L3" 'echo \' "  $R3A;   $R3A;	$R3B"
+pcmix join "$L3" 1 'one plain copy and one continuation-joined copy (the joined copy excluded by the scanner)' "$L3" "$R3A; $R3A; \\" "  $R3B"
+pcmix comp "$R3A; $R3A" 2 'a repeated segment compensating for an excluded physical copy' "$R3A; $R3A" 'echo \' "$R3A; $R3A"
+L2="$R3A; $R3B"
+mkdir -p "$work/pcmix-ok/bin"; printf '%s\n' '#!/bin/bash' "$L2" "$L2" >"$work/pcmix-ok/bin/x.sh"
+CASE="AC19' --print-context (Codex round 3 P3) control: two keys each counted 2, the block 2, COUNT 2: prints the whole file's hash"
+check test "$(cd "$work/pcmix-ok" && python3 "$chk" --print-context bin/x.sh "$L2" 2)" = "$(shasum -a 256 "$work/pcmix-ok/bin/x.sh" | cut -d' ' -f1)"
+# the checker refuses the same shape: a line that repeats its download segment counts each copy twice, so a copy the scanner excludes (a continued
+# echo) could balance the block count; such a line's copies cannot be counted as lines and its row fails (fail closed)
+LR='curl -fsS -o "$tmp/i" https://packages.example.dev/a.tgz; curl -fsS -o "$tmp/i" https://packages.example.dev/a.tgz'
+one ifr6 "$FETCH$LR"$'\n'$'echo \\\n'"$LR"$'\n' "$LR" "$HOSTN" '{"count": 2}'
+CASE="AC19' (1) Codex round 3 P3: a ruled line that repeats its download segment (one real copy, one continued echo copy, count 2) fails: exit 1"
+refused 0; check grep -q 'repeats its download segment' "$work/if.out"
 pcerr() { # DIR FILE WHY
   rc=0; out=$(cd "$1" && python3 "$chk" --print-context "$2" "$LIT" 2>"$work/pc.err") || rc=$?
   CASE="AC19' --print-context (Codex P3): $3: exit 2, nothing on stdout, no traceback"
