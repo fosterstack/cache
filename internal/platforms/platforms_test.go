@@ -217,7 +217,7 @@ func checkReleaseConfig(text string) []string {
 var wantArchives = []string{"fscache linux/amd64 tar.gz", "fscache linux/arm64 tar.gz", "fscache-fips linux/amd64 tar.gz", "fscache-fips linux/arm64 tar.gz"}
 
 // releaseArchive is one archive file a release produces.
-type releaseArchive struct{ build, goos, goarch, format string }
+type releaseArchive struct{ build, goos, goarch, format, name string }
 
 func (a releaseArchive) String() string {
 	return a.build + " " + a.goos + "/" + a.goarch + " " + a.format
@@ -382,7 +382,7 @@ func releaseArchives(text string, lineBuilds []relBuild) (archives []releaseArch
 				for _, o := range tg.goos {
 					for _, arch := range tg.goarch {
 						for _, format := range formats {
-							archives = append(archives, releaseArchive{b, o, arch, format})
+							archives = append(archives, releaseArchive{b, o, arch, format, ""})
 						}
 					}
 				}
@@ -422,9 +422,32 @@ func releaseArchives(text string, lineBuilds []relBuild) (archives []releaseArch
 // or `ignore:` route around goos either), and its archives definitions produce exactly the four tar.gz Linux
 // archives, read by a YAML loader that refuses any key or form it does not resolve.
 func TestReleaseConfigBuildsOnlyLinux(t *testing.T) {
-	for _, p := range checkReleaseConfig(read(t, ".goreleaser.yaml")) {
+	text := read(t, ".goreleaser.yaml")
+	for _, p := range checkReleaseConfig(text) {
 		t.Error(".goreleaser.yaml: " + p)
 	}
+	builds, _ := parseBuilds(text)
+	archives, _ := releaseArchives(text, builds)
+	var names []string
+	for _, a := range archives {
+		names = append(names, a.name)
+	}
+	sort.Strings(names)
+	if strings.Join(names, ", ") != strings.Join(wantArchiveNames, ", ") {
+		t.Errorf(".goreleaser.yaml renders the archive names [%s], want exactly [%s]", strings.Join(names, ", "), strings.Join(wantArchiveNames, ", "))
+	}
+}
+
+// wantArchiveNames are the four archive files the committed .goreleaser.yaml renders, as docs/install.md
+// lists them (fscache_X.Y.Z_linux_amd64.tar.gz, ...), with the release version written <version>: the
+// standard template "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}" and the FIPS template
+// "{{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}_{{ .Arch }}", project_name fscache, goos linux, goarch
+// amd64 and arm64, and GoReleaser's .tar.gz extension for the tar.gz format.
+var wantArchiveNames = []string{
+	"fscache-fips_<version>_linux_amd64.tar.gz",
+	"fscache-fips_<version>_linux_arm64.tar.gz",
+	"fscache_<version>_linux_amd64.tar.gz",
+	"fscache_<version>_linux_arm64.tar.gz",
 }
 
 // proves: REQ-PLAT-001-AC1
@@ -503,6 +526,17 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"goamd64 levels":                     edit(fipsGoos, fipsGoos[:len(fipsGoos)-len("    goos:\n      - linux\n")]+"    goamd64:\n      - v1\n      - v3\n    goos:\n      - linux\n"),
 		"skipped build":                      edit(fipsGoos, fipsGoos+"    skip: true\n"),
 		"prebuilt builder":                   edit(fipsGoos, fipsGoos+"    builder: prebuilt\n"),
+		// Round-3 regressions (both seats): empty or grouped ids, and the archive file names.
+		"third archive with empty ids": edit("\nchecksum:", "\n  - id: fscache-all\n    ids: []\n    formats:\n      - tar.gz\n    name_template: all_{{ .Os }}_{{ .Arch }}\n\nchecksum:"),
+		"fips archive with empty ids":  edit(fipsIDs, "    ids: []\n"),
+		"both builds in one archive":   edit("    ids:\n      - fscache\n", "    ids:\n      - fscache\n      - fscache-fips\n"),
+		"one grouped archive only":     edit(fipsIDs, "    ids:\n      - fscache-fips\n      - fscache\n"),
+		"standard template renamed":    edit("      {{ .ProjectName }}_{{ .Version }}", "      other_{{ .Version }}"),
+		"fips template collides":       edit("      {{ .ProjectName }}-fips_{{ .Version }}", "      {{ .ProjectName }}_{{ .Version }}"),
+		"template adds an expression":  edit("      {{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "      {{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ .Env.SUFFIX }}"),
+		"template drops the arch":      edit("      {{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "      {{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}"),
+		"project name changed":         edit("project_name: fscache\n", "project_name: fscache2\n"),
+		"project name removed":         edit("project_name: fscache\n", ""),
 	}
 	for name, text := range archiveMutants {
 		if _, dup := mutants[name]; dup {
@@ -836,6 +870,24 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"hyphenated six-archive":       install + "\nThis is a six-archive release.\n",
 		"bold wrapped Windows":         install + "\nNative binaries for Win**dows** are attached.\n",
 		"bold Apple Silicon, no space": install + "\nNative binaries for Apple**Silicon** are attached.\n",
+		// Round-3 regressions (both seats): inline HTML inside a word, autolinks and attributes, counts past five
+		// words, partitive counts, and limiting claims.
+		"html bold inside six":            install + "\nEvery release ships si<b>x</b> archives.\n",
+		"html bold starts six":            install + "\nEvery release ships <b>si</b>x archives.\n",
+		"html bold inside Windows":        install + "\nNative binaries for Win<b>dows</b> are attached.\n",
+		"html bold starts Windows":        install + "\nNative binaries for <b>Win</b>dows are attached.\n",
+		"html span with class in Windows": install + "\nNative binaries for Win<span class=\"x\">dows</span> are attached.\n",
+		"html code inside macOS":          install + "\nNative binaries for mac<code>OS</code> are attached.\n",
+		"block break between six":         install + "\nEvery release ships six<br>archives.\n",
+		"autolink names windows":          install + "\nNative binaries: <https://example.com/windows>\n",
+		"link attribute names macos":      install + "\nNative binaries: <a href=\"https://example.com/macos\">here</a>.\n",
+		"six words between":               install + "\nSix signed static stripped verified Linux release archives.\n",
+		"ten words between":               install + "\nEvery release ships six signed, static, stripped, reproducible, verified, attested Linux and FIPS release archives.\n",
+		"all six of the archives":         install + "\nAll six of the release archives are signed.\n",
+		"six of the four archives":        install + "\nDownload six of the four archives.\n",
+		"five of the archives":            install + "\nFive of the archives are FIPS builds.\n",
+		"only an archive":                 install + "\nOnly an archive is shipped.\n",
+		"just one archive":                install + "\nJust one archive is shipped.\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -852,6 +904,13 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"There is no archive for this machine.",
 		"All **four** Linux archives are signed.",
 		"Every release ships a `checksums.txt` covering all four Linux archives.",
+		"Every release ships <b>four</b> archives.",
+		"Every release ships fo<b>ur</b> archives.",
+		"All four of the release archives are signed.",
+		"Two of the four archives are FIPS builds.",
+		"Pick one of the archives; two of them are arm64 builds.",
+		"Every release ships four signed, static, stripped, reproducible, verified Linux release archives.",
+		"See <https://example.com/linux> for the archives.",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
@@ -918,6 +977,8 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"bold archive count":                notes + "- The release ships **six** archives.\n",
 		"count after one of":                notes + "- Pick one of six archives.\n",
 		"sentence repeated with emphasis":   notes + "- No **macOS** or Windows binaries are shipped; use the container image.\n",
+		"html inside the count":             notes + "- The release ships si<b>x</b> archives.\n",
+		"html inside Windows":               notes + "- A signed installer for Win<i>dows</i> ships with this release.\n",
 	}
 	for name, text := range mutants {
 		if text == notes {
@@ -953,9 +1014,19 @@ func packageTests(t *testing.T) map[string]bool {
 		if err != nil {
 			t.Fatalf("read %s: %v", e.Name(), err)
 		}
-		for _, m := range testFunc.FindAllStringSubmatch(string(b), -1) {
-			tests[m[1]] = true
+		for name := range declaredTests(t, e.Name(), string(b)) {
+			tests[name] = true
 		}
+	}
+	return tests
+}
+
+// declaredTests returns the names of the top-level test functions declared in one Go source file.
+func declaredTests(t *testing.T, file, src string) map[string]bool {
+	t.Helper()
+	tests := map[string]bool{}
+	for _, m := range testFunc.FindAllStringSubmatch(src, -1) {
+		tests[m[1]] = true
 	}
 	return tests
 }
@@ -1064,9 +1135,30 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		{"folded block scalar wraps Mac OS", edit(lastRef, lastRef+"      - type: inspection\n        ref: >-\n          runs on Mac\n          OS hosts\n"), "Mac OS"},
 		{"comment names Windows", edit(lastRef, lastRef+"      # Windows is a documented equivalent\n"), "Windows"},
 		{"second document", real + "---\nnote: darwin is a documented equivalent\n", "darwin"},
+		// Round-3 regressions (both seats): inline HTML inside a word, a bracketed name, comments wrapped.
+		{"html tag inside Windows", edit(plat2, "so a missing variant/arch fails; Win<b>dows</b> is the documented equivalent\" }\n"), "Windows"},
+		{"html tag starts Windows", edit(plat2, "so a missing variant/arch fails; <b>Win</b>dows is the documented equivalent\" }\n"), "Windows"},
+		{"bracketed windows", edit(plat2, "so a missing variant/arch fails; <windows> is the documented equivalent\" }\n"), "windows"},
+		{"comment wraps Apple Silicon", edit(lastRef, lastRef+"      # Apple\n      # Silicon binaries are available.\n"), "Apple"},
+		{"comment wraps OS X", edit(lastRef, lastRef+"      # runs on OS\n      # X hosts\n"), "OS"},
+		{"line comment wraps Apple Silicon", edit(lastRef, lastRef+"      - { type: inspection, ref: x } # Apple\n      # Silicon binaries\n"), "Apple"},
 	}
+	// A test function that is commented out, or that is not a top-level test, does not authorize a reference.
+	const fake = "package platforms\n\nimport \"testing\"\n\n/*\nfunc TestDarwin(t *testing.T) {\n}\n*/\n\n// func TestMacOS(t *testing.T) {\n\nvar s = `\nfunc TestWindows(t *testing.T) {\n`\n\nfunc TestReal(t *testing.T) {}\n"
+	declared := declaredTests(t, "fake_test.go", fake)
+	if len(declared) != 1 || !declared["TestReal"] {
+		t.Errorf("declared tests in the fake file are %v, want only TestReal", declared)
+	}
+	withFake := map[string]bool{}
+	for k := range tests {
+		withFake[k] = true
+	}
+	for k := range declared {
+		withFake[k] = true
+	}
+	mutants = append(mutants, struct{ name, text, want string }{"commented-out test authorizes a ref", edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/platforms:TestDarwin\" }\n"), "Darwin"})
 	for _, m := range mutants {
-		ps := checkEvidenceMappings(m.text, tests)
+		ps := checkEvidenceMappings(m.text, withFake)
 		if !strings.Contains(strings.ToLower(strings.Join(ps, "\n")), strings.ToLower(m.want)) {
 			t.Errorf("mutant %q: the check does not name %q: %v", m.name, m.want, ps)
 		}
