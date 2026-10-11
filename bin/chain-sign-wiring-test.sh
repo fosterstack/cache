@@ -3274,7 +3274,33 @@ d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF"'rows["bin
 d=$(crf cr_ok '#!/usr/bin/env bash\necho a\n'); expm ok "$d" - "line-bound: control: the same script without a CR"
 
 
-EXPECT=1297
+# ---- PR 1b: a command-level deny finding on a command that spans several physical lines has NO waivable line
+dl lc_a 'foo x \\\n  archive/vi' '[D("foo x \\")]' caught 'by a path'
+dl lc_b 'tar \\\n -I sh x f' '[D("tar \\")]' caught 'program-running option' '["tar"]'
+dl lc_c 'foo archive/vi \\\n  x' '[D("foo archive/vi \\")]' caught 'by a path'
+dl lc_d 'echo a \\\n  git status' '[D("  git status")]' ok -
+dl lc_e 'foo archive/vi' '[D("foo archive/vi")]' ok -
+dl lc_f 'echo \\\n  $(foo archive/vi)' '[D("echo \\")]' caught 'by a path'
+dl lc_g 'echo \\\n  $(foo archive/vi)' '[D("  $(foo archive/vi)")]' caught 'by a path'
+dl lc_h 'find . \\\n -exec dist/sed {} +' '[D("find . \\")]' caught 'program-running option' '["find"]'
+dl lc_i 'cat <<EOF\nline \\\ngit x\nEOF' '[D("git x")]' ok -
+dl lc_j 'git status \\\n  archive/vi' '[D("git status \\")]' caught 'by a path'
+dl lc_k 'git status \\\n  b' '[D("git status \\")]' ok -
+dl lc_l 'tar -I sh x f' '[D("tar -I sh x f")]' ok - '["tar"]'
+dl lc_m '# git is only documented here' '[]' caught "'git'"
+dl lc_n '# git is only documented here' '[D("# git is only documented here")]' ok -
+dl lc_o 'git -c core.sshCommand=x \\\n  fetch' '[D("git -c core.sshCommand=x \\")]' caught 'program-running option' '["git"]'
+d=$(crf cr_d '#!/usr/bin/env bash\ncurl a\necho b\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a")]'; expm caught "$d" 'carriage return' "line-bound: a valid ASCII entry with a CR on another line of the script: no waiver applies"
+cat > "$work/loadcr.py" <<'PY'
+import importlib.util, os, sys
+spec = importlib.util.spec_from_file_location("cts", os.environ["CHAIN_ROOT"] + "/bin/chain-test-signers.py"); cts = importlib.util.module_from_spec(spec); spec.loader.exec_module(cts)
+rows, errs, _ = cts.load_scripts(sys.argv[1])
+print("; ".join(errs) or "ok"); sys.exit(1 if errs else 0)
+PY
+d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
+
+
+EXPECT=1315
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
