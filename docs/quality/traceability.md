@@ -17,10 +17,10 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 79 |
-| Acceptance criteria | 252 |
-| Release-blocking ACs | 46 |
-| ACs with mapped evidence | 236 |
-| Release-blocking ACs with mapped evidence | 46 |
+| Acceptance criteria | 253 |
+| Release-blocking ACs | 47 |
+| ACs with mapped evidence | 237 |
+| Release-blocking ACs with mapped evidence | 47 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 44 |
 | Confidence: implementation-only | 34 |
@@ -295,11 +295,14 @@ The server shall write a marker file at startup and remove it on clean shutdown.
 
 *Introduced v0.2.0 · tier community · confidence documented · source: audit-response-2026-09-08 §4.7 (decided); test-strategy.md §2.2; audit §18*
 
+> AC4 added Oct 11 2026 (advisor step 5): from the Codex round-5 finding on PR #257. A startup whose reconciliation returned an error cleared the marker on the way out, although a failed start is not a clean shutdown; the behavior predates #257.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-STORE-005-AC1 | Given a store holding a blob with no metadata record (as after a crash between the two writes); when reconciliation runs; then the blob is adopted - it appears in totals and entry count, is retrievable, and participates in eviction | component | yes | approved | 3 item(s) |
 | REQ-STORE-005-AC2 | Given a metadata record whose blob is missing; when reconciliation runs; then the record is dropped and totals no longer include it | component | yes | approved | 2 item(s) |
 | REQ-STORE-005-AC3 | Given a data directory with an unclean-shutdown marker and one of each inconsistency; when the server starts; then reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk | component |  | approved | 2 item(s) |
+| REQ-STORE-005-AC4 | Given a data directory with an unclean-shutdown marker, and a startup reconciliation that fails partway, returning an error after some index changes; when the server starts; then it exits non-zero without serving, naming the reconciliation failure; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles again | component | yes | approved | 2 item(s) |
 
 ## Eviction
 

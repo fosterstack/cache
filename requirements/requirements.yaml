@@ -667,6 +667,11 @@ requirements:
     introduced: v0.2.0
     origin: audit-2026-09-08
     confidence: documented
+    notes: >
+      AC4 added Oct 11 2026 (advisor step 5): from the Codex round-5 finding
+      on PR #257. A startup whose reconciliation returned an error cleared
+      the marker on the way out, although a failed start is not a clean
+      shutdown; the behavior predates #257.
     acceptance_criteria:
       - id: REQ-STORE-005-AC1
         given: a store holding a blob with no metadata record (as after a crash between the two writes)
@@ -685,6 +690,12 @@ requirements:
         when: the server starts
         then: reconciliation runs before serving and logs the adopted/dropped counts; a subsequent clean restart does not walk
         verification: { method: component, release_blocking: false }
+        status: approved
+      - id: REQ-STORE-005-AC4
+        given: a data directory with an unclean-shutdown marker, and a startup reconciliation that fails partway, returning an error after some index changes
+        when: the server starts
+        then: it exits non-zero without serving, naming the reconciliation failure; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles again
+        verification: { method: component, release_blocking: true }
         status: approved
 
   # ── Eviction ──────────────────────────────────────────────────────────
