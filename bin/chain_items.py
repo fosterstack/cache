@@ -246,7 +246,8 @@ def read_bytes(directory, name, what=None):
 
 def check_layout(images_dir, image, digest):
     """The image's OCI layout directory out/<image>/ (PROPOSED/UNVERIFIED, cache P5): oci-layout 1.0.0, an index.json with exactly ONE descriptor that
-    is the digest Build records, and that blob present and hashing to its name. A docker-save tarball (manifest.json, no oci-layout) is not a layout:
+    is the digest Build records, that blob a real OCI image index present and hashing to its name, and its linux/amd64 and linux/arm64 child manifests present
+    and hashing to theirs. Returns {arch: child digest}, which the caller binds to the sidecar. A docker-save tarball (manifest.json, no oci-layout) is not a layout:
     pushing it changes the digest, pushing the layout directory does not."""
     root = os.path.join(images_dir, image)
     if os.path.islink(root) or not os.path.isdir(root):
@@ -265,14 +266,32 @@ def check_layout(images_dir, image, digest):
             raise ValueError
     except (OSError, ValueError, KeyError, TypeError):
         refuse("build", "layout: %s index.json does not hold exactly one descriptor, the digest %s" % (image, digest))
-    blob = os.path.join(root, "blobs", "sha256", digest.split(":", 1)[1])
+    def blob_bytes(dg, what):
+        path = os.path.join(root, "blobs", "sha256", dg.split(":", 1)[1])
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            data = None
+        if os.path.islink(path) or data is None or hashlib.sha256(data).hexdigest() != dg.split(":", 1)[1]:
+            refuse("build", "layout: %s %s blob %s is missing or does not hash to its name" % (image, what, dg))
+        return data
     try:
-        with open(blob, "rb") as f:
-            ok = hashlib.sha256(f.read()).hexdigest() == digest.split(":", 1)[1]
-    except OSError:
-        ok = False
-    if os.path.islink(blob) or not ok:
-        refuse("build", "layout: %s blobs/sha256/<digest> is missing or does not hash to its name" % image)
+        platforms = strict_json(blob_bytes(digest, "index"))["manifests"]
+        found = {}
+        for m in platforms:
+            p = m.get("platform") or {}
+            if p.get("os") == "linux" and p.get("architecture") in ARCHES.values():
+                if p["architecture"] in found or not DIGEST.fullmatch(str(m.get("digest", ""))):
+                    raise ValueError
+                found[p["architecture"]] = m["digest"]
+        if sorted(found) != sorted(ARCHES.values()):
+            raise ValueError
+    except (ValueError, KeyError, TypeError, AttributeError):
+        refuse("build", "layout: %s index blob is not an OCI image index with exactly one linux/amd64 and one linux/arm64 descriptor" % image)
+    for arch, dg in sorted(found.items()):
+        blob_bytes(dg, "%s manifest" % arch)
+    return found
 
 
 def image_items(images_dir):
@@ -281,7 +300,7 @@ def image_items(images_dir):
         items["image-" + image] = read_bytes(images_dir, image + ".digest").decode().strip()
         if not DIGEST.fullmatch(items["image-" + image]):
             refuse("build", "layout: %s.digest is not a sha256 digest" % image)
-        check_layout(images_dir, image, items["image-" + image])
+        in_index = check_layout(images_dir, image, items["image-" + image])
         seen = {}
         for line in read_bytes(images_dir, image + ".manifests").decode().split("\n"):
             if line.strip():
@@ -292,6 +311,8 @@ def image_items(images_dir):
                 seen[parts[0]] = parts[1]
         if sorted(seen) != sorted(ARCHES.values()):
             refuse("build", "manifests: an architecture is missing in %s.manifests" % image)
+        if seen != in_index:
+            refuse("build", "layout: %s sidecar %s.manifests does not name the platform descriptors of the image index" % (image, image))
         for arch, digest in seen.items():
             items["image-%s-manifest-%s" % (image, arch)] = digest
         items["lock-" + image] = "sha256:" + hashlib.sha256(read_bytes(images_dir, image + ".full.lock.json")).hexdigest()
