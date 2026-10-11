@@ -619,7 +619,10 @@ import itertools
 def vlines(nt):
     return vex_part(nt).splitlines()
 def no_pos(vc):
-    return [{k: v for k, v in e.items() if k != "statement"} for e in vc]
+    """only the numeric position in a positional label varies with input order; an identifier label is kept (Codex #300
+    r2, B: the permutation checks keep stable statement identities)"""
+    return [dict(e, statement=re.sub(r"\d+ of the (old|new) document", r"N of the \1 document", e["statement"]))
+            if "statement" in e else e for e in vc]
 PC = "pkg:oci/cache"
 def sub(*ids):
     return [{"@id": PC, "subcomponents": [{"@id": i} for i in ids]}]
@@ -640,9 +643,12 @@ nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(dict(NA, **{"@id": "urn:s:1"}), dic
                                           vd(dict(NA, **{"@id": "urn:s:1"}), dict(NB, status_notes="B2", **{"@id": "urn:s:2"}))))
 check("AC8 VEX notes: no products, two statements: the changed one is named by its @id",
       len(vlines(nt_)) == 1 and "urn:s:2" in nt_ and "urn:s:1" not in nt_, vex_part(nt_))
-nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(NA, NB), vd(NA, dict(NB, status_notes="B2"))))
-check("AC8 VEX notes: no products and no @id, two statements: the changed one is named by its position",
-      len(vlines(nt_)) == 1 and "statement 2 of the new document" in nt_ and "(changed: status_notes)" in nt_, vex_part(nt_))
+vc_ = P.vex_changes(vd(NA, NB), vd(NA, dict(NB, status_notes="B2")))
+nt_ = P.notes("v0.2.3", [], vc_)
+check("AC8 VEX notes: no products and no @id, two statements, one changed: nothing identifies it, so removed + added, "
+      "each named by its position (Codex #300 r2, A3: an absent scope is no identity)",
+      sorted(v["change"] for v in vc_) == ["added", "removed"] and "statement 2 of the new document" in nt_
+      and "statement 2 of the old document" in nt_, vex_part(nt_))
 # A2 / B F1: pairing never guesses between statements that share a scope
 Sa, Sb = vs(products=[{"@id": PC}], status_notes="a"), vs(products=[{"@id": PC}], status_notes="b")
 check("AC8 VEX reorder control (A2): two statements, one CVE, one product scope, order swapped: no change",
@@ -683,15 +689,17 @@ for i_, (o_, n_) in enumerate(cases_):
     check("AC8 VEX order: case %d gives one result for every order of either list" % i_, len(outs_) == 1, outs_)
 # A test strength: every top-level statement field, one by one; nested changes
 FULL = vs(**{"@id": "urn:s", "version": 1, "timestamp": "t1", "last_updated": "t1", "supplier": "s",
-             "action_statement_timestamp": "t1"})
+             "action_statement_timestamp": "t1", "x-extension": {"k": 1}})
 for field, val in (("@id", "urn:s2"), ("version", 2), ("timestamp", "t2"), ("last_updated", "t2"), ("supplier", "s2"),
                    ("action_statement_timestamp", "t2"), ("justification", "inline_mitigations_already_exist"),
                    ("impact_statement", "x"), ("action_statement", "y"), ("status_notes", "z"),
                    ("products", [{"@id": PC + "2"}]), ("vulnerability", {"name": "CVE-7", "description": "d"}),
-                   ("version", True), ("x-extension", "e")):
+                   ("version", True), ("version", 1.0), ("x-extension", "e"), ("x-extension", {"k": True}),
+                   ("x-extension", {"k": 1.0}), ("x-extension", {"k": [1]})):
     for label, o_, n_ in (("changed", FULL, dict(FULL, **{field: val})), ("dropped", FULL, {k: v for k, v in FULL.items() if k != field}),
                           ("added", {k: v for k, v in FULL.items() if k != field}, FULL)):
-        if o_ == n_ or (field == "vulnerability" and label != "changed"):
+        # skip only a case that is the same JSON (1 == True in Python, never in JSON: Codex #300 r2, A7/B)
+        if json.dumps(o_, sort_keys=True) == json.dumps(n_, sort_keys=True) or (field == "vulnerability" and label != "changed"):
             continue
         vc_ = P.vex_changes(vd(o_), vd(n_))
         check("AC8 VEX field %s %s (%r): 'changed: %s'" % (field, label, val, field) if label == "changed" else
@@ -728,7 +736,10 @@ got_ = vex_part(P.notes("v0.2.3", [], P.vex_changes(DOC, dict(DOC, **{"x-extensi
 check("AC8 VEX doc: an extension field added is named", got_ == "- document fields changed (x-extension); no statement changed", got_)
 # A3: malformed products are never iterated into the notes; the statement is unpairable and named neutrally
 for bad in ("pkg:oci/a", 5, [1, 2], ["pkg:oci/a"], [{"x": 1}], [{"@id": 5}], [{"@id": PC, "subcomponents": "xy"}],
-            [{"@id": PC, "subcomponents": [3]}], {"@id": PC}):
+            [{"@id": PC, "subcomponents": [3]}], {"@id": PC},
+            # an identifiers form the schema does not allow (Codex #300 r2, A5: the allowed forms are read, below)
+            [{"identifiers": {}}], [{"identifiers": "pkg:oci/a"}], [{"identifiers": {"purl": 5}}], [{"identifiers": {"x": "y"}}],
+            [{"@id": PC, "subcomponents": [{"identifiers": {}}]}], [{"@id": PC, "subcomponents": [{"identifiers": ["x", "y"]}]}]):
     o_, n_ = vs(products=bad, status_notes="n1"), vs(products=bad, status_notes="n2")
     try:
         vc_ = P.vex_changes(vd(o_, vs(products=D1)), vd(n_, vs(products=D1)))
@@ -750,6 +761,10 @@ for label, o_, n_ in (("new root a list", {"statements": []}, [1]), ("old root a
                       ("statements not a list", vd(), {"statements": {}}), ("a statement not an object", vd(VS), {"statements": [1]}),
                       ("a statement without vulnerability", vd(VS), {"statements": [{"status": "affected"}]}),
                       ("a vulnerability name not a string", vd(VS), vd(vs(vulnerability={"name": 5}))),
+                      # the status the notes print is read-checked too (Codex #300 r2, A6)
+                      ("a status not a string", vd(VS), vd(vs(status=5))), ("a status outside OpenVEX", vd(VS), vd(vs(status="bogus"))),
+                      ("a statement without status", vd(VS), vd(vs(drop=("status",)))),
+                      ("an old statement with a numeric status", vd(vs(status=1)), vd(VS)),
                       ("new document missing", vd(VS), None)):
     try:
         P.vex_changes(o_, n_); got_ = "accepted"
@@ -758,6 +773,77 @@ for label, o_, n_ in (("new root a list", {"statements": []}, [1]), ("old root a
     except Exception as e:      # noqa: BLE001
         got_ = "%s: %s" % (type(e).__name__, e)
     check("AC8 VEX malformed document (%s): refused with ValueError" % label, got_ == "ValueError", got_)
+# AC8 (rule 0254 "names the statements that changed"; Codex #300 r2): every line of the FINAL notes names exactly one
+# statement, after redaction too; @id pairs only when unique in each whole document; an absent or empty scope is no
+# identity; subcomponent order is not scope; the schema's identifiers forms are read
+def distinct(nt):
+    ls = vlines(nt)
+    return len(ls) == len(set(ls))
+for a_, b_ in (("urn:statement:claude-a", "urn:statement:claude-b"), ("urn:claude", "urn:gemini")):
+    S1, S2 = (vs(products=[{"@id": PC}], status="fixed", status_notes=n, **{"@id": i}) for i, n in ((a_, "a"), (b_, "b")))
+    nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(S1, S2), vd(dict(S1, status_notes="a2"), dict(S2, status_notes="b2"))))
+    check("AC8 VEX notes redaction (A1/B): @ids %s / %s that redact alike: two distinct lines, each named by its position" % (a_, b_),
+          len(vlines(nt_)) == 2 and distinct(nt_) and "statement 1 of the new document" in nt_ and "statement 2 of the new document" in nt_
+          and not re.search(r"(?i)claude|gemini", nt_), vex_part(nt_))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(), vd(vs(vulnerability={"name": "CVE-claude-1"}, status="fixed"),
+                                                     vs(vulnerability={"name": "CVE-claude-2"}, status="fixed"))))
+check("AC8 VEX notes redaction: two CVE names that redact alike: two distinct lines, each named by its position",
+      len(vlines(nt_)) == 2 and distinct(nt_) and "statement 1 of the new document" in nt_ and "claude" not in nt_.lower(), vex_part(nt_))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(SAi, SBi), vd(dict(SAi, status_notes="a2"), dict(SBi, status_notes="b2"))))
+check("AC8 VEX notes redaction control: @ids that survive redaction still name their statements",
+      distinct(nt_) and "statement urn:statement:a" in nt_ and "statement urn:statement:b" in nt_ and "of the new document" not in nt_, vex_part(nt_))
+X_ = {"@id": "urn:x"}
+vc_ = P.vex_changes(vd(vs(products=[{"@id": "pkg:a"}], status_notes="u", **X_), vs(products=[{"@id": "pkg:b"}], status_notes="old", **X_)),
+                    vd(vs(products=[{"@id": "pkg:a"}], status_notes="u", **X_), vs(products=[{"@id": "pkg:c"}], status_notes="new", **X_)))
+check("AC8 VEX dup-@id (A2): an @id held twice in the whole document never pairs, even when unique among the rest: removed + added",
+      sorted(v["change"] for v in vc_) == ["added", "removed"], vc_)
+vc_ = P.vex_changes(vd(vs(products=[{"@id": "pkg:b"}], status_notes="old", **X_), vs(vulnerability={"name": "CVE-8"}, **X_)),
+                    vd(vs(products=[{"@id": "pkg:c"}], status_notes="new", **X_)))
+check("AC8 VEX dup-@id (A2): an @id held twice across CVEs in the old document does not pair: removed + added",
+      sorted(v["change"] for v in vc_ if v["cve"] == "CVE-7") == ["added", "removed"], vc_)
+for label, empty in (("absent", None), ("empty", [])):
+    U_ = vs(drop=("products",)) if empty is None else vs(products=empty)
+    vc_ = P.vex_changes(vd(vs(products=D1), dict(U_, status_notes="u1")), vd(vs(products=D1), dict(U_, status_notes="u2")))
+    check("AC8 VEX %s scope (A3): beside an unchanged scoped statement, an unscoped one with new notes is removed + added" % label,
+          sorted(v["change"] for v in vc_) == ["added", "removed"], vc_)
+    vc_ = P.vex_changes(vd(dict(U_, status_notes="u1")), vd(dict(U_, status_notes="u2")))
+    check("AC8 VEX %s scope: the only statement of its CVE still pairs (the CVE identifies it)" % label,
+          [v["change"] for v in vc_] == ["changed: status_notes"], vc_)
+vc_ = P.vex_changes(vd(vs(products=sub("urn:a", "urn:b")), vs(products=D1)), vd(vs(products=sub("urn:b", "urn:a")), vs(products=D1)))
+check("AC8 VEX subcomponent order (A4): [a,b] -> [b,a] beside another statement, no @id: one 'changed: products'",
+      [v["change"] for v in vc_] == ["changed: products"], vc_)
+vc_ = P.vex_changes(vd(vs(products=sub("urn:a", "urn:b"), status="fixed", status_notes="a"),
+                       vs(products=sub("urn:b", "urn:a"), status="under_investigation", status_notes="b")),
+                    vd(vs(products=sub("urn:b", "urn:a"), status="fixed", status_notes="a2"),
+                       vs(products=sub("urn:a", "urn:b"), status="under_investigation", status_notes="b2")))
+check("AC8 VEX subcomponent order (A4/B): two statements of one unordered scope, both changed: two removed + two added, never guessed",
+      sorted(v["change"] for v in vc_) == ["added", "added", "removed", "removed"], vc_)
+IDP = [{"identifiers": {"purl": PC}}]
+vc_ = P.vex_changes(vd(vs(products=IDP, **{"@id": "urn:statement:a"})), vd(vs(products=IDP, status_notes="n2", **{"@id": "urn:statement:a"})))
+check("AC8 VEX identifiers (A5/B): a product named by identifiers.purl, the only statement: 'changed: status_notes'",
+      [v["change"] for v in vc_] == ["changed: status_notes"] and not any(v.get("products_unreadable") for v in vc_), vc_)
+for label, prods in (("identifiers.purl", IDP), ("identifiers.cpe23", [{"identifiers": {"cpe23": "cpe:2.3:a:fs:cache:1:*:*:*:*:*:*:*"}}]),
+                     ("identifiers.cpe22", [{"identifiers": {"cpe22": "cpe:/a:fs:cache:1"}}]),
+                     ("a subcomponent's identifiers", [{"@id": PC, "subcomponents": [{"identifiers": {"purl": BB1}}]}])):
+    vc_ = P.vex_changes(vd(vs(products=prods), vs(products=D1)), vd(vs(products=prods, status_notes="n2"), vs(products=D1)))
+    nt_ = P.notes("v0.2.3", [], vc_)
+    want_ = list(prods[0].get("identifiers", {}).values()) or [BB1]
+    check("AC8 VEX identifiers (A5): %s beside another statement, no @id: one changed line naming it, never 'unreadable'" % label,
+          [v["change"] for v in vc_] == ["changed: status_notes"] and "unreadable" not in nt_ and want_[0] in nt_, vex_part(nt_))
+# B: order independence keeps identifier labels; equal products and status tie on content, not input order
+TA, TB = (vs(products=[{"@id": PC}], status="fixed", status_notes="t", **{"@id": i}) for i in ("urn:s:a", "urn:s:b"))
+check("AC8 VEX order (B): first patch, equal products and status, @ids urn:s:a / urn:s:b: one order either way",
+      P.vex_changes(None, vd(TA, TB)) == P.vex_changes(None, vd(TB, TA)) and len(P.vex_changes(None, vd(TA, TB))) == 2,
+      (P.vex_changes(None, vd(TA, TB)), P.vex_changes(None, vd(TB, TA))))
+R1, R2 = (vs(products=[{"@id": PC}], status="fixed", status_notes=n, **{"@id": i}) for i, n in (("urn:claude-a", "a"), ("urn:claude-b", "b")))
+for i_, (o_, n_) in enumerate((((TA, TB), (dict(TB, status_notes="t2"), TA)),
+                               ((R1, R2), (dict(R1, status_notes="a2"), dict(R2, status_notes="b2"))),
+                               ((vs(products=sub("urn:a", "urn:b")), vs(products=D1)), (vs(products=D1), vs(products=sub("urn:b", "urn:a")))),
+                               ((vs(products=IDP, status_notes="i"), Sa), (Sa, vs(products=IDP, status_notes="i2"))))):
+    outs_ = {json.dumps(no_pos(P.vex_changes(vd(*po), vd(*pn)))) for po in itertools.permutations(o_) for pn in itertools.permutations(n_)}
+    nts_ = [P.notes("v0.2.3", [], P.vex_changes(vd(*po), vd(*pn))) for po in itertools.permutations(o_) for pn in itertools.permutations(n_)]
+    check("AC8 VEX order (B): round-2 case %d gives one result for every order, identifier labels kept, final lines distinct" % i_,
+          len(outs_) == 1 and all(distinct(x) for x in nts_), outs_)
 pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
@@ -832,6 +918,10 @@ rc = P.main(args); out_ = open(os.path.join(cd_, "notes.md")).read() if rc == 0 
 check("AC8w CLI notes: heading, the fix with its variants, the VEX change, only the unpublished entry",
       rc == 0 and out_.startswith("## v0.2.3 — patch release\n") and "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: default, fips)" in out_
       and "CVE-1: not_affected (changed from affected)" in out_ and "- Second change, one line (advisor 0130)." in out_ and "Go 1.27" not in out_, out_)
+os.remove(os.path.join(cd_, "notes.md"))
+args_null_ = [x if x != os.path.join(cd_, "o.json") else J_("null.json", None) for x in args]
+check("AC8 CLI notes (Codex #300 r2, B): a --vex-old file holding JSON null is refused (exit 2, no notes), never 'every statement added'",
+      P.main(args_null_) == 2 and not os.path.exists(os.path.join(cd_, "notes.md")))
 open(os.path.join(cd_, "nrn.md"), "w").write("- uncited change\n")
 check("0130 CLI notes: an uncited entry refuses the notes (exit 2, so no tag)", P.main(args) == 2)
 os.remove(os.path.join(cd_, "nrn.md"))
