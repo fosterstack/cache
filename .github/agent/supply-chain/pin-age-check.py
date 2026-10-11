@@ -17,6 +17,7 @@ import hashlib
 import datetime as dt
 import importlib.util
 import json
+import keyword
 import os
 import re
 import subprocess
@@ -761,7 +762,9 @@ _SH_WORD = re.compile(r"""(?:"[^"]*"|'[^']*'|[^\s"'])+""")
 _SH_LIT = re.compile(r"[A-Za-z0-9_./:%+@,=][A-Za-z0-9_./:%+@,=-]*")    # no ~ ? * [ ] { } $ ` \ ! # & ; | < > ( ) or quote: nothing bash expands
 _SH_SQ = re.compile(r"'([^']*)'")
 _SH_DQ = re.compile(r'"((?:[^"\\`$]|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)*)"')
-_SH_OPTION = re.compile(r"-[A-Za-z0-9]+|--[a-z0-9][a-z0-9-]*")       # an option of a command other than curl, spelled plainly with no glued value
+# an option of a command other than curl (and after the repo:self prefix), spelled plainly: -x (exactly ONE letter: a cluster, a digit or a glued value
+# such as -Cforeign, -xvf, -j4, -o/tmp/x is not listed; only curl has listed clusters) or --name, nothing glued (Codex A round 7 P2)
+_SH_OPTION = re.compile(r"-[A-Za-z]|--[a-z0-9][a-z0-9-]*")
 # outside quotes, none of: a group, a subscript, a brace, a redirection, a quote left open, a tilde, a glob, a comment, an expansion, a backtick, a backslash
 _SH_UNQUOTED = set("()[]{}<>\"'~*?#$`\\")
 _PY_WORDS = {"and", "or", "not", "is", "in", "if", "else", "for", "as", "lambda"}   # after curl, a Python operator word: curl is a name, not a command
@@ -774,11 +777,14 @@ _COUNT = re.compile(r"[0-9]+")                                        # N digits
 _GLOB = set("[]{}")                                                   # curl's own URL globbing: never in a curl argument, quoted or not
 _REDIRECT_LONG = ("--location", "--location-trusted", "--follow", "--config")
 # the Python form: the WHOLE line is one subprocess call (optionally assigned to a plain name), its first argument a list whose first element is "curl"
-_PY_HEAD = re.compile(r"(?:[A-Za-z_]\w* ?= ?)?subprocess\.(?:run|call|check_call|check_output|Popen) ?")
+_PY_HEAD = re.compile(r"(?:([A-Za-z_][A-Za-z0-9_]*) ?= ?)?subprocess\.(?:run|call|check_call|check_output|Popen) ?")
 # a list element: a plain string literal with an optional ONE-letter r, b or u prefix (rr, bu, rb, f, t are not listed: Codex round 6 P3), or a NAME
 # (never an attribute, a subscript or a call: Codex A round 6 P2) only as the FILE after "-o" or "--output"
 _PY_STR = re.compile(r"""\s*([rRbBuU]?)("[^"\\]*"|'[^'\\]*')\s*(?:,|$)""")
-_PY_NAME = re.compile(r"\s*([A-Za-z_]\w*)\s*(?:,|$)")
+_PY_NAME = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:,|$)")
+# a plain NAME (the FILE after "-o"/"--output", an assignment target): an ASCII identifier that is not a keyword and not None, True or False (Codex B
+# round 6 P3: class, lambda, None, x\u00b2 are not names a reader can take as a variable); a builtin such as print is a plain name
+_PY_NOT_NAME = frozenset(keyword.kwlist) | {"None", "True", "False"}    # kwlist holds None, True, False; named for the reader
 _PY_KWARGS = re.compile(r"(?:\s*,\s*(?:stdout|stderr|check|timeout|capture_output|text)\s*=\s*[A-Za-z0-9_.]+)*\s*,?\s*")
 
 
@@ -832,18 +838,24 @@ def _sh_items(args):
 _GH_WORD = re.compile(r"\bgh\b")
 
 
-def _repo_selector(t):
+# the options of the repo:self prefix's gh release download whose next word is a value (a pattern, a directory, a file, an archive format): a gh word
+# there is data, never a command (Codex A round 7 P3); after any other word, and in every later segment, a gh word is refused
+_GH_VALUED = {"-p", "--pattern", "-D", "--dir", "-O", "--output", "-A", "--archive"}
+
+
+def _repo_selector(t, value=False):
     """Why the word T (its quotes removed) names a repository or runs gh after the repo:self prefix, else None. OPEN-1: -R (any single-dash word holding
     R, glued -Rfoo too) and --repo (--r, --re, --rep, --repo, --repo=..., --repository) are refused by name; OPEN-2 (Codex round 6, A P1 and B P2): in EVERY
     command segment of the line, not only the first, and no word after the prefix holds gh (the prefix is the only listed gh: a later gh release download,
-    gh api, env GH_REPO=x gh, bash -c 'gh ...' is not pinned to the repository itself)."""
+    gh api, env GH_REPO=x gh, bash -c 'gh ...' is not pinned to the repository itself). VALUE: T is the value of a _GH_VALUED option of the prefix's own
+    command, where a gh word is data (--pattern gh); -R and --repo are refused there too."""
     a = t.replace('"', "").replace("'", "")
     name = a.split("=", 1)[0]
     if a.startswith("-") and not a.startswith("--") and "R" in a:
         return f"{t} names a repository after the repo:self prefix (-R is refused by name, in every command of the line)"
     if a.startswith("--") and len(name) > 2 and ("--repo".startswith(name) or name.startswith("--repo")):
         return f"{t} names a repository after the repo:self prefix (--repo is refused by name, any abbreviation too, in every command of the line)"
-    if _GH_WORD.search(a):
+    if not value and _GH_WORD.search(a):
         return f"{t} runs gh after the repo:self prefix (the prefix is the only listed gh on a repo:self line)"
     return None
 
@@ -886,9 +898,12 @@ def _shell_listed(flat, gh=False):
             toks.append(w)
     (state, cmd, args), curls = (("args", "gh", []) if gh else ("start", None, [])), 0
     finish = lambda: (_option_list(_sh_items(args)) if args else "curl with no argument") if cmd == "curl" else _gh_options(args) if cmd == "gh" else None
+    prev = None
     for t in toks:
-        if gh and t not in _SH_SEP and _repo_selector(t):    # OPEN-1 and OPEN-2: every segment of a repo:self line, not only the first (Codex round 6)
-            return _repo_selector(t)
+        value = cmd == "gh" and prev in _GH_VALUED          # the value of a value option of the prefix's own gh release download (Codex A round 7 P3)
+        if gh and t not in _SH_SEP and _repo_selector(t, value):    # OPEN-1 and OPEN-2: every segment of a repo:self line, not only the first (Codex round 6)
+            return _repo_selector(t, value)
+        prev = t
         if t in _SH_SEP:
             if state == "start":
                 return f"an empty command before {t}"
@@ -967,8 +982,11 @@ def _python_listed(flat):
     if j < 0 or j not in br or br[j][0] != "[" or br[j][1] is None:
         return '"curl" is not the first element of a list closed on the line'
     p, close = br[j][2], br[j][1]
-    if p is None or br[p][0] != "(" or br[p][1] != len(flat) - 1 or flat[p + 1:j].strip() or not _PY_HEAD.fullmatch(flat[:p]):
+    head = _PY_HEAD.fullmatch(flat[:p]) if p is not None else None
+    if p is None or br[p][0] != "(" or br[p][1] != len(flat) - 1 or flat[p + 1:j].strip() or not head:
         return "the list is not the first argument of a subprocess call that is the whole line"
+    if head.group(1) in _PY_NOT_NAME:
+        return f"the assignment target {head.group(1)} is not a plain name (a keyword, None, True or False)"
     if not _PY_KWARGS.fullmatch(flat[close + 1:br[p][1]]):
         return "the call holds an argument other than the plain keyword arguments"
     rest, items = flat[e + 1:close], []
@@ -984,8 +1002,8 @@ def _python_listed(flat):
             items.append(("opt", c) if c.startswith("-") else ("word", c))
         else:
             m = _PY_NAME.match(rest)
-            if not m:
-                return "a list element is not a plain string literal or name"
+            if not m or m.group(1) in _PY_NOT_NAME:
+                return "a list element is not a plain string literal or name (an ASCII identifier, not a keyword, None, True or False)"
             items.append(("value", m.group(1)))
         rest = rest[m.end():]
     return _option_list(items)
@@ -1005,10 +1023,16 @@ def _unlisted(flat, repo_self=False):
     return None if py is None else f"as a shell line: {sh}; as a subprocess call: {py}"
 
 
+# a word of a line for (6): a quoted string whole (a Python string prefix allowed), or an unquoted run up to whitespace, a quote, ;, | or &; an address is
+# ONE word, never split at a comma, a ; or a ? inside it (Codex A round 7 P2)
+_REDIRECT_WORD = re.compile(r"""[rRbBuU]{0,2}"[^"]*"|[rRbBuU]{0,2}'[^']*'|[^\s"';|&]+""")
+
+
 def _redirect_words(flat):
-    """True when a word of the line (split on whitespace, commas, brackets, parentheses, ;, | and &, a Python string prefix and quotes stripped) starts
-    with a single - and holds an L or a K, or is, begins with or abbreviates --location, --location-trusted, --follow or --config (AC19 (6))."""
-    words = [_STR_PREFIX.sub("", x).strip("\"'") for x in re.split(r"[\s,\[\]();|&]+", flat)]
+    """True when a word of the line (_REDIRECT_WORD: a quoted word or a Python list element whole, its prefix and quotes stripped; an unquoted word whole)
+    starts with a single - and holds an L or a K, or is, begins with or abbreviates --location, --location-trusted, --follow or --config (AC19 (6)). Only
+    a word that STARTS with - is read: -L inside an address (a,-L, "a;-L", "a?x=-L") is not an option."""
+    words = [_STR_PREFIX.sub("", x).strip("\"'") for x in _REDIRECT_WORD.findall(flat)]
     long = lambda w: w.split("=", 1)[0]
     return any((w.startswith("-") and not w.startswith("--") and ("L" in w or "K" in w))
                or (w.startswith("--") and len(long(w)) > 2 and any(o.startswith(long(w)) or long(w).startswith(o) for o in _REDIRECT_LONG)) for w in words)
