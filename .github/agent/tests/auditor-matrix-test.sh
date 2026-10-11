@@ -3278,7 +3278,7 @@ if blk<0:      # an old-schema (v1) record that the PR itself adds
     json.dump({"schema":"auditor-review-record/v1","tree":t,"rounds":[{"round":1,"reviewers":rv}],"stop":{"codex":"clear"}},
               open(".github/agent/reviews/%s.json"%t,"w")); sys.exit()
 rv={"codex_a":seat("A","gpt-6.1-sol",0,"ab"*32),"codex_b":seat("B","gpt-6-astra",blk,"cd"*32)}
-json.dump({"schema":"auditor-review-record/v2","tree":t,"change":"test","rounds":[{"round":1,"reviewers":rv}],
+json.dump({"schema":"auditor-review-record/v2","tree":t,"rounds":[{"round":1,"reviewers":rv}],
            "stop":{"codex_a":"clear","codex_b":"clear" if blk==0 else "blocked"}},open(".github/agent/reviews/%s.json"%t,"w"))
 RR
 ) && gt add -A && gt commit -qm rec; }

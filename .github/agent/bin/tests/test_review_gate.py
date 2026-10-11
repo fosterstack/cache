@@ -5,7 +5,7 @@ review seats on two different listed models (AC5, AC6); no substitute is accepte
 schema v2 gate counts only as the same file already at the merge base and on the trusted revision, unchanged by the pull
 request (AC7); the workflow runs the gate in isolated mode from the default branch's copy (AC8). Each test class names
 the AC it proves."""
-import ast, contextlib, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
+import ast, contextlib, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest, unittest.mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.dirname(HERE)
@@ -23,6 +23,7 @@ EVB = "ef" * 32
 FIELDS = ("reviewer", "vendor", "seat", "model", "effort", "blockers_open", "evidence_sha256")
 NO_SUB = "no substitute is accepted"
 PERMITTED_ONLY = "only the permitted fields are read, and no substitute is accepted"
+ANCHOR = '"schema": "%s"' % V2      # where a raw-JSON test inserts a top-level field
 
 
 def seat(letter, model, effort="xhigh", **over):
@@ -34,7 +35,7 @@ def seat(letter, model, effort="xhigh", **over):
 
 def good(tree=TREE):
     """A complete schema v2 record: seats A and B on two different listed models, both clear."""
-    return {"schema": V2, "tree": tree, "change": "test",
+    return {"schema": V2, "tree": tree,
             "rounds": [{"round": 1, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol"),
                                                   "codex_b": seat("B", "gpt-6-astra")}}],
             "stop": {"codex_a": "clear", "codex_b": "clear"}}
@@ -147,7 +148,7 @@ class ClearingRecord(unittest.TestCase):
     def test_blockers_open_must_be_exactly_the_integer_zero(self):
         for bad in (None, "0", False, 0.0, 0.5, 1, -1, [0]):
             r = good(); final(r)["codex_a"]["blockers_open"] = bad
-            self.assertEqual(problems(r), ["codex_a blockers_open is %r, want the integer 0" % (bad,)], bad)
+            self.assertEqual(problems(r), ["codex_a blockers_open is %s, want the integer 0" % G._show(bad)], bad)
 
     def test_evidence_must_be_64_lowercase_hex(self):
         for bad in (EVA.upper(), EVA[:63], EVA + "a", EVA + "\n", "", None, 7, "g" * 64):
@@ -246,7 +247,7 @@ class Refusals(unittest.TestCase):
     def test_a_seat_entry_that_is_not_an_object_fails_naming_it(self):
         for bad in (None, [], "codex", 0, True):
             r = good(); final(r)["codex_a"] = bad
-            self.assertIn("codex_a entry is not an object (%r)" % (bad,), problems(r), bad)
+            self.assertIn("codex_a entry is not an object (%s)" % G._show(bad), problems(r), bad)
 
     def test_two_shapes_are_both_reported(self):
         r = good(); final(r)["codex_a"]["blockers_open"] = 1; final(r)["codex_b"]["model"] = "gpt-6.1-sol"
@@ -344,14 +345,13 @@ class PermittedFields(unittest.TestCase):
 
     def test_the_permitted_field_sets_are_exactly_these(self):
         self.assertEqual(sorted(G.RECORD_REQUIRED), ["rounds", "schema", "stop", "tree"])
-        self.assertEqual(sorted(G.RECORD_OPTIONAL), ["change", "residuals", "reviewed_commit"])
+        self.assertEqual(sorted(G.RECORD_OPTIONAL), ["residuals", "reviewed_commit"])
         self.assertEqual(sorted(G.ROUND_REQUIRED), ["reviewers", "round"])
-        self.assertEqual(sorted(G.ROUND_OPTIONAL), ["label"])
+        self.assertEqual(sorted(G.ROUND_OPTIONAL), [])
         self.assertEqual(tuple(G.FIELDS), FIELDS)
 
     def test_a_complete_record_with_every_optional_field_clears(self):
         r = good(); r["reviewed_commit"] = "1f" * 20; r["residuals"] = ["one", "two"]
-        r["rounds"][0]["label"] = "head 1f1f1f1: both seats clear"
         self.assertEqual(problems(r), [])
 
     def test_an_extra_top_level_field_fails_naming_it_and_saying_no_substitute(self):
@@ -394,9 +394,7 @@ class PermittedFields(unittest.TestCase):
                 self.assertTrue(named(ps, NO_SUB), (where, text, ps))
 
     def test_the_optional_fields_are_typed(self):
-        for f, bad, msg in (("change", 5, "record change is not a string"),
-                            ("change", ["x"], "record change is not a string"),
-                            ("reviewed_commit", "1F" * 20, "record reviewed_commit is not 40 lowercase hex characters"),
+        for f, bad, msg in (("reviewed_commit", "1F" * 20, "record reviewed_commit is not 40 lowercase hex characters"),
                             ("reviewed_commit", "1f" * 32, "record reviewed_commit is not 40 lowercase hex characters"),
                             ("reviewed_commit", None, "record reviewed_commit is not 40 lowercase hex characters"),
                             ("residuals", "none", "record residuals is not a list of strings"),
@@ -405,9 +403,6 @@ class PermittedFields(unittest.TestCase):
                             ("residuals", {"a": "b"}, "record residuals is not a list of strings")):
             r = good(); r[f] = bad
             self.assertIn(msg, problems(r), (f, bad))
-        for bad in (5, None, ["x"], {"x": 1}):
-            r = good(); r["rounds"][0]["label"] = bad
-            self.assertIn("rounds[0] label is not a string", problems(r), bad)
 
     def test_every_round_needs_a_positive_increasing_round_number(self):
         for bad in (..., None, 0, -1, True, "1", 1.0, [1]):
@@ -417,7 +412,7 @@ class PermittedFields(unittest.TestCase):
                 want = "rounds[0] has no round field"
             else:
                 r["rounds"][0]["round"] = bad
-                want = "rounds[0] round is %r, want a positive integer" % (bad,)
+                want = "rounds[0] round is %s, want a positive integer" % G._show(bad)
             self.assertIn(want, problems(r), bad)
         for first, second in ((2, 2), (3, 2)):
             r = good(); r["rounds"][0]["round"] = second
@@ -451,7 +446,7 @@ class PermittedFields(unittest.TestCase):
     def test_a_tree_that_is_not_a_string_fails(self):
         for bad in (None, 1, [TREE], {"tree": TREE}):
             r = good(); r["tree"] = bad
-            self.assertIn("record binds tree %r, the change is %s" % (bad, TREE), problems(r), bad)
+            self.assertIn("record binds tree %s, the change is %s" % (G._show(bad), TREE), problems(r), bad)
 
     def test_a_deeply_nested_value_is_reported_not_raised(self):
         deep = "x"
@@ -494,14 +489,14 @@ class StrictJson(unittest.TestCase):
 
     def test_nan_and_infinity_are_refused(self):
         for c in ("NaN", "Infinity", "-Infinity"):
-            raw = self.body().replace('"change": "test"', '"change": "test", "residuals": [%s]' % c, 1)
+            raw = self.body().replace(ANCHOR, ANCHOR + ', "residuals": [%s]' % c, 1)
             self.load_fails(raw.encode(), "the record holds the non-standard constant %s" % c)
 
     def test_a_byte_order_mark_is_refused(self):
         self.load_fails(b"\xef\xbb\xbf" + self.body().encode(), "the record starts with a byte order mark")
 
     def test_bytes_that_are_not_utf_8_are_refused(self):
-        for bad in (self.body().replace('"test"', '"t\xe9st"').encode("latin-1"), b"\xff\xfe{}", b'{"a": "\xc0\xaf"}'):
+        for bad in (self.body().replace('"codex"', '"c\xe9dex"', 1).encode("latin-1"), b"\xff\xfe{}", b'{"a": "\xc0\xaf"}'):
             self.load_fails(bad, "the record is not UTF-8")
 
     def test_anything_after_the_value_is_refused(self):
@@ -509,17 +504,17 @@ class StrictJson(unittest.TestCase):
             self.load_fails((self.body() + tail).encode(), "the record is not valid JSON")
 
     def test_nesting_too_deep_is_refused_not_raised(self):
-        ok = self.body().replace('"change": "test"', '"change": "test", "residuals": ' + "[" * 15 + "]" * 15, 1)
+        ok = self.body().replace(ANCHOR, ANCHOR + ', "residuals": ' + "[" * 15 + "]" * 15, 1)
         G.load_record(ok.encode())                                   # 16 levels: read (then refused as mistyped)
-        over = self.body().replace('"change": "test"', '"change": "test", "residuals": ' + "[" * 16 + "]" * 16, 1)
+        over = self.body().replace(ANCHOR, ANCHOR + ', "residuals": ' + "[" * 16 + "]" * 16, 1)
         self.load_fails(over.encode(), "the record nests too deeply to read (more than 16 levels)")
-        quoted = self.body().replace('"change": "test"', '"change": "%s"' % ("[{" * 50 + '\\\"' + "]}" * 50), 1)
+        quoted = self.body().replace(ANCHOR, ANCHOR + ', "change": "%s"' % ("[{" * 50 + '\\\"' + "]}" * 50), 1)
         self.assertEqual(G.load_record(quoted.encode())["change"][:4], "[{[{")   # brackets inside a string do not count
-        raw = self.body().replace('"change": "test"', '"change": "test", "residuals": ' + "[" * 200000 + "]" * 200000, 1)
+        raw = self.body().replace(ANCHOR, ANCHOR + ', "residuals": ' + "[" * 200000 + "]" * 200000, 1)
         self.load_fails(raw.encode(), "the record nests too deeply to read")
 
     def test_a_record_over_the_size_bound_is_refused(self):
-        raw = self.body().replace('"change": "test"', '"change": "%s"' % ("x" * G.MAX_RECORD_BYTES), 1)
+        raw = self.body().replace(ANCHOR, ANCHOR + ', "change": "%s"' % ("x" * G.MAX_RECORD_BYTES), 1)
         self.load_fails(raw.encode(), "the record is larger than %d bytes" % G.MAX_RECORD_BYTES)
 
     def test_not_json_at_all(self):
@@ -545,10 +540,10 @@ class StrictJson(unittest.TestCase):
         self.assertIn("the record repeats the key 'blockers_open'", out)
 
     def test_the_cli_refuses_nan_a_bom_and_deep_nesting(self):
-        for make, want in ((lambda t: self.body(t).replace('"change": "test"', '"change": "test", "residuals": [NaN]', 1),
+        for make, want in ((lambda t: self.body(t).replace(ANCHOR, ANCHOR + ', "residuals": [NaN]', 1),
                             "non-standard constant NaN"),
                            (lambda t: b"\xef\xbb\xbf" + self.body(t).encode(), "byte order mark"),
-                           (lambda t: self.body(t).replace('"change": "test"', '"change": "test", "residuals": '
+                           (lambda t: self.body(t).replace(ANCHOR, ANCHOR + ', "residuals": '
                                                            + "[" * 100000 + "]" * 100000, 1), "nests too deeply")):
             c = CliRepo(); c.start(self)
             c.change(".github/agent/bin/x.py", "b\n")
@@ -1102,6 +1097,338 @@ class HarnessManifest(unittest.TestCase):
     def test_files_outside_the_prefix_are_not_reviewed(self):
         self.r.write(".github/supply-chain-harness.json", "x\n"); self.r.change(".github/supply-chain-exceptions.json", "{}\n")
         self.assertEqual(self.r.judge()[0], 0)
+
+
+# ---- round 2 (Oct 11): free text, diagnostics, bounded work, the merged file, revision arguments ------------------
+def run_main_utf8(*argv):
+    """main() writing to real UTF-8 streams that refuse what they cannot encode (StringIO hides an encoding failure);
+    returns (rc, stdout, stderr), each decoded as ASCII: every diagnostic is plain ASCII, whatever the record holds."""
+    ob, eb = io.BytesIO(), io.BytesIO()
+    out = io.TextIOWrapper(ob, encoding="utf-8", errors="strict", write_through=True)
+    err = io.TextIOWrapper(eb, encoding="utf-8", errors="strict", write_through=True)
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = G.main(list(argv))
+    return rc, ob.getvalue().decode("ascii"), eb.getvalue().decode("ascii")
+
+
+def nested(depth, leaf="x"):
+    v = leaf
+    for _ in range(depth):
+        v = [v]
+    return v
+
+
+class FreeText(unittest.TestCase):
+    """REQ-AUD-018-AC4 ("a record that names a substitutes allow-list entry" fails, "naming the entry and saying that no
+    substitute is accepted"): a record holds no free text that could name an entry. change and label are not permitted
+    fields; residuals, the only free text, is plain descriptive text: letters, digits, spaces and a few punctuation
+    marks, at most 1000 characters each, with no run of 4 or more digits and no run of 7 or more hexadecimal characters
+    that holds a digit (no entry id, commit or hash)."""
+
+    def test_change_and_label_are_not_permitted_fields(self):
+        for v in ("0317", "plain words"):
+            r = good(); r["change"] = v
+            self.assertIn("record has an extra field 'change': " + PERMITTED_ONLY, problems(r), v)
+            r = good(); r["rounds"][0]["label"] = v
+            self.assertIn("rounds[0] has an extra field 'label': " + PERMITTED_ONLY, problems(r), v)
+            r = good(); r["rounds"][0]["round"] = 2
+            r["rounds"].insert(0, {"round": 1, "label": v, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol")}})
+            self.assertIn("rounds[0] has an extra field 'label': " + PERMITTED_ONLY, problems(r), v)
+
+    def test_a_residual_that_could_name_an_entry_a_commit_or_a_hash_fails_naming_it(self):
+        for bad in ("0317", "entry 0350 applies", "12345", "see ac34eaf", "1f1f1f1", "x" * 1001, "tab\there",
+                    "new\nline", "café", "{0}", "back\\slash", "a`b", "$HOME", "#12", "\ud800", "\x00"):
+            r = good(); r["residuals"] = ["fine", bad]
+            ps = problems(r)
+            hit = [p for p in ps if p.startswith("record residuals[1] ")]
+            self.assertEqual(len(hit), 1, (bad, ps))
+            self.assertIn("is not plain descriptive text", hit[0])
+            self.assertTrue(hit[0].endswith(NO_SUB), hit[0])
+            self.assertIn(G._show(bad), hit[0])
+
+    def test_plain_residuals_clear(self):
+        r = good(); r["residuals"] = [
+            "crafted fixture only: REQ-AUD-018-AC16, PR 297, round 3 (line 143) - not reproduced on the candidate",
+            "deadbeef is only a word here; 7 days, 100% (A/B_C+D=E&F*G<H>I!J?K'L\"M)", "", "x" * 1000]
+        self.assertEqual(problems(r), [])
+
+    def test_no_other_string_field_takes_free_text(self):
+        def at(r, path):
+            o = r
+            for k in path[:-1]:
+                o = o[k]
+            return o, path[-1]
+        r0 = good(); r0["reviewed_commit"] = "1f" * 20
+        paths = [("schema",), ("tree",), ("reviewed_commit",), ("stop", "codex_a"), ("stop", "codex_b")]
+        paths += [("rounds", 0, "reviewers", s, f) for s in ("codex_a", "codex_b")
+                  for f in FIELDS if isinstance(seat("A", "m")[f], str)]
+        for path in paths:
+            r = json.loads(json.dumps(r0)); o, k = at(r, path)
+            o[k] = "plain words"
+            self.assertNotEqual(problems(r), [], path)
+
+
+class Diagnostics(unittest.TestCase):
+    """REQ-AUD-018-AC5 ("any missing, extra, mistyped or malformed field fails the gate with a message naming it"), AC4
+    and AC6: every diagnostic is plain ASCII and bounded in length and in number, whatever the record holds (a lone
+    surrogate, a long key, a deep value, thousands of extra fields), and no value can make the gate raise."""
+
+    def test_values_are_shown_escaped_and_bounded(self):
+        self.assertEqual(G._show("\ud800"), "'\\ud800'")
+        self.assertEqual(G._show("café"), "'caf\\xe9'")
+        self.assertEqual(G._show("claude"), "'claude'")
+        self.assertLess(len(G._show("y" * 100000)), 140)
+        self.assertIn("100000 characters", G._show("y" * 100000))
+        for v, want in ((None, "None"), (True, "True"), (0, "0"), (-3, "-3"), (0.5, "0.5"),
+                        ([], "<a list of length 0>"), ([0], "<a list of length 1>"), (nested(200000), "<a list of length 1>"),
+                        ({"a": 1}, "<an object with 1 field(s)>")):
+            self.assertEqual(G._show(v), want, v)
+        self.assertIn("integer", G._show(10 ** 5000))
+        self.assertLess(len(G._show(10 ** 5000)), 80)
+
+    def mutated(self, t, old, new):
+        body = json.dumps(good(t))
+        self.assertIn(old, body)
+        return body.replace(old, new, 1)
+
+    def test_a_lone_surrogate_in_every_string_field_or_key_is_refused_naming_it(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        S = "\\ud800"
+        cases = [('"schema": "%s"' % V2, '"schema": "%s"' % S, "has schema '%s'" % S),
+                 ('"tree": "', '"tree": "%s' % S, "record binds tree '"),
+                 ('"stop": {', '"residuals": ["%s"], "stop": {' % S, "record residuals[0] '%s'" % S),
+                 ('"stop": {', '"reviewed_commit": "%s", "stop": {' % S, "record reviewed_commit is not 40"),
+                 ('"reviewer": "codex"', '"reviewer": "%s"' % S, "codex_a reviewer is '%s'" % S),
+                 ('"vendor": "openai"', '"vendor": "%s"' % S, "codex_a vendor is '%s'" % S),
+                 ('"seat": "A"', '"seat": "%s"' % S, "codex_a seat is '%s'" % S),
+                 ('"model": "gpt-6.1-sol"', '"model": "%s"' % S, "codex_a model '%s'" % S),
+                 ('"effort": "xhigh"', '"effort": "%s"' % S, "codex_a effort '%s'" % S),
+                 ('"evidence_sha256": "%s"' % EVA, '"evidence_sha256": "%s"' % S, "codex_a evidence_sha256 is not 64"),
+                 ('"codex_b": "clear"', '"codex_b": "%s"' % S, "stop verdict for codex_b is '%s'" % S),
+                 ('"stop": {', '"%s": 1, "stop": {' % S, "record has an extra field '%s'" % S),
+                 ('"round": 1', '"round": 1, "%s": 1' % S, "rounds[0] has an extra field '%s'" % S),
+                 ('"reviewer": "codex"', '"reviewer": "codex", "%s": 1' % S, "codex_a has an extra field '%s'" % S),
+                 ('"reviewers": {', '"reviewers": {"%s": {}, ' % S, "final round entry '%s' is not a seat" % S),
+                 ('"stop": {', '"stop": {"%s": "clear", ' % S, "stop holds an extra key '%s'" % S),
+                 ('"stop": {', '"substitut%s": 1, "stop": {' % S, "marks a substitute"),
+                 ('"stop": {', '"x": ["substitute %s"], "stop": {' % S, "names a substitute ('substitute %s')" % S)]
+        for old, new, want in cases:
+            c.record(None, raw=lambda t: self.mutated(t, old, new))
+            rc, out, err = run_main_utf8("--base", c.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, (new, out, err))
+            self.assertIn(want, out, (new, out))
+
+    def test_a_lone_surrogate_in_a_record_only_pull_request_is_refused_naming_it(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/reviews/%s.json" % ("0" * 64), '{"schema": "\\ud800"}')
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("its schema is '\\ud800'", out)
+
+    def test_a_non_ascii_path_is_shown_escaped(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/café.py", "b\n")
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("caf\\xe9.py", out)
+
+    def test_a_long_key_or_value_is_shown_bounded(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        c.record(None, raw=lambda t: self.mutated(t, '"stop": {', '"%s": ["%s"], "stop": {' % ("k" * 100000, "substitute" * 10000)))
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out[:300])
+        self.assertTrue(all(len(line) < 1000 for line in out.splitlines()), max(map(len, out.splitlines())))
+
+    def test_the_number_of_problems_is_bounded(self):
+        r = good()
+        for i in range(5000):
+            r["x%d" % i] = 1
+        ps = problems(r)
+        self.assertEqual(len(ps), G.MAX_PROBLEMS + 1)
+        self.assertIn("more problem(s) not shown", ps[-1])
+        r = good(); r["residuals"] = ["substitute"] * 5000
+        self.assertEqual(len(problems(r)), G.MAX_PROBLEMS + 1)
+        r = good(); final(r).update({"k%d" % i: {} for i in range(5000)})
+        self.assertEqual(len(problems(r)), G.MAX_PROBLEMS + 1)
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        c.record(None, raw=lambda t: json.dumps(dict(good(t), **{"x%d" % i: 1 for i in range(5000)})))
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        self.assertLessEqual(len(out.splitlines()), G.MAX_PROBLEMS + 1)
+        self.assertIn("more problem(s) not shown", out)
+
+    def test_a_deeply_nested_decoded_value_in_any_field_is_reported_not_raised(self):
+        deep = nested(200000)
+        def put(path):
+            r = good(); r["reviewed_commit"] = "1f" * 20; r["residuals"] = ["x"]
+            o = r
+            for k in path[:-1]:
+                o = o[k]
+            o[path[-1]] = deep
+            return r
+        paths = [(k,) for k in ("schema", "tree", "reviewed_commit", "residuals", "rounds", "stop", "extra")]
+        paths += [("rounds", 0), ("rounds", 0, "round"), ("rounds", 0, "reviewers"), ("stop", "codex_a"), ("stop", "extra")]
+        paths += [("rounds", 0, "reviewers", "codex_a")] + [("rounds", 0, "reviewers", "codex_a", f) for f in FIELDS]
+        paths += [("rounds", 0, "reviewers", "codex_a", "extra"), ("rounds", 0, "reviewers", "extra")]
+        for path in paths:
+            ps = problems(put(path))
+            self.assertNotEqual(ps, [], path)
+        for f in ("model", "evidence_sha256", "seat"):          # both seats deep: the two are never compared deeply
+            r = good(); final(r)["codex_a"][f] = nested(200000); final(r)["codex_b"][f] = nested(200000)
+            self.assertNotEqual(problems(r), [], f)
+        r = good(); r["rounds"][0]["round"] = 2
+        r["rounds"].insert(0, {"round": 1, "reviewers": {"codex_a": deep}})
+        self.assertNotEqual(problems(r), [])
+        self.assertEqual(problems(deep), ["record is not a JSON object"])
+
+    def test_the_substitute_scan_does_not_amplify_a_long_key_into_memory(self):
+        import tracemalloc
+        r = good(); r["k" * 10000] = [None] * 2000
+        r2 = good(); r2["k" * 10000] = {"substitute": ["substitute"] * 2000}
+        for rec in (r, r2):
+            tracemalloc.start()
+            try:
+                problems(rec)
+                peak = tracemalloc.get_traced_memory()[1]
+            finally:
+                tracemalloc.stop()
+            self.assertLess(peak, 2000000)
+
+
+class LinearRead(unittest.TestCase):
+    """REQ-AUD-018-AC5 and AC3: reading a record takes time linear in its size (an unterminated string of escaped
+    quotes once took quadratic time and could use up the judge's time before any refusal)."""
+
+    def test_the_depth_count_skips_strings_and_escapes(self):
+        for text, want in (('["[", {"a": "]\\"["}, [[]]]', 3), ('"\\\\"', 0), ('["\\\\", [1]]', 2), ('{}', 1),
+                           ('"[[[', 0), ('"\\"[[[', 0)):
+            self.assertEqual(G._depth(text), want, text)
+
+    def test_an_unterminated_string_of_escaped_quotes_is_refused_in_linear_time(self):
+        with self.assertRaises(ValueError):
+            G.load_record(b'"' + b'\\"' * 20000)
+        code = ("import importlib.util,sys,time;s=importlib.util.spec_from_file_location('g',sys.argv[1]);"
+                "g=importlib.util.module_from_spec(s);s.loader.exec_module(g);t=time.time()\n"
+                "for raw in (b'\"'+b'\\\\\"'*520000, b'{\"a\": \"'+b'\\\\\"'*520000, b'['*16+b'\"'+b'\\\\\"'*520000):\n"
+                "  try: g.load_record(raw)\n"
+                "  except ValueError: pass\n"
+                "  else: sys.exit('read')\n"
+                "print('refused in %.1fs' % (time.time()-t))")
+        try:
+            p = subprocess.run([sys.executable, "-I", "-c", code, SCRIPT], capture_output=True, text=True,
+                               timeout=30, stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired:
+            self.fail("reading 1 MB of escaped quotes took more than 30 seconds")
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("refused in", p.stdout)
+
+
+class MergedFile(unittest.TestCase):
+    """REQ-AUD-018-AC7 ("the gate does not re-judge such a record by any rule (old or new)"; "the gate reads the legacy
+    record from the trusted revision only"): the identity check comes first (the path untouched by the pull request, the
+    same regular-file blob at the merge base, the head and the trusted revision), and only then is the TRUSTED copy read.
+    A merged old-schema record is read as the old gate read it (an ordinary JSON reader), so a repeated key or NaN in it
+    is history, not a refusal; a merged file whose schema cannot be told, or that claims schema v2 without being strict
+    JSON, fails closed."""
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+        self.root = self.r.base
+
+    def merged(self, raw):
+        """A fresh history from the root: the record `raw(tree)` merged for x.py=b, main moved on, the PR reverts."""
+        self.r.git("reset", "-q", "--hard", self.root)
+        self.r.base = self.root
+        return LegacyRecord.merged_legacy(self, raw=raw)
+
+    def v1(self, t, old='"schema": "%s"' % V1, new=None):
+        body = json.dumps(legacy(t))
+        self.assertIn(old, body)
+        return body.replace(old, new, 1)
+
+    def test_an_unchanged_merged_v1_record_with_a_repeated_key_or_nan_is_honoured(self):
+        for new in ('"schema": "%s", "schema": "%s"' % (V1, V1), '"schema": "%s", "x": NaN' % V1,
+                    '"schema": "%s", "x": -Infinity' % V1):
+            path = self.merged(lambda t, new=new: self.v1(t, new=new))
+            rc, out, _ = run_main_utf8("--base", self.r.base, "--head", "HEAD")
+            self.assertEqual(rc, 0, (new, out))
+            self.assertIn("honoured as merged, not re-judged", out)
+            self.assertIn(path, out)
+
+    def test_a_merged_file_whose_schema_cannot_be_told_fails_closed(self):
+        for raw in ("{not json", '{"schema": "%s"' % V1, "﻿" + '{"schema": "%s"}' % V1,
+                    '{"schema": "%s", "x": %s}' % (V1, "[" * 17 + "]" * 17)):
+            path = self.merged(lambda t, raw=raw: raw)
+            rc, out, _ = run_main_utf8("--base", self.r.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, (raw, out))
+            self.assertIn(path, out)
+            self.assertIn("its schema cannot be told", out)
+            self.assertIn("a schema v2 record is required", out)
+
+    def test_a_merged_file_that_claims_schema_v2_without_strict_json_fails_closed(self):
+        for new in ('"schema": "%s", "schema": "%s"' % (V2, V1), '"schema": "%s", "x": NaN, "schema": "%s"' % (V1, V2)):
+            self.merged(lambda t, new=new: self.v1(t, new=new))
+            rc, out, _ = run_main_utf8("--base", self.r.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, (new, out))
+            self.assertIn("claims schema v2 but is not strict JSON", out)
+
+    def test_the_legacy_record_is_read_from_the_trusted_revision_after_the_identity_check(self):
+        path = self.merged(lambda t: json.dumps(legacy(t)))
+        trusted = "trusted-tip"                      # the same commit as the merge base, under its own name
+        self.r.git("branch", trusted, self.r.base)
+        calls, real = [], G._git
+        def spy(*a, **k):
+            calls.append(a)
+            return real(*a, **k)
+        with unittest.mock.patch.object(G, "_git", spy):
+            rc, out, _ = run_main_utf8("--base", self.r.base, "--head", "HEAD", "--subs-rev", trusted)
+        self.assertEqual(rc, 0, out)
+        reads = [i for i, a in enumerate(calls) if a[0] == "cat-file"]
+        self.assertEqual(len(reads), 1, calls)
+        before = calls[:reads[0]]
+        listed = [a[2] for a in before if a[0] == "ls-tree" and a[-1] == path]
+        self.assertEqual(listed, [trusted, self.r.base, "HEAD"], before)      # trusted first, then base and head
+        want = real("ls-tree", "-z", trusted, "--", path).split("\t")[0].split()[2]
+        self.assertEqual(calls[reads[0]][-1], want)          # the trusted revision's blob, by its id
+
+    def test_a_record_the_pull_request_adds_is_read_from_the_head_and_judged_strictly(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        self.r.record(None, raw=lambda t: json.dumps(legacy(t)).replace('"schema"', '"schema": "x", "schema"', 1))
+        rc, out, _ = run_main_utf8("--base", self.r.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the record repeats the key 'schema'", out)
+
+
+class RevisionArguments(unittest.TestCase):
+    """REQ-AUD-018-AC3: a revision the gate cannot read is refused by name (exit 2), never a traceback, and any failure
+    to judge is a named refusal (exit 1), never a pass."""
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+        self.r.change(".github/agent/bin/x.py", "b\n"); self.r.record(good)
+
+    def test_an_unreadable_base_or_head_is_refused_naming_it(self):
+        for opt in ("--base", "--head"):
+            for bad in ("no-such-ref", "0" * 40, "-x", "--all", "HEAD:src", "HEAD~99"):
+                argv = {"--base": self.r.base, "--head": "HEAD"}
+                argv[opt] = bad
+                rc, out, err = run_main_utf8("--base", argv["--base"], "--head", argv["--head"])
+                self.assertEqual(rc, 2, (opt, bad, out, err))
+                self.assertIn("%s %s is not a commit the gate can read" % (opt, G._show(bad)), err)
+        rc, _, err = run_main_utf8("--print-tree", "--head", "no-such-ref")
+        self.assertEqual(rc, 2)
+        self.assertIn("--head 'no-such-ref' is not a commit the gate can read", err)
+
+    def test_any_failure_to_judge_is_a_named_refusal(self):
+        for exc in (RuntimeError("git diff: boom\nmore"), ValueError("bad \ud800"), RecursionError("deep"), MemoryError()):
+            with unittest.mock.patch.object(G, "auditor_changes", side_effect=exc):
+                rc, out, err = run_main_utf8("--base", self.r.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, (exc, out, err))
+            self.assertIn("::error::review gate: the change could not be judged (%s" % type(exc).__name__, out)
+            self.assertIn("it does not clear", out)
 
 
 if __name__ == "__main__":
