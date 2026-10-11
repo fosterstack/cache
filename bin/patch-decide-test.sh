@@ -1344,6 +1344,10 @@ nt_ = P.notes("v0.2.3", [], vc_)
 check("AC8 VEX order (r4, B): products pkg:a, pkg:b@1, pkg:z z sort by value whatever their printed form; entries keep the raw products",
       [v.get("products") for v in vc_] == [["pkg:a"], ["pkg:b@1"], ["pkg:z z"]]
       and [l.split(" [", 1)[1].split("]:", 1)[0] for l in vlines(nt_)] == ["pkg:a", '`"pkg:b@1"`', '`"pkg:z z"`'], (vc_, vex_part(nt_)))
+vc_ = P.vex_changes(None, vd(vs(products=[{"@id": "pkg:z z"}, {"@id": "pkg:a"}, {"@id": "pkg:b@1"}]), vs()))
+check("AC8 VEX order (r4, B): one statement's products print in the order of their values, not of their printed forms",
+      vc_[0].get("products") == ["pkg:a", "pkg:b@1", "pkg:z z"]
+      and vlines(P.notes("v0.2.3", [], vc_))[0].startswith('- CVE-7 [pkg:a, `"pkg:b@1"`, `"pkg:z z"`]: '), (vc_, vlines(P.notes("v0.2.3", [], vc_))))
 pub ="## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
