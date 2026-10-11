@@ -149,15 +149,36 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 // A larger file is refused rather than read whole into memory.
 const maxTLSFileBytes = 1 << 20
 
+// openTLSFile is os.Open behind a seam, so a test can stand in a path
+// that changed between the check and the open.
+var openTLSFile = os.Open
+
 // readTLSFile reads the file the variable name points at, at most
 // maxTLSFileBytes of it. Errors name the variable and the path and carry
 // only the operating system's error (which names the path), never content.
+//
+// Only a regular file is read (a symlink to one is followed, as a
+// Kubernetes Secret volume presents its files). The path is checked before
+// the open, because opening a FIFO with no writer blocks forever, before
+// the bind and deaf to SIGTERM; and the opened handle is checked again, so
+// a path swapped in between is refused too.
 func readTLSFile(name, path string) ([]byte, error) {
-	f, err := os.Open(path) // #nosec G304 -- the operator names this file in FSCACHE_TLS_CERT or FSCACHE_TLS_KEY; reading it is the feature
+	notRegular := fmt.Errorf("%s=%q is not a regular file", name, path)
+	st, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("%s=%q cannot be read: %w", name, path, err)
+	}
+	if !st.Mode().IsRegular() {
+		return nil, notRegular
+	}
+	f, err := openTLSFile(path) // #nosec G304 -- the operator names this file in FSCACHE_TLS_CERT or FSCACHE_TLS_KEY; reading it is the feature
 	if err != nil {
 		return nil, fmt.Errorf("%s=%q cannot be read: %w", name, path, err)
 	}
 	defer func() { _ = f.Close() }()
+	if fst, err := f.Stat(); err != nil || !fst.Mode().IsRegular() {
+		return nil, notRegular
+	}
 	b, err := io.ReadAll(io.LimitReader(f, maxTLSFileBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("%s=%q cannot be read: %w", name, path, err)

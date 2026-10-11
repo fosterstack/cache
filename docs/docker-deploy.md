@@ -194,9 +194,13 @@ Four more:
   `/healthz` checks move to `https://`. Mount the files read-only, for example
   `-v /etc/fscache/tls:/etc/fscache/tls:ro` with
   `-e FSCACHE_TLS_CERT=/etc/fscache/tls/tls.crt -e FSCACHE_TLS_KEY=/etc/fscache/tls/tls.key`.
-  The files are read only at startup: replace them, then restart the container.
-  Terminating TLS in a reverse proxy in front of the server remains the other
-  option, and needs neither variable.
+  Each file may be at most 1 MiB. The files are read only at startup: replace
+  them, then restart the container. Terminating TLS in a reverse proxy in front
+  of the server remains the other option, and needs neither variable.
+  If clients cannot connect over TLS, check from the client side:
+  `openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
+  chain, the negotiated version and cipher, and the alert). The server does not
+  log handshake failures at the default log level.
 
 A bad numeric value in any of these stops the server at startup with a message
 naming the variable, rather than silently falling back to a default.

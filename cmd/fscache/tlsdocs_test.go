@@ -70,7 +70,7 @@ func TestTLSDocsDescribeBothOptions(t *testing.T) {
 	// deployment pages say how to diagnose a failing handshake from the
 	// client side (the server logs handshake failures only at DEBUG).
 	for _, p := range []string{"../../README.md", "../../docs/kubernetes.md", "../../docs/docker-deploy.md"} {
-		if !strings.Contains(normSpace(text[p]), "each file may be at most 1 MiB") {
+		if !strings.Contains(strings.ToLower(normSpace(text[p])), "each file may be at most 1 mib") {
 			t.Errorf("%s does not say each file may be at most 1 MiB", p)
 		}
 	}

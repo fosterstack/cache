@@ -922,3 +922,17 @@ func TestTLSPathCheckedAgainOnTheOpenHandle(t *testing.T) {
 		t.Fatalf("error = %v, want exactly %q", err, want)
 	}
 }
+
+// proves: REQ-TLS-001-AC3 — a regular file whose read fails is refused, naming the variable and the path
+func TestTLSReadErrorRefused(t *testing.T) {
+	dir := t.TempDir()
+	p := writePair(t, dir, "readerr", "MARKER-READ-a0a0a0")
+	orig := openTLSFile
+	openTLSFile = func(path string) (*os.File, error) { return os.OpenFile(path, os.O_WRONLY, 0) } // a handle that cannot be read
+	defer func() { openTLSFile = orig }()
+	_, err := loadKeyPair(p.certPath, p.keyPath)
+	if err == nil {
+		t.Fatal("a file that cannot be read was accepted")
+	}
+	checkRefusal(t, badPairCase{names: []string{"FSCACHE_TLS_CERT", p.certPath, "cannot be read"}, files: []string{p.certPath, p.keyPath}}, err.Error())
+}

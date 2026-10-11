@@ -163,6 +163,7 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestTLSFileSizeCap" }
       - { type: go-test, ref: "cmd/fscache:TestTLSPathMustBeRegularFile" }
       - { type: go-test, ref: "cmd/fscache:TestTLSPathCheckedAgainOnTheOpenHandle" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSReadErrorRefused" }
       - { type: go-test, ref: "cmd/fscache:TestTLSRefusalTextIsFixed" }
   - ac: REQ-TLS-001-AC4
     evidence:

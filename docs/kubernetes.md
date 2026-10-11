@@ -547,7 +547,9 @@ then serves HTTPS only, on the same port, with TLS 1.2 as the minimum version;
 a plain-HTTP request to that port gets `400`. HTTP/2 is not offered. Setting only one of the two, or a
 file that is missing, unreadable, not PEM, or a key that does not match the
 certificate, stops the start with a message naming the variable and the path,
-before anything under the data directory is touched.
+before anything under the data directory is touched. Each file may be at most
+1 MiB, and each must be a regular file (a symlink to one, as in a Secret
+volume, is fine).
 
 Put the certificate in a Secret of type `kubernetes.io/tls` and mount it
 read-only. Both files must be readable by the container's non-root user
@@ -601,6 +603,11 @@ in place, but the running server keeps presenting the certificate it started
 with: to rotate, update the Secret, then restart the pod
 (`kubectl -n fscache-ns rollout restart deploy/fscache`). The startup log line
 reports `tls` as `enabled` or `disabled`.
+
+If clients cannot connect over TLS, check from the client side:
+`openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
+chain, the negotiated version and cipher, and the alert). The server does not
+log handshake failures at the default log level.
 
 ## Applying these manifests
 
