@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -1983,6 +1983,368 @@ for r in rows:
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
     pre = next((x for x in ("text, not a command: ", "harness assertion: ") if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
+PY
+
+# --- REQ-SUP-001-AC19 (AC19', the literal design; advisor step 5, Oct 11): ruled INPUT FETCHES. A row of the BASE branch's unmeasured_input_fetch names the
+# line (AC16's key, line hash and count), its enclosing block (context: a .sh file's sha256, or a workflow or action step as canonical JSON), the literal host
+# (or repo:self), one literal verifier line and a test case. No grammar: the reviewers of the rows read the lines; the check guarantees none of it changes. --
+cat >"$work/if.py" <<'PY'
+import hashlib, json, os, pathlib, re, shutil, subprocess, sys, yaml
+VL = os.environ.get("VL", "")
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+flat = lambda s: " ".join(s.split())
+cmd, args = sys.argv[1], sys.argv[2:]
+def show(repo, f):
+    return subprocess.run(["git", "-C", repo, "show", "HEAD:" + f], capture_output=True, check=True).stdout
+def context(repo, f, line):   # an independent oracle of the context hash
+    data = show(repo, f)
+    if not f.endswith((".yml", ".yaml")):
+        return hashlib.sha256(data).hexdigest()
+    doc = yaml.load(data.decode(), Loader=yaml.BaseLoader)
+    steps = [s for j in (doc.get("jobs") or {}).values() for s in j.get("steps", [])] if "jobs" in doc else doc["runs"]["steps"]
+    hit = [s for s in steps if isinstance(s, dict) and any(flat(x) == flat(line) for x in str(s.get("run", "")).split("\n"))]
+    return hashlib.sha256(json.dumps(hit[0], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() if hit else "0" * 64
+if cmd == "repo":     # repo SRC OUT (base|head PATH TEXT|-)...
+    src, out, spec = args[0], args[1], args[2:]
+    shutil.rmtree(out, ignore_errors=True); shutil.copytree(src, out, symlinks=True)
+    g = lambda *a: subprocess.run(["git", "-C", out, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
+    for part in ("base", "head"):
+        for i in range(0, len(spec), 3):
+            if spec[i] != part:
+                continue
+            p = pathlib.Path(out) / spec[i + 1]
+            if spec[i + 2] == "-":
+                p.unlink()
+            else:
+                p.parent.mkdir(parents=True, exist_ok=True); p.write_bytes(spec[i + 2].encode("utf-8", "surrogateescape"))
+        g("add", "-A"); g("commit", "-q", "--allow-empty", "-m", part)
+elif cmd == "row":    # row REPO FILE LINE HOST [OVERRIDES-JSON]: the row for LINE, its context computed from REPO's HEAD (null deletes a field)
+    repo, f, line, host = args[:4]
+    fl = flat(line); seg = next((s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", fl) if re.search(r"\b(?:curl|wget)\b", s)), None)
+    form = "a download" if seg is not None else "a gh release or extension download"
+    row = {"file": f, "form": form, "key": H(seg if seg is not None else fl), "line": H(fl), "ruling": "an input fetch: the verifier checks the bytes before use",
+           "count": 1, "context": context(repo, f, line), "host": host, "verifier": {"file": "bin/verify.sh", "line": VL},
+           "test": {"file": "bin/fetch-test.sh", "case": "a package whose bytes fail verification is removed before use"}}
+    for k, v in (json.loads(args[4]) if len(args) > 4 else {}).items():
+        if v is None:
+            row.pop(k, None)
+        else:
+            row[k] = v
+    print(json.dumps(row))
+elif cmd == "file":   # file OUT MODE ROW...
+    out, mode, rows = args[0], args[1], [json.loads(r) for r in args[2:]]
+    d, raw = {"exceptions": [], "unmeasured_text": [], "unmeasured_input_fetch": rows}, None
+    if mode == "both": d["unmeasured_text"] = [{k: rows[0][k] for k in ("file", "form", "key", "line", "ruling")}]
+    elif mode == "notlist": d["unmeasured_input_fetch"] = {"rows": rows}
+    elif mode == "notdict": d["unmeasured_input_fetch"] = [list(rows[0].values())]
+    elif mode == "dup": d["unmeasured_input_fetch"] = rows + rows[:1]
+    elif mode == "dupjsonkey": raw = '{"exceptions": [], "unmeasured_input_fetch": [], "unmeasured_input_fetch": ' + json.dumps(rows) + '}'
+    elif mode == "duprowkey": raw = '{"exceptions": [], "unmeasured_input_fetch": [' + json.dumps(rows[0])[:-1] + ', "host": "evil.example"}]}'
+    elif mode == "nanrow": raw = '{"exceptions": [], "unmeasured_input_fetch": [' + json.dumps(rows[0])[:-1] + ', "count": NaN}]}'
+    elif mode != "plain": raise SystemExit("unknown mode " + mode)
+    open(out, "w").write(raw if raw is not None else json.dumps(d, indent=2))
+PY
+VL='verify_sha256() { echo "$2  $1" | sha256sum -c - >/dev/null || { rm -f "$1"; exit 1; }; }'
+ifrepo() { local n=$1; shift; python3 "$work/if.py" repo "$base" "$work/$n" "$@"; }
+ifrow() { VL="$VL" python3 "$work/if.py" row "$@"; }
+ifx() { python3 "$work/if.py" file "$@"; }
+ifck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/if.json" --exceptions "$2" >"$work/if.out" 2>&1 || rc=$?; }
+refused() { check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq "${1:-0}"; }
+HOSTN=packages.example.dev
+LIT='curl -fsS -o "$tmp/i" "https://packages.example.dev/os/${arch}/APKINDEX.tar.gz"'
+KEY='curl -fsS -o "$tmp/k" https://packages.example.dev/key.pub || exit 1'
+FETCH=$'#!/bin/bash\nset -eu\n'
+VERIFY=$'#!/bin/bash\n'"$VL"$'\n'
+TESTT=$'#!/bin/sh\nCASE="a package whose bytes fail verification is removed before use"\n'
+SUPPORT=(base bin/verify.sh "$VERIFY" base bin/fetch-test.sh "$TESTT")
+# one: REPO-NAME HEAD-TEXT-OF-bin/fetch.sh LINE [HOST] [OVERRIDES] -> a repo, its row for LINE, the check: rc and if.out
+one() { local ov=${5-}; [ -n "$ov" ] || ov='{}'; ifrepo "$1" "${SUPPORT[@]}" head bin/fetch.sh "$2"; ifx "$work/if-1.json" plain "$(ifrow "$work/$1" bin/fetch.sh "$3" "${4:-$HOSTN}" "$ov")"; ifck "$1" "$work/if-1.json"; }
+ifrepo ifm "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n'
+RLIT=$(ifrow "$work/ifm" bin/fetch.sh "$LIT" "$HOSTN"); RKEY=$(ifrow "$work/ifm" bin/fetch.sh "$KEY" "$HOSTN")
+ifx "$work/if-ok.json" plain "$RLIT" "$RKEY"
+CASE="AC19' setup: the fixture adds exactly two unmeasured downloads, the scan stays strict"
+check python3 - "$chk" "$work/ifm" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+a = ac._added_unmeasured(sys.argv[2], "HEAD~1", "HEAD")
+assert len(a) == 2 and all(x[0] == "bin/fetch.sh" and x[1] == "a download" for x in a), a
+PY
+ifck ifm "$work/if-ok.json"
+CASE="AC19': a row for each added fetch (count, context, literal host, verifier line, test case all held) passes: exit 0, each reported as a ruled input fetch naming its verifier"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 2; check grep -q 'bin/verify.sh' "$work/if.out"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1]))['moved']; assert len(r)==2 and all(x['ok'] and 'ruled input fetch' in x['reason'] for x in r), r" "$work/if.json"
+ifx "$work/if-one.json" plain "$RLIT"; ifck ifm "$work/if-one.json"
+CASE="AC19': a row exempts exactly its own fetch: the other added download fails (exit 1)"
+refused 1; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 1
+ifx "$work/if-none.json" plain; ifck ifm "$work/if-none.json"
+CASE="AC19': an empty unmeasured_input_fetch exempts nothing: both added downloads fail (exit 1)"
+refused 0; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 2
+for ov in '{"key": "0000000000000000"}' '{"line": "0000000000000000"}' '{"file": "bin/other.sh"}'; do
+  ifx "$work/if-w.json" plain "$(ifrow "$work/ifm" bin/fetch.sh "$LIT" "$HOSTN" "$ov")" "$RKEY"; ifck ifm "$work/if-w.json"
+  CASE="AC19': a row whose identity does not match ($ov) does not apply: exit 1"
+  refused 1
+done
+# (1) count is EXACT
+one ifc2 "$FETCH$LIT"$'\n'"$LIT"$'\n' "$LIT"
+CASE="AC19' (1): one MORE copy than the row's count (2 copies, count 1) fails: exit 1"
+refused 0
+one ifc0 "$FETCH$LIT"$'\n' "$LIT" "$HOSTN" '{"count": 2}'
+CASE="AC19' (1): one FEWER copy than the row's count (1 copy, count 2) fails: exit 1"
+refused 0
+one ifc22 "$FETCH$LIT"$'\n'"$LIT"$'\n' "$LIT" "$HOSTN" '{"count": 2}'
+CASE="AC19' (1) control: 2 copies with count 2 pass: exit 0"
+check test "$rc" -eq 0
+# (2) context: a .sh file is the whole file; any edit anywhere voids the row
+for edit in $'# a comment\n' $'export X=1\n' $'\n'; do
+  ifrepo ifce "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n'"$edit"
+  ifck ifce "$work/if-ok.json"
+  CASE="AC19' (2): any edit of the .sh file outside the line (+$(printf '%q' "$edit")) changes the context hash: both fetches fail (exit 1)"
+  refused 0
+done
+# (2) context: a workflow step as canonical JSON; any edit of run:, env:, shell:, if:, with: voids the row
+wfs() { printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n%s\n' "$1"; }
+STEPW="      - name: fetch"$'\n'"        env:"$'\n'"          A: b"$'\n'"        run: |"$'\n'"          set -eu"$'\n'"          $LIT"
+ifrepo ifw "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW")"$'\n'
+RW=$(ifrow "$work/ifw" .github/workflows/f.yml "$LIT" "$HOSTN"); ifx "$work/if-w0.json" plain "$RW"; ifck ifw "$work/if-w0.json"
+CASE="AC19' (2) control: a fetch line in a workflow step's run: with the step's context passes: exit 0"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1
+NL=$'\n'
+for v in "${STEPW/set -eu/set -euo pipefail}|run:" "${STEPW/A: b/A: c}|env:" "${STEPW/        run: |/        shell: bash${NL}        run: |}|shell:" \
+         "${STEPW/        run: |/        if: always()${NL}        run: |}|if:" "${STEPW/        run: |/        with:${NL}          x: y${NL}        run: |}|with:" "${STEPW/name: fetch/name: fetch2}|name:"; do
+  ifrepo ifwe "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "${v%|*}")"$'\n'; ifck ifwe "$work/if-w0.json"
+  CASE="AC19' (2): an edit of the enclosing step's ${v##*|} changes the context hash: exit 1"
+  refused 0
+done
+ifrepo ifwo "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW"$'\n'"      - run: echo other")"$'\n'; ifck ifwo "$work/if-w0.json"
+CASE="AC19' (2) control: an edit of ANOTHER step of the workflow keeps the context: exit 0"
+check test "$rc" -eq 0
+STEP2="      - run: |"$'\n'"          $LIT"
+ifrepo ifw2 "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW"$'\n'"$STEP2")"
+ifx "$work/if-w2.json" plain "$(ifrow "$work/ifw2" .github/workflows/f.yml "$LIT" "$HOSTN" '{"count": 2}')"; ifck ifw2 "$work/if-w2.json"
+CASE="AC19' (2): the line in TWO steps (a context that cannot be isolated one way) fails closed: exit 1"
+refused 0
+for place in "      - name: s"$'\n'"        env:"$'\n'"          X: |"$'\n'"            $LIT"$'\n'"        run: echo x" "      - name: s"$'\n'"        with:"$'\n'"          script: |"$'\n'"            $LIT"; do
+  ifrepo ifwx "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$place")"
+  ifx "$work/if-wx.json" plain "$(ifrow "$work/ifwx" .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifwx "$work/if-wx.json"
+  CASE="AC19' (5): a fetch line outside jobs.<id>.steps[*].run ($(case "$place" in *env:*) echo env;; *) echo with;; esac)) fails: exit 1"
+  refused 0; check grep -q 'run: of 0 steps' "$work/if.out"
+done
+ifrepo ifwy "${SUPPORT[@]}" head .github/workflows/f.yml "x: &a 1"$'\n'"y: *a"$'\n'"$(wfs "$STEPW")"$'\n'; ifck ifwy "$work/if-w0.json"
+CASE="AC19' (5): a workflow holding a YAML anchor and alias is refused (the inventory cannot read it): exit 2, never a pass"
+check test "$rc" -eq 2; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0
+ifrepo ifwm "${SUPPORT[@]}" head .github/workflows/f.yml "z:"$'\n'"  <<: {k: v}"$'\n'"$(wfs "$STEPW")"$'\n'
+ifx "$work/if-wm.json" plain "$(ifrow "$work/ifwm" .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifwm "$work/if-wm.json"
+CASE="AC19' (5): a workflow holding a YAML merge key fails closed: exit 1"
+refused 0; check grep -q 'merge key' "$work/if.out"
+ifrepo ifwa "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW" | sed 's/^jobs:/x: \&anch 1\njobs:/')"
+ifx "$work/if-wa.json" plain "$(ifrow "$work/ifwa" .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifwa "$work/if-wa.json"
+CASE="AC19' (5): a workflow with only an anchor (no alias) fails closed: exit 1"
+refused 0
+ifrepo ifact "${SUPPORT[@]}" head .github/actions/f/action.yml "name: f"$'\n'"runs:"$'\n'"  using: composite"$'\n'"  steps:"$'\n'"    - shell: bash"$'\n'"      run: |"$'\n'"        $LIT"
+ifx "$work/if-act.json" plain "$(ifrow "$work/ifact" .github/actions/f/action.yml "$LIT" "$HOSTN")"; ifck ifact "$work/if-act.json"
+CASE="AC19' (2) control: a fetch line in a composite action step's run: passes: exit 0"
+check test "$rc" -eq 0
+ifrepo ifwc "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW"$'\n'"      - name: s"$'\n'"        env:"$'\n'"          X: |"$'\n'"            $LIT"$'\n'"        run: echo x")"$'\n'
+ifx "$work/if-wc.json" plain "$(ifrow "$work/ifwc" .github/workflows/f.yml "$LIT" "$HOSTN" '{"count": 2}')"; ifck ifwc "$work/if-wc.json"
+CASE="AC19' (2): one copy in the step's run: and one outside any run: (count 2) fails: exit 1"
+refused 0; check grep -q 'outside its enclosing step' "$work/if.out"
+ifrepo ifok "${SUPPORT[@]}" head .github/x-sha256.txt "$LIT"$'\n'
+ifx "$work/if-k.json" plain "$(ifrow "$work/ifok" .github/x-sha256.txt "$LIT" "$HOSTN" '{"context": "0000000000000000000000000000000000000000000000000000000000000000"}')"
+python3 -c 'import json,sys,hashlib; d=json.load(open(sys.argv[1])); d["unmeasured_input_fetch"][0]["context"]=hashlib.sha256(open(sys.argv[2],"rb").read()).hexdigest(); json.dump(d,open(sys.argv[1],"w"))' "$work/if-k.json" "$work/ifok/.github/x-sha256.txt"
+ifck ifok "$work/if-k.json"
+CASE="AC19' (2): a fetch line in a file of another kind (.github/x-sha256.txt, read by the scan), even with the whole file's hash as context, fails closed: exit 1"
+refused 0; check grep -q 'neither a .sh file nor a workflow' "$work/if.out"
+python3 - "$work/if-split.json" "$RLIT" "$(ifrow "$work/ifm" bin/fetch.sh "$LIT || exit 1" "$HOSTN")" <<'PY2'
+import json, sys
+a, b = json.loads(sys.argv[2]), json.loads(sys.argv[3])
+json.dump({"exceptions": [], "unmeasured_text": [{k: a[k] for k in ("file", "form", "key", "line", "ruling")}], "unmeasured_input_fetch": [b]}, open(sys.argv[1], "w"))
+PY2
+ifrepo ifmix "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$LIT || exit 1"$'\n'
+ifck ifmix "$work/if-split.json"
+CASE="AC19': one download whose two lines are ruled one by unmeasured_text and one by unmeasured_input_fetch is not ruled: exit 1, refused as added"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/fetch.sh: a download added' "$work/if.out"; check test "$(grep -cE 'ruled text|ruled input fetch' "$work/if.out")" -eq 0
+# (5) a shell script starts with a bash shebang; the file is UTF-8 with no carriage return
+for sb in $'#!/bin/sh\n' $'set -eu\n' $'#!/usr/bin/env sh\n'; do
+  one ifsb "$sb$LIT"$'\n' "$LIT"
+  CASE="AC19' (5): a .sh file whose first line is $(printf '%q' "${sb%$'\n'}") (not a bash shebang) fails: exit 1"
+  refused 0
+done
+one ifsb2 $'#!/usr/bin/env bash\n'"$LIT"$'\n' "$LIT"
+CASE="AC19' (5) control: #!/usr/bin/env bash passes: exit 0"
+check test "$rc" -eq 0
+one ifcr "$FETCH$LIT"$'\n# a\rb\n' "$LIT"
+CASE="AC19' (5): a fetch file holding a carriage return fails: exit 1"
+refused 0
+one ifut "$FETCH$LIT"$'\n# \xff\n' "$LIT"
+CASE="AC19' (5): a fetch file that is not UTF-8 fails: exit 1"
+refused 0
+ifrepo ifvcr "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head bin/verify.sh "$VERIFY"$'# x\ry\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifvcr" bin/fetch.sh "$LIT" "$HOSTN")"; ifck ifvcr "$work/if-1.json"
+CASE="AC19' (5): a verifier file holding a carriage return fails: exit 1"
+refused 0
+ifrepo ifvsb "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head bin/verify.sh $'#!/bin/sh\n'"$VL"$'\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifvsb" bin/fetch.sh "$LIT" "$HOSTN")"; ifck ifvsb "$work/if-1.json"
+CASE="AC19' (5): a .sh verifier file without a bash shebang fails: exit 1"
+refused 0
+# (3) the verifier line: present exactly once, in a regular file; the test case present
+vcase() { # VERIFY-FILE-TEXT|- WHY [VERIFIER-FILE]
+  ifrepo ifv "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head "${3:-bin/verify.sh}" "$1"
+  ifx "$work/if-1.json" plain "$(ifrow "$work/ifv" bin/fetch.sh "$LIT" "$HOSTN" "{\"verifier\": {\"file\": \"${3:-bin/verify.sh}\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$VL")}}")"; ifck ifv "$work/if-1.json"
+  CASE="AC19' (3): $2: exit 1"
+  refused 0; check grep -q 'verifier' "$work/if.out"
+}
+vcase $'#!/bin/bash\nverify() { sha256sum -c x; }\n' 'the verifier line absent from its file'
+vcase "$VERIFY$VL"$'\n' 'the verifier line twice in its file'
+vcase - 'the verifier file deleted'
+ifrepo iflk "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'
+lb=$(printf '%s' "$VERIFY" | git -C "$work/iflk" hash-object -w --stdin); git -C "$work/iflk" update-index --add --cacheinfo "120000,$lb,bin/vlink.sh"; git -C "$work/iflk" commit -q --amend -m head
+ifx "$work/if-1.json" plain "$(ifrow "$work/iflk" bin/fetch.sh "$LIT" "$HOSTN" "{\"verifier\": {\"file\": \"bin/vlink.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$VL")}}")"; ifck iflk "$work/if-1.json"
+CASE="AC19' (3): a verifier file that is a symbolic link in the tree fails: exit 1"
+refused 0
+ifrepo ifdir "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head bin/vdir.sh/x "$VERIFY"
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifdir" bin/fetch.sh "$LIT" "$HOSTN" "{\"verifier\": {\"file\": \"bin/vdir.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$VL")}}")"; ifck ifdir "$work/if-1.json"
+CASE="AC19' (3): a verifier path that is a directory (not a regular file) fails: exit 1"
+refused 0
+VW="      - run: |"$'\n'"          cosign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out"
+ifrepo ifvw "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head .github/workflows/v.yml "$(wfs "$VW")"
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifvw" bin/fetch.sh "$LIT" "$HOSTN" '{"verifier": {"file": ".github/workflows/v.yml", "line": "cosign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out"}}')"; ifck ifvw "$work/if-1.json"
+CASE="AC19' (3) control: a verifier line in a workflow step's run: passes: exit 0"
+check test "$rc" -eq 0
+ifrepo ifve "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head .github/workflows/v.yml "$(wfs "      - env:"$'\n'"          V: cosign verify-blob --certificate-identity x"$'\n'"        run: echo x")"
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifve" bin/fetch.sh "$LIT" "$HOSTN" '{"verifier": {"file": ".github/workflows/v.yml", "line": "V: cosign verify-blob --certificate-identity x"}}')"; ifck ifve "$work/if-1.json"
+CASE="AC19' (3): a verifier line found only outside a step's run: (an env: entry) fails: exit 1"
+refused 0
+for ov in '{"test": {"file": "bin/fetch-test.sh", "case": "a case that is not in the test file"}}' '{"test": {"file": "bin/missing-test.sh", "case": "a package whose bytes fail verification is removed before use"}}'; do
+  ifx "$work/if-1.json" plain "$(ifrow "$work/ifm" bin/fetch.sh "$LIT" "$HOSTN" "$ov")" "$RKEY"; ifck ifm "$work/if-1.json"
+  CASE="AC19' (3): the test case or the test file absent ($ov) fails: exit 1"
+  refused 1
+done
+# (4) the host is literal in the line
+for L in 'curl -fsS -o "$tmp/i" "https://$H/os/i"' 'curl -fsS -o "$tmp/i" "https://packages.example.dev@evil.example/os/i"' 'curl -fsS -o "$tmp/i" http://packages.example.dev/os/i' \
+         'curl -fsS -o "$tmp/i" https://packages.example.dev.evil.example/os/i' 'curl -fsS -o "$tmp/i" https://packages.example.dev:443/os/i' 'curl -fsS -o "$tmp/i" "$URL"'; do
+  one ifh "$FETCH$L"$'\n' "$L"
+  CASE="AC19' (4): the host not literal as https://packages.example.dev/ in $L fails: exit 1"
+  refused 0
+done
+# repo:self: the line begins exactly with gh release download "$ver" --repo "$GITHUB_REPOSITORY"
+GHD='gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json -D dist'
+one ifg "$FETCH$GHD"$'\n' "$GHD" repo:self
+CASE="AC19' (4) control: the exact repo:self form passes: exit 0"
+check test "$rc" -eq 0
+for L in 'gh release download "$tag" --repo "$GITHUB_REPOSITORY" -p m' 'gh release download "$ver" --repo other/repo -p m' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"x -p m' \
+         'gh release download $ver --repo "$GITHUB_REPOSITORY" -p m' 'GH_REPO=x gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p m'; do
+  one ifg "$FETCH$L"$'\n' "$L" repo:self
+  CASE="AC19' (4): the repo:self line $L (not the exact form) fails: exit 1"
+  refused 0
+done
+# (6) a line that follows redirects needs a cosign verify-blob verifier line with identity and issuer on that line
+COS='cosign verify-blob --bundle "$1.b" --certificate-identity "https://github.com/o/r/.github/workflows/r.yml@refs/heads/main" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$1"'
+for L in 'curl -L -o "$tmp/i" https://packages.example.dev/os/i' 'curl --location -o "$tmp/i" https://packages.example.dev/os/i' 'curl -fsSL -o "$tmp/i" https://packages.example.dev/os/i' \
+         'curl -Lfsg -o "$tmp/i" https://packages.example.dev/os/i' '    r = subprocess.run(["curl", "-fsSL", "-o", part, "https://packages.example.dev/os/i"], stdout=sys.stderr)'; do
+  one ifr "$FETCH$L"$'\n' "$L"
+  CASE="AC19' (6): the redirect-following line $L with a checksum verifier line fails: exit 1"
+  refused 0; check grep -q 'redirect' "$work/if.out"
+done
+RL='curl -fsSL -o "$tmp/i" https://packages.example.dev/os/i'
+rcase() { # VERIFIER-LINE EXPECTED-RC WHY
+  ifrepo ifrv "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$RL"$'\n' head bin/verify.sh $'#!/bin/bash\n'"$1"$'\n'
+  ifx "$work/if-1.json" plain "$(ifrow "$work/ifrv" bin/fetch.sh "$RL" "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$1")}}")"; ifck ifrv "$work/if-1.json"
+  CASE="AC19' (6): $3: exit $2"
+  check test "$rc" -eq "$2"
+}
+rcase "$COS" 0 'control: a redirect-following line with a cosign verify-blob verifier line carrying identity and issuer passes'
+rcase "${COS/--certificate-identity /--certificate-identity-regexp }" 0 'control: --certificate-identity-regexp passes'
+rcase "${COS/--certificate-oidc-issuer https:\/\/token.actions.githubusercontent.com /}" 1 'a cosign verifier line without --certificate-oidc-issuer fails'
+rcase 'cosign verify-blob --bundle "$1.b" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$1"' 1 'a cosign verifier line without --certificate-identity fails'
+rcase 'cosign verify --certificate-identity x --certificate-oidc-issuer y img' 1 'cosign verify (not verify-blob) fails'
+rcase 'sha256sum -c "$1.sha256" --certificate-identity x --certificate-oidc-issuer y' 1 'a checksum line carrying the flag words but not cosign verify-blob fails'
+# rows from the pull request itself, the trusted copy, malformed lists, both lists
+ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
+rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
+CASE="AC19': input-fetch rows that only the pull request adds are never read: both fetches fail (exit 1)"
+refused 0; check test "$(grep -c 'FAIL unmeasured' "$work/if.out")" -eq 2
+mkdir -p "$work/trusted-if/agent"; cp -R "$here/../supply-chain" "$work/trusted-if/agent/supply-chain"; cp "$work/if-ok.json" "$work/trusted-if/supply-chain-exceptions.json"; rc=0
+python3 "$work/trusted-if/agent/supply-chain/pin-age-check.py" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
+CASE="AC19': the default rulings file is the trusted copy beside the script: the same rows there pass (exit 0)"
+check test "$rc" -eq 0; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 2
+rm -rf "$work/trusted-if"
+ifx "$work/if-both.json" both "$RLIT" "$RKEY"; ifck ifm "$work/if-both.json"
+CASE="AC19': the same row in unmeasured_text AND unmeasured_input_fetch stops the check: exit 2, names both lists, not a pass"
+check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"; check grep -q 'unmeasured_text' "$work/if.out"; check grep -qi 'not a pass' "$work/if.out"
+for ov in '{"count": null}' '{"context": null}' '{"host": null}' '{"verifier": null}' '{"test": null}' '{"ruling": ""}' '{"context": "abc"}' '{"context": "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789"}' \
+  '{"count": 0}' '{"count": 101}' '{"count": true}' '{"count": 2.0}' '{"note": "x"}' '{"redirects": true}' '{"form": "a system package install"}' '{"key": "0123"}' \
+  '{"host": ""}' '{"host": "Packages.Example.Dev"}' '{"host": "https://packages.example.dev"}' '{"host": "packages.example.dev/os"}' '{"host": "localhost"}' '{"host": "repo:self"}' '{"host": "lock:x"}' '{"host": 5}' \
+  '{"verifier": "bin/verify.sh"}' '{"verifier": {"file": "bin/verify.sh"}}' '{"verifier": {"file": "bin/verify.sh", "function": "verify_sha256"}}' '{"verifier": {"file": "bin/verify.sh", "line": "x", "note": "y"}}' \
+  '{"verifier": {"file": "bin/verify.sh", "line": ""}}' '{"verifier": {"file": "bin/verify.sh", "line": "a\nb"}}' '{"verifier": {"file": "/bin/verify.sh", "line": "x y"}}' '{"verifier": {"file": "../v.sh", "line": "x y"}}' \
+  '{"verifier": {"file": "bin/verify.txt", "line": "x y"}}' '{"test": "bin/fetch-test.sh"}' '{"test": {"file": "bin/fetch-test.sh"}}' '{"test": {"file": "bin/fetch-test.sh", "case": "short"}}' \
+  '{"test": {"file": "bin/fetch.sh", "case": "a package whose bytes fail verification is removed before use"}}'; do
+  ifx "$work/if-bad.json" plain "$(ifrow "$work/ifm" bin/fetch.sh "$LIT" "$HOSTN" "$ov")" "$RKEY"; ifck ifm "$work/if-bad.json"
+  CASE="AC19': a malformed unmeasured_input_fetch row ($ov) stops the check fail-closed: exit 2, names the list, never a pass"
+  check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"; check grep -qi 'not a pass' "$work/if.out"
+done
+ifx "$work/if-bad.json" plain "$(ifrow "$work/ifg" bin/fetch.sh "$GHD" "$HOSTN")"; ifck ifm "$work/if-bad.json"
+CASE="AC19': a gh release download row with a host other than repo:self stops the check: exit 2"
+check test "$rc" -eq 2
+for m in notlist notdict dup dupjsonkey duprowkey nanrow; do
+  ifx "$work/if-bad.json" "$m" "$RLIT" "$RKEY"; ifck ifm "$work/if-bad.json"
+  CASE="AC19': a malformed unmeasured_input_fetch ($m) stops the check fail-closed: exit 2, names the list, never a pass"
+  check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"; check grep -qi 'not a pass' "$work/if.out"
+done
+CASE="AC19' (generic): no row without count, context, host, verifier and test is accepted (an AC16 row, and the AC19' row less any one field or sub-field)"
+check python3 - "$chk" "$work" "$RLIT" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+good = json.loads(sys.argv[3]); p = sys.argv[2] + "/if-gen.json"
+def load(row):
+    json.dump({"exceptions": [], "unmeasured_input_fetch": [row]}, open(p, "w"))
+    return ac.load_input_fetch(p, required=True)
+assert len(load(good)) == 1
+variants = [{k: good[k] for k in ("file", "form", "key", "line", "ruling")}]
+variants += [{k: v for k, v in good.items() if k != drop} for drop in good]
+variants += [dict(good, **{f: {k: v for k, v in good[f].items() if k != drop}}) for f in ("verifier", "test") for drop in good[f]]
+for v in variants:
+    try:
+        load(v)
+    except RuntimeError as e:
+        assert "unmeasured_input_fetch" in str(e), e
+    else:
+        raise AssertionError(("accepted", v))
+PY
+# the held recheck: a later pull request that removes the verifier or the test of a ruled fetch still in the head fails
+ifrepo ifgone "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/verify.sh $'#!/bin/bash\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifgone" bin/fetch.sh "$LIT" "$HOSTN")"; ifck ifgone "$work/if-1.json"
+CASE="AC19' (held): a pull request that removes the verifier line of a ruled fetch still in the head fails (exit 1), naming the verifier"
+check test "$rc" -eq 1; check grep -q 'verifier' "$work/if.out"
+ifrepo ifgonet "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch-test.sh $'#!/bin/sh\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifgonet" bin/fetch.sh "$LIT" "$HOSTN")"; ifck ifgonet "$work/if-1.json"
+CASE="AC19' (held): a pull request that removes the test case of a ruled fetch still in the head fails (exit 1)"
+check test "$rc" -eq 1
+ifrepo ifstay "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head README.md 'x'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifstay" bin/fetch.sh "$LIT" "$HOSTN")"; ifck ifstay "$work/if-1.json"
+CASE="AC19' (held) control: a pull request that keeps the verifier and the test passes (exit 0)"
+check test "$rc" -eq 0
+ifrepo ifheld "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch.sh "$FETCH$LIT"$'\n# edited\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifstay" bin/fetch.sh "$LIT" "$HOSTN")"; ifck ifheld "$work/if-1.json"
+CASE="AC19' (held): a later pull request that edits the .sh holding a ruled fetch (context changed, line unchanged) fails: exit 1"
+check test "$rc" -eq 1
+# the documented context command: pin-age-check.py --print-context FILE LINE prints what the rows author writes as context
+CASE="AC19' --print-context: for a .sh file, the sha256 of the whole file (equals the independent oracle)"
+check test "$(cd "$work/ifm" && python3 "$chk" --print-context bin/fetch.sh "$LIT")" = "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["context"])' "$RLIT")"
+CASE="AC19' --print-context: for a workflow, the sha256 of the step's canonical JSON (equals the independent oracle)"
+check test "$(cd "$work/ifw" && python3 "$chk" --print-context .github/workflows/f.yml "$LIT")" = "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["context"])' "$RW")"
+CASE="AC19' --print-context: a line in two steps cannot be isolated: exit 2, nothing printed on stdout"
+rc=0; out=$(cd "$work/ifw2" && python3 "$chk" --print-context .github/workflows/f.yml "$LIT" 2>/dev/null) || rc=$?
+check test "$rc" -eq 2; check test -z "$out"
+CASE="AC19' --print-context: a .sh file without a bash shebang: exit 2"
+rc=0; (cd "$work/ifsb" && python3 "$chk" --print-context bin/fetch.sh "$LIT" >/dev/null 2>&1) || rc=$?
+check test "$rc" -eq 2
+CASE="AC19': the committed exceptions file holds an unmeasured_input_fetch list (empty in this change) that loads, and its format note"
+check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+d = json.load(open(sys.argv[2]))
+assert d["unmeasured_input_fetch"] == [] and ac.load_input_fetch(sys.argv[2], required=True) == {}, d.get("unmeasured_input_fetch")
+assert "REQ-SUP-001-AC19" in d["_format_unmeasured_input_fetch"]
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------

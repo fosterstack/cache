@@ -427,6 +427,12 @@ def check(moved_items, source, now, min_days):
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["--print-context"]:
+        if len(argv) != 3:
+            print("usage: pin-age-check.py --print-context FILE LINE", file=sys.stderr)
+            return 2
+        return print_context(argv[1], argv[2])
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base", required=True)
@@ -462,7 +468,7 @@ def _line_hash(flat):
     return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16]
 
 
-def _occurrences(root, rev):
+def _occurrences(root, rev, flats=None):
     """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
     a group no row can name ('unruled:' + its hash)."""
     out = {}
@@ -470,13 +476,17 @@ def _occurrences(root, rev):
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
         per = out.setdefault(k, {})
         per[lh] = per.get(lh, 0) + 1
+        if flats is not None and bashlike:
+            flats[(k, lh)] = flat
     return out
 
 
-def _unmeasured_counts(root, base, head):
+def _unmeasured_counts(root, base, head, held=None, flats=None):
     """{key: {whole-line hash: head occurrences}} for every (key, whole line) the head has MORE of than the base: an occurrence is identified by its key
     AND the whole line it sits in, so an edited line that keeps its download segment is an addition, like a new one (REQ-SUP-001-AC16)."""
-    b, h = _occurrences(root, base), _occurrences(root, head)
+    b, h = _occurrences(root, base), _occurrences(root, head, flats)   # held/flats (AC19): every head occurrence and its flattened line
+    if held is not None:
+        held.update(h)
     added = {}
     for k, per in h.items():
         for lh, n in per.items():
@@ -508,26 +518,27 @@ def _no_constant(name):
     raise ValueError(f"{name} is not JSON (Python's reader accepts NaN, Infinity and -Infinity; this file must not hold them)")
 
 
-def load_ruled_text(path, required=False):
-    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
-    raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
+def _load_rows(path, name, fields, required=False, check=None):
+    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count, row)} from the file's list NAME (one reader for AC16 and AC19). A missing
+    default file is no rows; anything malformed raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
+    lists = "unmeasured_text, unmeasured_input_fetch"
     if not os.path.exists(path):
         if required:
-            raise RuntimeError(f"the exceptions file {path} (unmeasured_text) does not exist")
+            raise RuntimeError(f"the exceptions file {path} ({lists}) does not exist")
         return {}
     try:
         with open(path) as f:
             d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)   # a repeated key would let a later copy silently win
     except (OSError, ValueError) as e:
-        raise RuntimeError(f"the exceptions file {path} (unmeasured_text) is unreadable: {e}")
-    rows = d.get("unmeasured_text", []) if isinstance(d, dict) else None
+        raise RuntimeError(f"the exceptions file {path} ({lists}) is unreadable: {e}")
+    rows = d.get(name, []) if isinstance(d, dict) else None
     if not isinstance(rows, list):
-        raise RuntimeError(f"{path}: unmeasured_text is not a list")
+        raise RuntimeError(f"{path}: {name} is not a list")
     out = {}
     for i, r in enumerate(rows):
-        bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count"} or not set(_RULED_FIELDS) <= set(r):
-            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count)")
+        bad = lambda why, i=i: RuntimeError(f"{path}: {name} row {i} {why}")
+        if not isinstance(r, dict) or set(r) - set(fields) - {"count"} or not set(fields) <= set(r):
+            raise bad(f"must be an object with exactly {', '.join(fields)} (count optional for unmeasured_text)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{16}", r["key"]):
@@ -537,25 +548,225 @@ def load_ruled_text(path, required=False):
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
+        if check:
+            check(r, bad)
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
-        out[k] = (r["ruling"].strip(), count)
+        out[k] = (r["ruling"].strip(), count, r)
     return out
 
 
+def load_ruled_text(path, required=False):
+    """The unmeasured_text rows (REQ-SUP-001-AC16)."""
+    return _load_rows(path, "unmeasured_text", _RULED_FIELDS, required)
+
+
+def _covered(rows, k, per):
+    """The rows of one list that rule item k: one per added whole line, when EVERY added (key, whole line) is named by a row and its head occurrences are
+    within that row's count; else None. The same segment inside any other line, an edited line, or one copy too many leaves the item refused (AC16)."""
+    rs = [rows.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
+    return rs if all(r and n <= r[1] for r, n in zip(rs, per.values())) else None
+
+
+# --- REQ-SUP-001-AC19 (AC19', the literal design; advisor step 5, Oct 11). A row names its line, the line's enclosing block (context), the literal host,
+# ONE literal verifier line and a test case. Nothing is parsed as shell: the rows' reviewers read the lines; this check guarantees none of them changes.
+_FETCH_FIELDS = _RULED_FIELDS + ("count", "context", "host", "verifier", "test")
+REPO_SELF, GH_FORM = "repo:self", "a gh release or extension download"
+_GH_SELF = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+_HOST = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
+_TEST_FILE = re.compile(r"(?:^|/)(?:[^/]+-test\.sh|[^/]+_test\.go|[^/]+_test\.py|test_[^/]+\.py)$")
+_WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$|(?:^|/)action\.ya?ml$")
+_SHEBANGS = ("#!/bin/bash", "#!/usr/bin/env bash")
+_IDENT, _ISSUER = ("--certificate-identity", "--certificate-identity-regexp"), ("--certificate-oidc-issuer",)
+_flat = lambda s: " ".join(s.split())
+
+
+def _rel_path(p):
+    return (isinstance(p, str) and 0 < len(p) <= 512 and not p.startswith("/") and "\\" not in p
+            and not any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in p) and all(c not in ("", ".", "..") for c in p.split("/")))
+
+
+def _check_fetch_row(r, bad):
+    if not (isinstance(r["context"], str) and re.fullmatch(r"[0-9a-f]{64}", r["context"])):
+        raise bad("context is not a 64 lowercase hex sha256")
+    if not ((r["host"] == REPO_SELF and r["form"] == GH_FORM and r["key"] == r["line"])
+            or (r["form"] == "a download" and isinstance(r["host"], str) and _HOST.fullmatch(r["host"]))):
+        raise bad(f"host is not a lower-case DNS name on 'a download', nor {REPO_SELF} on '{GH_FORM}' (key equal to line)")
+    v, t = r["verifier"], r["test"]
+    if not (isinstance(v, dict) and set(v) == {"file", "line"} and _rel_path(v["file"]) and (v["file"].endswith((".sh", ".py", ".go")) or _WORKFLOW.search(v["file"]))
+            and isinstance(v["line"], str) and v["line"].strip() and not any(c in v["line"] for c in "\r\n")):
+        raise bad("verifier must be {file, line}: a .sh, .py, .go, workflow or action file and one non-empty line")
+    if not (isinstance(t, dict) and set(t) == {"file", "case"} and _rel_path(t["file"]) and _TEST_FILE.search(t["file"])
+            and isinstance(t["case"], str) and len(t["case"].strip()) >= 12 and not any(c in t["case"] for c in "\r\n")):
+        raise bad("test must be {file, case}: a test file (*-test.sh, *_test.go, *_test.py, test_*.py) and one line of at least 12 characters")
+
+
+def load_input_fetch(path, required=False):
+    """The unmeasured_input_fetch rows (REQ-SUP-001-AC19)."""
+    return _load_rows(path, "unmeasured_input_fetch", _FETCH_FIELDS, required, _check_fetch_row)
+
+
+def _head_bytes(root, head, path):
+    """The bytes of a REGULAR file in the head tree (head None: the working tree), or None (missing, a link, a directory, too large)."""
+    if head is None:
+        p = os.path.join(root, path)
+        if os.path.islink(p) or not os.path.isfile(p):
+            return None
+        data = open(p, "rb").read()
+        return None if len(data) > inv.MAX_FILE else data
+    try:
+        r = subprocess.run(["git", "-C", root, "ls-tree", "-z", head, "--", path], capture_output=True, timeout=GH_TIMEOUT)
+        meta, _, name = r.stdout.rstrip(b"\0").partition(b"\t")
+        if r.returncode or name != path.encode() or meta.split()[:2] not in ([b"100644", b"blob"], [b"100755", b"blob"]):
+            return None
+        b = subprocess.run(["git", "-C", root, "cat-file", "blob", meta.split()[2].decode()], capture_output=True, timeout=GH_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired, IndexError):
+        return None
+    return None if b.returncode or len(b.stdout) > inv.MAX_FILE else b.stdout
+
+
+def _text(data, path):
+    """(text, None), or (None, why): a regular UTF-8 file with no carriage return."""
+    if data is None:
+        return None, f"{path} is not a regular file in the head tree"
+    if b"\r" in data:
+        return None, f"{path} holds a carriage return"
+    try:
+        return data.decode("utf-8"), None
+    except UnicodeDecodeError:
+        return None, f"{path} is not UTF-8"
+
+
+def _steps(text, path):
+    """The steps of a workflow (jobs.<id>.steps[*]) or composite action (runs.steps[*]), every scalar a string; or why not: a YAML document holding an
+    anchor, an alias or a merge key is not read."""
+    try:
+        for ev in inv.yaml.parse(text):
+            if isinstance(ev, inv.yaml.AliasEvent) or getattr(ev, "anchor", None) or isinstance(ev, inv.yaml.ScalarEvent) and ev.value == "<<" and ev.style is None:
+                return f"{path} holds a YAML anchor, alias or merge key"
+        doc = inv.yaml.load(text, Loader=inv.yaml.BaseLoader)
+    except inv.yaml.YAMLError:
+        return f"{path} does not parse"
+    if not isinstance(doc, dict):
+        return f"{path} is not a workflow or action"
+    if isinstance(doc.get("jobs"), dict):
+        return [s for j in doc["jobs"].values() if isinstance(j, dict) and isinstance(j.get("steps"), list) for s in j["steps"] if isinstance(s, dict)]
+    runs = doc.get("runs")
+    return [s for s in runs["steps"] if isinstance(s, dict)] if isinstance(runs, dict) and isinstance(runs.get("steps"), list) else []
+
+
+def _context(data, path, flat):
+    """(context hash, copies of the line inside the block) or a str why the block cannot be isolated in exactly one way. A .sh file: the sha256 of the whole
+    file (its first line a bash shebang); a workflow or action: the sha256 of the ONE step whose run: holds the line, as canonical JSON."""
+    text, why = _text(data, path)
+    if why:
+        return why
+    if path.endswith(".sh"):
+        if text.split("\n", 1)[0] not in _SHEBANGS:
+            return f"{path} does not start with #!/bin/bash or #!/usr/bin/env bash"
+        return hashlib.sha256(data).hexdigest(), sum(1 for x in text.split("\n") if _flat(x) == flat)
+    if _WORKFLOW.search(path):
+        steps = _steps(text, path)
+        if isinstance(steps, str):
+            return steps
+        hits = [(s, n) for s in steps if isinstance(s.get("run"), str) for n in [sum(1 for x in s["run"].split("\n") if _flat(x) == flat)] if n]
+        if len(hits) != 1:
+            return f"the line is in the run: of {len(hits)} steps of {path} (exactly one is needed)"
+        return hashlib.sha256(json.dumps(hits[0][0], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest(), hits[0][1]
+    return f"{path} is neither a .sh file nor a workflow or action"
+
+
+def _follows_redirects(flat):
+    return any(w.startswith("--location") or re.fullmatch(r"-[A-Za-z]*L[A-Za-z]*", w) for w in (x.strip("\"'") for x in re.split(r"[\s,\[\]()]+", flat)))
+
+
+def _cosign(line):
+    words = [w.strip("\"'") for w in line.split()]
+    has = lambda names: any(w.split("=", 1)[0] in names for w in words)
+    return any(words[i:i + 2] == ["cosign", "verify-blob"] for i in range(len(words))) and has(_IDENT) and has(_ISSUER)
+
+
+def _fetch_unverified(root, head, row, flat, held_n):
+    """None when the head holds what an input-fetch row requires (REQ-SUP-001-AC19), else why not."""
+    if held_n != row["count"]:
+        return f"the head holds the line {held_n} times, the row counts {row['count']} (exactly)"
+    ctx = _context(_head_bytes(root, head, row["file"]), row["file"], flat)
+    if isinstance(ctx, str):
+        return ctx
+    if ctx[1] != held_n:
+        return "a copy of the line lies outside its enclosing step's run:"
+    if ctx[0] != row["context"]:
+        return "the enclosing block changed (the context hash differs): the rows PR re-reads it and writes a new context"
+    if row["host"] == REPO_SELF:
+        if not (flat == _GH_SELF or flat.startswith(_GH_SELF + " ")):
+            return f"a repo:self line begins with {_GH_SELF}"
+    elif f"https://{row['host']}/" not in flat:
+        return f"the line does not name https://{row['host']}/ literally"
+    v, t = row["verifier"], row["test"]
+    vt, why = _text(_head_bytes(root, head, v["file"]), v["file"])
+    if why:
+        return f"the verifier file: {why}"
+    if v["file"].endswith(".sh") and vt.split("\n", 1)[0] not in _SHEBANGS:
+        return f"the verifier file {v['file']} does not start with a bash shebang"
+    if _WORKFLOW.search(v["file"]):
+        steps = _steps(vt, v["file"])
+        if isinstance(steps, str):
+            return f"the verifier file: {steps}"
+        vlines = [x for s in steps if isinstance(s.get("run"), str) for x in s["run"].split("\n")]
+    else:
+        vlines = vt.split("\n")
+    if sum(1 for x in vlines if _flat(x) == _flat(v["line"])) != 1:
+        return f"the verifier line is not exactly once in {v['file']}{' (in a step run:)' if _WORKFLOW.search(v['file']) else ''}"
+    if _follows_redirects(flat) and not _cosign(v["line"]):
+        return "the line follows redirects: its verifier line must be cosign verify-blob with --certificate-identity[-regexp] and --certificate-oidc-issuer"
+    tt, why = _text(_head_bytes(root, head, t["file"]), t["file"])
+    if why or t["case"] not in tt:
+        return f"the test file {t['file']} does not hold the case"
+    return None
+
+
+def print_context(path, line):
+    """--print-context FILE LINE (run from the repository root): the context a rows author writes for LINE in FILE (the working tree)."""
+    ctx = _context(_head_bytes(".", None, path), path, _flat(line))
+    if isinstance(ctx, str):
+        print(f"pin-age: cannot isolate the context: {ctx}", file=sys.stderr)
+        return 2
+    print(ctx[0])
+    return 0
+
+
 def _run(a, moved, fx, now):
-    rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
-    lines = _unmeasured_counts(a.root, a.base, a.head)
-    added, ruled = [], []
+    path = a.exceptions or DEFAULT_EXCEPTIONS
+    rulings = load_ruled_text(path, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
+    fetches = load_input_fetch(path, required=bool(a.exceptions))
+    both = sorted(set(rulings) & set(fetches))
+    if both:
+        raise RuntimeError(f"{path}: the row {both[0]} is in both unmeasured_text and unmeasured_input_fetch: an item is ruled by exactly one list")
+    held, flats = {}, {}
+    lines = _unmeasured_counts(a.root, a.base, a.head, held, flats)
+    added, ruled, fetched = [], [], []
     for k in sorted(lines):
-        # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
-        # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
-        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
-        if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
-            ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
+        text = _covered(rulings, k, lines[k])
+        fetch = None if text else _covered(fetches, k, lines[k])    # an item is ruled by ONE list
+        if text:
+            ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in text))))
+        elif fetch:
+            why = next((w for w in (_fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), ""), held[k][lh]) for lh, r in zip(lines[k], fetch)) if w), None)
+            if why:
+                added.append((k, why))
+            else:
+                fetched.append((k, "; ".join(dict.fromkeys(r[0] for r in fetch)), ", ".join(dict.fromkeys(r[2]["verifier"]["file"] for r in fetch))))
         else:
-            added.append(k)
+            added.append((k, None))
+    named = {k for k, _ in added}
+    for k, per in sorted(held.items()):     # a ruled fetch still in the head is re-checked though nothing is added (its verifier, test, count, context)
+        for lh, n in per.items():
+            r = fetches.get((k[0], k[1], k[2].split(":", 1)[0], lh))
+            why = r and k not in named and lh not in lines.get(k, {}) and _fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), ""), n)
+            if why:
+                added.append((k, why))
+                named.add(k)
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
@@ -564,14 +775,19 @@ def _run(a, moved, fx, now):
         print(f"pin-age: {len(rows)} moved version(s), each must be public {a.min_days:g} days by a server-side time:")
         for r in rows:
             print(f"  {'ok  ' if r['ok'] else 'FAIL'} {r['item']}: {r['reason']}")
-    for path, what, line in added:
+    for (path, what, line), why in added:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
-                     "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
-        print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+                     "reason": (f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"
+                                if why is None else f"{what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_input_fetch, but: {why}")})
+        print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused" if why is None else f"  FAIL unmeasured:{path}: {what} ({line[:60]}): input fetch not verified (REQ-SUP-001-AC19): {why}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
         print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled text (REQ-SUP-001-AC16): {ruling[:200]}")
+    for (path, what, line), ruling, verifier in fetched:
+        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
+                     "reason": f"ruled input fetch: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_input_fetch, verified by {verifier}: {ruling[:200]}"})
+        print(f"  ok   unmeasured:{path}: {what} ({line[:60]}): ruled input fetch (REQ-SUP-001-AC19), verified by {verifier}: {ruling[:200]}")
     failing = [r for r in rows if not r["ok"]]
     if a.json:
         json.dump({"min_days": a.min_days, "moved": rows}, open(a.json, "w"), indent=1)
