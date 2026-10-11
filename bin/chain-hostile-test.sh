@@ -1172,7 +1172,9 @@ import sys, yaml
 reqs = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
 r = reqs["REQ-CHAIN-001"]
 then = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["then"]
-for words in ("a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)", "before the cutover pull request merges chain-v030 to main",
+given = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["given"]
+assert "a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)" in given, "AC5 given does not name the signed rc-tag run"
+for words in ("before the cutover pull request merges chain-v030 to main",
               "no v0.3.0 tag may be pushed unless an rc-tag run of that same commit's chain files", "a branch dry run does not satisfy this AC",
               "bin/chain-hostile-test.sh", "the wiring tests judge the files"):
     assert words in then, "AC5 lacks: " + words
