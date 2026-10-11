@@ -265,9 +265,26 @@ def _clean(s):
     return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", str(s)))
 
 
+def _visible(s):
+    """Markdown output (notes, changelog, tag notes): the redaction marker as visible text — "<redacted>" parses as an
+    HTML tag and renders as nothing (Codex #300 r4, B low); an older text's marker is shown the same way"""
+    return s.replace("<redacted>", "(redacted)")
+
+
+def _clean_md(s):
+    """_clean for Markdown output, with the visible marker"""
+    return _visible(_clean(s))
+
+
 def _clean_lines(s):
-    """_clean one line at a time: no redaction ever matches across a line break and merges two lines (Codex #300 r3, B1)"""
-    return "\n".join(_clean(ln) for ln in str(s).split("\n"))
+    """_clean_md one line at a time, split at every line boundary str.splitlines() knows (LF, CR, CRLF, VT, FF, FS, GS,
+    RS, NEL, LS, PS), each written back as LF: no redaction ever matches across a line break and merges two lines
+    (Codex #300 r3 B1; r4 A R3-4, B low)"""
+    out = []
+    for ln in str(s).splitlines(True):
+        body = ln.splitlines()[0]
+        out.append(_clean_md(body) + ("\n" if len(body) < len(ln) else ""))
+    return "".join(out)
 
 
 UNPRINTED = ("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn")
@@ -280,14 +297,17 @@ def _oneline(s):
                    if unicodedata.category(c) in UNPRINTED else c for c in str(s))
 
 
-# A value the VEX document supplies prints bare only when no renderer (CommonMark, GFM, GitHub's emoji, autolink and
-# commit-SHA filters) can show it as anything else: identifier characters starting with a letter or @, an underscore only
-# inside a word, no emoji-shortcode shape, no autolink, no SHA-like hex run (Codex #300 r3, B3). Anything else (a control
-# character, a space, Markdown or HTML, an empty name, text shaped like a position label) prints as its JSON string in
-# a code span: one line, shown literally by every renderer, decoding back to exactly that value (fail closed).
-BARE = re.compile(r"[A-Za-z@][A-Za-z0-9.:/@?=%+_-]*\Z")
-NOT_BARE = re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|://|(?i:www)\.|"
-                      r"(?<![A-Za-z0-9])[0-9a-fA-F]{7,40}(?![A-Za-z0-9])")
+# A value the VEX document supplies prints bare only in a conservative allowed form no renderer (CommonMark, GFM,
+# GitHub's mention, issue-reference, emoji, autolink and commit-SHA filters) can show as anything else (Codex #300 r3 B3;
+# r4 A R3-5, B low): a letter, then letters, digits and - . _ / only, optionally after one pkg: / urn: / cpe: prefix
+# (purl, URN, CPE; no other "scheme:" form, so no mailto:, xmpp:, http:); no '@' anywhere (a mention or an e-mail
+# autolink), no '#' (an issue reference), no GH- or GHSA- reference, no '//', no www., an underscore only inside a word,
+# no emoji-shortcode shape, no SHA-like hex run of 7 or more. Anything else (a control character, a space, Markdown or
+# HTML, an empty name, text shaped like a position label) prints as its JSON string in a code span: one line, shown
+# literally by every renderer, decoding back to exactly that value (fail closed).
+BARE = re.compile(r"(?:(?:pkg|urn|cpe):)?[A-Za-z][A-Za-z0-9._/-]*\Z")
+NOT_BARE = re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|//|(?i:www)\.|(?i:(?<![A-Za-z0-9])gh(?:sa)?-)|"
+                      r"(?<![A-Za-z0-9])[0-9a-fA-F]{7,}(?![A-Za-z0-9])")
 
 
 def _lit(v, before_colon=False):
@@ -335,10 +355,11 @@ def _check_entry(e):
 
 def _vex_line(v):
     """the notes line of one VEX statement entry, before redaction (vex_changes checks the redacted lines name one
-    statement each and are distinct); the CVE name prints as _lit, everything else is one line whatever a caller hands in"""
+    statement each and are distinct); the CVE name prints as _lit, the products as vex_changes printed them
+    (products_shown; else the products as one line), everything else is one line whatever a caller hands in"""
     return "- %s%s: %s (%s)%s" % (
         _lit(v["cve"], before_colon=True), " [products unreadable]" if v.get("products_unreadable")
-        else " [%s]" % _oneline(", ".join(v["products"])) if v.get("products") else "",
+        else " [%s]" % _oneline(", ".join(v.get("products_shown") or v["products"])) if v.get("products") else "",
         _oneline(v["status"]), _oneline(v["change"]), " — %s" % _oneline(v["statement"]) if v.get("statement") else "")
 
 
@@ -352,7 +373,7 @@ def notes(version, fixes, vex_changes, behavior=()):
     lines += ["", "### VEX"]
     stmts = [v for v in vex_changes if "document" not in v]
     vl = [_vex_line(v) for v in stmts]
-    if len({_clean(x) for x in vl}) != len(vl):     # every published statement line is its own (Codex #300 r3)
+    if len({_clean_md(x) for x in vl}) != len(vl):  # every published statement line is its own (Codex #300 r3)
         raise ValueError("VEX notes: two statement lines read alike")
     lines += vl
     lines += ["- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]), "" if stmts else "; no statement changed")
@@ -514,8 +535,8 @@ def vex_changes(old_doc, new_doc):
         return out, ids
 
     def component(c):
-        """the label of a component the schema allows (a string @id, or identifiers with only purl/cpe23/cpe22 strings),
-        else None"""
+        """(raw label, printed label) of a component the schema allows (a string @id, or identifiers with only
+        purl/cpe23/cpe22 strings), else None"""
         if not isinstance(c, dict) or ("@id" in c and not isinstance(c["@id"], str)):
             return None
         idf = c.get("identifiers")
@@ -523,11 +544,16 @@ def vex_changes(old_doc, new_doc):
                                    or not all(k in VEX_ID_FORMS and isinstance(v, str) for k, v in idf.items())):
             return None
         if isinstance(c.get("@id"), str):
-            return _lit(c["@id"])
-        return " ".join(_lit(idf[k]) for k in VEX_ID_FORMS if k in idf) if idf else None
+            return c["@id"], _lit(c["@id"])
+        if not idf:
+            return None
+        vals = [idf[k] for k in VEX_ID_FORMS if k in idf]
+        return " ".join(vals), " ".join(_lit(v) for v in vals)
 
     def products(s_):
-        """(display labels, scope key or None when there is no scope), or None when products is present but unreadable"""
+        """(raw labels, scope key or None when there is no scope, printed labels), or None when products is present but
+        unreadable; both label lists in the order of the raw values, so how a value prints never reorders anything
+        (Codex #300 r4, B)"""
         ps = s_.get("products", [])
         if not isinstance(ps, list):
             return None
@@ -539,9 +565,11 @@ def vex_changes(old_doc, new_doc):
             if label is None or None in sub_labels:
                 return None
             sub_labels.sort()
-            labels.append(label + (" (subcomponents: %s)" % ", ".join(sub_labels) if sub_labels else ""))
+            labels.append((label[0] + (" (subcomponents: %s)" % ", ".join(x[0] for x in sub_labels) if sub_labels else ""),
+                           label[1] + (" (subcomponents: %s)" % ", ".join(x[1] for x in sub_labels) if sub_labels else "")))
             keys.append(canon(dict(p, subcomponents=sorted(subs, key=canon)) if "subcomponents" in p else p))
-        return sorted(labels), (tuple(sorted(keys)) if keys else None)
+        labels.sort()
+        return [x[0] for x in labels], (tuple(sorted(keys)) if keys else None), [x[1] for x in labels]
 
     def match(ro, rn, key, unique):
         """pair the statements of ro and rn whose key (not None; key(statement, side)) is equal; with unique, only a key
@@ -591,7 +619,7 @@ def vex_changes(old_doc, new_doc):
             if prod is None:
                 e["products_unreadable"] = True
             elif several:
-                e["products"] = prod[0]
+                e["products"], e["products_shown"] = prod[0], prod[2]
             if several or cve == "":
                 sid = own_id(s_, side) if cve != "" else None
                 e["statement"] = ("statement %s" % _lit(sid) if sid is not None
@@ -624,19 +652,19 @@ def vex_changes(old_doc, new_doc):
         return changed_
 
     def names_one(e):
-        fin, lab = _clean(_vex_line(e)), e.get("statement")
+        fin, lab = _clean_md(_vex_line(e)), e.get("statement")
         if lab:
             return fin.endswith(" — " + lab)
         name = "- " + _lit(e["cve"], before_colon=True)
         return fin.startswith(name + ": ") or fin.startswith(name + " [")
     for r in recs:
         name = _lit(r[0]["cve"], before_colon=True)
-        if _clean(name) != name or not names_one(r[0]):
+        if _clean_md(name) != name or not names_one(r[0]):
             by_position(r)
     while True:
         seen = {}
         for r in recs:
-            seen.setdefault(_clean(_vex_line(r[0])), []).append(r)
+            seen.setdefault(_clean_md(_vex_line(r[0])), []).append(r)
         if not [by_position(r) for rs in seen.values() if len(rs) > 1 for r in rs if by_position(r)]:
             break
     if not all(names_one(r[0]) for r in recs) or any(len(rs) > 1 for rs in seen.values()):
@@ -653,7 +681,8 @@ def vex_changes(old_doc, new_doc):
 def unpublished(entries, published_text):
     """Advisor 0135: an entry an earlier patch already published (any v* tag message, CHANGELOG.md) is not published
     again — the clear-and-changelog PR may not have merged when the next patch is decided."""
-    return [e for e in entries if ("- %s" % _clean(_oneline(e))) not in published_text]
+    published_text = _visible(published_text)      # an older text's "<redacted>" reads as today's marker (r4)
+    return [e for e in entries if ("- %s" % _clean_md(_oneline(e))) not in published_text]
 
 
 PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
@@ -680,7 +709,7 @@ def tag_notes(raw):
     # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
         return None
-    m = PATCH_HEAD.match(body.split("\n", 1)[0])
+    m = PATCH_HEAD.match((body.splitlines() or [""])[0])
     return _clean_lines(body) if m and m.group(1) == tag else None
 
 
@@ -699,7 +728,7 @@ def changelog(notes_text, changelog_text, next_notes_text):
             while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
                 j += 1
             entry = " ".join(ln.strip() for ln in lines[i:j])[2:]
-            if ("- %s" % _clean(_oneline(entry))) in notes_text:
+            if ("- %s" % _clean_md(_oneline(entry))) in notes_text:
                 i = j
                 continue
         keep += lines[i:j]
