@@ -73,8 +73,17 @@ def check_digest_names(stage, path):
     """AC15 for a digests.json: its keys (never its values) must not name a 0.0.0 file. An unreadable file is left to the schema check that follows."""
     try:
         with open(path, "rb") as f:
-            keys = list(strict_json(f.read()))
-    except (OSError, ValueError, TypeError):
+            raw = f.read()
+    except OSError:
+        return
+    check_digest_bytes(stage, raw)
+
+
+def check_digest_bytes(stage, raw):
+    """The same check on bytes already read, so a caller that hashes and parses the file reads it once."""
+    try:
+        keys = list(strict_json(raw))
+    except (ValueError, TypeError):
         return
     check_snapshot_version(stage, keys)
 

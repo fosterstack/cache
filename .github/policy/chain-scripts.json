@@ -6,7 +6,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "0799135895da3ffeff509283b20f1ab8e03ef033b791e4cea88038cbb70bc9a0",
+      "sha256": "82154f39e35fa8410ecaa66bf8e31b12e52273bce2010116b94b7190c2f88283",
       "tools": [
         "make",
         "at",
@@ -147,7 +147,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "427546e5f58484ac0a4d270afcd86a48171fde1c885ff91e80f6598cc3b16bd8"
+      "sha256": "4076d79561584fc2bd74d96ca396da6ce66b1b0d11fc8aa3ab813024cc248a8c"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",

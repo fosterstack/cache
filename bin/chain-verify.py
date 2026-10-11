@@ -886,7 +886,6 @@ def check_build_record(a):
     and the list has the right format. Returns (policy, digest-object). Signs nothing and calls no tool."""
     # two clearly named inputs: --template makes the per-tag policy here (the production Sign job), --policy is a finished one
     # (the dry run's own policy.json); exactly one is given
-    chain_items.check_digest_names("build", a.digests)
     pol = make_policy_from_template(a, a.template) if a.template else load_json(a.policy, "policy")
     if "roots" not in pol:
         refuse("sign", "--policy must be a finished policy; a template goes to --template")
@@ -896,6 +895,7 @@ def check_build_record(a):
             d_bytes = f.read()
     except OSError:
         refuse("sign", "digest file is missing or unreadable (format)")
+    chain_items.check_digest_bytes("build", d_bytes)       # a snapshot version in the list: refused before any certificate, from the bytes read once (REQ-CHAIN-004-AC15)
     # Build's record first, as stage build, under the policy's build identity (a dry-run policy is allowed for this)
     pol_b = dict(pol)
     pol_b.pop("dry_run", None)
