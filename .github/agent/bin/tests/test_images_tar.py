@@ -77,6 +77,37 @@ class ImagesLayout(unittest.TestCase):
             with P._Layout(lay) as t, self.assertRaises(KeyError):
                 t.getmember("blobs/" + d.replace(":", "/"))
 
+    def test_a_blob_that_does_not_hash_to_its_name_is_refused_on_read(self):
+        with tempfile.TemporaryDirectory() as w:
+            lay = os.path.join(w, "production"); d = image_layout(lay)
+            blob = os.path.join(lay, "blobs", "sha256", d.split(":")[1])
+            with P._Layout(lay) as t:
+                self.assertEqual(t.extractfile("blobs/" + d.replace(":", "/")).read(), b"{}")
+            open(blob, "wb").write(b'{"layers": []}')          # other bytes under the same name
+            with P._Layout(lay) as t, self.assertRaises(ValueError):
+                t.extractfile("blobs/" + d.replace(":", "/")).read()
+            with self.assertRaises(ValueError):
+                P.read_image(lay, "amd64")
+
+    def test_rescan_binding_refuses_a_layout_with_a_wrong_blob(self):
+        with tempfile.TemporaryDirectory() as w:
+            images = os.path.join(w, "images"); os.makedirs(images)
+            d = image_layout(os.path.join(images, "production"))
+            open(os.path.join(images, "production", "blobs", "sha256", d.split(":")[1]), "wb").write(b"[]")
+            got, why = P.rescan_binding(binding(w), images)
+            self.assertIsNone(got)
+            self.assertIn("no image digest", why)
+
+    def test_manifest_refuses_a_layout_with_a_blob_that_does_not_hash_to_its_name(self):
+        with tempfile.TemporaryDirectory() as w:
+            lay = os.path.join(w, "images", "production"); d = image_layout(lay)
+            open(os.path.join(lay, "blobs", "sha256", d.split(":")[1]), "ab").write(b" ")
+            with mock.patch.object(M, "_skopeo", return_value=True) as sk:
+                got, why = M._archives(w, "", os.path.join(w, "c.oci"), os.path.join(w, "c.tar"))
+            self.assertIsNone(got)
+            self.assertIn("does not hash", why)
+            sk.assert_not_called()
+
     def test_bundles_read_the_variant_directory(self):
         seen = []
         def read(path, arch):
