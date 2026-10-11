@@ -289,6 +289,9 @@ def load_scripts(base):
             errs.append("chain-scripts.json: %s signs but has no reason" % p)
         if not isinstance(r.get("runs", []), list):
             errs.append("chain-scripts.json: %s `runs` must be a list" % p)
+        em = r.get("env_mentions", [])
+        if not isinstance(em, list) or not all(isinstance(e, dict) and set(e) == {"name", "text", "why"} and all(isinstance(e[k], str) for k in e) for e in em):
+            errs.append("chain-scripts.json: %s `env_mentions` must be a list of {name, text, why} strings" % p)
         rows[p] = r
     for p, r in rows.items():
         for q in r.get("runs", []) if isinstance(r.get("runs", []), list) else []:
@@ -554,6 +557,36 @@ def command_words(text):
             out.append((w, rest))
     return out
 
+# REQ-CHAIN-001-AC1 "sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS" (final batch B1, the class closed): a listed script may
+# mention one of these names ONLY as a pure read: $NAME / ${NAME} in shell; os.environ.get("NAME"), os.getenv("NAME") or an
+# os.environ["NAME"] that is not assigned or deleted in Python. Any other mention (for/read/printf -v/mapfile/getopts/declare -n/unset/
+# ${NAME:=}, putenv/update/setdefault/pop, env={...}, a comment or a string) is refused unless the row's `env_mentions` lists that
+# exact text with a reason; an entry whose text is not in the file is stale and refused.
+PROTECTED = re.compile(r"(?<![A-Za-z0-9_])(PATH|BASH_ENV|ENV|LD_[A-Za-z0-9_]+|PYTHON[A-Za-z0-9_]*|NODE_OPTIONS|IFS|SHELLOPTS|BASHOPTS|CDPATH|"
+                       r"GLOBIGNORE|PS4|PROMPT_COMMAND|BASH_FUNC_[A-Za-z0-9_%]*)(?![A-Za-z0-9_])")
+
+def protected_env_mentions(path, text, row):
+    errs, spans = [], []
+    for e in row.get("env_mentions") or []:
+        t, nm = e.get("text", ""), e.get("name", "")
+        if not str(e.get("why") or "").strip(): errs.append("%s: env_mentions entry %r has no reason" % (path, t)); continue
+        hits = [(m.start(), m.end(), nm) for m in re.finditer(re.escape(t), text)] if t else []
+        if not hits or not any(PROTECTED.fullmatch(nm or "") and nm in text[a:b] for a, b, _ in hits):
+            errs.append("%s: env_mentions entry %r (%s) matches nothing in the file (stale)" % (path, t, nm)); continue
+        spans += hits
+    py = _is_python(path, text)
+    for m in PROTECTED.finditer(text):
+        a, b, nm = m.start(), m.end(), m.group(1)
+        if any(x <= a and b <= y and nm == n for x, y, n in spans): continue
+        before, after = text[max(0, a - 40):a], text[b:b + 40]
+        if not py and (before.endswith("$") or (before.endswith("${") and after.startswith("}"))): continue
+        if py and re.search(r"(?:environ\.get|getenv)\(\s*[\"']$", before) and re.match(r"[\"']", after): continue
+        if py and re.search(r"(?<!del )os\.environ\[\s*[\"']$", before) and re.match(r"[\"']\s*\](?!\s*=(?!=))", after) \
+                and not re.search(r"\bdel\s+os\.environ\[\s*[\"']$", before): continue
+        line = text.count("\n", 0, a) + 1
+        errs.append("%s: line %d mentions %s outside a pure read (only $NAME/${NAME}, or an os.environ read; a listed exception goes in env_mentions)" % (path, line, nm))
+    return errs
+
 def scan_script(path, text, row, rows, base):
     """Errors for one LISTED script. Not a shell parser: a conservative TEXT scan over the raw file whatever its extension or shebang
     (it over-reports by design): (a) a command from the finite DENY list (interpreters, source/eval/exec, make/xargs/find, curl/wget/ssh,
@@ -607,6 +640,7 @@ def scan_script(path, text, row, rows, base):
                 errs.append("%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     for m in ENV_SET.finditer(text):
         errs.append("%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
+    errs += protected_env_mentions(path, text, row)
     for ln in logical(text).splitlines():
         m = LAUNCHER.search(ln)
         if not m: continue

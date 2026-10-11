@@ -15,7 +15,19 @@
       "runs": [],
       "signs": "provenance",
       "sign_subcommand": "sign",
-      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec"
+      "reason": "the verifier; its `sign` subcommand is the provenance signer (it checks Build's record, then calls cosign attest-blob once); listed tools are subcommand and message words the text scan over-reports, not commands it runs; `exec` is the Python builtin that runs the helper modules' hashed source in load_sibling, not a shell exec",
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "no cosign on PATH, or not runnable",
+          "why": "a code comment naming where Python looks for cosign; nothing is set"
+        },
+        {
+          "name": "PATH",
+          "text": "cosign not found on PATH",
+          "why": "the refusal message when cosign cannot be started; nothing is set"
+        }
+      ]
     },
     {
       "path": "bin/install-scanner.sh",
