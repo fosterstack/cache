@@ -298,6 +298,17 @@ st s_go_other "AC4 the Go install line names another target" "install-scanner.sh
 st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
 st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
 st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
+# Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
+# bin/witnessed.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
+# checksum-verified install lines; nothing with a token, a secret, a build command, a download, an upload or the identity token may come before it.
+st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" "before admission" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
+st s_pre_sec   "AC4 a secret on a step before admission" "before admission" 'name: install Witness (pinned by checksum)\n' 'name: install Witness (pinned by checksum)\n        env:\n          K: ${{ secrets.KEY }}\n'
+st s_pre_build "AC4 a build command before admission" "before admission" "$GOINST" "$GOINST      - name: build early\n        run: bash bin/build-apk.sh --variant standard\n"
+st s_pre_up    "AC4 an upload before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: early\n          path: out\n"
+st s_pre_down  "AC4 a download before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        with:\n          name: x\n          path: x\n"
+st s_pre_tok   "AC4 a step that reads the identity token before admission" "before admission" "$GOINST" "$GOINST      - name: token\n        run: bash bin/x.sh \"\$ACTIONS_ID_TOKEN_REQUEST_TOKEN\"\n"
+st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed.sh apk bin/build-stage-apk.sh\n"
+st s_pre_other "AC4 any other run step before admission" "before admission" "$GOINST" "$GOINST      - name: other\n        run: bash bin/chain-hostile-step.sh\n"
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
        'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
@@ -1854,7 +1865,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=638
+EXPECT=646
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
