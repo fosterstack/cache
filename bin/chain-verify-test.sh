@@ -1154,11 +1154,11 @@ expect_ok     "002-AC3 a Witness stage record needs no Rekor entry" verify $(V) 
 expect_refuse "002-AC3 a Witness record is checked for the timestamp instead" "timestamp" verify $(V) --stage build $(rec build_coll_nostamp)
 
 # ---- REQ-CHAIN-003-AC2: only the standard record types, exact strings ------------------------------------------------
-expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_ID_TOKEN_REQUEST_CUSTOM (the whole prefix, not a fixed list)" "build|ACTIONS_ID_TOKEN_REQUEST_CUSTOM" verify $(V) --stage build $(rec build_env_custom)
-expect_refuse "004-AC8 verify refuses a signed Build record whose environment names GH_TOKEN" "build|GH_TOKEN" verify $(V) --stage build $(rec build_env_gh)
-expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_RUNTIME_URL" "build|ACTIONS_RUNTIME_URL" verify $(V) --stage build $(rec build_env_runtime)
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_ID_TOKEN_REQUEST_CUSTOM (the whole prefix, not a fixed list)" "build|actions_id_token_request_custom" verify $(V) --stage build $(rec build_env_custom)
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names GH_TOKEN" "build|gh_token" verify $(V) --stage build $(rec build_env_gh)
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_RUNTIME_URL" "build|actions_runtime_url" verify $(V) --stage build $(rec build_env_runtime)
 expect_ok "004-AC8 control: a signed Build record with an ordinary environment variable passes verify" verify $(V) --stage build $(rec build_env_clean)
-expect_refuse "004-AC8 stage-start refuses the same record as the previous stage's" "build|ACTIONS_ID_TOKEN_REQUEST_CUSTOM" $(ST rebuild build) $(rec build_env_custom) --digests "$work/digests.json"
+expect_refuse "004-AC8 stage-start refuses the same record as the previous stage's" "build|actions_id_token_request_custom" $(ST rebuild build) $(rec build_env_custom) --digests "$work/digests.json"
 expect_ok     "003-AC2 the Witness collection type (Statement v0.1, as Witness writes it) is allowed" verify $(V) --stage build $(rec build_coll)
 expect_ok     "003-AC2 the Witness collection type in a Statement v1 is allowed" verify $(V) --stage build $(rec build_coll_v1)
 expect_ok     "003-AC2 SLSA provenance v1 is allowed" verify $(V) --stage sign $(rec sign_prov) $(R)

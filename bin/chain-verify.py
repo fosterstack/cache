@@ -649,6 +649,8 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     stamped = check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
     chain_valid_at(stage, chain, stamped)
     stmt, needs_rekor = check_record_type(stage, pol, ptype, payload)
+    if isinstance(stmt, dict) and stmt.get("predicateType") == COLL:
+        chain_items.check_record_env(stage, dsse, payload)      # REQ-CHAIN-004-AC8: no token variable or value in a verified Witness collection
     if needs_rekor:
         check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf)
     return stmt, payload, dsse

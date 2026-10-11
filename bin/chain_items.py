@@ -403,6 +403,19 @@ def cmd_rebuild_compare(a):
 
 
 # ---- record-env -------------------------------------------------------------------------------------------------------------------
+def check_record_env(stage, envelope, payload):
+    """AC8 on an already-read record (REQ-CHAIN-004-AC8): no ACTIONS_ID_TOKEN_REQUEST_* name (the whole prefix), runtime-token name, GH_TOKEN or GITHUB_TOKEN, no compact JWT
+    and no GitHub token value anywhere in the envelope or the decoded payload. The verifiers call it for every verified Witness collection, naming the record's own stage."""
+    text = json.dumps(envelope) + "\n" + payload.decode("utf-8", "replace")
+    found = sorted(set(re.findall(r"ACTIONS_ID_TOKEN_REQUEST_[A-Za-z0-9_]*", text)) | {n for n in TOKEN_NAMES if n in text})
+    if found:
+        refuse(stage, "env: the record names " + " ".join(found))
+    if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", text):
+        refuse(stage, "env: the record holds a compact JWT")
+    if re.search(r"\bgh[pousr]_[A-Za-z0-9]{20,}", text):
+        refuse(stage, "env: the record holds a GitHub token")
+
+
 def cmd_record_env(a):
     try:
         with open(a.record, "rb") as f:
@@ -420,16 +433,10 @@ def cmd_record_env(a):
     if isinstance(name, str) and SNAPSHOT_NAME.fullmatch(name):
         refuse("build", "snapshot record")          # nothing can token-check a snapshot record; nothing consumes one (REQ-CHAIN-004-AC13)
     try:
-        text = json.dumps(envelope) + "\n" + b64d(envelope["payload"]).decode("utf-8", "replace")
+        payload = b64d(envelope["payload"])
     except ValueError:
         refuse("build", "env: the DSSE payload is not base64")
-    found = [n for n in TOKEN_NAMES if n in text]
-    if found:
-        refuse("build", "env: the record names " + " ".join(found))
-    if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", text):
-        refuse("build", "env: the record holds a compact JWT")
-    if re.search(r"\bgh[pousr]_[A-Za-z0-9]{20,}", text):
-        refuse("build", "env: the record holds a GitHub token")
+    check_record_env("build", envelope, payload)
     print("ok")
 
 
