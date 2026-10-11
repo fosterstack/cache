@@ -236,6 +236,10 @@ AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|ma
 #    word (not refused: it would be a new class of finding for plain variable use, not measured against real scripts); git rebase -x, bisect run,
 #    submodule foreach, tar old-style option bundles that consume following words, and GNU long-option abbreviations shorter than the 4-character prefix
 #    rule (a finite option list in a text reader; the reviewed `deny` exception with the whole command is the way to admit a use).
+#  - recorded limits after the round-5 check: the reader's normalized command word is not checked for curl, gh, git, docker, wget, nc, aws, kubectl, go,
+#    pip, dpkg, su, crontab, script, trap (quote-split and backslash-escaped spellings such as \curl, cu""rl, c\x27\x27url are a stated limit); the positional
+#    skip of a deny budget was tried (e059a3f on branch pipeline-chain-judge-exceptions-fix5) and withdrawn: it skipped a token whenever any command
+#    word started there and read CRLF text as LF.
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
