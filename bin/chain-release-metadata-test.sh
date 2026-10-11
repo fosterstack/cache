@@ -4,7 +4,7 @@
 #
 # The four release metadata files and their signed list. bin/release-metadata.py has four subcommands, all offline and deterministic (no clock, no network):
 #   images    --digests D --images-dir I --out F   the image digests for bin/vex-forms.py, ONLY from Build's verified digests.json and images/<variant>.digest/.manifests
-#   manifest  --digests D --images-dir I --version V --commit SHA --run-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
+#   manifest  --digests D --images-dir I --version V --commit SHA --ci-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
 #             the shape the REQ-REL-004 rescan reads)
 #   list      --version V --dir DIR --out F        release-files.sha256: the sha256 of exactly the four files, in this order: release-manifest.json, the OpenVEX file,
 #             the CSAF file, the inspector-filters file (the form of cache's change under handoff 0362, PR #276)
@@ -58,7 +58,7 @@ img("a missing images/<variant>.manifests file is refused", lambda t, d: os.remo
 # ---- manifest: deterministic, the rescan's shape ------------------------------------------------------------------------------------------
 def manifest(t, out, version=V, commit="a" * 40, extra=()):
     return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--version", version, "--commit", commit,
-               "--run-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out, *extra)
+               "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out, *extra)
 t, d = tree(); m1, m2 = t + "/m1.json", t + "/m2.json"; rc, so, se = manifest(t, m1); rc2, _, _ = manifest(t, m2)
 mj = json.load(open(m1)) if os.path.exists(m1) else {}
 check(rc == 0 and rc2 == 0 and open(m1, "rb").read() == open(m2, "rb").read(), "manifest: two runs give the same bytes (no clock, no random value)", se[:200])

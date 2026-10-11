@@ -834,7 +834,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
-      "sha256": "91fcc45181e95501c3f922de7c64e85e7c6a3c0cf81cb3eceb83593f3bee4af7",
+      "sha256": "59f41c824394d35103569f2e24d209db3ae6a1029894bb14c0692f4f2318a1e9",
       "exceptions": [
         {
           "rule": "deny",
@@ -855,17 +855,18 @@
     {
       "path": "bin/release-apks.sh",
       "tools": [
+        "bash",
         "jq",
-        "melange",
         "python3",
         "trap"
       ],
       "runs": [
-        "bin/apk-tool.py"
+        "bin/apk-tool.py",
+        "bin/release-sign-apks.sh"
       ],
       "signs": "other",
-      "reason": "Release, step release-apks: re-signs the apks Build made with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
-      "sha256": "0b0d6b1eb330f40549dd230f6796d3671976cdd06729dcc0dce3f4569c9cde71",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
+      "sha256": "03a6fd65c167b999a13619670a2e1ba81663679b57543bdfabfda367c8d864a4",
       "reads_env": [
         "APK_RELEASE_SIGNING_KEY"
       ]
@@ -879,7 +880,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "a448aba620cd0fcd8713bf43d8262bb1ab22bedd26856873627b94830638895e",
+      "sha256": "9d7732d53bacc5ae9d6111b66ee503892013a507cb20509b19786beee2fc1b56",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -894,11 +895,13 @@
         "python3"
       ],
       "runs": [
-        "bin/vendor-provenance.py"
+        "bin/release-metadata.py",
+        "bin/vendor-provenance.py",
+        "bin/vex-forms.py"
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "70d7224da0ac0025c48ffa1eea9906427bcc14dbe832ce36fbcfe460a4be348a",
+      "sha256": "184e9ed05e814cb45f8fa02e092a4189235fcd9d36220abae4803b5502306927",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -908,12 +911,15 @@
     {
       "path": "bin/release-assets.sh",
       "tools": [
-        "gh"
+        "gh",
+        "python3"
       ],
-      "runs": [],
+      "runs": [
+        "bin/release-metadata.py"
+      ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "381e82018a06686f541791c63434a59d8b8b1b42d061660de2fe89737ea53958",
+      "sha256": "e19c3cbdb77863cf32b5c171aa38589e82a82e6e7d0392d30a05ae67fd159b63",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -947,7 +953,38 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "10cb671ff08048d314c74862f7a034957b1b231e1e612478c839969b29c8269e"
+      "sha256": "99b919f96d33623412d09f008243a9112d310b8fa1d5b33abb1c0f304d216c7a"
+    },
+    {
+      "path": "bin/release-metadata.py",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
+      "sha256": "09186a34182c32c8426d24da4f7e1df0a97da5fe139be036d907f147efedb612"
+    },
+    {
+      "path": "bin/vex-forms.py",
+      "tools": [
+        "at",
+        "aws",
+        "gcloud"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
+      "sha256": "86b95375aefdfa64ff682244012ed3643b5699b1b9bbfc18321070209532354c",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "            # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen",
+          "line_sha256": "67b70aee004b9d32aeb202d7ddc726f137ae53b5fe08c950c9ae528a8ae6265c",
+          "count": 1,
+          "why": "a comment quoting the purl pkg:golang/github.com/acme/busybox as the example of a namespaced component the forms refuse; it is text, not a command (cache's REQ-SCAN-010 code)"
+        }
+      ]
     }
   ],
   "ambient_env": [

@@ -53,8 +53,8 @@ ROWS = {
     "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
     "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
     "bin/release-publish.sh": {"tools": ["crane", "jq"], "signs": False, "runs": []},
-    "bin/release-sign.sh":    {"tools": ["cosign", "jq", "python3"], "signs": "other", "runs": ["bin/vendor-provenance.py"]},
-    "bin/release-assets.sh":  {"tools": ["gh"], "signs": False, "runs": []},
+    "bin/release-sign.sh":    {"tools": ["cosign", "jq", "python3"], "signs": "other", "runs": ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]},
+    "bin/release-assets.sh":  {"tools": ["gh", "python3"], "signs": False, "runs": ["bin/release-metadata.py"]},
     "bin/release-postverify.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-postverify.py"]},   # rule 79 amended
     "bin/release-postverify.py": {"tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": []},   # runs only verify forms, judged first
 }

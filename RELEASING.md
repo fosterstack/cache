@@ -8,50 +8,61 @@ laptop cannot forge a release that GitHub's own runners never built).
 
 ## Pipeline (`.github/workflows/release.yml`)
 
+From v0.3.0 the release is five stages, each one reusable workflow file with its
+own job and its own signing identity, on a fresh GitHub-hosted runner:
+
 ```
-source admission → build (binaries) → image assembly → reproducibility
-  → { scans, acceptance } → release authorization → promotion
+Build -> { Sign, Rebuild } ; { Build, Sign } -> Check ; { Check, Rebuild, Sign } -> Release
 ```
 
-One build, one set of digests, promoted without a rebuild. Each stage is
-a reusable workflow with its own OIDC identity; each signs a predicate
-about what it produced or verified, and each verifies its inputs'
-predicates on entry — so the bytes that are scanned, tested, and finally
-made public are provably the same bytes, referenced by digest at every
-step, never re-resolved from a registry.
+The chain starts on a pushed `v*` tag (or a branch dry run, which publishes
+nothing). Every stage first verifies the signed record of the stage before it
+and ties its work to the digest list Build attested; Release publishes by
+digest the exact bytes Build made and Rebuild and Check judged, and never
+rebuilds. Release is the only job that holds a registry credential, the apk
+signing key or `packages: write`.
 
-- **Source admission** runs before any repository-controlled command:
-  the tag's SSH signature and the tagged commit's signature are checked
-  against the allowed-signers list on protected `main`, the commit must
-  be an ancestor of `main` with every required check green on the exact
-  SHA, and an approved requirements baseline must exist for the version.
-- **Build** compiles the binary matrix with a toolchain pinned to
-  `go.mod` (`GOTOOLCHAIN=local`, `go mod verify`, manifests never
-  mutated), produces the archives, `checksums.txt`, and per-archive
-  SBOMs, and signs a build predicate whose subjects are the archive
-  digests as the builder itself emitted them.
-- **Image assembly** verifies each archive against that signed predicate
-  before opening it, assembles each variant with a COPY-only Dockerfile
-  (digest-pinned distroless base, zero `RUN`), and pushes by digest only
-  to a private candidates package — no tags, nothing public.
-- **Reproducibility** repeats the assembly on a separate runner and
-  asserts the digests come out identical. The images are reproducible,
-  and this check is what makes that a tested claim rather than a
-  promise: if it ever fails, the release fails.
-- **Scans**: every scanner in
-  [`.github/policy/scanners.json`](.github/policy/scanners.json) runs
-  against the exact candidate digests; block at any severity; a
-  published VEX statement is the only exception. **Acceptance**: the
-  release-artifact scenarios plus the Gradle and Maven acceptance
-  suites run against the exact candidate image.
-- **Release authorization** verifies the entire graph — every predicate,
-  signed by the expected stage, naming these digests — and is the only
-  stage that can approve promotion. Anything missing fails closed.
-- **Promotion** copies the approved digests to the public registries
-  with no build step of any kind, asserts the public digest equals the
-  candidate digest after every copy, signs, publishes the release
-  files, re-verifies everything as an anonymous customer would, and
-  only then undrafts the release.
+- **Build** (`stage-build.yml`): admits the tagged commit (tag signature,
+  ancestry of `main`, required checks, approved requirements baseline), builds
+  the apks on two native runners (amd64 and arm64) and assembles the images
+  and archives. Witness (pinned by checksum, set up first) wraps every step
+  through `bin/witnessed.sh` and signs Build's record keyless under Build's
+  identity; `digests.json` is the list of everything Build made.
+- **Sign** (`stage-sign.yml`): its own job and workflow file; it receives only
+  Build's digest list, never runs code from the build, and writes and signs the
+  SLSA provenance keyless under its own identity.
+- **Rebuild** (`stage-reproducibility.yml`): builds the same commit on fresh
+  machines and compares every item with Build's; any difference blocks the
+  release.
+- **Check** (`stage-verify.yml`): runs every scanner of
+  [`.github/policy/scanners.json`](.github/policy/scanners.json), the Gradle
+  and Maven suites, the no-phone-home and Kubernetes suites, the FIPS check
+  and the customer-guide commands against the exact candidate digests, as
+  Witness steps; it runs beside Rebuild.
+- **Release** (`stage-promote.yml`, environment `release`): six Witness steps,
+  each a committed script. `release-verify` checks the tag and verifies the
+  earlier stages' records in order before any credential exists in the job;
+  `release-apks` re-signs the apks with the stored release key through
+  `bin/release-sign-apks.sh`; `release-publish` pushes the images by digest to
+  `ghcr.io/fosterstack/cache` and `docker.io/fosterstack/cache` and reads each
+  registry back; `release-sign` signs the images in both registries and the
+  release files keyless, each with a Rekor entry; `release-assets` attaches the
+  evidence to the GitHub release; `release-postverify` runs the customer-guide
+  commands that need a registry against what was just published. Release
+  creates no tag.
+- **Release candidates**: a tag matching exactly `vX.Y.Z-rcN` runs every stage
+  and Release's `release-verify`, and then ends: no credential is read, nothing
+  is pushed, no release is created, no floating tag moves. A tag that is
+  neither `vX.Y.Z` nor that form is refused by `release-verify`.
+- **Floating tags**: a final release moves `:X.Y` to itself every time and `:X`
+  and `:latest` only when it is the highest released version (the plain
+  `X.Y.Z` tags of `ghcr.io/fosterstack/cache`); the `-fips` image gets its exact
+  tag only.
+
+Releases before v0.3.0 were built by the earlier eight-stage chain (source
+admission, build, image assembly, reproducibility, scans and acceptance,
+release authorization, promotion); the image signer of those releases is
+`stage-promote.yml` too.
 
 ## Cutting a release
 

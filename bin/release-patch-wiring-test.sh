@@ -124,6 +124,11 @@ if not dstep or '--released "$RUNNER_TEMP/released.json"' not in dstep[0]["run"]
         "gh release list --exclude-drafts" not in facts[0]["run"] or "released.json" not in facts[0]["run"]:
     bad.append("decide's baseline is not the latest published release")
 scan = [s for s in steps if "patch-decide.py removed" in (s.get("run") or "")]
+# REQ-REL-009-AC3 (advisor 0389): the immediate cut scans the images that exist for the latest release's version (patch-decide.py variants: v0.3.0 dropped
+# the debug variant), never a literal -debug tag, and the notes read a variant's scan only when that scan was made
+_note = [s for s in steps if "patch-decide.py notes" in (s.get("run") or "")]
+if not scan or "patch-decide.py variants" not in scan[0]["run"] or "-debug" in scan[0]["run"] or not _note or "patch-decide.py variants" not in _note[0]["run"] or "-debug" in _note[0]["run"]:
+    bad.append("the immediate cut does not scan exactly the images that exist for the latest release (patch-decide.py variants), or names a -debug tag")
 if not scan or "&& rel+=" in scan[0]["run"] or "removed-unknown" not in scan[0]["run"] or \
         not dstep or "--removed-unknown" not in dstep[0]["run"]:
     bad.append("an unscannable release image is not reported as unknown")
@@ -343,6 +348,9 @@ case_ precheck-own-files     bad "[s.__setitem__('run', s['run'].replace('owner-
 case_ precheck-local-signers bad "[s.__setitem__('run', s['run'].replace('git show origin/main:.github/policy/allowed_signers', 'cat .github/policy/allowed_signers')) for s in $D['steps'] if s.get('id') == 'basecheck']"
 case_ no-baseline-check       bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'basecheck']"
 case_ wait-ignores-baseline   bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if s.get('id') == 'checks']"
+case_ scan-debug-literal       bad "[s.__setitem__('run', s['run'].replace('\$(python3 bin/patch-decide.py variants --version \"\$ver\")', '\"\$ver\" \"\$ver-debug\" \"\$ver-fips\"')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ scan-no-variants         bad "[s.__setitem__('run', s['run'].replace('patch-decide.py variants', 'patch-decide.py ready')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ notes-debug-literal      bad "[s.__setitem__('run', s['run'].replace('patch-decide.py notes', 'echo -debug; python3 bin/patch-decide.py notes')) for s in $D['steps'] if 'patch-decide.py notes' in (s.get('run') or '')]"
 case_ no-check-wait           bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'checks']"
 case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=latest', 'filter=all')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ wait-unbounded          bad "[s.pop('timeout-minutes') for s in $D['steps'] if s.get('id') == 'checks']"
@@ -350,7 +358,7 @@ case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
-case_ promotion-own-baseline  bad "$J['promotion']['with']['baseline-version'] = '\${{ github.ref_name }}'"
+case_ promotion-own-baseline  bad "$J.setdefault('promotion', {}).setdefault('with', {})['baseline-version'] = '\${{ github.ref_name }}'"
 case_ no-schedule             bad "d['on'].pop('schedule')"
 case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('base_ok', 'ok')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ policy-read-once        bad "[s.__setitem__('run', 'git show origin/main:.github/policy/required-checks.json > x\n' + s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
@@ -499,7 +507,7 @@ if "baseline_version" not in open(os.path.join(root, "bin/build-admit.py")).read
     bad.append("bin/build-admit.py does not write the baseline it used into the admission evidence")
 for f, needle in (("stage-promote.yml", '--arg baseline "requirements/releases/${base}.yaml"'),):
     d = yaml.load(open(os.path.join(root, ".github/workflows", f)), Loader=yaml.BaseLoader)
-    inp = d["on"]["workflow_call"]["inputs"].get("baseline-version") or {}
+    inp = (((d.get("on") or {}).get("workflow_call") or {}).get("inputs") or {}).get("baseline-version") or {}
     text = open(os.path.join(root, ".github/workflows", f)).read()
     if inp.get("default") != "" or needle not in text or "inputs.baseline-version" not in text:
         bad.append("%s does not read the baseline it is given" % f)

@@ -12,7 +12,7 @@ import json, os, re, shlex, subprocess, sys
 LIST = "docs/verify-release.cannot-run.json"
 DIGESTS = "witness-build/digests.json"
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")   # constants: releases publish identical digests to both; no input names a repository
-TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$")
+TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")   # a release candidate publishes nothing, so there is nothing to verify (REQ-CHAIN-007-AC14)
 PH = re.compile(r"<([A-Z][A-Z0-9_]*)>")
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 SAFE = re.compile(r"^[A-Za-z0-9._:/@+-]+$")
@@ -73,7 +73,7 @@ def form_error(c):
 def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
     if not TAG.match(tag):
-        refuse("refused at tag: %r is not vX.Y.Z or vX.Y.Z-rc.N" % tag)
+        refuse("refused at tag: %r is not vX.Y.Z" % tag)
     if not os.path.exists(LIST):
         refuse("the list %s is missing: the post-publish verification has nothing to run (a missing list is a failed release)" % LIST)
     try:
