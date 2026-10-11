@@ -1078,6 +1078,9 @@ def scan_script(path, text, row, rows, base):
     cw_budget = {}                                 # round 2 (1): a script path at a COMMAND POSITION is judged once, as the whole command (below),
     for c in cmds:                                 # never by its token: the token pass skips as many occurrences as there are commands named by it
         if c.cw is not None: cw_budget[c.cw] = cw_budget.get(c.cw, 0) + 1
+    deny_budget = {}                               # round 4 (1): a bare denied word that is a command word is judged ONCE, as the whole command (below)
+    for c in cmds:
+        if c.cw is not None and "/" not in c.cw and is_deny_token(c.cw) and c.cw not in tools: deny_budget[c.cw] = deny_budget.get(c.cw, 0) + 1
     def script_like(t):
         n = t[2:] if t.startswith("./") else t
         pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
@@ -1097,6 +1100,7 @@ def scan_script(path, text, row, rows, base):
             # archive/go is judged by the script rule alone. A Python script has no command position, so it keeps the word-level test.
             if py: add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
         elif is_deny_token(n) and n not in tools:
+            if deny_budget.get(t, 0) > 0: deny_budget[t] -= 1; continue
             add("deny", t, "%s: names the command %r, which is not in this script's `tools` list" % (path, t))
         if script_like(t) and n != path and n not in runs and not (n == selfbase):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
@@ -1114,6 +1118,8 @@ def scan_script(path, text, row, rows, base):
                 add("deny", w, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, w))
             elif "/" not in n and GLOBCH.search(n) and re.search(r"[A-Za-z]", n) and deny_class_last(n):      # a bare * or ? is a case pattern, not a command name
                 add("deny", w, "%s: names the command %r by a pattern that could match a denied command (a path or pattern: name it bare)" % (path, w))
+            if "/" not in n and is_deny_token(w) and w not in tools:     # the reader's NORMALIZED command word (\curl, cu""rl, c''url): whole command text
+                add("deny", span, "%s: names the command %r, which is not in this script's `tools` list" % (path, w))
             kind = family_kind(name)
             po = program_option(name, c.operands)
             if po is not None:

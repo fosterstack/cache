@@ -3216,7 +3216,7 @@ for pth in archive/vi archive/ash /usr/bin/python3.11 x/rbash usr/bin/perl5.38 x
 d=$(py8 p8_ok1 "archive/go.tar"); expm ok "$d" - "round-4 (8): control: a data path archive/go.tar is admitted"
 d=$(py8 p8_ok2 "dist/data.json"); expm ok "$d" - "round-4 (8): control: dist/data.json is admitted"
 # (9) the reader's normalized command word
-for form in '\\curl x' 'cu""rl x' "c''url x" 'c\\\\\nurl x' '"curl" x' '\\gh x' 'g""it status' '\\wget x'; do
+for form in '\\curl x' 'cu""rl x' "c''url x" 'c\\\nurl x' '"curl" x' '\\gh x' 'g""it status' '\\wget x'; do
   kc "n9_$RANDOM" "$form" 'names the command'
 done
 # (10) minimal: an absolute path or a substitution as the command word
