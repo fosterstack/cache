@@ -170,6 +170,12 @@ CHAIN_STEPS = {
     "the release chain's hostile dry run, judged offline (REQ-CHAIN-001-AC5)": "bash bin/chain-hostile-test.sh",
     "the Sign boundary's wiring: one Sign file, the closed stage grammar, no secrets (REQ-CHAIN-001, 002-AC4, 003-AC5)": "bash bin/chain-sign-wiring-test.sh",
     "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)": "bash bin/chain-records-test.sh",
+    "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)": "bash bin/chain-build-wiring-test.sh",
+    "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)": "bash bin/chain-build-admit-test.sh",
+    "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)": "bash bin/chain-bind-test.sh",
+    "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)": "bash bin/chain-rebuild-test.sh",
+    "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)": "bash bin/chain-snapshot-test.sh",
+    "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)": "bash bin/chain-install-witness-test.sh",
 }
 for name, run in CHAIN_STEPS.items():
     hits = [st for st in steps_ if (st.get("run") or "").strip(" \t\n") == run]
@@ -282,8 +288,8 @@ case_ job-defaults-run          bad "d['jobs']['allowlist']['defaults'] = {'run'
 case_ ps4-ifs-prompt            bad "d['jobs']['allowlist']['env'] = {'IFS': 'x'}"
 case_ ld-preload-step           bad "$steps[4]['env'] = {'LD_PRELOAD': '/tmp/x.so'}"
 
-# the release chain's four required steps (REQ-CHAIN-001..003): each mutation of each step is caught
-for r in "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh"; do
+# the release chain's ten required steps (four of PR 1, six of PR 2) (REQ-CHAIN-001..003): each mutation of each step is caught
+for r in "CHAIN_TEST_REQUIRE_NETCUT=1 bash bin/chain-verify-test.sh" "bash bin/chain-hostile-test.sh" "bash bin/chain-sign-wiring-test.sh" "bash bin/chain-records-test.sh" "bash bin/chain-build-wiring-test.sh" "bash bin/chain-build-admit-test.sh" "bash bin/chain-bind-test.sh" "bash bin/chain-rebuild-test.sh" "bash bin/chain-snapshot-test.sh" "bash bin/chain-install-witness-test.sh"; do
   n=$(basename "${r##* }" .sh); cs="[s for s in $steps if (s.get('run') or '').strip() == '$r'][0]"
   case_ "$n-removed"     bad "$steps[:] = [s for s in $steps if (s.get('run') or '').strip() != '$r']"
   case_ "$n-if-false"    bad "$cs['if'] = 'false'"
