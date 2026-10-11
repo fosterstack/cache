@@ -341,12 +341,12 @@ gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$root" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer (frozen legacy files' own findings left out)" "$(tracked_copy real)"
-d=$(tracked_copy changed); printf '# x\n' >> "$d/.github/workflows/stage-verify.yml"
-expect_named "a changed byte in frozen stage-verify.yml: it is judged in full and named" "$d" "legacy file changed (judged in full): .github/workflows/stage-verify.yml"
+d=$(tracked_copy changed); printf '# x\n' >> "$d/.github/workflows/stage-promote.yml"
+expect_named "a changed byte in frozen stage-promote.yml: it is judged in full and named" "$d" "legacy file changed (judged in full): .github/workflows/stage-promote.yml"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
-expect_named "with legacy-stage-files.json deleted the whole tree is judged (red today on stage-verify.yml)" "$d" "stage-verify.yml: actions/attest with no literal predicate-type"
+expect ok "with legacy-stage-files.json deleted the whole tree is judged and is green (PR 3 rewrote stage-verify.yml, the last legacy file with a finding of its own)" "$d"
 EXPECT=97
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi

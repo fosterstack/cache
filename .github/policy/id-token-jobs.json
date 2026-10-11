@@ -48,38 +48,8 @@
   },
   {
    "workflow": "release.yml",
-   "job": "scans",
-   "reason": "calls stage-verify.yml (legacy, frozen)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "acceptance-artifacts",
-   "reason": "calls stage-acceptance-artifacts.yml (legacy, frozen)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "acceptance",
-   "reason": "calls acceptance.yml, which needs the inherited token for the stage files it calls"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "acceptance-egress",
-   "reason": "calls stage-acceptance-egress.yml (legacy, frozen)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "acceptance-k8s",
-   "reason": "calls stage-acceptance-k8s.yml (legacy, frozen)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "acceptance-predicate",
-   "reason": "calls stage-acceptance-predicate.yml (legacy, frozen)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "authorization",
-   "reason": "calls stage-authorize.yml (legacy, frozen)"
+   "job": "check",
+   "reason": "calls stage-verify.yml: Check, whose Witness steps mint the keyless signing identity (REQ-CHAIN-006)"
   },
   {
    "workflow": "release.yml",
@@ -153,8 +123,8 @@
   },
   {
    "workflow": "stage-verify.yml",
-   "job": "scan",
-   "reason": "legacy stage (frozen): actions/attest of the scan results; rewritten in PR 3"
+   "job": "check",
+   "reason": "Check: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-006); signs no provenance"
   }
  ]
 }

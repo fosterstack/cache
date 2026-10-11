@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/acceptance-gradle.sh: the Gradle remote-cache suite (REQ-GRADLE-001-AC1..AC4), extracted unchanged from acceptance.yml
 # (advisor ruling Q7; REQ-CHAIN-006-AC5). The server is already listening on localhost:18095: acceptance.yml starts it (from source,
-# or the candidate image), and in Check bin/check-acceptance.sh starts the candidate from Build's tarball.
+# or the candidate image), and in Check the Check acceptance wrapper starts the candidate from Build's tarball.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
@@ -48,8 +48,7 @@ hits=$(awk '/^fscache_cache_hits_total/ {print $2}' /tmp/metrics-cold.txt)
 # build's restored bytes can be proven identical, not assumed.
 step_08() (
 cd bench/gradle-sample
-find . -path '*/build/classes/*' -type f -print0 | sort -z \
-  | xargs -0 sha256sum > /tmp/cold-outputs.sha256
+find . -path '*/build/classes/*' -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/cold-outputs.sha256
 wc -l < /tmp/cold-outputs.sha256
 )
 
@@ -107,8 +106,7 @@ echo "warm: hits=${hits:-0} (>= ${expected} required); PUTs cold=${cold_puts:-0}
 step_13() (
 cd bench/gradle-sample
 set -euo pipefail
-find . -path '*/build/classes/*' -type f -print0 | sort -z \
-  | xargs -0 sha256sum > /tmp/warm-outputs.sha256
+find . -path '*/build/classes/*' -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/warm-outputs.sha256
 if ! diff -u /tmp/cold-outputs.sha256 /tmp/warm-outputs.sha256; then
   echo "::error::restored outputs differ from the cold build's — the cache returned different bytes" >&2
   exit 1

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # bin/acceptance-egress.sh: the no-phone-home suite (REQ-PRIV-001-AC1), extracted unchanged from stage-acceptance-egress.yml
-# (advisor ruling Q7; REQ-CHAIN-006-AC5). REF is the candidate image to run (bin/check-acceptance.sh sets it to the image it
+# (advisor ruling Q7; REQ-CHAIN-006-AC5). REF is the candidate image to run (the Check acceptance wrapper sets it to the image it
 # loaded from Build's tarball). The old stage's evidence upload is not carried: Check uploads check-results/ only.
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
@@ -101,7 +101,7 @@ analyze_strace() {
   # DNS/OUT violations to stdout and exits non-zero on any
   # violation OR unusable trace.
   set +e
-  python3 "${GITHUB_WORKSPACE}/bin/analyze-egress-trace.py" "$sfile" "${args[@]}" \
+  python3 bin/analyze-egress-trace.py "$sfile" "${args[@]}" \
     > "/tmp/${label}.sys.ext" 2> "/tmp/${label}.sys.err"
   local rc=$?
   set -e
@@ -256,11 +256,7 @@ run_scenario() {
   # an unconfined seccomp/apparmor profile are required for ptrace.
   # FSCACHE_* env is inherited unchanged (none is set here), so the
   # cache runs identically to a bare `docker run "$REF"`.
-  docker run -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" \
-    --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined \
-    -v "$TRACE_BIN":/trace:ro -v "$TRACE_OUT":/out \
-    --entrypoint /trace/strace "$REF" \
-    -f -e trace=network -yy -qq -o "/out/${label}.strace" "$CANDIDATE_ENTRYPOINT" >/dev/null
+  docker run -d --name "fscache-cand-${label}" --net "container:fscache-net-${label}" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v "$TRACE_BIN":/trace:ro -v "$TRACE_OUT":/out --entrypoint /trace/strace "$REF" -f -e trace=network -yy -qq -o "/out/${label}.strace" "$CANDIDATE_ENTRYPOINT" >/dev/null
   # ---- startup interval (capture already running) ----
   # The client runs INSIDE the shared netns, so it reaches the server
   # over loopback with no egress and no host port - identical on the
@@ -433,7 +429,7 @@ negative_controls() {
   # here so the release gate itself proves the analyzer catches
   # the connect AND sendmmsg packetless canaries and fails closed
   # on unusable traces - not a single ad-hoc example.
-  bash "${GITHUB_WORKSPACE}/bin/analyze-egress-trace-test.sh" \
+  bash bin/analyze-egress-trace-test.sh \
     || fail "control C: the candidate-trace analyzer regression suite failed"
           }
 

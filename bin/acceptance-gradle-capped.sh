@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # bin/acceptance-gradle-capped.sh: the Gradle capped-server suite (REQ-EVICT-002-AC3) and the suite's results line, extracted
 # unchanged from acceptance.yml (advisor ruling Q7; REQ-CHAIN-006-AC5). The capped server is already listening on localhost:18096.
-# Its last step writes the asserted ACs to $GITHUB_OUTPUT (the results step of acceptance.yml; bin/check-acceptance.sh reads it).
+# Its last step writes the asserted ACs to $GITHUB_OUTPUT (the results step of acceptance.yml; the Check acceptance wrapper reads it).
 # Each step_NN below is the `run:` body of that step, byte for byte, run in its own subshell with the step's working directory, as
 # GitHub runs a step (bash -eo pipefail, its own process): its exit, cd, variables and traps stay inside it, and the first failing
 # step stops the suite. Only `set -eo pipefail` is set here, GitHub's default for a run step (no -u: the bodies never ran with it).
 set -eo pipefail
+# The one Gradle invocation of the three builds below (the sample project's own wrapper, as acceptance.yml ran it).
+capped_build() { ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1; }
 
 # acceptance.yml, job acceptance-gradle, step 17: REQ-EVICT-002-AC3 — capped cold build (413 disables remote caching mid-build)
 # R03: this scenario proves the REAL post-413 behavior of Gradle
@@ -50,7 +52,7 @@ find /tmp/gradle-recovery -name build -type d -not -path '*/.gradle/*' -exec rm 
 # --info so every cacheable task logs "Build cache key for task ...":
 # the assertions below verify EXACT keys on the server, not a raw
 # PUT count (same environment-independent pattern used above).
-(cd /tmp/gradle-capped-a && ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1 | tee /tmp/capped-cold.log) \
+(cd /tmp/gradle-capped-a && capped_build | tee /tmp/capped-cold.log) \
   || { echo "::error::first (cold) build against the capped server failed - a 413 must be a cache miss, never a build failure" >&2; exit 1; }
 )
 
@@ -107,7 +109,7 @@ grep -q 'remote build cache was disabled' /tmp/capped-cold.log \
 # acceptance.yml, job acceptance-gradle, step 19: REQ-EVICT-002-AC3 — capped warm build restores only the pre-stored small task
 step_19() (
 set -euo pipefail
-(cd /tmp/gradle-capped-b && ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1 | tee /tmp/capped-warm.log) \
+(cd /tmp/gradle-capped-b && capped_build | tee /tmp/capped-warm.log) \
   || { echo "::error::second (warm) build against the capped server failed" >&2; exit 1; }
 # (5) The restore set is EXACTLY the small task stored before the
 # 413 (:core:compileJava). module-a must NOT be restored — it
@@ -137,7 +139,7 @@ set -euo pipefail
 # (6) A third build in a fresh workspace of the ORIGINAL sample (no
 # oversized file) against the SAME capped server must still get a
 # remote hit — the earlier 413 must not poison later builds.
-(cd /tmp/gradle-recovery && ./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1 | tee /tmp/capped-recovery.log) \
+(cd /tmp/gradle-recovery && capped_build | tee /tmp/capped-recovery.log) \
   || { echo "::error::the recovery build (original sample, no oversized file) failed" >&2; exit 1; }
 if ! grep -qE '^> Task :core:compileJava FROM-CACHE' /tmp/capped-recovery.log; then
   echo "::error::a subsequent small-only build did NOT get a remote cache hit - the cap poisoned later builds" >&2

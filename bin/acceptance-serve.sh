@@ -2,7 +2,7 @@
 # bin/acceptance-serve.sh SUITE main|capped|stop   (SUITE: gradle | maven)
 # Starts the candidate image IMAGE_REF the way acceptance.yml's release-chain mode starts it for that suite (same container name, port,
 # environment and health wait; no registry login: Check loads the candidate from Build's tarball), or removes every suite container.
-# Used by bin/check-acceptance.sh (REQ-CHAIN-006-AC5). The Maven password below is the suite's fixture credential, the one its
+# Used by the Check acceptance wrapper (REQ-CHAIN-006-AC5). The Maven password below is the suite's fixture credential, the one its
 # settings.xml step writes; it protects nothing.
 set -euo pipefail
 suite=${1:-} what=${2:-}

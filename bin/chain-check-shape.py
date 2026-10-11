@@ -8,7 +8,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         ubuntu-24.04; permissions exactly contents read + id-token write; no container, services, env, defaults, secrets,
                         strategy, needs, shell, working-directory, continue-on-error; steps EXACTLY, in order:
                           1. actions/checkout (full commit digest, persist-credentials: false, nothing else)
-                          2. run: ./bin/install-scanner.sh witness
+                          2. run: bash bin/install-scanner.sh witness
                           3. run: bash bin/install-kind.sh (REQ-CHAIN-006-AC14: kind and kubectl from exact versions and committed sha256)
                           4. digest-pinned actions/download-artifact steps, names from DOWN, explicit path outside bin/ and .github/, EXACTLY ONE
                              of them `images` (path images/; the candidates arrive as OCI tarballs, advisor ruling Q4)
@@ -199,7 +199,7 @@ def stage(path):
                 bad.append("upload-artifact must be digest-pinned, name and path from %s (witness-check carries witness-records/): %s" % (UP, w))
         elif u:
             bad.append("uses not allowed in the Check stage: %s" % u)
-        elif (s.get("run") or "").strip() == "./bin/install-scanner.sh witness":
+        elif (s.get("run") or "").strip() == "bash bin/install-scanner.sh witness":
             kinds.append("install")
         elif (s.get("run") or "").strip() == KIND_STEP:
             kinds.append("kind")

@@ -15,7 +15,7 @@ create_cluster() (
 kind create cluster --name fscache-accept --image kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
 )
 
-# NEW (in place of the old stage's registry pull): the candidate bin/check-acceptance.sh loaded and tagged as $CANDIDATE_LOCAL.
+# NEW (in place of the old stage's registry pull): the candidate the Check acceptance wrapper loaded and tagged as $CANDIDATE_LOCAL.
 load_candidate() (
 kind load docker-image "$CANDIDATE_LOCAL" --name fscache-accept
 )
@@ -23,29 +23,7 @@ kind load docker-image "$CANDIDATE_LOCAL" --name fscache-accept
 # stage-acceptance-k8s.yml, job k8s, step 3: extract the documented manifests verbatim (image substituted)
 step_03() (
 set -euo pipefail
-python3 - <<'PY'
-import re, os
-doc = open("docs/kubernetes.md").read()
-# Grab the first fenced yaml block under each documented H2.
-want = ["## Secret (credentials)", "## PersistentVolumeClaim",
-        "## Deployment", "## Service"]
-blocks = []
-for heading in want:
-    i = doc.index(heading)
-    m = re.search(r"```yaml\n(.*?)```", doc[i:], re.S)
-    if not m:
-        raise SystemExit(f"no yaml block under {heading!r}")
-    blocks.append(m.group(1).rstrip())
-manifest = "\n---\n".join(blocks)
-# Substitute ONLY the image tag with the loaded candidate; keep
-# imagePullPolicy Never so kind uses the loaded image.
-manifest = manifest.replace("ghcr.io/fosterstack/cache:X.Y.Z", os.environ["CANDIDATE_LOCAL"])
-manifest = manifest.replace(
-    "image: " + os.environ["CANDIDATE_LOCAL"],
-    "image: " + os.environ["CANDIDATE_LOCAL"] + "\n          imagePullPolicy: Never")
-open("/tmp/fscache-k8s.yaml", "w").write(manifest)
-print(manifest)
-PY
+python3 bin/acceptance-k8s-manifests.py
 )
 
 # stage-acceptance-k8s.yml, job k8s, step 4: apply and wait for Ready
@@ -59,83 +37,7 @@ kubectl rollout status deploy/fscache --timeout=180s \
 # stage-acceptance-k8s.yml, job k8s, step 5: extract the documented runner env block and smoke commands
 step_05() (
 set -euo pipefail
-python3 - <<'PY'
-import re, os, shlex
-doc = open("docs/kubernetes.md").read()
-
-# --- The documented "In-cluster runners" env block ---------------
-# The runner-side secretKeyRef mapping a CI runner pod uses to
-# receive FSCACHE_USERNAME / FSCACHE_PASSWORD. We graft this block
-# VERBATIM into a client pod: if the doc regresses (e.g. back to an
-# envFrom shortcut, or a wrong secret key), the grafted pod's env
-# is wrong and the assertions below fail.
-i = doc.index("## In-cluster runners")
-section = doc[i:]
-yaml_blocks = re.findall(r"```yaml\n(.*?)```", section, re.S)
-runner_block = next((b for b in yaml_blocks if "name: runner" in b), None)
-if runner_block is None:
-    raise SystemExit("no runner pod-spec yaml block under 'In-cluster runners'")
-rlines = runner_block.splitlines()
-env_idx = next((n for n, l in enumerate(rlines) if l.strip() == "env:"), None)
-if env_idx is None:
-    raise SystemExit("documented runner block has no 'env:' list (regressed to envFrom?)")
-env_block = "\n".join(l for l in rlines[env_idx:] if l.strip() != "")
-for name in ("FSCACHE_USERNAME", "FSCACHE_PASSWORD"):
-    if name not in env_block:
-        raise SystemExit("documented runner env block does not map " + name)
-
-# The doc block's `env:` sits at 6-space indent under
-# `- name: runner`; that is exactly where our container needs it,
-# so it grafts in unchanged.
-pod = (
-    "apiVersion: v1\n"
-    "kind: Pod\n"
-    "metadata:\n"
-    "  name: fscache-runner\n"
-    "  labels:\n"
-    "    app.kubernetes.io/name: fscache-runner\n"
-    "spec:\n"
-    "  restartPolicy: Never\n"
-    "  containers:\n"
-    "    - name: runner\n"
-    "      image: " + os.environ["CLIENT_LOCAL"] + "\n"
-    "      imagePullPolicy: Never\n"
-    '      command: ["sleep", "3600"]\n'
-    + env_block + "\n"
-)
-open("/tmp/runner-pod.yaml", "w").write(pod)
-print("=== runner client pod (documented env block grafted) ===")
-print(pod)
-
-# --- The documented port-forward smoke commands ------------------
-# Taken from their published text; the port-forward is backgrounded
-# for CI and each curl's expected result is read from the doc's own
-# `# -> ...` annotations, so a broken documented command/credential
-# fails here.
-sh_blocks = re.findall(r"```sh\n(.*?)```", doc, re.S)
-pf_block = next(b for b in sh_blocks if "port-forward" in b)
-curl_block = next(b for b in sh_blocks if "curl -s localhost" in b)
-pf_cmd = next(l.strip() for l in pf_block.splitlines()
-              if l.strip() and not l.strip().startswith("#"))
-open("/tmp/pf-forward.sh", "w").write("#!/usr/bin/env bash\n" + pf_cmd + "\n")
-
-raw = re.sub(r"\\\n\s*", " ", curl_block)   # join line continuations
-cmds = [l.rstrip() for l in raw.splitlines()
-        if l.strip() and not l.strip().startswith("#")]
-lines = ["#!/usr/bin/env bash", "set -euo pipefail"]
-lines.append('assert_out() { got=$(eval "$1" 2>/dev/null) || true; [ "$got" = "$2" ] || { echo "::error::documented smoke command failed: [$1] got [$got] want [$2]" >&2; exit 1; }; }')
-lines.append('assert_ok() { eval "$1" >/dev/null 2>&1 || { echo "::error::documented smoke command failed: [$1]" >&2; exit 1; }; }')
-for c in cmds:
-    m = re.search(r"#\s*->\s*(\S+)", c)
-    if m:
-        lines.append("assert_out " + shlex.quote(c) + " " + shlex.quote(m.group(1)))
-    else:
-        lines.append("assert_ok " + shlex.quote(c))
-open("/tmp/smoke-assert.sh", "w").write("\n".join(lines) + "\n")
-print("=== documented port-forward: " + pf_cmd)
-print("=== documented smoke assertions ===")
-print("\n".join(lines))
-PY
+python3 bin/acceptance-k8s-smoke.py
 )
 
 # stage-acceptance-k8s.yml, job k8s, step 6: load a pinned curl image for the runner client pod
@@ -185,11 +87,11 @@ set -euo pipefail
 # Run the documented port-forward verbatim (backgrounded for CI),
 # then the documented curl smoke commands with their doc-declared
 # expected results.
-bash /tmp/pf-forward.sh >/tmp/pf.log 2>&1 &   # the documented command, written by the step above
+bash /tmp/pf-forward >/tmp/pf.log 2>&1 &   # the documented command, written by the step above
 pf=$!
 trap 'kill "$pf" 2>/dev/null || true' EXIT
 for _ in $(seq 1 30); do grep -q "Forwarding from" /tmp/pf.log && break; sleep 1; done
-bash /tmp/smoke-assert.sh
+bash /tmp/smoke-assert
 echo "REQ-DEPLOY-003-AC1: manifests + runner env block + smoke commands from docs/kubernetes.md pass"
 )
 

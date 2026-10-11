@@ -111,7 +111,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 156, 6   # 156: main's 140 + the 9 release-chain PR 1 patterns (chain-* scripts and tests, the Sigstore public trust files, results/.gitkeep) + the 7 PR 2 patterns (Witness wrapper, Build/Rebuild stage scripts, admission, items and archive helpers, suites)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 163, 6   # 163 = 156 + the 7 PR 3 patterns (check scripts and helpers, acceptance suites, kind installer, Check suites and shape judge); 156: main's 140 + the 9 release-chain PR 1 patterns (chain-* scripts and tests, the Sigstore public trust files, results/.gitkeep) + the 7 PR 2 patterns (Witness wrapper, Build/Rebuild stage scripts, admission, items and archive helpers, suites)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -158,7 +158,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "c6efba270b77edad3d27b1c68f3623dd47a9c36b0026b7a4496f035b4ba7d5cd"
+PINNED_SHA256 = "70b7db52966aff1c468ff967ccd288f7ad659de8e589ca6d5b1c4cd46867777c"
 if rstart and rend:
     import hashlib
     _b = _rawlines

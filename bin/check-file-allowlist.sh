@@ -147,6 +147,15 @@ ALLOW_PATTERNS=(
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
   '^bin/chain-test-(harness|shape)\.py$'
+  # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
+  # suite), the kind installer, and the Check suites with their shape judge
+  '^bin/check-(stage|scan|fips|acceptance|guide)\.sh$'
+  '^bin/check-(guide-plan|osv-db)\.py$'
+  '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
+  '^bin/acceptance-k8s-(manifests|smoke)\.py$'
+  '^bin/install-kind\.sh$'
+  '^bin/chain-check-(scripts|wiring)-test\.sh$'
+  '^bin/chain-check-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'

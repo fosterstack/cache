@@ -24,10 +24,6 @@
   {
    "path": ".github/workflows/stage-promote.yml",
    "sha256": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393"
-  },
-  {
-   "path": ".github/workflows/stage-verify.yml",
-   "sha256": "4bd41b1e9563c3d0c35f9b1ab2f2dff5085615d4d96e545ae1750704a22fdc78"
   }
  ]
 }

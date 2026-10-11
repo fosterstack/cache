@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # bin/check-acceptance.sh SUITE --digests FILE --images DIR --out DIR   (SUITE: gradle | maven | egress | k8s)
 # Runs one existing acceptance suite against the production candidate from Build's artifacts (v0.3.0 rule 55; REQ-CHAIN-006-AC5).
-# It loads DIR/production.tar and runs the suite's shared scripts (bin/acceptance-*.sh, the bodies acceptance.yml and the old stages ran,
-# unchanged) against that image: gradle and maven start the candidate as acceptance.yml's release-chain mode does (bin/acceptance-serve.sh),
+# It loads DIR/production.tar and runs the suite's shared scripts (the bodies acceptance.yml and the old stages ran, unchanged: the
+# bin/acceptance-SUITE scripts) against that image: gradle and maven start the candidate as acceptance.yml's release-chain mode does (bin/acceptance-serve.sh),
 # maven once per extension version of acceptance.yml's matrix (1.2.0, 1.2.3) from a clean state; egress runs it as REF; k8s loads it into
 # its kind cluster as CANDIDATE_LOCAL. The suite's last step writes the ACs it asserted as results=JSON to $GITHUB_OUTPUT; the script
 # fails when a suite fails or reports no passing assertion, and writes OUT/acceptance-SUITE.json naming the candidate digest.
@@ -29,7 +29,7 @@ done
 d=$(jq -r '."image-production" // empty' "$digests")
 [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-production digest"
 [ -f "$images/production.tar" ] || fail "the production image $images/production.tar is missing"
-[ -f "bin/acceptance-$suite.sh" ] || fail "the $suite suite (bin/acceptance-$suite.sh) is not in the tree"
+[ -f "bin/acceptance-$suite.sh" ] || fail "the $suite suite script is not in the tree"
 mkdir -p "$out"
 loaded=$(docker load -i "$images/production.tar")
 ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
@@ -38,38 +38,35 @@ tmp=$(mktemp -d)
 cleanup() { [ ! -f "$tmp/extensions.xml" ] || cp "$tmp/extensions.xml" bench/maven-sample/.mvn/extensions.xml; bash bin/acceptance-serve.sh gradle stop; rm -rf "$tmp"; }
 trap cleanup EXIT
 # The suites ran under setup-java 21 in acceptance.yml; the ubuntu-24.04 runner carries a Java 21 beside its default.
-[ -z "${JAVA_HOME_21_X64:-}" ] || { export JAVA_HOME="$JAVA_HOME_21_X64"; export PATH="$JAVA_HOME/bin:$PATH"; }
+[ -z "${JAVA_HOME_21_X64:-}" ] || export JAVA_HOME="$JAVA_HOME_21_X64"
 
-run() { # run SCRIPT: one shared suite script, its results line (if any) appended to $tmp/results
-  : > "$tmp/output"
-  GITHUB_OUTPUT="$tmp/output" bash "bin/$1" < /dev/null || fail "$1 failed against $d"
-  sed -n 's/^results=//p' "$tmp/output" >> "$tmp/results"
-}
+fresh_output() { : > "$tmp/output"; }   # each suite script writes its results=JSON line to its own GITHUB_OUTPUT file
+collect() { sed -n 's/^results=//p' "$tmp/output" >> "$tmp/results"; }   # its results line (if any) is appended to $tmp/results
 : > "$tmp/results"
 case "$suite" in
   gradle)
     IMAGE_REF="$ref" bash bin/acceptance-serve.sh gradle main
-    run acceptance-gradle.sh
+    fresh_output; GITHUB_OUTPUT="$tmp/output" bash bin/acceptance-gradle.sh || fail "the gradle suite script failed against $d"; collect
     IMAGE_REF="$ref" bash bin/acceptance-serve.sh gradle capped
-    run acceptance-gradle-capped.sh ;;
+    fresh_output; GITHUB_OUTPUT="$tmp/output" bash bin/acceptance-gradle-capped.sh || fail "the gradle-capped suite script failed against $d"; collect ;;
   maven)
     cp bench/maven-sample/.mvn/extensions.xml "$tmp/extensions.xml"
     export COLD_LOOKUPS=2 COLD_UPLOADS=5 MODULES=2   # acceptance.yml's acceptance-maven job env, unchanged
     for v in 1.2.0 1.2.3; do                         # acceptance.yml's matrix; each leg there starts on a fresh runner
       bash bin/acceptance-serve.sh maven stop
       rm -rf /tmp/mvn-* /tmp/m2-* /tmp/m-cold* /tmp/m-warm*
-      find bench/maven-sample -name target -type d -prune -exec rm -rf {} +
+      rm -rf bench/maven-sample/target bench/maven-sample/lib/target bench/maven-sample/app/target
       sed "s|<version>[0-9.]*</version>|<version>$v</version>|" "$tmp/extensions.xml" > bench/maven-sample/.mvn/extensions.xml
       IMAGE_REF="$ref" bash bin/acceptance-serve.sh maven main
-      run acceptance-maven.sh
+      fresh_output; GITHUB_OUTPUT="$tmp/output" bash bin/acceptance-maven.sh || fail "the maven suite script failed against $d"; collect
       IMAGE_REF="$ref" bash bin/acceptance-serve.sh maven capped
-      run acceptance-maven-capped.sh
+      fresh_output; GITHUB_OUTPUT="$tmp/output" bash bin/acceptance-maven-capped.sh || fail "the maven-capped suite script failed against $d"; collect
     done ;;
   egress)
-    REF="$ref" run acceptance-egress.sh ;;
+    fresh_output; GITHUB_OUTPUT="$tmp/output" REF="$ref" bash bin/acceptance-egress.sh || fail "the egress suite script failed against $d"; collect ;;
   k8s)
     docker tag "$ref" fscache-candidate:accept
-    CANDIDATE_LOCAL=fscache-candidate:accept run acceptance-k8s.sh ;;
+    fresh_output; GITHUB_OUTPUT="$tmp/output" CANDIDATE_LOCAL=fscache-candidate:accept bash bin/acceptance-k8s.sh || fail "the k8s suite script failed against $d"; collect ;;
 esac
 want=1; [ "$suite" != maven ] || want=2
 jq -s -e --argjson n "$want" 'length == $n and all(.[]; type == "array" and length > 0 and all(.[]; .result == "pass"))' "$tmp/results" > /dev/null 2>&1 \

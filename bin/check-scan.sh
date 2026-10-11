@@ -6,7 +6,7 @@
 # modules (go.mod, tools/requirements/go.mod), as scanners.json (row 45) and today's stage-verify.yml have it. No unlisted scanner runs.
 # A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). The package
 # count is read from the tool's own machine output: the components of the CycloneDX SBOM grype writes (-o cyclonedx-json=FILE, as
-# bin/grype-scan.sh counts them for REQ-REL-004-AC1) and the packages osv-scanner lists with --format json --all-packages (shapes as
+# the PR scan script counts them for REQ-REL-004-AC1) and the packages osv-scanner lists with --format json --all-packages (shapes as
 # recorded in .github/agent/fixtures/scanners).
 # Vulnerability databases (REQ-CHAIN-006-AC15): grype fetches its database fresh (grype db update) before the first scan, and every scan
 # is then held to that database (no auto-update, a 48-hour built-age limit); the database each scan used is read from its own output
@@ -43,7 +43,7 @@ done
 [ -f "$list" ] || fail "the scanner list $list does not exist"
 [ -f "$digests" ] || fail "the digest list $digests does not exist"
 scanners=()
-while IFS= read -r s; do scanners+=("$s"); done < <(jq -r '.scanners[]' "$list")
+mapfile -t scanners < <(jq -r '.scanners[]' "$list")
 [ "${#scanners[@]}" -gt 0 ] || fail "no scanner is listed in $list (a vacuous pass is not a pass)"
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k] // empty' "$digests")
@@ -51,8 +51,17 @@ for v in production fips; do
   [ -f "$images/$v.tar" ] || fail "the $v image $images/$v.tar is missing"
 done
 shopt -s nullglob
+# REQ-PLAT-001-AC1 (Linux only): the archive set is exactly the four Linux archives, fscache and fscache-fips for amd64 and arm64, of one version,
+# and no darwin or windows file of any kind exists beside them. Anything else stops here, before a scan counts it as covered.
+for f in "$archives"/*; do
+  case "${f,,}" in *darwin*|*windows*) fail "a darwin or windows file exists in $archives ($(basename "$f")): REQ-PLAT-001 ships Linux only" ;; esac
+done
 tars=("$archives"/*.tar.gz)
-[ "${#tars[@]}" -gt 0 ] || fail "no release archive in $archives"
+want=$(printf '%s\n' fscache_VER_linux_amd64.tar.gz fscache_VER_linux_arm64.tar.gz fscache-fips_VER_linux_amd64.tar.gz fscache-fips_VER_linux_arm64.tar.gz)
+ver=$(basename "${tars[0]:-x}" | sed -n 's/^fscache[a-z-]*_\([^_]*\)_linux_.*/\1/p')
+got=$(for f in "$archives"/*; do basename "$f"; done | sort)
+[ -n "$ver" ] && [ "$got" = "$(sed "s/VER/$ver/" <<< "$want" | sort)" ] \
+  || fail "the archive set in $archives is not exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64, of one version): found $(tr '\n' ' ' <<< "$got")"
 mods=(go.mod tools/requirements/go.mod)
 for m in "${mods[@]}"; do [ -f "$m" ] || fail "the Go module file $m is missing"; done
 mkdir -p "$out"
@@ -63,10 +72,11 @@ GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (.g
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
+add_target() { tname+=("$1"); tdigest+=("$2"); tpath+=("$3"); }   # one scan target: its name, its digest and the file the scanner reads
 failed=0 ran=0
 all="[]"
 for s in "${scanners[@]}"; do
-  if ! command -v "$s" > /dev/null 2>&1; then
+  if ! type -P "$s" > /dev/null 2>&1; then
     echo "check-scan: $s is listed but not installed" >&2; failed=1; continue
   fi
   case "$s" in grype|osv-scanner) ;; *) echo "check-scan: $s is listed but this script knows no way to run it" >&2; failed=1; continue ;; esac
@@ -97,15 +107,15 @@ for s in "${scanners[@]}"; do
   verdict=pass
   [ -n "$version" ] || { echo "check-scan: $s reports no version" >&2; verdict=fail; }
   subjects="[]"
-  targets=()
-  for v in production fips; do targets+=("$v|$(jq -r --arg k "image-$v" '.[$k]' "$digests")|$images/$v.tar"); done
+  tname=() tdigest=() tpath=()
+  for v in production fips; do add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v.tar"; done
   if [ "$s" = grype ]; then
-    for a in "${tars[@]}"; do targets+=("$(basename "$a")|sha256:$(sha256sum "$a" | cut -d' ' -f1)|$a"); done
+    for a in "${tars[@]}"; do add_target "$(basename "$a")" "sha256:$(sha256sum "$a" | cut -d' ' -f1)" "$a"; done
   else
-    for m in "${mods[@]}"; do targets+=("$m|sha256:$(sha256sum "$m" | cut -d' ' -f1)|$m"); done
+    for m in "${mods[@]}"; do add_target "$m" "sha256:$(sha256sum "$m" | cut -d' ' -f1)" "$m"; done
   fi
-  for t in "${targets[@]}"; do
-    IFS='|' read -r name digest path <<< "$t"
+  for ti in "${!tname[@]}"; do
+    name=${tname[$ti]} digest=${tdigest[$ti]} path=${tpath[$ti]}
     rc=0
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
@@ -136,7 +146,7 @@ for s in "${scanners[@]}"; do
       from=$(jq -r '.descriptor.db.status.from // empty' "$tmp/out.json" 2> /dev/null) || from=""
       built=$(jq -r '.descriptor.db.status.built // empty' "$tmp/out.json" 2> /dev/null) || built=""
       sum=""; [[ "$from" =~ [?\&]checksum=sha256(%3A|%3a|:)([0-9a-f]{64})($|\&) ]] && sum="sha256:${BASH_REMATCH[2]}"
-      host=""; [[ "$from" =~ ^https://([^/?#]+)/ ]] && host=${BASH_REMATCH[1]}
+      host=""; case "$from" in https://*/*) host=${from#https://}; host=${host%%/*} ;; esac
       bt=$(jq -rn --arg b "$built" '$b | fromdateiso8601' 2> /dev/null) || bt=""
       if [ "$host" != "$GRYPE_HOST" ]; then
         echo "check-scan: grype's database for $name came from ${from:-nowhere}, not grype's own database host ($GRYPE_HOST)" >&2; sv=fail
@@ -157,47 +167,7 @@ for s in "${scanners[@]}"; do
   done
   dbs="[]"
   if [ "$s" = osv-scanner ]; then   # the databases the scans used, read from the downloaded files (REQ-CHAIN-006-AC15)
-    if dbs=$(python3 -I - "$osvcache" "$tmp/osv-ecos" "$now" "$MAX_AGE" <<'PY'
-import datetime, hashlib, json, os, sys, zipfile
-cache, ecofile, now, max_age = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-HOST = "https://osv-vulnerabilities.storage.googleapis.com"   # the only allowed osv database host
-def fail(m):
-    print("check-scan: " + m, file=sys.stderr); sys.exit(1)
-ecos = {l.strip() for l in open(ecofile) if l.strip()}
-zips = sorted(os.path.join(d, f) for d, _, fs in os.walk(cache) for f in fs if f == "all.zip")
-if not zips:
-    fail("no osv database zip in the cache after the run: osv-scanner scanned against no downloaded database")
-out = []
-for z in zips:
-    eco = os.path.basename(os.path.dirname(z))
-    if eco not in ecos and not any(e.split(":")[0] == eco for e in ecos):
-        fail("the osv database %s is for %s, not one the scan targets (the scans reported %s)" % (z, eco, sorted(ecos)))
-    try:
-        with zipfile.ZipFile(z) as zf:
-            recs = [json.loads(zf.read(n)) for n in zf.namelist() if n.endswith(".json")]
-    except (zipfile.BadZipFile, ValueError, OSError) as e:
-        fail("the osv database for %s is unreadable: %s" % (eco, e))
-    if not recs:
-        fail("the osv database for %s holds no record" % eco)
-    dated = []
-    for r in recs:
-        m = r.get("modified") if isinstance(r, dict) else None
-        if isinstance(m, str):
-            try:
-                dated.append((datetime.datetime.fromisoformat(m.replace("Z", "+00:00")), m))
-            except ValueError:
-                pass
-    if not dated:
-        fail("the osv database for %s has no record with a readable modified date" % eco)
-    t, newest = max(dated)
-    if now - t.timestamp() > max_age:
-        fail("the osv database for %s has its newest record modified %s, older than 48 hours: OSV records change constantly, so a stale "
-             "newest modification means the database was not refreshed" % (eco, newest))
-    out.append({"ecosystem": eco, "db_source_url": "%s/%s/all.zip" % (HOST, eco), "db_source_basis": "documented", "db_newest_record_modified": newest,
-                "db_digest": "sha256:" + hashlib.sha256(open(z, "rb").read()).hexdigest()})
-print(json.dumps(out))
-PY
-    ); then :; else dbs="[]"; verdict=fail; fi
+    if dbs=$(python3 bin/check-osv-db.py "$osvcache" "$tmp/osv-ecos" "$now" "$MAX_AGE"); then :; else dbs="[]"; verdict=fail; fi
   elif [ -z "$db_url" ]; then
     verdict=fail
   fi

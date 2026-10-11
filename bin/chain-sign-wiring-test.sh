@@ -182,7 +182,6 @@ LEGACY_PINNED = {
     ".github/workflows/stage-acceptance-predicate.yml": "6fc4b5e514cb054c20f4cc56eeebf123fdda54ec9cc985ffef1922c72e8be4a8",
     ".github/workflows/stage-authorize.yml": "2a0b7c7b6260a372d1d4f31c9de5fb78039b899aa9c4351065f658293523cfdf",
     ".github/workflows/stage-promote.yml": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393",
-    ".github/workflows/stage-verify.yml": "4bd41b1e9563c3d0c35f9b1ab2f2dff5085615d4d96e545ae1750704a22fdc78",
 }
 LEGACY_EXPECTED = set(LEGACY_PINNED)
 def sha256_of(path):

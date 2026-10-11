@@ -293,13 +293,10 @@ for gone in ("acceptance-gradle.yml", "acceptance-maven.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
         bad.append("%s still exists" % gone)
 rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
-calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", "")) and "stage-" not in str(v.get("uses", ""))]
-if calls != ["acceptance"] or rel["acceptance"].get("uses") != "./.github/workflows/acceptance.yml":
-    bad.append("release.yml does not call acceptance.yml once: %s" % calls)
-pred = (rel.get("acceptance-predicate") or {}).get("with") or {}
-if pred.get("gradle-results") != "${{ needs.acceptance.outputs.gradle-results }}" or \
-        pred.get("maven-results") != "${{ needs.acceptance.outputs.maven-results }}":
-    bad.append("the predicate does not receive both results")
+# REQ-CHAIN-006-AC10 (PR 3): the release chain no longer calls acceptance.yml (Check runs the shared suite scripts itself); the workflow stays for the PR gate
+calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", ""))]
+if calls:
+    bad.append("release.yml still calls an acceptance workflow (Check runs the suites): %s" % calls)
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
