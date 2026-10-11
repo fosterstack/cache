@@ -269,6 +269,12 @@ HOSTED = re.compile(r"ubuntu-(22\.04|24\.04)(-arm)?|ubuntu-latest")  # CLOSED se
 MATRIX_READ = re.compile(r"\$\{\{ ?matrix\.([A-Za-z_][\w-]*) ?\}\}")  # the one expression runs-on may hold: a whole read of one matrix key
 MATRIX_LIT = re.compile(r"[A-Za-z0-9_.-]+")
 USES_OK = re.compile(r"actions/(checkout|download-artifact|upload-artifact)@([0-9a-f]{40})")
+# ONE more action reference, a closed allowance (advisor, Codex #299 A r2 blocker 4): admission's verify-freeze needs the Go toolchain of go.mod, which the
+# old stage-admission installed. It is valid only in stage-build.yml, job apk, exactly once, before the first step that runs bin/witnessed.sh (admission is
+# the first command of that step), with exactly these two `with:` keys (the version comment is the pin checker's: a parsed workflow has none); no other file, job, digest or tag.
+SETUP_GO_REF = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+SETUP_GO_WITH = {"go-version-file": "go.mod", "cache": "false"}
+SETUP_GO_PLACE = (".github/workflows/stage-build.yml", "apk")
 
 def action_files(base):
     """Every composite action file (action.yml / action.yaml, any case) anywhere in the tree (Opus #249 r6)."""
@@ -768,7 +774,21 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                 elif k not in env_names and k not in amb: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json" % (sp, k))
             if uses is not None:
                 if env: errs.append("%s: an action step passes env" % sp)
-                m = USES_OK.fullmatch(str(uses).split(" #")[0].strip())
+                ref, _, comment = str(uses).partition(" #")
+                if ref.strip() == SETUP_GO_REF:
+                    steps_ = j.get("steps") or []
+                    pos = [k for k, x in enumerate(steps_) if isinstance(x, dict) and str(x.get("uses", "")).split(" #")[0].strip() == SETUP_GO_REF]
+                    first_run = next((k for k, x in enumerate(steps_) if isinstance(x, dict) and "witnessed.sh" in str(x.get("run", ""))), len(steps_))
+                    if (full, jn) != SETUP_GO_PLACE:
+                        errs.append("%s: actions/setup-go is allowed only in %s job %s" % (sp, SETUP_GO_PLACE[0], SETUP_GO_PLACE[1]))
+                    elif w != SETUP_GO_WITH:
+                        errs.append("%s: actions/setup-go may carry exactly with %s, got %s" % (sp, SETUP_GO_WITH, w))
+                    elif len(pos) != 1:
+                        errs.append("%s: actions/setup-go may appear once in the job, found %d" % (sp, len(pos)))
+                    elif pos[0] > first_run:
+                        errs.append("%s: actions/setup-go must come before the step that runs bin/witnessed.sh (admission)" % sp)
+                    continue
+                m = USES_OK.fullmatch(ref.strip())
                 if not m:
                     errs.append("%s: uses %r; a stage file may use only a digest-pinned actions/checkout, download-artifact or upload-artifact (no local composite action, docker://, github-script, reusable workflow)" % (sp, uses)); continue
                 act = m.group(1)

@@ -47,6 +47,10 @@ jobs:
         env:
           MODE: ${{ inputs.mode }}
         run: bash bin/build-stage-refuse-mode.sh "$MODE"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
       - name: install Witness (pinned by checksum)
         run: bash bin/install-scanner.sh witness
       - name: apk under Witness

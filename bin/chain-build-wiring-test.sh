@@ -87,7 +87,7 @@ spec = importlib.util.spec_from_file_location("shape", shape); S = importlib.uti
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65"
-json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD]}, open(w + "/allowed-actions.json", "w"))
+json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD, S.SETUP_GO]}, open(w + "/allowed-actions.json", "w"))
 
 
 def witness_block(spec_):       # the stage's Witness step(s): one line through the helper (the fixture side of the seam, 1/2)
