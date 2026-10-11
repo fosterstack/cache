@@ -238,6 +238,7 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestServeErrorAfterShutdownSignalIsReturned" }
       - { type: go-test, ref: "cmd/fscache:TestServePanicInReadyKeepsMarker" }
       - { type: go-test, ref: "cmd/fscache:TestServePanicInServerNewKeepsMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServeTLSErrorsKeepMarker" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -775,6 +776,112 @@ func TestServeErrorAfterShutdownSignalIsReturned(t *testing.T) {
 	}
 	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
 		t.Errorf("unclean marker present = %v (err %v) after a serving error during shutdown, want true", present, err)
+	}
+}
+
+// proves: REQ-STORE-005-AC5 — with TLS on, a listener error, a serving error after the shutdown signal and a shutdown error each keep the marker; only the clean return clears it
+//
+// The same exits as the plain-HTTP tests above, taken through ServeTLS: the
+// plain Serve seam fails the test if it is called, so every case runs on the
+// HTTPS path. The listener error is real: the listener is closed under
+// ServeTLS, which then returns net.ErrClosed, not http.ErrServerClosed.
+func TestServeTLSErrorsKeepMarker(t *testing.T) {
+	p := writePair(t, t.TempDir(), "ac5", "MARKER-AC5-1a2b3c")
+	realTLS := httpServeTLS
+	for _, tc := range []struct {
+		name      string
+		raceStop  bool // ServeTLS fails only after the shutdown signal was taken
+		noSignal  bool // no shutdown signal: serve must return on the error alone
+		serveTLS  func(*http.Server, net.Listener) error
+		shutdown  func(*http.Server, context.Context) error
+		wantErr   error
+		wantInErr string
+		keep      bool
+	}{
+		{
+			name: "listener error",
+			serveTLS: func(s *http.Server, l net.Listener) error {
+				_ = l.Close()
+				return realTLS(s, l)
+			},
+			noSignal: true, wantErr: net.ErrClosed, wantInErr: "serve:", keep: true,
+		},
+		{name: "serving error after the shutdown signal", raceStop: true, wantErr: errTestServe, wantInErr: "serve:", keep: true},
+		{
+			name:     "shutdown error",
+			serveTLS: realTLS,
+			shutdown: func(*http.Server, context.Context) error { return errTestShutdown },
+			wantErr:  errTestShutdown, wantInErr: "shutdown:", keep: true,
+		},
+		{name: "clean return", serveTLS: realTLS, keep: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			freshRegistry(t)
+			dir := t.TempDir()
+			t.Setenv("FSCACHE_DATA_DIR", dir)
+			t.Setenv("FSCACHE_ADDR", freePort(t))
+			t.Setenv("FSCACHE_TLS_CERT", p.certPath)
+			t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+			closes := countCloses(t)
+
+			origPlain, origTLS, origShutdown := httpServe, httpServeTLS, httpShutdown
+			t.Cleanup(func() { httpServe, httpServeTLS, httpShutdown = origPlain, origTLS, origShutdown })
+			httpServe = func(*http.Server, net.Listener) error {
+				t.Error("plain Serve called with TLS configured")
+				return nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ready := func() { cancel() }
+			if tc.noSignal {
+				ready = nil
+			}
+			serveTLS := tc.serveTLS
+			if tc.shutdown != nil {
+				httpShutdown = tc.shutdown
+			}
+			if tc.raceStop {
+				// ServeTLS blocks until Shutdown runs, so the select can only
+				// take the cancelled context; then ServeTLS fails.
+				release := make(chan struct{})
+				serveTLS = func(_ *http.Server, l net.Listener) error {
+					<-release
+					_ = l.Close()
+					return errTestServe
+				}
+				httpShutdown = func(*http.Server, context.Context) error { close(release); return nil }
+				cancel()
+				ready = nil
+			}
+			var tlsCalls atomic.Int32
+			httpServeTLS = func(s *http.Server, l net.Listener) error { tlsCalls.Add(1); return serveTLS(s, l) }
+
+			errc := make(chan error, 1)
+			go func() { errc <- serve(ctx, quietLogger(), ready) }()
+			var err error
+			select {
+			case err = <-errc:
+			case <-time.After(10 * time.Second):
+				t.Fatal("serve did not return")
+			}
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("serve: %v", err)
+				}
+			} else if !errors.Is(err, tc.wantErr) || !strings.Contains(err.Error(), tc.wantInErr) {
+				t.Fatalf("serve error = %v, want %q wrapping %v", err, tc.wantInErr, tc.wantErr)
+			}
+			if n := tlsCalls.Load(); n != 1 {
+				t.Errorf("ServeTLS called %d times, want 1", n)
+			}
+			if *closes != 1 {
+				t.Errorf("stores closed %d times, want 1", *closes)
+			}
+			if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || present != tc.keep {
+				t.Errorf("unclean marker present = %v (err %v), want %v", present, err, tc.keep)
+			}
+		})
 	}
 }
 
