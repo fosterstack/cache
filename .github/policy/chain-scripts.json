@@ -1,7 +1,8 @@
 {
   "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
   "env_names": [
-    "DIGESTS"
+    "DIGESTS",
+    "MODE"
   ],
   "scripts": [
     {
@@ -343,7 +344,7 @@
       "runs": [],
       "signs": false,
       "reason": "Build and Rebuild guard (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7): runs only when mode is neither release nor snapshot and refuses",
-      "sha256": "2b28c355ae65a500dddac3fbadc8865d758f5a5a0e8dfd2d06daf3b737ab3705"
+      "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe"
     }
   ],
   "ambient_env": [
