@@ -76,6 +76,8 @@ if ! grep -q '^GO_VER=' "$sut" 2> /dev/null; then
            "go: an unknown architecture is refused" "go: a failed download is refused" "go: no go.mod is refused" "go: a failed install leaves no toolchain" \
            "go: there is no environment override of a checksum or of the version"; do bad "$l (bin/install-scanner.sh has no go: RED until implemented)"; done
 else
+  tools_gomod_ver=$(awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ {sub(/^go/, "", $2); t = $2} $1 == "go" && g == "" {g = $2} END {print (t != "" ? t : g)}' "$root/tools/requirements/go.mod")
+  [ "$tools_gomod_ver" = "$repo_gomod_ver" ] || repo_gomod_ver="$repo_gomod_ver (tools/requirements/go.mod says $tools_gomod_ver)"
   if [ "$GOVER" = "$repo_gomod_ver" ] && grep -q "$GO_AMD" < <(grep -E 'go:x86_64\|go:amd64' "$sut") && grep -q "$GO_ARM" < <(grep -E 'go:aarch64\|go:arm64' "$sut"); then
     ok "go: the pinned version ($GOVER) is the repo go.mod's and the two sha256 values are go.dev's published ones"
   else bad "go: pins: version '$GOVER' vs go.mod '$repo_gomod_ver'; amd64/arm64 values"; fi
