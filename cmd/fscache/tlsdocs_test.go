@@ -66,6 +66,23 @@ func TestTLSDocsDescribeBothOptions(t *testing.T) {
 		t.Errorf("README row %q must list both variables, default unset, required together", row)
 	}
 
+	// The 1 MiB limit is stated where the variables are described, and the
+	// deployment pages say how to diagnose a failing handshake from the
+	// client side (the server logs handshake failures only at DEBUG).
+	for _, p := range []string{"../../README.md", "../../docs/kubernetes.md", "../../docs/docker-deploy.md"} {
+		if !strings.Contains(normSpace(text[p]), "each file may be at most 1 MiB") {
+			t.Errorf("%s does not say each file may be at most 1 MiB", p)
+		}
+	}
+	for _, p := range []string{"../../docs/kubernetes.md", "../../docs/docker-deploy.md"} {
+		flat := normSpace(text[p])
+		for _, want := range []string{"openssl s_client -connect HOST:PORT -alpn http/1.1", "The server does not log handshake failures at the default log level."} {
+			if !strings.Contains(flat, want) {
+				t.Errorf("%s does not say %q", p, want)
+			}
+		}
+	}
+
 	// kubernetes.md: the old sentence is gone; both options; the Secret
 	// mounted read-only; probes over HTTPS.
 	k := text["../../docs/kubernetes.md"]
