@@ -308,7 +308,8 @@ def notes(version, fixes, vex_changes, behavior=()):
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
-    lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
+    lines += ["- %s%s: %s (%s)" % (v["cve"], " [%s]" % ", ".join(v["products"]) if v.get("products") else "",
+                                   v["status"], v["change"]) for v in vex_changes] or ["- no change"]
     for b in behavior:
         _check_entry(b)
     if behavior:
@@ -417,18 +418,53 @@ def fixed_findings(release_by_variant, head):
 
 
 def vex_changes(old_doc, new_doc):
-    """AC8: each VEX statement added, changed (its status) or removed since the latest tag, by CVE."""
+    """AC8 (rule 0254: the notes name the statements that changed): each VEX statement added, changed or removed since
+    the latest tag. A change to any field of a statement (products, status, justification, impact or action text,
+    status_notes, anything else) is a change, named by field. A CVE may carry several statements (one per product
+    set): they are matched by @id, then by product set, then a lone leftover pair is one statement changed; each
+    statement of a CVE that has several is also named by its products."""
+    absent = object()
+
     def by_cve(doc):
-        return {s_["vulnerability"]["name"]: s_.get("status", "") for s_ in (doc or {}).get("statements", [])}
+        out = {}
+        for s_ in (doc or {}).get("statements", []):
+            out.setdefault(s_["vulnerability"]["name"], []).append(s_)
+        return out
+
+    def pkey(s_):
+        return sorted(json.dumps(p, sort_keys=True) for p in s_.get("products") or [])
+
+    def entry(cve, s_, change, several):
+        e = {"cve": cve, "status": s_.get("status", ""), "change": change}
+        if several:
+            e["products"] = [p["@id"] if isinstance(p, dict) and "@id" in p else json.dumps(p, sort_keys=True)
+                             for p in s_.get("products") or []]
+        return e
+
     old, new = by_cve(old_doc), by_cve(new_doc)
     out = []
     for cve in sorted(set(old) | set(new)):
-        if cve not in old:
-            out.append({"cve": cve, "status": new[cve], "change": "added"})
-        elif cve not in new:
-            out.append({"cve": cve, "status": old[cve], "change": "removed"})
-        elif old[cve] != new[cve]:
-            out.append({"cve": cve, "status": new[cve], "change": "changed from %s" % old[cve]})
+        olds, news = list(old.get(cve, [])), list(new.get(cve, []))
+        several = len(olds) > 1 or len(news) > 1
+        pairs = []
+        for same in (lambda o, n: "@id" in o and o["@id"] == n.get("@id"), lambda o, n: pkey(o) == pkey(n)):
+            for o in list(olds):
+                n = next((n for n in news if same(o, n)), None)
+                if n is not None:
+                    pairs.append((o, n)); olds.remove(o); news.remove(n)
+        if len(olds) == 1 and len(news) == 1:
+            pairs.append((olds.pop(), news.pop()))
+        found = []
+        for o, n in pairs:
+            fields = sorted(k for k in set(o) | set(n) if o.get(k, absent) != n.get(k, absent))
+            others = [k for k in fields if k != "status"]
+            if "status" in fields:
+                found.append(entry(cve, n, "changed from %s" % o.get("status", "")
+                                   + ("; also " + ", ".join(others) if others else ""), several))
+            elif fields:
+                found.append(entry(cve, n, "changed: " + ", ".join(fields), several))
+        found += [entry(cve, n, "added", several) for n in news] + [entry(cve, o, "removed", several) for o in olds]
+        out += sorted(found, key=lambda e: (e.get("products", []), e["change"]))
     return out
 
 
