@@ -21,6 +21,7 @@ import (
 	"github.com/fosterstack/cache/internal/blobstore"
 	"github.com/fosterstack/cache/internal/cache"
 	"github.com/fosterstack/cache/internal/metadata"
+	"github.com/fosterstack/cache/internal/server"
 )
 
 var (
@@ -688,6 +689,92 @@ func TestServeShutdownErrorOrphanAdoptedOnNextStart(t *testing.T) {
 	}
 	if present, _ := markerPresent(uncleanMarkerPath(dir)); present {
 		t.Error("marker still present after the clean next run")
+	}
+}
+
+// recoverServe runs serve and returns what it panicked with (nil if it
+// returned normally).
+func recoverServe(ctx context.Context, ready func()) (r any) {
+	defer func() { r = recover() }()
+	_ = serve(ctx, quietLogger(), ready)
+	return nil
+}
+
+// REQ-STORE-005 (the marker is removed on clean shutdown only): a panic
+// after the startup reconcile and before the serving loop, here in the
+// ready callback, is not a clean shutdown. The panic propagates, the
+// stores are closed once and the marker is still present.
+func TestServePanicInReadyKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	closes := countCloses(t)
+	const boom = "test: ready panicked"
+	if r := recoverServe(context.Background(), func() { panic(boom) }); r != boom {
+		t.Fatalf("recovered %v from serve, want the panic %q to propagate", r, boom)
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a panic in ready, want true", present, err)
+	}
+}
+
+// The same for a panic while the HTTP handler is built (server.New).
+func TestServePanicInServerNewKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	closes := countCloses(t)
+	const boom = "test: server.New panicked"
+	orig := serverNew
+	serverNew = func(server.Config) http.Handler { panic(boom) }
+	defer func() { serverNew = orig }()
+	if r := recoverServe(context.Background(), nil); r != boom {
+		t.Fatalf("recovered %v from serve, want the panic %q to propagate", r, boom)
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a panic in server.New, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC5, the select race: the shutdown signal is taken first,
+// Shutdown returns nil, and the serving goroutine then reports a serving
+// error. The error is not swallowed: serve returns it and the marker stays.
+func TestServeErrorAfterShutdownSignalIsReturned(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	release := make(chan struct{})
+	origServe, origShutdown := httpServe, httpShutdown
+	// Serve blocks until Shutdown runs, so the select can only take the
+	// cancelled context; then Serve fails with a serving error.
+	httpServe = func(_ *http.Server, l net.Listener) error {
+		<-release
+		_ = l.Close()
+		return errTestServe
+	}
+	httpShutdown = func(*http.Server, context.Context) error { close(release); return nil }
+	defer func() { httpServe, httpShutdown = origServe, origShutdown }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := serve(ctx, quietLogger(), nil)
+	if err == nil || !errors.Is(err, errTestServe) || !strings.Contains(err.Error(), "serve:") {
+		t.Fatalf("serve error = %v, want the serving error %v", err, errTestServe)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a serving error during shutdown, want true", present, err)
 	}
 }
 

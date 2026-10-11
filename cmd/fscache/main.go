@@ -251,6 +251,7 @@ var (
 	httpShutdown   = (*http.Server).Shutdown
 	httpServe      = (*http.Server).Serve
 	clearMarkerFn  = clearMarker
+	serverNew      = server.New
 )
 
 func main() { osExit(runMain()) }
@@ -378,7 +379,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	sampler := storesample.New(filepath.Join(cfg.dataDir, "blobs"), storesample.Deps{}, storesample.Options{Log: log})
 	sampler.Start()
 
-	handler := server.New(server.Config{
+	handler := serverNew(server.Config{
 		Sampler:              sampler,
 		Cache:                c,
 		Metrics:              m,

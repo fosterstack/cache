@@ -680,7 +680,9 @@ requirements:
       or shutdown error the HTTP server is closed without waiting for
       active handlers, so an upload can leave a blob with no index record;
       the marker now stays so the next start reconciles. Draining active
-      handlers before the stores close is not part of this rule.
+      handlers before the stores close is not part of this rule. The
+      marker is kept on every exit except a clean return (including a
+      panic).
     acceptance_criteria:
       - id: REQ-STORE-005-AC1
         given: a store holding a blob with no metadata record (as after a crash between the two writes)
