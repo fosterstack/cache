@@ -799,6 +799,21 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"A7-6 sboms null":               edit("sboms:\n  - artifacts: archive\n", "sboms:\n"),
 		"A7-6 sboms extra entry":        edit("  - artifacts: archive\n", "  - artifacts: archive\n  - artifacts: package\n"),
 		"A7-6 sboms entry as a mapping": edit("sboms:\n  - artifacts: archive\n", "sboms:\n  artifacts: archive\n"),
+		// Round-8 self-review (the YAML-decoding family, applied to the release configuration): any explicit YAML tag is
+		// refused by name, also one that decodes to the pinned value (a !!binary main, a !!str hook), and a YAML
+		// directive (%YAML, %TAG, which can remap a tag) is refused.
+		"N8 main as !!binary of the pinned value": edit("  - id: fscache\n    main: ./cmd/fscache\n", "  - id: fscache\n    main: !!binary Li9jbWQvZnNjYWNoZQ==\n"),
+		"N8 version tagged !!int":                 edit("version: 2\n", "version: !!int 2\n"),
+		"N8 draft tagged !!bool":                  edit("  draft: true\n", "  draft: !!bool true\n"),
+		"N8 hook tagged !!str":                    edit("    - go mod verify\n", "    - !!str go mod verify\n"),
+		"N8 sbom artifacts tagged !!str":          edit("  - artifacts: archive\n", "  - artifacts: !!str archive\n"),
+		"N8 checksum name tagged !!str":           edit("  name_template: \"checksums.txt\"\n", "  name_template: !!str \"checksums.txt\"\n"),
+		"N8 project name tagged !!str":            edit("project_name: fscache\n", "project_name: !!str fscache\n"),
+		"N8 archive ids item tagged !!str":        edit("    ids:\n      - fscache\n", "    ids:\n      - !!str fscache\n"),
+		"N8 release github as a tagged mapping":   edit("  github:\n    owner: fosterstack\n", "  github: !!map\n    owner: fosterstack\n"),
+		"N8 env item as !!binary GOOS=darwin":     edit("      - GOFIPS140=v1.0.0\n", "      - GOFIPS140=v1.0.0\n      - !!binary R09PUz1kYXJ3aW4=\n"),
+		"N8 %YAML directive":                      "%YAML 1.2\n---\n" + real,
+		"N8 %TAG directive remaps !!":             "%TAG !! tag:example.com,2000:\n---\n" + real,
 		// Round-5 regressions (B1): every build's binary output path is resolved (dist/<id>_<os>_<arch>_<level>/<binary>)
 		// and enters the collision check; a binary name that leaves its build directory, holds a path separator or a
 		// template, or is missing is refused.
@@ -1646,6 +1661,36 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"placeholder in an indented fence":         install + "\n   ```sh\n   kubectl exec -it <pod> -- sh\n   ```\n",
 		"placeholder in a four-backtick fence":     install + "\n````\n```\nkubectl exec -it <pod> -- sh\n````\n",
 		"placeholder in a tilde fence":             install + "\n~~~ sh `x`\nkubectl exec -it <pod> -- sh\n~~~\n",
+		// Round-8 regressions (A8-2/B8-5, A8-4, B8-6, B8-4): a trailing plus before punctuation is a bound; a full
+		// reference link whose label has no definition in the file is refused (CommonMark renders it as literal text);
+		// a parenthesized title holding an unescaped "(" and a "](" with no "[" before it are not links and are refused;
+		// "none of the archives" is a count of zero in any clause.
+		"A8-2/B8-5 4+ before a full stop":          install + "\nRelease archives: 4+.\n",
+		"B8-5 (4+) archives":                       install + "\nThe release ships (4+) archives.\n",
+		"A8-4 reference label without definition":  install + "\nThe release ships [the][six] archives.\n",
+		"B8-6 title with an unescaped parenthesis": install + "\nRelease archives: [count](six (a(b)).\n",
+		"B8-6 link close with no opener":           install + "\nRelease archives: count](six).\n",
+		"B8-4 none of the archives exist":          install + "\nNone of the archives exist.\n",
+		"B8-4 has none of the archives":            install + "\nThe release has none of the archives.\n",
+		// Round-8 self-review (the count and link family): neighbour shapes of each finding, each refused.
+		"N8 4+ before a comma":                         install + "\nRelease archives: 4+, all signed.\n",
+		"N8 4+ before a semicolon":                     install + "\nRelease archives: 4+; each is signed.\n",
+		"N8 four+ in words":                            install + "\nRelease archives: four+.\n",
+		"N8 fullwidth plus":                            install + "\nRelease archives: 4＋.\n",
+		"N8 superscript plus":                          install + "\nRelease archives: 4⁺.\n",
+		"N8 four-plus":                                 install + "\nThe release ships four-plus archives.\n",
+		"N8 greater-than sign":                         install + "\nRelease archives: >4.\n",
+		"N8 greater-or-equal sign":                     install + "\nRelease archives: ≥ 4.\n",
+		"N8 tilde for about":                           install + "\nRelease archives: ~4.\n",
+		"N8 at-least sign written >=":                  install + "\nRelease archives: >= 4.\n",
+		"N8 reference label defined under another":     install + "\nThe release ships [the][six] archives.\n\n[seven]: https://example.com/x\n",
+		"N8 collapsed reference without definition":    install + "\nThe release ships [the][] six archives.\n",
+		"N8 escaped opener is no link":                 install + "\nThe release ships \\[the](six) archives.\n",
+		"N8 link close with no opener mid-sentence":    install + "\nThe release ships the](six) archives.\n",
+		"N8 title with a nested parenthesis and count": install + "\nEvery release ships [four](a (x(six)) archives.\n",
+		"N8 zero of the archives":                      install + "\nZero of the archives are signed.\n",
+		"N8 none of the four archives":                 install + "\nNone of the four archives exist.\n",
+		"N8 none of the archives after a colon":        install + "\nRelease archives: none of them.\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -1687,6 +1732,12 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		// parenthesis in a destination pass.
 		"If it prints anything else, there is no archive for this machine; run the container.",
 		"Every release ships [four](https://example.com/a\\(b) archives.",
+		// Round-8 precision: a full reference link whose label is defined in the file hides its label (case-insensitive,
+		// as CommonMark matches labels); a parenthesized title without a nested "(" is read; a "+" between words is
+		// not a bound on a count.
+		"The release ships [the][Four] archives.\n\n[four]: https://example.com/x",
+		"Every release ships [four](https://example.com/a (a title)) archives.",
+		"The four archives cover `linux/amd64` + `linux/arm64`.",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
@@ -1895,10 +1946,22 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"a prefixed changelog entry":           "# Changelog\n\n## v0.3.1 — patch release\n\n### Behavior changes\n- Note: " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
 		"a changelog entry split by a joiner":  strings.Replace(published, "macOS", "mac͏OS", 1),
 		"a changelog entry with no line start": "# Changelog\n\nSee: - " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
+		// Round-8 regression (A8-3) and self-review: beside a valid cited changelog entry, the sentence anywhere else in
+		// the changelog (an uncited paragraph, an entry with another citation, a prefixed or emphasized bullet, a second
+		// cited entry's sentence inside another entry) is refused, as in the notes.
+		"A8-3 a cited entry and an uncited paragraph":   published + "\n" + notesSentence + "\n",
+		"N8 a cited entry and another citation":         published + "- " + notesSentence + " (advisor 0130).\n",
+		"N8 a cited entry and a prefixed bullet":        published + "- Note: " + notesSentence + "\n",
+		"N8 a cited entry and an emphasized bullet":     published + "- **" + notesSentence + "**\n",
+		"N8 a cited entry and the sentence mid-entry":   published + "- Packaging changed. " + notesSentence + " (owner decision, Oct 9; advisor 0390).\n",
+		"N8 a cited entry and the sentence in a header": published + "\n## " + notesSentence + "\n",
 	} {
 		if ps := checkNotes(cleared, cl, archives); len(ps) == 0 {
 			t.Errorf("the cleared notes pass with %s", name)
 		}
+	}
+	if ps := checkNotes(notes, published+"\n"+notesSentence+"\n", archives); len(ps) == 0 {
+		t.Errorf("an uncited changelog mention passes while the notes still carry the entry")
 	}
 	// Round-7 decision (advisor, final): the checks read no Markdown structure, so an entry is a plain line: a line
 	// starting "- " or "* " after optional indentation, whatever surrounds it (a fence line is plain text). These
@@ -2196,6 +2259,27 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		// is refused in the mappings as in the docs.
 		{"A7-4 angle-bracket destination splits Windows", edit(plat2, "so a missing variant/arch fails; Win[do](<./a)b>)ws is the documented equivalent\" }\n"), "link this check does not read"},
 		{"A7-4 angle-bracket destination in a comment", edit(lastRef, lastRef+"      # Win[do](<./a)b>)ws is a documented equivalent\n"), "link this check does not read"},
+		// Round-8 regressions (A8-1/B8-3, B8-1): the placeholder exception holds only on a whole-line comment at column 0
+		// in the file's leading comment block, never in a value; any explicit YAML tag other than !!str is refused by name
+		// (a !!binary scalar decodes to text the raw value does not show), and a binary scalar's decoded text is read.
+		{"A8-1 placeholder in a value", edit(lastRef, lastRef+"      - { type: inspection, ref: x, note: '\"<package dir>:<TestName>\"' }\n"), "inline HTML"},
+		{"B8-3 placeholder as a ref", edit(lastRef, lastRef+"      - { type: inspection, ref: '\"<package dir>:<TestName>\"' }\n"), "inline HTML"},
+		{"B8-1 !!binary decodes to a tag", edit(lastRef, lastRef+"      - { type: inspection, ref: !!binary PGI+ }\n"), "explicit YAML tag"},
+		{"B8-1 !!binary decodes to Windows", edit(lastRef, lastRef+"      - { type: inspection, ref: !!binary V2luZG93cw== }\n"), "Windows"},
+		// Round-8 self-review (the marker and YAML-decoding family): neighbour shapes, each refused.
+		{"N8 !!binary tag named", edit(lastRef, lastRef+"      - { type: inspection, ref: !!binary V2luZG93cw== }\n"), "explicit YAML tag"},
+		{"N8 local !binary tag", edit(lastRef, lastRef+"      - { type: inspection, ref: !binary V2luZG93cw== }\n"), "explicit YAML tag"},
+		{"N8 !!binary block scalar", edit(lastRef, lastRef+"      - type: inspection\n        ref: !!binary |\n          V2luZG93cw==\n"), "explicit YAML tag"},
+		{"N8 !!binary key", edit(lastRef, lastRef+"      - { type: inspection, ref: x, !!binary V2luZG93cw==: y }\n"), "explicit YAML tag"},
+		{"N8 tagged mapping", edit(lastRef, lastRef+"      - !!map { type: inspection, ref: x }\n"), "explicit YAML tag"},
+		{"N8 %TAG directive", "%TAG !! tag:example.com,2000:\n---\n" + real, "directive"},
+		{"N8 placeholder in a key", edit(lastRef, lastRef+"      - { type: inspection, ref: x, '\"<package dir>:<TestName>\"': y }\n"), "inline HTML"},
+		{"N8 placeholder in a block scalar comment-like line", edit(lastRef, lastRef+"      - type: inspection\n        ref: |\n          # \"<package dir>:<TestName>\"\n"), "inline HTML"},
+		{"N8 placeholder behind an anchor", edit(lastRef, lastRef+"      - { type: inspection, ref: &p '\"<package dir>:<TestName>\"' }\n"), "inline HTML"},
+		{"N8 placeholder in a line comment", edit(lastRef, lastRef+"      - { type: inspection, ref: x } # \"<package dir>:<TestName>\"\n"), "inline HTML"},
+		{"N8 placeholder in an indented comment", edit(lastRef, lastRef+"      # go-test refs are \"<package dir>:<TestName>\"\n"), "inline HTML"},
+		{"N8 placeholder in a later column-0 comment", real + "# go-test refs are \"<package dir>:<TestName>\"\n", "inline HTML"},
+		{"N8 placeholder in a second document's comment", real + "---\n# \"<package dir>:<TestName>\"\nx: 1\n", "inline HTML"},
 	}
 	// A test function that is commented out, or that is not a top-level test, does not authorize a reference.
 	const fake = "package platforms\n\nimport \"testing\"\n\n/*\nfunc TestDarwin(t *testing.T) {\n}\n*/\n\n// func TestMacOS(t *testing.T) {\n\nvar s = `\nfunc TestWindows(t *testing.T) {\n`\n\nfunc TestReal(t *testing.T) {}\n"
@@ -2302,6 +2386,16 @@ var allowedMarkup = []struct{ files, text, why string }{
 	{mappingsFile, "\"<package dir>:<TestName>\"", "the placeholder form of a go-test ref, in a YAML comment; the mappings file is never rendered as HTML"},
 }
 
+// markupUsed reports whether the allowedMarkup text a applies to file and appears in text.
+func markupUsed(file, text, a string) bool {
+	for _, m := range markupFor(file) {
+		if m == a && strings.Contains(text, a) {
+			return true
+		}
+	}
+	return false
+}
+
 // contentFiles are the files the content guard reads: the scanned docs, the next release notes and the evidence
 // mappings, the documents this project writes and reviews.
 func contentFiles() []string {
@@ -2320,7 +2414,7 @@ func TestDocsHoldNoInlineHTMLOrInvisibleCharacters(t *testing.T) {
 			t.Error(p)
 		}
 		for _, m := range allowedMarkup {
-			if (m.files == f || (m.files == "*.md" && strings.HasSuffix(f, ".md"))) && strings.Contains(text, m.text) {
+			if markupUsed(f, text, m.text) {
 				used[m.text] = true
 			}
 		}
@@ -2453,6 +2547,31 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 	if ps := contentProblems(mappingsFile, "# run `kubectl exec <pod>` first\n"); !strings.Contains(strings.Join(ps, "\n"), mappingsFile+":1: inline HTML") {
 		t.Errorf("a placeholder in the mappings file (YAML, not Markdown: no code span) is not refused: %v", ps)
 	}
+	// Round-8 regressions (A8-1/B8-3): the mappings placeholder is excepted only on a whole-line comment at column 0 in
+	// the file's leading comment block; anywhere else (a value, a later or indented comment, a line comment) it is a
+	// tag-like "<", and only a placeholder in that place counts as the exception being used.
+	const placeholder = "\"<package dir>:<TestName>\""
+	for name, s := range map[string]string{
+		"in a value":                   "mappings:\n  - note: '" + placeholder + "'\n",
+		"in a comment after a key":     "mappings: []\n# go-test refs are " + placeholder + "\n",
+		"in an indented leading line":  "  # go-test refs are " + placeholder + "\n",
+		"in a line comment":            "x: 1 # " + placeholder + "\n",
+		"after a document marker":      "---\n# go-test refs are " + placeholder + "\n",
+		"in a comment without a space": "#" + placeholder + "\n",
+	} {
+		if ps := contentProblems(mappingsFile, s); !strings.Contains(strings.Join(ps, "\n"), "inline HTML") {
+			t.Errorf("the mappings placeholder %s is not refused: %v", name, ps)
+		}
+		if markupUsed(mappingsFile, s, placeholder) {
+			t.Errorf("the mappings placeholder %s counts as the exception being used", name)
+		}
+	}
+	if !markupUsed(mappingsFile, "# header\n#\n# go-test refs are "+placeholder+" and\n", placeholder) {
+		t.Errorf("the mappings placeholder in the leading comment block does not count as used")
+	}
+	if markupUsed("docs/install.md", "x <!-- pinned: historical --> <!-- pinned: upstream -->\n", "<!-- pinned: historical -->") {
+		t.Errorf("a marker that does not end its line counts as the exception being used")
+	}
 	if ps := contentProblems(notesFile, "Cut four times. <!-- pinned: upstream -->\n"); len(ps) > 0 {
 		t.Errorf("a listed marker in the notes is refused: %v", ps)
 	}
@@ -2471,6 +2590,21 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 			"marker splits six":                  "si<!-- pinned: historical -->x archives",
 			"marker inside a line of prose":      "The version is pinned <!-- pinned: upstream --> for all four archives.",
 			"marker joined to a word at the end": "Windows<!-- pinned: upstream -->",
+			// Round-8 regression (B8-2) and self-review: placement is decided on the original line, order independent:
+			// each marker must itself end its line (or stand alone on it), so two markers on one line are refused in
+			// either order, and so is a marker followed by anything.
+			"B8-2 historical then upstream":       "x <!-- pinned: historical --> <!-- pinned: upstream -->",
+			"B8-2 upstream then historical":       "x <!-- pinned: upstream --> <!-- pinned: historical -->",
+			"N8 two markers alone":                "<!-- pinned: upstream --> <!-- pinned: historical -->",
+			"N8 one marker twice":                 "x <!-- pinned: upstream --> <!-- pinned: upstream -->",
+			"N8 markers joined":                   "x <!-- pinned: upstream --><!-- pinned: historical -->",
+			"N8 markers split by a tab":           "x <!-- pinned: upstream -->\t<!-- pinned: historical -->",
+			"N8 marker first, then prose":         "<!-- pinned: upstream --> four archives",
+			"N8 marker mid table row":             "| a <!-- pinned: upstream --> | b |",
+			"N8 marker then a backslash":          "x <!-- pinned: upstream --> \\",
+			"N8 three markers":                    "x <!-- pinned: historical --> <!-- pinned: upstream --> <!-- pinned: historical -->",
+			"N8 marker then a tag":                "x <!-- pinned: upstream --> <b>",
+			"N8 marker after a tab then a marker": "\t<!-- pinned: historical -->\t<!-- pinned: upstream -->",
 		} {
 			ps := contentProblems(f, "a first line\n\n"+s+"\n")
 			if !strings.Contains(strings.Join(ps, "\n"), f+":") || len(ps) == 0 {
