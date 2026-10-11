@@ -232,7 +232,7 @@ mappings:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: no shell in production/fips, /busybox/sh runs and /bin/sh absent in debug - against images assembled from the exact attested binaries" }
   - ac: REQ-PLAT-002-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: production/debug/fips serve cache traffic on linux/amd64 AND linux/arm64 (QEMU, fips authenticated); the REQ-PLAT-002 result is derived from a served-matrix file so a missing variant/arch fails; darwin is the documented equivalent" }
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: production/debug/fips serve cache traffic on linux/amd64 AND linux/arm64 (QEMU, fips authenticated); the REQ-PLAT-002 result is derived from a served-matrix file so a missing variant/arch fails" }
   - ac: REQ-FIPS-002-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: three runtime postures asserted exactly - the validated-module fips build names the certificate, standard is off, and the forced-standard build reports mode-forced and NEVER claims the certificate (the over-claim the reviews flagged)" }

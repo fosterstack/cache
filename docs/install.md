@@ -88,7 +88,7 @@ Then point your build tool at it: [Gradle setup](gradle.md) ·
 ## Verify what you downloaded
 
 Do this before you install it, not after. Every release ships a
-`checksums.txt` covering all six archives plus a cosign keyless signature
+`checksums.txt` covering all four Linux archives plus a cosign keyless signature
 bundle over that file:
 
 ```sh

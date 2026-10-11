@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -42,12 +43,16 @@ var (
 	itemKey     = regexp.MustCompile(`^([a-z_]+):(.*)$`)
 	plainWord   = regexp.MustCompile(`^[a-z0-9]+$`)
 	plainID     = regexp.MustCompile(`^[a-z0-9-]+$`)
+	topKey      = regexp.MustCompile(`^([a-z_][a-z0-9_]*):(\s.*)?$`)
 )
 
 // parseBuilds reads the builds: section line by line, in the one block style the file uses. It reports, and
 // never guesses at, anything it cannot read: an anchor, alias or merge key anywhere; a goos/goarch key that
 // is not `goos:` alone on its line inside a build (a flow list, a quoted key, a key outside builds:); a list
 // item that is not a plain lower-case word; any targets: or ignore: key; a line of builds: of another shape.
+// Every top-level line must be a plain unquoted key (`name:` at column 0); a quoted, explicit (`?`) or flow
+// key, a document marker or directive, a tab-indented line and a repeated top-level key are each refused,
+// and there must be exactly one top-level builds section, written `builds:` alone on its line.
 func parseBuilds(text string) (builds []relBuild, problems []string) {
 	lines := strings.Split(text, "\n")
 	accepted := map[int]bool{} // lines holding a goos/goarch key the parser read
@@ -60,6 +65,8 @@ func parseBuilds(text string) (builds []relBuild, problems []string) {
 		}
 	}
 	in := false
+	top := map[string]bool{} // top-level keys already read
+	sections := 0            // top-level builds keys
 	var cur *relBuild
 	listKey := "" // the key whose block list the next items belong to
 	for n := 0; n < len(lines); n++ {
@@ -69,8 +76,20 @@ func parseBuilds(text string) (builds []relBuild, problems []string) {
 		}
 		if !strings.HasPrefix(line, " ") {
 			in = line == "builds:"
-			if strings.HasPrefix(line, "builds") && !in {
-				problems = append(problems, fmt.Sprintf("line %d: builds key in another form: %s", n+1, line))
+			m := topKey.FindStringSubmatch(line)
+			if m == nil {
+				problems = append(problems, fmt.Sprintf("line %d: a top-level line of a shape this check does not read: %s", n+1, line))
+				continue
+			}
+			if top[m[1]] {
+				problems = append(problems, fmt.Sprintf("line %d: top-level key %s repeated", n+1, m[1]))
+			}
+			top[m[1]] = true
+			if m[1] == "builds" {
+				sections++
+				if !in {
+					problems = append(problems, fmt.Sprintf("line %d: builds key in another form: %s", n+1, line))
+				}
 			}
 			continue
 		}
@@ -137,6 +156,9 @@ func parseBuilds(text string) (builds []relBuild, problems []string) {
 				listKey = key
 			}
 		}
+	}
+	if sections != 1 {
+		problems = append(problems, fmt.Sprintf("%d top-level builds sections, want exactly one", sections))
 	}
 	for n, line := range lines {
 		if strings.HasPrefix(strings.TrimSpace(line), "#") || accepted[n] {
@@ -240,14 +262,23 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 	}
 }
 
-// platformWord finds a mention of a non-Linux desktop platform.
-var platformWord = regexp.MustCompile(`(?i)darwin|mac\s?os|\bmacs?\b|apple silicon|\bosx\b|windows`)
+// platformWord finds a mention of a non-Linux desktop platform. The docs checks match it against whole
+// Markdown paragraphs with whitespace collapsed, so a name wrapped across a soft line break is one match.
+var platformWord = regexp.MustCompile(`(?i)darwin|mac\s?os|\bmacs?\b|apple\s+silicon|\bos\s?x\b|windows`)
+
+// archiveClaim finds an archive-count claim: a count (a number word or digits) followed, within two words,
+// by "archives". The words between may not include "of" ("one of the archives" is not a count).
+var archiveClaim = regexp.MustCompile(`(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)((?:\s+[a-z0-9/_.-]+){0,2})\s+archives\b`)
+
+var numberWords = map[string]int{"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
 
 // docsScanned are the public docs that describe what a release ships.
 var docsScanned = []string{"README.md", "docs/install.md", "docs/docker-deploy.md", "RELEASING.md", "docs/verify-images.md"}
 
-// allowedLine is a line of a scanned doc that names a non-Linux platform without claiming a darwin or
-// windows binary exists. The text is the whole line, trimmed; each must still be present (a stale entry fails).
+// allowedLine is a run of text in a scanned doc that names a non-Linux platform without claiming a darwin or
+// windows binary exists. The text is matched exactly, with whitespace collapsed, inside one Markdown
+// paragraph (or one line of a code block), so it may span a soft line break; a platform name is excused only
+// if it lies wholly inside an allowed text. Each must still be present (a stale entry fails).
 type allowedLine struct {
 	file, text, why string
 	optional        bool // may be absent: the line arrives when this branch next takes main
@@ -281,7 +312,6 @@ var notScanned = map[string]string{
 	".github/agent":                                    "its runner and developer-host logic names Windows and macOS runners it refuses or works around",
 	"docs/quality/traceability.md":                     "generated from requirements.yaml",
 	"requirements/":                                    "the requirement text and frozen v0.2.x baselines",
-	"docs/next-release-notes.md":                       "carries the REQ-PLAT-001 release-notes line (checked by TestNextReleaseNotesSayLinuxOnly)",
 	".github/workflows/stage-acceptance-artifacts.yml": "frozen legacy stage file (legacy-stage-files.json); its archive check is rewritten by the release-chain pull requests",
 }
 
@@ -300,37 +330,104 @@ func releaseArchiveCount(t *testing.T) int {
 	return n
 }
 
-// checkDoc returns every problem in one scanned doc and the allowed texts it found.
-func checkDoc(file, text string, allowed []allowedLine, archives int) (problems []string, seen map[string]bool) {
-	_ = archives
-	ok := map[string]bool{}
-	for _, a := range allowed {
-		if a.file == file {
-			ok[a.text] = true
+// unit is a run of Markdown a reader takes as one piece of text: a paragraph (consecutive non-blank lines
+// outside a code fence, so a sentence wrapped across a soft line break is one unit), or one line of a fenced
+// code block. text has its whitespace collapsed to single spaces; line is its first physical line.
+type unit struct {
+	line int
+	text string
+}
+
+func units(text string) []unit {
+	var out []unit
+	var para []string
+	start := 0
+	flush := func() {
+		if len(para) > 0 {
+			out = append(out, unit{start, strings.Join(strings.Fields(strings.Join(para, " ")), " ")})
+			para = nil
 		}
 	}
-	seen = map[string]bool{}
+	fenced := false
 	for n, line := range strings.Split(text, "\n") {
 		l := strings.TrimSpace(line)
-		if strings.Contains(strings.ToLower(l), "_darwin_") {
-			problems = append(problems, fmt.Sprintf("%s:%d names a darwin archive: %s", file, n+1, l))
-		}
-		if !platformWord.MatchString(l) {
+		fence := strings.HasPrefix(l, "```") || strings.HasPrefix(l, "~~~")
+		if fenced || fence || l == "" {
+			flush()
+			if l != "" {
+				out = append(out, unit{n + 1, strings.Join(strings.Fields(l), " ")})
+			}
+			if fence {
+				fenced = !fenced
+			}
 			continue
 		}
-		if ok[l] {
-			seen[l] = true
-			continue
+		if len(para) == 0 {
+			start = n + 1
 		}
-		problems = append(problems, fmt.Sprintf("%s:%d names a non-Linux platform and is not an allowed line: %s", file, n+1, l))
+		para = append(para, l)
+	}
+	flush()
+	return out
+}
+
+// checkDoc returns every problem in one scanned doc and the allowed texts it found: a darwin archive name;
+// an archive-count claim that is not the count .goreleaser.yaml produces; a platform name that does not lie
+// wholly inside one of the file's allowed texts.
+func checkDoc(file, text string, allowed []allowedLine, archives int) (problems []string, seen map[string]bool) {
+	seen = map[string]bool{}
+	for _, u := range units(text) {
+		if strings.Contains(strings.ToLower(u.text), "_darwin_") {
+			problems = append(problems, fmt.Sprintf("%s:%d names a darwin archive: %s", file, u.line, u.text))
+		}
+		for _, m := range archiveClaim.FindAllStringSubmatch(u.text, -1) {
+			if strings.Contains(" "+strings.ToLower(m[2])+" ", " of ") {
+				continue
+			}
+			n, ok := numberWords[strings.ToLower(m[1])]
+			if !ok {
+				n, _ = strconv.Atoi(m[1]) // m[1] is digits here; one too large for an int reads as 0, still not the count
+			}
+			if n != archives {
+				problems = append(problems, fmt.Sprintf("%s:%d claims %q, but .goreleaser.yaml produces %d archives", file, u.line, m[0], archives))
+			}
+		}
+		var spans [][2]int
+		for _, a := range allowed {
+			want := strings.Join(strings.Fields(a.text), " ")
+			if a.file != file || want == "" {
+				continue
+			}
+			for off := 0; ; {
+				k := strings.Index(u.text[off:], want)
+				if k < 0 {
+					break
+				}
+				seen[a.text] = true
+				spans = append(spans, [2]int{off + k, off + k + len(want)})
+				off += k + 1
+			}
+		}
+		for _, loc := range platformWord.FindAllStringIndex(u.text, -1) {
+			covered := false
+			for _, sp := range spans {
+				if sp[0] <= loc[0] && loc[1] <= sp[1] {
+					covered = true
+				}
+			}
+			if !covered {
+				problems = append(problems, fmt.Sprintf("%s:%d names a non-Linux platform (%q) outside an allowed text: %s", file, u.line, u.text[loc[0]:loc[1]], u.text))
+			}
+		}
 	}
 	return problems, seen
 }
 
 // proves: REQ-PLAT-001-AC1
-// TestDocsClaimNoDarwinOrWindowsBinary: every line of the public docs that names darwin, macOS, a Mac,
-// Apple Silicon, OS X or Windows is one of the named allowed lines (none of which claims such a binary);
-// darwin archive names are gone, and each allowed line is still present.
+// TestDocsClaimNoDarwinOrWindowsBinary: every mention of darwin, macOS, a Mac, Apple Silicon, OS X or
+// Windows in the public docs, read paragraph by paragraph so a soft-wrapped name counts, lies inside one of
+// the named allowed texts (none of which claims such a binary); darwin archive names are gone; every
+// archive-count claim is the count .goreleaser.yaml produces; and each allowed text is still present.
 func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
 	archives := releaseArchiveCount(t)
 	for _, f := range docsScanned {
@@ -401,13 +498,18 @@ const (
 	notesSentence = "No macOS or Windows binaries are shipped; use the container image."
 )
 
-// checkNotes returns every reason the next release notes fail REQ-PLAT-001.
+// checkNotes returns every reason the next release notes fail REQ-PLAT-001. The whole file is checked as a
+// scanned doc whose only allowed text is notesSentence, matched exactly; the sentence must appear exactly once.
 func checkNotes(text string, archives int) []string {
-	_ = archives
-	if !strings.Contains(strings.Join(strings.Fields(text), " "), strings.TrimSuffix(notesSentence, ".")) {
-		return []string{fmt.Sprintf("%s does not say %q", notesFile, notesSentence)}
+	problems, _ := checkDoc(notesFile, text, []allowedLine{{notesFile, notesSentence, "the REQ-PLAT-001 release-notes line", false}}, archives)
+	count := 0
+	for _, u := range units(text) {
+		count += strings.Count(u.text, notesSentence)
 	}
-	return nil
+	if count != 1 {
+		problems = append(problems, fmt.Sprintf("%s says %q %d times, want exactly once", notesFile, notesSentence, count))
+	}
+	return problems
 }
 
 // proves: REQ-PLAT-001-AC1
