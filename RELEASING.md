@@ -96,7 +96,7 @@ now do. Do not revisit without a reason that outweighs that.
 - A `:X.Y.Z-fips` variant, `GOFIPS140=v1.0.0` baked in at compile time <!-- pinned: upstream -->
   (Go's CMVP FIPS 140-3 validated module, cert #5247) — built from the
   first release even before the Compliance tier ships.
-- Bare binaries + `checksums.txt` (via `goreleaser`), `linux`/`darwin` ×
+- Bare binaries + `checksums.txt` (via `goreleaser`), `linux` ×
   `amd64`/`arm64`, for container-averse or air-gapped environments.
 - Per image: a cosign keyless signature **in both registries**, a SLSA
   provenance attestation, and the full release-chain predicates

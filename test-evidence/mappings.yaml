@@ -218,7 +218,10 @@ mappings:
       - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }
   - ac: REQ-PLAT-001-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: six-archive set asserted, linux/amd64 binaries executed; darwin and arm64 execution are documented equivalents pending runner legs" }
+      - { type: go-test, ref: "internal/platforms:TestReleaseConfigBuildsOnlyLinux" }
+      - { type: go-test, ref: "internal/platforms:TestDocsClaimNoDarwinOrWindowsBinary" }
+      - { type: go-test, ref: "internal/platforms:TestNextReleaseNotesSayLinuxOnly" }
+      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: archive set asserted, linux/amd64 binaries executed (a frozen legacy stage file: its six-archive count is rewritten to the four Linux archives by the release-chain pull request that replaces it)" }
   - ac: REQ-PLAT-003-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: no shell in production/fips, /busybox/sh runs and /bin/sh absent in debug - against images assembled from the exact attested binaries" }

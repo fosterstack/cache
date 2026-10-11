@@ -18,7 +18,7 @@
   },
   {
    "path": ".goreleaser.yaml",
-   "sha256": "ee61cbac9780d91fd871b587470fbe19bc6537739368e24d138c88d602dc0ea4",
+   "sha256": "0efe3df7858e66e75d0da9a34e6e1279d49967a194b8fab88a2130ec1adeced3",
    "reason": "the release build: run by stage-build.yml's build job, which holds id-token: write"
   },
   {

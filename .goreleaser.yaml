@@ -17,7 +17,6 @@ builds:
       - CGO_ENABLED=0
     goos:
       - linux
-      - darwin
     goarch:
       - amd64
       - arm64
@@ -33,9 +32,8 @@ builds:
 
   # GOFIPS140=v1.0.0 selects Go's CMVP FIPS 140-3 validated cryptographic
   # module (cert #5247) at build time — addendum §4. This is a second
-  # build variant of the same source, not a fork. Linux-only: the
-  # Compliance-tier buyer (CMMC/800-171 contractors) deploys on Linux;
-  # darwin/-fips has no market and would just double CI time for nothing.
+  # build variant of the same source, not a fork. Both builds are
+  # Linux-only (REQ-PLAT-001).
   - id: fscache-fips
     main: ./cmd/fscache
     binary: fscache-fips

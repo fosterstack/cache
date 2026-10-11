@@ -137,7 +137,7 @@ run — there is no primary platform.
 
 | Artifact | Platforms |
 |---|---|
-| Binaries (`fscache`) | `linux/amd64`, `linux/arm64`, `darwin/amd64`, `darwin/arm64` |
+| Binaries (`fscache`) | `linux/amd64`, `linux/arm64` |
 | FIPS binaries (`fscache-fips`) | `linux/amd64`, `linux/arm64` |
 | Container images (prod, `-debug`, `-fips`) | multi-arch: `linux/amd64` + `linux/arm64` |
 
@@ -157,9 +157,9 @@ Wolfi. See
 [the variant docs](docs/verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect)
 and [troubleshooting](docs/docker-deploy.md#troubleshooting-with-the-debug-image).
 
-FIPS is Linux-only on purpose: the compliance buyer it serves deploys on
-Linux, so a macOS FIPS build would double CI time for a configuration nobody
-assesses. Container images ship as multi-arch manifests, so `docker pull`
+Every binary, standard and FIPS, is built for
+Linux. No macOS or Windows binaries are shipped: on a Mac, run the container image
+(see [docker-deploy.md](docs/docker-deploy.md)). Container images ship as multi-arch manifests, so `docker pull`
 resolves the right image by itself on Apple Silicon and Graviton. Windows is
 not built and not planned — this is a server that lives next to your CI
 runners; develop on Windows via WSL2, which is `linux/amd64`.

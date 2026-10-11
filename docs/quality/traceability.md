@@ -396,13 +396,13 @@ The server shall make no outbound network connections — no telemetry, no updat
 
 ### REQ-PLAT-001 — Binary platform matrix
 
-Every release shall ship static (CGO_ENABLED=0) binaries for linux/amd64, linux/arm64, darwin/amd64, and darwin/arm64, and FIPS-variant binaries for the two Linux platforms only.
+Every release shall ship static (CGO_ENABLED=0) standard and FIPS-variant binaries for linux/amd64 and linux/arm64. No macOS or Windows binaries are shipped; the release notes say so and point macOS users to the container image.
 
-*Introduced v0.1.0 · tier community · confidence documented · source: README.md "Supported platforms"; docs/install.md; .goreleaser.yaml*
+*Introduced v0.1.0 · tier community · confidence documented · source: README.md "Supported platforms"; docs/install.md; docs/docker-deploy.md; RELEASING.md; docs/next-release-notes.md; .goreleaser.yaml*
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the six archives exist and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 1 item(s) |
+| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 4 item(s) |
 
 ### REQ-PLAT-002 — Image variants and multi-arch
 

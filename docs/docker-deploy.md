@@ -297,9 +297,10 @@ stored as separate artifacts against each digest rather than as extra
 entries in this index, so nothing else should appear here — see
 [Verify our images](verify-images.md).
 
-There are no darwin or windows images: containers on those platforms run a
-Linux VM, and it pulls `linux/*` like any other Linux host. For a native
-macOS binary, see [Install FosterStack Cache](install.md).
+There are no darwin or windows images and no darwin or windows binaries: on a
+Mac or a Windows host, run the `linux/amd64` or `linux/arm64` image under
+Docker, which runs it in a Linux VM and pulls `linux/*` like any other Linux
+host.
 
 ## Troubleshooting with the `:debug` image
 

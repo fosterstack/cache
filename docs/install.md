@@ -11,22 +11,17 @@ and verification deltas.
 
 ## Supported platforms
 
-Every release builds all of these. There is no "primary" platform — the
-binaries are cross-compiled from the same source in the same CI run.
+Every release builds all of these, from the same source in the same CI run.
 
 | Platform | Archive | Notes |
 |---|---|---|
 | `linux/amd64` | `fscache_X.Y.Z_linux_amd64.tar.gz` | The usual CI runner |
 | `linux/arm64` | `fscache_X.Y.Z_linux_arm64.tar.gz` | AWS Graviton, Ampere, Raspberry Pi 4/5 |
-| `darwin/amd64` | `fscache_X.Y.Z_darwin_amd64.tar.gz` | Intel Mac |
-| `darwin/arm64` | `fscache_X.Y.Z_darwin_arm64.tar.gz` | **Apple Silicon** (M1–M4) |
 
-**FIPS builds are Linux-only**: `fscache-fips_X.Y.Z_linux_amd64.tar.gz` and
+**FIPS builds**: `fscache-fips_X.Y.Z_linux_amd64.tar.gz` and
 `fscache-fips_X.Y.Z_linux_arm64.tar.gz`. The `-fips` variant is the same
 source built with `GOFIPS140=v1.0.0` <!-- pinned: upstream -->, selecting Go's CMVP FIPS 140-3
-validated cryptographic module (cert #5247). There is no darwin FIPS build:
-the compliance buyer this serves deploys on Linux, so a macOS FIPS binary
-would double CI time for a configuration nobody assesses.
+validated cryptographic module (cert #5247).
 
 The FIPS build says so at startup, so the property is observable rather than
 taken on trust:
@@ -38,6 +33,9 @@ taken on trust:
 Standard builds report `"fips140":"off"`. `/statusz` reports the same field.
 An assessor can confirm which build is running from the process log and the
 install path, without access to your build pipeline.
+
+**No macOS or Windows binaries are shipped.** On a Mac, run the container
+image instead: see [docker-deploy.md](docker-deploy.md).
 
 **Container images are multi-arch** (`linux/amd64` + `linux/arm64`), so
 `docker pull` resolves the right one automatically — including on Apple
@@ -52,12 +50,12 @@ build. If you develop on Windows, run the server under WSL2 — that's
 ## Which archive do I need?
 
 ```sh
-# Prints e.g. "darwin_arm64" — the exact string in the archive name.
+# Prints "linux_amd64" or "linux_arm64" — the exact string in the archive name.
 echo "$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
 ```
 
-`uname -m` reports `arm64` on Apple Silicon and `x86_64` on Intel Macs. If
-you get `darwin_arm64`, you want the Apple Silicon archive.
+If it prints anything else, there is no archive for this machine; run the
+container image instead ([docker-deploy.md](docker-deploy.md)).
 
 ## Install
 
