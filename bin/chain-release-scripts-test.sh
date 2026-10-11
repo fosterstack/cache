@@ -58,7 +58,18 @@ fi''',
  "gh": r'''#!/usr/bin/env bash
 echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL:-}" ] || { echo "gh failed" >&2; exit 1; }
-[ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac''',
+[ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
+pub="$LOG.published"
+if [ "$1 $2" = "release upload" ]; then shift 3; mkdir -p "$pub"; for f in "$@"; do cp "$f" "$pub/"; done
+elif [ "$1 $2" = "release download" ]; then d=; while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done; mkdir -p "$d"; cp "$pub"/* "$d"/ 2>/dev/null || true
+  [ -z "${GH_DROP:-}" ] || rm -f "$d/$GH_DROP"; [ -z "${GH_ALTER:-}" ] || printf x >> "$d/$GH_ALTER"; fi''',
+ "bin/vex-forms.py": r'''import json, os, sys
+a = sys.argv[1:]
+open(os.environ["LOG"], "a").write("vex-forms %s\n" % " ".join(a))
+if os.environ.get("VEXFORMS_FAIL"): print("vex-forms: image digests missing", file=sys.stderr); sys.exit(1)
+ver = a[a.index("--version") + 1]; out = a[a.index("--out-dir") + 1]
+json.load(open(a[a.index("--images") + 1]))
+open(os.path.join(out, "fosterstack-cache-%s.csaf.json" % ver), "w").write("{}"); open(os.path.join(out, "fosterstack-cache-%s.inspector-filters.json" % ver), "w").write("{}")''',
  "melange": r'''#!/usr/bin/env bash
 echo "melange $*" >> "$LOG"
 [ -z "${MELANGE_FAIL:-}" ] || exit 1
@@ -115,7 +126,9 @@ def tree(extra_env=None):
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    if os.path.exists(os.path.join(BIN, "release-postverify.py")): shutil.copy(os.path.join(BIN, "release-postverify.py"), os.path.join(t, "bin", "release-postverify.py"))
+    for extra in ("release-postverify.py", "release-metadata.py"):
+        if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
+    os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
     digs = dict(DIG)
     for top in ("apks", "rapks"):                      # Build's apk-<runner> and Rebuild's rapk-<runner> artifacts, downloaded to apks/<runner> and rapks/<runner>
         for runner, archdir, short in RUNNERS:
@@ -127,9 +140,11 @@ def tree(extra_env=None):
         os.makedirs(os.path.join(t, "images", v + "-sbom"), exist_ok=True)
         open(os.path.join(t, "images", v + ".tar"), "w").write("tar-" + v)
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
+        open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
         open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("{}"); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("{}")
     for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist"):
         os.makedirs(os.path.join(t, d), exist_ok=True)
+    for k in ("archive-linux-amd64", "archive-linux-arm64", "archive-fips-linux-amd64", "archive-fips-linux-arm64"): digs[k] = "sha256:" + hashlib.sha256(k.encode()).hexdigest()
     json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
     for f in ("witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "witness-check/check-collection.json", "provenance/provenance.json", "dist/checksums.txt"):
         open(os.path.join(t, f), "w").write("{}")
@@ -140,7 +155,7 @@ def run(t, script, env=None, creds=None, tag="v0.3.0"):
     path = os.path.join(t, "bin", script + ".sh")
     if not os.path.exists(path): LAST[0] = 127; return 127, "", "the script " + script + ".sh does not exist"
     LAST[0] = 0
-    e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag}
+    e = {"PATH": os.path.join(t, ".fakebin") + ":" + os.environ["PATH"], "HOME": t, "LOG": os.path.join(t, "calls.log"), "REG": os.path.join(t, "reg"), "GITHUB_REF_NAME": tag, "GITHUB_SHA": "c" * 40, "GITHUB_SERVER_URL": "https://github.com", "GITHUB_REPOSITORY": "fosterstack/cache", "GITHUB_RUN_ID": "7", "GITHUB_RUN_ATTEMPT": "1", "GITHUB_WORKFLOW_REF": "fosterstack/cache/.github/workflows/release.yml@refs/tags/" + tag}
     e.update({k: SENT[k] for k in (creds or [])}); e.update(env or {})
     r = subprocess.run(["bash", path], cwd=t, env=e, capture_output=True, text=True)
     LAST[0] = r.returncode if r.returncode == 127 else 0
@@ -305,6 +320,21 @@ for f in ("policy.json", "vendor-evidence.json", "production.sbom.json", "checks
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"EVIDENCE_FAIL": "1"}); check(rc != 0 and not signs(t), "AC8 failing evidence stops everything before anything is signed")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(signs(t)) == 1, "AC8 a failing signature stops at the first one")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 0 and os.path.exists(os.path.join(t, "release-evidence")), "AC8 the bundles and the evidence land in release-evidence/")
+# AC13: the four metadata files and the signed list are made in release-sign, before the first signature, from Build's verified digests only
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)
+vf = [l for l in L if l.startswith("vex-forms")]
+check(rc == 0 and len(vf) == 1 and "--openvex .vex/fosterstack-cache.openvex.json" in vf[0] and "--images release-metadata/vex-images.json" in vf[0] and "--version v0.3.0" in vf[0] and "--out-dir release-metadata" in vf[0], "AC13 bin/vex-forms.py makes the CSAF and inspector-filters files from the one OpenVEX file and the image digests of release-metadata/vex-images.json", str(vf))
+check(sorted(os.listdir(os.path.join(t, "release-metadata"))) == sorted(["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.csaf.json", "fosterstack-cache-v0.3.0.inspector-filters.json", "release-files.sha256", "vex-images.json"]) if os.path.isdir(os.path.join(t, "release-metadata")) else False, "AC13 release-metadata/ holds the four files, release-files.sha256 and the vex input", str(os.listdir(t)))
+lf = os.path.join(t, "release-metadata/release-files.sha256")
+check(os.path.exists(lf) and [x.split("  ")[1] for x in open(lf).read().split("\n") if x] == ["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.csaf.json", "fosterstack-cache-v0.3.0.inspector-filters.json"], "AC13 release-files.sha256 lists exactly the four files in order")
+first_sig = next((i for i, l in enumerate(L) if l.startswith("cosign")), 99)
+check(L.index(vf[0]) < first_sig if vf else False, "AC13 the metadata is made before the first signature")
+check(any(l.startswith("cosign sign-blob") and "release-files.sha256.bundle" in l and l.endswith("release-metadata/release-files.sha256") for l in L), "AC13 release-files.sha256 is signed keyless with a bundle in release-evidence/", str([l for l in L if "release-files" in l]))
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": "release-files.sha256.bundle"}); check(rc != 0 and "rekor" in se.lower() and "release-files.sha256" in se, "AC13 a release-files bundle with no Rekor entry fails, naming it", "rc=%s %s" % (rc, first(se)))
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"VEXFORMS_FAIL": "1"}); check(rc != 0 and not signs(t), "AC13 failing VEX generation stops everything before anything is signed")
+t = tree(); open(os.path.join(t, "images/fips.manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\n"); rc, so, se = run(t, "release-sign", creds=REG); check(rc != 0 and "fips.manifests" in se and not signs(t), "AC13 an images/<variant>.manifests that is not complete stops before anything is signed")
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
+    t = tree(); rc, so, se = run(t, "release-sign", creds=REG, tag=tag); check(rc != 0 and "tag" in se and not log(t), "AC14 release-sign refuses the tag %r" % tag, "rc=%s %s" % (rc, first(se)))
 # ---- AC9: release-assets.sh ----------------------------------------------------------------------------------------------------------------------
 t = tree(); os.makedirs(os.path.join(t, "release-apks/x86_64")); os.makedirs(os.path.join(t, "release-apks/aarch64")); os.makedirs(os.path.join(t, "release-evidence")); open(os.path.join(t, "release-apks/x86_64/a.apk"), "w").write("x"); open(os.path.join(t, "release-apks/aarch64/a.apk"), "w").write("y"); open(os.path.join(t, "release-evidence/e.json"), "w").write("{}")
 rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
@@ -314,6 +344,23 @@ for what in ("release upload v0.3.0", "release-upload/amd64-a.apk", "release-upl
 t2 = tree(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_FAIL_ON": "release view"})
 check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(l.endswith("--verify-tag") for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
 check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-file" in l or "--notes-from-tag" in l], "AC9 no undraft and no tag notes here (REQ-REL-009-AC8 is the patch-notes job's)")
+def full_assets():
+    t = tree(); rc_, so_, se_ = run(t, "release-sign", creds=REG)
+    os.makedirs(os.path.join(t, "release-apks/x86_64")); os.makedirs(os.path.join(t, "release-apks/aarch64"))
+    open(os.path.join(t, "release-apks/x86_64/a.apk"), "w").write("x"); open(os.path.join(t, "release-apks/aarch64/a.apk"), "w").write("y")
+    for n, c in (("fscache_0.3.0_linux_amd64.tar.gz", b"A"), ("fscache_0.3.0_linux_arm64.tar.gz", b"B")): open(os.path.join(t, "dist", n), "wb").write(c)
+    open(os.path.join(t, "dist/checksums.txt"), "w").write("".join("%s  %s\n" % (hashlib.sha256(c).hexdigest(), n) for n, c in (("fscache_0.3.0_linux_amd64.tar.gz", b"A"), ("fscache_0.3.0_linux_arm64.tar.gz", b"B"))))
+    return t
+t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
+check(rc == 0 and "release-upload/release-files.sha256 " in L + " " and "release-upload/release-manifest.json" in L and "release-upload/release-files.sha256.bundle" in L, "AC13 the four metadata files, release-files.sha256 and its bundle are attached", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); os.remove(os.path.join(t, "release-evidence/release-files.sha256.bundle")); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+check(rc != 0 and "release-files.sha256.bundle" in se and not [l for l in log(t) if l.startswith("gh release upload")], "AC13 the coverage gate runs BEFORE the upload: a release without the signed list is refused, nothing is uploaded", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); os.makedirs(os.path.join(t, "release-evidence"), exist_ok=True); open(os.path.join(t, "release-evidence/stray.json"), "w").write("{}"); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
+check(rc != 0 and "stray.json" in se and not [l for l in log(t) if l.startswith("gh release upload")], "AC13 an asset covered by nothing stops the release before the upload, naming it", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_DROP": "release-files.sha256.bundle"})
+check(rc != 0 and "release-files.sha256.bundle" in se, "AC13 the gate runs again AFTER publishing, on what the release stores: a missing asset fails the run", "rc=%s %s" % (rc, first(se)))
+t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env={"GH_ALTER": "release-manifest.json"})
+check(rc != 0 and "release-manifest.json" in se, "AC13 the gate after publishing catches a stored file that differs from the staged one", "rc=%s %s" % (rc, first(se)))
 for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
     t3 = tree(); rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], tag=tag); check(rc3 != 0 and "tag" in se3 and not log(t3), "AC14 release-assets refuses the tag %r" % tag, "rc=%s %s" % (rc3, first(se3)))
 check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git |tag ", l)], "AC9 no release is created without --verify-tag and no tag is made")
