@@ -644,8 +644,8 @@ def _run(a, moved, fx, now):
     for rk, row in sorted(rulings.items()):
         if row[2] is None or rk not in head or (head[rk][0] in lines and rk[3] in lines[head[rk][0]]):
             continue                                       # unpinned, its line gone from the head, or an added occurrence (judged above)
-        if not _row_applies(a.root, a.head, rk[0], rk[3], row):
-            held.append(head[rk][0])
+        if head[rk][1] > row[1] or not _row_applies(a.root, a.head, rk[0], rk[3], row):
+            held.append(head[rk][0])                       # more copies in the head than the row's count, or its pins no longer hold
     if not moved and not added and not held:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
@@ -660,8 +660,8 @@ def _run(a, moved, fx, now):
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
     for path, what, line in held:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
-                     "reason": f"{what} in {path} ({line[:100]}) is a held check-call row whose pins no longer hold in the head (the test file or its library changed): the row is void"})
-        print(f"  FAIL unmeasured:{path}: {what} ({line[:60]}): held check-call row, its pins no longer hold (context or callee changed)")
+                     "reason": f"{what} in {path} ({line[:100]}) is a held check-call row whose pins no longer hold in the head (the test file or its library changed), or whose line occurs more often than its count: the row is void"})
+        print(f"  FAIL unmeasured:{path}: {what} ({line[:60]}): held check-call row, its pins no longer hold (context or callee changed) or over its count")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
