@@ -1490,6 +1490,10 @@ arithmetic on digits and on $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c -E
 escaped dot and brackets in a pattern	t "r" "x" bash -c 'grep -Eq -- "\[a\.b\]" "$1"' _ "$CALLS"
 a pattern whose first character is a space, then a dash	t "r" "x" bash -c 'grep -q -- " -x" "$1"' _ "$CALLS"
 no argument after _	t "r" "x" bash -c 'test 1 -eq 1' _
+synthetic, the HTTPS-check shape: no unknown field, one flag with its value, no second flag, a count	t "rule 9" "synthetic: every call has the flag --alpha with the value =beta, once, and no plain http address" bash -c 'grep -q -- " unk:\[" "$1" && exit 1; grep -- "^argv \[tool\]" "$1" | grep -v -q -- " opt:\[--alpha\] val:\[=beta\]" && exit 1; grep -Eq -- " opt:\[--alpha\] .* opt:\[--alpha\]| url:\[http://" "$1" && exit 1; test "$(grep -c -- "^argv \[tool\]" "$1")" -ge 3' _ "$work/argv"
+synthetic, the cap-check shape: selected calls, a positive whole-number value, a count	t "rule 9" "synthetic: every selected call has a positive cap" bash -c 'grep -E -- "^argv \[tool\] .* url:\[https://example\.invalid/(a.b|cd)/" "$1" | grep -v -Eq -- " opt:\[--cap\] val:\[(1|2|3|4|5|6|7|8|9)(0|1|2|3|4|5|6|7|8|9)*\]" && exit 1; test "$(grep -c -E -- "^argv \[tool\] .* url:\[https://example\.invalid/(a.b|cd)/" "$1")" -ge 1' _ "$work/argv"
+synthetic, the status-file shape: an exit status, an existing log, no selected call	t "rule 9" "synthetic: status 2, the log exists and holds no selected call" bash -c 'test "$(cat -- "$1")" = 2 && test -f "$2" && ! grep -q -E -- " url:\[https://example\.invalid/(a.b|cd)/" "$2"' _ "$work/rc" "$work/argv"
+synthetic, the first-field shape: a required first field and no redirect flag in any letter group	t "rule 9" "synthetic: every call starts with opt -q and none has -L" bash -c 'grep -- "^argv \[tool\]" "$1" | grep -v -q -- "^argv \[tool\] opt:\[-q\]" && exit 1; grep -- "^argv \[tool\]" "$1" | grep -Eq -- " opt:\[-(f|s|S|g|q)*L(f|s|S|g|q|o|m)*\]| opt:\[--location\]" && exit 1; test "$(grep -c -- "^argv \[tool\] opt:\[-q\]" "$1")" -ge 3' _ "$work/argv"
 EOF
 while IFS=$'\t' read -r what line; do
   hf "$line"
@@ -1501,8 +1505,6 @@ cat >"$work/hf-real.txt" <<'EOF'
 # ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------
 # the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir
 # url characters, curl flags and caps
-t "rule 32" "refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)" bash -c 'grep -- "^argv \[curl\]" "$1" | grep -v -q -- " opt:\[--proto\] val:\[=https\]" && exit 1; grep -- "^argv \[curl\]" "$1" | grep -v -q -- " opt:\[--tlsv1\.2\]" && exit 1; test "$(grep -c -- "^argv \[curl\]" "$1")" -ge 3' _ "$work/argv"
-t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c 'grep -E -- "^argv \[curl\] .* url:\[https://packages\.wolfi\.dev/os/(x86.64|aarch64)/" "$1" | grep -v -Eq -- " opt:\[(-g|--globoff)\]" && exit 1; grep -E -- "^argv \[curl\] .* url:\[https://packages\.wolfi\.dev/os/(x86.64|aarch64)/" "$1" | grep -v -q -- " opt:\[--max-filesize\] val:\[" && exit 1; grep -E -- "^argv \[curl\] .* url:\[https://packages\.wolfi\.dev/os/(x86.64|aarch64)/" "$1" | grep -v -q -- " opt:\[--max-time\] val:\[" && exit 1; test "$(grep -c -E -- "^argv \[curl\] .* url:\[https://packages\.wolfi\.dev/os/(x86.64|aarch64)/" "$1")" -ge 1' _ "$work/argv"
 EOF
 while IFS= read -r line; do
   case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
@@ -1515,127 +1517,6 @@ real = {H(" ".join(l.split())) for l in open(sys.argv[1]).read().split("\n") if 
 rows = {r["line"] for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["file"] == "bin/refresh-inputs-test.sh"}
 assert real == rows, (sorted(real ^ rows))
 PY
-# --- what each committed harness line ASSERTS (Codex, PR 289 round 2: a ruling must describe the line's real check). Each real line is run under bash 5
-# against call logs written here: a log that meets the rule must pass (exit 0), and each log that breaks it in one way must fail (exit 1). Every harness
-# line of the committed rows needs a case set (a new line without one fails), so the rulings' prose is checked by execution, not by reading.
-cat >"$work/hf_sem.py" <<'PY'
-import json, os, re, subprocess, sys, tempfile
-real, w = sys.argv[1], sys.argv[2]
-def bash5():
-    for d in os.environ.get("PATH", "").split(os.pathsep):
-        p = os.path.join(d, "bash")
-        if d and os.access(p, os.X_OK):
-            r = subprocess.run([p, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
-            if r.returncode == 0 and r.stdout.strip().isdigit() and int(r.stdout) >= 5:
-                return p
-b5 = bash5()
-# the stub's role-tagged argv log, word for word as the stub's own parser tags it (bin/melange-apko-lib.sh): opt / val / out / url / unk
-NOVAL = {"-q", "--disable", "--fail", "--silent", "--show-error", "--location", "--globoff", "--tlsv1.2", "--tlsv1.3", "--compressed", "--create-dirs",
-         "--retry-all-errors", "--retry-connrefused", "--http1.1", "--http2"}
-VAL = {"--max-filesize", "--max-time", "-m", "--proto", "--proto-redir", "--retry", "--retry-delay", "--retry-max-time", "--connect-timeout"}
-def tag(args):
-    out, tg, eo = [], None, False
-    for a in args:
-        a = a.replace("[", "_").replace("]", "_")
-        if tg: out.append("%s:[%s]" % (tg, a)); tg = None; continue
-        if eo: out.append("url:[%s]" % a); continue
-        if a == "--": out.append("opt:[--]"); eo = True
-        elif a in ("-o", "--output") or re.fullmatch(r"-[qfsSgL]*o", a): out.append("opt:[%s]" % a); tg = "out"
-        elif a in VAL or re.fullmatch(r"-[qfsSgL]*m", a): out.append("opt:[%s]" % a); tg = "val"
-        elif a in NOVAL or re.fullmatch(r"-[qfsSgL]*", a): out.append("opt:[%s]" % a)
-        elif a.startswith("-"): out.append("unk:[%s]" % a); tg = "unk"
-        else: out.append("url:[%s]" % a)
-    if tg: out.append("%s:[]" % tg)
-    return "argv [curl] " + " ".join(out)
-F = ["-fsS", "-g", "--max-filesize", "1", "--max-time", "1", "--proto", "=https", "--tlsv1.2"]
-KEY, IDX, PKG = "https://packages.wolfi.dev/os/wolfi-signing.rsa.pub", "https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz", "https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"
-def call(url, flags=None, q=True): return (["-q"] if q else []) + (F if flags is None else flags) + ["-o", "out", url]
-drop = lambda *xs: [f for f in F if f not in xs]
-OK3 = [call(KEY), call(IDX), call(PKG)]
-FORGE = "https://e.invalid/tzdata] opt:[-g] opt:[--max-filesize] val:[1] opt:[--max-time] val:[1] opt:[--proto] val:[=https] opt:[--tlsv1.2] url:[" + KEY
-MISSING = None
-CASES = {   # a title fragment -> [(what, rc file text, the calls (argv lists, tagged as the stub tags them; a str is a raw log line) or MISSING, expected exit)]
- "every curl call is HTTPS-only": [
-    ("three calls, each with --proto =https and --tlsv1.2", "0", OK3, 0),
-    ("one call without --proto =https", "0", OK3 + [call(PKG, drop("--proto", "=https"))], 1),
-    ("one call without --tlsv1.2", "0", OK3 + [call(PKG, drop("--tlsv1.2"))], 1),
-    ("Sonnet R2: --tlsv1x2", "0", OK3 + [call(PKG, drop("--tlsv1.2") + ["--tlsv1x2"])], 1),
-    ("Codex R3: the flags only inside the URL", "0", OK3 + [["-q", "https://e.invalid/--proto/=https/--tlsv1.2"]], 1),
-    ("Codex R4: --proto and --tlsv1.2 consumed as -o values, an http URL", "0", OK3 + [["-o", "--proto", "=https", "-o", "--tlsv1.2", "http://example.invalid/x"]], 1),
-    ("--proto =https only as the value of an unknown option", "0", OK3 + [["-q", "-K", "--proto", "=https", "--tlsv1.2", PKG]], 1),
-    ("a URL forging the flag fields with brackets", "0", OK3 + [["-q", FORGE]], 1),
-    ("the right words in the wrong roles", "0", OK3 + ["argv [curl] opt:[-q] val:[--proto] opt:[=https] url:[--tlsv1.2] url:[" + PKG + "]"], 1),
-    ("only two calls", "0", OK3[:2], 1),
-    ("no call log at all", "0", MISSING, 1)],
- "every package and index download is globoff": [
-    ("every package and index call has -g, --max-filesize and --max-time", "0", OK3, 0),
-    ("--globoff instead of -g", "0", [call(IDX, ["--globoff" if f == "-g" else f for f in F]), call(PKG)], 0),
-    ("Codex R2: one matching call without --max-time", "0", [call(PKG), call(IDX, drop("--max-time", "1"))], 1),
-    ("Codex R3: the flags only inside the URL", "0", [["https://packages.wolfi.dev/os/x86_64/tzdata/-g/--max-filesize/--max-time"]], 1),
-    ("Codex R4: -g, --max-filesize and --max-time consumed as -o values", "0", [call(IDX), ["-o", "-g", "-o", "--max-filesize", "-o", "--max-time", PKG]], 1),
-    ("Sonnet R1: -g only inside tzdata-glibc.apk", "0", [["-q", "--max-filesize", "1", "--max-time", "1", "https://packages.wolfi.dev/os/x86_64/tzdata-glibc.apk"]], 1),
-    ("an -o value imitating -g", "0", [call(IDX), ["-q", "--max-filesize", "1", "--max-time", "1", "-o", "-g", PKG]], 1),
-    ("--max-time without a value (the last word)", "0", [call(IDX), ["-q", "-g", "--max-filesize", "1", PKG, "--max-time"]], 0),
-    ("a URL forging the flag fields with brackets", "0", [call(IDX), ["-q", "https://packages.wolfi.dev/os/x86_64/tzdata] opt:[-g] opt:[--max-filesize] val:[1] opt:[--max-time] val:[1"]], 1),
-    ("the right words in the wrong roles", "0", [call(IDX), "argv [curl] opt:[-q] val:[-g] val:[--max-filesize] url:[1] out:[--max-time] url:[" + PKG + "]"], 1),
-    ("one matching call without -g", "0", [call(IDX), call(PKG, drop("-g"))], 1),
-    ("one matching call without --max-filesize", "0", [call(IDX), call(PKG, drop("--max-filesize", "1"))], 1),
-    ("no package or index call at all", "0", [call(KEY)], 1),
-    ("no call log at all", "0", MISSING, 1)],
- "every curl call reads no curlrc": [
-    ("every call starts with -q and none follows a redirect", "0", OK3, 0),
-    ("one call without -q", "0", OK3 + [call(PKG, q=False)], 1),
-    ("-q present but not first", "0", OK3 + [["-fsS", "-q", "-g", PKG]], 1),
-    ("-q only as an -o value", "0", OK3 + [["-o", "-q", "-g", PKG]], 1),
-    ("one call with -L", "0", OK3 + [call(PKG, ["-fsSL"] + F[1:])], 1),
-    ("one call with -L in an -o group (-fsSLo)", "0", OK3 + [["-q", "-g", "-fsSLo", "out", PKG]], 1),
-    ("one call with --location", "0", OK3 + [call(PKG, F + ["--location"])], 1),
-    ("Codex R3: -q and -L only inside the URL", "0", OK3 + [["https://e.invalid/-q/-L/--location"]], 1),
-    ("the right words in the wrong roles", "0", OK3 + ["argv [curl] url:[-q] opt:[-g] url:[" + PKG + "]"], 1),
-    ("only two calls", "0", OK3[:2], 1),
-    ("no call log at all", "0", MISSING, 1)],
- "a url with a character outside the plain set is refused": [
-    ("exit 2 and only the key fetched", "2", OK3[:1], 0),
-    ("exit 2 but a tzdata package fetched", "2", OK3, 1),
-    ("exit 2 but a package with a glob-like name fetched (os/x86_64/*.apk)", "2", OK3[:1] + [call("https://packages.wolfi.dev/os/x86_64/*.apk")], 1),
-    ("exit 0 (not refused)", "0", OK3[:1], 1),
-    ("Sonnet R2b: exit 2 and NO call log at all", "2", MISSING, 1)],
- "refresh compares the live Wolfi key": [
-    ("exit 0 and a curl call for the live signing key", "0", OK3, 0),
-    ("exit 0 but no call for the signing key", "0", OK3[1:], 1),
-    ("the key fetched but exit 3", "3", OK3, 1),
-    ("Codex R4: the key address only as the -o FILE, another address as the URL", "0", [["-q", "-o", KEY, IDX]], 1),
-    ("Sonnet R4: an APKINDEX URL and an -o file named wolfi-signing.rsa.pub", "0", [["-q", IDX, "-o", "wolfi-signing.rsa.pub"]], 1),
-    ("a longer address that only starts with the key address", "0", [["-q", KEY + ".x"]], 1),
-    ("a URL forging a url field with brackets", "0", [["-q", "https://e.invalid/x] url:[" + KEY]], 1),
-    ("no call log at all", "0", MISSING, 1)],
-}
-# each case runs twice: with plain paths, and with $work a directory named --file=w (an operand that starts with - must stay an operand: grep and cat pass --)
-out = {"bash5": b5, "lines": [], "unmatched": []}
-for line in [l for l in open(real).read().split("\n") if l.startswith("t ")]:
-    keys = [k for k in CASES if k in line]
-    if len(keys) != 1:
-        out["unmatched"].append(line[:80]); continue
-    for what, rc, log, want in CASES[keys[0]]:
-        for variant in ("plain paths", "$work named --file=w"):
-            d = tempfile.mkdtemp(dir=w, prefix="hfsem.")
-            wd = d if variant == "plain paths" else "--file=w"
-            os.makedirs(os.path.join(d, wd), exist_ok=True)
-            open(os.path.join(d, wd, "rc"), "w").write(rc + "\n")
-            if log is not MISSING:
-                open(os.path.join(d, wd, "argv"), "w").write("\n".join(x if isinstance(x, str) else tag(x) for x in log) + "\n")
-            r = subprocess.run([b5, "-c", 't() { shift 2; "$@"; }\n' + line], cwd=d, env={"PATH": os.environ["PATH"], "work": wd, "CALLS": os.path.join(wd, "calls"), "LC_ALL": "C"},
-                               stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
-            out["lines"].append({"line": keys[0], "what": what + " (" + variant + ")", "want": want, "got": r.returncode})
-json.dump(out, open(os.path.join(w, "hf-sem.json"), "w"), indent=1)
-PY
-python3 "$work/hf_sem.py" "$work/hf-real.txt" "$work" </dev/null
-CASE="AC16 harness semantics: every harness line of the committed rows has a case set (no line asserts something untested)"
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); n=sum(1 for l in open(sys.argv[2]) if l.startswith('t ')); assert r['bash5'] and not r['unmatched'] and len({x['line'] for x in r['lines']}) == n, (r['unmatched'], n)" "$work/hf-sem.json" "$work/hf-real.txt"
-while IFS=$'\t' read -r ln what want; do
-  CASE="AC16 harness semantics: the committed line '$ln' $([ "$want" = 0 ] && echo PASSES || echo FAILS) on a log where $what"
-  check python3 -c "import json,sys; x=[x for x in json.load(open(sys.argv[1]))['lines'] if x['line'] == sys.argv[2] and x['what'] == sys.argv[3]]; assert len(x) == 1 and (x[0]['got'] == 0) == (x[0]['want'] == 0), x" "$work/hf-sem.json" "$ln" "$what"
-done < <(python3 -c "import json,sys; [print(x['line'] + chr(9) + x['what'] + chr(9) + str(x['want'])) for x in json.load(open(sys.argv[1]))['lines']]" "$work/hf-sem.json")
 # --- RUNTIME proof (Sonnet R1): every corpus line is EXECUTED under every bash on PATH (one per version: bash 5, whose test -v / -R / arithmetic operands
 # evaluate $(...) even in single quotes, and, where present, an older bash such as 3.2), with a stub directory first on PATH whose curl, wget, touch, cmd and
 # ls only write a marker file; the inner bash is the same shell. Then: every line that wrote the marker was refused by the parser, the planted reproductions
@@ -1871,6 +1752,46 @@ while IFS= read -r cls; do
 done < <(python3 -c "import json,sys; [print(k) for k in json.load(open(sys.argv[1]))['classes'] if not k.startswith('the refused corpus: ')]" "$work/hf-enum.json")
 CASE="AC16 harness enumeration: at least 3000 lines in at least 30 classes, none accepted and none refused for another reason"
 check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['total'] >= 3000 and len([k for k in r['classes'] if not k.startswith('the refused')]) >= 30 and r['accepted'] == 0 and r['wrong_reason'] == 0, (r['total'], r['accepted'], r['wrong_reason'])" "$work/hf-enum.json"
+# --- the GOLDEN whitelist (Sonnet, PR 289 round 5: the mutation run catches only the widenings it lists; a security control fails closed). The sha256 of
+# HARNESS_WHITELIST as canonical JSON (sorted keys, no spaces, ASCII) must equal HARNESS_WHITELIST_GOLDEN below: ANY change to the grammar, a widening
+# the mutation list does not name included, turns this suite red. Changing the grammar is therefore two deliberate edits in one reviewed diff: the
+# whitelist, and this golden value (whose new value the failing case prints).
+HARNESS_WHITELIST_GOLDEN=b2584723ffad2283b2d195aff694c38669d7746ef2e1dfe2520207768060371d
+cat >"$work/hf_gold.py" <<'PY'
+import hashlib, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("hf", sys.argv[1]); m = importlib.util.module_from_spec(spec)
+sys.argv = [sys.argv[1], "--file", "/dev/null"]   # harness_form.py judges only when run as a script: importing it runs nothing
+spec.loader.exec_module(m)
+print(hashlib.sha256(json.dumps(m.HARNESS_WHITELIST, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()).hexdigest())
+PY
+hfg=$(python3 "$work/hf_gold.py" "$work/harness_form.py" </dev/null)
+CASE="AC16 harness whitelist: HARNESS_WHITELIST equals the reviewed golden (canonical sha256 $HARNESS_WHITELIST_GOLDEN; this tree's whitelist hashes to $hfg)"
+check test "$hfg" = "$HARNESS_WHITELIST_GOLDEN"
+hgd=$(mktemp -d "$work/hfgold.XXXXXX")
+while IFS=$'\t' read -r what patch; do
+  python3 - "$work/harness_form.py" "$hgd/m.py" "$patch" <<'PY'
+import sys
+s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"; assert s.count(m) == 1
+open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
+PY
+  CASE="AC16 harness whitelist: a widening the mutation list does not name ($what) changes the canonical hash, so the golden check is red"
+  check test "$(python3 "$work/hf_gold.py" "$hgd/m.py" </dev/null)" != "$HARNESS_WHITELIST_GOLDEN"
+done <<'EOF'
+commands + xargs (Sonnet R4)	HARNESS_WHITELIST["commands"].append("xargs")
+pipe_into + sh (Sonnet R4)	HARNESS_WHITELIST["pipe_into"].append("sh")
+grep_options + -P (Sonnet R4)	HARNESS_WHITELIST["grep_options"].append("-P")
+; in rule_title_chars (Sonnet R4)	HARNESS_WHITELIST["rule_title_chars"] += ";"
+grep_options + -vq	HARNESS_WHITELIST["grep_options"].append("-vq")
+a new key	HARNESS_WHITELIST["extra"] = []
+a reordered list (order is part of the reviewed text)	HARNESS_WHITELIST["commands"].reverse()
+EOF
+python3 - "$work/harness_form.py" "$hgd/m.py" "pass" <<'PY'
+import sys
+s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"
+open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
+PY
+CASE="AC16 harness whitelist: a no-op patch keeps the canonical hash (the golden check detects change, not noise)"
+check test "$(python3 "$work/hf_gold.py" "$hgd/m.py" </dev/null)" = "$HARNESS_WHITELIST_GOLDEN"
 # --- MUTATION run (like pip-pin's): a temp copy of harness_form.py with HARNESS_WHITELIST widened by ONE token; the enumeration (positions and skips from
 # the real whitelist) and the refused corpus must then report at least one line the real whitelist refuses for the expected reason that the mutant either
 # ACCEPTS (an unexpected acceptance) or refuses for ANOTHER reason (the newline and CR line_chars mutants: the shape still refuses those lines, so they
@@ -1959,13 +1880,6 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "2d6db92689368ed6": "# url characters, curl flags and caps",
     "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
-    # harness assertion lines (the second allowed form): t, a quoted rule and title, one single-quoted bash -c body in the fixed vocabulary, _ and path arguments
-    "3c6eebce4768a5e5": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \" opt:\\[--proto\\] val:\\[=https\\]\" && exit 1; grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \" opt:\\[--tlsv1\\.2\\]\" && exit 1; test \"$(grep -c -- \"^argv \\[curl\\]\" \"$1\")\" -ge 3' _ \"$work/argv\"",
-    "c11dd5da2dbb0266": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \" opt:\\[--proto\\] val:\\[=https\\]\" && exit 1; grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \" opt:\\[--tlsv1\\.2\\]\" && exit 1; test \"$(grep -c -- \"^argv \\[curl\\]\" \"$1\")\" -ge 3' _ \"$work/argv\"",
-    "fc236193a8c79323": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \" opt:\\[--proto\\] val:\\[=https\\]\" && exit 1; grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \" opt:\\[--tlsv1\\.2\\]\" && exit 1; test \"$(grep -c -- \"^argv \\[curl\\]\" \"$1\")\" -ge 3' _ \"$work/argv\"",
-    "8e8a07ce9c320820": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -Eq -- \" opt:\\[(-g|--globoff)\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -q -- \" opt:\\[--max-filesize\\] val:\\[\" && exit 1; grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -q -- \" opt:\\[--max-time\\] val:\\[\" && exit 1; test \"$(grep -c -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\")\" -ge 1' _ \"$work/argv\"",
-    "bd93c54a1b93fcbd": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -Eq -- \" opt:\\[(-g|--globoff)\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -q -- \" opt:\\[--max-filesize\\] val:\\[\" && exit 1; grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -q -- \" opt:\\[--max-time\\] val:\\[\" && exit 1; test \"$(grep -c -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\")\" -ge 1' _ \"$work/argv\"",
-    "c9836851158c3ce7": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -Eq -- \" opt:\\[(-g|--globoff)\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -q -- \" opt:\\[--max-filesize\\] val:\\[\" && exit 1; grep -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\" | grep -v -q -- \" opt:\\[--max-time\\] val:\\[\" && exit 1; test \"$(grep -c -E -- \"^argv \\[curl\\] .* url:\\[https://packages\\.wolfi\\.dev/os/(x86.64|aarch64)/\" \"$1\")\" -ge 1' _ \"$work/argv\"",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = json.load(open(sys.argv[1]))["unmeasured_text"]
