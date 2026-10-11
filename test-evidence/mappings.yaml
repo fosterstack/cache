@@ -955,3 +955,4 @@ mappings:
   - ac: REQ-CHAIN-007-AC13
     evidence:
       - { type: shell-test, ref: "bin/chain-release-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-release-metadata-test.sh" }
