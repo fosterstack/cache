@@ -544,7 +544,7 @@ no certificate, and the manifests on this page apply as written.
 **TLS in the server.** Set `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` to a PEM
 certificate file (it may hold the chain) and its private key file. The server
 then serves HTTPS only, on the same port, with TLS 1.2 as the minimum version;
-a plain-HTTP request to that port gets `400`. Setting only one of the two, or a
+a plain-HTTP request to that port gets `400`. HTTP/2 is not offered. Setting only one of the two, or a
 file that is missing, unreadable, not PEM, or a key that does not match the
 certificate, stops the start with a message naming the variable and the path,
 before anything under the data directory is touched.

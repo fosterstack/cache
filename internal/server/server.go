@@ -101,11 +101,17 @@ const (
 //
 // tlsCfg, when non-nil, is the TLS configuration from TLSConfig and the
 // server is then served with ServeTLS (REQ-TLS-001); nil keeps plain HTTP.
+// Either way the server speaks HTTP/1 only (REQ-TLS-001-AC9): HTTP/2, over
+// TLS or unencrypted, is not offered, so the request bounds are the same
+// on both listeners.
 func NewHTTPServer(addr string, h http.Handler, tlsCfg *tls.Config) *http.Server {
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
 		TLSConfig:         tlsCfg,
+		Protocols:         &protocols,
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		ReadTimeout:       ReadTimeout,
 		WriteTimeout:      WriteTimeout,

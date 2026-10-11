@@ -189,9 +189,9 @@ Four more:
 - **HTTPS from the server itself** — `FSCACHE_TLS_CERT` / `FSCACHE_TLS_KEY`,
   a PEM certificate file (it may hold the chain) and its private key file,
   required together and unset by default. With both set, the server serves
-  HTTPS only, on `FSCACHE_ADDR`, with TLS 1.2 as the minimum version; a
-  plain-HTTP request to that port gets `400`, and `/healthz` checks move to
-  `https://`. Mount the files read-only, for example
+  HTTPS only, on `FSCACHE_ADDR`, with TLS 1.2 as the minimum version, and
+  HTTP/2 is not offered. A plain-HTTP request to that port gets `400`, and
+  `/healthz` checks move to `https://`. Mount the files read-only, for example
   `-v /etc/fscache/tls:/etc/fscache/tls:ro` with
   `-e FSCACHE_TLS_CERT=/etc/fscache/tls/tls.crt -e FSCACHE_TLS_KEY=/etc/fscache/tls/tls.key`.
   The files are read only at startup: replace them, then restart the container.
