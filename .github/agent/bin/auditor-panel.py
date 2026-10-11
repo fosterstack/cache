@@ -596,11 +596,45 @@ def _pick_manifest(idx, blob, arch):
     return None
 
 
+class _Layout:
+    """An OCI image layout DIRECTORY (Build's images artifact: images/<variant>/ with oci-layout, index.json, blobs/sha256/<hex>), read with the small
+    surface the readers use from a tar: extractfile(name).read() and getmember(name). Only index.json and blobs/sha256/<64 hex> are readable; a symlink,
+    a directory without an oci-layout file (a docker-save shape) or any other name is refused. The old archive file is not read: the digest would not
+    be the one Build recorded."""
+
+    def __init__(self, path):
+        if os.path.islink(path) or not os.path.isdir(path):
+            raise OSError("%s is not an OCI layout directory" % os.path.basename(path))
+        if not os.path.isfile(os.path.join(path, "oci-layout")):
+            raise ValueError("%s has no oci-layout file: not an OCI layout (a docker-save shape?)" % os.path.basename(path))
+        self.root = path
+
+    def _path(self, name):
+        if name != "index.json" and not re.fullmatch(r"blobs/sha256/[0-9a-f]{64}", name):
+            raise KeyError(name)
+        p = os.path.join(self.root, name)
+        if os.path.islink(p) or not os.path.isfile(p):
+            raise KeyError(name)
+        return p
+
+    def extractfile(self, name):
+        return open(self._path(name), "rb")
+
+    def getmember(self, name):
+        return self._path(name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
 def read_image(archive, arch):
     """The image's final filesystem facts from an OCI archive: every path, the dpkg status records, and the bytes
     of executables carrying Go build information. Layers apply in order; whiteouts remove paths."""
     paths, status, gobins = set(), {}, {}
-    with tarfile.open(archive) as t:
+    with _Layout(archive) as t:
         def blob(d):
             return t.extractfile("blobs/" + d.replace(":", "/")).read()
         man = _pick_manifest(json.loads(t.extractfile("index.json").read()), blob, arch)
@@ -690,7 +724,7 @@ class Bundles:
         if img not in self.cache:
             variant, _, arch = img.rpartition("-")
             try:
-                facts = self.read(os.path.join(self.oci_dir, variant + ".tar"), arch)
+                facts = self.read(os.path.join(self.oci_dir, variant), arch)
                 self.cache[img] = (facts, self.buildinfo(facts["gobins"]))
             except (OSError, ValueError, KeyError, tarfile.TarError) as e:
                 self.cache[img] = None
@@ -948,10 +982,11 @@ def rescan_binding(path, oci_dir):
         return None, "no rescan binding (run, scanned head, main's head, conclusion) in %s" % path
     digests = {}
     for name in sorted(os.listdir(oci_dir)) if os.path.isdir(oci_dir) else []:
-        if not name.endswith(".tar"):
-            continue
+        p = os.path.join(oci_dir, name)
+        if os.path.islink(p) or not os.path.isdir(p) or not os.path.isfile(os.path.join(p, "oci-layout")):
+            continue        # only an OCI layout directory is evidence: an archive file or a docker-save shape is not
         try:
-            with tarfile.open(os.path.join(oci_dir, name)) as t:
+            with _Layout(p) as t:
                 idx = json.loads(t.extractfile("index.json").read())
                 ds = [m["digest"] for m in idx.get("manifests") or [] if DIGEST.match(str(m.get("digest", "")))]
                 # every manifest the index names must itself be readable — a syntactically valid digest over a blob
@@ -962,7 +997,7 @@ def rescan_binding(path, oci_dir):
             ds = []
         if not ds:
             return None, "the rescan's evidence %s has no image digest" % name
-        digests[name[:-4]] = ", ".join(ds)
+        digests[name] = ", ".join(ds)
     if not digests:
         return None, "the rescan's evidence has no image digest (%s)" % oci_dir
     return dict({k: b[k] for k in keys}, digests=digests), None
@@ -996,7 +1031,7 @@ def cmd_judge(a, seats=None, bundles=None, advisory=None):
             unreadable.append(img)
             continue
         try:
-            read_image(os.path.join(a.oci, variant + ".tar"), arch)
+            read_image(os.path.join(a.oci, variant), arch)
         except (OSError, ValueError, KeyError, tarfile.TarError):
             unreadable.append(img)
     if unreadable:

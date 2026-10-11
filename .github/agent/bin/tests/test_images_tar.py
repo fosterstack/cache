@@ -20,7 +20,7 @@ M = load("auditor_manifest_tar", "auditor-manifest.py")
 
 
 def image_layout(path, layout_file=True):
-    """A minimal OCI image LAYOUT directory (Build's images/<variant>/): oci-layout, index.json naming one manifest, and that blob."""
+    """A minimal OCI image LAYOUT directory (one directory per variant in Build's images artifact): oci-layout, index.json naming one manifest, and that blob."""
     blob = b"{}"
     d = "sha256:" + hashlib.sha256(blob).hexdigest()
     os.makedirs(os.path.join(path, "blobs", "sha256"))
@@ -57,6 +57,25 @@ class ImagesLayout(unittest.TestCase):
             got, why = P.rescan_binding(binding(w), images)
             self.assertIsNone(got)
             self.assertIn("no image digest", why)
+
+    def test_layout_reader_refuses_links_odd_names_and_non_directories(self):
+        with tempfile.TemporaryDirectory() as w:
+            lay = os.path.join(w, "production"); d = image_layout(lay)
+            with P._Layout(lay) as t:
+                self.assertIn("index.json", t.getmember("index.json"))
+                self.assertEqual(t.extractfile("blobs/" + d.replace(":", "/")).read(), b"{}")
+                for bad in ("../index.json", "blobs/sha256/zz", "oci-layout", "blobs/sha256/" + "0" * 64):
+                    with self.assertRaises(KeyError):
+                        t.getmember(bad)
+            os.symlink(lay, os.path.join(w, "link"))
+            with self.assertRaises(OSError):
+                P._Layout(os.path.join(w, "link"))
+            open(os.path.join(w, "file"), "w").write("x")
+            with self.assertRaises(OSError):
+                P._Layout(os.path.join(w, "file"))
+            blob = os.path.join(lay, "blobs", "sha256", d.split(":")[1]); os.rename(blob, blob + ".real"); os.symlink(blob + ".real", blob)
+            with P._Layout(lay) as t, self.assertRaises(KeyError):
+                t.getmember("blobs/" + d.replace(":", "/"))
 
     def test_bundles_read_the_variant_directory(self):
         seen = []

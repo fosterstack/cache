@@ -319,12 +319,15 @@ def _archives(rescan_dir, test_image, oci, tar):
         ok1 = _skopeo(ref, "oci-archive:%s:%s" % (oci, TAG))
         ok2 = _skopeo(ref, "docker-archive:%s:%s" % (tar, TAG))
         return (("test_image=%s" % test_image, None) if (ok1 or ok2) else (None, "skopeo could not pull %s" % ref))
-    named = glob.glob(os.path.join(rescan_dir, "**", "production.tar"), recursive=True)
+    # Build's images artifact: one OCI layout DIRECTORY per variant (images/production/ with oci-layout, index.json, blobs/): the digest is the one Build
+    # recorded. An archive file or a docker-save shape is not a candidate.
+    named = [p for p in glob.glob(os.path.join(rescan_dir, "**", "production"), recursive=True)
+             if os.path.isdir(p) and not os.path.islink(p) and os.path.isfile(os.path.join(p, "oci-layout"))]
     if not named:
-        return None, "no production.tar in the rescan artifacts"
-    # production.tar (Build's images artifact) is a multi-arch index; select amd64 into a single-arch OCI archive that
+        return None, "no production OCI layout directory (images/production) in the rescan artifacts"
+    # production is a multi-arch index; select amd64 into a single-arch OCI archive that
     # grype can catalogue, and a docker-save tar for trivy/osv.
-    src = "oci-archive:%s" % named[0]
+    src = "oci:%s" % named[0]
     ok1 = _skopeo(src, "oci-archive:%s:%s" % (oci, TAG))
     ok2 = _skopeo(src, "docker-archive:%s:%s" % (tar, TAG))
     return (os.path.basename(named[0]), None) if (ok1 or ok2) else (None, "skopeo convert failed")

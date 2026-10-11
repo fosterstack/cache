@@ -45,7 +45,7 @@ def tar_bytes(files, gz=True):
 
 
 def write_layout(path, files):
-    """An OCI image LAYOUT directory (Build's images artifact: images/<variant>/): oci-layout, index.json, blobs/sha256/<hex>."""
+    """An OCI image LAYOUT directory (one per variant in Build's images artifact): oci-layout, index.json and the blobs."""
     os.makedirs(path, exist_ok=True)
     for name, data, _mode in [("oci-layout", b'{"imageLayoutVersion": "1.0.0"}', 0o644)] + list(files):
         p = os.path.join(path, name)
