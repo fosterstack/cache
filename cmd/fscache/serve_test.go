@@ -708,6 +708,7 @@ func TestServeShutdownErrorOrphanAdoptedOnNextStart(t *testing.T) {
 // before it serves, keeps the upload that completed before the error (served,
 // counted the same by /statusz and /metrics), and does not adopt the held,
 // partial upload (404, adopted_blobs=0, no temporary file left behind).
+// The first run starts without a marker; the startup reconcile is the second start's.
 //
 // What it does not hold open: the window between a completed upload's
 // rename and its index record is a few instructions inside cache.Put, with
@@ -817,18 +818,29 @@ func realServingErrorThenRestart(t *testing.T, withTLS bool) {
 	if _, err := io.WriteString(held, "PUT /held-key HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n0123456789"); err != nil {
 		t.Fatalf("write the held request: %v", err)
 	}
-	// The blob store creates its temporary file before it reads the body:
-	// once one exists, the handler is in flight, writing the blob.
+	// The blob store creates its temporary file before it copies the body,
+	// so the file existing is not enough: wait until it holds the ten bytes
+	// sent so far. Then the handler is in flight, mid-copy, held on the rest.
+	const heldSent = 10
 	tmpDir := filepath.Join(dir, "blobs", "+tmp")
+	var heldSize int64 = -1
 	deadline := time.Now().Add(10 * time.Second)
 	for {
-		if entries, _ := os.ReadDir(tmpDir); len(entries) > 0 {
+		if entries, _ := os.ReadDir(tmpDir); len(entries) == 1 {
+			if fi, err := entries[0].Info(); err == nil {
+				heldSize = fi.Size()
+			}
+		}
+		if heldSize == heldSent {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("the held upload never reached the blob store")
+			t.Fatalf("the held upload's temporary file holds %d bytes after 10s (-1: none), want the %d sent", heldSize, heldSent)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+	if heldSize != heldSent {
+		t.Fatalf("held upload size = %d, want %d", heldSize, heldSent)
 	}
 
 	// The real serving error: the listener fails under the running server.
