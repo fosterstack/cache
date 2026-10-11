@@ -2294,6 +2294,65 @@ ifrepo ifdk2 "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW")"$'\n'
 ifx "$work/if-dk.json" plain "$(ifrow "$work/ifdk2" .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifdk2 "$work/if-dk.json"
 CASE="AC19' (5): a workflow repeating a top-level key fails: exit 1"
 refused 0
+# Codex (bc5585c) P2: a line is NOT redirect-following only when every downloader word the inventory recognises is the bare word curl (or the first
+# element "curl" of a Python list) and no word holds L or begins --location; any other spelling (wget.exe, /usr/bin/wget, curl.exe, b"curl", 'curl') needs cosign
+for L in 'wget.exe -q -O "$tmp/i" https://packages.example.dev/a.tgz' '/usr/bin/wget -q -O "$tmp/i" https://packages.example.dev/a.tgz' \
+         '/usr/bin/curl -fsS -o "$tmp/i" https://packages.example.dev/a.tgz' 'curl.exe -fsS -o "$tmp/i" https://packages.example.dev/a.tgz' \
+         'curl-impersonate -fsS -o "$tmp/i" https://packages.example.dev/a.tgz' \
+         '    r = subprocess.run([b"curl", b"-fsS", b"-o", part, b"https://packages.example.dev/a.tgz"], stdout=sys.stderr)' \
+         '    r = subprocess.run([b"wget", b"-q", b"-O", part, b"https://packages.example.dev/a.tgz"], stdout=sys.stderr)' \
+         "    r = subprocess.run(['curl', '-fsS', '-o', part, 'https://packages.example.dev/a.tgz'], stdout=sys.stderr)" \
+         '    r = subprocess.run([TOOLS["curl"], "-fsS", "-o", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)' \
+         '    r = subprocess.run(["curl", b"-L", "-fsS", "-o", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)'; do
+  one ifr3 "$FETCH$L"$'\n' "$L"
+  CASE="AC19' (6) Codex P2: $L is not the bare curl, so it counts as following redirects and a checksum verifier line fails: exit 1"
+  refused 0; check grep -q 'redirect' "$work/if.out"
+done
+PYC='    r = subprocess.run(["curl", "-fsS", "-o", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)'
+one ifr4 "$FETCH$PYC"$'\n' "$PYC"
+CASE="AC19' (6) control: a Python list whose first element is \"curl\" with no L passes with a checksum verifier line: exit 0"
+check test "$rc" -eq 0
+CASE="AC19' (6) Codex P2: every line the inventory recognises as a download is classified; only the bare curl forms without L are not redirect-following"
+check python3 - "$chk" <<'PYC1'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'r = subprocess.run(["curl", "-fsS", "-o", p, "https://h.example.dev/a"], stdout=sys.stderr)', 'if curl -fsS -o x https://h.example.dev/a; then ok=1; break; fi',
+         'curl -fsS https://h.example.dev/a || exit 1']
+OTHER = ['wget https://h.example.dev/a', 'wget.exe https://h.example.dev/a', '/usr/bin/wget https://h.example.dev/a', '/usr/bin/curl -fsS https://h.example.dev/a', 'curl.exe -fsS https://h.example.dev/a',
+         'curl-impersonate -fsS https://h.example.dev/a', 'x=curl; $x https://h.example.dev/a curl.', 'r = subprocess.run([b"curl", b"-fsS"])', 'r = subprocess.run([b"wget"])',
+         "r = subprocess.run(['curl', '-fsS'])", 'r = subprocess.run([CURL, "curl"])', 'curl -fsSL https://h.example.dev/a', 'curl -4fsSL https://h.example.dev/a',
+         'curl --location https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; wget https://h.example.dev/b', 'echo wget; curl -fsS https://h.example.dev/a', 'curl "wget" https://h.example.dev/a',
+         'WGET=1 curl https://h.example.dev/a wget', 'curl\twget https://h.example.dev/a']
+for line in PLAIN + OTHER:
+    flat = " ".join(line.split())
+    occ = [k for k, f, b in ac.inv.unmeasured_occurrences({"bin/x.sh": line + "\n"}) if k[1] == "a download"]
+    assert occ, ("the inventory does not see a download in", line)
+    assert ac._follows_redirects(flat) == (line in OTHER), (line, ac._follows_redirects(flat))
+PYC1
+# helper review of the round-2 fix: only a list LITERAL's first element "curl" is bare; a subscript (TOOLS["curl"]) or a first element written as an
+# expression ("curl" "x", "curl"+X, "curl".replace(...)) is not; a prefixed string flag (b"-L", r"-fsSL", f"--location", rb'-L', U"-L") is still a word holding L
+CASE="AC19' (6) helper review: a subscript, a concatenated first element or a prefixed string flag holding L counts as following redirects"
+check python3 - "$chk" <<'PYC2'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+PLAIN = ['cmd = ["curl", "-fsS", "-o", p, "https://h.example.dev/a"]', 'cmd = [ "curl" , "-fsS", "https://h.example.dev/a"]', 'r = run([["curl", "-fsS", "https://h.example.dev/a"]])',
+         'r = run(x, ["curl", "-fsS", "https://h.example.dev/a"])', 'r = run(["curl"])', 'r = run(["curl", "-fsS", "https://h.example.dev/a?CurlLocation=1"])']
+OTHER = ['r = subprocess.run([TOOLS["curl"], "-fsS", "-o", p, "https://h.example.dev/a"])', 'r = subprocess.run([TOOLS ["curl"], "-fsS", "https://h.example.dev/a"])',
+         'r = subprocess.run([f()["curl"], "-fsS", "https://h.example.dev/a"])', 'r = subprocess.run([x[0]["curl"], "-fsS", "https://h.example.dev/a"])',
+         'r = subprocess.run(["curl" "-impersonate", "-fsS", "https://h.example.dev/a"])', 'r = subprocess.run(["curl"+SUFFIX, "-fsS", "https://h.example.dev/a"])',
+         'r = subprocess.run(["curl".replace("c", "c"), "-fsS", "https://h.example.dev/a"])', 'r = subprocess.run(["curl" if a else "wget2", "https://h.example.dev/a"])',
+         'r = subprocess.run(["curl", b"-L", "https://h.example.dev/a"])', 'r = subprocess.run(["curl", r"-fsSL", "https://h.example.dev/a"])',
+         'r = subprocess.run(["curl", f"--location", "https://h.example.dev/a"])', "r = subprocess.run([\"curl\", rb'-L', \"https://h.example.dev/a\"])",
+         'r = subprocess.run(["curl", U"-L", "https://h.example.dev/a"])', 'r = subprocess.run(["curl", Rb"--location-trusted", "https://h.example.dev/a"])']
+bad = []
+for line in PLAIN + OTHER:
+    flat = " ".join(line.split())
+    if not [k for k, f, b in ac.inv.unmeasured_occurrences({"bin/x.sh": line + "\n"}) if k[1] == "a download"]:
+        bad.append(("the inventory does not see a download in", line))
+    elif ac._follows_redirects(flat) != (line in OTHER):
+        bad.append((line, ac._follows_redirects(flat)))
+assert not bad, bad
+PYC2
 # rows from the pull request itself, the trusted copy, malformed lists, both lists
 ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
 rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
@@ -2402,6 +2461,32 @@ check test "$(cd "$work/ifc22" && python3 "$chk" --print-context bin/fetch.sh "$
 CASE="AC19' --print-context: COUNT that is not a whole number from 1 to 100: exit 2"
 rc=0; (cd "$work/ifm" && python3 "$chk" --print-context bin/fetch.sh "$LIT" x >/dev/null 2>&1) || rc=$?
 check test "$rc" -eq 2
+CASE="AC19' --print-context (Codex P3): one copy in a step's run: and one in an env: block: the scanner counts 2, the block 1: exit 2, nothing on stdout"
+rc=0; out=$(cd "$work/ifwc" && python3 "$chk" --print-context .github/workflows/f.yml "$LIT" 2>/dev/null) || rc=$?
+check test "$rc" -eq 2; check test -z "$out"
+rc=0; out=$(cd "$work/ifwc" && python3 "$chk" --print-context .github/workflows/f.yml "$LIT" 2 2>/dev/null) || rc=$?
+CASE="AC19' --print-context (Codex P3): the same with COUNT 2 (one copy outside the block): exit 2, nothing on stdout"
+check test "$rc" -eq 2; check test -z "$out"
+pcerr() { # DIR FILE WHY
+  rc=0; out=$(cd "$1" && python3 "$chk" --print-context "$2" "$LIT" 2>"$work/pc.err") || rc=$?
+  CASE="AC19' --print-context (Codex P3): $3: exit 2, nothing on stdout, no traceback"
+  check test "$rc" -eq 2; check test -z "$out"; check test "$(grep -c Traceback "$work/pc.err")" -eq 0
+}
+pcerr "$work/ifm" bin/missing.sh 'a missing file'
+mkdir -p "$work/ifm/bin/adir.sh"; pcerr "$work/ifm" bin/adir.sh 'a directory'; rmdir "$work/ifm/bin/adir.sh"
+cp "$work/ifm/bin/fetch.sh" "$work/ifm/bin/noread.sh"; chmod 000 "$work/ifm/bin/noread.sh"
+if [ ! -r "$work/ifm/bin/noread.sh" ]; then pcerr "$work/ifm" bin/noread.sh 'a file that cannot be read (permission denied)'; fi
+chmod 600 "$work/ifm/bin/noread.sh"; rm -f "$work/ifm/bin/noread.sh"
+# Codex P3 (size): a file larger than the limit is refused by its size before it is read (exit 2, "too large"), in the checker and in --print-context
+big=$(python3 -c 'import sys; sys.stdout.write("#" * 1000001)')
+ifrepo ifbig "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head bin/verify.py "$big"$'\n'"$VL"$'\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifbig" bin/fetch.sh "$LIT" "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.py\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$VL")}}")"; ifck ifbig "$work/if-1.json"
+CASE="AC19' (size): a verifier file larger than the limit stops the check by its size: exit 2, too large, never a pass"
+check test "$rc" -eq 2; check grep -q 'by its size' "$work/if.out"; check grep -qi 'not a pass' "$work/if.out"
+printf '%s\n' '#!/bin/bash' "$big" "$LIT" >"$work/ifbig/bin/big.sh"
+rc=0; out=$(cd "$work/ifbig" && python3 "$chk" --print-context bin/big.sh "$LIT" 2>"$work/pc.err") || rc=$?
+CASE="AC19' --print-context (size): a working-tree file larger than the limit is refused by its size: exit 2, nothing on stdout"
+check test "$rc" -eq 2; check test -z "$out"; check grep -q 'by its size' "$work/pc.err"
 CASE="AC19' --print-context: a .sh file without a bash shebang: exit 2"
 rc=0; (cd "$work/ifsb" && python3 "$chk" --print-context bin/fetch.sh "$LIT" >/dev/null 2>&1) || rc=$?
 check test "$rc" -eq 2

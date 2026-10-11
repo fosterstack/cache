@@ -608,22 +608,39 @@ def load_input_fetch(path, required=False):
 
 
 def _head_bytes(root, head, path):
-    """The bytes of a REGULAR file in the head tree (head None: the working tree), or None (missing, a link, a directory, too large)."""
+    """The bytes of a REGULAR file in the head tree (head None: the working tree), or None (missing, a link, a directory, unreadable). The size is
+    checked BEFORE the content is read: a file larger than the inventory's limit raises RuntimeError (the check cannot run, exit 2)."""
+    too_large = lambda size: RuntimeError(f"{path} is too large to read safely ({size} bytes by its size, more than {inv.MAX_FILE})")
+    read_past = RuntimeError(f"{path} read past the {inv.MAX_FILE}-byte limit")
     if head is None:
         p = os.path.join(root, path)
-        if os.path.islink(p) or not os.path.isfile(p):
+        try:
+            if os.path.islink(p) or not os.path.isfile(p):
+                return None
+            if os.path.getsize(p) > inv.MAX_FILE:
+                raise too_large(os.path.getsize(p))
+            with open(p, "rb") as f:
+                data = f.read(inv.MAX_FILE + 1)
+        except OSError:
             return None
-        data = open(p, "rb").read()
-        return None if len(data) > inv.MAX_FILE else data
+        if len(data) > inv.MAX_FILE:
+            raise read_past
+        return data
     try:
-        r = subprocess.run(["git", "-C", root, "ls-tree", "-z", head, "--", path], capture_output=True, timeout=GH_TIMEOUT)
+        r = subprocess.run(["git", "-C", root, "ls-tree", "-l", "-z", head, "--", path], capture_output=True, timeout=GH_TIMEOUT)
         meta, _, name = r.stdout.rstrip(b"\0").partition(b"\t")
         if r.returncode or name != path.encode() or meta.split()[:2] not in ([b"100644", b"blob"], [b"100755", b"blob"]):
             return None
+        if int(meta.split()[3]) > inv.MAX_FILE:     # ls-tree -l: the blob's size, read before its content
+            raise too_large(int(meta.split()[3]))
         b = subprocess.run(["git", "-C", root, "cat-file", "blob", meta.split()[2].decode()], capture_output=True, timeout=GH_TIMEOUT)
-    except (OSError, subprocess.TimeoutExpired, IndexError):
+    except (OSError, subprocess.TimeoutExpired, IndexError, ValueError):
         return None
-    return None if b.returncode or len(b.stdout) > inv.MAX_FILE else b.stdout
+    if b.returncode:
+        return None
+    if len(b.stdout) > inv.MAX_FILE:
+        raise read_past
+    return b.stdout
 
 
 def _text(data, path):
@@ -691,11 +708,26 @@ def _context(data, path, flat):
     return f"{path} is neither a .sh file nor a workflow or action"
 
 
+_DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")    # the inventory's own recogniser of "a download" (pin-inventory.unmeasured_occurrences)
+_LIST_OPEN = re.compile(r'(?:^|[(\[,=]) ?\[ ?"$')     # before "curl": a list LITERAL's [ (after the line start, (, [, , or =), never a subscript x["curl"]
+_LIST_NEXT = re.compile(r'" ?[,\]]')                  # after curl: the closing quote, then , or ]: the element is exactly the str "curl"
+_STR_PREFIX = re.compile(r"^[bBrRuUfFtT]{1,2}(?=[\"'])")
+
+
 def _follows_redirects(flat):
-    """True (fail closed) for wget, which follows redirects by default, for any word beginning --location, and for ANY single-dash word holding L
-    (-L, -fsSL, -4fsSL, -#L, -fsSLo"$out"): a false positive only asks for the cosign verifier line."""
-    words = [x.strip("\"'") for x in re.split(r"[\s,\[\]()]+", flat)]
-    return any(w == "wget" or w.endswith("/wget") or w.startswith("--location") or (w.startswith("-") and not w.startswith("--") and "L" in w) for w in words)
+    """False ONLY when every downloader word the inventory recognises is the bare word curl (a whole space-delimited word, or the WHOLE first element
+    "curl" of a Python list literal: ["curl", or ["curl"], never a subscript TOOLS["curl"] or an expression "curl"+X) and no word holds an L after a
+    single - or begins --location (a Python string prefix such as b"-L" or rb'-L' is read through). Everything else (wget in any spelling, which follows
+    redirects by default, /usr/bin/curl, curl.exe, b"curl", 'curl', -L, -fsSL, -4fsSL, -#L, -fsSLo"$out", --location*) counts as following redirects,
+    fail closed: a false positive only asks for the cosign verifier line."""
+    for m in _DOWNLOADER.finditer(flat):
+        s, e = m.span()
+        word = (s == 0 or flat[s - 1] == " ") and (e == len(flat) or flat[e] == " ")
+        listed = bool(_LIST_OPEN.search(flat[:s]) and _LIST_NEXT.match(flat, e))
+        if not (m.group() == "curl" and (word or listed)):
+            return True
+    words = [_STR_PREFIX.sub("", x).strip("\"'") for x in re.split(r"[\s,\[\]()]+", flat)]
+    return any(w.startswith("--location") or (w.startswith("-") and not w.startswith("--") and "L" in w) for w in words)
 
 
 def _cosign(line):
@@ -746,9 +778,26 @@ def _fetch_unverified(root, head, row, flat, held_n):
 def print_context(path, line, count="1"):
     """--print-context FILE LINE [COUNT] (run from the repository root): the context a rows author writes for LINE in FILE (the working tree); exit 2
     and nothing on stdout unless the line is present exactly COUNT times (default 1) in one block that can be isolated."""
-    ctx = _context(_head_bytes(".", None, path), path, _flat(line))
-    if not isinstance(ctx, str) and not (re.fullmatch(r"[1-9][0-9]?|100", count) and ctx[1] == int(count)):
-        ctx = f"the line is in its block {ctx[1]} times, not {count}"
+    flat = _flat(line)
+    try:
+        data = _head_bytes(".", None, path)
+    except RuntimeError as e:
+        data, ctx = None, str(e)
+    else:
+        ctx = _context(data, path, flat)
+    if not isinstance(ctx, str):
+        text = data.decode("utf-8")
+        per = {}
+        try:
+            for k, f, bashlike in inv.unmeasured_occurrences({path: text}):    # the scanner's own count, as the check counts it
+                if f == flat and bashlike:
+                    per[k] = per.get(k, 0) + 1
+        except RuntimeError as e:
+            per = {None: -1}
+            print(f"pin-age: {e}", file=sys.stderr)
+        total = max(per.values(), default=0)
+        if not (re.fullmatch(r"[1-9][0-9]?|100", count) and ctx[1] == total == int(count)):
+            ctx = f"the scanner counts the line {total} times, its block {ctx[1]} times, not {count}"
     if isinstance(ctx, str):
         print(f"pin-age: cannot isolate the context: {ctx}", file=sys.stderr)
         return 2
