@@ -182,6 +182,16 @@ mappings:
       - { type: go-test, ref: "internal/server:TestMalformedPathsRejectedNoRedirect" }
       - { type: go-test, ref: "internal/server:TestRawPathIsMalformed" }
       - { type: manual, ref: "before-state independently reproduced by the external audit at head 20e65c9 (audits/2026-09-14/evidence/http-results.json): raw /x/../alias, /x//alias, /x/./alias answered 307 to the normalized path; the front controller now answers 400 with no redirect" }
+  - ac: REQ-PROTO-003-AC3
+    evidence:
+      - { type: go-test, ref: "internal/blobstore:TestDotLeafKeysInDifferentDirectoriesStayDistinct" }
+      - { type: go-test, ref: "internal/blobstore:TestDotLeafKeysRoundTrip" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkReturnsDotLeafKeys" }
+      - { type: go-test, ref: "internal/blobstore:TestRelPathUnchangedForOtherKeys" }
+      - { type: go-test, ref: "internal/blobstore:TestRelPathDotLeafHasNoDotDotSegment" }
+      - { type: go-test, ref: "internal/blobstore:TestRelPathRandomCorpusStaysInside" }
+      - { type: go-test, ref: "internal/server:TestDotLeafKeysOverHTTP" }
+      - { type: go-test, ref: "internal/cache:TestReconcileAdoptsDotLeafBlob" }
   - ac: REQ-PROTO-007-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReservedPathsRefuseWritesAndStoreNothing" }

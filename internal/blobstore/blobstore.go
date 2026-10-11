@@ -40,6 +40,9 @@ var segmentRE = regexp.MustCompile(`^[A-Za-z0-9._-]{1,255}$`)
 
 const maxSegments = 16
 
+// dotLeafShard is the shard directory for a leaf that starts with "..".
+const dotLeafShard = "__"
+
 // dirPerm/filePerm are deliberately tight: this store holds build-artifact
 // bytes with no need for group/other access, and a compliance-tier buyer's
 // assessor will check exactly this kind of default.
@@ -110,7 +113,9 @@ func ValidateKey(key string) error {
 
 // relPath returns the store-relative path for key, sharding on the first
 // two characters of the leaf segment so no single directory accumulates
-// millions of entries.
+// millions of entries. A leaf whose first two characters are ".." uses the
+// fixed shard dotLeafShard instead (REQ-PROTO-003-AC3); every other key
+// keeps the shard it always had.
 func relPath(key string) (string, error) {
 	if err := ValidateKey(key); err != nil {
 		return "", err
@@ -120,6 +125,9 @@ func relPath(key string) (string, error) {
 	shard := leaf
 	if len(shard) > 2 {
 		shard = shard[:2]
+	}
+	if shard == ".." {
+		shard = dotLeafShard
 	}
 	parts := append(append([]string{}, segments[:len(segments)-1]...), shard, leaf)
 	return path.Join(parts...), nil
@@ -243,7 +251,7 @@ func randomTempName() (string, error) {
 // truth, the metadata index is rebuildable, and this is how the truth is
 // enumerated. The on-disk layout is <parent dirs>/<shard>/<leaf>, so a
 // key is the file's path with the shard directory (the leaf's first two
-// characters) removed.
+// characters, or dotLeafShard) removed.
 func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string, err error) {
 	var walk func(rel string) error
 	walk = func(rel string) error {
