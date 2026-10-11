@@ -624,9 +624,14 @@ def _covered(rows, k, per):
 # is refused, never skipped (fail closed). ---------------------------------------------------------------------------------------------------------------
 _SEGMENTS = re.compile(r"\s*(?:;|&&|\|\||\|)\s*")      # the scan's own split of a line into commands (pin-inventory.unmeasured_occurrences)
 _NAME = r"[A-Za-z_][A-Za-z0-9_]*"
-_DENIED = re.compile(r"(?:GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|HOME|PATH|BASH_ENV|ENV|CURL_HOME|XDG_CONFIG_HOME|SSL_CERT_FILE|NODE_OPTIONS"
-                     r"|LD_\w*|PYTHON\w*)")
+_DENIED = re.compile(r"(?:GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|GITHUB_STATE|GITHUB_WORKSPACE|RUNNER_TEMP|IFS|CDPATH|PS4|PROMPT_COMMAND|SHELLOPTS|BASHOPTS"
+                     r"|HOME|PATH|BASH_ENV|ENV|CURL_HOME|XDG_CONFIG_HOME|SSL_CERT_FILE|NODE_OPTIONS"
+                     r"|LD_\w*|PYTHON\w*)", re.I)
 _SHELL_KEYS = {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"}
+_ENV_PREFIX_DENY = ("GH_", "GIT_", "SSL_", "SIGSTORE_", "TUF_", "OPENSSL_", "CURL_", "PYTHON", "LD_", "DYLD_")
+_TOKEN_VALUES = {"${{ github.token }}", "${{ secrets.GITHUB_TOKEN }}"}
+_SELF_ENV = {"GH_TOKEN": _TOKEN_VALUES, "VER": {"${{ github.ref_name }}"}}   # the ONLY env: of a repo:self step, with these values only
+_ENV_VALUES = _TOKEN_VALUES | {"${{ github.ref_name }}"}                    # the only ${{ }} an env: value of a ruled step may hold
 _ENV_DENY = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "CURL_CA_BUNDLE", "SSL_CERT_FILE",
              "SSL_CERT_DIR", "CURL_HOME", "XDG_CONFIG_HOME", "GH_HOST", "GH_REPO", "GH_ENTERPRISE_TOKEN", "BASH_ENV", "ENV", "PATH", "LD_PRELOAD",
              "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PYTHONUSERBASE"}
@@ -770,7 +775,7 @@ def _shell_shape(flat):
         cmd, tail = toks[:n], toks[n:]
     if any(isinstance(t, tuple) for t in cmd) or not cmd:
         return None, "the line holds another command, a pipe, a redirect or a subshell"
-    num = lambda t: isinstance(t, str) and re.fullmatch(r"[0-9]{1,3}", t)
+    num = lambda t: isinstance(t, str) and re.fullmatch(r"[1-9]", t)   # a failed fetch never exits 0
     msg = lambda t: isinstance(t, str) and re.fullmatch(r'"[A-Za-z0-9 .,:_-]*"', t)
     if tail and not (tail[0] == ("op", "||") and (len(tail) == 3 and tail[1] == "exit" and num(tail[2])
                                                     or tail[1:2] == ["die"] and (len(tail) == 3 and msg(tail[2]) or len(tail) == 4 and msg(tail[2]) and num(tail[3])))):
@@ -796,8 +801,8 @@ def _python_words(flat):
     if not (isinstance(call, ast.Call) and attr(call.func, "subprocess", "run") and len(call.args) == 1 and isinstance(call.args[0], ast.List)):
         return "the line is not subprocess.run([...]) with one list"
     kws = [k.arg for k in call.keywords]
-    if len(set(kws)) != len(kws) or not set(kws) <= {"stdout", "stderr"} or not all(attr(k.value, "sys", "stderr") for k in call.keywords):
-        return "subprocess.run takes only stdout=sys.stderr and stderr=sys.stderr here"
+    if sorted(kws) != ["stderr", "stdout"] or not all(attr(k.value, "sys", "stderr") for k in call.keywords):
+        return "subprocess.run takes exactly stdout=sys.stderr and stderr=sys.stderr here"
     words = []
     for e in call.args[0].elts:
         if isinstance(e, ast.Constant) and isinstance(e.value, str) and _LITWORD.fullmatch(e.value):
@@ -858,7 +863,7 @@ def _contexts(text, path):
             return f"{path} holds ${{{{: it rules nothing"
         shell, py = hd
         return {"shell": [[lines[i] for i in shell]], "python": [lines[i] for i in py], "raw": [lines]}
-    if path.endswith((".yml", ".yaml")):
+    if path.endswith(_WF_FILE):
         try:
             doc = inv.yaml.safe_load(text)
         except inv.yaml.YAMLError:
@@ -870,31 +875,78 @@ def _contexts(text, path):
                 for k, v in d.items():
                     if k in _SHELL_KEYS or (k == "shell" and v != "bash"):
                         bad.append(k)
-                    if k == "env" and isinstance(v, dict):
-                        bad.extend(x for x in v if x in _ENV_DENY)
+                    if k == "env":
+                        if not isinstance(v, dict):
+                            bad.append("a non-mapping env:")
+                        else:
+                            bad.extend(x for x, y in v.items() if not isinstance(x, str) or x in _ENV_DENY
+                                       or x.startswith(_ENV_PREFIX_DENY) and not (x == "GH_TOKEN" and y in _TOKEN_VALUES))
                     walk(v)
             elif isinstance(d, list):
                 for v in d:
                     walk(v)
         walk(doc)
         if bad:
-            return f"{path} sets {bad[0]} (only bash run: steps are read, and no env: may set a proxy, CA, gh host, shell, PATH or loader variable)"
-        runs = [t.split("\n") for t in _run_texts(doc)]
-        return {"shell": runs, "python": [], "raw": runs}
+            return f"{path} sets {bad[0]} (only bash run: steps are read; every env: is a mapping and none sets a proxy, CA, gh, git, ssl, sigstore, shell, PATH or loader variable)"
+        steps = list(_steps(doc))
+        runs = [s["run"].split("\n") for s in steps]
+        return {"shell": runs, "python": [], "raw": runs, "steps": steps, "doc": doc}
     return f"{path} is neither a shell script nor a workflow or action"
 
 
+def _off(d):
+    """True when a step or job never runs or never fails the job: if: false (literal), or continue-on-error other than false."""
+    return d.get("if") in (False, "false", "${{ false }}") or d.get("continue-on-error", False) not in (False, "false")
+
+
+def _steps(doc):
+    """The run: steps that bash runs: jobs.<id>.steps[*] of a workflow (shell: absent or bash, on a job whose runs-on is literal and names no windows
+    runner unless the step says shell: bash) and runs.steps[*] of a composite action (shell: bash, required); never a step or job that is off (_off)."""
+    if not isinstance(doc, dict):
+        return
+    jobs = doc.get("jobs")
+    if isinstance(jobs, dict):
+        for job in jobs.values():
+            if not isinstance(job, dict) or _off(job) or not isinstance(job.get("steps"), list):
+                continue
+            ro = job.get("runs-on")
+            ro = ro if isinstance(ro, list) else [ro]
+            linux = all(isinstance(x, str) and "${{" not in x and "windows" not in x.lower() and "macos" not in x.lower() for x in ro)
+            for s in job["steps"]:
+                if isinstance(s, dict) and isinstance(s.get("run"), str) and not _off(s) and (s.get("shell") == "bash" or "shell" not in s and linux):
+                    yield s
+    runs = doc.get("runs")
+    if isinstance(runs, dict) and runs.get("using") == "composite" and isinstance(runs.get("steps"), list):
+        for s in runs["steps"]:
+            if isinstance(s, dict) and isinstance(s.get("run"), str) and not _off(s) and s.get("shell") == "bash":
+                yield s
+
+
+def _step_exprs_bad(step):
+    """Why a ruled step may not be read, or None: ${{ }} anywhere outside its env: values (expanded by GitHub before bash), or an env: value holding
+    an expression other than ${{ github.token }}, ${{ secrets.GITHUB_TOKEN }} or ${{ github.ref_name }}."""
+    def strings(d):
+        if isinstance(d, dict):
+            for k, v in d.items():
+                yield str(k)
+                yield from strings(v)
+        elif isinstance(d, list):
+            for v in d:
+                yield from strings(v)
+        elif isinstance(d, str):
+            yield d
+    if any("${{" in x for k, v in step.items() if k != "env" for x in strings({k: v})):
+        return "the ruled step holds ${{ outside its env: values (expanded by GitHub before bash)"
+    env = step.get("env") or {}
+    if any(isinstance(v, str) and "${{" in v and v not in _ENV_VALUES for v in env.values()):
+        return "an env: value of the ruled step holds an expression other than ${{ github.token }}, ${{ secrets.GITHUB_TOKEN }} or ${{ github.ref_name }}"
+    return None
+
+
 def _run_texts(doc):
-    """Every run: script in a parsed workflow or action (the steps)."""
-    if isinstance(doc, dict):
-        for k, v in doc.items():
-            if k == "run" and isinstance(v, str):
-                yield v
-            else:
-                yield from _run_texts(v)
-    elif isinstance(doc, list):
-        for v in doc:
-            yield from _run_texts(v)
+    """The run: scripts that bash runs in a parsed workflow or action (see _steps)."""
+    for s in _steps(doc):
+        yield s["run"]
 
 
 _flat = lambda s: " ".join(s.split())
@@ -1076,38 +1128,72 @@ def _has_flags(words):
     return has(_IDENT) and has(_ISSUER)
 
 
+_INSECURE = ("--insecure-ignore-tlog", "--insecure-ignore-sct")
+
+
 def _sh_signature(lines):
-    """True when the shell lines run (as a COMMAND, not text) cosign verify-blob with --certificate-identity[-regexp] and --certificate-oidc-issuer:
-    continuations joined, comments dropped, each command of each line read; a command is the segment itself, after if / ! / then / { only."""
-    joined = re.sub(r"\\\n\s*", " ", "\n".join(lines))
+    """True when the shell lines run cosign verify-blob with --certificate-identity[-regexp] and --certificate-oidc-issuer as the COMMAND words of a
+    simple command (after if, !, then, {, elif, while, until, do or else only), read with the quote-aware tokenizer: never text in a string, an
+    assignment value or an echo argument. Continuations are joined and comment lines dropped; a line the tokenizer cannot read (a quote spanning lines,
+    a single quote, a backslash, a substitution, an inline comment) makes the whole body no signature (fail closed). --insecure-ignore-tlog and
+    --insecure-ignore-sct are never a signature check."""
+    joined = re.sub(r"\\\n[ \t]*", " ", "\n".join(lines))
+    found = False
     for line in joined.split("\n"):
         flat = _flat(line)
-        if flat.startswith("#"):
+        if not flat or flat.startswith("#"):
             continue
-        for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):
-            words = seg.split(" ")
-            while words and words[0] in ("if", "!", "then", "{", "elif", "while", "until"):
+        toks = _shell_tokens(flat)
+        if isinstance(toks, str):
+            return False
+        cmds, cur = [], []
+        for tk in toks:
+            if isinstance(tk, tuple):
+                cmds.append(cur)
+                cur = []
+            else:
+                cur.append(tk)
+        cmds.append(cur)
+        for words in cmds:
+            while words and words[0] in ("if", "!", "then", "{", "}", "elif", "while", "until", "do", "else", "fi", "done"):
                 words = words[1:]
-            if words[:2] == ["cosign", "verify-blob"] and _has_flags(words):
-                return True
-    return False
+            if (words[:2] == ["cosign", "verify-blob"] and _has_flags(words)
+                    and not any(w.split("=", 1)[0] in _INSECURE for w in words)):
+                found = True
+    return found
+
+
+_PY_RUNNERS = ("run", "check_call", "check_output", "call")
 
 
 def _py_signature(lines):
-    """True when the Python def CALLS a list ["cosign", "verify-blob", ...] holding --certificate-identity[-regexp] and --certificate-oidc-issuer."""
+    """True when the Python def CALLS subprocess.run|check_call|check_output|call (that exact name, no alias) on a list whose first items are the
+    literals "cosign", "verify-blob" and that holds both identity and issuer flags (and no --insecure-ignore-*), the call not nested in a lambda, an
+    inner def or a class, and not an argument of another call."""
     import ast, textwrap
     try:
         tree = ast.parse(textwrap.dedent("\n".join(lines)))
     except (SyntaxError, ValueError):
         return False
-    for node in ast.walk(tree):
+    fn = next((n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))), None)
+    if fn is None:
+        return False
+
+    def visit(node, in_arg):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)) and node is not fn:
+            return False
         if isinstance(node, ast.Call):
-            for a in node.args:
-                if isinstance(a, ast.List):
-                    words = [e.value for e in a.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
-                    if words[:2] == ["cosign", "verify-blob"] and _has_flags(words):
-                        return True
-    return False
+            f = node.func
+            if (not in_arg and isinstance(f, ast.Attribute) and f.attr in _PY_RUNNERS and isinstance(f.value, ast.Name) and f.value.id == "subprocess"
+                    and node.args and isinstance(node.args[0], ast.List)):
+                elts = node.args[0].elts
+                words = [e.value for e in elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                if (len(elts) >= 2 and all(isinstance(e, ast.Constant) and e.value == w for e, w in zip(elts[:2], ("cosign", "verify-blob"))) and _has_flags(words)
+                        and not any(w.split("=", 1)[0] in _INSECURE for w in words)):
+                    return True
+            return any(visit(c, True) for c in list(node.args) + [k.value for k in node.keywords]) or visit(node.func, in_arg)
+        return any(visit(c, in_arg) for c in ast.iter_child_nodes(node))
+    return any(visit(s, False) for s in fn.body)
 
 
 def _signature_unverified(vt, v):
@@ -1117,8 +1203,8 @@ def _signature_unverified(vt, v):
            " --certificate-identity[-regexp] and --certificate-oidc-issuer as code (a checksum, a comment, a heredoc or an echo string is not enough)")
     if "function" in v:
         ok = any(_sh_signature(b) if lang == "sh" else _py_signature(b) if lang == "py" else False for lang, b in _bodies(vt, v["file"], v["function"]))
-    else:
-        ok = _sh_signature([v["line"]]) and not _flat(v["line"]).startswith("#")
+    else:   # a line verifier of a redirects row: a shell command, in a .sh file or a run: line of a workflow or action only
+        ok = v["file"].endswith((".sh",) + _WF_FILE) and _sh_signature([v["line"]]) and not _flat(v["line"]).startswith("#")
     return None if ok else why
 
 
@@ -1132,7 +1218,8 @@ def _code_lines(text, path):
         out = [] if hd is None else [lines[i] for i in sorted(hd[0] + hd[1])]
     elif path.endswith(_WF_FILE):
         ctx = _contexts(text, path)
-        out = [] if isinstance(ctx, str) else [x for b in ctx["shell"] if "<<" not in "\n".join(b) and "${{" not in "\n".join(b) for x in b]
+        out = [] if isinstance(ctx, str) else [x for s in ctx["steps"] if "<<" not in s["run"] and "${{" not in s["run"] and not _step_exprs_bad(s)
+                                               for x in s["run"].split("\n")]
     else:
         out = lines
     return [x for x in out if not _flat(x).startswith(("#", "//"))]
@@ -1161,8 +1248,22 @@ def _fetch_unverified(root, head, row, flat, held_n):
     pyform = re.match(r"(?:" + _NAME + r" = )?subprocess\.run\(", flat)
     kind = "python" if pyform else "shell"
     where = ctx["python"] if pyform else [x for step in ctx["shell"] for x in step]
-    if path.endswith(_WF_FILE) and any("${{" in "\n".join(b) or "<<" in "\n".join(b) for b in ctx["shell"] if any(_flat(x) == flat for x in b)):
-        return "a run: block holding the line holds ${{ (expanded by GitHub before bash) or a <<: it rules nothing"
+    if path.endswith(_WF_FILE):
+        holding = [s for s in ctx["steps"] if any(_flat(x) == flat for x in s["run"].split("\n"))]
+        if any("${{" in s["run"] or "<<" in s["run"] for s in holding):
+            return "a run: block holding the line holds ${{ (expanded by GitHub before bash) or a <<: it rules nothing"
+        why = next((w for w in map(_step_exprs_bad, holding) if w), None)
+        if why:
+            return why
+        if host == REPO_SELF:
+            for s in holding:
+                env = s.get("env") or {}
+                if any(k not in _SELF_ENV or v not in _SELF_ENV[k] for k, v in env.items()):
+                    return "a repo:self step's env: holds only GH_TOKEN (${{ github.token }} or ${{ secrets.GITHUB_TOKEN }}) and VER (${{ github.ref_name }})"
+            if re.search(r"(?m)^\s*GITHUB_[A-Za-z0-9_]*\s*:", text):
+                return f"{path} sets a GITHUB_* variable: it rules no repo:self download"
+    elif host == REPO_SELF and _flat(text.split("\n", 1)[0]) not in ("#!/bin/bash", "#!/usr/bin/env bash"):
+        return f"{path} must start with #!/bin/bash or #!/usr/bin/env bash: the tag check [[ ... ]] is bash"
     if sum(1 for x in where if _flat(x) == flat) != held_n:
         return (f"every copy of the line must be {'in the body of a python3 heredoc with a quoted tag' if pyform else 'shell text: a run: step of bash, or a .sh file outside heredocs'}"
                 f" ({kind} form)")

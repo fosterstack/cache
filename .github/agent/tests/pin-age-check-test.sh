@@ -1469,8 +1469,8 @@ hostcase "$C --max-redirs 3 $O $U" 1 'ruling 3a: --max-redirs on a line that doe
 hostcase "curl -q -fsSL -g --proto =https $R $O $U" 1 'ruling 3b: a redirects row whose verifier is checksum-only (sha256sum -c) is refused' '{"redirects": true}'
 hostcase "$C $R $O $U" 1 'F11: redirects: true on a line that does not follow redirects is refused' "{\"redirects\": true, $SIGV}"
 # ruling 3b/3c: the verifier of a redirects row is a SIGNATURE check: code holding cosign verify-blob with --certificate-identity[-regexp] and --certificate-oidc-issuer
-sigcase() { # VERIFIER-FILE-TEXT VERIFIER-JSON EXPECTED-RC WHY
-  ifrepo ifs "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$RLL"$'\n' head bin/v2.sh "$1"
+sigcase() { # VERIFIER-FILE-TEXT VERIFIER-JSON EXPECTED-RC WHY [VERIFIER-PATH]
+  ifrepo ifs "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$RLL"$'\n' head "${5:-bin/v2.sh}" "$1"
   ifx "$work/if-s.json" plain "$(ifrow bin/fetch.sh "$RLL" "$HOSTN" "{\"redirects\": true, \"verifier\": $2}")"; ifck ifs "$work/if-s.json"
   CASE="AC19 (redirects verifier, ruling 3b): $4: exit $3"
   check test "$rc" -eq "$3"; if [ "$3" -ne 0 ]; then check grep -qE 'input fetch not verified.*(signature|as code)' "$work/if.out"; fi
@@ -1857,6 +1857,117 @@ CASE="AC19 (workflow verifier): a FUNCTION verifier in a workflow file stops the
 check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"
 ifrepo ifvc "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n'"# sha256sum -c x || exit 1"$'\n'
 vtcase '{"verifier": {"file": "bin/fetch.sh", "line": "# sha256sum -c x || exit 1"}}' 'a verifier line that is a comment in a .sh file' ifvc
+# --- Sonnet round 3 -----------------------------------------------------------------------------------------------------------------------------------
+# B1: a signature verifier is cosign verify-blob as the COMMAND words of a simple command (quote-aware), never text in a string, an assignment or an echo
+vjf() { python3 -c 'import json,sys; print(json.dumps({"file": sys.argv[2], "line": sys.argv[1]}))' "$1" "$2"; }
+SIGW='--bundle b --certificate-identity x --certificate-oidc-issuer https://i out'
+for L in "echo \"x; cosign verify-blob $SIGW\"" "x=\"a; cosign verify-blob $SIGW\"" "echo 'cosign verify-blob $SIGW'" "printf '%s\\n' \"cosign verify-blob $SIGW\""; do
+  sigcase "#!/bin/sh"$'\n'"$L"$'\n' "$(vj "$L")" 1 "B1: the line verifier $L (the command only as text) is refused"
+done
+sigcase $'#!/bin/sh\nvs() { echo "; cosign verify-blob --certificate-identity x --certificate-oidc-issuer y"; }\n' "$VF" 1 'B1: a function that only echoes "; cosign verify-blob ..." is refused'
+sigcase $'#!/bin/sh\nvs() {\n  x="\n  cosign verify-blob --certificate-identity x --certificate-oidc-issuer y out\n  "\n  sha256sum -c "$1.sha256" || exit 1\n}\n' "$VF" 1 'B1: the command inside a multi-line quoted string (no heredoc) is refused'
+sigcase $'#!/bin/sh\nvs() {\n  cosign verify-blob --insecure-ignore-tlog --bundle b --certificate-identity x --certificate-oidc-issuer y "$1" || exit 1\n}\n' "$VF" 1 'B1: cosign verify-blob with --insecure-ignore-tlog is refused'
+sigcase $'#!/bin/sh\nvs() {\n  cosign verify-blob --insecure-ignore-sct=true --bundle b --certificate-identity x --certificate-oidc-issuer y "$1" || exit 1\n}\n' "$VF" 1 'B1: cosign verify-blob with --insecure-ignore-sct is refused'
+sigcase "cosign verify-blob $SIGW"$'\n' "$(vjf "cosign verify-blob $SIGW" bin/v2.py)" 1 'B1: a LINE verifier in a .py file for a redirects row is refused' bin/v2.py
+sigcase "cosign verify-blob $SIGW"$'\n' "$(vjf "cosign verify-blob $SIGW" bin/v2.go)" 1 'B1: a LINE verifier in a .go file for a redirects row is refused' bin/v2.go
+PYS='["cosign", "verify-blob", "--bundle", p + ".b", "--certificate-identity", "x", "--certificate-oidc-issuer", "y", p]'
+pysig() { sigcase $'#!/bin/sh\npython3 - <<\'PY\'\nimport subprocess\ndef vs(p):\n'"$1"$'\n    raise SystemExit(1)\nPY\n' "$VF" "$2" "$3"; }
+pysig "    print($PYS)" 1 'B1: a Python def that prints the cosign list is refused'
+pysig "    n = len($PYS)" 1 'B1: a Python def that takes len() of the cosign list is refused'
+pysig "    x = lambda: subprocess.run($PYS)" 1 'B1: a Python def that only builds a lambda calling cosign is refused'
+pysig "    run = subprocess.run"$'\n'"    run($PYS)" 1 'B1: a Python call through an alias of subprocess.run is refused'
+pysig "    subprocess.check_call([cosign_bin, \"cosign\", \"verify-blob\", \"--certificate-identity\", \"x\", \"--certificate-oidc-issuer\", \"y\", p])" 1 'B1: a list whose FIRST items are not the literals "cosign", "verify-blob" is refused'
+pysig "    subprocess.check_call($PYS)" 0 'B1 control: subprocess.check_call of the cosign list as a statement passes'
+pysig "    r = subprocess.run($PYS, check=True)" 0 'B1 control: r = subprocess.run(cosign list) as a statement passes'
+# B2: a run: block is jobs.<id>.steps[*].run (workflow) or runs.steps[*].run with shell: bash (composite action), nothing else named run
+wfcase "      - name: s"$'\n'"        with:"$'\n'"          run: |"$'\n'"            $LIT" 1 'B2: the fetch line under with: run: (not a step run:) is refused'
+wfcase "      - name: s"$'\n'"        env:"$'\n'"          run: x"$'\n'"        run: |"$'\n'"          $LIT" 0 'B2 control: a key named run under env: does not stop the real run: block'
+yvcase "$FSTEP"$'\n'"      - name: v"$'\n'"        with:"$'\n'"          run: '$VLINE'" "$CURL276" github.com "$VLINE" true 1 'B2: a verifier line under with: run: is refused'
+ifrepo ifwin "${SUPPORT[@]}" head .github/workflows/f.yml "$(printf 'on: push\njobs:\n  j:\n    runs-on: windows-latest\n    steps:\n      - run: |\n          %s\n' "$LIT")"
+ifx "$work/if-wf.json" plain "$(ifrow .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifwin "$work/if-wf.json"
+CASE="AC19 (B2): a run: step without shell: bash on a windows runner (default shell not bash) is refused: exit 1"
+check test "$rc" -eq 1
+ifrepo ifmat "${SUPPORT[@]}" head .github/workflows/f.yml "$(printf 'on: push\njobs:\n  j:\n    runs-on: ${{ matrix.os }}\n    steps:\n      - shell: bash\n        run: |\n          %s\n' "$LIT")"
+ifx "$work/if-wf.json" plain "$(ifrow .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifmat "$work/if-wf.json"
+CASE="AC19 (B2) control: a runs-on expression with an explicit shell: bash step passes: exit 0"
+check test "$rc" -eq 0
+actcase() { # ACTION-STEPS EXPECTED-RC WHY
+  ifrepo ifa "${SUPPORT[@]}" head .github/actions/f/action.yml "$(printf 'name: f\nruns:\n  using: composite\n  steps:\n%s\n' "$1")"
+  ifx "$work/if-a.json" plain "$(ifrow .github/actions/f/action.yml "$LIT" "$HOSTN")"; ifck ifa "$work/if-a.json"
+  CASE="AC19 (composite action, B2/B3): $3: exit $2"
+  check test "$rc" -eq "$2"
+}
+actcase "    - shell: bash"$'\n'"      run: |"$'\n'"        $LIT" 0 'control: a composite step with shell: bash passes'
+actcase "    - run: |"$'\n'"        $LIT" 1 'a composite step without shell: bash is refused'
+# B3: a .sh file holding a repo:self line must start with a bash shebang ([[ is not sh)
+ghcase "$CHK"$'\n' "$GHD" 1 'B3: a .sh file whose shebang is #!/bin/sh is refused' $'#!/bin/sh\nset -eu\nver="$VER"\n'
+ghcase "$CHK"$'\n' "$GHD" 1 'B3: a .sh file with no shebang is refused' $'set -eu\nver="$VER"\n'
+ghcase "$CHK"$'\n' "$GHD" 0 'B3 control: #!/usr/bin/env bash passes' $'#!/usr/bin/env bash\nset -euo pipefail\nver="$VER"\n'
+if command -v dash >/dev/null 2>&1; then
+  printf '%s\n' '#!/bin/sh' 'ver="$VER"' 'if [[ ! "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo bad >&2; exit 1; fi' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json' >"$work/e2e/dash.sh"
+  : >"$work/e2e/log"; rc=0; env -i PATH="$work/e2e/bin:/usr/bin:/bin" VER='evil;x' GITHUB_REPOSITORY=o/r E2E_LOG="$work/e2e/log" dash "$work/e2e/dash.sh" </dev/null >/dev/null 2>&1 || rc=$?
+  CASE="AC19 (repo:self, B3 end to end): under dash the if [[ ! ... ]] form fails OPEN (a bad tag downloads): why the bash shebang is required"
+  check test "$(wc -l <"$work/e2e/log" | tr -d ' ')" -eq 1
+fi
+# B4: env: must be a mapping at every level; a repo:self step's env: holds only GH_TOKEN (github.token or secrets.GITHUB_TOKEN) and VER (github.ref_name)
+ghwf "${STEP276/          GH_TOKEN:/          GITHUB_REPOSITORY: evil\/x${NL}          GH_TOKEN:}" 1 'B4: the repo:self step env: setting GITHUB_REPOSITORY is refused'
+ghwf "${STEP276/          GH_TOKEN:/          GH_CONFIG_DIR: \/tmp\/x${NL}          GH_TOKEN:}" 1 'B4: the repo:self step env: setting GH_CONFIG_DIR is refused'
+ghwf "${STEP276/          GH_TOKEN:/          GH_PROMPT_DISABLED: 1${NL}          GH_TOKEN:}" 1 'B4: the repo:self step env: setting GH_PROMPT_DISABLED is refused'
+ghwf "${STEP276/\${{ github.token \}\}/\${{ secrets.OTHER \}\}}" 1 'B4: GH_TOKEN from another secret is refused'
+ghwf "${STEP276/\${{ github.token \}\}/\${{ secrets.GITHUB_TOKEN \}\}}" 0 'B4 control: GH_TOKEN from secrets.GITHUB_TOKEN passes'
+ghwf "${STEP276/\${{ github.ref_name \}\}/\${{ github.event.inputs.v \}\}}" 1 'B4: VER from another expression is refused'
+ghwf "${STEP276/        env:/        env: \${{ fromJSON(inputs.e) \}\}${NL}        x-env:}" 1 'B4: a non-mapping step env: (an expression) is refused'
+ifrepo ifwn "${SUPPORT[@]}" head .github/workflows/rel.yml "$(printf 'on: push\nenv: ${{ fromJSON(inputs.e) }}\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n%s\n' "$STEP276")"
+ifx "$work/if-w.json" plain "$(ifrow .github/workflows/rel.yml "$GH276" repo:self)"; ifck ifwn "$work/if-w.json"
+CASE="AC19 (B4): a non-mapping workflow-level env: is refused: exit 1"
+check test "$rc" -eq 1; check grep -q 'input fetch not verified' "$work/if.out"
+ifrepo ifwg "${SUPPORT[@]}" head .github/workflows/rel.yml "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      GIT_SSH_COMMAND: x\n    steps:\n%s\n' "$STEP276")"
+ifx "$work/if-w.json" plain "$(ifrow .github/workflows/rel.yml "$GH276" repo:self)"; ifck ifwg "$work/if-w.json"
+CASE="AC19 (B4): a job-level env: GIT_* key is refused: exit 1"
+check test "$rc" -eq 1; check grep -q 'GIT_SSH_COMMAND' "$work/if.out"
+for key in SIGSTORE_ROOT_FILE TUF_ROOT GH_HOST_X SSL_X OPENSSL_CONF DYLD_INSERT_LIBRARIES; do
+  wfcase "      - env:"$'\n'"          $key: x"$'\n'"        run: |"$'\n'"          $LIT" 1 "B4: a curl step whose env: sets $key is refused"
+done
+wfcase "      - env:"$'\n'"          - X=1"$'\n'"        run: |"$'\n'"          $LIT" 1 'B4: an env: list is refused'
+# round-3 mutants: cases only one layer catches
+ifrepo ifdef "${SUPPORT[@]}" head .github/workflows/f.yml "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    defaults:\n      run:\n        shell: python\n    steps:\n      - run: |\n          %s\n' "$LIT")"
+ifx "$work/if-wf.json" plain "$(ifrow .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifdef "$work/if-wf.json"
+CASE="AC19 (B2): a job defaults: run: shell: python (the step has no shell:) is refused: exit 1"
+check test "$rc" -eq 1
+pysig "    print(subprocess.run($PYS))" 1 'B1: the cosign call as an argument of another call (print) is refused'
+sigcase $'#!/bin/sh\nvs() {\n  echo verify-blob --certificate-identity x --certificate-oidc-issuer y\n  sha256sum -c "$1.sha256" || exit 1\n}\n' "$VF" 1 'B1: verify-blob as an unquoted echo argument is refused'
+ghwf "${STEP276/          GH_TOKEN:/          FOO: bar${NL}          GH_TOKEN:}" 1 'B4: a repo:self step env: key outside the allow-list (FOO) is refused'
+ghwf "${STEP276/\${{ github.ref_name \}\}/\${{ github.token \}\}}" 1 'B4: VER set to ${{ github.token }} (an allowed expression, not VER'"'"'s value) is refused'
+wfcase "      - env:"$'\n'"          GH_TOKEN: plain"$'\n'"        run: |"$'\n'"          $LIT" 1 'B4: a curl step env: GH_TOKEN with a value other than the token expressions is refused'
+ifrepo ifgr "${SUPPORT[@]}" head .github/workflows/rel.yml "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      GITHUB_REPOSITORY: evil/x\n    steps:\n%s\n' "$STEP276")"
+ifx "$work/if-w.json" plain "$(ifrow .github/workflows/rel.yml "$GH276" repo:self)"; ifck ifgr "$work/if-w.json"
+CASE="AC19 (B4): a job-level env: GITHUB_REPOSITORY for a repo:self line is refused: exit 1"
+check test "$rc" -eq 1; check grep -q 'GITHUB_' "$work/if.out"
+wfcase "      - run: |"$'\n'"          cat >/dev/null <<EOF"$'\n'"          x"$'\n'"          EOF"$'\n'"          $LIT" 1 'a << in the run: block holding a ruled curl line is refused'
+# R2: the Python form needs both stdout=sys.stderr and stderr=sys.stderr
+pycase "${PYF/, stdout=sys.stderr, stderr=sys.stderr/}" 1 'R2: the Python form with no keywords is refused'
+pycase "${PYF/, stderr=sys.stderr/}" 1 'R2: the Python form without stderr=sys.stderr is refused'
+# R3: no ${{ anywhere in a ruled step outside its env: values (and env: values only the allowed expressions)
+wfcase "      - working-directory: \${{ github.event.inputs.d }}"$'\n'"        run: |"$'\n'"          $LIT" 1 'R3: ${{ }} in working-directory: of the ruled step is refused'
+wfcase "      - name: \${{ github.event.issue.title }}"$'\n'"        run: |"$'\n'"          $LIT" 1 'R3: ${{ }} in name: of the ruled step is refused'
+wfcase "      - env:"$'\n'"          T: \${{ github.event.issue.title }}"$'\n'"        run: |"$'\n'"          $LIT" 1 'R3: an env: value with another ${{ }} in the ruled step is refused'
+wfcase "      - env:"$'\n'"          T: \${{ github.token }}"$'\n'"        run: |"$'\n'"          $LIT" 0 'R3 control: an env: value ${{ github.token }} passes'
+# R4: more denied output names, compared without case
+for nm in RUNNER_TEMP GITHUB_STATE GITHUB_WORKSPACE IFS CDPATH PS4 PROMPT_COMMAND SHELLOPTS BASHOPTS path home; do
+  hostcase "$C -o \"\$$nm/x\" $U" 1 "R4: an output under \$$nm (denied, any case) is refused"
+done
+# R5: a failed fetch must not exit 0
+hostcase "$C $O $U || exit 0" 1 'R5: CMD || exit 0 is refused'
+hostcase "$C $O $U"' || die "x" 0' 1 'R5: CMD || die "x" 0 is refused'
+hostcase "$C $O $U || exit 10" 1 'R5: CMD || exit 10 (not 1 to 9) is refused'
+# cheap limits closed: a ruled step or its job with if: false or continue-on-error: true does not count
+yvcase "$FSTEP"$'\n'"      - if: false"$'\n'"        run: |"$'\n'"          $VLINE" "$CURL276" github.com "$VLINE" true 1 'a verifier line in a step with if: false is refused'
+yvcase "$FSTEP"$'\n'"      - continue-on-error: true"$'\n'"        run: |"$'\n'"          $VLINE" "$CURL276" github.com "$VLINE" true 1 'a verifier line in a step with continue-on-error: true is refused'
+wfcase "      - continue-on-error: true"$'\n'"        run: |"$'\n'"          $LIT" 1 'a fetch line in a step with continue-on-error: true is refused'
+ifrepo ifjf "${SUPPORT[@]}" head .github/workflows/f.yml "$(printf 'on: push\njobs:\n  j:\n    if: false\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          %s\n' "$LIT")"
+ifx "$work/if-wf.json" plain "$(ifrow .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifjf "$work/if-wf.json"
+CASE="AC19: a fetch line in a job with if: false is refused: exit 1"
+check test "$rc" -eq 1
 for ov in '{"host": "repo:other"}' '{"host": "repo:"}' '{"form": "a download"}'; do
   ifx "$work/if-bad.json" plain "$(ifrow bin/rel.sh "$GHD" repo:self "$ov")"; ifck ifm "$work/if-bad.json"
   CASE="AC19 (repo:self): a malformed row ($ov) stops the check fail-closed: exit 2, names the list"
