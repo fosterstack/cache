@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10
+# proves: REQ-CHAIN-006-AC7, REQ-CHAIN-007-AC4, REQ-CHAIN-007-AC5, REQ-CHAIN-007-AC6, REQ-CHAIN-007-AC7, REQ-CHAIN-007-AC8, REQ-CHAIN-007-AC9, REQ-CHAIN-007-AC10
 # RED until PR 4 is implemented (bin/release-verify.sh, release-apks.sh, release-publish.sh, release-sign.sh, release-assets.sh, release-postverify.sh/.py do not exist): step 4.
 #
 # Release, behaviour half (v0.3.0 rules 5, 17, 29, 53b, 56, 57, 64, 69, 71; advisor rulings of Oct 9: rc tags like finals, the release policy
@@ -40,6 +40,8 @@ case "$1" in
         d=$(cat "${2%.tar}.digest"); p="$REG/${3/://}"; mkdir -p "$(dirname "$p")"
         [ "${REG_CORRUPT:-}" = "$host" ] && d="sha256:$(printf 'f%.0s' $(seq 64))"; echo "$d" > "$p" ;;
   digest) p="$REG/${2/://}"; [ -e "$p" ] && cat "$p" || { echo "NAME_UNKNOWN $2" >&2; exit 1; } ;;
+  ls) [ -z "${LS_FAIL:-}" ] || { echo "connection refused" >&2; exit 1; }
+      [ -d "$REG/$2" ] || { echo "NAME_UNKNOWN $2" >&2; exit 1; }; ls "$REG/$2" ;;
   *) echo "crane: unexpected $1" >&2; exit 2 ;;
 esac''',
  "cosign": r'''#!/usr/bin/env bash
@@ -209,6 +211,39 @@ check(rc != 0 and not pushes(t), "AC7 an image whose own digest is not the attes
 for miss in ("DOCKERHUB_TOKEN", "DOCKERHUB_USERNAME", "GH_TOKEN"):
     t = tree(); rc, so, se = run(t, "release-publish", creds=[c for c in REG if c != miss])
     check(rc == 2 and miss in se and not pushes(t), "AC7 a missing %s is refused with exit 2, naming it, before any push" % miss, "rc=%s %s" % (rc, first(se)))
+# ---- REQ-REL-009-AC11 (Codex B1 on the old stage-promote.yml, which moved :latest on every release): the floating tags of a FINAL release --------
+# AC11: ":X.Y to itself every time, :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest".
+# The released versions are the plain X.Y.Z tags of ghcr.io/fosterstack/cache (rc tags, -fips tags and the floating tags themselves are not versions).
+# NOT in AC11 and so not built: floating tags of the -fips image (it gets its exact tag only), and any flag. The registry fake lists tags with `crane ls`.
+def seed(t, tags, host="ghcr.io"):
+    d = os.path.join(t, "reg", host, "fosterstack", "cache"); os.makedirs(d, exist_ok=True)
+    for x in tags: open(os.path.join(d, x), "w").write("sha256:" + "7" * 64)
+def float_run(tag, tags, env=None, creds=REG):
+    t = tree()
+    if tags is not None: seed(t, tags)
+    rc, so, se = run(t, "release-publish", creds=creds, env=env, tag=tag)
+    return t, rc, so, se
+def tagset(t): return {(p[3].split("/")[0], p[3].split(":")[1]) for p in pushes(t)}
+def want(*tags): return {(h, x) for h in ("ghcr.io", "docker.io") for x in tags}
+t, rc, so, se = float_run("v0.3.0", ["0.2.2", "0.2.1", "latest", "0.2"]); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 the highest released version moves :X.Y, :X and :latest (production image), the -fips image gets its exact tag only, in both registries", "rc=%s %s %s" % (rc, sorted(got), first(se)))
+t, rc, so, se = float_run("v0.3.1", ["0.3.0", "0.4.0"]); got = tagset(t)
+check(rc == 0 and got == want("0.3.1", "0.3.1-fips", "0.3"), "AC11 a patch of an older line moves :X.Y only: 0.4.0 is higher, so neither :0 nor :latest moves (the Codex B1 finding: the old stage moved :latest always)", "rc=%s %s %s" % (rc, sorted(got), first(se)))
+t, rc, so, se = float_run("v0.3.0", ["1.0.0"]); got = tagset(t)
+check(rc == 0 and "latest" not in {x for _, x in got} and "0" not in {x for _, x in got} and ("ghcr.io", "0.3") in got, "AC11 :latest is never moved by a version lower than a released one (1.0.0 exists)", str(sorted(got)))
+t, rc, so, se = float_run("v0.3.0", ["0.4.0-rc.1", "0.2.0-fips", "latest", "0.3", "0", "9.9.9-fips", "1.0.0-rc.2", "v9.9.9", "latest-fips"]); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 only plain X.Y.Z tags are released versions: rc tags, -fips tags, floating tags and malformed tags do not block :latest", "rc=%s %s %s" % (rc, sorted(got), first(se)))
+t, rc, so, se = float_run("v0.3.0", None); got = tagset(t)
+check(rc == 0 and got == want("0.3.0", "0.3.0-fips", "0.3", "0", "latest"), "AC11 a repository with no tag yet (NAME_UNKNOWN) means this is the highest version", "rc=%s %s %s" % (rc, sorted(got), first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_FAIL": "1"})
+check(rc != 0 and not pushes(t) and "ghcr.io" in se and "list" in se.lower(), "AC11 a tag list that cannot be read stops the release before any push (it never guesses that this is the highest)", "rc=%s %s" % (rc, first(se)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"REG_CORRUPT": "docker.io"})
+check(rc != 0 and "differ" in se and "docker.io" in se, "AC11 a floating tag is read back like an exact one (a mirror that shows another digest blocks the release)", "rc=%s %s" % (rc, first(se)))
+for tag in ("v0.3.0-rc.1", "v10.20.30-rc.7"):
+    t, rc, so, se = float_run(tag, ["0.2.2"]); x = {y for _, y in tagset(t)}
+    check(rc == 0 and x == {tag[1:], tag[1:] + "-fips"}, "AC11 the release candidate %s gets its exact tags only, never a floating one" % tag, str(sorted(x)))
+t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.startswith("crane push")]
+check(L and all(re.search(r" images/(production|fips)\.tar ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
 # ---- AC8: release-sign.sh -------------------------------------------------------------------------------------------------------------------
 def signs(t): return [l for l in log(t) if l.startswith("cosign")]
 t = tree(); os.makedirs(os.path.join(t, "reg"), exist_ok=True); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)
@@ -324,7 +359,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "149"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "159"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
