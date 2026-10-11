@@ -633,7 +633,20 @@ def _run(a, moved, fx, now):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
             added.append(k)
-    if not moved and not added:
+    # HELD rows (Sonnet, pull request 297 round 2): a pinned (check-call) row whose line occurs in the head is re-checked on EVERY run, whether or not
+    # this pull request adds that line and whether or not any pin moved: an edit of the pinned test file or library voids it even when no line is added.
+    # A row whose line no longer occurs in the head is ignored (the line is gone).
+    head = {}
+    for hk, per in _occurrences(a.root, a.head).items():
+        for lh, n in per.items():
+            head[(hk[0], hk[1], hk[2].split(":", 1)[0], lh)] = (hk, n)
+    held = []
+    for rk, row in sorted(rulings.items()):
+        if row[2] is None or rk not in head or (head[rk][0] in lines and rk[3] in lines[head[rk][0]]):
+            continue                                       # unpinned, its line gone from the head, or an added occurrence (judged above)
+        if not _row_applies(a.root, a.head, rk[0], rk[3], row):
+            held.append(head[rk][0])
+    if not moved and not added and not held:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
     else:
@@ -645,6 +658,10 @@ def _run(a, moved, fx, now):
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+    for path, what, line in held:
+        rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
+                     "reason": f"{what} in {path} ({line[:100]}) is a held check-call row whose pins no longer hold in the head (the test file or its library changed): the row is void"})
+        print(f"  FAIL unmeasured:{path}: {what} ({line[:60]}): held check-call row, its pins no longer hold (context or callee changed)")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
