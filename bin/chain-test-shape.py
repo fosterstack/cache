@@ -481,9 +481,8 @@ def listed(path, root):
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml",
          "release": "stage-promote.yml"}
-# Check needs exactly build AND sign: it opens by verifying Sign's provenance, so the candidate is signed before it is checked (rule 80; advisor
-# ruling Oct 10, Q9). Rebuild runs beside Sign and Check; release needs all three.
-NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build", "sign"], "release": ["check", "rebuild", "sign"]}
+# Check needs exactly build (REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side; Codex B r2 R3). Release needs all three.
+NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"], "release": ["check", "rebuild", "sign"]}
 
 
 # The `if` of the chain jobs (REQ-CHAIN-005-AC5). ONE gate G, the same exact text on build and sign: the chain starts on a v* tag PUSH, or in a dry-run
@@ -493,7 +492,7 @@ NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"
 # build needs nothing. PR 1's release.yml has other strings (`!inputs.dry-run && ...` conjuncts on other jobs, `if: ${{ inputs.dry-run }}` on sign):
 # at the merge of PR 1 into chain-v030 they are replaced by these.
 GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
-RELEASE_IF = "${{ !inputs.dry-run }}"
+RELEASE_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
 BUILD_WITH = {"hostile": "${{ inputs.dry-run == true && github.ref_type == 'branch' }}"}
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
@@ -505,7 +504,7 @@ SIGN_WITH = {"digests": "${{ needs.build.outputs.digests }}"}
 # (the auditor App's secrets live in that environment, main only), and the exact `needs` / `if` where they matter. decide, patch-notes and
 # patch-failed exist today (automatic patch releases, REQ-REL-009); the hostile-* jobs are PR 1's dry-run proof (contents: read, no environment,
 # no secrets). Anything else is a way to publish around Rebuild or Check.
-PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' }}"
+PATCH_NOTES_IF = "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
 DECIDE_IF = "${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}"
 NON_CHAIN = {
     "decide": {"perm": {"contents": "read", "checks": "read", "id-token": "write", "issues": "write"}, "agent": True, "if": DECIDE_IF},
