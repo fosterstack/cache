@@ -300,6 +300,14 @@ def _check_entry(e):
                 raise ValueError("next-release-notes entry names a vendor or model split by whitespace: %r" % e)
 
 
+def _vex_line(v):
+    """the notes line of one VEX statement entry, before redaction (vex_changes checks the redacted lines are distinct)"""
+    return "- %s%s: %s (%s)%s" % (
+        v["cve"], " [products unreadable]" if v.get("products_unreadable")
+        else " [%s]" % ", ".join(v["products"]) if v.get("products") else "",
+        v["status"], v["change"], " — %s" % v["statement"] if v.get("statement") else "")
+
+
 def notes(version, fixes, vex_changes, behavior=()):
     lines = ["## %s — patch release" % version, "", "### Fixes"]
     for f in fixes:
@@ -309,10 +317,7 @@ def notes(version, fixes, vex_changes, behavior=()):
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
     stmts = [v for v in vex_changes if "document" not in v]
-    lines += ["- %s%s: %s (%s)%s" % (
-        v["cve"], " [products unreadable]" if v.get("products_unreadable")
-        else " [%s]" % ", ".join(v["products"]) if v.get("products") else "",
-        v["status"], v["change"], " — %s" % v["statement"] if v.get("statement") else "") for v in stmts]
+    lines += [_vex_line(v) for v in stmts]
     lines += ["- document fields changed (%s)%s" % (", ".join(v["document"]), "" if stmts else "; no statement changed")
               for v in vex_changes if "document" in v]
     if not vex_changes:
@@ -424,21 +429,30 @@ def fixed_findings(release_by_variant, head):
     return [out[k] for k in sorted(out)]
 
 
+VEX_STATUS = ("not_affected", "affected", "fixed", "under_investigation")
+VEX_ID_FORMS = ("purl", "cpe23", "cpe22")     # the OpenVEX v0.2 identifiers forms (.github/agent/bin/auditorlib/openvex-schema.json)
+
+
 def vex_changes(old_doc, new_doc):
     """AC8 (rule 0254: the notes name the statements that changed): each VEX statement added, changed or removed since
     the latest tag. A change to any field of a statement (products, status, justification, impact or action text,
     status_notes, anything else, nested values too) is a change, named by field; values compare as JSON, type-sensitive
     (1 and true differ). A CVE may carry several statements. Pairing is total, order-independent and never guesses
-    (Codex #300 r1, A2/B F1): within a CVE, (1) identical statements pair first; (2) then statements whose own @id
-    appears exactly once on each side; (3) then statements whose product scope (products with their subcomponents)
-    is unique on both sides among the rest; a CVE with exactly one statement on each side pairs those two; anything
-    left is removed + added. A statement whose products is not an array of objects with a string @id (subcomponents
-    likewise) is unpairable beyond step (1) and is named "products unreadable", never iterated (A3). Each statement of
-    a CVE that has several is named by its products and by its own @id (unique in its document), else its position in
-    the new document (the old one when removed) (A1). Entries sort by content, not input order (B F3). A change to the
-    document's own fields (version, timestamp, author, ...) adds one {"document": [fields]} entry, last (advisor ruling
-    on 0389 (d)). A malformed document (not an object, no statements array, a statement without a vulnerability name)
-    is refused with ValueError: no notes, no patch (B F4)."""
+    (Codex #300 r1, A2/B F1; r2): within a CVE, (1) identical statements pair first; (2) then statements whose own @id
+    appears exactly once in each WHOLE document (r2, A2); (3) then statements whose product scope is unique on both
+    sides among the rest — the scope is the products with their subcomponents, subcomponent order ignored (r2, A4); an
+    absent or empty products is no scope (r2, A3); a CVE with exactly one statement on each side pairs those two; anything
+    left is removed + added. A product or subcomponent is read when it is an object with a string @id or with
+    identifiers holding only purl / cpe23 / cpe22 strings (the schema's forms, r2 A5), named by its @id, else by those
+    identifiers; a statement whose products is anything else is unpairable beyond step (1) and is named "products
+    unreadable", never iterated (A3). Each statement of a CVE that has several is named by its products and by its own
+    @id (unique in its document), else its position in the new document (the old one when removed) (A1); a statement is
+    named by its position instead whenever redaction would change its @id or its CVE name, or two notes lines would read
+    the same after redaction (r2, A1/B). Entries sort by content, not input order (B F3). A change to the document's own
+    fields (version, timestamp, author, ...) adds one {"document": [fields]} entry, last (advisor ruling on 0389 (d)).
+    A document the notes cannot read is refused with ValueError: no notes, no patch (B F4) — not an object, no statements
+    array, a statement that is not an object, has no vulnerability name or a status outside OpenVEX's four (r2, A6). This
+    is what the notes read, not a full OpenVEX schema check."""
     def canon(v):
         return json.dumps(v, sort_keys=True)
 
@@ -450,32 +464,50 @@ def vex_changes(old_doc, new_doc):
             v_ = s_.get("vulnerability") if isinstance(s_, dict) else None
             if not isinstance(v_, dict) or not isinstance(v_.get("name"), str) or not v_["name"]:
                 raise ValueError("VEX %s document: statement %d has no vulnerability name" % (side, pos))
+            if not isinstance(s_.get("status"), str) or s_["status"] not in VEX_STATUS:
+                raise ValueError("VEX %s document: statement %d has no OpenVEX status" % (side, pos))
             out.setdefault(v_["name"], []).append((pos, s_))
             if isinstance(s_.get("@id"), str):
                 ids[s_["@id"]] = ids.get(s_["@id"], 0) + 1
         return out, ids
 
+    def component(c):
+        """the label of a component the schema allows (a string @id, or identifiers with only purl/cpe23/cpe22 strings),
+        else None"""
+        if not isinstance(c, dict) or ("@id" in c and not isinstance(c["@id"], str)):
+            return None
+        idf = c.get("identifiers")
+        if "identifiers" in c and (not isinstance(idf, dict) or not idf
+                                   or not all(k in VEX_ID_FORMS and isinstance(v, str) for k, v in idf.items())):
+            return None
+        if isinstance(c.get("@id"), str):
+            return c["@id"]
+        return " ".join(idf[k] for k in VEX_ID_FORMS if k in idf) if idf else None
+
     def products(s_):
-        """(display labels, scope key), or None when products is present but unreadable"""
+        """(display labels, scope key or None when there is no scope), or None when products is present but unreadable"""
         ps = s_.get("products", [])
         if not isinstance(ps, list):
             return None
-        labels = []
+        labels, keys = [], []
         for p in ps:
             subs = p.get("subcomponents", []) if isinstance(p, dict) else None
-            if (not isinstance(p, dict) or not isinstance(p.get("@id"), str) or not isinstance(subs, list)
-                    or not all(isinstance(c, dict) and isinstance(c.get("@id"), str) for c in subs)):
+            label = component(p)
+            sub_labels = [component(c) for c in subs] if isinstance(subs, list) else [None]
+            if label is None or None in sub_labels:
                 return None
-            sub_ids = sorted(c["@id"] for c in subs)
-            labels.append(p["@id"] + (" (subcomponents: %s)" % ", ".join(sub_ids) if sub_ids else ""))
-        return sorted(labels), tuple(sorted(canon(p) for p in ps))
+            sub_labels.sort()
+            labels.append(label + (" (subcomponents: %s)" % ", ".join(sub_labels) if sub_labels else ""))
+            keys.append(canon(dict(p, subcomponents=sorted(subs, key=canon)) if "subcomponents" in p else p))
+        return sorted(labels), (tuple(sorted(keys)) if keys else None)
 
     def match(ro, rn, key, unique):
-        """pair the statements of ro and rn whose key (not None) is equal; with unique, only a key held once per side"""
+        """pair the statements of ro and rn whose key (not None; key(statement, side)) is equal; with unique, only a key
+        held once per side"""
         ko, kn = {}, {}
-        for side, rest in ((ko, ro), (kn, rn)):
+        for side, name, rest in ((ko, "old", ro), (kn, "new", rn)):
             for x in rest:
-                k = key(x[1])
+                k = key(x[1], name)
                 if k is not None:
                     side.setdefault(k, []).append(x)
         got = []
@@ -492,43 +524,69 @@ def vex_changes(old_doc, new_doc):
     else:
         old, old_ids = {}, {}
     new, new_ids = by_cve(new_doc, "new")
-    out = []
+    side_ids = {"old": old_ids, "new": new_ids}
+
+    def own_id(s_, side):
+        """the statement's @id when it is held exactly once in its whole document (r2, A2), else None"""
+        sid = s_.get("@id")
+        return sid if isinstance(sid, str) and side_ids[side].get(sid) == 1 else None
+
+    recs = []       # (entry, position, side)
     for cve in sorted(set(old) | set(new)):
         olds, news = list(old.get(cve, [])), list(new.get(cve, []))
         several = len(olds) > 1 or len(news) > 1
         lone = len(olds) == 1 and len(news) == 1
-        pairs = match(olds, news, canon, False)
-        pairs += match(olds, news, lambda s_: s_["@id"] if isinstance(s_.get("@id"), str) and products(s_) else None, True)
-        pairs += match(olds, news, lambda s_: products(s_)[1] if products(s_) else None, True)
-        if lone and olds and news and products(olds[0][1]) and products(news[0][1]):
+        pairs = match(olds, news, lambda s_, side: canon(s_), False)
+        pairs += match(olds, news, lambda s_, side: own_id(s_, side) if products(s_) is not None else None, True)
+        pairs += match(olds, news, lambda s_, side: products(s_)[1] if products(s_) is not None else None, True)
+        if lone and olds and news and products(olds[0][1]) is not None and products(news[0][1]) is not None:
             pairs.append((olds.pop(), news.pop()))
 
         def entry(x, side, change):
             pos, s_ = x
-            e = {"cve": cve, "status": s_.get("status", ""), "change": change}
+            e = {"cve": cve, "status": s_["status"], "change": change}
             prod = products(s_)
             if prod is None:
                 e["products_unreadable"] = True
             elif several:
                 e["products"] = prod[0]
             if several:
-                ids = old_ids if side == "old" else new_ids
-                sid = s_.get("@id")
-                e["statement"] = ("statement %s" % sid if isinstance(sid, str) and ids.get(sid) == 1
+                sid = own_id(s_, side)
+                e["statement"] = ("statement %s" % sid if sid is not None
                                   else "statement %d of the %s document" % (pos, side))
-            return (e.get("products", []), "products_unreadable" in e, change, str(e["status"]), canon(s_)), e
+            return (e.get("products", []), "products_unreadable" in e, change, e["status"], canon(s_)), (e, pos, side)
 
         found = []
         for (_, o), n in ((p[0], p[1]) for p in pairs):
             fields = sorted(k for k in set(o) | set(n[1]) if k not in o or k not in n[1] or canon(o[k]) != canon(n[1][k]))
             others = [k for k in fields if k != "status"]
             if "status" in fields:
-                found.append(entry(n, "new", "changed from %s" % o.get("status", "")
+                found.append(entry(n, "new", "changed from %s" % o["status"]
                                    + ("; also " + ", ".join(others) if others else "")))
             elif fields:
                 found.append(entry(n, "new", "changed: " + ", ".join(fields)))
         found += [entry(x, "new", "added") for x in news] + [entry(x, "old", "removed") for x in olds]
-        out += [e for _, e in sorted(found, key=lambda f: f[0])]
+        recs += [r for _, r in sorted(found, key=lambda f: f[0])]
+
+    # r2 (A1/B): the published lines are the redacted ones; each must still name exactly one statement. A label redaction
+    # would change, or a line that reads like another after redaction, is replaced by the statement's position, which is
+    # unique: a new-document statement is in at most one entry (changed or added), an old one only in a removed one.
+    def by_position(r):
+        e, pos, side = r
+        label = "statement %d of the %s document" % (pos, side)
+        changed_ = e.get("statement") != label
+        e["statement"] = label
+        return changed_
+    for r in recs:
+        if _clean(r[0]["cve"]) != r[0]["cve"] or _clean(r[0].get("statement", "")) != r[0].get("statement", ""):
+            by_position(r)
+    while True:
+        seen = {}
+        for r in recs:
+            seen.setdefault(_clean(_vex_line(r[0])), []).append(r)
+        if not [by_position(r) for rs in seen.values() if len(rs) > 1 for r in rs if by_position(r)]:
+            break
+    out = [r[0] for r in recs]
     if old_doc is not None:     # advisor ruling (0389 (d)): a document-level change is a VEX change too, named by field
         doc_fields = sorted(k for k in (set(old_doc) | set(new_doc)) - {"statements"}
                             if k not in old_doc or k not in new_doc or canon(old_doc[k]) != canon(new_doc[k]))
@@ -765,6 +823,8 @@ def main(argv=None):
             nn = open(a.next_notes).read() if os.path.exists(a.next_notes) else ""     # no file: no entries
             behavior = unpublished(behavior_entries(nn), open(a.published).read())
             old = json.load(open(a.vex_old)) if a.vex_old else None
+            if a.vex_old and old is None:       # a supplied file holding null is not "no old document" (Codex #300 r2, B)
+                raise ValueError("VEX old document %s: null" % a.vex_old)
             fixes = fixed_findings(rel, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})
             text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior)
         except (ValueError, OSError, KeyError, TypeError) as e:
