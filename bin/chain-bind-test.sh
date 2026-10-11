@@ -346,6 +346,23 @@ check("items-merge: digests.json is exactly the oracle's: 2 images, 4 apks, 4 ar
       rc == 0 and got_digests == expected_digests and len(expected_digests) == 10, "exit %s" % rc)
 
 
+# B1 (Codex B r2): Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text with printf '%s'. The file the
+# Witness product hashes must therefore BE those bytes (compact, no trailing newline), or Sign's byte binding refuses every release. The test hashes what Sign
+# actually receives and runs the REAL verifier comparison on it.
+original = open(d + "/digests.json", "rb").read() if os.path.exists(d + "/digests.json") else b""
+transported = subprocess.run(["jq", "-c", "."], input=original, capture_output=True).stdout.rstrip(b"\n")      # the stage output text, as Sign's printf writes it
+check("items-merge: digests.json is byte-identical to what the stage output transports to Sign (compact JSON, no trailing newline)",
+      rc == 0 and original != b"" and original == transported, "%d bytes written, %d transported" % (len(original), len(transported)))
+_cv = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); cv = importlib.util.module_from_spec(_cv)
+sys.path.insert(0, root + "/bin"); _cv.loader.exec_module(cv)
+stmt = {"subject": [{"name": cv.PRODUCT, "digest": {"sha256": hashlib.sha256(original).hexdigest()}}]}      # the product the Witness record holds for the file
+try:
+    cv.digest_compare("build", stmt, transported, json.loads(transported)); bound = True
+except cv.Refuse:
+    bound = False
+check("items-merge: Sign's byte binding (digest_compare, the real verifier) accepts the text the stage output carries", bound, "refused")
+
+
 def edit_fragment(d, runner, edit):
     path = "%s/apk/%s/items-apk.json" % (d, runner)
     fragment = json.load(open(path))
@@ -400,7 +417,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 55
+EXPECT = 57
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
