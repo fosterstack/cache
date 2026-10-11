@@ -698,6 +698,10 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
     full = path or ".github/workflows/" + rel      # round 2 (2): a pin binds the FULL repo path of the file
     pins = getattr(env_names, "pinned", {})        # round 1 (5): (file, job, id) -> the reviewed pinned step
     found = set()
+    run_count = {}                                  # round 4 (7): how often each run text occurs in the whole file
+    for _jn, _j in ((d.get("jobs") or {}).items()):
+        for _s in ((_j.get("steps") or []) if isinstance(_j, dict) else []):
+            if isinstance(_s, dict) and isinstance(_s.get("run"), str): run_count[_s["run"]] = run_count.get(_s["run"], 0) + 1
     amb = getattr(env_names, "ambient", {})        # PR 1b (B): name -> listed scripts that read it from their own environment
     extra = set(d) - STAGE_WF_KEYS
     if extra: errs.append("%s: workflow keys %s are not allowed in a stage file (env, defaults, concurrency, run-name can reroute every step)" % (rel, sorted(extra)))
@@ -711,6 +715,9 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
             if pin is not None:
                 # round 1 (5), a REVIEWED PINNED STEP: exactly name/id/run, and the run text equal to the entry's; nothing else about it is relaxed
                 found.add((full, jn, s.get("id")))
+                same_id = sum(1 for x in (j.get("steps") or []) if isinstance(x, dict) and x.get("id") == s.get("id"))
+                if same_id != 1 or run_count.get(pin["run"], 0) != 1:
+                    errs.append("%s: pinned step %r occurs %d time(s) in its job and its run text %d time(s) in the file; exactly once each is required" % (pre, s.get("id"), same_id, run_count.get(pin["run"], 0)))
                 if set(s) != {"name", "id", "run"}: errs.append("%s: pinned step %r has keys %s; a pinned step has exactly name, id and run" % (pre, s.get("id"), sorted(s)))
                 elif s.get("run") != pin["run"]: errs.append("%s: pinned step %r has a run text that differs from its pinned_steps entry" % (pre, s.get("id")))
                 continue
