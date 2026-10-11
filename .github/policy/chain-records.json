@@ -6,24 +6,9 @@
    "consumer": "release"
   },
   {
-   "type": "https://fosterstack.com/attestations/source-admission/v1",
-   "claim": "the tag and commit were admitted (old chain, removed in PR 2: admission becomes Build's first step)",
-   "consumer": "build"
-  },
-  {
-   "type": "https://fosterstack.com/attestations/build/v1",
-   "claim": "what the old build stage built (old chain, replaced by Build's Witness record in PR 2)",
-   "consumer": "release"
-  },
-  {
-   "type": "https://fosterstack.com/attestations/image-build/v1",
-   "claim": "the old image stage's image digests and base images (old chain, removed in PR 2)",
-   "consumer": "check"
-  },
-  {
-   "type": "https://fosterstack.com/attestations/reproducibility/v1",
-   "claim": "the old rebuild reproduced the candidate digests (old chain, replaced by Rebuild's Witness record in PR 2)",
-   "consumer": "release"
+   "type": "https://witness.testifysec.com/attestation-collection/v0.1",
+   "claim": "what each Build and Rebuild step did and produced, signed keyless by Witness under the stage's own identity (apk, build, rapk, rebuild)",
+   "consumer": "rebuild"
   },
   {
    "type": "https://fosterstack.com/attestations/acceptance/v1",
