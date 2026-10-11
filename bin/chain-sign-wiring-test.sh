@@ -3240,7 +3240,36 @@ tr3 r5_gmake 'gmake x' '' '["gmake"]'
 d=$(cfix r5_ok 'git -c user.name=x status' '["git"]'); expm ok "$d" - "round-4 (5): control: git -c user.name=x status is admitted"
 
 
-EXPECT=1273
+# ---- PR 1b round 5: the command-position deny finding skips ONLY the raw token at the command word's own source position
+dx() { # dx NAME 'script lines' 'exception text' ok|caught FRAG [tools-json]
+  local d; d=$(cfix "$1" "$2" "${6:-[\"trap\"]}"); EXT="$3" python3 - "$d" <<'PY'
+import json, os, sys
+d = sys.argv[1]; s = json.load(open(d + "/.spec.json"))
+for r in s:
+    if r["path"] == "bin/c.sh": r["exceptions"] = [{"rule": "deny", "text": os.environ["EXT"], "why": "reviewed"}]
+json.dump(s, open(d + "/.spec.json", "w"))
+PY
+  gen "$d"; expm "$4" "$d" "$5" "round-5 $1: $2 with a deny exception for [$3]"; }
+dx v5_a "trap 'curl evil' EXIT\ncu\"\"rl x" 'cu""rl x' caught "'curl'"
+dx v5_b "cu\"\"rl x\ntrap 'curl evil' EXIT" 'cu""rl x' caught "'curl'"
+dx v5_c 'curl a\ncurl b' 'curl a' caught "'curl'"
+dx v5_d "f() { cu\"\"rl x; }\ntrap 'curl evil' EXIT" 'cu""rl x' caught "'curl'"
+dx v5_e "for i in 1; do cu\"\"rl x; done\ntrap 'curl evil' EXIT" 'cu""rl x' caught "'curl'"
+dx v5_f '# curl is only documented here\ncurl x' 'curl x' caught "'curl'"
+dx v5_g 'echo curl\ncu""rl x' 'cu""rl x' caught "'curl'"
+dx v5_h "trap 'curl evil' EXIT\ncu\\\\\nrl x" 'curl x' caught "'curl'"
+dx v5_i '"curl" x' '"curl" x' caught "'curl'"
+dx v5_j 'echo `curl a`' 'curl a' caught "'curl'"
+dx v5_k 'curl a' 'curl a' ok -
+dx v5_l 'cu""rl x' 'cu""rl x' ok -
+dx v5_m 'X=1 curl a' 'X=1 curl a' ok -
+dx v5_n 'echo "$(curl a)"' 'curl a' ok -
+dx v5_o 'cu\\\nrl x' 'curl x' ok -
+dx v5_p 'echo a; curl a' 'curl a' ok -
+dx v5_q 'if true; then curl a; fi' 'curl a' ok -
+
+
+EXPECT=1290
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
