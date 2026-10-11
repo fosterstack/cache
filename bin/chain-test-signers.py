@@ -190,7 +190,10 @@ INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node",
 # commands a listed script may NOT name unless its row lists them in `tools` (a finite list of the usual ways out, not a parser)
 DENY = INTERPRETERS | {"curl", "wget", "nc", "ncat", "netcat", "telnet", "ssh", "scp", "sftp", "rsync", "ftp", "socat", "gh", "git",
                        "docker", "podman", "kubectl", "aws", "gcloud", "az", "terraform", "pip", "pip3", "go", "cargo", "apt",
-                       "apt-get", "dpkg", "su", "trap", "crontab", "systemd-run", "script"}
+                       "apt-get", "dpkg", "su", "trap", "crontab", "systemd-run", "script",
+                       # final batch R-g: the evaluator words, seen ANYWHERE in a listed script's text (a trap handler, a string, an
+                       # argument), unless the row's `tools` names the word
+                       "awk", "gawk", "mawk", "nawk", "sed", "php", "lua", "tar"}
 STAGE_WF_KEYS = {"name", "on", "permissions", "jobs"}
 STAGE_JOB_KEYS = {"name", "needs", "if", "runs-on", "permissions", "steps", "outputs", "timeout-minutes", "strategy", "environment"}
 STAGE_STEP_KEYS = {"name", "id", "uses", "with", "run", "env", "if", "timeout-minutes"}
