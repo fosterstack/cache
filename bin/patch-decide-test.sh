@@ -941,8 +941,9 @@ def span_of(v):
     return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(v, ensure_ascii=True).replace("`", "\\u0060"))
 def bare_ok(v, before_colon=False):
     """the oracle's own bare-form rule (r6, A (c)): a letter, then letters, digits and - . _ / only, after at most one
-    pkg: / urn: / cpe: prefix, and inert (with the ':' the notes print after a CVE name)"""
-    return (re.fullmatch(r"(?:(?:pkg|urn|cpe):)?[A-Za-z][A-Za-z0-9._/-]*", v) is not None
+    pkg: / urn: / cpe: prefix, and inert (with the ':' the notes print after a CVE name); r8 (r7 B F4): no run of five
+    hyphens (a space printed after it would complete '-----BEGIN ')"""
+    return (re.fullmatch(r"(?:(?:pkg|urn|cpe):)?[A-Za-z][A-Za-z0-9._/-]*", v) is not None and "-----" not in v
             and inert(v + (":" if before_colon else "")))
 def tok_is(tok, v, before_colon=False):
     """Codex #300 r5 (A R4-3, B F2); r6 (A (c), B F3): a printed token names the source value v only as the ONE printed
@@ -1110,14 +1111,26 @@ def diff_problems(nt, o_doc, n_doc):
     if removed_ - surplus_old:
         probs.append("a removed line names an old statement an identical new one accounts for")
     left = list((surplus_old - removed_).elements())
-    def pair(i, avail):
+    def pairings(i, avail):
+        """how many one-to-one pairings of the changed lines with the remaining old statements fit (counted up to 2)"""
         if i == len(changed):
-            return not avail
+            return 0 if avail else 1
         st, change, _ = changed[i]
-        return any(claim_fits(change, json.loads(a), st) and pair(i + 1, avail[:j] + avail[j + 1:]) for j, a in enumerate(avail))
-    if not pair(0, left):
+        n_ = 0
+        for j, a in enumerate(avail):
+            if n_ >= 2:
+                break
+            if claim_fits(change, json.loads(a), st):
+                n_ += pairings(i + 1, avail[:j] + avail[j + 1:])
+        return min(n_, 2)
+    np_ = pairings(0, left)
+    if np_ == 0:
         probs.append("the changed lines do not pair one-to-one with the remaining old statements by their claimed change: %r"
                      % [c_[2] for c_ in changed])
+    elif np_ > 1 and len({canon_(json.loads(a)) for a in left}) > 1:
+        # r8 (Codex #300 r7, A low): 'changed' claims that fit more than one pairing of distinct old statements are a
+        # guess the documents do not decide; production prints removed + added then, and the oracle refuses the guess
+        probs.append("the changed lines guess a pairing the documents do not decide: %r" % [c_[2] for c_ in changed])
     want_doc = [] if o_doc is None else field_diff({k: v for k, v in o_doc.items() if k != "statements"},
                                                     {k: v for k, v in n_doc.items() if k != "statements"})
     if want_doc:
@@ -2124,7 +2137,10 @@ check("AC14 R14-8: the changelog refuses colliding next-release-notes entries be
 check("AC14 R14-9: a line that only contains the entry's line does not publish it",
       P.unpublished(["x (advisor 0130)."], "- foo - x (advisor 0130).\n") == ["x (advisor 0130)."])
 check("AC14 R14-9: the entry's own line publishes it, trailing space or tab ignored on either side",
-      P.unpublished(["x (advisor 0130)."], "- x (advisor 0130). \t\n") == [] and P.unpublished(["x (advisor 0130).\t"], "- x (advisor 0130).\n") == [])
+      P.unpublished(["x (advisor 0130)."], "- x (advisor 0130). \t\n") == [] and P.unpublished(["x (advisor 0130).  "], "- x (advisor 0130).\n") == [])
+rc_, err_, out_, p_ = notes_cli("# Notes\n\n- x (advisor 0130).\t\n- y (advisor 0131).\n", published="## v0.2.2 — patch release\n\n- x (advisor 0130). \n")
+check("AC14 R14-9: through the CLI, an entry with a trailing tab in next-release-notes is published by its line with a trailing space",
+      rc_ == 0 and "- x (advisor 0130)." not in (out_ or "") and "- y (advisor 0131)." in (out_ or ""), (rc_, err_, out_))
 check("AC14 R14-9: interior or leading whitespace differs: not published (shown, never dropped)",
       P.unpublished(["x  y (advisor 0130)."], "- x y (advisor 0130).\n") == ["x  y (advisor 0130)."]
       and P.unpublished(["x (advisor 0130)."], " - x (advisor 0130).\n") == ["x (advisor 0130)."])
@@ -2151,13 +2167,15 @@ check("AC14 tag-notes: a refused form exits 2 with the line named, nothing print
 rc_, _, _ = cli(["tag-notes"], stdin="object 1\ntype commit\ntag v0.3.0\ntagger o <o@x> 1 +0000\n\nv0.3.0\n")
 check("AC14 tag-notes: an owner's tag still exits 1 (no notes, not a refusal)", rc_ == 1, rc_)
 # property: no refused form outside a VEX section can reach the published text (notes, a tag's notes, the changelog)
-TRIG_P = ["<b", "</", "<!--", "<?", "<é", "[x]:", "[x]", " [", "&amp;", "&#97;", "&#x61;", "-----BEGIN ", "-----", "BEGIN ", "<", "&",
-          "[", "]", ":", " ", "a", "gpt", "- ", "> ", "1. ", "\\", "`"]
+TRIG_P = ["<b", "</", "<!--", "<?", "<é", "[x]:", "&amp;", "&#97;", "&#x61;", "-----BEGIN ", "-----"]
+SAFE_P = ["[x]", " [", "BEGIN ", "<", "&", "[", "]", ":", " ", "a", "gpt", "- ", "> ", "1. ", "\\", "`", "(redacted)", "-"]
 rngp_ = random.Random(1414)
+def rpiece():
+    return rngp_.choice(TRIG_P if rngp_.random() < 0.12 else SAFE_P)
 bad_, made_, ref_ = [], 0, 0
 for it_ in range(1500):
-    ents_ = ["".join(rngp_.choice(TRIG_P) for _ in range(rngp_.randint(1, 6))) + " (advisor %04d)." % i for i in range(rngp_.randint(1, 3))]
-    pkg_ = "".join(rngp_.choice(TRIG_P) for _ in range(rngp_.randint(1, 4)))
+    ents_ = ["".join(rpiece() for _ in range(rngp_.randint(1, 6))) + " (advisor %04d)." % i for i in range(rngp_.randint(1, 3))]
+    pkg_ = "".join(rpiece() for _ in range(rngp_.randint(1, 4)))
     try:
         nt_ = P.notes("v0.2.3", [dict(fixes[0], package=pkg_)], [], behavior=ents_)
     except ValueError:

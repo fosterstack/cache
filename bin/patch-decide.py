@@ -13,6 +13,8 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
   notes                   rule 5: per fix the CVE, package, old -> new, severity, variants; each VEX change; a
                           no-behavior-change line, or (advisor 0130) the behavior changes listed in
                           docs/next-release-notes.md, each citing the handoff that judged it; no vendor or model names.
+                          Its sources are refused, never rewritten, when a line holds a form Markdown could hide text in
+                          (REQ-REL-009-AC14, advisor step 5): file:line, exit 2, nothing written.
   removed_critical_high   rule 2: the latest release's critical/high findings that HEAD removes (a Go module or the
                           toolchain at or past the advisory's fixed version; a distribution package the new base
                           image no longer reports); unknown or unreadable never counts as removed.
@@ -267,7 +269,7 @@ def _clean(s):
 
 def _visible(s):
     """Markdown output (notes, changelog, tag notes): the redaction marker as visible text — "<redacted>" parses as an
-    HTML tag and renders as nothing (Codex #300 r4, B low); an older text's marker is shown the same way"""
+    HTML tag and renders as nothing (Codex #300 r4, B low)"""
     return s.replace("<redacted>", "(redacted)")
 
 
@@ -280,79 +282,109 @@ PUNCT = r"!-/:-@\[-`{-~"                         # every ASCII punctuation chara
 ESC = re.compile(r"([%s])" % PUNCT)
 ESCAPED = re.compile(r"(?:\\[%s]|[^%s])*\Z" % (PUNCT, PUNCT))
 UNESC = re.compile(r"\\([%s])" % PUNCT)
-MARK = re.compile(r"(?i)redacted")                # the marker in every form it was ever written: <..>, (..), escaped, any case
+MARKS = ("(redacted)", "\\(redacted\\)")         # the marker as the notes print it, and as it renders after one escape
 FREE_PRE = re.compile(r"- |#{1,6} ")             # a bullet or an ATX heading stays one
-SHOWN_SPAN = re.compile(r"`[^`]+`")
-SHOWN_BAD = re.compile(r"[!\"#$%&'*+<=>?@\\^`{|}~]|//|(?i:www)\.|(?<![A-Za-z0-9])_(?![A-Za-z0-9])")
-SHOWN_BRACKETS = re.compile(r"[^\[\]]*(?: \[[^\[\]]*\]: [^\[\]]*)?\Z")
 
 
-def _shows(body):
-    """the body of a line holding the marker shows it as text as written (Codex #300 r6, A R5-1 / B F1): outside its
-    code spans (single backticks, none adjacent: literal text in every renderer) it holds letters, digits, spaces,
-    non-ASCII text and . , ; : ( ) / - only, '_' only beside a letter or digit, '[' only as the one ' [...]: ' list a VEX
-    line prints, no '//' or 'www.': nothing that starts a link, image, reference definition, HTML, comment, autolink,
-    entity, escape, code, footnote, table or math construct can take the marker into its syntax. Anything else is not
-    judged: the line is escaped (fail closed, no construct list to keep up)."""
-    if "``" in body:
-        return False
-    rest = SHOWN_SPAN.sub("C", body)
-    return not SHOWN_BAD.search(rest) and bool(SHOWN_BRACKETS.match(rest))
+def _marked(s):
+    """s holds the marker, as written or read unescaped once (Codex #300 r8: the historical forms are cut back, advisor
+    step 5: no published text ever held '<redacted>' or another form, and a source holding '<' before a letter is refused,
+    REQ-REL-009-AC14; 'notredacted' is not the marker, r7 A medium)"""
+    u = UNESC.sub(r"\1", s)
+    return any(m in t for m in MARKS for t in (s, u))
 
 
 def _clean_free(line):
-    """one line of free text (a fix line, a behavior entry, any line of a tag's own text) for Markdown output. The
-    marker is recognised in every form it was ever written — origin/main's "<redacted>", round 4's "(redacted)", the
-    escaped forms, any case (Codex #300 r6, A R5-1 / B F1). A line holding it after _clean is kept as written only when
-    the marker was already there (_clean redacted nothing new) and _shows() finds nothing around it that could hide it
-    (so a VEX line the notes print reads back unchanged); otherwise every ASCII punctuation character is backslash-
-    escaped, the marker written '\\(redacted\\)': no link, image, HTML tag, comment, code span or other construct can take
-    it into its syntax (Codex #300 r5, A R4-4 / B F3). A line in that escaped form that holds the marker is read
-    unescaped, cleaned and escaped again, so cleaning twice changes nothing; a line without the marker is never read as
-    escaped — it is _clean's output unchanged ('google\\.com' is redacted as before round 5; r6, A (d) / B F6). A leading
-    '- ' bullet or an ATX heading's '#... ' stays one."""
+    """one line of free text (a fix line, a behavior entry, any line of a tag's own text outside a VEX section) for
+    Markdown output: the escape-whole-line rule (Codex #300 r5, A R4-4 / B F3; r8, advisor step 5). A line whose cleaned
+    text holds the marker is written with every ASCII punctuation character backslash-escaped, the marker '\\(redacted\\)':
+    no link, image, HTML, code span or other construct can take it into its syntax; any other line is _clean's output
+    unchanged. A line already in that escaped form that holds the marker is read unescaped, cleaned and escaped again, so
+    cleaning twice changes nothing; a line without the marker is never read as escaped ('google\\.com' is redacted as
+    before round 5; r6, A (d) / B F6). A leading '- ' bullet or an ATX heading's '#... ' stays one."""
     m = FREE_PRE.match(line)
     pre = m.group(0) if m else ""
     body = line[len(pre):]
-    own = bool(MARK.search(body) and "\\" in body and ESCAPED.match(body))   # this function's own escaped form
+    own = bool("\\" in body and ESCAPED.match(body) and _marked(UNESC.sub(r"\1", body)))   # this function's own form
     raw = UNESC.sub(r"\1", body) if own else body
     c = _visible(_clean(raw))
-    if not MARK.search(c) or (not own and c == raw and _shows(c)):
-        return pre + c
-    return pre + ESC.sub(r"\\\1", c)
+    return pre + (ESC.sub(r"\\\1", c) if _marked(c) else c)
 
 
-NOTES_LINE = re.compile(r"(?:- .*|#{1,6}(?: .*)?|No behavior change: this release contains fixes only\.)?\Z", re.S)
+VEX_HEAD = "### VEX"
 
 
-def _shaped(text):
-    """a text holding the marker is published only when every line is blank, a '- ' bullet, an ATX heading, the
-    no-behavior-change line (what notes() writes), or a paragraph line standing alone (a blank line or the text's edge
-    before and after it, no leading space) that is fully escaped or that _shows() reads as plain text: then no line can
-    open a block (HTML, comment, fence, quote, indented code, reference definition) or continue a construct (a link title,
-    inline HTML) across lines, and a marker on another line cannot be taken into it (Codex #300 r6, B F2; fail closed).
-    A text without the marker is not judged."""
-    lines = text.split("\n")
-    if not any(MARK.search(ln) for ln in lines):
-        return True
-    for i, ln in enumerate(lines):
-        if NOTES_LINE.match(ln):
-            continue
-        alone = (i == 0 or lines[i - 1] == "") and (i + 1 == len(lines) or lines[i + 1] == "")
-        if not (alone and ln[:1].strip() and (ESCAPED.match(ln) or _shows(ln))):
-            return False
-    return True
+def _vex_flags(lines):
+    """for each line, whether it is a VEX statement line: a '- ' line in the run directly after a '### VEX' line (the lines
+    notes() prints through _lit; advisor step 5 (1): exempt from the source refusals, nothing else is)"""
+    out, inside = [], False
+    for ln in lines:
+        inside = inside and ln.startswith("- ")
+        out.append(inside)
+        if ln == VEX_HEAD:
+            inside = True
+    return out
 
 
 def _clean_lines(s):
-    """_clean_free one line at a time, split at every line boundary str.splitlines() knows (LF, CR, CRLF, VT, FF, FS,
-    GS, RS, NEL, LS, PS), each written back as LF: no redaction ever matches across a line break and merges two lines
-    (Codex #300 r3 B1; r4 A R3-4, B low). Its callers judge the whole text with _shaped() (r6, B F2)."""
+    """the notes text cleaned one line at a time, split at every line boundary str.splitlines() knows (LF, CR, CRLF, VT,
+    FF, FS, GS, RS, NEL, LS, PS), each written back as LF: no redaction ever matches across a line break and merges two
+    lines (Codex #300 r3 B1; r4 A R3-4, B low). A VEX statement line (by its section, r8) is kept as written when
+    redaction changes nothing in it (so the notes' own VEX lines read back unchanged); otherwise, and for every other line,
+    _clean_free writes it."""
+    parts = str(s).splitlines(True)
+    bodies = [(ln.splitlines() or [""])[0] for ln in parts]
     out = []
-    for ln in str(s).splitlines(True):
-        body = ln.splitlines()[0]
-        out.append(_clean_free(body) + ("\n" if len(body) < len(ln) else ""))
+    for ln, body, vex in zip(parts, bodies, _vex_flags(bodies)):
+        c = body if vex and _clean_md(body) == body else _clean_free(body)
+        out.append(c + ("\n" if len(body) < len(ln) else ""))
     return "".join(out)
+
+
+# REQ-REL-009-AC14 (advisor step 5, Oct 11; owner rule 5): the notes sources are refused outright, never decoded, escaped or
+# rewritten, when a line holds one of these forms. The reference-definition shape is read after any list or quote markers
+# and indentation (a definition can open inside a list item, '-  [x]: /u', or after an item that starts blank,
+# '-\n    [x]: /u'), and a '[' label left open at the line end is refused too (a label may span lines): wider than
+# CommonMark, fail closed. 'Letter' after '<' is any Unicode letter (str.isalpha).
+REFDEF = re.compile(r"(?:[ \t]*(?:>|(?:[-+*]|\d{1,9}[.)])(?=[ \t]|$)))*[ \t]*\[(?:[^\]\\]|\\.)*(?:\]:|$)")
+CHARREF = re.compile(r"&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);")
+SIG_DELIM = "-----BEGIN "
+
+
+def _refused_form(line):
+    """why REQ-REL-009-AC14 refuses this line, or None"""
+    line = str(line)
+    if any(c == "<" and i + 1 < len(line) and (line[i + 1] in "/!?" or line[i + 1].isalpha()) for i, c in enumerate(line)):
+        return "'<' before a letter, '/', '!' or '?'"
+    if REFDEF.match(line):
+        return "the shape of a link reference definition"
+    if CHARREF.search(line):
+        return "a character reference"
+    if SIG_DELIM in line:
+        return "the signature delimiter '-----BEGIN '"
+    return None
+
+
+def _refuse_text(text, name, skip_vex=False):
+    """refuse (ValueError naming name:line) a text any line of which holds a refused form; skip_vex: the VEX statement
+    lines of each '### VEX' section are exempt (advisor step 5 (1))"""
+    lines = str(text).splitlines()
+    flags = _vex_flags(lines) if skip_vex else [False] * len(lines)
+    for n, (ln, vex) in enumerate(zip(lines, flags), 1):
+        why = None if vex else _refused_form(ln)
+        if why:
+            raise ValueError("%s:%d: %s" % (name, n, why))
+
+
+def _no_collision(items):
+    """items: (published line, location 'file:line:'); two that publish the same line (trailing whitespace ignored, as
+    'already published' reads it) are refused, both named (REQ-REL-009-AC14 (5))"""
+    seen = {}
+    for line, loc in items:
+        k = line.rstrip()
+        if k in seen:
+            raise ValueError("%s %s two entries publish the same line" % (seen[k], loc))
+        seen[k] = loc
 
 
 UNPRINTED = ("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn")
@@ -376,14 +408,15 @@ def _oneline(s):
 # built-in forms; an autolink a repository configures in its own settings (a custom prefix such as "TICKET-") is a
 # repository setting outside this code and is not covered (Codex #300 r5, A R4-2: documented, not handled).
 BARE = re.compile(r"(?:(?:pkg|urn|cpe):)?[A-Za-z][A-Za-z0-9._/-]*\Z")
-NOT_BARE = re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|//|(?i:www)\.|(?i:(?<![A-Za-z0-9])gh(?:sa)?-)|"
+NOT_BARE = re.compile(r"-----|(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|//|(?i:www)\.|(?i:(?<![A-Za-z0-9])gh(?:sa)?-)|"
                       r"(?<![A-Za-z0-9])[0-9a-fA-F]{7,}(?![A-Za-z0-9])")
 
 
 def _lit(v, before_colon=False):
-    """the printed form of a document-supplied value; before_colon: the notes print ':' right after it (a CVE name). In
-    the quoted form a hyphen followed by four more is written \\u002d (the same JSON string): no run of five hyphens, a
-    signature-block delimiter, is ever printed, so the tag of the notes stays readable (Codex #300 r6, B F4)"""
+    """the printed form of a document-supplied value; before_colon: the notes print ':' right after it (a CVE name). A
+    value holding five hyphens is never bare (a space the notes print after it would complete '-----BEGIN '; Codex #300
+    r7, B F4), and in the quoted form a hyphen followed by four more is written \\u002d (the same JSON string): no run of
+    five hyphens, a signature-block delimiter, is ever printed, so the tag of the notes stays readable (r6, B F4)"""
     v = str(v)
     if BARE.match(v) and not NOT_BARE.search(v + (":" if before_colon else "")):
         return v
@@ -393,19 +426,44 @@ def _lit(v, before_colon=False):
 CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
 
 
-def behavior_entries(text):
-    """The entries of docs/next-release-notes.md (advisor 0130): each "- " bullet, its indented continuation lines joined.
-    An entry is only a change the owner or the advisor judged unable to affect supported clients, so each must end by
-    citing that handoff, "(... advisor NNNN)"; an entry without one is refused (ValueError) and nothing is cut."""
+def _entries(text):
+    """[entry, line number of its bullet] of a next-release-notes text: each "- " bullet, its indented continuation lines
+    joined"""
     out = []
-    for ln in text.splitlines():
+    for n, ln in enumerate(text.splitlines(), 1):
         if ln.startswith("- "):
-            out.append(ln[2:].strip())
+            out.append([ln[2:].strip(), n])
         elif out and ln.startswith("  ") and ln.strip():
-            out[-1] += " " + ln.strip()
-    for e in out:
-        _check_entry(e)
+            out[-1][0] += " " + ln.strip()
     return out
+
+
+def _source_entries(text, name):
+    """the entries of a next-release-notes text read as a notes source (REQ-REL-009-AC14): every line of the file, and
+    every entry with its lines joined as notes() prints it, is refused (ValueError naming name:line) when it holds a
+    refused form; two entries whose published lines are the same line are refused, both named"""
+    _refuse_text(text, name)
+    ents = _entries(text)
+    for e, n in ents:
+        why = _refused_form("- " + _oneline(e))
+        if why:
+            raise ValueError("%s:%d: %s (the entry, its lines joined)" % (name, n, why))
+    _no_collision([(_entry_line(e), "%s:%d:" % (name, n)) for e, n in ents])
+    return ents
+
+
+def behavior_entries(text, name="docs/next-release-notes.md"):
+    """The entries of docs/next-release-notes.md (advisor 0130). An entry is only a change the owner or the advisor judged
+    unable to affect supported clients, so each must end by citing that handoff, "(... advisor NNNN)"; an entry without
+    one is refused (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two
+    entries publishing the same line are refused, naming name:line."""
+    ents = _source_entries(text, name)
+    for e, n in ents:
+        try:
+            _check_entry(e)
+        except ValueError as x:
+            raise ValueError("%s:%d: %s" % (name, n, x))
+    return [e for e, _ in ents]
 
 
 def _check_entry(e):
@@ -440,14 +498,43 @@ def _entry_line(e):
     return _clean_free("- %s" % _oneline(e))
 
 
+FIX_FIELDS = ("cve", "package", "old", "new", "severity")
+
+
+def _fix_raw(f):
+    """the fix line of one fix record before cleaning (one line)"""
+    return _oneline("- %s in %s: %s → %s (severity %s; variants: %s)" % (
+        f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))
+
+
 def notes(version, fixes, vex_changes, behavior=()):
     """every line is one line (_oneline) cleaned on its own: a VEX line as _clean_md (its document values are bare
     identifier text or code spans; vex_changes checked that final form), every other line as free text (_clean_free:
-    a line holding the marker is written escaped, Codex #300 r5)"""
-    lines = [_clean_free("## %s — patch release" % _oneline(version)), "", "### Fixes"]
-    for f in fixes:
-        lines.append(_clean_free(_oneline("- %s in %s: %s → %s (severity %s; variants: %s)" % (
-            f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))))
+    a line holding the marker is written escaped, Codex #300 r5). The fix records and behavior entries are notes sources
+    (REQ-REL-009-AC14): a field, a fix line or an entry holding a refused form is refused (ValueError), and so are two fix
+    records or two entries whose published lines are the same line; the written text is checked to hold no refused form
+    outside its VEX section, no '-----BEGIN ', and to read back unchanged as a tag's notes."""
+    for i, f in enumerate(fixes, 1):
+        for k in FIX_FIELDS:
+            why = _refused_form(_oneline(f[k]))
+            if why:
+                raise ValueError("fix record %d, %s: %s" % (i, k, why))
+        for v in f.get("variants") or []:
+            why = _refused_form(_oneline(v))
+            if why:
+                raise ValueError("fix record %d, variant: %s" % (i, why))
+        why = _refused_form(_fix_raw(f))
+        if why:
+            raise ValueError("fix record %d, its fix line: %s" % (i, why))
+    for i, b in enumerate(behavior, 1):
+        _check_entry(b)
+        why = _refused_form("- " + _oneline(b))
+        if why:
+            raise ValueError("behavior entry %d: %s" % (i, why))
+    fl = [_clean_free(_fix_raw(f)) for f in fixes]
+    _no_collision([(ln, "fix record %d:" % i) for i, ln in enumerate(fl, 1)])
+    _no_collision([(_entry_line(b), "behavior entry %d:" % i) for i, b in enumerate(behavior, 1)])
+    lines = [_clean_free("## %s — patch release" % _oneline(version)), "", "### Fixes"] + fl
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
@@ -455,7 +542,7 @@ def notes(version, fixes, vex_changes, behavior=()):
     vl = [_clean_md(_vex_line(v)) for v in stmts]
     if len(set(vl)) != len(vl):  # every published statement line is its own (Codex #300 r3)
         raise ValueError("VEX notes: two statement lines read alike")
-    if any(_clean_free(ln) != ln for ln in vl):     # the tag of the notes reads back as the notes (r6, fail closed)
+    if any(_clean_md(ln) != ln for ln in vl):       # the tag of the notes reads back as the notes (r6; r8 by section)
         raise ValueError("VEX notes: a statement line the tag would not read back unchanged")
     lines += vl
     lines += [_clean_md("- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]),
@@ -463,15 +550,16 @@ def notes(version, fixes, vex_changes, behavior=()):
               for v in vex_changes if "document" in v]
     if not vex_changes:
         lines.append("- no change")
-    for b in behavior:
-        _check_entry(b)
     if behavior:
         lines += ["", "### Behavior changes"] + [_entry_line(b) for b in behavior]
     else:
         lines += ["", "No behavior change: this release contains fixes only."]
     text = "\n".join(lines) + "\n"
-    if not _shaped(text):                            # every line notes() writes is a bullet, a heading or blank (r6)
-        raise ValueError("notes: a line that is not a bullet, a heading or blank")
+    _refuse_text(text, "notes", skip_vex=True)       # fail closed: no refused form reaches the published text (AC14)
+    if SIG_DELIM in text:
+        raise ValueError("notes: the signature delimiter '-----BEGIN ' in a VEX line")
+    if _clean_lines(text) != text:
+        raise ValueError("notes: the tag of these notes would not read back unchanged")
     return text
 
 
@@ -769,17 +857,20 @@ def vex_changes(old_doc, new_doc):
     return out
 
 
+def _published_lines(text):
+    """the lines of a published text, each without its trailing whitespace: git's tag-message cleanup strips trailing
+    whitespace, so only that is ignored; leading and interior whitespace stay significant"""
+    return {ln.rstrip() for ln in str(text).splitlines()}
+
+
 def unpublished(entries, published_text):
     """Advisor 0135: an entry an earlier patch already published (any v* tag message, CHANGELOG.md) is not published
-    again — the clear-and-changelog PR may not have merged when the next patch is decided."""
-    return [e for e in entries if not any(f in published_text for f in _published_forms(e))]
-
-
-def _published_forms(e):
-    """every line a behavior entry was ever published as: this code's (_entry_line), origin/main's "<redacted>" and
-    round 4's "(redacted)" forms (r4; r6, B F1: changelog() removes an entry by them too)"""
-    legacy = "- %s" % _clean(_oneline(e))
-    return (_entry_line(e), legacy, _visible(legacy))
+    again — the clear-and-changelog PR may not have merged when the next patch is decided. Published means a whole line
+    of the published text is the line notes() prints for the entry, trailing whitespace ignored on both sides; a line
+    that only contains it is not (REQ-REL-009-AC14, advisor step 5; Codex #300 r7, A medium / B F2). No published text
+    ever held another form of an entry (no CHANGELOG.md on main, no v* tag message holds 'redacted')."""
+    pub = _published_lines(published_text)
+    return [e for e in entries if _entry_line(e).rstrip() not in pub]
 
 
 PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
@@ -790,7 +881,9 @@ RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"   # de
 
 def tag_notes(raw):
     """AC8: the notes a generated patch tag carries (`git cat-file tag` output), or None for any other tag (an owner's
-    release keeps the fixed release text). The heading must name the tag itself; the signature block is dropped."""
+    release keeps the fixed release text). The heading must name the tag itself; the signature block is dropped. A
+    generated tag's notes holding a refused form outside a VEX section are refused (ValueError naming the line of the
+    tag message; REQ-REL-009-AC14, advisor step 5: tag-notes exits 2 like notes and changelog)."""
     head, _, body = raw.partition("\n\n")
     tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
     tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
@@ -812,31 +905,36 @@ def tag_notes(raw):
     m = PATCH_HEAD.fullmatch(head_) if lf_ else None
     if not (m and m.group(1) == tag):
         return None
-    out = _clean_lines(body)
-    return out if _shaped(out) else None            # a marker beside a line not shaped as notes (r6, B F2): no notes
+    _refuse_text(body, "tag message", skip_vex=True)
+    return _clean_lines(body)
 
 
-def changelog(notes_text, changelog_text, next_notes_text):
+def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHANGELOG.md", "docs/next-release-notes.md")):
     """AC8 + advisor 0130: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
-    entries these notes published — an entry added since stays). The new notes are cleaned line by line; the existing
-    history is copied unchanged, never rewritten — and is refused (ValueError, nothing written) unless it is exactly
-    what this function writes, so cleaning it would change nothing: LF line ends only, no name, no unescaped marker
-    (Codex #300 r5, A R4-1 / B low; fail closed). After the title, the one blank line this function writes is dropped and
-    everything else is copied byte for byte, its own spacing kept (r6, A R5-5). The whole changelog holding the marker
-    must be shaped as notes (r6, B F2): new notes cannot open a construct that takes a marker of the history below."""
+    entries these notes published — an entry added since stays). The three inputs are notes sources (REQ-REL-009-AC14):
+    a line holding a refused form outside a VEX section, or two next-release-notes entries publishing the same line, is
+    refused (ValueError naming file:line; names: the three inputs' names) before anything is cleaned or removed. The new
+    notes are cleaned line by line; the existing history is copied unchanged, never rewritten — and is refused unless it
+    is exactly what this function writes, so cleaning it would change nothing: LF line ends only, no name, no unescaped
+    marker in free text (Codex #300 r5, A R4-1 / B low; fail closed). After the title, the one blank line this function
+    writes is dropped and everything else is copied byte for byte, its own spacing kept (r6, A R5-5). An entry leaves
+    next-release-notes only when a whole line of the cleaned notes is the line notes() prints for it, trailing whitespace
+    ignored (r8, R14-9)."""
+    notes_name, cl_name, nn_name = names
+    _refuse_text(notes_text, notes_name, skip_vex=True)
+    _refuse_text(changelog_text or "", cl_name, skip_vex=True)
+    _source_entries(next_notes_text, nn_name)
     notes_text = _clean_lines(notes_text)
     title = "# Changelog\n"
     rest = (changelog_text or title)
     if rest.startswith(title):
         rest = rest[len(title):]
         rest = rest[1:] if rest.startswith("\n") else rest
-    if _clean_lines(rest) != rest or not _shaped(rest):
-        raise ValueError("CHANGELOG.md history is not clean (a line end other than LF, a name, an unescaped marker, or a "
-                         "marker beside a line that is not a bullet, a heading or blank): refused, not rewritten")
+    if _clean_lines(rest) != rest:
+        raise ValueError("%s: the history is not clean (a line end other than LF, a name, or an unescaped marker in free "
+                         "text): refused, not rewritten" % cl_name)
     new_cl = title + "\n" + notes_text.rstrip("\n") + "\n" + ("\n" + rest if rest else "")
-    if not _shaped(new_cl):
-        raise ValueError("CHANGELOG.md with these notes holds the marker beside a line that is not a bullet, a heading or "
-                         "blank: refused")
+    published = _published_lines(notes_text)
     lines, keep, i = next_notes_text.splitlines(keepends=True), [], 0
     while i < len(lines):
         j = i + 1
@@ -844,7 +942,7 @@ def changelog(notes_text, changelog_text, next_notes_text):
             while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
                 j += 1
             entry = " ".join(ln.strip() for ln in lines[i:j])[2:]
-            if any(f in notes_text for f in _published_forms(entry)):
+            if _entry_line(entry).rstrip() in published:
                 i = j
                 continue
         keep += lines[i:j]
@@ -966,6 +1064,41 @@ def grype_findings(doc):
     return out
 
 
+def check_fix_sources(fixes, docs, gomod_path, gomod_text):
+    """REQ-REL-009-AC14: each printed fix record's source values — the scan match it comes from (the first variant, in
+    the order fixed_findings reads them) and, for a Go module, its go.mod line — and its composed fix line are refused
+    (ValueError) when they hold a refused form, named by the scan file and the JSON key path (JSON has no line) or by
+    go.mod:line. docs: {variant: (path, grype document)}. A finding HEAD does not fix is not printed and not judged."""
+    glines = gomod_text.splitlines()
+    for f in fixes:
+        loc = next(((path, i, m) for v in sorted(docs) for path, doc in [docs[v]] for i, m in enumerate(doc["matches"])
+                    if m["vulnerability"]["id"] == f["cve"] and m["artifact"]["name"] == f["package"]), None)
+        if loc is None:
+            raise ValueError("fix record %s: no scan match" % f["cve"])
+        path, i, m = loc
+        go = m["artifact"].get("type") in ("go-module", "golang")
+        vals = [("vulnerability.id", m["vulnerability"]["id"]), ("artifact.name", m["artifact"]["name"]),
+                ("artifact.version", m["artifact"].get("version")), ("vulnerability.severity", m["vulnerability"].get("severity"))]
+        if not go:                          # a distribution package prints its scan's fix versions
+            vals += [("vulnerability.fix.versions[%d]" % j, x)
+                     for j, x in enumerate((m["vulnerability"].get("fix") or {}).get("versions") or [])]
+        for key, v in vals:
+            why = _refused_form(_oneline(v)) if v is not None else None
+            if why:
+                raise ValueError("%s:matches[%d].%s: %s" % (path, i, key, why))
+        where = ""
+        if go:
+            pat = re.compile(r"^go\s" if f["package"] == "stdlib" else r"(^|\s)%s\s+%s(\s|$)" % (re.escape(f["package"]), re.escape(str(f["new"]))))
+            n = next((k for k, ln in enumerate(glines, 1) if pat.search(ln.strip())), None)
+            where = " %s:%s:" % (gomod_path, n if n else "?")
+            why = _refused_form(_oneline(f["new"]))
+            if why:
+                raise ValueError("%s:matches[%d]:%s %s" % (path, i, where, why))
+        why = _refused_form(_fix_raw(f))
+        if why:
+            raise ValueError("%s:matches[%d]:%s the composed fix line: %s" % (path, i, where, why))
+
+
 def gomod_versions(text):
     """{module: version} from go.mod, plus the toolchain as stdlib (go1.X.Y from the go directive)."""
     out = {m.group(1): m.group(2) for m in re.finditer(r"(?m)^\s*(?:require\s+)?([\w./-]+\.[\w./-]+)\s+(v\S+)", text)}
@@ -1015,17 +1148,24 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "notes":
         try:
-            rel = {}
+            rel, docs = {}, {}
             for v in a.variant_grype:
                 name, _, path = v.partition("=")
-                rel[name] = grype_findings(json.load(open(path)))
+                why = _refused_form(_oneline(name))
+                if why:
+                    raise ValueError("--variant-grype %s: the variant name: %s" % (path, why))
+                docs[name] = (path, json.load(open(path)))
+                rel[name] = grype_findings(docs[name][1])
             base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
             nn = open(a.next_notes).read() if os.path.exists(a.next_notes) else ""     # no file: no entries
-            behavior = unpublished(behavior_entries(nn), open(a.published).read())
+            # every source is refused before any entry is dropped as already published (REQ-REL-009-AC14 (5))
+            behavior = unpublished(behavior_entries(nn, a.next_notes), open(a.published).read())
             old = json.load(open(a.vex_old)) if a.vex_old else None
             if a.vex_old and old is None:       # a supplied file holding null is not "no old document" (Codex #300 r2, B)
                 raise ValueError("VEX old document %s: null" % a.vex_old)
-            fixes = fixed_findings(rel, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})
+            gomod_text = open(a.gomod).read()
+            fixes = fixed_findings(rel, {"go": gomod_versions(gomod_text), "base_findings": base})
+            check_fix_sources(fixes, docs, a.gomod, gomod_text)
             text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior)
         except (ValueError, OSError, KeyError, TypeError) as e:
             print("notes: %s — no notes, no patch" % _clean(str(e)), file=sys.stderr)
@@ -1034,7 +1174,11 @@ def main(argv=None):
             fh.write(text)
         return 0
     if a.cmd == "tag-notes":
-        t = tag_notes(sys.stdin.read())
+        try:
+            t = tag_notes(sys.stdin.read())
+        except ValueError as e:             # a generated patch tag's notes holding a refused form (REQ-REL-009-AC14)
+            print("tag-notes: %s — no notes" % _clean(str(e)), file=sys.stderr)
+            return 2
         if t is None:
             return 1
         sys.stdout.write(t)
@@ -1044,7 +1188,8 @@ def main(argv=None):
         old_cl = open(cl_path, newline="").read() if os.path.exists(cl_path) else None    # line ends as stored (r5)
         has_nn = os.path.exists(a.next_notes)
         try:
-            new_cl, new_nn = changelog(open(a.notes).read(), old_cl, open(a.next_notes).read() if has_nn else "")
+            new_cl, new_nn = changelog(open(a.notes).read(), old_cl, open(a.next_notes).read() if has_nn else "",
+                                       names=(a.notes, cl_path, a.next_notes))
         except ValueError as e:
             print("changelog: %s — nothing written" % _clean(str(e)), file=sys.stderr)
             return 2
