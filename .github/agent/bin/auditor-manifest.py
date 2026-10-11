@@ -18,7 +18,7 @@ runner's daemon, so `osv-scanner scan image <ref>` pulled from a registry and fo
 and grype catalogued nothing off the daemon-loaded distroless image. We convert the OCI
 archive once to a docker-save tar with skopeo (no daemon) and point all three scanners at it.
 """
-import json, os, re, subprocess, sys, glob
+import hashlib, json, os, re, subprocess, sys, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import cli
 
@@ -325,6 +325,16 @@ def _archives(rescan_dir, test_image, oci, tar):
              if os.path.isdir(p) and not os.path.islink(p) and os.path.isfile(os.path.join(p, "oci-layout"))]
     if not named:
         return None, "no production OCI layout directory (images/production) in the rescan artifacts"
+    # every blob of the layout is re-hashed against its file name before skopeo reads it (fail closed): the candidate's identity is the digest Build recorded
+    blobs = os.path.join(named[0], "blobs", "sha256")
+    try:
+        for n in os.listdir(blobs):
+            p = os.path.join(blobs, n)
+            with open(p, "rb") as fh:
+                if os.path.islink(p) or hashlib.sha256(fh.read()).hexdigest() != n:
+                    return None, "blob %s of the production layout does not hash to its name" % n[:12]
+    except OSError as e:
+        return None, "the production layout's blobs cannot be read (%s)" % type(e).__name__
     # production is a multi-arch index; select amd64 into a single-arch OCI archive that
     # grype can catalogue, and a docker-save tar for trivy/osv.
     src = "oci:%s" % named[0]

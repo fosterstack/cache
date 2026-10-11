@@ -116,7 +116,7 @@ class Harness(unittest.TestCase):
         self.source = os.path.join(self.tmp, "src"); os.makedirs(self.source)
         _wr(os.path.join(self.source, "go.mod"), "// c\nmodule github.com/fosterstack/cache\n\ngo 1.22\n")
         self.rescan = os.path.join(self.tmp, "rescan", "a", "b"); os.makedirs(self.rescan)
-        self.prod_oci = os.path.join(self.rescan, "production"); os.makedirs(self.prod_oci); _wr(os.path.join(self.prod_oci, "oci-layout"), "{}")   # the OCI layout directory of the images artifact
+        self.prod_oci = os.path.join(self.rescan, "production"); os.makedirs(os.path.join(self.prod_oci, "blobs", "sha256")); _wr(os.path.join(self.prod_oci, "oci-layout"), "{}")   # the OCI layout directory of the images artifact
         self.kdl = os.path.join(self.tmp, "kdl.json"); _wr(self.kdl, "{}")
         self.out = os.path.join(self.tmp, "out", "manifest.json")
         self.oci = os.path.join(self.reports, "candidate.oci"); self.tar = os.path.join(self.reports, "candidate.tar")

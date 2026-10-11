@@ -18,7 +18,7 @@ This step, run by auditor.yml right after the rescan, judges them:
 Public text names the seats ("vendor A", "vendor B", "primary", "second"); vendor and model names live only in the
 environment's secrets (rule 8(b), rule 14, REQ-AUD-6 AC1).
 """
-import argparse, copy, datetime, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
+import argparse, copy, datetime, hashlib, io, json, os, re, subprocess, sys, tarfile, tempfile, time, urllib.parse, urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from auditorlib import policy, signed_commit  # noqa: E402
@@ -617,10 +617,20 @@ class _Layout:
             raise KeyError(name)
         return p
 
+    def _bytes(self, name):
+        """The blob's bytes, re-hashed against the sha256 in its file name (fail closed on a mismatch: the digest is the evidence's identity)."""
+        p = self._path(name)
+        with open(p, "rb") as fh:
+            data = fh.read()
+        if name.startswith("blobs/sha256/") and hashlib.sha256(data).hexdigest() != name.rsplit("/", 1)[1]:
+            raise ValueError("blob %s does not hash to its name" % name.rsplit("/", 1)[1][:12])
+        return data
+
     def extractfile(self, name):
-        return open(self._path(name), "rb")
+        return io.BytesIO(self._bytes(name))
 
     def getmember(self, name):
+        self._bytes(name)
         return self._path(name)
 
     def __enter__(self):

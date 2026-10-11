@@ -325,7 +325,7 @@ def args(**kw):
 
 HEAD = "a" * 40
 MAIN = "b" * 40
-DIGEST = "sha256:" + "c" * 64
+DIGEST = "sha256:" + hashlib.sha256(json.dumps({"layers": []}).encode()).hexdigest()      # the manifest blob rescan_oci() writes: a blob is named by its hash
 
 
 def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readable=True):
@@ -335,8 +335,9 @@ def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readab
     real manifest — the getmember-only check of r1's fix passed this, r2 correctly still refuses it)."""
     path = os.path.join(d, variant)
     if not readable:
-        raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
-        write_layout(path, [("index.json", raw, 0o644)] + ([("blobs/" + digest.replace(":", "/"), b"{", 0o644)] if blob else []))   # a blob that is not parseable JSON
+        bad = "sha256:" + hashlib.sha256(b"{").hexdigest()        # a blob named by its own hash, whose bytes are not parseable JSON
+        raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": bad}]}).encode()
+        write_layout(path, [("index.json", raw, 0o644)] + ([("blobs/" + bad.replace(":", "/"), b"{", 0o644)] if blob else []))
         return
     man = json.dumps({"layers": []}).encode()
     man_digest = "sha256:" + hashlib.sha256(man).hexdigest()
