@@ -338,7 +338,9 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	// keepMarker is set while the startup reconcile runs and released only
 	// when it succeeds: after an error or a panic the stores may be half
 	// repaired, so the marker stays and the next start reconciles again
-	// (REQ-STORE-005-AC4).
+	// (REQ-STORE-005-AC4). It is set again on a serving or shutdown error:
+	// the HTTP server is then closed without waiting for active handlers,
+	// so an upload may leave a blob with no index record (REQ-STORE-005-AC5).
 	keepMarker := false
 	defer func() {
 		if err := cacheClose(c); err != nil {
@@ -346,7 +348,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 			return
 		}
 		if keepMarker {
-			log.Warn("fscache: reconciliation did not finish; unclean marker kept, next start reconciles again")
+			log.Warn("fscache: unclean marker kept, next start reconciles")
 			return
 		}
 		if err := clearMarkerFn(marker); err != nil {
@@ -436,12 +438,14 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 
 	select {
 	case err := <-errCh:
+		keepMarker = true
 		return fmt.Errorf("serve: %w", err)
 	case <-ctx.Done():
 		log.Info("fscache: shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpShutdown(httpServer, shutdownCtx); err != nil {
+			keepMarker = true
 			return fmt.Errorf("shutdown: %w", err)
 		}
 		return nil
