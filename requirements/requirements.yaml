@@ -120,6 +120,21 @@ requirements:
       '..' are stored under a fixed shard; before this they failed with
       500 or shared a path. No other key's on-disk path changes, so an
       existing store needs no migration.
+      AC4 (origin: advisor ruling Oct 10): temporary files no longer share a
+      name space with keys. A write goes through a temporary file in the
+      directory `+tmp` at the top of the store; '+' is outside the segment
+      alphabet, so no key's path can contain that name. Reconciliation
+      removes files only there, plus leftover `.tmp-` files directly at the
+      top of the store, where no key's path can lie (every key's path has at
+      least two parts). A file is a blob when it is the very file its key's
+      path opens (on a case-insensitive filesystem a shard directory keeps
+      the case of the key that created it). Trade-off for stores written by
+      earlier versions: files they left in shard directories are never
+      removed by reconciliation. One that its key's path does not open is
+      not indexed and keeps using disk until removed by hand; one that it
+      does open (possible only in the shard `.t`) cannot be told apart from
+      a stored key and is kept as that key: indexed, counted in the totals,
+      and evictable like any entry.
     acceptance_criteria:
       - id: REQ-PROTO-003-AC1
         given: a running server, exercised through its real HTTP routing stack by a client that does NOT follow redirects
@@ -137,6 +152,12 @@ requirements:
         given: a key whose leaf segment starts with two dots
         when: it is stored and read
         then: it is kept under the fixed shard `__` of its directory, two different keys that differ only in their directory part stay different, and the result stays inside the store root; every key whose leaf does not start with two dots keeps exactly its previous path
+        verification: { method: component, release_blocking: true }
+        status: approved
+      - id: REQ-PROTO-003-AC4
+        given: a key whose leaf starts with `.tmp-` stored before an unclean shutdown, at the top level or in a nested directory, including a leaf shaped exactly like a generated temporary name, and stray files in the store's temporary directory
+        when: the store is reconciled at startup
+        then: the blob is still there and still readable, only files in the dedicated temporary directory (and leftover `.tmp-` files directly at the top of the store, where no key's path can lie) are removed, and every key keeps its path
         verification: { method: component, release_blocking: true }
         status: approved
 
