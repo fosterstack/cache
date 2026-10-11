@@ -186,6 +186,16 @@ FORBID_ENV = re.compile(r"(BASH_ENV|ENV|PATH|LD_[A-Z0-9_]*|PYTHON[A-Z0-9_]*|NODE
 SIGNS = (False, "provenance", "other")
 # PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
+# PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
+# plain literal; never a secret, a glued expression or a substitution
+AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./-]+")
+
+class EnvNames(set):
+    """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
+    environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
+    whole is allowed only through this map."""
+    def __init__(self, *a):
+        super().__init__(*a); self.ambient = {}
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node", "ruby", "perl", "source", "eval", "exec",
                 "make", "gmake", "xargs", "run-parts", "npm", "yarn", "pnpm", "just", "task", "parallel", "env", "sudo", "nohup",
                 "timeout", "nice", "command", "builtin", "watch", "at", "find"}
@@ -306,7 +316,7 @@ def load_scripts(base):
     if not isinstance(data, list):
         return {}, ["chain-scripts.json has no `scripts` list"], set()
     names = doc.get("env_names", [])
-    env_names = set()
+    env_names = EnvNames()
     if not isinstance(names, list): errs.append("chain-scripts.json: env_names must be a list")
     else:
         for n in names:
@@ -333,10 +343,18 @@ def load_scripts(base):
         em = r.get("env_mentions", [])
         if not isinstance(em, list) or not all(isinstance(e, dict) and set(e) == {"name", "text", "why"} and all(isinstance(e[k], str) for k in e) for e in em):
             errs.append("chain-scripts.json: %s `env_mentions` must be a list of {name, text, why} strings" % p)
+        txt = open(full, errors="replace").read()
+        if "reads_env" in r:
+            re_ = r["reads_env"]
+            if not isinstance(re_, list) or not all(isinstance(n, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", n) and not FORBID_ENV.fullmatch(n) for n in re_):
+                errs.append("chain-scripts.json: %s `reads_env` must be a list of allowed variable names (never BASH_ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*, ...)" % p)
+            else:
+                for n in re_:
+                    if not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(n), txt):
+                        errs.append("chain-scripts.json: %s reads_env names %s, which the script never mentions (stale)" % (p, n))
         if "exceptions" in r:
             good, ee = exception_entries(p, r["exceptions"])
             errs += ee
-            txt = open(full, errors="replace").read()
             for e in good:
                 if e["text"] not in txt:
                     errs.append("chain-scripts.json: %s exceptions entry %r (%s) matches nothing in the file (stale)" % (p, e["text"], e["rule"]))
@@ -344,6 +362,25 @@ def load_scripts(base):
     for p, r in rows.items():
         for q in r.get("runs", []) if isinstance(r.get("runs", []), list) else []:
             if q not in rows: errs.append("chain-scripts.json: %s runs %r, which is not listed" % (p, q))
+    amb = doc.get("ambient_env", [])
+    if not isinstance(amb, list): errs.append("chain-scripts.json: ambient_env must be a list of {name, script, why}")
+    else:
+        seen = set()
+        for e in amb:
+            if not isinstance(e, dict) or set(e) != {"name", "script", "why"} or not all(isinstance(v, str) for v in e.values()):
+                errs.append("chain-scripts.json: ambient_env entry %r must be an object with exactly name, script and why (strings)" % (e,)); continue
+            nm, sc, why = e["name"], e["script"], e["why"]
+            if not re.fullmatch(r"[A-Z][A-Z0-9_]*", nm) or FORBID_ENV.fullmatch(nm):
+                errs.append("chain-scripts.json: ambient_env name %r is not an allowed variable name (never BASH_ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*, ...)" % nm); continue
+            if sc not in rows:
+                errs.append("chain-scripts.json: ambient_env %s names script %r, which is not a listed script" % (nm, sc)); continue
+            if not isinstance(rows[sc].get("reads_env"), list) or nm not in rows[sc]["reads_env"]:
+                errs.append("chain-scripts.json: ambient_env %s names %s, whose row does not list %s in reads_env" % (nm, sc, nm)); continue
+            if not why.strip():
+                errs.append("chain-scripts.json: ambient_env %s for %s has no reason (why)" % (nm, sc)); continue
+            if (nm, sc) in seen:
+                errs.append("chain-scripts.json: ambient_env %s for %s is listed twice" % (nm, sc)); continue
+            seen.add((nm, sc)); env_names.ambient.setdefault(nm, set()).add(sc)
     return rows, errs, env_names
 
 def _words(line):
@@ -397,7 +434,7 @@ def _arg_error(parts, envnames):
 
 PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > digests\.json")
 
-def check_run(run, envnames, rows, reads=None):
+def check_run(run, envnames, rows, reads=None, argpaths=None):
     """Grammar errors (list of 'line N: ...') for one stage-file `run:` text; also returns the listed paths it runs. `reads` (a set, when
     given) receives every env name the PARSED command words read whole (comments stripped; Codex #249 r8 B2), the only reads that count."""
     errs, ran = [], []
@@ -443,6 +480,7 @@ def check_run(run, envnames, rows, reads=None):
             errs.append("line %d: %s: %s is not listed in .github/policy/chain-scripts.json" % (n, line[:90], path)); continue
         for rawa, parts in words[2:]:
             e = _arg_error(parts, envnames)
+            if argpaths is not None and len(parts) == 1 and parts[0][0] == "lit" and parts[0][1] in rows: argpaths.add(parts[0][1])
             if e: errs.append("line %d: %s: %s" % (n, line[:90], e))
             elif len(parts) == 1 and parts[0][0] == "dq":
                 wm = re.fullmatch(r"\$(\w+)|\$\{(\w+)\}", parts[0][1])
@@ -505,11 +543,23 @@ def _runner_errors(pre, j):
             errs.append("%s: runs-on reads matrix.%s, whose value %r is not a GitHub-hosted ubuntu runner" % (pre, key, leaf))
     return errs
 
+def _reach(paths, rows):
+    """The listed scripts a step can run: the ones it names (as the command or as an argument) and, transitively, their `runs`."""
+    seen, todo = set(), list(paths)
+    while todo:
+        p = todo.pop()
+        if p in seen or p not in rows: continue
+        seen.add(p)
+        r = rows[p].get("runs")
+        if isinstance(r, list): todo += [q for q in r if isinstance(q, str)]
+    return seen
+
 def stage_grammar(rel, d, rows, env_names=frozenset()):
     """(errors, listed paths run) for a parsed stage workflow file (YAML via the caller). The grammar is FINITE over keys:
     workflow, job and step keys come from closed sets; step `uses` from a closed list; env names from a closed set; the run
     lines from the grammar of check_run."""
     errs, ran = [], []
+    amb = getattr(env_names, "ambient", {})        # PR 1b (B): name -> listed scripts that read it from their own environment
     extra = set(d) - STAGE_WF_KEYS
     if extra: errs.append("%s: workflow keys %s are not allowed in a stage file (env, defaults, concurrency, run-name can reroute every step)" % (rel, sorted(extra)))
     for jn, j in ((d.get("jobs") or {}).items()):
@@ -526,7 +576,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
             if (run is None) == (uses is None): errs.append("%s: must have exactly one of run/uses" % sp); continue
             for k in env:
                 if FORBID_ENV.fullmatch(k): errs.append("%s: env %s is never allowed (it can make a shell or interpreter load other code)" % (sp, k))
-                elif k not in env_names: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json" % (sp, k))
+                elif k not in env_names and k not in amb: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json" % (sp, k))
             if uses is not None:
                 if env: errs.append("%s: an action step passes env" % sp)
                 m = USES_OK.fullmatch(str(uses).split(" #")[0].strip())
@@ -547,9 +597,18 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
                 continue
             if w: errs.append("%s: a run step has `with`" % sp)
             got = set()
-            e, r = check_run(str(run), set(env.keys()), rows, got)
-            for k in env:                       # Codex #249 r8 B2: read only by a whole word of the PARSED command (a comment never counts)
-                if k not in got: errs.append("%s: env %s is not read whole (\"$%s\") by the step's run line" % (sp, k, k))
+            argp = set()
+            e, r = check_run(str(run), set(env.keys()), rows, got, argp)
+            reach = _reach(set(r) | argp, rows)
+            for k, v in env.items():            # Codex #249 r8 B2: read only by a whole word of the PARSED command (a comment never counts)
+                if k in got: continue
+                if k in amb and not FORBID_ENV.fullmatch(k):    # PR 1b (B): an ambient name is read by a listed script from its own environment
+                    if not (amb[k] & reach):
+                        errs.append("%s: env %s is listed ambient only for %s, which this step does not run (as its script, an argument or through `runs`)" % (sp, k, ", ".join(sorted(amb[k]))))
+                    elif not isinstance(v, str) or not AMBIENT_VALUE.fullmatch(v.strip()):
+                        errs.append("%s: ambient env %s has the value %r, which is not one plain expression (github.token, inputs.X, matrix.X) or a plain literal" % (sp, k, v))
+                else:
+                    errs.append("%s: env %s is not read whole (\"$%s\") by the step's run line" % (sp, k, k))
             errs += ["%s: %s" % (sp, x) for x in e]; ran += r
     return errs, ran
 
