@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-PLAT-001-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
+# proves: REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, REQ-FIPS-001-AC2, REQ-FIPS-002-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
 # RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
 # bin/witnessed.sh do not exist): step 4.
 #
@@ -272,6 +272,137 @@ resetf; rm -f "$work/fakedir/removed"; st fips '{"fips140":false,"fips140_note":
 if [ "$rc" = 1 ] && [ -f "$work/fakedir/removed" ]; then ok "AC6 the containers are removed even when the check fails"; else bad "AC6 cleanup after a failure (rc=$rc, removed file present: $([ -f "$work/fakedir/removed" ] && echo yes || echo no))"; fi
 resetf; st fips '{"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
 want_fail "AC6 a status without the fips140 field fails" fips "${FIPS[@]}"
+# ---- the artifact checks ported from stage-acceptance-artifacts.yml (advisor ruling 0384): bin/check-artifacts.sh ----------------------
+# artifact checks (each Linux amd64 binary executes: it starts, answers /healthz and round-trips a key), REQ-FIPS-001-AC1 (the module selection is
+# read from the binary's build info), REQ-FIPS-001-AC2 and REQ-FIPS-002-AC1 (three runtime postures; the forced-standard build never claims the module),
+# REQ-PLAT-003-AC1 (production and -fips run no shell at any probed path), REQ-PLAT-002-AC1 (production and -fips: both platform entries are in the image
+# archive and the image serves cache traffic on this runner's architecture). The -debug clause has no subject (owner Oct 9). The arm64 binaries and images
+# need an arm64 runner, which the one-job Check does not have (reported in round 2); only the amd64 halves run here.
+# The "binaries" are small real HTTP servers (python3) so the script's curl calls are real; GOFIPS140 is read from a fake `go version -m`.
+fa="$work/fa"; mkdir -p "$fa/bin" "$fa/images" "$fa/out" "$fa/real"
+cat > "$fa/server.py" <<'PYS'
+import http.server, json, os, sys
+store = {}
+name = os.path.basename(sys.argv[0])
+kind = os.environ.get("FAKE_KIND", "")
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, body=b""):
+        self.send_response(code); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        if self.path == "/healthz": return self._send(200, b"ok")
+        if self.path == "/statusz":
+            forced = "fips140=on" in os.environ.get("GODEBUG", "")
+            if name.endswith("fips") or kind == "fips":
+                note = os.environ.get("FAKE_FIPS_NOTE", "active (Go validated module v1.0.0, CMVP cert #5247)"); on = True
+            elif forced:
+                note = os.environ.get("FAKE_FORCED_NOTE", "active (fips140 mode forced at runtime; not the validated-module build)"); on = True
+            else:
+                note = os.environ.get("FAKE_STD_NOTE", "off"); on = False
+            return self._send(200, json.dumps({"fips140": on, "fips140_note": note}).encode())
+        self._send(200 if self.path in store else 404, store.get(self.path, b""))
+    def do_PUT(self):
+        store[self.path] = self.rfile.read(int(self.headers.get("Content-Length", 0))); self._send(200)
+addr = os.environ.get("FSCACHE_ADDR", ":8080")
+http.server.HTTPServer(("127.0.0.1", int(addr.rsplit(":", 1)[1])), H).serve_forever()
+PYS
+for b in fscache fscache-fips; do { echo '#!/usr/bin/env python3'; cat "$fa/server.py"; } > "$fa/real/$b"; chmod +x "$fa/real/$b"; done
+mkarch() { # mkarch DIR: the four Linux archives, each holding its binary
+  rm -rf "$1"; mkdir -p "$1"
+  for n in fscache fscache-fips; do for a in amd64 arm64; do tar -czf "$1/${n}_0.3.0_linux_${a}.tar.gz" -C "$fa/real" "$n"; done; done
+}
+mkarch "$fa/dist"
+# OCI image archives: index.json with the platform entries, as Build's tarballs are (PROPOSED layout, read fail-closed)
+python3 - "$fa/images" <<'PYO'
+import io, json, sys, tarfile
+def mk(path, platforms):
+    idx = {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + "%064x" % (i + 1), "size": 1,
+                                              "platform": {"os": p.split("/")[0], "architecture": p.split("/")[1]}} for i, p in enumerate(platforms)]}
+    with tarfile.open(path, "w") as t:
+        for n, b in (("index.json", json.dumps(idx).encode()), ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}')):
+            ti = tarfile.TarInfo(n); ti.size = len(b); t.addfile(ti, io.BytesIO(b))
+for v in ("production", "fips"):
+    mk(sys.argv[1] + "/" + v + ".tar", ["linux/amd64", "linux/arm64"])
+mk(sys.argv[1] + "/fips-amd64only.tar", ["linux/amd64"])
+PYO
+cp "$fx/digests.json" "$fa/digests.json"
+fake2="$work/fake2"; mkdir -p "$fake2"
+cat > "$fake2/go" <<'GOEOF'
+#!/usr/bin/env bash
+# fake `go version -m BINARY`: the build info a binary carries
+echo "go $*" >> "$FAKE_LOG"
+[ "$1 $2" = "version -m" ] || exit 2
+echo "$3: go1.26.0"; echo "	build	CGO_ENABLED=0"
+case "$(basename "$3")" in
+  fscache-fips) [ -n "${FAKE_GOFIPS_FIPS-v1.0.0}" ] && echo "	build	GOFIPS140=${FAKE_GOFIPS_FIPS-v1.0.0}";;
+  fscache) [ -z "${FAKE_GOFIPS_STD:-}" ] || echo "	build	GOFIPS140=${FAKE_GOFIPS_STD}";;
+esac
+exit 0
+GOEOF
+cat > "$fake2/docker" <<'DKEOF'
+#!/usr/bin/env bash
+# fake docker for the artifact checks: load names fscache:VARIANT; `run -d` starts a real fake server; a shell probe fails unless FAKE_SHELL names VARIANT:PATH
+echo "docker $*" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
+case "$1" in
+  load) echo "Loaded image: fscache:$(basename "${3:-x}" .tar)";;
+  run)
+    ep=""; img=""; detach=0; nm=""
+    for ((i=2; i<=$#; i++)); do a=${!i}; j=$((i+1)); case "$a" in --entrypoint) ep=${!j};; --name) nm=${!j};; -d) detach=1;; fscache:*) img=$a;; esac; done
+    if [ -n "$ep" ]; then
+      case " ${FAKE_SHELL:-} " in *" ${img#fscache:}:$ep "*) exit 0;; esac
+      exit 1
+    fi
+    [ "$detach" = 1 ] || exit 0
+    port=$((41000 + $(ls "$FAKE_DIR" | grep -c '^srv-')))
+    FSCACHE_ADDR=":$port" FAKE_KIND=${img#fscache:} python3 "$FAKE_DIR/server.py" > /dev/null 2>&1 &
+    echo $! > "$FAKE_DIR/srv-$port"; echo "$port" > "$FAKE_DIR/port-$nm"; echo cid;;
+  port) echo "127.0.0.1:$(cat "$FAKE_DIR/port-$2" 2> /dev/null || echo 1)";;
+  rm|stop)
+    for f in "$FAKE_DIR"/srv-*; do [ -f "$f" ] && kill "$(cat "$f")" 2> /dev/null; rm -f "$f"; done; true;;
+  logs|inspect|tag) ;;
+esac
+exit 0
+DKEOF
+chmod +x "$fake2/go" "$fake2/docker"
+ART=(check-artifacts.sh --digests digests.json --images images --archives dist --out out)
+arun() { # arun [VAR=val ...] -- SCRIPT ARGS : the artifact check in its own tree with the artifact fakes first on PATH
+  local envs=(FAKE_NONE=1); while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
+  rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"; cp "$fa/server.py" "$work/fakedir/server.py"; : > "$work/log"; rc=0
+  cp "$root"/bin/check-artifacts.sh "$root"/bin/check-image-platforms.py "$fa/bin/" 2> /dev/null || true
+  out=$( (cd "$fa" && env "${envs[@]}" PATH="$fake2:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$work/fakedir" bash "bin/$1" "${@:2}") 2>&1) || rc=$?
+}
+aok() { local l=$1; shift; arun "$@"; if [ "$rc" = 0 ]; then ok "$l"; else bad "$l -> rc=$rc: ${out:0:200}"; fi; }
+afail() { local l=$1 w=$2; shift 2; arun "$@"; if [ "$rc" = 1 ] && grep -Fqi -- "$w" <<< "$out"; then ok "$l (caught: ${out:0:70})"; else bad "$l -> rc=$rc, wanted exit 1 naming '$w': ${out:0:200}"; fi; }
+aok "ART the amd64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}"
+if [ -f "$fa/out/artifacts-result.json" ] && jq -e '.production.digest and .fips.digest and ([.checks[].ac] | index("REQ-FIPS-002-AC1")) != null and all(.checks[]; .result == "pass")' "$fa/out/artifacts-result.json" > /dev/null 2>&1; then ok "ART the result names both candidate digests and every AC it asserted"; else bad "ART artifacts-result.json missing or incomplete"; fi
+if ! grep -q 5247 "$fa/out/artifacts-result.json" 2> /dev/null; then ok "ART the result does not repeat the certificate number (documented mapping only)"; else bad "ART the certificate number is in the result"; fi
+if [ "$(grep -c '^docker run -d' "$work/log" 2> /dev/null || echo 0)" = 0 ]; then :; fi
+arun -- "${ART[@]}"; if grep -Fq 'FSCACHE_USERNAME' "$work/log" && ls "$work"/fakedir/srv-* > /dev/null 2>&1; then bad "ART containers were left running"; else ok "ART the containers are removed at the end and the -fips image is started with credentials"; fi
+mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz"
+afail "PLAT-001-AC1 a missing amd64 archive fails naming it" fscache-fips -- "${ART[@]}"
+mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fips.bad"; mkdir -p "$fa/bad"; cp "$fa/real/fscache-fips.bad" "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
+tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips
+afail "PLAT-001-AC1 a binary that exits at once does not execute: fails naming healthz" healthz -- "${ART[@]}"
+mkarch "$fa/dist"
+afail "FIPS-001-AC1 the fips binary embeds no module selection fails" GOFIPS140 -- FAKE_GOFIPS_FIPS= "${ART[@]}"
+afail "FIPS-001-AC1 another module version than v1.0.0 fails" v1.0.0 -- FAKE_GOFIPS_FIPS=v1.26.0 "${ART[@]}"
+afail "FIPS-001-AC1 the standard binary embedding a selection (crossed variants) fails" crossed -- FAKE_GOFIPS_STD=v1.0.0 "${ART[@]}"
+afail "FIPS-002-AC1 the fips binary reporting off fails" "fips build" -- FAKE_FIPS_NOTE=off "${ART[@]}"
+afail "FIPS-002-AC1 the standard default reporting active fails" "standard" -- FAKE_STD_NOTE='active (x)' "${ART[@]}"
+afail "FIPS-001-AC2 the forced-standard build claiming the validated module fails" "forced" -- FAKE_FORCED_NOTE='active (Go validated module v1.0.0, CMVP cert #5247)' "${ART[@]}"
+afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" -- FAKE_FORCED_NOTE=off "${ART[@]}"
+afail "PLAT-003-AC1 a shell at /bin/sh in the production image fails naming production" production -- FAKE_SHELL="production:/bin/sh" "${ART[@]}"
+afail "PLAT-003-AC1 a shell at /busybox/sh in the -fips image fails naming fips" fips -- FAKE_SHELL="fips:/busybox/sh" "${ART[@]}"
+afail "PLAT-003-AC1 a shell at another path (/usr/bin/bash) fails" shell -- FAKE_SHELL="production:/usr/bin/bash" "${ART[@]}"
+cp "$fa/images/fips.tar" "$work/fips.tar.keep"; cp "$fa/images/fips-amd64only.tar" "$fa/images/fips.tar"
+afail "PLAT-002-AC1 an image archive without the linux/arm64 platform entry fails naming it" linux/arm64 -- "${ART[@]}"
+cp "$work/fips.tar.keep" "$fa/images/fips.tar"
+cp "$fa/digests.json" "$work/dig.keep"; printf '{"image-production":"%s"}\n' "$D1" > "$fa/digests.json"
+afail "ART a digest list without the -fips image digest fails" image-fips -- "${ART[@]}"
+cp "$work/dig.keep" "$fa/digests.json"
+mv "$fa/images/production.tar" "$fa/images/production.tar.off"
+afail "ART a missing production image fails naming it" production -- "${ART[@]}"
+mv "$fa/images/production.tar.off" "$fa/images/production.tar"
 # ---- REQ-CHAIN-006-AC7: check-guide.sh (a FIXTURE guide in cache-3f's format; the real docs/verify-release.md does not exist yet) ------
 # REVISIT (cache-3f's run on the real draft, Oct 10): a verify command whose subject is an image reference (<IMAGE_REF>,
 # <IMAGE_REF_FIPS>, a literal registry reference with `:` or `@`, or oci://...) needs a registry: it is NEVER run, it must be listed
@@ -454,7 +585,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=105
+EXPECT=124
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
