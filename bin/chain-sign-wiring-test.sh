@@ -454,6 +454,8 @@ def judge_tree(base):
     frozen legacy files (legacy-stage-files.json), pinned build configuration (build-config-files.json), the jobs that may hold
     id-token: write (id-token-jobs.json), the signer table with chain-signers.json, and the stage grammar over chain-scripts.json."""
     bad = []
+    bad_utf8 = _cts.non_utf8_yaml(base)         # final batch R-f: a file that is not UTF-8 is named and the judge stops (never a traceback)
+    if bad_utf8: return ["AC1: %s is not valid UTF-8 (it cannot be read, so it cannot be judged)" % x for x in bad_utf8]
     wfdir = os.path.join(base, ".github/workflows")
     files = sorted(glob.glob(wfdir + "/*.yml") + glob.glob(wfdir + "/*.yaml"))
     frozen = frozen_files(base, bad)          # their OWN findings are left out; the listed scripts they run are still followed

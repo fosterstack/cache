@@ -63,6 +63,9 @@ else:
 import importlib.util
 _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
 _cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
+_bad_utf8 = _cts.non_utf8_yaml(base)        # final batch R-f: named, never a traceback
+if _bad_utf8:
+    print("; ".join("%s is not valid UTF-8 (it cannot be read, so it cannot be judged)" % x for x in _bad_utf8)); sys.exit(1)
 _disc = []
 files = _cts.signing_files(base, _disc)   # the ONE discovery routine, shared with chain-sign-wiring-test.sh (Codex #249 r7 B8, r8 B4)
 bad += _disc

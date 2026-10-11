@@ -210,6 +210,20 @@ def action_files(base):
         out += [os.path.join(dp, x) for x in fs if x.lower() in ("action.yml", "action.yaml")]
     return sorted(out)
 
+def non_utf8_yaml(base):
+    """Every .yml/.yaml file anywhere (outside .git) whose bytes are not valid UTF-8, as relative paths (final batch R-f): the judges
+    report each by name and stop, instead of reading it with a traceback (GitHub refuses such a workflow too)."""
+    out = []
+    for dp, dirs, fs in os.walk(base):
+        dirs[:] = [x for x in dirs if x != ".git"]
+        for x in fs:
+            if not x.lower().endswith((".yml", ".yaml")): continue
+            f = os.path.join(dp, x)
+            try: open(f, "rb").read().decode("utf-8")
+            except UnicodeDecodeError: out.append(os.path.relpath(f, base))
+            except OSError: out.append(os.path.relpath(f, base))
+    return sorted(out)
+
 def signing_files(base, errs=None):
     """The ONE discovery routine of the chain judges (Codex #249 r7 B8, r8 B4; the wiring and records judges both use it, so they cannot
     drift): every .yml/.yaml under .github/workflows/ (any depth), every composite action file anywhere (any case), and every other
