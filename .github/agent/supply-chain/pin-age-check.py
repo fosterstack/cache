@@ -633,7 +633,7 @@ def _run(a, moved, fx, now):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
             added.append(k)
-    # HELD rows (Sonnet, pull request 297 round 2): a pinned (check-call) row whose line occurs in the head is re-checked on EVERY run, whether or not
+    # HELD rows (pull request 297, review round 2): a pinned (check-call) row whose line occurs in the head is re-checked on EVERY run, whether or not
     # this pull request adds that line and whether or not any pin moved: an edit of the pinned test file or library voids it even when no line is added.
     # A row whose line no longer occurs in the head is ignored (the line is gone).
     head = {}
