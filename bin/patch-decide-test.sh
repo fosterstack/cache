@@ -502,6 +502,17 @@ ents = P.behavior_entries(NRN)
 check("0130 entries parsed, continuation lines joined", ents == [
     "Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).",
     "Second change, one line (advisor 0130)."], ents)
+# Codex #293 r3 B1: the repository's own notes file passes the validator the release workflow runs (an entry
+# without "(... advisor NNNN)" or "(... handoff NNNN)" would stop the release before its tag)
+real_nrn = open(os.path.join(os.path.dirname(sys.argv[1]), "..", "docs/next-release-notes.md")).read()
+try:
+    real_ents = P.behavior_entries(real_nrn); real_err = None
+except ValueError as e:
+    real_ents, real_err = [], e
+check("0130 the repository's docs/next-release-notes.md passes the notes validator", real_err is None, real_err)
+check("0390 the Linux-only entry cites advisor 0390",
+      any(e.startswith("No macOS or Windows binaries are shipped") and e.endswith("(owner decision, Oct 9; advisor 0390).")
+          for e in real_ents), real_ents)
 check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
 for bad in ["- A change nobody judged.\n", "- A change (owner said so).\n", "- A change (advisor 15).\n"]:
     try:
