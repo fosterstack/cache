@@ -3369,7 +3369,25 @@ while IFS= read -r l; do
   case "$l" in ok*) pass=$((pass + 1)); echo "$l";; *) failn=$((failn + 1)); echo "$l";; esac
 done < <(python3 "$work/setupgo.py" 2>&1)
 
-EXPECT=1329
+# ---- Codex A r4 #2 / B F1: the judge prints its findings as structured ids, one for one with its own list (CHAIN_FINDINGS=1; stderr; output only) ----------------
+fj="$work/fj"; mkdir -p "$fj"
+d=$(tracked_copy fjson); printf 'cosign attest --type slsaprovenance x\n' > "$d/bin/fj-signer.sh"; ( cd "$d" && git add -A 2> /dev/null || true )
+rc=0; CHAIN_FINDINGS=1 python3 "$work/judge.py" tree "$d" > "$fj/out.txt" 2> "$fj/err.txt" || rc=$?
+rcp=0
+python3 - "$fj/out.txt" "$fj/err.txt" "$rc" <<'PY' || rcp=$?
+import json, sys
+out = open(sys.argv[1]).read().rstrip("\n"); lines = [l for l in open(sys.argv[2]).read().split("\n") if l.startswith("FINDINGS-JSON ")]
+assert sys.argv[3] == "1" and len(lines) == 1, (sys.argv[3], len(lines))
+ids = json.loads(lines[0][len("FINDINGS-JSON "):])
+assert isinstance(ids, list) and ids and all(isinstance(x, str) for x in ids)
+assert "; ".join(ids) == out, "printed list and ids differ"
+PY
+if [ "$rcp" = 0 ]; then pass=$((pass + 1)); echo "ok   findings ids: the FINDINGS-JSON line is the judge's own findings, one for one with the printed list (rc 1, none dropped, none added, same order)"
+else failn=$((failn + 1)); echo "FAIL findings ids: the printed structured ids differ from the judge's list"; fi
+rc=0; python3 "$work/judge.py" tree "$d" > /dev/null 2> "$fj/err2.txt" || rc=$?
+if ! grep -q 'FINDINGS-JSON' "$fj/err2.txt"; then pass=$((pass + 1)); echo "ok   findings ids: nothing is printed unless CHAIN_FINDINGS=1 (no change to the judge's existing output)"; else failn=$((failn + 1)); echo "FAIL findings ids: printed without CHAIN_FINDINGS=1"; fi
+
+EXPECT=1331
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

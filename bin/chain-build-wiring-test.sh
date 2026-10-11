@@ -1550,8 +1550,10 @@ rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-g
 # The two chain suites whose red cases are expected (this one and bin/chain-sign-wiring-test.sh) judge their own output against the list: the CI step
 # passes only when the set of red cases EQUALS the list. The helper is proven here on synthetic output and a throw-away git repository.
 KR="$root/bin/chain-known-red.py"
-krj() { # krj WANT-EXIT LABEL FILE-LIST SUITE-OUTPUT-TEXT [FRAGMENT]
-  local rc=0 out; out=$(printf '%s\n' "$4" | python3 "$KR" judge --suite s.sh --list "$3" 2>&1) || rc=$?
+krj() { # krj WANT-EXIT LABEL FILE-LIST SUITE-OUTPUT-TEXT [FRAGMENT]   (KRJ_RC: the inner suite's exit status, default 1 with a FAIL line, else 0)
+  local rc=0 out inner=${KRJ_RC:-}
+  [ -n "$inner" ] || { if grep -q '^FAIL ' <<< "$4"; then inner=1; else inner=0; fi; }
+  out=$(printf '%s\n' "$4" | python3 "$KR" judge --suite s.sh --list "$3" --inner-rc "$inner" 2>&1) || rc=$?
   if [ "$rc" = "$1" ] && { [ -z "${5:-}" ] || grep -F -q -- "$5" <<< "$out"; }; then ok "known-red $2"; else bad "known-red $2 (exit $rc: ${out:0:160})"; fi; }
 mkdir -p "$work/kr"
 printf '{"entries":[{"id":"KR-1","suite":"s.sh","case":"the real tree: a","reason":"r","green_by":"PR 3"},{"id":"KR-2","suite":"s.sh","case":"shrink: b","reason":"r","green_by":"P4"},{"id":"KR-9","suite":"other.sh","case":"x","reason":"r","green_by":"P5"}]}\n' > "$work/kr/list.json"
@@ -1561,6 +1563,26 @@ krj 1 "a red case that is not on the list fails and is named" "$work/kr/list.jso
 krj 1 "a listed case that now passes fails and is named" "$work/kr/list.json" $'FAIL the real tree: a -> d\npass=5 fail=1' "KR-2"
 krj 1 "a suite that printed no summary fails closed" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x' "no \`pass="
 krj 1 "an entry of another suite does not cover a red case" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\nFAIL x -> d\npass=1 fail=3' "x"
+# the judge does not trust the printed summary (Codex A r4 #2, B F1): fail=M must equal the FAIL lines, each listed case appears ONCE, the inner exit status
+# is accounted for, and an entry with `findings` is compared with the structured FINDINGS-JSON line printed right before the case's FAIL line
+krj 1 "a summary claiming fail=999 over two FAIL lines is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=999' "summary"
+krj 1 "a summary claiming fewer failures than FAIL lines is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=1' "summary"
+krj 1 "a listed case printed twice is refused (each exactly once)" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=3' "twice"
+KRJ_RC=1 krj 1 "a nonzero inner exit with no FAIL line is refused" "$work/kr/list.json" $'pass=5 fail=0' "exit"
+KRJ_RC=0 krj 1 "a zero inner exit with FAIL lines is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=2' "exit"
+KRJ_RC=2 krj 1 "an inner exit status that is neither 0 nor 1 is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=2' "exit"
+rc=0; kout=$(printf 'pass=0 fail=0\n' | python3 "$KR" judge --suite s.sh --list "$work/kr/list.json" 2>&1) || rc=$?
+[ "$rc" != 0 ] && grep -q -- '--inner-rc' <<< "$kout" && ok "known-red: a judge call without --inner-rc is refused (the wrapper must pass the inner status)" || bad "known-red: --inner-rc is optional"
+printf '{"entries":[{"id":"KS-1","suite":"s.sh","case":"sign: tree","reason":"r","green_by":"P4","findings":["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/b.sh: names the script y"]}]}\n' > "$work/kr/struct.json"
+FJ() { printf 'FINDINGS-JSON %s\n' "$1"; }
+G3='["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/b.sh: names the script y"]'
+krj 0 "structured: the printed findings equal the entry's (with multiplicity)" "$work/kr/struct.json" "$(FJ "$G3")"$'\nFAIL sign: tree -> text\npass=0 fail=1'
+krj 1 "structured: an additional finding behind a matching label is refused" "$work/kr/struct.json" "$(FJ '["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/b.sh: names the script y","AC1: bin/c.sh: sets PATH"]')"$'\nFAIL sign: tree -> text\npass=0 fail=1' "c.sh"
+krj 1 "structured: a substituted finding is refused" "$work/kr/struct.json" "$(FJ '["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/z.sh: names the script y"]')"$'\nFAIL sign: tree -> text\npass=0 fail=1' "z.sh"
+krj 1 "structured: fewer occurrences than listed (multiplicity) is refused" "$work/kr/struct.json" "$(FJ '["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y"]')"$'\nFAIL sign: tree -> text\npass=0 fail=1'
+krj 1 "structured: B's probe (matching label plus UNEXPECTED text, no structured line) is refused" "$work/kr/struct.json" $'FAIL sign: tree -> UNEXPECTED: unlisted id-token job and non-Sign provenance signer\npass=0 fail=1' "FINDINGS-JSON"
+krj 1 "structured: a FINDINGS-JSON line that is not the line before the FAIL line is not used" "$work/kr/struct.json" "$(FJ "$G3")"$'\nok   something\nFAIL sign: tree -> text\npass=1 fail=1' "FINDINGS-JSON"
+krj 1 "structured: a FINDINGS-JSON line that is not a JSON list of strings is refused" "$work/kr/struct.json" $'FINDINGS-JSON {"a":1}\nFAIL sign: tree -> text\npass=0 fail=1' "FINDINGS-JSON"
 printf '{"entries":[{"id":"K","suite":"s.sh","case":"c"}]}\n' > "$work/kr/bad.json"
 krj 1 "an entry without a reason or green_by is refused" "$work/kr/bad.json" $'pass=1 fail=0' "exactly"
 printf '{"entries":[{"id":"K","suite":"s.sh","case":"c","reason":"r","green_by":"g"},{"id":"K","suite":"s.sh","case":"d","reason":"r","green_by":"g"}]}\n' > "$work/kr/dup.json"
@@ -1603,8 +1625,17 @@ rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789ab
 rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull request event names the base and the body; locally the base is origin/chain-v030 and KNOWN_RED_ADD names new ids
 [ "$rc" = 0 ] && ok "known-red: the committed list is well formed and compares with the base" || bad "known-red: the committed test-evidence/known-red.json (exit $rc)"
 for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh; do
-  if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null; then ok "known-red: $sfile judges its own output against the list"; else bad "known-red: $sfile does not judge its output against the list"; fi
+  if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
+# the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1..3 and KR-BUILD-1 carry their structured findings (19, 19, 19 and the graph's)" || bad "known-red: the real-suite entries lack their structured findings"
+import json, sys
+e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
+for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3", "KR-BUILD-1"):
+    f = e[k].get("findings")
+    assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
+for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3"): assert len(e[k]["findings"]) == 19, (k, len(e[k]["findings"]))
+PY
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
@@ -1820,7 +1851,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=623
+EXPECT=638
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
