@@ -196,10 +196,10 @@ jobs:
     needs: build
     uses: ./.github/workflows/stage-reproducibility.yml
   check:
-    needs: [build, sign]
+    needs: build
     uses: ./.github/workflows/stage-verify.yml
   release:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [rebuild, check, sign]
     uses: ./.github/workflows/stage-promote.yml
   decide:
@@ -215,7 +215,7 @@ jobs:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-notes:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' }}
+    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -664,25 +664,24 @@ GATE_BODY="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 GATE="\${{ $GATE_BODY }}"
 OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
-PNIF="\${{ needs.decide.outputs.tagged == 'true' }}"
-RELIF="\${{ !inputs.dry-run }}"
+PNIF="\${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
 BUILD_HEAD="    if: $GATE\n$BUILD_USES"
 REL_HEAD="  release:\n    if: $RELIF\n    needs: [rebuild, check, sign]"
 gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' "rebuild must need exactly"
-gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: [build, sign]' '  check:\n    needs: [build, sign, rebuild]' "check must need exactly"
-# Check opens by verifying Sign's provenance: the candidate is signed before it is checked (rule 80; advisor ruling Oct 10, Q9). Check needs
-# exactly build AND sign, the same edge PR 3's Check judge pins.
-gr g2b "005-AC5 check does not need sign (it would run before the candidate is signed)" '  check:\n    needs: [build, sign]' '  check:\n    needs: build' \
+gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\n    needs: [build, rebuild]' "check must need exactly"
+# REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side (Codex B r2 R3: the earlier edge Check -> Sign is gone).
+gr g2b "005-AC5 check also needs sign (AC5: Check needs only Build)" '  check:\n    needs: build' '  check:\n    needs: [build, sign]' \
        "check must need exactly"
-gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, sign]' '  check:\n    needs: sign' "check must need exactly"
+gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: build' '  check:\n    needs: sign' "check must need exactly"
 gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
 gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n    needs: check" \
     "sign must need exactly"
 gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: build' \
        '  rebuild:\n    needs: build\n    if: always()' "rebuild may not carry an if"
-gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: [build, sign]' "  check:\n    needs: [build, sign]\n    if: $GATE" "check may not carry an if"
+gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: build' "  check:\n    needs: build\n    if: $GATE" "check may not carry an if"
 gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [rebuild, check, sign]' \
        "release must carry exactly the if"
 gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [rebuild, check, sign]' \
