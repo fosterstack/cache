@@ -85,7 +85,7 @@ class ClearingRecord(unittest.TestCase):
         self.assertEqual(G.SEATS, {"codex_a": "A", "codex_b": "B"})
 
     def test_not_an_object(self):
-        self.assertEqual(problems([good()]), ["record is not a JSON object"])
+        self.assertEqual(problems([good()]), ["record is not a JSON object: " + NO_SUB])
 
     def test_a_wrong_tree_fails_naming_both_trees(self):
         self.assertIn("record binds tree %s, the change is %s" % (TREE, "99" * 32), problems(good(), tree="99" * 32))
@@ -99,12 +99,15 @@ class ClearingRecord(unittest.TestCase):
                 del r["rounds"]
             else:
                 r["rounds"] = rounds
-            self.assertEqual(problems(r), ["no review rounds recorded"], rounds)
+            # a value the gate does not permit says no substitute is accepted (AC4); a missing field does not
+            want = "no review rounds recorded" + ("" if rounds is ... else ": " + NO_SUB)
+            self.assertEqual(problems(r), [want], rounds)
 
     def test_final_round_without_reviewers(self):
         for fin in ("round", {"round": 2}, {"round": 2, "reviewers": ["codex_a", "codex_b"]}, None):
             r = good(); r["rounds"].append(fin)
-            self.assertEqual(problems(r), ["final round names no reviewers"], fin)
+            want = "final round names no reviewers" + ("" if fin == {"round": 2} else ": " + NO_SUB)
+            self.assertEqual(problems(r), [want], fin)
 
     def test_only_the_FINAL_round_counts(self):
         r = good()
@@ -136,7 +139,7 @@ class ClearingRecord(unittest.TestCase):
             else:
                 r["stop"] = stop
             ps = problems(r)
-            self.assertIn("stop is missing or not an object", ps, stop)
+            self.assertIn("stop is missing or not an object" + ("" if stop is ... else ": " + NO_SUB), ps, stop)
         r = good(); del r["stop"]["codex_b"]
         self.assertIn("stop verdict for codex_b is None, want 'clear'", problems(r))
 
@@ -148,12 +151,13 @@ class ClearingRecord(unittest.TestCase):
     def test_blockers_open_must_be_exactly_the_integer_zero(self):
         for bad in (None, "0", False, 0.0, 0.5, 1, -1, [0]):
             r = good(); final(r)["codex_a"]["blockers_open"] = bad
-            self.assertEqual(problems(r), ["codex_a blockers_open is %s, want the integer 0" % G._show(bad)], bad)
+            tail = "" if type(bad) is int else ": " + NO_SUB      # an integer out of range is no substitute
+            self.assertEqual(problems(r), ["codex_a blockers_open is %s, want the integer 0%s" % (G._show(bad), tail)], bad)
 
     def test_evidence_must_be_64_lowercase_hex(self):
         for bad in (EVA.upper(), EVA[:63], EVA + "a", EVA + "\n", "", None, 7, "g" * 64):
             r = good(); final(r)["codex_b"]["evidence_sha256"] = bad
-            self.assertIn("codex_b evidence_sha256 is not 64 lowercase hex characters", problems(r), repr(bad))
+            self.assertIn("codex_b evidence_sha256 is not 64 lowercase hex characters: " + NO_SUB, problems(r), repr(bad))
 
     def test_the_cli_prints_that_a_v2_record_clears(self):
         c = CliRepo(); c.start(self)
@@ -206,25 +210,25 @@ class Refusals(unittest.TestCase):
                            ("vendor", "openai ", "codex_b vendor is 'openai ', want 'openai'"),
                            ("model", "some-other-model", "codex_b model 'some-other-model' is not on the gate's list of Codex models")):
             r = good(); final(r)["codex_b"][f] = v
-            self.assertIn(word, problems(r), (f, v))
+            self.assertIn(word + ": " + NO_SUB, problems(r), (f, v))
 
     def test_a_model_or_effort_off_the_lists_fails(self):
         for m in ("gpt-5", "gpt-6-sol-mini", "", "GPT-6-ASTRA", "gpt-6-astra ", None, 6):
             r = good(); final(r)["codex_a"]["model"] = m
-            self.assertIn("codex_a model %r is not on the gate's list of Codex models" % (m,), problems(r), m)
+            self.assertIn("codex_a model %r is not on the gate's list of Codex models: %s" % (m, NO_SUB), problems(r), m)
         for e in ("low", "XHIGH", "", "minimal", None, 3):
             r = good(); final(r)["codex_b"]["effort"] = e
-            self.assertIn("codex_b effort %r is not on the gate's list of efforts" % (e,), problems(r), e)
+            self.assertIn("codex_b effort %r is not on the gate's list of efforts: %s" % (e, NO_SUB), problems(r), e)
 
     def test_a_seat_letter_that_does_not_match_its_key_fails(self):
         r = good(); final(r)["codex_a"]["seat"] = "B"
-        self.assertIn("codex_a seat is 'B', want 'A'", problems(r))
+        self.assertIn("codex_a seat is 'B', want 'A': " + NO_SUB, problems(r))
         r = good(); final(r)["codex_b"]["seat"] = "a"
-        self.assertIn("codex_b seat is 'a', want 'B'", problems(r))
+        self.assertIn("codex_b seat is 'a', want 'B': " + NO_SUB, problems(r))
         r = good(); final(r)["codex_a"], final(r)["codex_b"] = final(r)["codex_b"], final(r)["codex_a"]
         ps = problems(r)
-        self.assertIn("codex_a seat is 'B', want 'A'", ps)
-        self.assertIn("codex_b seat is 'A', want 'B'", ps)
+        self.assertIn("codex_a seat is 'B', want 'A': " + NO_SUB, ps)
+        self.assertIn("codex_b seat is 'A', want 'B': " + NO_SUB, ps)
 
     def test_an_open_blocker_in_either_seat_fails_naming_it(self):
         for name in ("codex_a", "codex_b"):
@@ -239,7 +243,7 @@ class Refusals(unittest.TestCase):
         for name in ("codex_a", "codex_b"):
             for v in ("blocked", "Clear", None, True):
                 r = good(); r["stop"][name] = v
-                self.assertIn("stop verdict for %s is %r, want 'clear'" % (name, v), problems(r), (name, v))
+                self.assertIn("stop verdict for %s is %r, want 'clear': %s" % (name, v, NO_SUB), problems(r), (name, v))
         for k in ("sonnet", "codex", "opus", "codex_c"):
             r = good(); r["stop"][k] = "clear"
             self.assertEqual(problems(r), ["stop holds an extra key %r: %s" % (k, PERMITTED_ONLY)], k)
@@ -247,7 +251,7 @@ class Refusals(unittest.TestCase):
     def test_a_seat_entry_that_is_not_an_object_fails_naming_it(self):
         for bad in (None, [], "codex", 0, True):
             r = good(); final(r)["codex_a"] = bad
-            self.assertIn("codex_a entry is not an object (%s)" % G._show(bad), problems(r), bad)
+            self.assertIn("codex_a entry is not an object (%s): %s" % (G._show(bad), NO_SUB), problems(r), bad)
 
     def test_two_shapes_are_both_reported(self):
         r = good(); final(r)["codex_a"]["blockers_open"] = 1; final(r)["codex_b"]["model"] = "gpt-6.1-sol"
@@ -399,7 +403,7 @@ class PermittedFields(unittest.TestCase):
                             ("reviewed_commit", None, "record reviewed_commit is not 40 lowercase hex characters"),
                             ("reviewed_commit", "pr210", "record reviewed_commit is not 40 lowercase hex characters")):
             r = good(); r[f] = bad
-            self.assertIn(msg, problems(r), (f, bad))
+            self.assertIn(msg + ": " + NO_SUB, problems(r), (f, bad))
 
     def test_every_round_needs_a_positive_increasing_round_number(self):
         for bad in (..., None, 0, -1, True, "1", 1.0, [1]):
@@ -409,7 +413,7 @@ class PermittedFields(unittest.TestCase):
                 want = "rounds[0] has no round field"
             else:
                 r["rounds"][0]["round"] = bad
-                want = "rounds[0] round is %s, want a positive integer" % G._show(bad)
+                want = "rounds[0] round is %s, want a positive integer%s" % (G._show(bad), "" if type(bad) is int else ": " + NO_SUB)
             self.assertIn(want, problems(r), bad)
         for first, second in ((2, 2), (3, 2)):
             r = good(); r["rounds"][0]["round"] = second
@@ -422,28 +426,28 @@ class PermittedFields(unittest.TestCase):
             r["rounds"].insert(0, {"round": 1, "reviewers": rv})
             return problems(r)
         self.assertEqual(with_earlier({"codex_b": seat("B", "gpt-6-astra", blockers_open=4)}), [])
-        for rv, want in (({}, "rounds[0] reviewers is not a non-empty object"),
-                         (None, "rounds[0] reviewers is not a non-empty object"),
-                         (["codex_a"], "rounds[0] reviewers is not a non-empty object"),
+        for rv, want in (({}, "rounds[0] reviewers is not a non-empty object: " + NO_SUB),
+                         (None, "rounds[0] reviewers is not a non-empty object: " + NO_SUB),
+                         (["codex_a"], "rounds[0] reviewers is not a non-empty object: " + NO_SUB),
                          ({"opus": {}}, "rounds[0] entry 'opus' is not a seat (only codex_a and codex_b take a seat): " + NO_SUB),
                          ({"codex_a": {k: v for k, v in seat("A", "gpt-6.1-sol").items() if k != "model"}}, "rounds[0].codex_a has no model field"),
-                         ({"codex_a": seat("A", "gpt-6.1-sol", vendor="anthropic")}, "rounds[0].codex_a vendor is 'anthropic', want 'openai'"),
-                         ({"codex_a": seat("A", "some-model")}, "rounds[0].codex_a model 'some-model' is not on the gate's list of Codex models"),
-                         ({"codex_a": seat("B", "gpt-6.1-sol")}, "rounds[0].codex_a seat is 'B', want 'A'"),
-                         ({"codex_a": seat("A", "gpt-6.1-sol", evidence_sha256="x")}, "rounds[0].codex_a evidence_sha256 is not 64 lowercase hex characters"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", vendor="anthropic")}, "rounds[0].codex_a vendor is 'anthropic', want 'openai': " + NO_SUB),
+                         ({"codex_a": seat("A", "some-model")}, "rounds[0].codex_a model 'some-model' is not on the gate's list of Codex models: " + NO_SUB),
+                         ({"codex_a": seat("B", "gpt-6.1-sol")}, "rounds[0].codex_a seat is 'B', want 'A': " + NO_SUB),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", evidence_sha256="x")}, "rounds[0].codex_a evidence_sha256 is not 64 lowercase hex characters: " + NO_SUB),
                          ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open=-1)}, "rounds[0].codex_a blockers_open is -1, want a non-negative integer"),
-                         ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open=True)}, "rounds[0].codex_a blockers_open is True, want a non-negative integer"),
-                         ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open="2")}, "rounds[0].codex_a blockers_open is '2', want a non-negative integer"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open=True)}, "rounds[0].codex_a blockers_open is True, want a non-negative integer: " + NO_SUB),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open="2")}, "rounds[0].codex_a blockers_open is '2', want a non-negative integer: " + NO_SUB),
                          ({"codex_a": seat("A", "gpt-6.1-sol", note="x")}, "rounds[0].codex_a has an extra field 'note': " + PERMITTED_ONLY),
-                         ({"codex_a": "clear"}, "rounds[0].codex_a entry is not an object ('clear')")):
+                         ({"codex_a": "clear"}, "rounds[0].codex_a entry is not an object ('clear'): " + NO_SUB)):
             self.assertIn(want, with_earlier(rv), rv)
         r = good(); r["rounds"].insert(0, "round one")
-        self.assertIn("rounds[0] is not an object", problems(r))
+        self.assertIn("rounds[0] is not an object: " + NO_SUB, problems(r))
 
     def test_a_tree_that_is_not_a_string_fails(self):
         for bad in (None, 1, [TREE], {"tree": TREE}):
             r = good(); r["tree"] = bad
-            self.assertIn("record binds tree %s, the change is %s" % (G._show(bad), TREE), problems(r), bad)
+            self.assertIn("record binds tree %s, the change is %s: %s" % (G._show(bad), TREE, NO_SUB), problems(r), bad)
 
     def test_a_deeply_nested_value_is_reported_not_raised(self):
         deep = "x"
@@ -451,7 +455,7 @@ class PermittedFields(unittest.TestCase):
             deep = [deep]
         r = good(); r["reviewed_commit"] = deep
         ps = problems(r)
-        self.assertIn("record reviewed_commit is not 40 lowercase hex characters", ps)
+        self.assertIn("record reviewed_commit is not 40 lowercase hex characters: " + NO_SUB, ps)
 
 
 # ---- REQ-AUD-018-AC4, AC5, AC6: the record is read as strict JSON ------------------------------------------------
@@ -1254,7 +1258,7 @@ class Diagnostics(unittest.TestCase):
             r["x%d" % i] = 1
         ps = problems(r)
         self.assertEqual(len(ps), G.MAX_PROBLEMS + 1)
-        self.assertIn("more problem(s) not shown", ps[-1])
+        self.assertEqual(ps[-1], "... and %d more problem(s) not shown" % (5000 - G.MAX_PROBLEMS))
         r = good(); r["residuals"] = ["substitute"] * 5000
         self.assertEqual(len(problems(r)), G.MAX_PROBLEMS + 1)
         r = good(); final(r).update({"k%d" % i: {} for i in range(5000)})
@@ -1289,7 +1293,7 @@ class Diagnostics(unittest.TestCase):
         r = good(); r["rounds"][0]["round"] = 2
         r["rounds"].insert(0, {"round": 1, "reviewers": {"codex_a": deep}})
         self.assertNotEqual(problems(r), [])
-        self.assertEqual(problems(deep), ["record is not a JSON object"])
+        self.assertEqual(problems(deep), ["record is not a JSON object: " + NO_SUB])
 
     def test_the_substitute_scan_does_not_amplify_a_long_key_into_memory(self):
         import tracemalloc
@@ -1802,7 +1806,7 @@ class EveryAddedRecordJudged(unittest.TestCase):
             (j(extra_seat), "codex_a has an extra field 'note'"),
             (j(dict(good(t), residuals=["pr210"])), "record has an extra field 'residuals'"),
             (j(dict(good(t), label="pr:210")), "record has an extra field 'label'"),
-            (j(former), "codex_a model 'pr210' is not on the gate's list"),
+            (j(former), "codex_a model 'pr210' is not on the gate's list of Codex models: " + NO_SUB),
             (j(open_blocker), "codex_b blockers_open is 1, want the integer 0"),
             (j(good(TREE)), "record binds tree %s" % TREE),
             (j(good(t)).replace('"schema"', '"schema": "x", "schema"', 1), "the record repeats the key 'schema'"),
@@ -1864,7 +1868,8 @@ class EveryAddedRecordJudged(unittest.TestCase):
         self.assertEqual(rc, 1)
         lines = out.splitlines()
         self.assertLessEqual(len(lines), G.MAX_PROBLEMS + 1, len(lines))
-        self.assertIn("more problem(s) not shown", lines[-1])
+        self.assertEqual(lines[-1], "::error::review gate: ... and 200 more problem(s) not shown; 4 more added record(s) "
+                                    "not read (the gate stops reading at %d problems)" % G.MAX_PROBLEMS)
 
 
 class LineBoundAfterEscaping(unittest.TestCase):
@@ -1903,6 +1908,226 @@ class LineBoundAfterEscaping(unittest.TestCase):
                 G._read_record(rev, rec_path("1" * 64))
         self.assertLess(len(str(cm.exception)), 400)
         self.assertTrue(str(cm.exception).isascii())
+
+
+# ---- round 5: every substitute-shaped refusal says no substitute is accepted; every count is exact -------------------
+class NoSubstituteStatement(unittest.TestCase):
+    """REQ-AUD-018-AC4 (a record carrying a substitute in any form fails, "naming the entry and saying that no substitute
+    is accepted"), round 5 finding 1: EVERY refusal of a key or a value the gate does not permit (an extra field, an entry
+    under another key, a former allow-list id or a model alias in any string field, free text, a value of the wrong type)
+    ends with the statement, built by the one helper _no_substitute; only a missing field, an integer out of range and a
+    relation between permitted values (the same model, the same evidence, round order, another tree) are stated plainly."""
+
+    BAD = ("pr210", "pr:210", "0317", "0350", "opus", "sonnet", "claude", "gpt-6-sol-mini", "codex-opus", "",
+           "entry pr210 applies", None, True, 1.5, [], ["pr210"], {}, {"id": "pr210"})
+    # the lines stated plainly: a relation between permitted values, or a field or seat that is missing (an empty
+    # object in place of a seat or of the final round's reviewers is a seat with every field missing)
+    RELATION = re.compile(r"name the same model|have the same evidence_sha256|does not follow round"
+                          r"|^(rounds\[\d+\]\.)?codex_[ab] has no \w+ field$|^final round has no codex_[ab] entry$")
+
+    def full(self):
+        """A clearing record with every permitted field and an earlier round holding both seats."""
+        r = good(); r["reviewed_commit"] = "1f" * 20; r["rounds"][0]["round"] = 2
+        r["rounds"].insert(0, {"round": 1, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol", blockers_open=2),
+                                                          "codex_b": seat("B", "gpt-6-astra")}})
+        self.assertEqual(problems(r), [])
+        return r
+
+    def paths(self, v, at=()):
+        """Every (path of a value, the object holding it) in `v`."""
+        if isinstance(v, dict):
+            yield at, v
+            for k, x in v.items():
+                yield from self.paths(x, at + (k,))
+        elif isinstance(v, list):
+            yield at, v
+            for i, x in enumerate(v):
+                yield from self.paths(x, at + (i,))
+        else:
+            yield at, v
+
+    def put(self, r, path, value):
+        o = r
+        for k in path[:-1]:
+            o = o[k]
+        o[path[-1]] = value
+
+    def assert_says_it(self, ps, why):
+        self.assertNotEqual(ps, [], why)
+        for p in ps:
+            if not self.RELATION.search(p):
+                self.assertTrue(p.endswith(": " + NO_SUB) or p.endswith(", and " + NO_SUB), (why, p))
+
+    def test_every_value_the_gate_does_not_permit_is_refused_saying_no_substitute_is_accepted(self):
+        r0 = self.full()
+        for path, _ in list(self.paths(r0)):
+            if not path:
+                continue
+            for v in self.BAD:
+                r = json.loads(json.dumps(r0)); self.put(r, path, json.loads(json.dumps(v)))
+                self.assert_says_it(problems(r), (path, v))
+
+    def test_every_key_the_gate_does_not_permit_is_refused_saying_no_substitute_is_accepted(self):
+        r0 = self.full()
+        for path, obj in list(self.paths(r0)):
+            if not isinstance(obj, dict):
+                continue
+            for key in ("opus", "sonnet", "codex", "codex_c", "pr210", "substitute_id", "allowlist_entry", "label"):
+                for v in ("clear", "pr210", {}, seat("A", "gpt-6-luna", evidence_sha256="56" * 32)):
+                    r = json.loads(json.dumps(r0)); o = r
+                    for k in path:
+                        o = o[k]
+                    o[key] = json.loads(json.dumps(v))
+                    self.assert_says_it(problems(r), (path, key, v))
+
+    def test_a_record_that_is_not_an_object_says_it(self):
+        for v in ("pr210", ["pr210"], None, 0):
+            self.assertEqual(problems(v), ["record is not a JSON object: " + NO_SUB], v)
+
+    def test_a_former_allow_list_id_or_a_model_alias_in_a_seat_says_it_exactly(self):
+        for where in ("final", "earlier"):
+            for name in ("codex_a", "codex_b"):
+                for f in ("model", "effort", "reviewer", "vendor", "seat"):
+                    for v in ("pr210", "pr:210", "0350", "opus", "claude-opus", "gpt-6-sol-mini"):
+                        r = self.full()
+                        rv = r["rounds"][-1 if where == "final" else 0]["reviewers"]
+                        rv[name][f] = v
+                        at = name if where == "final" else "rounds[0].%s" % name
+                        what = {"model": "model %r is not on the gate's list of Codex models" % v,
+                                "effort": "effort %r is not on the gate's list of efforts" % v,
+                                "reviewer": "reviewer %r, want 'codex'" % v,
+                                "vendor": "vendor %r, want 'openai'" % v,
+                                "seat": "seat %r, want %r" % (v, G.SEATS[name])}[f]
+                        if f in ("reviewer", "vendor", "seat"):
+                            what = what.replace("%s %r" % (f, v), "%s is %r" % (f, v), 1)
+                        self.assertEqual(problems(r), ["%s %s: %s" % (at, what, NO_SUB)], (where, name, f, v))
+
+    def test_a_missing_field_or_a_relation_is_stated_plainly(self):
+        r = good(); del final(r)["codex_a"]["model"]
+        self.assertEqual(problems(r), ["codex_a has no model field"])
+        r = good(); del final(r)["codex_b"]
+        del r["stop"]["codex_b"]
+        self.assertEqual(problems(r), ["final round has no codex_b entry", "stop verdict for codex_b is None, want 'clear'"])
+        r = good(); final(r)["codex_a"]["blockers_open"] = 3
+        self.assertEqual(problems(r), ["codex_a blockers_open is 3, want the integer 0"])
+        self.assertEqual(problems(good(), tree="99" * 32), ["record binds tree %s, the change is %s" % (TREE, "99" * 32)])
+
+    def test_an_old_schema_or_unreadable_record_says_it_through_the_cli(self):
+        c = CliRepo(); c.start(self)
+        for body in (json.dumps(legacy("1" * 64)), '{"schema": "pr210"}', "[]", "not json"):
+            c.git("reset", "-q", "--hard", c.base)
+            c.change(rec_path("1" * 64), body)
+            rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, out)
+            self.assertIn("a schema v2 record is required, and " + NO_SUB, out, body)
+        c.git("reset", "-q", "--hard", c.base)
+        c.change(".github/agent/bin/x.py", "b\n"); c.record(legacy)
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a schema v2 record is required, and " + NO_SUB, out)
+
+    def test_a_merged_file_refused_by_its_schema_says_it(self):
+        for raw in (b'{"schema": "auditor-review-record/v2", "schema": 1}', b"\xff"):
+            kind, why = G.classify_merged(raw)
+            self.assertEqual(kind, "refused", raw)
+            self.assertTrue(why.endswith("a schema v2 record is required, and " + NO_SUB), (raw, why))
+
+    def test_the_statement_is_written_by_one_helper_only(self):
+        """No refusal path can omit the statement by spelling its own: the words "no substitute" occur in exactly one
+        string constant of the gate (NO_SUBSTITUTE), the name NO_SUBSTITUTE is read only inside _no_substitute, and every
+        reason _no_substitute is given ends in ", and " so the statement always follows it."""
+        with open(SCRIPT) as fh:
+            tree = ast.parse(fh.read())
+        docs = {id(n.body[0].value) for n in ast.walk(tree)
+                if isinstance(n, (ast.Module, ast.FunctionDef, ast.ClassDef)) and n.body
+                and isinstance(n.body[0], ast.Expr) and isinstance(n.body[0].value, ast.Constant)}
+        said = [n for n in ast.walk(tree) if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                and "no substitute" in n.value and id(n) not in docs]
+        self.assertEqual([n.value for n in said], ["no substitute is accepted"])
+        readers = [f.name for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)
+                   for n in ast.walk(f) if isinstance(n, ast.Name) and n.id == "NO_SUBSTITUTE"]
+        self.assertEqual(readers, ["_no_substitute"])
+        top = [n for n in tree.body if isinstance(n, ast.Assign)
+               for t in n.targets if isinstance(t, ast.Name) and t.id == "NO_SUBSTITUTE"]
+        self.assertEqual(len(top), 1)
+        self.assertNotIn("NO_SUBSTITUTE", [n.id for a in tree.body if isinstance(a, ast.Assign) and a not in top
+                                           for n in ast.walk(a.value) if isinstance(n, ast.Name)])
+        for why in (G.PERMITTED, G.V2_REQUIRED):
+            self.assertTrue(why.endswith(", and "), why)
+        self.assertEqual(G._no_substitute("x"), "x: " + NO_SUB)
+        self.assertEqual(G._no_substitute("x", G.PERMITTED), "x: " + PERMITTED_ONLY)
+
+
+class ExactProblemCounts(unittest.TestCase):
+    """REQ-AUD-018-AC5 ("any missing, extra, mistyped or malformed field fails the gate with a message naming it") and the
+    bounded diagnostics, round 5 finding 2: the count of problems not shown is exact wherever the problems arise (a
+    record, a final seat, a seat of an earlier round, several records), so MAX_PROBLEMS shown plus the count is the
+    number of problems found."""
+
+    def extras(self, n, prefix="x"):
+        return {"%s%d" % (prefix, i): 1 for i in range(n)}
+
+    def assert_count(self, ps, total):
+        shown = min(total, G.MAX_PROBLEMS)
+        self.assertEqual(len(ps), shown + (1 if total > G.MAX_PROBLEMS else 0), total)
+        if total > G.MAX_PROBLEMS:
+            self.assertEqual(ps[-1], "... and %d more problem(s) not shown" % (total - G.MAX_PROBLEMS))
+        else:
+            self.assertFalse(any(p.startswith("... and") for p in ps))
+
+    def test_a_final_seat_s_problems_are_counted_exactly(self):
+        for n in (99, 100, 101, 300):
+            r = good(); final(r)["codex_a"].update(self.extras(n))
+            self.assert_count(problems(r), n)
+
+    def test_an_earlier_seat_s_problems_are_counted_exactly(self):
+        r = good(); r["rounds"][0]["round"] = 2
+        r["rounds"].insert(0, {"round": 1, "reviewers": {"codex_b": dict(seat("B", "gpt-6-astra"), **self.extras(300))}})
+        self.assert_count(problems(r), 300)
+
+    def test_problems_of_two_seats_and_the_record_are_counted_exactly(self):
+        r = good(); r.update(self.extras(120, "r"))
+        final(r)["codex_a"].update(self.extras(150)); final(r)["codex_b"].update(self.extras(150))
+        self.assert_count(problems(r), 420)
+        r = good(); r.update(self.extras(5000))
+        self.assert_count(problems(r), 5000)
+
+    def last(self, out):
+        return out.splitlines()[-1]
+
+    def test_the_cli_counts_a_selected_record_s_seat_problems_exactly(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        c.record(lambda t: (lambda r: (final(r)["codex_a"].update(self.extras(300)), r)[1])(good(t)))
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(out.splitlines()), G.MAX_PROBLEMS + 1)
+        self.assertEqual(self.last(out), "::error::review gate: ... and 200 more problem(s) not shown")
+
+    def test_the_cli_counts_added_records_exactly_and_names_those_not_read(self):
+        c = CliRepo(); c.start(self)
+        for i in range(5):
+            h = "%064x" % (i + 7)
+            r = good(h); final(r)["codex_b"].update(self.extras(300))
+            c.write(rec_path(h), json.dumps(r))
+        c.git("add", "-A"); c.git("commit", "-qm", "many")
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(out.splitlines()), G.MAX_PROBLEMS + 1)
+        self.assertEqual(self.last(out), "::error::review gate: ... and 200 more problem(s) not shown; 4 more added "
+                                         "record(s) not read (the gate stops reading at %d problems)" % G.MAX_PROBLEMS)
+
+    def test_the_cli_counts_an_added_and_the_selected_record_together_exactly(self):
+        c = CliRepo(); c.start(self)
+        h = "%064x" % 7
+        other = good(h); final(other)["codex_b"].update(self.extras(150))
+        c.write(rec_path(h), json.dumps(other)); c.change(".github/agent/bin/x.py", "b\n")
+        c.record(lambda t: (lambda r: (final(r)["codex_a"].update(self.extras(150)), r)[1])(good(t)))
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(out.splitlines()), G.MAX_PROBLEMS + 1)
+        self.assertEqual(self.last(out), "::error::review gate: ... and 200 more problem(s) not shown")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
