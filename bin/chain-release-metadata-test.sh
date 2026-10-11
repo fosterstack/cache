@@ -3,8 +3,8 @@
 # RED until bin/release-metadata.py exists (REQ-CHAIN-007-AC13, advisor 0386 item 2; owner Oct 10: v0.3.0 matches CISA secure by design): step 4.
 #
 # The four release metadata files and their signed list. bin/release-metadata.py has four subcommands, all offline and deterministic (no clock, no network):
-#   images    --digests D --images-dir I --out F   the image digests for bin/vex-forms.py, ONLY from Build's verified digests.json and images/<variant>.digest/.manifests
-#   manifest  --digests D --images-dir I --version V --commit SHA --ci-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
+#   images    --digests D --images-dir I --items ITEMS --out F   the image digests for bin/vex-forms.py, ONLY from Build's verified digests.json and images/<variant>.digest/.manifests
+#   manifest  --digests D --images-dir I --items ITEMS --vex-dir DIR --version V --commit SHA --ci-url U --workflow W --out F   release-manifest.json (keeps `.images[].variant` and `.images[].digest`,
 #             the shape the REQ-REL-004 rescan reads)
 #   list      --version V --dir DIR --out F        release-files.sha256: the sha256 of exactly the four files, in this order: release-manifest.json, the OpenVEX file,
 #             the CSAF file, the inspector-filters file (the form of cache's change under handoff 0362, PR #276)
@@ -33,18 +33,23 @@ def tree():
     d = {"image-production": IP, "image-fips": IF, "archive-linux-amd64": sha(b"a1"), "archive-linux-arm64": sha(b"a2"), "archive-fips-linux-amd64": sha(b"a3"), "archive-fips-linux-arm64": sha(b"a4"),
          "apk-standard-amd64": sha(b"p1"), "apk-standard-arm64": sha(b"p2"), "apk-fips-amd64": sha(b"p3"), "apk-fips-arm64": sha(b"p4")}
     json.dump(d, open(t + "/witness-build/digests.json", "w"))
+    items = {}
     for v, idx in (("production", IP), ("fips", IF)):
         open("%s/images/%s.digest" % (t, v), "w").write(idx + "\n")
         open("%s/images/%s.manifests" % (t, v), "w").write("".join("%s %s\n" % (a, h) for a, h in KIDS[v].items()))
+        os.makedirs("%s/images/%s-sbom" % (t, v)); open("%s/images/%s.full.lock.json" % (t, v), "w").write("lock " + v); open("%s/images/%s-sbom/sbom.json" % (t, v), "w").write("sbom " + v)
+        items.update({"image-" + v: idx, "lock-" + v: sha(b"lock " + v.encode()), "sbom-" + v: sha(b"sbom " + v.encode())})
+        items.update({"image-%s-manifest-%s" % (v, a): h for a, h in KIDS[v].items()})
+    json.dump(items, open(t + "/witness-build/items.json", "w"))
     return t, d
 def setd(t, d): json.dump(d, open(t + "/witness-build/digests.json", "w"))
 V = "v0.3.0"
 # ---- images: the digests for vex-forms.py -------------------------------------------------------------------------------------------------
-t, d = tree(); out = t + "/vex-images.json"; rc, so, se = run("images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--out", out)
+t, d = tree(); out = t + "/vex-images.json"; rc, so, se = run("images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", out)
 doc = json.load(open(out)) if os.path.exists(out) else {}
 check(rc == 0 and doc == {v: {"index": i, "children": {"linux/amd64": KIDS[v]["amd64"], "linux/arm64": KIDS[v]["arm64"]}} for v, i in (("production", IP), ("fips", IF))}, "images: exactly the two variants, index from Build's verified digests.json and the children from images/<variant>.manifests", "rc=%s %s" % (rc, se[:200]))
 def img(label, mutate, word):
-    t, d = tree(); mutate(t, d); rc, so, se = run("images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--out", t + "/o.json")
+    t, d = tree(); mutate(t, d); rc, so, se = run("images", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--out", t + "/o.json")
     check(rc == 1 and word in se and not os.path.exists(t + "/o.json"), "images: " + label, "rc=%s %s" % (rc, se[:200]))
 img("a third variant key (image-debug) in the digest list is refused", lambda t, d: (d.update({"image-debug": sha(b"x")}), setd(t, d)), "image-debug")
 img("a missing image-fips key is refused", lambda t, d: (d.pop("image-fips"), setd(t, d)), "image-fips")
@@ -55,9 +60,21 @@ img("a missing architecture line is refused", lambda t, d: open(t + "/images/fip
 img("an unknown architecture line is refused", lambda t, d: open(t + "/images/fips.manifests", "a").write("riscv64 " + sha(b"r") + "\n"), "fips.manifests")
 img("a malformed child digest is refused", lambda t, d: open(t + "/images/fips.manifests", "w").write("amd64 sha256:zz\narm64 " + KIDS["fips"]["arm64"] + "\n"), "fips.manifests")
 img("a missing images/<variant>.manifests file is refused", lambda t, d: os.remove(t + "/images/production.manifests"), "production.manifests")
+def items_of(t): return json.load(open(t + "/witness-build/items.json"))
+def setitems(t, it): json.dump(it, open(t + "/witness-build/items.json", "w"))
+img("a child digest that is not Build's verified item image-fips-manifest-arm64 is refused", lambda t, d: setitems(t, dict(items_of(t), **{"image-fips-manifest-arm64": sha(b"other")})), "image-fips-manifest-arm64")
+img("a child digest with no verified item is refused", lambda t, d: setitems(t, {k: v for k, v in items_of(t).items() if k != "image-production-manifest-amd64"}), "image-production-manifest-amd64")
+img("an index that differs from Build's verified item image-production is refused", lambda t, d: setitems(t, dict(items_of(t), **{"image-production": sha(b"other")})), "image-production")
+img("a lock file whose hash is not Build's verified item lock-production is refused", lambda t, d: open(t + "/images/production.full.lock.json", "w").write("tampered"), "lock-production")
+img("an SBOM whose hash is not Build's verified item sbom-fips is refused", lambda t, d: open(t + "/images/fips-sbom/sbom.json", "w").write("tampered"), "sbom-fips")
+img("a missing items file is refused", lambda t, d: os.remove(t + "/witness-build/items.json"), "items.json")
 # ---- manifest: deterministic, the rescan's shape ------------------------------------------------------------------------------------------
+def vexdir(t, version=V):
+    v = t + "/vex"; os.makedirs(v, exist_ok=True)
+    for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % version, "fosterstack-cache-%s.inspector-filters.json" % version): open(os.path.join(v, n), "w").write("content of " + n)
+    return v
 def manifest(t, out, version=V, commit="a" * 40, extra=()):
-    return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--version", version, "--commit", commit,
+    return run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--vex-dir", vexdir(t, version), "--version", version, "--commit", commit,
                "--ci-url", "https://github.com/fosterstack/cache/actions/runs/1/attempts/1", "--workflow", "fosterstack/cache/.github/workflows/release.yml@refs/tags/v0.3.0", "--out", out, *extra)
 t, d = tree(); m1, m2 = t + "/m1.json", t + "/m2.json"; rc, so, se = manifest(t, m1); rc2, _, _ = manifest(t, m2)
 mj = json.load(open(m1)) if os.path.exists(m1) else {}
@@ -65,6 +82,11 @@ check(rc == 0 and rc2 == 0 and open(m1, "rb").read() == open(m2, "rb").read(), "
 check([(i.get("variant"), i.get("digest")) for i in mj.get("images", [])] == [("production", IP), ("fips", IF)] and all(any(r.endswith("@" + i["digest"]) for r in i["refs"]) for i in mj.get("images", [])), "manifest: `.images[].variant` and `.images[].digest` keep the shape the rescan reads, with both registry references", str(mj.get("images")))
 check(mj.get("version") == V and mj.get("commit") == "a" * 40 and "generated_at" not in json.dumps(mj) and mj.get("run", {}).get("url", "").startswith("https://github.com/"), "manifest: version, commit and run recorded; no generated_at")
 check({a["name"]: a["digest"] for a in mj.get("archives", [])} == {k: v for k, v in d.items() if k.startswith("archive-")} and {a["name"]: a["digest"] for a in mj.get("apks", [])} == {k: v for k, v in d.items() if k.startswith("apk-")}, "manifest: archives and apks are exactly Build's attested digests")
+hexs = lambda n: hashlib.sha256(open(t + "/vex/" + n, "rb").read()).hexdigest()
+check([(x.get("form"), x.get("file"), x.get("sha256")) for x in mj.get("vex", [])] == [("openvex", "fosterstack-cache.openvex.json", hexs("fosterstack-cache.openvex.json")), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % V, hexs("fosterstack-cache-%s.inspector-filters.json" % V)), ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % V, hexs("fosterstack-cache-%s.csaf.json" % V))], "manifest: records the sha256 of the OpenVEX, inspector-filters and CSAF files it was made after (generated before the manifest)", str(mj.get("vex")))
+for n in ("fosterstack-cache.openvex.json", "fosterstack-cache-%s.csaf.json" % V, "fosterstack-cache-%s.inspector-filters.json" % V):
+    t, d = tree(); rc, so, se = manifest(t, t + "/m.json"); os.remove(t + "/vex/" + n); rc, so, se = run("manifest", "--digests", t + "/witness-build/digests.json", "--images-dir", t + "/images", "--items", t + "/witness-build/items.json", "--vex-dir", t + "/vex", "--version", V, "--commit", "a" * 40, "--ci-url", "u", "--workflow", "w", "--out", t + "/m2.json")
+    check(rc == 1 and n in se and not os.path.exists(t + "/m2.json"), "manifest: a missing %s (not generated before the manifest) is refused, naming it" % n, se[:160])
 for label, ver, com in (("a version that is not vX.Y.Z", "v0.3", "a" * 40), ("a release candidate (no release is made for one)", "v0.3.0-rc1", "a" * 40), ("a commit that is not 40 hex", V, "abc")):
     t, d = tree(); rc, so, se = manifest(t, t + "/m.json", ver, com); check(rc == 1 and not os.path.exists(t + "/m.json"), "manifest: " + label + " is refused", "rc=%s %s" % (rc, se[:160]))
 t, d = tree(); d.pop("apk-fips-arm64"); setd(t, d); rc, so, se = manifest(t, t + "/m.json"); check(rc == 1 and "apk-fips-arm64" in se, "manifest: a digest list without one of the four apks is refused, naming it", se[:160])
@@ -112,7 +134,7 @@ gate("a file with its own bundle (the SBOM) is covered by it", lambda a: None)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "40"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "50"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

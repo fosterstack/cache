@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The release metadata of Release (REQ-CHAIN-007-AC13; v0.3.0 rules 53, 56, 63, 64, 69; owner Oct 10: v0.3.0 matches CISA secure by design).
 
-  release-metadata.py images   --digests D --images-dir I --out F
+  release-metadata.py images   --digests D --images-dir I --items ITEMS --out F
         the image input of vex-forms, {variant: {index, children}}, made ONLY from Build's verified digest list and Build's
         images/<variant>.digest and images/<variant>.manifests; never from a registry
-  release-metadata.py manifest --digests D --images-dir I --version V --commit SHA --ci-url U --workflow W --out F
+  release-metadata.py manifest --digests D --images-dir I --items ITEMS --vex-dir DIR --version V --commit SHA --ci-url U --workflow W --out F
         release-manifest.json, deterministic (no clock): the images (`.images[].variant`, `.images[].digest` and both registry references,
         the shape the daily rescan reads), the archives and the apks as Build attested them
   release-metadata.py list     --version V --dir DIR --out F
@@ -94,12 +94,41 @@ def children_of(images_dir, variant, index):
     return {"linux/" + a: seen[a] for a in ARCHES}
 
 
-def image_input(digests, images_dir):
-    return {v: {"index": digests["image-" + v], "children": children_of(images_dir, v, digests["image-" + v])} for v in VARIANTS}
+def items_of(path):
+    d = strict_json(path)
+    if not isinstance(d, dict):
+        refuse("%s is not a JSON object" % path)
+    return d
+
+
+def image_input(digests, images_dir, items_path):
+    """Every digest that goes into the VEX forms and the manifest must be one Build verified: the index is Build's digests.json entry and its item image-<variant>,
+    each child is Build's item image-<variant>-manifest-<arch>, and the lock and SBOM files are the bytes of Build's items lock-<variant> and sbom-<variant>."""
+    items = items_of(items_path)
+    out = {}
+    for v in VARIANTS:
+        index = digests["image-" + v]
+        kids = children_of(images_dir, v, index)
+        if items.get("image-" + v) != index:
+            refuse("%s: image-%s is %s, not the attested %s" % (items_path, v, items.get("image-" + v), index))
+        for a in ARCHES:
+            key = "image-%s-manifest-%s" % (v, a)
+            if items.get(key) != kids["linux/" + a]:
+                refuse("%s: %s is %s, but %s/%s.manifests names %s" % (items_path, key, items.get(key), images_dir, v, kids["linux/" + a]))
+        for key, rel in (("lock-" + v, v + ".full.lock.json"), ("sbom-" + v, os.path.join(v + "-sbom", "sbom.json"))):
+            path = os.path.join(images_dir, rel)
+            try:
+                have = "sha256:" + sha256_file(path)
+            except OSError:
+                refuse("%s is missing" % path)
+            if items.get(key) != have:
+                refuse("%s: %s is %s, but %s hashes to %s" % (items_path, key, items.get(key), path, have))
+        out[v] = {"index": index, "children": kids}
+    return out
 
 
 def cmd_images(a):
-    doc = image_input(digests_of(a.digests), a.images_dir)
+    doc = image_input(digests_of(a.digests), a.images_dir, a.items)
     write_atomic(a.out, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
@@ -113,7 +142,14 @@ def cmd_manifest(a):
     want = sorted("apk-%s-%s" % (v, ar) for v in ("standard", "fips") for ar in ARCHES)
     if apks != want:
         refuse("%s: the apk keys must be exactly %s (missing: %s)" % (a.digests, ", ".join(want), ", ".join(k for k in want if k not in d) or "none"))
-    img = image_input(d, a.images_dir)
+    img = image_input(d, a.images_dir, a.items)
+    vex = []
+    for form, name in (("openvex", "fosterstack-cache.openvex.json"), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % a.version),
+                       ("csaf-2.0-vex", "fosterstack-cache-%s.csaf.json" % a.version)):
+        p = os.path.join(a.vex_dir, name)
+        if not os.path.isfile(p) or os.path.islink(p):
+            refuse("%s is missing: the VEX forms are made before the manifest" % name)
+        vex.append({"file": name, "form": form, "sha256": sha256_file(p)})
     doc = {
         "version": a.version, "commit": a.commit,
         "run": {"url": a.ci_url, "workflow": a.workflow},
@@ -121,6 +157,7 @@ def cmd_manifest(a):
                     "refs": ["%s@%s" % (REPO_GHCR, img[v]["index"]), "%s@%s" % (REPO_HUB, img[v]["index"])]} for v in VARIANTS],
         "archives": [{"name": k, "digest": d[k]} for k in sorted(d) if k.startswith("archive-")],
         "apks": [{"name": k, "digest": d[k]} for k in apks],
+        "vex": vex,
     }
     write_atomic(a.out, json.dumps(doc, indent=2) + "\n")
 
@@ -187,7 +224,7 @@ def cmd_gate(a):
     metadata files; checksums.txt lists existing files with their hashes; release-files.sha256 lists exactly the four metadata files with theirs;
     and every asset is covered: it is in checksums.txt or in release-files.sha256, or it is a bundle whose signed file is an asset, or it has its
     own bundle, or it is an apk (signed by the release key inside the file), a Witness record (`*-collection.json`, a signed envelope the stages
-    verified) or Build's digests.json (a product of Build's signed record). A symlink, a directory, or anything else is refused by name."""
+    verified) or Build's digests.json or items.json (products of Build's signed record). A symlink, a directory, or anything else is refused by name."""
     names = sorted(os.listdir(a.dir))
     for n in names:
         p = os.path.join(a.dir, n)
@@ -231,7 +268,7 @@ def cmd_gate(a):
             if signed_by(n) not in have:
                 refuse("%s signs %s, which is not an asset" % (n, signed_by(n)))
             continue
-        if bundle_of(n) in have or n.endswith(".apk") or n.endswith("-collection.json") or n == "digests.json":
+        if bundle_of(n) in have or n.endswith(".apk") or n.endswith("-collection.json") or n in ("digests.json", "items.json"):
             continue
         refuse("%s is covered by nothing: not in checksums.txt, not in release-files.sha256, and no bundle signs it" % n)
     if a.same_as:
@@ -241,9 +278,9 @@ def cmd_gate(a):
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
-    i = sub.add_parser("images"); i.add_argument("--digests", required=True); i.add_argument("--images-dir", required=True); i.add_argument("--out", required=True)
+    i = sub.add_parser("images"); i.add_argument("--digests", required=True); i.add_argument("--images-dir", required=True); i.add_argument("--items", required=True); i.add_argument("--out", required=True)
     m = sub.add_parser("manifest")
-    for k in ("digests", "images-dir", "version", "commit", "ci-url", "workflow", "out"):
+    for k in ("digests", "images-dir", "items", "vex-dir", "version", "commit", "ci-url", "workflow", "out"):
         m.add_argument("--" + k, required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")

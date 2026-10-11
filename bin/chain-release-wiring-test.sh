@@ -60,7 +60,7 @@ stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  content
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          + inst("witness") + inst("cosign") + inst("crane")
-         + "".join(dn(n) for n in ("witness-build", "digests", "witness-rebuild", "witness-check", "provenance", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"))
+         + "".join(dn(n) for n in ("witness-build", "digests", "items", "witness-rebuild", "witness-check", "provenance", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"))
          + wit("release-verify", {}) + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
          + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
          + up("release-evidence") + up("witness-release"))
@@ -357,6 +357,23 @@ mkdir -p "$work/rc/.github/workflows"; printf 'run: cosign verify-attestation --
 expect caught "AC13 stage-promote.yml still reads the authorization predicate" "authorization predicate" removed "$work/rc"
 mkdir -p "$work/rd/.github/workflows"; printf 'jobs:\n  authorization:\n    uses: ./.github/workflows/stage-authorize.yml\n' > "$work/rd/.github/workflows/release.yml"
 expect caught "AC13 release.yml still has an authorization job" "authorization job" removed "$work/rd"
+# ---- AC13: the metadata is made in order by bin/release-sign.sh (the VEX and CSAF before the manifest and the list, the manifest records their sha256, nothing signed earlier) ---------
+expect ok "AC13 the real bin/release-sign.sh makes the metadata in order from Build's verified digests and items" "" metadata "$root/bin/release-sign.sh"
+sg() { if mutate "$root/bin/release-sign.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" metadata "$work/$1.sh"; fi; }
+sg m_novex   'python3 bin/vex-forms\.py [^\n]*\n'                                              ''                              'no vex step'        "AC13 the VEX and CSAF files are not generated"
+sg m_noitems 'images --digests witness-build/digests.json --images-dir images --items witness-build/items.json' 'images --digests witness-build/digests.json --images-dir images' 'must carry --items' "AC13 the vex-forms input is not checked against Build's verified items"
+sg m_nomitem 'manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json' 'manifest --digests witness-build/digests.json --images-dir images' 'must carry --items' "AC13 the manifest is not checked against Build's verified items"
+sg m_novdir  ' --vex-dir release-metadata'                                                       ''                              'must carry --vex-dir' "AC13 the manifest does not record the VEX files' sha256"
+sg m_nolist  'python3 bin/release-metadata\.py list [^\n]*\n'                                   ''                              'no list step'       "AC13 release-files.sha256 is not made"
+sg m_early   '(python3 bin/release-metadata\.py images [^\n]*\n)'                              'cosign login ghcr.io -u x --password-stdin <<< "$GH_TOKEN"\n\1' 'must come before' "AC13 a registry login (the first cosign call) before the metadata exists"
+python3 - "$root/bin/release-sign.sh" "$work/m_swap.sh" <<'PY'
+import sys
+L = open(sys.argv[1]).read().split("\n")
+a = next(i for i, l in enumerate(L) if "release-metadata.py manifest" in l); b = next(i for i, l in enumerate(L) if "bin/vex-forms.py" in l)
+L[a], L[b] = L[b], L[a]
+open(sys.argv[2], "w").write("\n".join(L))
+PY
+expect caught "AC13 the manifest is made before the VEX and CSAF files exist" "must come before" metadata "$work/m_swap.sh"
 # ---- the real repository (RED until PR 4 is implemented) ---------------------------------------------------------------------
 expect ok "the real stage-promote.yml is the Release stage" "" stage "$root/.github/workflows/stage-promote.yml"
 expect ok "the real credentials reach only the steps that need them" "" credentials "$root/.github/workflows/stage-promote.yml"
@@ -368,7 +385,7 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-EXPECT=169
+EXPECT=177
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -218,6 +218,26 @@ EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # plain literal; never a secret, a glued expression or a substitution
 AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./-]+")
 
+# Release's NAMED SECRETS (rule 56: only Release holds a stored secret; advisor 0386 J): ONE closed list of five rows, in code, so that a sixth row, another name, another place
+# or another script is a reviewed edit of this file and nothing else.  name -> {(stage file, job): the listed scripts that may receive it}.  bin/witnessed.sh receives every
+# name at the place it is bound (it is the wrapper), GH_TOKEN being bound at exactly the two places below.
+_SB, _SP, _WIT = ".github/workflows/stage-build.yml", ".github/workflows/stage-promote.yml", "bin/witnessed.sh"
+_HUB = {(_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh"}}
+SECRET_ROWS = {
+    "GH_TOKEN": {(_SB, "apk"): {_WIT, "bin/build-stage-apk.sh", "bin/build-admit.py"},                      # row 1: the run's own token, admission only
+                 (_SP, "release"): {_WIT, "bin/release-publish.sh", "bin/release-sign.sh", "bin/release-assets.sh", "bin/release-postverify.sh"}},   # row 5
+    "APK_RELEASE_SIGNING_KEY": {(_SP, "release"): {_WIT, "bin/release-apks.sh"}},                          # row 2
+    "DOCKERHUB_USERNAME": _HUB,                                                                             # row 3
+    "DOCKERHUB_TOKEN": _HUB,                                                                                # row 4
+}
+SECRET_VALUE = {"GH_TOKEN": "${{ github.token }}", "APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}",
+                "DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}"}
+# the job that holds a named credential holds exactly these permissions (Build's apk job: read-only plus the identity token Witness needs; Release: the three writes)
+PLACE_PERMS = {(_SB, "apk"): {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"},
+               (_SP, "release"): {"contents": "write", "packages": "write", "id-token": "write"}}
+CHAIN_STAGE_FILES = {_SB, _SP, ".github/workflows/stage-sign.yml", ".github/workflows/stage-reproducibility.yml", ".github/workflows/stage-verify.yml"}
+CLOSED = "not in the closed secret list"
+
 # STATED LIMITS of the PR 1b mechanisms (round 1 (8)); none of them is closed by a judge of this kind:
 #  - ambient reach is NAME-LEVEL: a listed script named as the step's script, as an ARGUMENT, or through the `runs` of either counts as run by
 #    the step, so `bash bin/x.sh bin/adm.py` hands an ambient name listed for bin/adm.py to bin/x.sh as well; the step's env reaches every
@@ -251,7 +271,7 @@ class EnvNames(set):
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
     whole is allowed only through this map."""
     def __init__(self, *a):
-        super().__init__(*a); self.ambient = {}; self.pinned = {}; self.ambient_bind = {}
+        super().__init__(*a); self.ambient = {}; self.pinned = {}; self.ambient_bind = {}; self.closed = False   # closed: the tree has a Release (stage-promote.yml job release), so the five named-secret rows are enforced
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node", "ruby", "perl", "source", "eval", "exec",
                 "make", "gmake", "xargs", "run-parts", "npm", "yarn", "pnpm", "just", "task", "parallel", "env", "sudo", "nohup",
                 "timeout", "nice", "command", "builtin", "watch", "at", "find"}
@@ -411,6 +431,10 @@ def load_scripts(base):
         return {}, ["chain-scripts.json has no `scripts` list"], set()
     names = doc.get("env_names", [])
     env_names = EnvNames()
+    try:       # the five rows are enforced once the tree has a Release: stage-promote.yml with a job named release (a tree without one has nothing to bind them to)
+        env_names.closed = re.search(r"(?m)^  release:\s*$", open(os.path.join(base, ".github/workflows/stage-promote.yml"), errors="replace").read()) is not None
+    except OSError:
+        env_names.closed = False
     if not isinstance(names, list): errs.append("chain-scripts.json: env_names must be a list")
     else:
         for n in names:
@@ -475,7 +499,7 @@ def load_scripts(base):
     amb = doc.get("ambient_env", [])
     if not isinstance(amb, list): errs.append("chain-scripts.json: ambient_env must be a list of {name, script, why}")
     else:
-        seen = set()
+        seen, seen_at = set(), set()
         for e in amb:
             if (not isinstance(e, dict) or not {"name", "script", "why", "file", "job"} <= set(e) or set(e) - {"name", "script", "why", "file", "job", "handoff_line"}
                     or not all(isinstance(e[k], str) for k in e)):
@@ -483,13 +507,21 @@ def load_scripts(base):
             nm, sc, why = e["name"], e["script"], e["why"]
             if not re.fullmatch(r"[A-Z][A-Z0-9_]*", nm) or FORBID_ENV.fullmatch(nm):
                 errs.append("chain-scripts.json: ambient_env name %r is not an allowed variable name (never BASH_ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*, ...)" % nm); continue
+            if env_names.closed and e["file"] in CHAIN_STAGE_FILES and (e["file"], e["job"]) not in SECRET_ROWS.get(nm, {}):
+                errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s (rule 56: five rows, each bound to exact scripts)" % (nm, sc, e["file"], e["job"], CLOSED)); continue
             if sc not in rows:
                 errs.append("chain-scripts.json: ambient_env %s names script %r, which is not a listed script" % (nm, sc)); continue
             if not isinstance(rows[sc].get("reads_env"), list) or nm not in rows[sc]["reads_env"]:
                 errs.append("chain-scripts.json: ambient_env %s names %s, whose row does not list %s in reads_env" % (nm, sc, nm)); continue
             if not why.strip():
                 errs.append("chain-scripts.json: ambient_env %s for %s has no reason (why)" % (nm, sc)); continue
-            if (nm, sc) in seen:
+            if env_names.closed and e["file"] in CHAIN_STAGE_FILES and (e["file"] not in {f for f, _j in SECRET_ROWS.get(nm, {})} or (e["file"], e["job"]) not in SECRET_ROWS.get(nm, {}) or sc not in SECRET_ROWS[nm][(e["file"], e["job"])]):
+                errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s (rule 56: five rows, each bound to exact scripts)" % (nm, sc, e["file"], e["job"], CLOSED)); continue
+            if env_names.closed and nm in SECRET_VALUE and nm != "GH_TOKEN" and e["file"] not in CHAIN_STAGE_FILES:
+                errs.append("chain-scripts.json: ambient_env %s for %s at %s job %s is %s" % (nm, sc, e["file"], e["job"], CLOSED)); continue
+            if (nm, sc, e["file"], e["job"]) in seen_at:
+                errs.append("chain-scripts.json: ambient_env %s for %s is listed twice at %s job %s" % (nm, sc, e["file"], e["job"])); continue
+            if (nm, sc) in seen and not (nm == "GH_TOKEN" and sc == _WIT):      # only the wrapper is bound at both places of GH_TOKEN
                 errs.append("chain-scripts.json: ambient_env %s for %s is listed twice" % (nm, sc)); continue
             if "file" in e and not re.fullmatch(r"\.github/workflows/stage-[A-Za-z0-9_.-]+\.ya?ml", e["file"]):
                 errs.append("chain-scripts.json: ambient_env %s for %s: file %r is not a stage file path (.github/workflows/stage-*.yml)" % (nm, sc, e["file"])); continue
@@ -502,7 +534,7 @@ def load_scripts(base):
                 n_hl = sum(1 for l in strip(open(os.path.join(base, sc), errors="replace").read()).splitlines() if l.strip() == hl.strip())
                 if n_hl != 1:
                     errs.append("chain-scripts.json: ambient_env %s for %s: handoff_line %r occurs %d times outside comments in %s (exactly once is required)" % (nm, sc, hl, n_hl, sc)); continue
-            seen.add((nm, sc)); env_names.ambient.setdefault(nm, set()).add(sc)
+            seen.add((nm, sc)); seen_at.add((nm, sc, e["file"], e["job"])); env_names.ambient.setdefault(nm, set()).add(sc)
             env_names.ambient_bind.setdefault(nm, []).append((sc, e.get("file"), e.get("job")))
     pins = doc.get("pinned_steps", [])
     if not isinstance(pins, list): errs.append("chain-scripts.json: pinned_steps must be a list of {file, job, id, run, why}")
@@ -739,6 +771,14 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
         for _s in ((_j.get("steps") or []) if isinstance(_j, dict) else []):
             if isinstance(_s, dict) and isinstance(_s.get("run"), str): run_count[_s["run"]] = run_count.get(_s["run"], 0) + 1
     amb = getattr(env_names, "ambient", {})        # PR 1b (B): name -> listed scripts that read it from their own environment
+    closed = getattr(env_names, "closed", False)
+    if closed and full in CHAIN_STAGE_FILES:       # rule 56: a stored secret is read only as the value of a named env entry of Release; nowhere else, in no other stage
+        def _noenv(x):
+            if isinstance(x, dict): return {k: _noenv(v) for k, v in x.items() if not (k == "env" and full == _SP)}
+            if isinstance(x, list): return [_noenv(v) for v in x]
+            return x
+        if re.search(r"(?i)\bsecrets\b", json.dumps(_noenv(d))):
+            errs.append("%s: a stored secret outside %s (rule 56: %s)" % (rel, "the named env entries of Release" if full == _SP else "Release", "only Release holds a stored secret"))
     extra = set(d) - STAGE_WF_KEYS
     if extra: errs.append("%s: workflow keys %s are not allowed in a stage file (env, defaults, concurrency, run-name can reroute every step)" % (rel, sorted(extra)))
     for jn, j in ((d.get("jobs") or {}).items()):
@@ -746,6 +786,8 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
         extra = set(j) - STAGE_JOB_KEYS
         if extra: errs.append("%s: job keys %s are not allowed (container, services, defaults, env, uses, secrets, with run other code or reroute steps)" % (pre, sorted(extra)))
         errs += _runner_errors(pre, j)
+        if closed and (full, jn) in PLACE_PERMS and j.get("permissions") != PLACE_PERMS[(full, jn)]:
+            errs.append("%s: job %s must hold exactly the permissions %s, found %s" % (full, jn, PLACE_PERMS[(full, jn)], j.get("permissions")))
         for s in (j.get("steps") or []):
             pin = pins.get((full, jn, s.get("id"))) if isinstance(s.get("id"), str) else None
             if pin is not None:
@@ -765,7 +807,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
             if (run is None) == (uses is None): errs.append("%s: must have exactly one of run/uses" % sp); continue
             for k in env:
                 if FORBID_ENV.fullmatch(k): errs.append("%s: env %s is never allowed (it can make a shell or interpreter load other code)" % (sp, k))
-                elif k not in env_names and k not in amb: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json" % (sp, k))
+                elif k not in env_names and k not in amb: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json%s" % (sp, k, (" and " + CLOSED) if closed and full in CHAIN_STAGE_FILES else ""))
             if uses is not None:
                 if env: errs.append("%s: an action step passes env" % sp)
                 m = USES_OK.fullmatch(str(uses).split(" #")[0].strip())
@@ -793,15 +835,28 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                 # Round 1 (1): an AMBIENT name is valid in a step only if the step reaches a listed script the name is listed for AND its value is
                 # one plain expression; both checks run whether or not the run line also reads the name whole (a whole read of an ambient name in a
                 # step that does not reach its script is an error). An ambient name is never an ordinary env_names name.
+                if closed and full in CHAIN_STAGE_FILES and k in SECRET_ROWS:     # the five rows: name, place, scripts and value are exact
+                    used = set(r) | argp
+                    scripts = SECRET_ROWS[k].get((full, jn))
+                    if scripts is None or not used <= scripts:
+                        errs.append("%s: %s is allowed only %s (%s): found in %s job %s, reaching %s" % (sp, k, "for the admission step of stage-build.yml job apk" if k == "GH_TOKEN" else "in the named steps of stage-promote.yml job release",
+                                    CLOSED, full, jn, ", ".join(sorted(used - (scripts or set())) or ["no listed script"])))
+                    elif v != SECRET_VALUE[k]:
+                        errs.append("%s: %s must be exactly %s, found %r" % (sp, k, SECRET_VALUE[k], v))
+                elif closed and full in CHAIN_STAGE_FILES and k in amb:
+                    errs.append("%s: env %s is %s" % (sp, k, CLOSED))
                 if k in got and k not in amb: continue
                 if k in amb and not FORBID_ENV.fullmatch(k):    # PR 1b (B): an ambient name is read by a listed script from its own environment
-                    bad_bind = [(f, j) for sc, f, j in env_names.ambient_bind.get(k, []) if sc in reach and ((f and f != full) or (j and j != jn))]
+                    _bind = env_names.ambient_bind.get(k, [])       # a script may be bound at several places (the wrapper's GH_TOKEN): one of them must be this file and job
+                    bad_bind = [(f, j) for sc, f, j in _bind if sc in reach and not any(sc2 == sc and f2 == full and j2 == jn for sc2, f2, j2 in _bind)]
                     if bad_bind:
                         errs.append("%s: env %s is bound to file/job %s, not to %s job %s" % (sp, k, ", ".join("%s/%s" % fj for fj in bad_bind), full, jn))
                     elif not (amb[k] & reach):
                         errs.append("%s: env %s is listed ambient only for %s, which this step does not run (as its script, an argument or through `runs`)" % (sp, k, ", ".join(sorted(amb[k]))))
                     elif (set(r) | argp) - amb[k]:
                         errs.append("%s: env %s reaches %s, which is not authorized in ambient_env for it (the step's command script and every listed script named as an argument receive the environment too; each needs its own ambient_env entry with a reason and reads_env)" % (sp, k, ", ".join(sorted((set(r) | argp) - amb[k]))))
+                    elif closed and full in CHAIN_STAGE_FILES and k in SECRET_VALUE and v == SECRET_VALUE[k]:
+                        pass                                           # the named value of the closed list, checked exactly above
                     elif not isinstance(v, str) or not AMBIENT_VALUE.fullmatch(v):
                         errs.append("%s: ambient env %s has the value %r, which is not one plain expression (github.token, inputs.X, matrix.X) or a plain literal" % (sp, k, v))
                 else:

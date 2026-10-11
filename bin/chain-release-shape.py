@@ -16,6 +16,8 @@ which is RED until PR 4 is implemented. Finite grammars and allowlists only, no 
                       creation, no PATH-like setting, no credential printed (text scan, comments and quotes included; it over-reports).
   listed JSON ROOT    REQ-CHAIN-007-AC10 each release script is a row of chain-scripts.json with its sha256, its tools and its signs value.
   record FILE [VAL..] REQ-CHAIN-007-AC12 no credential name or value, no JWT, no token variable in a Witness envelope (payload decoded).
+  metadata FILE       REQ-CHAIN-007-AC13  bin/release-sign.sh makes the metadata in order: the image input, the OpenVEX copy, vex-forms, the manifest (which records the VEX files'
+                      sha256 and checks every digest against Build's verified digests.json and items.json), the list, and only then the first signature.
   removed ROOT        REQ-CHAIN-007-AC13 the old authorization machinery is gone.
 Modelled on: in-toto-witness docs/attestors/environment.md (what the environment attestor records and what a filter removes) and
 docs/tutorials/artifact-policy.md:58-70 (the envelope: base64 payload); PR 3's bin/chain-check-shape.py (the same stage grammar, the same
@@ -25,7 +27,7 @@ import base64, hashlib, json, os, re, sys, yaml
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
-DOWN = {"witness-build", "witness-rebuild", "witness-check", "provenance", "digests", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
+DOWN = {"witness-build", "witness-rebuild", "witness-check", "provenance", "digests", "items", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
 UP = {"release-evidence", "witness-release"}
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
@@ -330,6 +332,30 @@ def record(path, values):
     return bad
 
 
+def metadata(path):
+    """REQ-CHAIN-007-AC13 (advisor 0386 item 2, cache-ce): the VEX and CSAF files are generated BEFORE the signed manifest and before release-files.sha256, the manifest records their
+    sha256, the vex-forms input is made from Build's verified digests and items, and nothing is signed before all of it exists."""
+    lines = [l.strip() for l in open(path).read().split("\n") if l.strip() and not l.strip().startswith("#")]
+    def at(pat, start=0):
+        return next((i for i in range(start, len(lines)) if re.search(pat, lines[i])), None)
+    marks = {"images": at(r"release-metadata\.py images "), "cp": at(r"^cp \.vex/fosterstack-cache\.openvex\.json release-metadata/"), "vex": at(r"python3 bin/vex-forms\.py "),
+             "manifest": at(r"release-metadata\.py manifest "), "list": at(r"release-metadata\.py list "), "first": at(r"^cosign (login|sign)"), "lsign": at(r"cosign sign-blob .*release-files\.sha256\.bundle")}
+    bad = ["release-sign.sh has no %s step" % k for k, v in marks.items() if v is None]
+    if bad:
+        return bad
+    order = ["images", "cp", "vex", "manifest", "list", "first", "lsign"]
+    for a, b in zip(order, order[1:]):
+        if not marks[a] < marks[b]:
+            bad.append("the %s step must come before the %s step (the VEX and CSAF files are generated before the manifest and the list, and nothing is signed before them)" % (a, b))
+    for k, need in (("images", ["--items witness-build/items.json", "--digests witness-build/digests.json", "--images-dir images"]),
+                    ("vex", ["--openvex .vex/fosterstack-cache.openvex.json", "--images release-metadata/vex-images.json", '--version "$GITHUB_REF_NAME"']),
+                    ("manifest", ["--items witness-build/items.json", "--vex-dir release-metadata", "--digests witness-build/digests.json"])):
+        for n in need:
+            if n not in lines[marks[k]]:
+                bad.append("the %s step must carry %s" % (k, n))
+    return bad
+
+
 def removed(root):
     bad = [f"{f} still exists" for f in OLD if os.path.exists(os.path.join(root, f))]
     pp = os.path.join(root, ".github/workflows/stage-promote.yml")
@@ -343,11 +369,11 @@ def removed(root):
 
 if __name__ == "__main__":
     cmd, a = sys.argv[1], sys.argv[2:]
-    if cmd in ("stage", "credentials", "graph", "verify") and not os.path.exists(a[0]):
+    if cmd in ("stage", "credentials", "graph", "verify", "metadata") and not os.path.exists(a[0]):
         print("missing file: %s" % a[0]); sys.exit(1)
     fn = {"stage": lambda: stage(a[0]), "credentials": lambda: credentials(a[0]), "others": lambda: others(a[0]),
           "graph": lambda: graph(a[0]), "verify": lambda: verify(a[0]), "scan": lambda: scan(a[0], a[1]),
-          "listed": lambda: listed(a[0], a[1]), "record": lambda: record(a[0], a[1:]), "removed": lambda: removed(a[0])}[cmd]
+          "listed": lambda: listed(a[0], a[1]), "metadata": lambda: metadata(a[0]), "record": lambda: record(a[0], a[1:]), "removed": lambda: removed(a[0])}[cmd]
     bad = fn()
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)

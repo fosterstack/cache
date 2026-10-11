@@ -142,11 +142,16 @@ def tree(extra_env=None):
         open(os.path.join(t, "images", v + ".tar"), "w").write("tar-" + v)
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
         open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
-        open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("{}"); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("{}")
+        open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("lock " + v); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("sbom " + v)
     for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist"):
         os.makedirs(os.path.join(t, d), exist_ok=True)
     for k in ("archive-linux-amd64", "archive-linux-arm64", "archive-fips-linux-amd64", "archive-fips-linux-arm64"): digs[k] = "sha256:" + hashlib.sha256(k.encode()).hexdigest()
     json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
+    items = {}
+    for v in ("production", "fips"):
+        items.update({"image-" + v: DIG["image-" + v], "lock-" + v: "sha256:" + hashlib.sha256(("lock " + v).encode()).hexdigest(), "sbom-" + v: "sha256:" + hashlib.sha256(("sbom " + v).encode()).hexdigest(),
+                      "image-%s-manifest-amd64" % v: "sha256:" + "1" * 64, "image-%s-manifest-arm64" % v: "sha256:" + "2" * 64})
+    json.dump(items, open(os.path.join(t, "witness-build/items.json"), "w"))
     for f in ("witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "witness-check/check-collection.json", "provenance/provenance.json", "dist/checksums.txt"):
         open(os.path.join(t, f), "w").write("{}")
     os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w").write("[]")
@@ -328,6 +333,11 @@ check(rc == 0 and len(vf) == 1 and "--openvex .vex/fosterstack-cache.openvex.jso
 check(sorted(os.listdir(os.path.join(t, "release-metadata"))) == sorted(["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.csaf.json", "fosterstack-cache-v0.3.0.inspector-filters.json", "release-files.sha256", "vex-images.json"]) if os.path.isdir(os.path.join(t, "release-metadata")) else False, "AC13 release-metadata/ holds the four files, release-files.sha256 and the vex input", str(os.listdir(t)))
 lf = os.path.join(t, "release-metadata/release-files.sha256")
 check(os.path.exists(lf) and [x.split("  ")[1] for x in open(lf).read().split("\n") if x] == ["release-manifest.json", "fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.csaf.json", "fosterstack-cache-v0.3.0.inspector-filters.json"], "AC13 release-files.sha256 lists exactly the four files in order")
+mj = json.load(open(os.path.join(t, "release-metadata/release-manifest.json"))) if os.path.exists(os.path.join(t, "release-metadata/release-manifest.json")) else {}
+check([x.get("file") for x in mj.get("vex", [])] == ["fosterstack-cache.openvex.json", "fosterstack-cache-v0.3.0.inspector-filters.json", "fosterstack-cache-v0.3.0.csaf.json"] and all(x.get("sha256") == hashlib.sha256(open(os.path.join(t, "release-metadata", x["file"]), "rb").read()).hexdigest() for x in mj.get("vex", [])), "AC13 the VEX and CSAF files are generated BEFORE the manifest, and the manifest records their sha256", str(mj.get("vex")))
+vi = json.load(open(os.path.join(t, "release-metadata/vex-images.json"))) if os.path.exists(os.path.join(t, "release-metadata/vex-images.json")) else {}
+check(sorted(vi) == ["fips", "production"] and sorted(vi["production"]) == ["children", "index"] and sorted(vi["production"]["children"]) == ["linux/amd64", "linux/arm64"] and "debug" not in vi, "AC13 the vex-forms input is exactly {production: {index, children {linux/amd64, linux/arm64}}, fips: {...}}, no debug key", str(vi))
+t2 = tree(); os.remove(os.path.join(t2, "witness-build/items.json")); rc2, so2, se2 = run(t2, "release-sign", creds=REG); check(rc2 != 0 and "items.json" in se2 and not signs(t2), "AC13 without Build's verified items Release does not check the digests it publishes in the VEX forms: it stops before anything is signed", "rc=%s %s" % (rc2, first(se2)))
 first_sig = next((i for i, l in enumerate(L) if l.startswith("cosign")), 99)
 check(L.index(vf[0]) < first_sig if vf else False, "AC13 the metadata is made before the first signature")
 check(any(l.startswith("cosign sign-blob") and "release-files.sha256.bundle" in l and l.endswith("release-metadata/release-files.sha256") for l in L), "AC13 release-files.sha256 is signed keyless with a bundle in release-evidence/", str([l for l in L if "release-files" in l]))
@@ -454,7 +464,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "219"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "222"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

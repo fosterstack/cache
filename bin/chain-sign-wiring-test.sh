@@ -3271,7 +3271,7 @@ d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py"
 # pull-requests read + id-token write (Witness); in stage-promote.yml job release (contents/packages/id-token write): (2) APK_RELEASE_SIGNING_KEY -> release-apks.sh,
 # (3) DOCKERHUB_USERNAME and (4) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (5) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh, release-assets.sh,
 # release-postverify.sh. bin/witnessed.sh is bound for GH_TOKEN at exactly those two places and for the three secrets in Release. Every other name, place or script is refused.
-repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
+repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
 RCIF="if: \${{ !contains(github.ref_name, '\\''-'\\'') }}"
 for f in stage-sign stage-reproducibility stage-verify stage-build; do
   probe "sec_$f" "stored secret outside Release" "a stored secret (secrets.X_KEY) in a step env of $f.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/$f.yml"
