@@ -213,7 +213,7 @@ fi
 
 # ---- fixtures ---------------------------------------------------------------------------------------------------
 cat > "$work/fx.py" <<'PY'
-import base64, datetime as dt, hashlib, json, os, subprocess, sys, textwrap
+import base64, datetime as dt, hashlib, json, os, shutil, subprocess, sys, textwrap
 W = sys.argv[1]
 SSL = os.environ["OPENSSL"]
 def sh(*a, inp=None):
@@ -855,6 +855,67 @@ for _nm, _kw in (("iss_raw", {"issuer_der": _hx(_I)}), ("iss_ia5", {"issuer_der"
                  ("iss_der", {"issuer_der": "0c" + _ln(len(_I)) + _hx(_I)})):
     add("sign_" + _nm, STAGES["sign"], T, PROV, D, **_kw)
 dj("rekor-x3.json", {"entries": [entry("sign_" + n, 60 + i) for i, n in enumerate(("iss_raw", "iss_ia5", "iss_len", "iss_trail", "cfg_raw", "cfg_long", "iss_der"))]})
+# ---- PR 4 (advisor 0386, read-back verifier-bindings): bind-items and check-list ----
+# items.json is a PRODUCT of Build's record next to digests.json; the four Check records (scanners, acceptance, runtime, arm64) are Witness collections
+# named for their step, signed by stage-verify.yml at the tag, whose MATERIAL file:witness-build/digests.json carries the sha256 of Build's digest list.
+MAT = "https://witness.dev/attestations/material/v0.1/file:"
+PRD = "https://witness.dev/attestations/product/v0.1/file:"
+def _fsha(n): return hashlib.sha256(open(p(n), "rb").read()).hexdigest()
+dj("items.json", {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "1" * 64})
+dj("items-other.json", {"image-production": D["image-production"], "image-fips": D["image-fips"], "lock-production": "sha256:" + "2" * 64})
+def _prods(items_name, digests_name="digests.json"):
+    return [{"name": PRD + "digests.json", "digest": {"sha256": _fsha(digests_name)}}, {"name": PRD + "items.json", "digest": {"sha256": _fsha(items_name)}},
+            {"name": "https://witness.dev/attestations/git/v0.1/commithash:" + "f" * 40, "digest": {"gitoid:sha1": "gitoid:commit:sha1:" + "f" * 40}}]
+def _coll(step, subj): return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": step, "attestations": []}, "subject": subj}).encode()
+add("bi_ok", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+add("bi_otheritems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items-other.json")))
+add("bi_noitems", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")[:1] + _prods("items.json")[2:]))
+add("bi_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [{"name": PRD + "items.json", "digest": {"sha256": _fsha("items-other.json")}}]))
+add("bi_material", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", [_prods("items.json")[0], {"name": MAT + "items.json", "digest": {"sha256": _fsha("items.json")}}]))
+add("bi_wrongstage", STAGES["check"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+add("bi_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+add("bi_unsigned", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")), signed=False)
+def _chk(name, step, wf=None, ref=T, digests="digests.json", signed=True, subj=None):
+    wf = wf or STAGES["check"]
+    add(name, wf, ref, COLL, None, stmt="v0.1", signed=signed,
+        payload=_coll(step, subj if subj is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}},
+                                                        {"name": PRD + "check-results/%s.json" % step, "digest": {"sha256": "9" * 64}}]))
+for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("c_" + _sn, _sn)
+for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("co_" + _sn, _sn, digests="digests-other.json")      # all four agree with each other, not with Build's list
+_chk("c_arm64_job", "check-arm64"); _chk("c_runtime_arm64name", "arm64")
+_chk("c_scanners_buildid", "scanners", wf=STAGES["build"]); _chk("c_scanners_signid", "scanners", wf=STAGES["sign"]); _chk("c_scanners_relid", "scanners", wf=STAGES["release"])
+_chk("c_scanners_tag2", "scanners", ref=T2); _chk("c_scanners_branch", "scanners", ref="refs/heads/main")
+_chk("c_scanners_unsigned", "scanners", signed=False)
+_chk("c_scanners_nomat", "scanners", subj=[{"name": PRD + "check-results/scanners.json", "digest": {"sha256": "9" * 64}}])
+_chk("c_scanners_prodonly", "scanners", subj=[{"name": PRD + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}])
+_chk("c_scanners_dupmat", "scanners", subj=[{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests.json")}}, {"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha("digests-other.json")}}])
+def _cl(dirname, slots):
+    for slot, rec in slots.items():
+        if rec is None: continue
+        os.makedirs(p("%s/witness-%s" % (dirname, slot)), exist_ok=True)
+        shutil.copy(p(rec + ".json"), p("%s/witness-%s/%s-collection.json" % (dirname, slot, slot)))
+OK4 = {"scanners": "c_scanners", "acceptance": "c_acceptance", "runtime": "c_runtime", "arm64": "c_arm64"}
+_cl("cl_ok", OK4)
+_cl("cl_missing", dict(OK4, arm64=None))
+_cl("cl_extra", dict(OK4, extra="c_scanners"))
+_cl("cl_swapped", dict(OK4, scanners="c_acceptance", acceptance="c_scanners"))          # reordered: each record sits in the other's slot
+_cl("cl_dup", dict(OK4, acceptance="c_scanners"))                                        # the scanners record presented twice
+_cl("cl_subst", dict(OK4, runtime="c_scanners", acceptance="c_acceptance"))              # a substituted record under another name
+_cl("cl_unverifiable", dict(OK4, runtime="c_scanners_unsigned"))
+_cl("cl_wrongjob", dict(OK4, arm64="c_arm64_job"))
+_cl("cl_buildid", dict(OK4, scanners="c_scanners_buildid"))
+_cl("cl_signid", dict(OK4, scanners="c_scanners_signid"))
+_cl("cl_relid", dict(OK4, scanners="c_scanners_relid"))
+_cl("cl_tag2", dict(OK4, scanners="c_scanners_tag2"))
+_cl("cl_branch", dict(OK4, scanners="c_scanners_branch"))
+_cl("cl_nomat", dict(OK4, scanners="c_scanners_nomat"))
+_cl("cl_prodonly", dict(OK4, scanners="c_scanners_prodonly"))
+_cl("cl_dupmat", dict(OK4, scanners="c_scanners_dupmat"))
+_cl("cl_alt_digests", {"scanners": "co_scanners", "acceptance": "co_acceptance", "runtime": "co_runtime", "arm64": "co_arm64"})
+_cl("cl_onebad_digests", dict(OK4, runtime="co_runtime"))
+os.makedirs(p("cl_stray/witness-scanners"), exist_ok=True)
+_cl("cl_stray", OK4); open(p("cl_stray/witness-scanners/stray.json"), "w").write("{}")
+_cl("cl_empty", {})
 # the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
 open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
 open(p("now-in.txt"), "w").write(fmt(now + dt.timedelta(minutes=2)))
@@ -1789,6 +1850,40 @@ for c in x4_useslist:"uses" x4_jobuses:"uses" x4_svcstr:"services" x4_svclist:"s
   expect_refuse "X4 ${c%%:*}: a malformed shape is refused and named" "${c#*:}|not" $(A "${c%%:*}")
 done
 
+# ---- PR 4: bind-items and check-list (read-back verifier-bindings, advisor OK): refuse-only commands of Release's verify step, on the real verifier ----
+BI() { echo bind-items --policy "$work/policy.json" --now "$NOW" --record "$work/$1.json" --items "$work/${2:-items}.json"; }
+expect_ok     "PR4 bind-items: items.json equal to the product of Build's verified record is accepted" $(BI bi_ok)
+expect_refuse "PR4 bind-items: an items.json that is not the file Build's record holds is refused" "build|items.json|digest" $(BI bi_ok items-other)
+expect_refuse "PR4 bind-items: a record that holds another items.json hash is refused" "build|items.json|digest" $(BI bi_otheritems)
+expect_refuse "PR4 bind-items: a record with no items.json product is refused" "build|items.json" $(BI bi_noitems)
+expect_refuse "PR4 bind-items: two items.json products (one right, one wrong) are refused" "build|items.json" $(BI bi_dup)
+expect_refuse "PR4 bind-items: a material subject of the same name does not count as the product" "build|items.json" $(BI bi_material)
+expect_refuse "PR4 bind-items: a record signed by another stage's file is refused" "build|stage-verify.yml" $(BI bi_wrongstage)
+expect_refuse "PR4 bind-items: a record of another tag is refused" "build|v0.3.1" $(BI bi_othertag)
+expect_refuse "PR4 bind-items: an unsigned record is refused" "build|signature" $(BI bi_unsigned)
+CLS() { echo check-list --policy "$work/policy.json" --now "$NOW" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
+expect_ok     "PR4 check-list: exactly scanners, acceptance, runtime and arm64, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
+expect_refuse "PR4 check-list: a missing record (arm64) is refused, naming Check and the record" "check|arm64|missing" $(CLS cl_missing)
+expect_refuse "PR4 check-list: an extra record is refused, naming it" "check|extra" $(CLS cl_extra)
+expect_refuse "PR4 check-list: a stray file inside a record directory is refused" "check|stray.json" $(CLS cl_stray)
+expect_refuse "PR4 check-list: two records swapped between their slots (a substitution) are refused" "check|scanners" $(CLS cl_swapped)
+expect_refuse "PR4 check-list: the scanners record presented twice (as acceptance) is refused" "check|acceptance" $(CLS cl_dup)
+expect_refuse "PR4 check-list: a record substituted under another step's name is refused" "check|runtime" $(CLS cl_subst)
+expect_refuse "PR4 check-list: an unverifiable (unsigned) record is refused, naming the record" "check|runtime|signature" $(CLS cl_unverifiable)
+expect_refuse "PR4 check-list: the arm64 slot holding a record of the job check-arm64 (wrong job) is refused" "check|arm64" $(CLS cl_wrongjob)
+expect_refuse "PR4 check-list: a record signed by stage-build.yml is refused (wrong identity)" "check|stage-build.yml" $(CLS cl_buildid)
+expect_refuse "PR4 check-list: a record signed by stage-sign.yml is refused (wrong identity)" "check|stage-sign.yml" $(CLS cl_signid)
+expect_refuse "PR4 check-list: a record signed by stage-promote.yml is refused (wrong identity)" "check|stage-promote.yml" $(CLS cl_relid)
+expect_refuse "PR4 check-list: a record of another tag is refused" "check|v0.3.1" $(CLS cl_tag2)
+expect_refuse "PR4 check-list: a record signed on a branch is refused" "check|refs/heads/main" $(CLS cl_branch)
+expect_refuse "PR4 check-list: a record with no material digest list is refused" "check|scanners|digests" $(CLS cl_nomat)
+expect_refuse "PR4 check-list: a product named like the digest list does not stand in for the material" "check|scanners|digests" $(CLS cl_prodonly)
+expect_refuse "PR4 check-list: two material subjects for the digest list are refused" "check|scanners|digests" $(CLS cl_dupmat)
+expect_refuse "PR4 check-list: four valid records whose digests match EACH OTHER but not Build's verified digests are refused" "check|digest" $(CLS cl_alt_digests)
+expect_refuse "PR4 check-list: one record for other digests among three right ones is refused" "check|runtime|digest" $(CLS cl_onebad_digests)
+expect_refuse "PR4 check-list: against another digest list of Build's none of the records matches" "check|digest" $(CLS cl_ok digests-other)
+expect_refuse "PR4 check-list: an empty directory is refused" "check|missing" $(CLS cl_empty)
+
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs plus the S1 cases (where
 # cosign returned a bad bundle and Sign refused it); never one for a refusal of the check itself
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
@@ -1801,7 +1896,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=640
+EXPECT=670
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
