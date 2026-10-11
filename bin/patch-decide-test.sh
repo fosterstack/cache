@@ -1655,7 +1655,7 @@ R4T_ = ("## v0.2.2 — patch release\n\n### Fixes\n- CVE-1 in [click](redacted):
 got_ = P.tag_notes(mktag("v0.2.2", R4T_)) or ""
 check("AC8 redaction marker (r6, B F1): a round-4 tag's '[click](redacted)' (fix line and behavior entry) reads escaped, its VEX line unchanged",
       "](redacted)" not in got_ and "- \\[click\\]\\(redacted\\) \\(advisor 0130\\)\\.\n" in got_
-      and "- CVE-1 in \\[click\\]\\(redacted\\)\\:" in got_ and "- (redacted): fixed (added) — statement 2 of the new document\n" in got_, got_)
+      and "\\[click\\]\\(redacted\\)\\: v1" in got_ and "- (redacted): fixed (added) — statement 2 of the new document\n" in got_, got_)
 try:
     cl_, nn_ = P.changelog(R4T_, None, "- [click]gpt (advisor 0130).\n- Another change (advisor 0131).\n")
 except ValueError as e:
@@ -1730,7 +1730,7 @@ check("AC8 changelog history (r6, A R5-5): extra blank lines after the title are
 for x_ in ("google\\.com", "aws\\.com", "google\\.golang\\.org\\/protobuf \\(advisor 0130\\)\\."):
     y_ = P._clean_free(x_)
     check("AC8 redaction (r6, A (d) / B F6): %r without a marker is redacted as before round 5" % x_,
-          "(redacted)" in y_ and not re.search(r"(?i)google|aws", y_) and P._clean_free(y_) == y_, y_)
+          MARK_.search(y_) and not re.search(r"(?i)google|aws", y_) and P._clean_free(y_) == y_, y_)
 check("AC8 redaction (r6, B F6): an escaped line without a marker or a name is unchanged", P._clean_free("a\\.b \\(c\\)") == "a\\.b \\(c\\)")
 # B F4 (the channels this PR newly prints: a product, an @id, a field name; the name too, now printed by _lit): a value
 # holding a signature-block delimiter never makes the tag of the notes unreadable

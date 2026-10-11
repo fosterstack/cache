@@ -280,30 +280,74 @@ PUNCT = r"!-/:-@\[-`{-~"                         # every ASCII punctuation chara
 ESC = re.compile(r"([%s])" % PUNCT)
 ESCAPED = re.compile(r"(?:\\[%s]|[^%s])*\Z" % (PUNCT, PUNCT))
 UNESC = re.compile(r"\\([%s])" % PUNCT)
+MARK = re.compile(r"(?i)redacted")                # the marker in every form it was ever written: <..>, (..), escaped, any case
+FREE_PRE = re.compile(r"- |#{1,6} ")             # a bullet or an ATX heading stays one
+SHOWN_SPAN = re.compile(r"`[^`]+`")
+SHOWN_BAD = re.compile(r"[!\"#$%&'*+<=>?@\\^`{|}~]|//|(?i:www)\.|(?<![A-Za-z0-9])_(?![A-Za-z0-9])")
+SHOWN_BRACKETS = re.compile(r"[^\[\]]*(?: \[[^\[\]]*\]: [^\[\]]*)?\Z")
+
+
+def _shows(body):
+    """the body of a line holding the marker shows it as text as written (Codex #300 r6, A R5-1 / B F1): outside its
+    code spans (single backticks, none adjacent: literal text in every renderer) it holds letters, digits, spaces,
+    non-ASCII text and . , ; : ( ) / - only, '_' only beside a letter or digit, '[' only as the one ' [...]: ' list a VEX
+    line prints, no '//' or 'www.': nothing that starts a link, image, reference definition, HTML, comment, autolink,
+    entity, escape, code, footnote, table or math construct can take the marker into its syntax. Anything else is not
+    judged: the line is escaped (fail closed, no construct list to keep up)."""
+    if "``" in body:
+        return False
+    rest = SHOWN_SPAN.sub("C", body)
+    return not SHOWN_BAD.search(rest) and bool(SHOWN_BRACKETS.match(rest))
 
 
 def _clean_free(line):
-    """one line of free text (a fix line, a behavior entry, any line of a tag's own text) for Markdown output. A line
-    holding the redaction marker is written with every ASCII punctuation character backslash-escaped, the marker as
-    '\\(redacted\\)': no link, image, HTML tag, comment, code span or other construct of the text around it can take
-    the marker into its syntax and hide it (Codex #300 r5, A R4-4 / B F3; fail closed: no list of constructs to keep
-    up). A line already in that escaped form is read unescaped, cleaned and escaped again, so cleaning twice changes
-    nothing (a tag of the notes reads back as the notes; the changelog's history stays clean). A line without a marker
-    is _clean's, unchanged. A leading '- ' bullet stays a bullet."""
-    pre = "- " if line.startswith("- ") else ""
+    """one line of free text (a fix line, a behavior entry, any line of a tag's own text) for Markdown output. The
+    marker is recognised in every form it was ever written — origin/main's "<redacted>", round 4's "(redacted)", the
+    escaped forms, any case (Codex #300 r6, A R5-1 / B F1). A line holding it after _clean is kept as written only when
+    the marker was already there (_clean redacted nothing new) and _shows() finds nothing around it that could hide it
+    (so a VEX line the notes print reads back unchanged); otherwise every ASCII punctuation character is backslash-
+    escaped, the marker written '\\(redacted\\)': no link, image, HTML tag, comment, code span or other construct can take
+    it into its syntax (Codex #300 r5, A R4-4 / B F3). A line in that escaped form that holds the marker is read
+    unescaped, cleaned and escaped again, so cleaning twice changes nothing; a line without the marker is never read as
+    escaped — it is _clean's output unchanged ('google\\.com' is redacted as before round 5; r6, A (d) / B F6). A leading
+    '- ' bullet or an ATX heading's '#... ' stays one."""
+    m = FREE_PRE.match(line)
+    pre = m.group(0) if m else ""
     body = line[len(pre):]
-    own = bool(ESCAPED.match(body)) and "\\" in body       # this function's own escaped form
+    own = bool(MARK.search(body) and "\\" in body and ESCAPED.match(body))   # this function's own escaped form
     raw = UNESC.sub(r"\1", body) if own else body
-    c = _clean(raw)
-    if "<redacted>" in c or own:
-        return pre + ESC.sub(r"\\\1", c).replace("\\<redacted\\>", "\\(redacted\\)")
-    return pre + c
+    c = _visible(_clean(raw))
+    if not MARK.search(c) or (not own and c == raw and _shows(c)):
+        return pre + c
+    return pre + ESC.sub(r"\\\1", c)
+
+
+NOTES_LINE = re.compile(r"(?:- .*|#{1,6}(?: .*)?|No behavior change: this release contains fixes only\.)?\Z", re.S)
+
+
+def _shaped(text):
+    """a text holding the marker is published only when every line is blank, a '- ' bullet, an ATX heading, the
+    no-behavior-change line (what notes() writes), or a paragraph line standing alone (a blank line or the text's edge
+    before and after it, no leading space) that is fully escaped or that _shows() reads as plain text: then no line can
+    open a block (HTML, comment, fence, quote, indented code, reference definition) or continue a construct (a link title,
+    inline HTML) across lines, and a marker on another line cannot be taken into it (Codex #300 r6, B F2; fail closed).
+    A text without the marker is not judged."""
+    lines = text.split("\n")
+    if not any(MARK.search(ln) for ln in lines):
+        return True
+    for i, ln in enumerate(lines):
+        if NOTES_LINE.match(ln):
+            continue
+        alone = (i == 0 or lines[i - 1] == "") and (i + 1 == len(lines) or lines[i + 1] == "")
+        if not (alone and ln[:1].strip() and (ESCAPED.match(ln) or _shows(ln))):
+            return False
+    return True
 
 
 def _clean_lines(s):
     """_clean_free one line at a time, split at every line boundary str.splitlines() knows (LF, CR, CRLF, VT, FF, FS,
     GS, RS, NEL, LS, PS), each written back as LF: no redaction ever matches across a line break and merges two lines
-    (Codex #300 r3 B1; r4 A R3-4, B low)"""
+    (Codex #300 r3 B1; r4 A R3-4, B low). Its callers judge the whole text with _shaped() (r6, B F2)."""
     out = []
     for ln in str(s).splitlines(True):
         body = ln.splitlines()[0]
@@ -337,11 +381,13 @@ NOT_BARE = re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|//|
 
 
 def _lit(v, before_colon=False):
-    """the printed form of a document-supplied value; before_colon: the notes print ':' right after it (a CVE name)"""
+    """the printed form of a document-supplied value; before_colon: the notes print ':' right after it (a CVE name). In
+    the quoted form a hyphen followed by four more is written \\u002d (the same JSON string): no run of five hyphens, a
+    signature-block delimiter, is ever printed, so the tag of the notes stays readable (Codex #300 r6, B F4)"""
     v = str(v)
     if BARE.match(v) and not NOT_BARE.search(v + (":" if before_colon else "")):
         return v
-    return "`%s`" % json.dumps(v, ensure_ascii=True).replace("`", "\\u0060")
+    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(v, ensure_ascii=True).replace("`", "\\u0060"))
 
 
 CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
@@ -409,6 +455,8 @@ def notes(version, fixes, vex_changes, behavior=()):
     vl = [_clean_md(_vex_line(v)) for v in stmts]
     if len(set(vl)) != len(vl):  # every published statement line is its own (Codex #300 r3)
         raise ValueError("VEX notes: two statement lines read alike")
+    if any(_clean_free(ln) != ln for ln in vl):     # the tag of the notes reads back as the notes (r6, fail closed)
+        raise ValueError("VEX notes: a statement line the tag would not read back unchanged")
     lines += vl
     lines += [_clean_md("- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]),
                                                              "" if stmts else "; no statement changed"))
@@ -421,7 +469,10 @@ def notes(version, fixes, vex_changes, behavior=()):
         lines += ["", "### Behavior changes"] + [_entry_line(b) for b in behavior]
     else:
         lines += ["", "No behavior change: this release contains fixes only."]
-    return "\n".join(lines) + "\n"
+    text = "\n".join(lines) + "\n"
+    if not _shaped(text):                            # every line notes() writes is a bullet, a heading or blank (r6)
+        raise ValueError("notes: a line that is not a bullet, a heading or blank")
+    return text
 
 
 def _precedence(tag):
@@ -721,10 +772,14 @@ def vex_changes(old_doc, new_doc):
 def unpublished(entries, published_text):
     """Advisor 0135: an entry an earlier patch already published (any v* tag message, CHANGELOG.md) is not published
     again — the clear-and-changelog PR may not have merged when the next patch is decided."""
-    def forms(e):
-        legacy = "- %s" % _clean(_oneline(e))         # an older text's "<redacted>", and round 4's "(redacted)" (r4)
-        return (_entry_line(e), legacy, _visible(legacy))
-    return [e for e in entries if not any(f in published_text for f in forms(e))]
+    return [e for e in entries if not any(f in published_text for f in _published_forms(e))]
+
+
+def _published_forms(e):
+    """every line a behavior entry was ever published as: this code's (_entry_line), origin/main's "<redacted>" and
+    round 4's "(redacted)" forms (r4; r6, B F1: changelog() removes an entry by them too)"""
+    legacy = "- %s" % _clean(_oneline(e))
+    return (_entry_line(e), legacy, _visible(legacy))
 
 
 PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
@@ -755,7 +810,10 @@ def tag_notes(raw):
     # (as in round 3; Codex #300 r5, B low)
     head_, lf_, _ = body.partition("\n")
     m = PATCH_HEAD.fullmatch(head_) if lf_ else None
-    return _clean_lines(body) if m and m.group(1) == tag else None
+    if not (m and m.group(1) == tag):
+        return None
+    out = _clean_lines(body)
+    return out if _shaped(out) else None            # a marker beside a line not shaped as notes (r6, B F2): no notes
 
 
 def changelog(notes_text, changelog_text, next_notes_text):
@@ -763,15 +821,22 @@ def changelog(notes_text, changelog_text, next_notes_text):
     entries these notes published — an entry added since stays). The new notes are cleaned line by line; the existing
     history is copied unchanged, never rewritten — and is refused (ValueError, nothing written) unless it is exactly
     what this function writes, so cleaning it would change nothing: LF line ends only, no name, no unescaped marker
-    (Codex #300 r5, A R4-1 / B low; fail closed)."""
+    (Codex #300 r5, A R4-1 / B low; fail closed). After the title, the one blank line this function writes is dropped and
+    everything else is copied byte for byte, its own spacing kept (r6, A R5-5). The whole changelog holding the marker
+    must be shaped as notes (r6, B F2): new notes cannot open a construct that takes a marker of the history below."""
     notes_text = _clean_lines(notes_text)
     title = "# Changelog\n"
     rest = (changelog_text or title)
-    rest = rest[len(title):].lstrip("\n") if rest.startswith(title) else rest
-    if _clean_lines(rest) != rest:
-        raise ValueError("CHANGELOG.md history is not clean (a line end other than LF, a name, or an unescaped marker): "
-                         "refused, not rewritten")
-    new_cl = title + "\n" + notes_text.rstrip("\n") + "\n" + ("\n" + rest if rest.strip() else "")
+    if rest.startswith(title):
+        rest = rest[len(title):]
+        rest = rest[1:] if rest.startswith("\n") else rest
+    if _clean_lines(rest) != rest or not _shaped(rest):
+        raise ValueError("CHANGELOG.md history is not clean (a line end other than LF, a name, an unescaped marker, or a "
+                         "marker beside a line that is not a bullet, a heading or blank): refused, not rewritten")
+    new_cl = title + "\n" + notes_text.rstrip("\n") + "\n" + ("\n" + rest if rest else "")
+    if not _shaped(new_cl):
+        raise ValueError("CHANGELOG.md with these notes holds the marker beside a line that is not a bullet, a heading or "
+                         "blank: refused")
     lines, keep, i = next_notes_text.splitlines(keepends=True), [], 0
     while i < len(lines):
         j = i + 1
@@ -779,7 +844,7 @@ def changelog(notes_text, changelog_text, next_notes_text):
             while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
                 j += 1
             entry = " ".join(ln.strip() for ln in lines[i:j])[2:]
-            if _entry_line(entry) in notes_text:
+            if any(f in notes_text for f in _published_forms(entry)):
                 i = j
                 continue
         keep += lines[i:j]
