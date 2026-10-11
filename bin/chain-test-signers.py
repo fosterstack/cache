@@ -965,18 +965,24 @@ def deny_class_last(last):
 # matched by name, including an unambiguous abbreviation of 4+ characters (GNU getopt); short ones letter by letter inside a bundle (-xIf, -cMF,
 # -I/bin/sh), up to the first letter that takes an argument.
 LONG_RUN = {"tar": ("use-compress-program", "to-command", "checkpoint-action", "info-script", "new-volume-script", "rsh-command"),
-            "sort": ("compress-program",), "install": ("strip-program",), "rsync": ("rsh", "rsync-path"), "git": ("exec-path",)}
+            "sort": ("compress-program",), "install": ("strip-program",), "rsync": ("rsh", "rsync-path"), "git": ("exec-path", "upload-pack", "receive-pack")}
+# round 4 (5), REDUCED: git configuration keys that load a program (a finite list in a text reader; rebase -x, bisect run, submodule foreach, tar old-style
+# bundles and GNU long-option abbreviations beyond the 4+ character prefix rule are stated limits)
+GIT_RUN_KEY = re.compile(r"(?i)(core\.(sshcommand|pager|editor|fsmonitor|hookspath|askpass)|credential\.[^=]*helper|diff\.external|gpg\.[^=]*program)")
 SHORT_RUN = {"tar": "IF", "rsync": "e"}
 TAR_ARG_LETTERS = "bCfFgIKLNTVX"
 def program_option(cmd, operands):
     """The first program-running option of this command, or None. make, xargs (any command operand) and the find/ssh/git forms are covered too."""
-    if cmd == "make": return "make"
+    if re.fullmatch(r"g?make[0-9.]*", cmd): return cmd
     ops = list(operands)
     if cmd == "tar" and ops and re.fullmatch(r"[A-Za-z]+", ops[0]): ops[0] = "-" + ops[0]      # old style: tar xIf ...
     for idx, o in enumerate(ops):
         if cmd == "find" and o in ("-exec", "-execdir", "-ok", "-okdir"): return o
         if cmd == "ssh" and (o == "-o" and idx + 1 < len(ops) and re.match(r"(?i)(proxycommand|localcommand|permitlocalcommand)", ops[idx + 1]) or re.match(r"(?i)-o(proxycommand|localcommand)", o)): return o
-        if cmd == "git" and o == "-c" and idx + 1 < len(ops) and re.search(r"(?i)^(core\.(sshcommand|pager|editor|fsmonitor|hookspath|askpass)|alias\.[^=]*=!|credential\.helper=!)", ops[idx + 1]): return "-c " + ops[idx + 1]
+        if cmd == "git" and o == "-c" and idx + 1 < len(ops) and (GIT_RUN_KEY.match(ops[idx + 1]) or re.match(r"(?i)alias\.[^=]*=!", ops[idx + 1])): return "-c " + ops[idx + 1]
+        if cmd == "git" and (o == "--config-env" and idx + 1 < len(ops) or o.startswith("--config-env=")):
+            kv = ops[idx + 1] if o == "--config-env" else o.split("=", 1)[1]
+            if GIT_RUN_KEY.match(kv) or kv.lower().startswith("alias."): return o + " " + kv
         if not o.startswith("-") or o == "-": continue
         if o.startswith("--"):
             name = o[2:].split("=")[0]
