@@ -1,7 +1,7 @@
 {
  "schema": "auditor-review-record/v1",
  "tree": "dd9fc3f4e4aee830db2c60d10bc86e9b7397c1a845ba6dcd64773bb0d53cd3c2",
- "change": "RETROACTIVE record for cache#249, release chain PR 1 (the Sign boundary: stage-sign.yml, bin/chain-verify.py, the stage judges, policy pins), squash 4ffe51554606566dbd4b2a4ee08845850eb6737b on chain-v030 (PR head 138724d1abce0cc5b6348330e6d72ac37b460391); guarded paths changed: bin/check-file-allowlist.sh (nine release-chain patterns) and bin/check-file-allowlist-test.sh (EXPECT_ALLOW 149, PINNED_SHA256 37dd147a...). The tree hash binds the .github/agent content plus the guarded paths of chain-v030 at 4ffe515; the later chain PRs change the guarded paths again and need their own record, and the cutover PR's final tree needs one for the whole diff.",
+ "change": "RETROACTIVE record for cache#249, release chain PR 1 (the Sign boundary: stage-sign.yml, bin/chain-verify.py, the stage judges, policy pins), squash 4ffe51554606566dbd4b2a4ee08845850eb6737b on chain-v030 (PR head 138724d1abce0cc5b6348330e6d72ac37b460391); guarded paths changed: bin/check-file-allowlist.sh (nine release-chain patterns) and bin/check-file-allowlist-test.sh (EXPECT_ALLOW 149, PINNED_SHA256 37dd147a...). The tree hash binds the .github/agent content plus the guarded paths of chain-v030 at 4ffe515; the later chain PRs change the guarded paths again and need their own record, and the cutover PR's final tree needs one for the whole diff. This record does NOT clear the gate (Codex blockers_open 1: B1, see the round 9 entry); it stays history and proof of review.",
  "reviewed_commit": "138724d1abce0cc5b6348330e6d72ac37b460391",
  "closed_commit": "138724d1abce0cc5b6348330e6d72ac37b460391",
  "rounds": [
@@ -96,8 +96,9 @@
     },
     "codex": {
      "vendor": "openai",
-     "blockers_open": 0,
-     "evidence_sha256": "81ac1273773fdc2a83fe15a24b550458da0e1a341fde6cde7e409f5db84e48cd"
+     "blockers_open": 1,
+     "evidence_sha256": "81ac1273773fdc2a83fe15a24b550458da0e1a341fde6cde7e409f5db84e48cd",
+     "advisor_ruling": "B1 (REQ-REL-009-AC11, floating tags in the old stage-promote.yml): pre-existing main behaviour, not in #249's diff; tracked in X9 (advisor, Oct 11 2026). The finding is NOT conceded or fixed, so it stays open here."
     }
    },
    "extra_evidence": {
@@ -126,13 +127,13 @@
      "exit": 0,
      "blockers_reported": 1,
      "residuals_reported": 2,
-     "ruled_out_of_scope": "B1 (REQ-REL-009-AC11: the OLD stage-promote.yml always applies the floating tag latest) is existing behaviour on main, not in this change; advisor ruling Oct 11 2026: goes into X9 (floating tags behind a flag that is off, the owner decides). blockers_open is recorded as 0 on that ruling."
+     "ruled_out_of_scope": "B1 is held open (blockers_open 1). Advisor ruling Oct 11 2026: pre-existing main behaviour, not in #249's diff; tracked in X9 (floating tags behind a flag that is off, the owner decides). The advisor does not override a held Codex finding into zero."
     }
    }
   }
  ],
  "stop": {
-  "codex": "clear",
+  "codex": "held",
   "sonnet": "clear"
  },
  "residuals": [
