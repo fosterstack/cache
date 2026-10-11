@@ -2748,10 +2748,25 @@ PYC7
 # of either kind; (B7-2, P3) on a host line a double-quoted $ word is listed as the value of a gh option, as the notes say; (B7-3, P3) a Python NAME is
 # listed only as the FILE after "-o" or "--output", never after a cluster ending in o
 G8="$G0 -p a.json"
-for L in "$G8 ; git -C foreign fetch https://github.com/foreign/repo" "$G8 ; git fetch https://github.com/foreign/repo" "$G8 && git -C dist status" \
-         "$G8 ; curl https://github.com/other/repo/releases/download/v1.0.0/a" "$G8 ; curl -fsS -o x https://h.example.dev/a"; do
+for L in "$G8 ; git -C foreign fetch https://github.com/foreign/repo" "$G8 ; git fetch https://github.com/foreign/repo" "$G8 && git -C dist status"; do
   ghrefused "$L"
 done
+# a repo:self line with a later curl: the row rules the line's gh occurrence (form 'a gh release or extension download', key = the line's hash)
+ghcurlrefused() {
+  local ov k; k=$(python3 -c 'import hashlib,sys;print(hashlib.sha256(" ".join(sys.argv[1].split()).encode()).hexdigest()[:16])' "$1")
+  ov="{\"form\": \"a gh release or extension download\", \"key\": \"$k\"}"
+  one ifg8 "$FETCH$1"$'\n' "$1" repo:self "$ov"
+  CASE="AC19'' (0) Codex A8 P2: the repo:self line $1 (its gh occurrence ruled) with a checksum verifier line: exit 1, not a listed plain form"
+  refused 0; check grep -q 'listed plain form' "$work/if.out"
+  ov="{\"form\": \"a gh release or extension download\", \"key\": \"$k\", \"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}"
+  ifrepo ifg8c "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$1"$'\n' head bin/verify.sh $'#!/bin/bash\n'"$COS"$'\n'
+  ifx "$work/if-1.json" plain "$(ifrow "$work/ifg8c" bin/fetch.sh "$1" repo:self "$ov")"; ifck ifg8c "$work/if-1.json"
+  CASE="AC19'' (0) Codex A8 P2: the repo:self line $1 (its gh occurrence ruled) with a cosign verify-blob verifier line: exit 1, not a listed plain form"
+  refused 0; check grep -q 'listed plain form' "$work/if.out"
+}
+ghcurlrefused "$G8 ; curl https://github.com/other/repo/releases/download/v1.0.0/a"
+ghcurlrefused "$G8 ; curl -fsS -o x https://h.example.dev/a"
+ghcurlrefused "$G8 ; git -C foreign fetch https://github.com/foreign/repo"
 L8="curl -fsS $U0 ; git -C foreign fetch https://github.com/foreign/repo"
 one ifa8 "$FETCH$L8"$'\n' "$L8"
 CASE="AC19'' Codex A8 P2: a host line whose later git -C foreign fetch names a foreign repository (ruled for its curl only): exit 1"
