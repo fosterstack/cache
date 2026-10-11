@@ -7,7 +7,7 @@ build scripts P4/P5). They are listed here by case and reason, so a red CI run m
   judge --suite SUITE [--list FILE]        stdin is the suite's output: exit 0 only when the set of FAIL cases is EXACTLY the list's entries for SUITE
                                            (a red case that is not listed fails; a listed case that passes fails, naming it: remove the entry in the PR that fixes it)
   base-check [--list FILE] [--base REF] [--event FILE]
-                                           an entry added since the merge base fails unless the PR body names it with a line `known-red-add: <id>`
+                                           an entry added or changed since the merge base (compared in full: suite, case, reason, green_by) fails unless the PR body names it with a line `known-red-add: <id>`
                                            (the body is read from the GitHub event file, GITHUB_EVENT_PATH; --event overrides;
                                            locally, with no event file, the environment variable KNOWN_RED_ADD='id id ...' names them; a push event is not compared)
   empty [--list FILE]                      exit 1 while the list has entries (the cutover condition)
@@ -117,13 +117,14 @@ def cmd_base_check(args):
     mb = git("merge-base", "HEAD", base)
     mbs = mb.stdout.strip() if mb.returncode == 0 and mb.stdout.strip() else base
     old = git("show", "%s:test-evidence/known-red.json" % mbs)
-    old_ids = set()
+    old_entries = {}
     if old.returncode == 0:
         try:
-            old_ids = {e["id"] for e in json.loads(old.stdout)["entries"]}
+            old_entries = {e["id"]: e for e in json.loads(old.stdout)["entries"]}
         except (ValueError, KeyError, TypeError):
             fail("the list at the merge base is not readable")
-    added = [e["id"] for e in load(path) if e["id"] not in old_ids]
+    # an entry is NEW when its id is new or its content (suite, case, reason, green_by) differs from the merge base's: a retained id must not change meaning
+    added = [e["id"] for e in load(path) if old_entries.get(e["id"]) != {k: e[k] for k in KEYS}]
     named = set(re.findall(r"(?m)^known-red-add:\s*(\S+)\s*$", body)) | set(os.environ.get("KNOWN_RED_ADD", "").split())
     missing = [i for i in added if i not in named]
     if missing:
