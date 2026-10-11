@@ -232,6 +232,10 @@ AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|ma
 #    the script text only (textual order of simple commands, no loops or conditionals followed), not on what runs.
 #  - the AC8 `unset GH_TOKEN` placement relative to child scripts is a reviewed line bound by the script's sha256 and the exact-text row below
 #    (ambient_env `handoff_line`), not modelled: the judge does not follow order, depth, lists, functions, subshells or here-documents.
+#  - round 4: quote-split word forms in the raw-token words beyond what the normalized reader resolves; trap and alias string bodies; a bare "$x" command
+#    word (not refused: it would be a new class of finding for plain variable use, not measured against real scripts); git rebase -x, bisect run,
+#    submodule foreach, tar old-style option bundles that consume following words, and GNU long-option abbreviations shorter than the 4-character prefix
+#    rule (a finite option list in a text reader; the reviewed `deny` exception with the whole command is the way to admit a use).
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
