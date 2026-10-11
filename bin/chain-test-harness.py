@@ -272,8 +272,8 @@ open("%s/%s/index.json" % (out, image), "w").write('{"schemaVersion": 2, "manife
 open("%s/%s/blobs/sha256/%s" % (out, image, dg), "wb").write(blob)
 for cd, cb in children.values():
     open("%s/%s/blobs/sha256/%s" % (out, image, cd.split(":", 1)[1]), "wb").write(cb)
-open("%s/%s.digest" % (out, image), "w").write("sha256:%s\n" % dg)
-open("%s/%s.manifests" % (out, image), "w").write("amd64 %s\narm64 %s\n" % (children["amd64"][0], children["arm64"][0]))
+open("%s/%s.digest" % (out, image), "w").write("sha256:%s\\n" % dg)
+open("%s/%s.manifests" % (out, image), "w").write("amd64 %s\\narm64 %s\\n" % (children["amd64"][0], children["arm64"][0]))
 open("%s/%s.full.lock.json" % (out, image), "w").write("lock|" + image)
 open("%s/%s-sbom/sbom.json" % (out, image), "w").write("sbom|" + image)
 '''

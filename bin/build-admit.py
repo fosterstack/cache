@@ -36,6 +36,9 @@ SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)
 KEYLESS = "release-workflow-keyless"
 OWNER_SSH = "owner-ssh"
 ISSUER = "https://token.actions.githubusercontent.com"
+# the Go toolchain of go.mod, installed and checksum-pinned by `bash bin/install-scanner.sh go` (its fixed directory is <dest>/fscache-go, dest /usr/local/bin):
+# the freeze check runs THIS Go, never the runner's own `go`, which may be older than go.mod; GOTOOLCHAIN=local, so nothing is downloaded
+GO_BIN = "/usr/local/bin/fscache-go/bin/go"
 SIGNER = "bin/admission-tag-signer.py"
 INSTALLER = "bin/install-scanner.sh"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
@@ -447,7 +450,7 @@ def check_baseline(ctx):
         if owner_copy != tagged:
             raise Refusal("baseline", "%s at the tagged commit differs from the copy in the owner-signed %s" % (path, base))
     # The requirements tool proves the exact requirements hash and the complete blocking set (R07); approval is checked below.
-    rc, _, err = run_cmd(["go", "-C", "tools/requirements", "run", ".", "verify-freeze", base], {"GOTOOLCHAIN": "local"})
+    rc, _, err = run_cmd([ctx.go, "-C", "tools/requirements", "run", ".", "verify-freeze", base], {"GOTOOLCHAIN": "local"})
     if rc != 0:
         raise Refusal("baseline", "the freeze check (verify-freeze %s) failed: %s" % (base, one_line(text(err), 200)))
     try:
@@ -493,13 +496,16 @@ def read_environment():
             raise EnvError("%s is not a number" % n)
 
 
-def admit(out_path):
+def admit(out_path, go_bin=GO_BIN):
     read_environment()
+    if not (os.path.isfile(go_bin) and os.access(go_bin, os.X_OK)):
+        raise EnvError("the pinned Go toolchain is not installed at %s (bash bin/install-scanner.sh go installs it; the runner's own go is never used)" % go_bin)
     if os.path.exists(out_path):
         os.remove(out_path)  # a stale file must never survive a refusal
     tmp = tempfile.mkdtemp(prefix="build-admit-")
     try:
         ctx = Context(tmp)
+        ctx.go = go_bin
         check_tag_ref(ctx)
         check_tag_syntax(ctx)
         check_tag_points_at_sha(ctx)
@@ -523,6 +529,7 @@ def main(argv):
     sub.add_parser("list-checks")
     r = sub.add_parser("run")
     r.add_argument("--out", default="admission.json")
+    r.add_argument("--go", default=GO_BIN)      # the stage runs the default; the test points it at a fake
     args, extra = ap.parse_known_args(argv)
     if extra:
         print("usage error: the tag, ref and sha come only from the environment (GITHUB_REF, GITHUB_REF_NAME, GITHUB_SHA), not from "
@@ -532,7 +539,7 @@ def main(argv):
         print("\n".join(CHECKS))
         return 0
     try:
-        admit(args.out)
+        admit(args.out, args.go)
     except Refusal as e:
         if os.path.exists(args.out):
             os.remove(args.out)

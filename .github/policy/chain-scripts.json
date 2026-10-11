@@ -32,14 +32,15 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "a83e6b25c7c5be01a53e8f2bedebd173927eb65311835e77e6a08fcb4ae231c1",
+      "sha256": "2616fd2a436f2c6c28bf1610860c06865b8dd5a04fe3200421bc4f685a678c4e",
       "tools": [
-        "curl",
-        "trap",
-        "source",
-        "git",
         "at",
-        "tar"
+        "curl",
+        "git",
+        "go",
+        "source",
+        "tar",
+        "trap"
       ],
       "runs": [],
       "signs": "other",
@@ -205,7 +206,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "4c0a21f9415b4f065efbe18b94ccd2314596a85bd860999dee3d5ecadcb63814",
+      "sha256": "8c6f3797dc5e051098649709dae6aeb97f1449f733bdc89cac6a8e205ea959f5",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -214,6 +215,15 @@
           "name": "PATH",
           "text": "`git show REV:PATH`",
           "why": "a docstring naming the path operand of git show; nothing is set"
+        }
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "GO_BIN = \"/usr/local/bin/fscache-go/bin/go\"",
+          "line_sha256": "b0307bc8efcdaafbd89419f85d8a61f4af5918195bfe389b355fc0db4ba5b41f",
+          "count": 1,
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); admission runs exactly this go for the freeze check, never the runner's"
         }
       ]
     },

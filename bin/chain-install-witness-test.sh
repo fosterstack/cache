@@ -76,7 +76,7 @@ if ! grep -q '^GO_VER=' "$sut" 2> /dev/null; then
            "go: an unknown architecture is refused" "go: a failed download is refused" "go: no go.mod is refused" "go: a failed install leaves no toolchain" \
            "go: there is no environment override of a checksum or of the version"; do bad "$l (bin/install-scanner.sh has no go: RED until implemented)"; done
 else
-  if [ "$GOVER" = "$repo_gomod_ver" ] && grep -E 'go:x86_64\|go:amd64' "$sut" | grep -q "$GO_AMD" && grep -E 'go:aarch64\|go:arm64' "$sut" | grep -q "$GO_ARM"; then
+  if [ "$GOVER" = "$repo_gomod_ver" ] && grep -q "$GO_AMD" < <(grep -E 'go:x86_64\|go:amd64' "$sut") && grep -q "$GO_ARM" < <(grep -E 'go:aarch64\|go:arm64' "$sut"); then
     ok "go: the pinned version ($GOVER) is the repo go.mod's and the two sha256 values are go.dev's published ones"
   else bad "go: pins: version '$GOVER' vs go.mod '$repo_gomod_ver'; amd64/arm64 values"; fi
   gocheck "go: a wrong checksum (amd64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
@@ -88,7 +88,7 @@ else
   gocheck "go: a failed download is refused" "$gwork/mod-ok" "download failed.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/nope"
   gocheck "go: no go.mod is refused" "$gwork/mod-none" "go\\.mod.*PIPELINE failure|PIPELINE failure.*go\\.mod|no go\\.mod" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
   [ ! -e "$gwork/bin/fscache-go" ] && ok "go: a failed install leaves no toolchain" || bad "go: a failed install left $gwork/bin/fscache-go"
-  if grep -Eq 'GO_(SHA256|SUM|CHECKSUM|VER|VERSION)[^=]*[:-]|\$\{GO_(SHA256|SUM|CHECKSUM)|GOVERSION=|GOTOOLCHAIN=auto' "$sut"; then bad "go: the script lets the environment override the checksum or the version"; else ok "go: there is no environment override of a checksum or of the version (the only hook is GO_BASE_URL)"; fi
+  if grep -Eq 'GO_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{GO_(SHA256|SUM|CHECKSUM|VER|VERSION):?[-=]|GOVERSION=|GOTOOLCHAIN=auto' "$sut"; then bad "go: the script lets the environment override the checksum or the version"; else ok "go: there is no environment override of a checksum or of the version (the only hook is GO_BASE_URL)"; fi
 fi
 EXPECT=19
 echo "pass=$pass fail=$failn"
