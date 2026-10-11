@@ -154,7 +154,7 @@ ALLOW_PATTERNS=(
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/install-kind\.sh$'
   # the suite guard: no empty test file, a printed case count held to a committed floor that only rises
-  '^bin/suite-guard(-test)?\.sh$'
+  '^bin/suite-guard(-run|-test)?\.sh$'
   '^test-evidence/suite-floors\.json$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'

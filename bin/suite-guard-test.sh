@@ -7,13 +7,15 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 guard="$root/bin/suite-guard.sh"
+runner="$root/bin/suite-guard-run.sh"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0; failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
-[ -s "$guard" ] || { echo "FAIL bin/suite-guard.sh is missing or empty"; echo "suite-guard: 0 passed, 1 failed"; exit 1; }
+[ -s "$guard" ] && [ -s "$runner" ] || { echo "FAIL bin/suite-guard.sh is missing or empty"; echo "suite-guard: 0 passed, 1 failed"; exit 1; }
 # expect RC LABEL WORD -- ARGS : the guard exits RC and its output contains WORD
-expect() { local want=$1 label=$2 word=$3 out rc=0; shift 4; out=$(bash "$guard" "$@" 2>&1 < /dev/null) || rc=$?
+expect() { local want=$1 label=$2 word=$3 out rc=0 tool=$guard; shift 4; case "${1:-}" in run|all) tool=$runner ;; esac
+  out=$(bash "$tool" "$@" 2>&1 < /dev/null) || rc=$?
   if [ "$rc" = "$want" ] && { [ -z "$word" ] || grep -Fqi -- "$word" <<< "$out"; }; then ok "$label"; else bad "$label -> rc=$rc (want $want), wanted '$word': ${out:0:160}"; fi; }
 
 # ---- files: no empty test file ----------------------------------------------------------------------------------------------------
@@ -79,10 +81,10 @@ expect 1 "run: a suite below its floor fails" "below its floor" -- run "$work/rf
 
 # ---- all: every suite named in the floors file is run (the run-all wrapper) ---------------------------------------------------------
 mkdir -p "$work/all/bin"; cp "$work/s/good.sh" "$work/all/bin/a-test.sh"; cp "$work/s/red.sh" "$work/all/bin/b-test.sh"
-printf '{"bin/a-test.sh": 50, "bin/b-test.sh": 50}\n' > "$work/all/floors.json"
+printf '{"a-test.sh": 50, "b-test.sh": 50}\n' > "$work/all/floors.json"
 expect 1 "all: a known-red suite fails the run unless --count-only" "exited" -- all "$work/all/floors.json" "$work/all"
-expect 0 "all --count-only: every suite runs, prints its count and passes its floor" "bin/a-test.sh: count 60" -- all --count-only "$work/all/floors.json" "$work/all"
-printf '{"bin/a-test.sh": 50, "bin/gone-test.sh": 5}\n' > "$work/all/floors2.json"
+expect 0 "all --count-only: every suite runs, prints its count and passes its floor" "a-test.sh: count 60" -- all --count-only "$work/all/floors.json" "$work/all"
+printf '{"a-test.sh": 50, "gone-test.sh": 5}\n' > "$work/all/floors2.json"
 expect 1 "all: a suite named in the floors file that is not there fails" "gone-test.sh" -- all --count-only "$work/all/floors2.json" "$work/all"
 
 # ---- floors-vs-base: floors only rise ----------------------------------------------------------------------------------------------

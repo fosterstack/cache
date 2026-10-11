@@ -4,21 +4,14 @@
 #   count LOG                             prints the case count a suite's log carries (`pass=N`, `N passed`, `passed: N`, `Ran N tests`, `N killed`, else the
 #                                         number of ok/PASS lines); none, or zero, fails
 #   floor FLOORS SUITE N                  N must be at least the committed floor of SUITE (an unlisted suite, or a floor below 1, fails)
-#   run [--count-only] FLOORS SUITE PATH  runs `bash PATH` with stdin closed, requires a count line at or above the floor, and (unless --count-only,
-#                                         for a suite with known reds) a zero exit; prints `suite: count N (floor F) rc=R`
-#   all [--count-only] FLOORS [ROOT]       the run-all wrapper: runs every suite the floors file names (key = path under ROOT) through `run`
+#   (run and all, which execute suites, are bin/suite-guard-run.sh)
 #   floors-vs-base [--allow-lowered A,B] REF FLOORS   FLOORS (a path in the working tree) may not lower or drop a floor the file at REF holds,
 #                                         unless the suite is named in --allow-lowered (the PR body names it); no file at REF: passes
 # Why: a script committed as an empty file exits 0, so "rc 0" proved nothing (release chain PR 3, bin/check-file-allowlist-test.sh).
 set -euo pipefail
 die() { echo "suite-guard: $*" >&2; exit 1; }
-case_file() { # is a test file by name
-  case "$1" in
-    */tests/*|tests/*) return 0 ;;
-  esac
-  local b=${1##*/}
-  case "$b" in *-test.*|test_*|*_test.*) return 0 ;; esac
-  return 1
+case_file() { # is a test file by name: under a tests/ directory, or named *-test.*, test_* or *_test.*
+  printf '%s\n' "$1" | grep -Eq '(^|/)tests/|(^|/)test_[^/]*$|-test\.[^/]*$|_test\.[^/]*$'
 }
 cmd_files() {
   local root=${1:-.} bad=0 f
@@ -70,28 +63,6 @@ cmd_floor() {
   [ "$3" -ge "$f" ] || die "suite $2 printed $3 cases, below its floor of $f"
   echo "ok $2 $3 >= $f"
 }
-cmd_run() {
-  local only=0; [ "${1:-}" != --count-only ] || { only=1; shift; }
-  local floors=$1 name=$2 path=$3 log rc=0 n
-  [ -s "$path" ] || die "suite $name: $path is empty or missing"
-  log=$(mktemp); trap 'rm -f "$log"' RETURN
-  bash "$path" < /dev/null > "$log" 2>&1 || rc=$?
-  n=$(count_of "$log")
-  [ -n "$n" ] || die "suite $name printed no case count (rc=$rc)"
-  [ "$n" -gt 0 ] || die "suite $name printed a count of zero"
-  cmd_floor "$floors" "$name" "$n" > /dev/null
-  echo "suite-guard: $name: count $n (floor $(floor_of "$floors" "$name")) rc=$rc"
-  [ "$only" = 1 ] || [ "$rc" = 0 ] || die "suite $name exited $rc"
-}
-cmd_all() { # all [--count-only] FLOORS [ROOT]: runs every suite the floors file names (keys are paths under ROOT); fails if any fails its guard
-  local only=() ; [ "${1:-}" != --count-only ] || { only=(--count-only); shift; }
-  local floors=$1 root=${2:-.} bad=0 s
-  while IFS= read -r s; do
-    [ -f "$root/$s" ] || { echo "suite-guard: the floors file names $s, which is not there" >&2; bad=1; continue; }
-    ( cd "$root" && cmd_run ${only[@]+"${only[@]}"} "$floors" "$s" "$s" ) || bad=1
-  done < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))))' "$floors")
-  [ "$bad" = 0 ] || exit 1
-}
 cmd_vs_base() {
   local allow=""; [ "${1:-}" != --allow-lowered ] || { allow=$2; shift 2; }
   local ref=$1 file=$2 old
@@ -113,8 +84,6 @@ case "$sub" in
   files) cmd_files "$@" ;;
   count) cmd_count "$@" ;;
   floor) cmd_floor "$@" ;;
-  run) cmd_run "$@" ;;
-  all) cmd_all "$@" ;;
   floors-vs-base) cmd_vs_base "$@" ;;
-  *) echo "usage: suite-guard.sh files [ROOT] | count LOG | floor FLOORS SUITE N | run [--count-only] FLOORS SUITE PATH | floors-vs-base [--allow-lowered A,B] REF FLOORS" >&2; exit 2 ;;
+  *) echo "usage: suite-guard.sh files [ROOT] | count LOG | floor FLOORS SUITE N | floors-vs-base [--allow-lowered A,B] REF FLOORS" >&2; exit 2 ;;
 esac
