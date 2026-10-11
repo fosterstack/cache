@@ -314,7 +314,7 @@ DL_PATTERNS = ["release-files.sha256", "release-files.sha256.bundle", "release-m
 TAG_CHECK = r'''[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::unexpected release tag" >&2; exit 1; }'''
 FETCH = "Fetch the draft release files"
 PRE_OK = {"", "set -eu", "set -euo pipefail", 'ver="$VER"', "mkdir -p /tmp/release-files-draft"}   # AC19: all a step may hold before the tag check
-DL_ARGS = '-q -fsSL -g --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o "$dest" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi'
+DL_ARGS = '-q -fsSL -g --proto =https --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o "$dest" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi'
 VERIFY_PUB = ('cosign verify-blob --bundle "$pub/release-files.sha256.bundle" --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"'
               ' --certificate-oidc-issuer https://token.actions.githubusercontent.com "$pub/release-files.sha256" || fail "the release-files.sha256 bundle does not verify"')
 GOOD_ID = "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v9.9.9"
@@ -630,7 +630,7 @@ def rel_behaviour(steps):
     elif not all(u.startswith("https://github.com/fosterstack/cache/releases/download/v9.9.9/") for u in open(urls5).read().splitlines()):
         bad.append("the published check downloads from somewhere other than this release")
     argv5 = open(urls5 + ".argv").read().splitlines() if os.path.exists(urls5 + ".argv") else []
-    want_argv = re.compile(r"-q -fsSL -g --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o (\S+)/([^/\s]+) https://github\.com/fosterstack/cache/releases/download/v9\.9\.9/\2")
+    want_argv = re.compile(r"-q -fsSL -g --proto =https --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o (\S+)/([^/\s]+) https://github\.com/fosterstack/cache/releases/download/v9\.9\.9/\2")
     dirs = {m.group(1) for m in map(want_argv.fullmatch, argv5) if m}
     if not argv5 or not all(want_argv.fullmatch(a) for a in argv5) or len(dirs) != 1 or dirs & {os.path.join(c5, "work")}:
         bad.append("the published download is not -fsSL with both time bounds, -o into one fresh directory, from this release: %s" % argv5[:2])
@@ -739,6 +739,7 @@ MUTANTS = [
     ("the published download without -q first", mut_run(is_pub, " -q -fsSL", " -fsSL")),
     ("the published download without -g", mut_run(is_pub, "-fsSL -g ", "-fsSL ")),
     ("redirects without --proto-redir", mut_run(is_pub, " --proto-redir =https", "")),
+    ("no --proto", mut_run(is_pub, " --proto =https", "")),
     ("redirects without --max-redirs", mut_run(is_pub, " --max-redirs 3", "")),
     ("another --max-redirs number", mut_run(is_pub, "--max-redirs 3", "--max-redirs 10")),
     ("the published download without a time bound", mut_run(is_pub, " --connect-timeout 20 --max-time 120", "")),

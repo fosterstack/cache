@@ -549,7 +549,7 @@ jobs:
             ok=0
             # github.com redirects a release download to its asset host: follow at most 3 redirects, https only
             for _ in 1 2 3 4 5 6; do
-              if curl -q -fsSL -g --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o "$dest" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi
+              if curl -q -fsSL -g --proto =https --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o "$dest" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi
               sleep "${RETRY_SLEEP}"
             done
             [ "$ok" = 1 ] || fail "${f} was not downloadable after 6 tries"
