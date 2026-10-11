@@ -262,8 +262,11 @@ func randomTempName() (string, error) {
 // truth, the metadata index is rebuildable, and this is how the truth is
 // enumerated. The on-disk layout is <parent dirs>/<shard>/<leaf>, so a
 // key is the file's path with the shard directory (the leaf's first two
-// characters, or dotLeafShard) removed; a file is a blob only when it lies
-// at exactly that key's path.
+// characters, or dotLeafShard) removed; a file is a blob only when it is
+// the very file that key's path opens. That is usually the file at exactly
+// the key's path; on a case-insensitive filesystem a shard directory keeps
+// the case of the key that created it, so a blob can lie at a path that
+// differs from its key's path only in case.
 //
 // Stale temporary files are the files in tempDirName and the ".tmp-"
 // files directly at the top of the store; no key's path lies at either
@@ -315,8 +318,12 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 			parts := strings.Split(child, "/")
 			keyParts := append(append([]string{}, parts[:len(parts)-2]...), parts[len(parts)-1])
 			key := path.Join(keyParts...)
-			if want, err := relPath(key); err != nil || want != child {
-				continue // not at the path of the key it names; leave it alone
+			want, err := relPath(key)
+			if err != nil {
+				continue // not a shape this store produces; leave it alone
+			}
+			if want != child && !s.opensFile(want, info) {
+				continue // not the file its key's path opens; leave it alone
 			}
 			if err := fn(key, info.Size()); err != nil {
 				return err
@@ -328,6 +335,13 @@ func (s *Store) Walk(fn func(key string, size int64) error) (staleTemp []string,
 		return staleTemp, err
 	}
 	return staleTemp, nil
+}
+
+// opensFile reports whether opening rel through the store root reaches the
+// file described by info (the file Get would serve for rel).
+func (s *Store) opensFile(rel string, info fs.FileInfo) bool {
+	target, err := s.root.Stat(rel)
+	return err == nil && os.SameFile(target, info)
 }
 
 // readDir lists the directory rel inside the store root.
