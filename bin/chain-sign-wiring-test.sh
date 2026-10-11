@@ -2642,6 +2642,7 @@ expm() { # expm ok|caught DIR FRAGMENT LABEL : the tree judge with stderr merged
   elif [ "$1" = caught ] && [ "$rc" != 0 ] && ! grep -q Traceback <<< "$out" && grep -F -q -- "$3" <<< "$out"; then pass=$((pass + 1)); echo "ok   $4 (caught: ${out:0:160})"
   else failn=$((failn + 1)); echo "FAIL $4 -> rc=$rc ${out:0:500}"; fi
 }
+DEF='D=lambda l,c=1,w="x":{"rule":"deny","line":l,"line_sha256":__import__("hashlib").sha256(l.encode()).hexdigest(),"count":c,"why":w};'
 export WT='timeout 540 bash "$@"'
 wfix() { # wfix NAME [more script lines] : bin/witnessed.sh with the AC2 line and its one witness-target exception
   local d; d=$(mk "$1")
@@ -2666,16 +2667,16 @@ d=$(wfix x_numtext); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"][0]["
 d=$(wfix x_strentry); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"]=["timeout 540 bash"]'; expm caught "$d" 'exceptions' "exception: an entry that is not an object is an error"
 d=$(wfix x_notlist); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"]={"rule":"witness-target"}'; expm caught "$d" 'exceptions' "exception: exceptions that is not a list is an error"
 d=$(wfix x_dup); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append(dict(rows["bin/witnessed.sh"]["exceptions"][0]))'; expm caught "$d" 'exceptions' "exception: a duplicate entry is an error"
-d=$(wfix x_unused); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"timeout","why":"nothing denied here: timeout is in tools"})'; expm caught "$d" 'waives nothing' "exception: an entry whose text is in the file but waives no finding of its rule is an error"
+d=$(wfix x_unused); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("set -euo pipefail"))'; expm caught "$d" 'waives nothing' "exception: an entry whose text is in the file but waives no finding of its rule is an error"
 d=$(wfix x_launch 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm ok "$d" - "exception: a launcher exception waives exec bash at its command position"
 d=$(wfix x_launch2 'exec bash "$@"\nexec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm caught "$d" 'launches another program' "exception: a second exec bash stays a finding"
 d=$(wfix x_eval 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"})'; expm caught "$d" 'sed' "exception: an evaluator exception does not waive the deny finding of the same word (separate rule)"
-d=$(wfix x_eval2 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"] += [{"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"},{"rule":"deny","text":"sed","why":"reads one line"}]'; expm ok "$d" - "exception: evaluator and deny exceptions together waive sed -n"
-d=$(wfix x_deny 'curl -sf x\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"curl","why":"fetches the token"})'; expm ok "$d" - "exception: a deny exception waives one bare curl"
-d=$(wfix x_deny2 'curl -sf x\ncurl -sf y\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"curl","why":"fetches the token"})'; expm caught "$d" 'curl' "exception: a second bare curl stays a finding"
+d=$(wfix x_eval2 'sed -n 1p f\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"] += [{"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"},D("sed -n 1p f")]'; expm ok "$d" - "exception: evaluator and deny exceptions together waive sed -n"
+d=$(wfix x_deny 'curl -sf x\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))'; expm ok "$d" - "exception: a deny exception waives one bare curl"
+d=$(wfix x_deny2 'curl -sf x\ncurl -sf y\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("curl -sf x"))'; expm caught "$d" 'curl' "exception: a second bare curl stays a finding"
 d=$(wfix x_sname 'echo bin/helper.py\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"script-name","text":"bin/helper.py","why":"a message"})'; expm ok "$d" - "exception: a script-name exception waives a named script"
 d=$(wfix x_sname2 'echo bin/helper.py\n'); expm caught "$d" 'helper.py' "exception: the same named script without the exception is refused"
-d=$(wfix x_env 'echo "${PATH:=/x}"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"PATH","why":"x"})'; expm caught "$d" 'PATH' "exception: no exception rule waives an env-setting finding (env_mentions is the only way)"
+d=$(wfix x_env 'echo "${PATH:=/x}"\n'); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("echo \"${PATH:=/x}\""))'; expm caught "$d" 'PATH' "exception: no exception rule waives an env-setting finding (env_mentions is the only way)"
 # (B) ambient env names
 afix() { # afix NAME : witnessed.sh + a stage script that runs bin/build-admit.py (reads GH_TOKEN from its own environment) + a step that passes GH_TOKEN
   local d; d=$(wfix "$1" 'unset GH_TOKEN\n')
@@ -3074,8 +3075,8 @@ tr3 t3_s 'make x' '' '["make"]'
 d=$(cfix t3_ok1 'tar -xzf "$tmp/X.tgz" -C "$tmp" NAME' '["tar"]'); expm ok "$d" - "round-3 (3): control: tar -xzf \"\$tmp/X.tgz\" -C \"\$tmp\" NAME is admitted"
 d=$(cfix t3_ok2 'tar -cf x archive/go' '["tar"]'); expm ok "$d" - "round-3 (3): control: tar -cf x archive/go is admitted"
 d=$(cfix t3_ok3 'tar --checkpoint=100 -cf x y' '["tar"]'); expm ok "$d" - "round-3 (3): control: tar --checkpoint=100 (no action) is admitted"
-d=$(cfix t3_x1 'tar --to-command=vi -xf a.tar' '["tar"]'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"deny","text":"tar --to-command=vi -xf a.tar","why":"x"}]'; expm ok "$d" - "round-3 (3): a deny exception with the exact whole command waives the option"
-d=$(cfix t3_x2 'tar --to-command=vi -xf a.tar b' '["tar"]'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"deny","text":"tar --to-command=vi -xf a.tar","why":"x"}]'; expm caught "$d" 'program-running option' "round-3 (3): the same entry does not waive a changed tail"
+d=$(cfix t3_x1 'tar --to-command=vi -xf a.tar' '["tar"]'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("tar --to-command=vi -xf a.tar")]'; expm ok "$d" - "round-3 (3): a deny exception with the exact whole command waives the option"
+d=$(cfix t3_x2 'tar --to-command=vi -xf a.tar b' '["tar"]'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("tar --to-command=vi -xf a.tar")]'; expm caught "$d" 'program-running option' "round-3 (3): the same entry does not waive a changed tail"
 # (4) the ambient handoff: unset before any other child runs
 d=$(afix u4_file); python3 - "$d" <<'PY'
 import json, sys
@@ -3231,7 +3232,50 @@ tr3 r5_gmake 'gmake x' '' '["gmake"]'
 d=$(cfix r5_ok 'git -c user.name=x status' '["git"]'); expm ok "$d" - "round-4 (5): control: git -c user.name=x status is admitted"
 
 
-EXPECT=1244
+# ---- PR 1b: deny exceptions are LINE-BOUND ({rule, line, line_sha256, count, why}); a carriage return is refused
+dl() { # dl NAME 'script lines' 'python list of exceptions (D(line[,count]) builds a deny entry)' ok|caught FRAG [tools-json]
+  local d; d=$(cfix "$1" "$2" "${6:-[\"git\",\"tar\",\"trap\"]}"); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]='"$3"; expm "$4" "$d" "$5" "line-bound $1: $2 with $3"; }
+dl lb_a 'git status\ngit push origin main' '[D("git status")]' caught "'git'"
+dl lb_b 'git status' '[D("git status")]' ok -
+dl lb_c 'git status\ngit status' '[D("git status")]' caught 'count'
+dl lb_d 'git status\ngit status' '[D("git status", 2)]' ok -
+dl lb_e 'git status' '[D("git status", 2)]' caught 'count'
+dl lb_f "trap 'curl evil' EXIT\ncu\"\"rl x" '[D("cu\"\"rl x")]' caught "'curl'"
+for form in 'curl"$x" x' 'x=1 curl"$e" x' 'curl{,} x' 'curl`true` x'; do
+  dl "lb_q_$RANDOM" "$form\necho ok" '[D("echo ok")]' caught "'curl'"
+done
+dl lb_g 'curl a' '[D("curl a")]' ok - '[]'
+dl lb_h 'curl a' '[D("curl a")]' caught "'curl'" '["x"]'
+dl lb_i 'git status' '[D("git stat")]' caught 'stale'
+dl lb_j 'git status' '[dict(D("git status"), line_sha256="0"*64)]' caught 'sha256'
+dl lb_k 'git status' '[{"rule":"deny","text":"git status","why":"x"}]' caught 'line-bound'
+dl lb_l 'git status' '[D("git status"), D("git status")]' caught 'twice'
+dl lb_m 'git status' '[dict(D("git status"), count="1")]' caught 'count'
+dl lb_n 'git status' '[dict(D("git status"), count=0)]' caught 'count'
+dl lb_o 'git status' '[dict(D("git status"), count=True)]' caught 'count'
+dl lb_p 'git status' '[dict(D("git status"), extra=1)]' caught 'line-bound'
+dl lb_r 'git status' '[dict(D("git status"), why=" ")]' caught 'reason'
+dl lb_s 'git status' '[D("git status\nx")]' caught 'line'
+dl lb_t 'git status' '[D("")]' caught 'line'
+dl lb_u 'git status' '[D("git\tstatus")]' caught 'line'
+dl lb_v 'git status' '[D("git status")]' ok - '["git"]'
+dl lb_w 'git status' '[D("echo none")]' caught 'stale'
+dl lb_x 'echo a \\\n  git status' '[D("echo a \\")]' caught "'git'"
+dl lb_y 'git status \\\n  b' '[D("git status \\")]' ok -
+dl lb_z 'tar --to-command=vi -xf a.tar\ntar --to-command=vi -xf a.tar b' '[D("tar --to-command=vi -xf a.tar")]' caught 'program-running option'
+dl lb_za 'git -c core.sshCommand=x fetch\ngit -c core.sshCommand=x fetch b' '[D("git -c core.sshCommand=x fetch")]' caught 'program-running option'
+dl lb_zb 'tar --to-command=vi -xf a.tar' '[D("tar --to-command=vi -xf a.tar")]' ok -
+dl lb_zc 'git -c core.sshCommand=x fetch' '[D("git -c core.sshCommand=x fetch")]' ok -
+d=$(wfix lb_zd); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("set -euo pipefail"))'; expm caught "$d" 'waives nothing' "line-bound: a deny entry for a line with no deny finding waives nothing (an error)"
+# a carriage return anywhere is refused (the files are written as bytes)
+crf() { local d; d=$(cfix "$1" 'echo a'); printf '%b' "$2" > "$d/bin/c.sh"; edit_spec "$d" 'rows["bin/c.sh"]["tools"]=[]'; echo "$d"; }
+d=$(crf cr_a '#!/usr/bin/env bash\nset -euo pipefail\necho x\\\r\ncurl x\n'); expm caught "$d" 'carriage return' "line-bound: echo x\\<CR><LF>curl x is refused (bash does not join it)"
+d=$(crf cr_b '#!/usr/bin/env bash\necho a\r\n'); expm caught "$d" 'carriage return' "line-bound: any script with a CR is refused"
+d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]=[D("curl a\r")]'; expm caught "$d" 'carriage return' "line-bound: no waiver applies to a script with a CR"
+d=$(crf cr_ok '#!/usr/bin/env bash\necho a\n'); expm ok "$d" - "line-bound: control: the same script without a CR"
+
+
+EXPECT=1298
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
