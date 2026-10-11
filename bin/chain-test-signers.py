@@ -31,7 +31,7 @@ Two small things, and nothing else:
      * other workflows (ci.yml, scan.yml ...), composite actions and release.yml's non-stage jobs are NOT stage files: they keep only
        the direct signer-call scan (listed with a reason in .github/policy/chain-signers.json).
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
-import fnmatch, json, os, re
+import fnmatch, hashlib, json, os, re
 
 def jload(path):
     """json.load that REFUSES a repeated object key at any depth (round 1 (6)): a plain reader keeps only the last of two equal keys, so the
@@ -44,6 +44,11 @@ def jload(path):
         return d
     with open(path) as fh:
         return json.load(fh, object_pairs_hook=hook)
+
+def read_script(path):
+    """The text of a listed script with CR and LF kept exactly (no universal-newline translation: a CR is refused by scan_script)."""
+    with open(path, "rb") as fh:
+        return fh.read().decode("utf-8", "replace")
 
 def load_table(path=None):
     return jload(path or os.environ["CHAIN_SIGNER_TABLE"])["signers"]
@@ -240,6 +245,7 @@ AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|ma
 #    pip, dpkg, su, crontab, script, trap (quote-split and backslash-escaped spellings such as \curl, cu""rl, c\x27\x27url are a stated limit); the positional
 #    skip of a deny budget was tried (e059a3f on branch pipeline-chain-judge-exceptions-fix5) and withdrawn: it skipped a token whenever any command
 #    word started there and read CRLF text as LF.
+#  - deny exceptions bind the exact physical line with its sha256 and an exact count; the normalized-word check for \curl, cu""rl, c\x27\x27url is a stated limit.
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
@@ -359,6 +365,22 @@ def exception_entries(path, ex):
         return [], ["chain-scripts.json: %s `exceptions` must be a list of {rule, text, why}" % path]
     errs, good, seen = [], [], set()
     for e in ex:
+        if isinstance(e, dict) and e.get("rule") == "deny":
+            # the LINE-BOUND shape: a deny exception binds the exact physical line, its sha256 and the exact number of such lines
+            if set(e) != {"rule", "line", "line_sha256", "count", "why"}:
+                errs.append("chain-scripts.json: %s a deny exception is line-bound: an object with exactly rule, line, line_sha256, count and why (the {rule, text, why} shape is not accepted for deny): %r" % (path, e)); continue
+            ln, sha, cnt, why = e["line"], e["line_sha256"], e["count"], e["why"]
+            if not isinstance(ln, str) or not ln or any(not (" " <= ch <= "~") for ch in ln):
+                errs.append("chain-scripts.json: %s deny exception line %r must be one non-empty line of printable ASCII" % (path, ln)); continue
+            if not isinstance(sha, str) or sha != hashlib.sha256(ln.encode("utf-8")).hexdigest():
+                errs.append("chain-scripts.json: %s deny exception line %r: line_sha256 is not the sha256 of the line" % (path, ln)); continue
+            if not isinstance(cnt, int) or isinstance(cnt, bool) or cnt < 1:
+                errs.append("chain-scripts.json: %s deny exception line %r: count must be a positive integer" % (path, ln)); continue
+            if not isinstance(why, str) or not why.strip():
+                errs.append("chain-scripts.json: %s deny exception line %r has no reason (why)" % (path, ln)); continue
+            if ("deny", ln) in seen:
+                errs.append("chain-scripts.json: %s deny exception for line %r is listed twice" % (path, ln)); continue
+            seen.add(("deny", ln)); good.append(e); continue
         if not isinstance(e, dict) or set(e) != {"rule", "text", "why"}:
             errs.append("chain-scripts.json: %s exceptions entry %r must be an object with exactly rule, text and why" % (path, e)); continue
         rule, text, why = e["rule"], e["text"], e["why"]
@@ -422,7 +444,7 @@ def load_scripts(base):
         em = r.get("env_mentions", [])
         if not isinstance(em, list) or not all(isinstance(e, dict) and set(e) == {"name", "text", "why"} and all(isinstance(e[k], str) for k in e) for e in em):
             errs.append("chain-scripts.json: %s `env_mentions` must be a list of {name, text, why} strings" % p)
-        txt = open(full, errors="replace").read()
+        txt = read_script(full)
         if "reads_env" in r:
             re_ = r["reads_env"]
             if not isinstance(re_, list) or not all(isinstance(n, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", n) and not FORBID_ENV.fullmatch(n) for n in re_):
@@ -434,8 +456,13 @@ def load_scripts(base):
         if "exceptions" in r:
             good, ee = exception_entries(p, r["exceptions"])
             errs += ee
+            plines = txt.split("\n")
             for e in good:
-                if e["text"] not in txt and e["text"] not in logical(txt):
+                if e["rule"] == "deny":
+                    have = plines.count(e["line"])
+                    if have == 0: errs.append("chain-scripts.json: %s deny exception line %r is not a line of the script (stale)" % (p, e["line"]))
+                    elif have != e["count"]: errs.append("chain-scripts.json: %s deny exception line %r: the script has %d such lines, count says %d" % (p, e["line"], have, e["count"]))
+                elif e["text"] not in txt and e["text"] not in logical(txt):
                     errs.append("chain-scripts.json: %s exceptions entry %r (%s) matches nothing in the file (stale)" % (p, e["text"], e["rule"]))
         rows[p] = r
     for p, r in rows.items():
@@ -810,7 +837,7 @@ _SKIP_WORDS = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until
 class Cmd:
     """One simple command: `text` as written from its first assignment or redirection (or its command word) to the separator; `cw` its command
     word (quotes removed, None when there is none); `operands` the other words (quotes removed); `redirs` [(operator, target)]."""
-    def __init__(self, text, cw, operands, redirs): self.text, self.cw, self.operands, self.redirs = text, cw, operands, redirs
+    def __init__(self, text, cw, operands, redirs): self.text, self.cw, self.operands, self.redirs, self.line = text, cw, operands, redirs, None
 
 def _flush(s, items, end, cmds):
     if not items: return
@@ -950,8 +977,10 @@ def _lex(s, i, closer, cmds):
 def shell_commands(text):
     """The simple commands (Cmd) of comment-stripped, continuation-joined shell text, every logical line read on its own."""
     cmds = []
-    for line in logical(strip(text)).splitlines():
+    for k, line in enumerate(logical(strip(text)).splitlines()):
+        before = len(cmds)
         _lex(line, 0, None, cmds)
+        for c in cmds[before:]: c.line = k                 # the logical line the command was read from (scan_script maps it to a physical line)
     return cmds
 
 # Round 1 (4) + round 2 (8): fail closed by default for a path-like word whose LAST component is a deny-class command (or a glob that could be one).
@@ -1038,7 +1067,7 @@ def pathlike_deny(cmds, rows, runs):
         for o in c.operands:
             for t in TOKEN.findall(o):
                 n = t[2:] if t.startswith("./") else t
-                if "/" in n and not n.startswith(("-", "$")) and "://" not in n and deny_class_last(n.rsplit("/", 1)[-1]): out.append(t)
+                if "/" in n and not n.startswith(("-", "$")) and "://" not in n and deny_class_last(n.rsplit("/", 1)[-1]): out.append((t, c.line))
     return out
 
 # REQ-CHAIN-001-AC1 "sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS" (final batch B1, the class closed): a listed script may
@@ -1087,8 +1116,10 @@ def scan_script(path, text, row, rows, base):
     entry {rule, text, why} waives the FIRST finding with exactly that rule and exactly that text, and nothing else: a second finding
     with the same text, a different text, or a different rule stays a finding. An entry that waives nothing is itself an error. Findings
     that set PATH, BASH_ENV ... are never waived here (`env_mentions` is the only exception for those)."""
-    fnd = []                                       # (rule or None, exact text, message); rule None = never waived
-    def add(rule, txt, msg): fnd.append((rule, txt, msg))
+    if "\r" in text:                               # bash reads a CR as part of a word: no waiver applies, nothing else is judged
+        return ["%s: contains a carriage return, which bash reads as part of a word" % path]
+    fnd = []                                       # (rule or None, exact text, message, physical line index or None); rule None = never waived
+    def add(rule, txt, msg, ln=None): fnd.append((rule, txt, msg, ln))
     tools, runs = set(row.get("tools", [])), set(row.get("runs", []))
     selfbase = os.path.basename(path)
     py = _is_python(path, text)
@@ -1097,6 +1128,18 @@ def scan_script(path, text, row, rows, base):
     # Codex #249 r7 B3 (the class closed): a script token is compared to the manifest EXACTLY (only a leading ./ is normalised; no
     # basename match), a command named by ANY path is refused even when its bare name is in `tools` (the row governs the bare name only),
     # and a launcher prefix (env, command, exec, builtin, nohup, sudo, timeout, nice, xargs, ...) followed by another program is refused.
+    off = 1 if text.startswith("#!") and "\n" in text else 0          # physical line index of body line 0
+    bl = body.split("\n")
+    if bl and bl[-1] == "": bl.pop()
+    exotic = len(body.splitlines()) != len(bl)                        # another line separator: line numbers cannot be trusted (fail closed: not waivable)
+    starts, i_ = [], 0                                                # first physical body line of each logical (continuation-joined) line
+    pcode = [strip_line(l_) for l_ in body.splitlines()]
+    while i_ < len(pcode):
+        starts.append(i_)
+        while i_ + 1 < len(pcode) and len(pcode[i_]) - len(pcode[i_].rstrip("\\")) in range(1, len(pcode[i_]) + 1) and (len(pcode[i_]) - len(pcode[i_].rstrip("\\"))) % 2 == 1:
+            i_ += 1
+        i_ += 1
+    def phys(k): return None if exotic or k is None or k >= len(starts) else off + starts[k]
     cmds = [] if py else shell_commands(body)
     cw_budget = {}                                 # round 2 (1): a script path at a COMMAND POSITION is judged once, as the whole command (below),
     for c in cmds:                                 # never by its token: the token pass skips as many occurrences as there are commands named by it
@@ -1118,15 +1161,16 @@ def scan_script(path, text, row, rows, base):
         if pathlike and (name in DENY or (py and (name in DENYCLASS or VERSIONED.fullmatch(name)))):     # round 4 (8): Python strings get the whole deny class
             # PR 1b: in a SHELL script a path-like word is judged as a command only at command position (below); an argument such as
             # archive/go is judged by the script rule alone. A Python script has no command position, so it keeps the word-level test.
-            if py: add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
+            tline = None if exotic else off + body.count("\n", 0, tm.start())
+            if py: add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t), tline)
         elif is_deny_token(n) and n not in tools:
-            add("deny", t, "%s: names the command %r, which is not in this script's `tools` list" % (path, t))
+            add("deny", t, "%s: names the command %r, which is not in this script's `tools` list" % (path, t), None if exotic else off + body.count("\n", 0, tm.start()))
         if script_like(t) and n != path and n not in runs and not (n == selfbase):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
     if not py:
-        for t in pathlike_deny(cmds, rows, runs):
-            add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t))
+        for t, cline in pathlike_deny(cmds, rows, runs):
+            add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t), phys(cline))
         for c in cmds:
             if c.cw is None: continue
             w = c.cw
@@ -1134,15 +1178,15 @@ def scan_script(path, text, row, rows, base):
             name = n.rsplit("/", 1)[-1]
             span = c.text                          # the whole simple command, from its first assignment or redirection, as written
             if "/" in n and not n.startswith(("-", "$")) and "://" not in n and deny_class_last(name):
-                add("deny", w, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, w))
+                add("deny", w, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, w), phys(c.line))
             elif "/" not in n and GLOBCH.search(n) and re.search(r"[A-Za-z]", n) and deny_class_last(n):      # a bare * or ? is a case pattern, not a command name
-                add("deny", w, "%s: names the command %r by a pattern that could match a denied command (a path or pattern: name it bare)" % (path, w))
+                add("deny", w, "%s: names the command %r by a pattern that could match a denied command (a path or pattern: name it bare)" % (path, w), phys(c.line))
             if w.startswith(("/", "$(..)", "`..`")):         # round 4 (10): minimal: an absolute path or a substitution as the command word (a bare "$x" stays a stated limit)
                 add("script-name", span, "%s: %r is a command word that is an absolute path or built at run time: run time or absolute, it is not judged (name it bare or by an exact listed path)" % (path, w))
             kind = family_kind(name)
             po = program_option(name, c.operands)
             if po is not None:
-                add("deny", c.text, "%s: %r uses the program-running option %r (refused as an option; a reviewed `deny` exception with the exact whole command may waive it)" % (path, w, po))
+                add("deny", c.text, "%s: %r uses the program-running option %r (refused as an option; a reviewed line-bound `deny` exception may waive it)" % (path, w, po), phys(c.line))
             if name in LAUNCH_OUTRIGHT:
                 add("launcher", span, "%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
             if (name in EVALUATORS and not (name == "openssl" and not (c.operands and c.operands[0] == "s_client"))) or kind == "eval":
@@ -1171,10 +1215,18 @@ def scan_script(path, text, row, rows, base):
         if not LITERAL_PATH.fullmatch(first) or first not in runs:
             add("witness-target", after, "%s: after `witness run --` the command %r is not a literal path in this script's `runs` list ($@, \"$@\", $*, a variable or a substitution is an error)" % (path, first))
     waived, errs = set(), []
+    plines = text.split("\n")
     for e in (exception_entries(path, row["exceptions"])[0] if "exceptions" in row else []):
-        for i, (rule, txt, _msg) in enumerate(fnd):
+        if e["rule"] == "deny":                    # line-bound: every deny finding on a physical line that equals `line`, if the script has exactly `count` such lines
+            if plines.count(e["line"]) != e["count"]: continue
+            hit = False
+            for i, (rule, _t, _m, ln) in enumerate(fnd):
+                if rule == "deny" and ln is not None and ln < len(plines) and plines[ln] == e["line"]: waived.add(i); hit = True
+            if not hit: errs.append("%s: deny exception for line %r waives nothing (no deny finding is on a line with exactly that text)" % (path, e["line"]))
+            continue
+        for i, (rule, txt, _msg, _ln) in enumerate(fnd):
             if i not in waived and rule == e["rule"] and txt == e["text"]:
                 waived.add(i); break
         else:
             errs.append("%s: exceptions entry %r (%s) waives nothing (no finding of that rule has exactly that text)" % (path, e["text"], e["rule"]))
-    return list(dict.fromkeys([m for i, (_r, _t, m) in enumerate(fnd) if i not in waived] + errs))
+    return list(dict.fromkeys([m for i, (_r, _t, m, _l) in enumerate(fnd) if i not in waived] + errs))

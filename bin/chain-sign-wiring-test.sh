@@ -442,7 +442,7 @@ def listed_scripts(base, rows, ran, bad):
         return seen
     reach = {rel: closure(p) for rel, p in ran.items()}
     for p, row in sorted(rows.items()):
-        text = open(os.path.join(base, p), errors="replace").read()
+        text = _cts.read_script(os.path.join(base, p))
         bad += ["AC1: " + x for x in _cts.scan_script(p, text, row, rows, base)]
         signs = row.get("signs", False)
         for e, pv, line in signer_calls(text, False):      # raw text: a signer name in a comment, quote or heredoc counts
@@ -3234,18 +3234,17 @@ d=$(cfix r5_ok 'git -c user.name=x status' '["git"]'); expm ok "$d" - "round-4 (
 
 # ---- PR 1b: deny exceptions are LINE-BOUND ({rule, line, line_sha256, count, why}); a carriage return is refused
 dl() { # dl NAME 'script lines' 'python list of exceptions (D(line[,count]) builds a deny entry)' ok|caught FRAG [tools-json]
-  local d; d=$(cfix "$1" "$2" "${6:-[\"git\",\"tar\",\"trap\"]}"); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]='"$3"; expm "$4" "$d" "$5" "line-bound $1: $2 with $3"; }
+  local d; d=$(cfix "$1" "$2" "${6:-[]}"); edit_spec "$d" "$DEF"'rows["bin/c.sh"]["exceptions"]='"$3"; expm "$4" "$d" "$5" "line-bound $1: $2 with $3"; }
 dl lb_a 'git status\ngit push origin main' '[D("git status")]' caught "'git'"
 dl lb_b 'git status' '[D("git status")]' ok -
 dl lb_c 'git status\ngit status' '[D("git status")]' caught 'count'
 dl lb_d 'git status\ngit status' '[D("git status", 2)]' ok -
 dl lb_e 'git status' '[D("git status", 2)]' caught 'count'
-dl lb_f "trap 'curl evil' EXIT\ncu\"\"rl x" '[D("cu\"\"rl x")]' caught "'curl'"
+dl lb_f "trap 'curl evil' EXIT\ncu\"\"rl x" '[D("cu\"\"rl x")]' caught "'curl'" '["trap"]'
 for form in 'curl"$x" x' 'x=1 curl"$e" x' 'curl{,} x' 'curl`true` x'; do
   dl "lb_q_$RANDOM" "$form\necho ok" '[D("echo ok")]' caught "'curl'"
 done
 dl lb_g 'curl a' '[D("curl a")]' ok - '[]'
-dl lb_h 'curl a' '[D("curl a")]' caught "'curl'" '["x"]'
 dl lb_i 'git status' '[D("git stat")]' caught 'stale'
 dl lb_j 'git status' '[dict(D("git status"), line_sha256="0"*64)]' caught 'sha256'
 dl lb_k 'git status' '[{"rule":"deny","text":"git status","why":"x"}]' caught 'line-bound'
@@ -3258,14 +3257,14 @@ dl lb_r 'git status' '[dict(D("git status"), why=" ")]' caught 'reason'
 dl lb_s 'git status' '[D("git status\nx")]' caught 'line'
 dl lb_t 'git status' '[D("")]' caught 'line'
 dl lb_u 'git status' '[D("git\tstatus")]' caught 'line'
-dl lb_v 'git status' '[D("git status")]' ok - '["git"]'
+dl lb_v 'git status' '[D("git status")]' caught 'waives nothing' '["git"]'
 dl lb_w 'git status' '[D("echo none")]' caught 'stale'
 dl lb_x 'echo a \\\n  git status' '[D("echo a \\")]' caught "'git'"
 dl lb_y 'git status \\\n  b' '[D("git status \\")]' ok -
-dl lb_z 'tar --to-command=vi -xf a.tar\ntar --to-command=vi -xf a.tar b' '[D("tar --to-command=vi -xf a.tar")]' caught 'program-running option'
-dl lb_za 'git -c core.sshCommand=x fetch\ngit -c core.sshCommand=x fetch b' '[D("git -c core.sshCommand=x fetch")]' caught 'program-running option'
-dl lb_zb 'tar --to-command=vi -xf a.tar' '[D("tar --to-command=vi -xf a.tar")]' ok -
-dl lb_zc 'git -c core.sshCommand=x fetch' '[D("git -c core.sshCommand=x fetch")]' ok -
+dl lb_z 'tar --to-command=vi -xf a.tar\ntar --to-command=vi -xf a.tar b' '[D("tar --to-command=vi -xf a.tar")]' caught 'program-running option' '["tar"]'
+dl lb_za 'git -c core.sshCommand=x fetch\ngit -c core.sshCommand=x fetch b' '[D("git -c core.sshCommand=x fetch")]' caught 'program-running option' '["git"]'
+dl lb_zb 'tar --to-command=vi -xf a.tar' '[D("tar --to-command=vi -xf a.tar")]' ok - '["tar"]'
+dl lb_zc 'git -c core.sshCommand=x fetch' '[D("git -c core.sshCommand=x fetch")]' ok - '["git"]'
 d=$(wfix lb_zd); edit_spec "$d" "$DEF"'rows["bin/witnessed.sh"]["exceptions"].append(D("set -euo pipefail"))'; expm caught "$d" 'waives nothing' "line-bound: a deny entry for a line with no deny finding waives nothing (an error)"
 # a carriage return anywhere is refused (the files are written as bytes)
 crf() { local d; d=$(cfix "$1" 'echo a'); printf '%b' "$2" > "$d/bin/c.sh"; edit_spec "$d" 'rows["bin/c.sh"]["tools"]=[]'; echo "$d"; }
@@ -3275,7 +3274,7 @@ d=$(crf cr_c '#!/usr/bin/env bash\ncurl a\r\n'); edit_spec "$d" "$DEF"'rows["bin
 d=$(crf cr_ok '#!/usr/bin/env bash\necho a\n'); expm ok "$d" - "line-bound: control: the same script without a CR"
 
 
-EXPECT=1298
+EXPECT=1297
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

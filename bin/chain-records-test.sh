@@ -117,7 +117,7 @@ if os.path.exists(os.path.join(base, ".github/policy/chain-scripts.json")):
     bad += ["chain-scripts.json: " + x for x in serrs]
     for sp in sorted(srows):
         if sp == "bin/chain-verify.py": continue
-        scan(sp, open(os.path.join(base, sp), errors="replace").read(), True)
+        scan(sp, _cts.read_script(os.path.join(base, sp)), True)
 types = [r.get("type") for r in rows]
 for t in sorted(produced):
     if types.count(t) == 0: bad.append("produced type has no row: %s (in %s)" % (t, ", ".join(sorted(produced[t]))))
