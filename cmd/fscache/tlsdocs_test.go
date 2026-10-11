@@ -108,6 +108,29 @@ func TestTLSDocsDescribeBothOptions(t *testing.T) {
 	if example == "" {
 		t.Fatal("kubernetes.md has no yaml example setting FSCACHE_TLS_CERT")
 	}
+	// The TLS example is the page's Deployment with the TLS entries merged
+	// into its existing lists (env, probes, volumeMounts, volumes): taking
+	// out exactly the TLS lines gives back the Deployment block verbatim, so
+	// applying it neither duplicates a key nor drops the data volume.
+	dep := regexp.MustCompile("(?s)## Deployment\n.*?```yaml\n(.*?)```").FindStringSubmatch(k)
+	if dep == nil {
+		t.Fatal("kubernetes.md has no Deployment block")
+	}
+	var kept []string
+	for _, line := range strings.Split(example, "\n") {
+		tlsLine := false
+		for _, mark := range []string{"FSCACHE_TLS_", "/etc/fscache/tls", "scheme: HTTPS", "- name: tls", "readOnly: true", "secret:", "secretName: fscache-server-tls"} {
+			if strings.Contains(line, mark) {
+				tlsLine = true
+			}
+		}
+		if !tlsLine {
+			kept = append(kept, line)
+		}
+	}
+	if got := strings.Join(kept, "\n"); got != dep[1] {
+		t.Errorf("the TLS example minus its TLS lines is not the Deployment block:\n--- got\n%s\n--- want\n%s", got, dep[1])
+	}
 	for _, want := range []string{"FSCACHE_TLS_KEY", "secretName:", "readOnly: true"} {
 		if !strings.Contains(example, want) {
 			t.Errorf("the kubernetes.md TLS example does not set %q", want)
