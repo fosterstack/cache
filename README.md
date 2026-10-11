@@ -60,7 +60,7 @@ Shipped:
   once, and the scans, the acceptance tests and an independent
   reproducibility rebuild all run on that exact digest; the published
   images are that same digest, promoted without a rebuild. The daily rescan
-  then re-checks what is published. [`RELEASING.md`](RELEASING.md)
+  then re-checks the current release. [`RELEASING.md`](RELEASING.md)
   describes the pipeline stage by stage.
 - Acceptance-tested against a real multi-module Gradle project on every
   push/PR — a from-scratch second build must produce real `FROM-CACHE`
@@ -85,8 +85,8 @@ Not yet shipped:
 - **A CVE patch commitment you can hold us to.** We aim to ship fixes for
   dependency CVEs within 48 hours of public disclosure. That is a stated
   intention, not a contractual promise, and it will not be one until the
-  paid tiers exist. What already runs today is the detection half: every
-  published image is rescanned daily, so a CVE disclosed against bytes we
+  paid tiers exist. What already runs today is the detection half: the
+  current release's images are rescanned daily, so a CVE disclosed against bytes we
   already shipped raises an issue without anyone remembering to look.
 
 Tracked in this repo's issues, which is also where the roadmap gets argued

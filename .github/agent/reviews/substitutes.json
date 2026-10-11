@@ -18,6 +18,15 @@
       "effective_until": "2026-10-10T05:00:00Z",
       "owner_quote": "Proceed with opus just for this one that codex is hung up on",
       "scope": "pr:210"
+    },
+    {
+      "id": "0350",
+      "for": "codex",
+      "by": "opus",
+      "vendor": "anthropic",
+      "effective_until": "2026-10-17T05:00:00Z",
+      "owner_quote": "the plan is we use up the full 24% then switch back to opus as reviewer.  but when you switch to opus you need to scream at me - at that point I will hit the reset button.",
+      "scope": "all"
     }
   ]
 }

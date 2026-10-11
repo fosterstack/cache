@@ -97,16 +97,21 @@ class Cli(unittest.TestCase):
         for a in cases:
             rc, out, err, rec = self.run_cli(a + ["--path", "docs/a.md"])
             self.assertEqual((rc, out), (1, ""), a); self.assertTrue(err.startswith("auditor-signed-commit: "), err); self.assertEqual(rec.calls, [])
-        for p in ("/etc/passwd", "../x", "docs/../../x", "a//b", "./x", "docs/"):
-            rc, out, err, rec = self.run_cli(argv() + ["--path", p])
-            self.assertEqual((rc, out), (1, ""), p); self.assertIn("path", err); self.assertEqual(rec.calls, [], p)
+        with tempfile.TemporaryDirectory() as other:                                 # an absolute path of the system-file shape, in a tree outside the root
+            absolute = os.path.join(other, "etc", "passwd")
+            os.makedirs(os.path.dirname(absolute)); open(absolute, "w").close()
+            for p in (absolute, "../x", "docs/../../x", "a//b", "./x", "docs/"):
+                rc, out, err, rec = self.run_cli(argv() + ["--path", p])
+                self.assertEqual((rc, out), (1, ""), p); self.assertIn("path", err); self.assertEqual(rec.calls, [], p)
 
     def test_a_symlink_is_refused_not_followed(self):
-        os.symlink("/etc/hostname", os.path.join(self.dir.name, "docs", "link.md"))
-        os.symlink("/nonexistent/x", os.path.join(self.dir.name, "docs", "dangling.md"))
-        for p in ("docs/link.md", "docs/dangling.md"):
-            rc, out, err, rec = self.run_cli(argv() + ["--path", p])
-            self.assertEqual((rc, out), (1, ""), p); self.assertIn("symlink", err); self.assertEqual(rec.calls, [])
+        with tempfile.TemporaryDirectory() as outside:                               # a real file outside the tree for the link to point at
+            target = os.path.join(outside, "hostname"); open(target, "w").close()
+            os.symlink(target, os.path.join(self.dir.name, "docs", "link.md"))
+            os.symlink(os.path.join(outside, "nonexistent", "x"), os.path.join(self.dir.name, "docs", "dangling.md"))
+            for p in ("docs/link.md", "docs/dangling.md"):
+                rc, out, err, rec = self.run_cli(argv() + ["--path", p])
+                self.assertEqual((rc, out), (1, ""), p); self.assertIn("symlink", err); self.assertEqual(rec.calls, [])
 
     def test_a_symlinked_directory_in_the_path_is_refused_before_anything_is_read(self):
         with tempfile.TemporaryDirectory() as out:

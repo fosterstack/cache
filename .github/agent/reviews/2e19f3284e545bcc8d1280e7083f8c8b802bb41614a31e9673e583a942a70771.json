@@ -1,0 +1,70 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "2e19f3284e545bcc8d1280e7083f8c8b802bb41614a31e9673e583a942a70771",
+ "change": "Daily rescan: the published VEX filters the findings of scanners that cannot read it (OSV-Scanner, Snyk) and the tracking-issue lookup reads every page (REQ-REL-004-AC6, AC7); strict VEX/scanner-shape validation, exact image-repository and namespace-preserving package matching, purl grammar without qualifiers or subpaths -- PR #268",
+ "reviewed_commit": "6c5c9f6c652dab0a2c3445543b31639554f440ae",
+ "closed_commit": "6c5c9f6c652dab0a2c3445543b31639554f440ae",
+ "rounds": [
+  {
+   "round": 3,
+   "label": "head 75e8b708 (phase-2 R3 consultation): Codex conceded both round-2 blockers and held 2 new (Snyk applications mapping skipped; last-segment package match / pkg:/busybox); fixed in c3f55eb2",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "1120abdfa1035cc7a45d7fd0aef28a2978d09d3af43aea65aca9a6c22b768df3"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 2,
+     "evidence_sha256": "1120abdfa1035cc7a45d7fd0aef28a2978d09d3af43aea65aca9a6c22b768df3"
+    }
+   }
+  },
+  {
+   "round": 4,
+   "label": "head c3f55eb2 (R4 fix verification): Codex CLOSED both, one new medium finding (purl qualifiers discarded); Sonnet 0 blockers",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ece8f7e57ca09aa1956fa5ab5366ae7fe46684722c4d91453ce9e863ecfb7a45"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 1,
+     "evidence_sha256": "70803c28604bd104d3537c6592cb77f6a643b0a34ce9d96796bba96ef272bb2e"
+    }
+   }
+  },
+  {
+   "round": 5,
+   "label": "head 6c5c9f6c (R5, fix verification only): round-4 finding CLOSED by Codex and Sonnet; published VEX's four statements still suppress; row 78 clean (workflow unchanged, 148 digest-pinned, 0 findings)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "a1886a167025bbd2706e45e011586a0fbaeda461f8ab585bd1ecda821787c450"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "d7fdeef9d66c111d98f671a2b8431113aea6b70e5dbe8f3a084439f6399e1025"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX AND SONNET RUN SEPARATELY ON EACH ROUND; Codex's read-only sandbox could not run the suites (rescan-statement 198/0, panel-wiring 63/0, rescan-current-only 33/0, inspector-gate 17/0, auditor-labels 22/0 were run by Sonnet and the author): the suite counts are NOT VERIFIED BY CODEX",
+  "rounds 1-2 (head 6cc52710 and 786cb7a6) evidence is in the audit folder (codex-268-r1.md, codex-268-r2.md, sonnet-268-r1.md, sonnet-268-adv.md, sonnet-268-r2.md); this record lists the last three rounds",
+  "the shared inspector-gate.py same_pkg/name_version keep the last-segment fallback and lowercasing (PR gate only; the rescan no longer calls them)",
+  "exact name/version/case matching means a scanner naming variant stops a suppression and the daily rescan over-reports (fail-safe); real Snyk --all-projects top-level array output is an operational error (fail-safe)",
+  "Sonnet R5 residual: a test gap (no 'unreadable up front, whatever the finding' case for a qualified subcomponent whose statement CVE does not match the finding)",
+  "not verified by anyone: end-to-end osv-scanner/real Snyk CLI on the real images (not installed here)",
+  "the real Codex seat is openai; no Opus substitute is used in this record"
+ ]
+}
