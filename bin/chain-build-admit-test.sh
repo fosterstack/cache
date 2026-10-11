@@ -437,6 +437,10 @@ RC=0;
     "$W/c/out" 2> "$W/c/err") || RC=$?
 { [ -f "$BA" ] && [ "$RC" = 2 ] && grep -qi environment "$W/c/err";
 } && ok "AC4 a tag given as an argument is a usage error (the tag comes only from the environment)" || bad "AC4 --tag accepted or wrong exit: $RC"
+fresh; run_admit "GH_TOKEN="
+n_cases=$((n_cases + 1))
+{ [ -f "$BA" ] && [ "$RC" = 2 ] && grep -q GH_TOKEN "$W/c/err" && ! grep -q Traceback "$W/c/err" && ! grep -q '^gh ' "$W/c/calls.log";
+} && ok "AC8 admission without the GH_TOKEN its step hands it is an environment error (exit 2) naming the variable, before any GitHub call" || bad "AC8 a missing GH_TOKEN was not refused as an environment error: exit $RC"
 # ---- policy-from-main -------------------------------------------------------------------------------------------------------------
 fresh;
 G checkout -q -b feature v0.3.0 2> /dev/null;
@@ -717,6 +721,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=114
+EXPECT_TOTAL=115
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
