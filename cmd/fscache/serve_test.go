@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -693,6 +696,244 @@ func TestServeShutdownErrorOrphanAdoptedOnNextStart(t *testing.T) {
 	}
 }
 
+// proves: REQ-STORE-005-AC5 — end to end over real sockets, plain and TLS: an upload held in flight, a real serving error, then a restart on the same data directory
+//
+// Nothing here stands in for the server: Serve / ServeTLS are the real
+// methods (the seam only hands the test the listener they were given), the
+// upload is a real PUT whose body the test holds open after its first ten
+// bytes, and the serving error is real: the listener is closed under the
+// running server, whose accept loop then fails with net.ErrClosed. serve
+// returns that error, the stores are closed once, and the marker is kept.
+// A second serve on the same data directory finds the marker, reconciles
+// before it serves, keeps the upload that completed before the error (served,
+// counted the same by /statusz and /metrics), and does not adopt the held,
+// partial upload (404, adopted_blobs=0, no temporary file left behind).
+//
+// What it does not hold open: the window between a completed upload's
+// rename and its index record is a few instructions inside cache.Put, with
+// no point a socket can block on, so a real handler cannot be parked there.
+// The adoption of such a blob is TestServeShutdownErrorOrphanAdoptedOnNextStart.
+func TestServeRealServingErrorWithUploadInFlightThenRestart(t *testing.T) {
+	for _, withTLS := range []bool{false, true} {
+		name := "plain"
+		if withTLS {
+			name = "tls"
+		}
+		t.Run(name, func(t *testing.T) { realServingErrorThenRestart(t, withTLS) })
+	}
+}
+
+func realServingErrorThenRestart(t *testing.T, withTLS bool) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	addr := freePort(t)
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", addr)
+	scheme := "http"
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	dial := func() (net.Conn, error) { return net.DialTimeout("tcp", addr, 10*time.Second) }
+	if withTLS {
+		p := writePair(t, t.TempDir(), "ac5e2e", "MARKER-AC5E2E-7f3d9c")
+		t.Setenv("FSCACHE_TLS_CERT", p.certPath)
+		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+		scheme = "https"
+		client = tlsTestClient(p.leaf)
+		pool := x509.NewCertPool()
+		pool.AddCert(p.leaf)
+		dial = func() (net.Conn, error) {
+			d := &net.Dialer{Timeout: 10 * time.Second}
+			return tls.DialWithDialer(d, "tcp", addr, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+		}
+	}
+	base := scheme + "://" + addr
+	do := func(method, path, body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(method, base+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("request %s %s: %v", method, path, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read %s %s: %v", method, path, err)
+		}
+		return resp.StatusCode, string(b)
+	}
+
+	// The real Serve / ServeTLS, with the listener handed to the test. The
+	// other one fails the test if serve calls it.
+	lnc := make(chan net.Listener, 2)
+	origPlain, origTLS := httpServe, httpServeTLS
+	t.Cleanup(func() { httpServe, httpServeTLS = origPlain, origTLS })
+	wrong := func(*http.Server, net.Listener) error {
+		t.Error("serve chose the wrong serving path")
+		return nil
+	}
+	httpServe, httpServeTLS = func(s *http.Server, l net.Listener) error {
+		lnc <- l
+		return origPlain(s, l)
+	}, wrong
+	if withTLS {
+		httpServe, httpServeTLS = wrong, func(s *http.Server, l net.Listener) error {
+			lnc <- l
+			return origTLS(s, l)
+		}
+	}
+
+	// First run: no marker at start, so no reconcile; the marker is written.
+	closes := countCloses(t)
+	readyc := make(chan struct{})
+	errc := make(chan error, 1)
+	go func() { errc <- serve(context.Background(), quietLogger(), func() { close(readyc) }) }()
+	select {
+	case <-readyc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first run did not become ready")
+	}
+	var ln net.Listener
+	select {
+	case ln = <-lnc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the serving goroutine never received the listener")
+	}
+
+	// An upload that completes before the error: stored and indexed.
+	const doneBody = "completed before the serving error"
+	if code, _ := do(http.MethodPut, "/done-key", doneBody); code != http.StatusCreated {
+		t.Fatalf("PUT /done-key answered %d, want 201", code)
+	}
+
+	// The held upload: ten of the declared hundred bytes, then nothing.
+	held, err := dial()
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = held.Close() }()
+	if _, err := io.WriteString(held, "PUT /held-key HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n0123456789"); err != nil {
+		t.Fatalf("write the held request: %v", err)
+	}
+	// The blob store creates its temporary file before it reads the body:
+	// once one exists, the handler is in flight, writing the blob.
+	tmpDir := filepath.Join(dir, "blobs", "+tmp")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if entries, _ := os.ReadDir(tmpDir); len(entries) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the held upload never reached the blob store")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// The real serving error: the listener fails under the running server.
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close the listener: %v", err)
+	}
+	select {
+	case err := <-errc:
+		if err == nil || !errors.Is(err, net.ErrClosed) || !strings.Contains(err.Error(), "serve:") {
+			t.Fatalf("first run error = %v, want a serve error wrapping %v", err, net.ErrClosed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("first run did not return on the serving error")
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Fatalf("unclean marker present = %v (err %v) after a serving error with an upload in flight, want true", present, err)
+	}
+	// The held upload was cut, never answered: the server closed its
+	// connection before the handler finished.
+	if err := held.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("read deadline: %v", err)
+	}
+	got, rerr := io.ReadAll(held)
+	var ne net.Error
+	if errors.As(rerr, &ne) && ne.Timeout() {
+		t.Fatal("the held upload's connection is still open after serve returned")
+	}
+	if len(got) != 0 {
+		t.Errorf("the held upload was answered: %q", got)
+	}
+	_ = held.Close()
+
+	// Second run on the same data directory.
+	freshRegistry(t)
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	ready2 := make(chan struct{})
+	errc2 := make(chan error, 1)
+	go func() { errc2 <- serve(ctx2, log, func() { close(ready2) }) }()
+	select {
+	case <-ready2:
+	case err := <-errc2:
+		t.Fatalf("second run returned before it was ready: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("second run did not become ready")
+	}
+	select {
+	case <-lnc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second run's serving goroutine never received the listener")
+	}
+	out := logs.String() // the reconcile runs before ready
+	if !strings.Contains(out, "unclean shutdown detected") || !strings.Contains(out, "fscache: reconciled") {
+		t.Fatalf("second run did not reconcile before serving:\n%s", out)
+	}
+	if !strings.Contains(out, "adopted_blobs=0") {
+		t.Errorf("second run adopted a blob; the held upload was partial:\n%s", out)
+	}
+	if code, body := do(http.MethodGet, "/done-key", ""); code != http.StatusOK || body != doneBody {
+		t.Errorf("GET /done-key = %d %q, want 200 %q", code, body, doneBody)
+	}
+	if code, _ := do(http.MethodGet, "/held-key", ""); code != http.StatusNotFound {
+		t.Errorf("GET /held-key = %d, want 404: a partial upload is not a hit", code)
+	}
+	if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
+		t.Errorf("temporary files after the reconcile: %d (err %v), want none", len(entries), err)
+	}
+	_, statusBody := do(http.MethodGet, "/statusz", "")
+	var st struct {
+		Bytes   int64 `json:"store_bytes"`
+		Entries int   `json:"store_entries"`
+	}
+	if err := json.Unmarshal([]byte(statusBody), &st); err != nil {
+		t.Fatalf("decode /statusz: %v\n%s", err, statusBody)
+	}
+	_, scrape := do(http.MethodGet, "/metrics", "")
+	if st.Entries != 1 || st.Bytes != int64(len(doneBody)) {
+		t.Errorf("/statusz entries=%d bytes=%d, want 1 and %d", st.Entries, st.Bytes, len(doneBody))
+	}
+	if got, want := metricLine(scrape, "fscache_store_entries "), fmt.Sprintf("fscache_store_entries %d", st.Entries); got != want {
+		t.Errorf("/metrics %q, /statusz says %q", got, want)
+	}
+	if got, want := metricLine(scrape, "fscache_store_bytes "), fmt.Sprintf("fscache_store_bytes %d", st.Bytes); got != want {
+		t.Errorf("/metrics %q, /statusz says %q", got, want)
+	}
+
+	cancel2()
+	select {
+	case err := <-errc2:
+		if err != nil {
+			t.Fatalf("second run returned %v on a clean shutdown", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("second run did not shut down")
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || present {
+		t.Errorf("unclean marker present = %v (err %v) after the clean second run, want false", present, err)
+	}
+}
+
 // recoverServe runs serve and returns what it panicked with (nil if it
 // returned normally).
 func recoverServe(ctx context.Context, ready func()) (r any) {
@@ -784,7 +1025,10 @@ func TestServeErrorAfterShutdownSignalIsReturned(t *testing.T) {
 // The same exits as the plain-HTTP tests above, taken through ServeTLS: the
 // plain Serve seam fails the test if it is called, so every case runs on the
 // HTTPS path. The listener error is real: the listener is closed under
-// ServeTLS, which then returns net.ErrClosed, not http.ErrServerClosed.
+// ServeTLS, which then returns net.ErrClosed, not http.ErrServerClosed. The
+// serving error after the shutdown signal is real too: the real ServeTLS,
+// shown accepting by a real TLS handshake, fails on its closed listener after
+// the signal was taken and before the real Shutdown runs.
 func TestServeTLSErrorsKeepMarker(t *testing.T) {
 	p := writePair(t, t.TempDir(), "ac5", "MARKER-AC5-1a2b3c")
 	realTLS := httpServeTLS
@@ -806,7 +1050,7 @@ func TestServeTLSErrorsKeepMarker(t *testing.T) {
 			},
 			noSignal: true, wantErr: net.ErrClosed, wantInErr: "serve:", keep: true,
 		},
-		{name: "serving error after the shutdown signal", raceStop: true, wantErr: errTestServe, wantInErr: "serve:", keep: true},
+		{name: "serving error after the shutdown signal", raceStop: true, wantErr: net.ErrClosed, wantInErr: "serve:", keep: true},
 		{
 			name:     "shutdown error",
 			serveTLS: realTLS,
@@ -819,8 +1063,9 @@ func TestServeTLSErrorsKeepMarker(t *testing.T) {
 			clearEnv(t)
 			freshRegistry(t)
 			dir := t.TempDir()
+			addr := freePort(t)
 			t.Setenv("FSCACHE_DATA_DIR", dir)
-			t.Setenv("FSCACHE_ADDR", freePort(t))
+			t.Setenv("FSCACHE_ADDR", addr)
 			t.Setenv("FSCACHE_TLS_CERT", p.certPath)
 			t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
 			closes := countCloses(t)
@@ -842,17 +1087,36 @@ func TestServeTLSErrorsKeepMarker(t *testing.T) {
 				httpShutdown = tc.shutdown
 			}
 			if tc.raceStop {
-				// ServeTLS blocks until Shutdown runs, so the select can only
-				// take the cancelled context; then ServeTLS fails.
-				release := make(chan struct{})
-				serveTLS = func(_ *http.Server, l net.Listener) error {
-					<-release
-					_ = l.Close()
-					return errTestServe
+				// The real ServeTLS. A real TLS handshake proves it is
+				// accepting; only then is the shutdown signal given, so the
+				// select can only take the cancelled context. The Shutdown
+				// seam then closes the listener under the running ServeTLS,
+				// waits for its real accept error (net.ErrClosed: the server
+				// is not yet shutting down) and runs the real Shutdown.
+				lnc := make(chan net.Listener, 1)
+				returned := make(chan struct{})
+				serveTLS = func(s *http.Server, l net.Listener) error {
+					lnc <- l
+					defer close(returned)
+					return realTLS(s, l)
 				}
-				httpShutdown = func(*http.Server, context.Context) error { close(release); return nil }
-				cancel()
-				ready = nil
+				httpShutdown = func(s *http.Server, c context.Context) error {
+					_ = (<-lnc).Close()
+					<-returned
+					return origShutdown(s, c)
+				}
+				pool := x509.NewCertPool()
+				pool.AddCert(p.leaf)
+				ready = func() {
+					d := &net.Dialer{Timeout: 10 * time.Second}
+					conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+					if err != nil {
+						t.Errorf("TLS handshake with the running ServeTLS: %v", err)
+					} else {
+						_ = conn.Close()
+					}
+					cancel()
+				}
 			}
 			var tlsCalls atomic.Int32
 			httpServeTLS = func(s *http.Server, l net.Listener) error { tlsCalls.Add(1); return serveTLS(s, l) }
