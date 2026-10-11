@@ -16,13 +16,13 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 79 |
-| Acceptance criteria | 254 |
-| Release-blocking ACs | 47 |
-| ACs with mapped evidence | 238 |
-| Release-blocking ACs with mapped evidence | 47 |
+| Active requirements | 80 |
+| Acceptance criteria | 263 |
+| Release-blocking ACs | 52 |
+| ACs with mapped evidence | 247 |
+| Release-blocking ACs with mapped evidence | 52 |
 | Confidence: claimed-unverified | 1 |
-| Confidence: documented | 44 |
+| Confidence: documented | 45 |
 | Confidence: implementation-only | 34 |
 
 ## Cache protocol
@@ -167,6 +167,28 @@ At startup, after the configuration validates, the server shall log one warning 
 | REQ-CFG-005-AC4 | Given the list of known variables in the code, the names the code reads, and the README configuration table; when a test compares them; then every variable the code reads is in the list, every variable in the list is read by the code, every variable in the README table is in the list, and every variable in the list is in the README table | unit |  | approved | 3 item(s) |
 | REQ-CFG-005-AC5 | Given every known variable present in the environment, including with an empty value; when the check runs; then no warning is logged | unit |  | approved | 1 item(s) |
 | REQ-CFG-005-AC6 | Given an unknown name within Levenshtein distance 2 of a known name (FSCACHE_MAX_BYTE, FSCACHE_DATADIR), and an unknown name farther than that; when the warning is logged; then the near miss carries the attribute did_you_mean naming the closest known variable (ties broken by the order of the list), the far name carries none, and the suggestion is always a known name, never text taken from the environment | unit |  | approved | 2 item(s) |
+
+## TLS
+
+### REQ-TLS-001 — Optional native TLS listener
+
+When both FSCACHE_TLS_CERT and FSCACHE_TLS_KEY name a PEM certificate file and its private key file, the server shall serve HTTPS only, on FSCACHE_ADDR. It shall use a minimum of TLS 1.2 and Go's default cipher suites. When neither is set, it shall serve plain HTTP as today. It shall refuse to start on a one-sided pair, an unreadable or unparseable file, or a certificate and key that do not match. It shall do this before it creates or writes anything under FSCACHE_DATA_DIR. The files are read once at startup; a new certificate takes effect on restart. No log line, error message, metric or status field shall contain the private key's contents.
+
+*Introduced v0.3.0 · tier community · confidence documented · source: issue 278 (gap X2); cmd/fscache/main.go loadConfig and loadKeyPair and serve; internal/server/tls.go TLSConfig; internal/server/server.go NewHTTPServer; README.md; docs/kubernetes.md; docs/docker-deploy.md; docs/gradle.md*
+
+> AC9 (HTTP/1.1 only with TLS on) was added at advisor step 5 on Oct 11, after the read-back: with TLS on the server negotiates only HTTP/1.1; a client offering only h2 by ALPN gets no h2 connection. The 1 MiB file-size cap (Sonnet step-8 residual R3) is in AC3's text, added at advisor step 5 on Oct 11. AC4 note (residual R2, Oct 11): Go's http.Server error log (TLS handshake errors and the like) is written through the process logger at DEBUG, so it is covered by the same capture and a flood of such errors writes nothing at the default level.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-TLS-001-AC1 | Given FSCACHE_TLS_CERT and FSCACHE_TLS_KEY set to a matching certificate and key, generated in the test (ECDSA P-256); when the server starts and a client connects with TLS 1.2, with TLS 1.3, and with plain HTTP; then the TLS 1.2 and TLS 1.3 clients complete a handshake and an authenticated PUT/GET round trip. The plain-HTTP request gets no cache response and stores nothing (Go answers 400) | http-integration | yes | approved | 1 item(s) |
+| REQ-TLS-001-AC2 | Given the server from AC1; when clients connect offering only TLS 1.0, or only TLS 1.1, or (at TLS 1.2) only an RSA-key-exchange or 3DES suite; then every handshake fails. The server's tls.Config sets MinVersion = TLS 1.2 explicitly, so GODEBUG=tls10server=1 cannot lower it (the test runs one case with that GODEBUG set) | unit | yes | approved | 2 item(s) |
+| REQ-TLS-001-AC3 | Given each of: only FSCACHE_TLS_CERT set; only FSCACHE_TLS_KEY set; a cert path that does not exist; a key file the process cannot read; a file that is not PEM; a valid certificate with a key from a different pair. Data directory absent in one run, present in another; when the server starts; then it exits non-zero with an error naming the variable(s) and the path, never the file contents. The absent data directory is still absent. The present one is byte-identical with no unclean-shutdown marker (same check as REQ-CFG-004-AC1/AC2). A certificate or key file larger than 1 MiB is refused, naming the variable, the path and the limit; a file of exactly 1 MiB is read | unit | yes | approved | 9 item(s) |
+| REQ-TLS-001-AC4 | Given a key file whose PEM body contains a known marker string, both in a valid start and in a start refused for a mismatch; when logs, the startup error, /metrics and /statusz are captured; then the marker, and every 16-byte window of the key's base64 body, appears in none of them | unit | yes | approved | 3 item(s) |
+| REQ-TLS-001-AC5 | Given the -fips build (GOFIPS140, default runtime mode), started with a valid P-256 certificate; when a client offers only TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305 at TLS 1.2, then a client offers TLS 1.3 with AES-GCM; then the first handshake fails and the second succeeds. The same test file passes in ci.yml's existing fips140-only job, which already runs the full suite under GODEBUG=fips140=only (REQ-FIPS-003) | unit |  | approved | 1 item(s) |
+| REQ-TLS-001-AC6 | Given a running TLS server; the certificate file is then replaced on disk; when a new connection is made, then the server is restarted and another connection is made; then before the restart the old certificate is presented; after it the new one is. The docs say "replace the files, then restart" | http-integration |  | approved | 1 item(s) |
+| REQ-TLS-001-AC7 | Given README.md, docs/kubernetes.md, docs/docker-deploy.md, docs/gradle.md; when they are read; then the README configuration table lists both variables, "required together", default unset. kubernetes.md no longer says "no certificate handling of its own" and shows both options (TLS in front, or the certificate in a Secret mounted read-only, with probes using scheme HTTPS). Each page says the files are read at startup only, so a rotation needs a restart | unit |  | approved | 2 item(s) |
+| REQ-TLS-001-AC8 | Given a starting server; when the startup log record ("fscache: starting") is emitted; then it carries tls = enabled or disabled beside auth and fips140. Other records (an unknown-variable warning, a reconcile warning) may come before it. This extends REQ-OBS-004-AC1, whose field list is additive ("contains") | component |  | approved | 1 item(s) |
+| REQ-TLS-001-AC9 | Given a server started with TLS; when a client offers only h2 by ALPN, and a client offers h2 and http/1.1; then no h2 connection is made; the first gets a failed ALPN negotiation (no h2), the second negotiates http/1.1, and requests behave as on the plain listener (the same header size bound, body limit and upload concurrency bound) | http-integration | yes | approved | 3 item(s) |
 
 ## Authentication
 
