@@ -940,6 +940,33 @@ def deny_class_last(last):
     if last in DENYCLASS or VERSIONED.fullmatch(last): return True
     return bool(GLOBCH.search(last)) and any(fnmatch.fnmatchcase(c, last) for c in DENYCLASS)
 
+# Round 3 (3): the OPTIONS that run a program, refused as options (rule deny, text the whole command) for the commands that have them. Long options are
+# matched by name, including an unambiguous abbreviation of 4+ characters (GNU getopt); short ones letter by letter inside a bundle (-xIf, -cMF,
+# -I/bin/sh), up to the first letter that takes an argument.
+LONG_RUN = {"tar": ("use-compress-program", "to-command", "checkpoint-action", "info-script", "new-volume-script", "rsh-command"),
+            "sort": ("compress-program",), "install": ("strip-program",), "rsync": ("rsh", "rsync-path"), "git": ("exec-path",)}
+SHORT_RUN = {"tar": "IF", "rsync": "e"}
+TAR_ARG_LETTERS = "bCfFgIKLNTVX"
+def program_option(cmd, operands):
+    """The first program-running option of this command, or None. make, xargs (any command operand) and the find/ssh/git forms are covered too."""
+    if cmd == "make": return "make"
+    ops = list(operands)
+    if cmd == "tar" and ops and re.fullmatch(r"[A-Za-z]+", ops[0]): ops[0] = "-" + ops[0]      # old style: tar xIf ...
+    for idx, o in enumerate(ops):
+        if cmd == "find" and o in ("-exec", "-execdir", "-ok", "-okdir"): return o
+        if cmd == "ssh" and (o == "-o" and idx + 1 < len(ops) and re.match(r"(?i)(proxycommand|localcommand|permitlocalcommand)", ops[idx + 1]) or re.match(r"(?i)-o(proxycommand|localcommand)", o)): return o
+        if cmd == "git" and o == "-c" and idx + 1 < len(ops) and re.search(r"(?i)^(core\.(sshcommand|pager|editor|fsmonitor|hookspath|askpass)|alias\.[^=]*=!|credential\.helper=!)", ops[idx + 1]): return "-c " + ops[idx + 1]
+        if not o.startswith("-") or o == "-": continue
+        if o.startswith("--"):
+            name = o[2:].split("=")[0]
+            for full in LONG_RUN.get(cmd, ()):
+                if name == full or (len(name) >= 4 and full.startswith(name) and name != "checkpoint"): return o
+        else:
+            for ch in o[1:]:
+                if ch in SHORT_RUN.get(cmd, ""): return o
+                if cmd == "tar" and ch in TAR_ARG_LETTERS: break
+    return None
+
 DATA_ONLY = {"cp", "mv", "rm", "mkdir", "rmdir", "ls", "cat", "echo", "printf", "test", "[", "[[", "sha256sum", "shasum", "tar", "mktemp", "touch",
              "chmod", "ln", "readlink", "basename", "dirname", "head", "tail", "wc", "sort", "grep", "cut", "tr", "diff", "cmp", "install", "du",
              "stat", "date", "sleep", "true", "false"}
@@ -1067,6 +1094,9 @@ def scan_script(path, text, row, rows, base):
             elif "/" not in n and GLOBCH.search(n) and re.search(r"[A-Za-z]", n) and deny_class_last(n):      # a bare * or ? is a case pattern, not a command name
                 add("deny", w, "%s: names the command %r by a pattern that could match a denied command (a path or pattern: name it bare)" % (path, w))
             kind = family_kind(name)
+            po = program_option(name, c.operands)
+            if po is not None:
+                add("deny", c.text, "%s: %r uses the program-running option %r (refused as an option; a reviewed `deny` exception with the exact whole command may waive it)" % (path, w, po))
             if name in LAUNCH_OUTRIGHT:
                 add("launcher", span, "%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
             if (name in EVALUATORS and not (name == "openssl" and not (c.operands and c.operands[0] == "s_client"))) or kind == "eval":
