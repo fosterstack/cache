@@ -518,7 +518,7 @@ def _no_constant(name):
     raise ValueError(f"{name} is not JSON (Python's reader accepts NaN, Infinity and -Infinity; this file must not hold them)")
 
 
-def _load_rows(path, name, fields, required=False, check=None):
+def _load_rows(path, name, fields, required=False, check=None, optional=("count",)):
     """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count, row)} from the file's list NAME (one reader for AC16 and AC19). A missing
     default file is no rows; anything malformed raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
@@ -536,8 +536,8 @@ def _load_rows(path, name, fields, required=False, check=None):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why, i=i: RuntimeError(f"{path}: {name} row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(fields) - {"count"} or not set(fields) <= set(r):
-            raise bad(f"must be an object with exactly {', '.join(fields)} (and an optional count)")
+        if not isinstance(r, dict) or set(r) - set(fields) - set(optional) or not set(fields) <= set(r):
+            raise bad(f"must be an object with exactly {', '.join(fields)} (and optionally {', '.join(optional)})")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{16}", r["key"]):
@@ -566,6 +566,7 @@ GH_FORM = "a gh release or extension download"
 _HOST = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?")
 _FUNC = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 _TEST_FILE = re.compile(r"(?:^|/)(?:[^/]+-test\.sh|[^/]+_test\.go|[^/]+_test\.py|test_[^/]+\.py)$")
+_CODE_FILE = (".sh", ".py", ".go")
 MIN_CASE = 12
 
 
@@ -576,20 +577,22 @@ def _rel_path(p):
 
 
 def _check_fetch_row(r, bad):
-    """The AC19 fields, beyond AC16's: form, host, verifier and test, each strict."""
+    """The AC19 fields, beyond AC16's: form, host, verifier, test and the optional redirects, each strict."""
     h = r["host"]
     if h == REPO_SELF:
         if r["form"] != GH_FORM or r["key"] != r["line"]:
             raise bad(f"host {REPO_SELF} is only for the form '{GH_FORM}' (whose key is the whole-line hash, so key equals line)")
     elif r["form"] != "a download":
-        raise bad(f"form is not 'a download' (a curl or wget download), nor '{GH_FORM}' with host {REPO_SELF}")
-    elif not isinstance(h, str) or not (_rel_path(h[5:]) if h.startswith("lock:") else _HOST.fullmatch(h)):
-        raise bad(f"host is neither a lower-case DNS name with a dot (no scheme, port, path or user), nor lock:<relative path of a committed lock>, nor {REPO_SELF}")
+        raise bad(f"form is not 'a download' (a curl download), nor '{GH_FORM}' with host {REPO_SELF}")
+    elif not isinstance(h, str) or not _HOST.fullmatch(h):
+        raise bad(f"host is neither a lower-case DNS name with a dot (no scheme, port, path or user) nor {REPO_SELF} (a lock: host is not accepted)")
+    if "redirects" in r and (r["redirects"] is not True or h == REPO_SELF):
+        raise bad("redirects, when present, is the value true, on a curl row (a download that follows redirects)")
     v = r["verifier"]
     if not isinstance(v, dict) or set(v) not in ({"file", "function"}, {"file", "line"}):
         raise bad("verifier must be an object with file and exactly one of function or line")
-    if not _rel_path(v["file"]):
-        raise bad("verifier file is not a relative path in the repository")
+    if not _rel_path(v["file"]) or not v["file"].endswith(_CODE_FILE):
+        raise bad("verifier file is not a relative path to a shell, Python or Go file")
     if "function" in v and not (isinstance(v["function"], str) and _FUNC.fullmatch(v["function"])):
         raise bad("verifier function is not a function name")
     if "line" in v and not (isinstance(v["line"], str) and v["line"].strip() and not any(c in v["line"] for c in "\r\n")):
@@ -604,8 +607,8 @@ def _check_fetch_row(r, bad):
 
 
 def load_input_fetch(path, required=False):
-    """The unmeasured_input_fetch rows (REQ-SUP-001-AC19): AC16's row plus host, verifier and test."""
-    return _load_rows(path, "unmeasured_input_fetch", _FETCH_FIELDS, required, _check_fetch_row)
+    """The unmeasured_input_fetch rows (REQ-SUP-001-AC19): AC16's row plus host, verifier, test and the optional redirects."""
+    return _load_rows(path, "unmeasured_input_fetch", _FETCH_FIELDS, required, _check_fetch_row, optional=("count", "redirects"))
 
 
 def _covered(rows, k, per):
@@ -616,126 +619,245 @@ def _covered(rows, k, per):
     return rs if all(r and n <= r[1] for r, n in zip(rs, per.values())) else None
 
 
-# --- REQ-SUP-001-AC19: what the head must hold for a ruled input fetch ---------------------------------------------------------------------------------
+# --- REQ-SUP-001-AC19: what the head must hold for a ruled input fetch. Everything is CLOSED: a shape, a word or a context this reader does not know
+# is refused, never skipped (fail closed). ---------------------------------------------------------------------------------------------------------------
 _SEGMENTS = re.compile(r"\s*(?:;|&&|\|\||\|)\s*")      # the scan's own split of a line into commands (pin-inventory.unmeasured_occurrences)
-_LEAD = {"if", "!", "then", "do", "else", "elif", "while", "until"}
-_TOOLS = {   # the only words a ruled download may hold: flags, and options whose value is a number, =https or an output file
-    "curl": {"letters": set("fsSLq"), "flags": {"--fail", "--fail-with-body", "--silent", "--show-error", "--location", "--compressed", "--create-dirs",
-                                                 "--retry-all-errors", "--retry-connrefused", "--disable", "--http1.1", "--http2", "--tlsv1.2", "--tlsv1.3"},
-             "output": {"-o", "--output"}, "number": {"--retry", "--retry-delay", "--retry-max-time", "--max-time", "-m", "--connect-timeout"},
-             "proto": {"--proto", "--proto-redir"}},
-    "wget": {"letters": set("q"), "flags": {"--quiet", "--no-verbose", "-nv", "--https-only"}, "output": {"-O", "--output-document"},
-             "number": {"-t", "--tries", "-T", "--timeout"}, "proto": set()},
-}
-_REDIR = re.compile(r"(?:[12]?>>?|&>>?)")
-_DUP = re.compile(r"[12]?>&[12]")
+_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_DENIED = re.compile(r"(?:GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|HOME|PATH|BASH_ENV|ENV|CURL_HOME|XDG_CONFIG_HOME|SSL_CERT_FILE|NODE_OPTIONS"
+                     r"|LD_\w*|PYTHON\w*)")
+_SHELL_KEYS = {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"}
+_CURL = {"letters": set("fsSLg"), "flags": {"--fail", "--fail-with-body", "--silent", "--show-error", "--location", "--globoff", "--compressed",
+                                             "--create-dirs", "--retry-all-errors", "--retry-connrefused", "--http1.1", "--http2", "--tlsv1.2", "--tlsv1.3"},
+         "output": {"-o", "--output"}, "number": {"--retry", "--retry-delay", "--retry-max-time", "--max-time", "-m", "--connect-timeout", "--max-filesize"},
+         "proto": {"--proto", "--proto-redir"}}
+_LITWORD = re.compile(r"[A-Za-z0-9_./:=+,%@-]+")
+_RELPATH = r"[A-Za-z0-9_.][A-Za-z0-9_./-]*"
+_URLCH = r"[A-Za-z0-9._~/%+,=:@-]"
 
 
-def _plain(w):
-    """A word that names no address and expands nothing but $NAME or ${NAME}."""
-    return "://" not in w and not re.search(r"[{}\\<>|&;()`]", re.sub(r"\$\{[A-Za-z_]\w*\}", "", w))
+def _names_ok(word):
+    """Every $NAME or ${NAME} in WORD is a plain name that is not denied; no other expansion form remains."""
+    rest = re.sub(r"\$\{(" + _NAME + r")\}|\$(" + _NAME + ")", lambda m: "\0" if not _DENIED.fullmatch(m.group(1) or m.group(2)) else "$", word)
+    return "$" not in rest
 
 
-def _address_unruled(seg, host):
-    """None when the download command takes its address only as the row allows (REQ-SUP-001-AC19 (b)), else why not. Fail closed: a word this reader does
-    not know is refused, never skipped."""
-    if re.search(r"\$\(|`|<\(|>\(", seg):
-        return "a command substitution in the download command"
-    try:
-        lex = shlex.shlex(seg, posix=True)
-        lex.whitespace_split, lex.commenters = True, ""
-        words = list(lex)
-    except ValueError:
-        return "the download command cannot be read as words"
-    i = 0
-    while i < len(words) and words[i] in _LEAD:
-        i += 1
-    if i == len(words) or words[i] not in _TOOLS:
-        return "the download command does not start with curl or wget (an assignment, a wrapper or a path in front of it)"
-    tool, i, urls = _TOOLS[words[i]], i + 1, []
+def _no_dotdot(path):
+    return ".." not in path.split("/")
+
+
+def _output_ok(raw):
+    """An output path: a literal relative path, or "$NAME", "${NAME}", "$NAME/lit", "${NAME}/lit" (NAME plain, not denied); no glob, no .., not absolute."""
+    if re.fullmatch(_RELPATH, raw):
+        return _no_dotdot(raw)
+    m = re.fullmatch(r'"\$(?:\{(' + _NAME + r')\}|(' + _NAME + r'))(/[A-Za-z0-9_.-][A-Za-z0-9_./-]*)?"', raw)
+    return bool(m) and not _DENIED.fullmatch(m.group(1) or m.group(2)) and _no_dotdot(m.group(3) or "")
+
+
+def _address_ok(raw, host):
+    """An address: https://<host>/ then a path of URL characters, unquoted (all literal) or in double quotes with $NAME / ${NAME} in the path only."""
+    pre = f"https://{host}/"
+    if raw.startswith(pre):
+        return bool(re.fullmatch(_URLCH + "*", raw[len(pre):]))
+    if raw.startswith('"' + pre) and raw.endswith('"') and len(raw) > len(pre) + 1:
+        path = raw[len(pre) + 1:-1]
+        return _names_ok(path) and bool(re.fullmatch(r"(?:" + _URLCH + r"|\$\{" + _NAME + r"\}|\$" + _NAME + ")*", path))
+    return False
+
+
+def _curl_unruled(words, host, row):
+    """None when the curl command (raw words) is one this check reads, else why not: curl, -q or --disable FIRST (no ~/.curlrc), -g (no URL globbing),
+    then only listed flags, a number, --proto/--proto-redir =https, -o with an output path, and addresses on the row's host; -L only with the row's
+    redirects: true and --proto-redir =https."""
+    if len(words) < 2 or words[0] != "curl" or words[1] not in ("-q", "--disable"):
+        return "a ruled download is curl with -q (or --disable) as its FIRST argument, so no ~/.curlrc is read"
+    i, urls, glob_off, follows, redir_https = 2, [], False, False, False
     while i < len(words):
         w = words[i]
         i += 1
-        if _DUP.fullmatch(w):
+        if w in _CURL["flags"] or re.fullmatch(r"-[A-Za-z]+", w) and set(w[1:]) <= _CURL["letters"]:
+            glob_off |= w == "--globoff" or (not w.startswith("--") and "g" in w)
+            follows |= w == "--location" or (not w.startswith("--") and "L" in w)
             continue
-        m = re.match(_REDIR.pattern + r"(.*)$", w)
-        if m:
-            target = m.group(1)
-            if not target:
-                if i == len(words):
-                    return "an output redirect with no target"
-                target, i = words[i], i + 1
-            if target.startswith("-") or not _plain(target):
-                return f"an output redirect to {target[:60]!r}"
+        if w in _CURL["output"] | _CURL["number"] | _CURL["proto"]:
+            if i == len(words):
+                return f"{w} has no value"
+            v, i = words[i], i + 1
+            if w in _CURL["number"] and not re.fullmatch(r"\d{1,12}", v):
+                return f"{w} takes a number"
+            if w in _CURL["proto"] and v != "=https":
+                return f"{w} must be =https"
+            if w in _CURL["output"] and not _output_ok(v):
+                return f"{w} names {v[:60]!r}: an output is a literal relative path or \"$NAME[/path]\" (no glob, no .., not absolute, not a denied name)"
+            redir_https |= w == "--proto-redir"
             continue
-        name, eq, val = w.partition("=") if w.startswith("--") else (w, "", "")
-        if not eq and (w in tool["flags"] or re.fullmatch(r"-[A-Za-z]+", w) and set(w[1:]) <= tool["letters"]):
-            continue
-        if name in tool["output"] | tool["number"] | tool["proto"]:
-            if not eq:
-                if i == len(words):
-                    return f"{name} has no value"
-                val, i = words[i], i + 1
-            if name in tool["number"] and not re.fullmatch(r"\d{1,5}", val):
-                return f"{name} takes a number"
-            if name in tool["proto"] and val != "=https":
-                return f"{name} must be =https"
-            if name in tool["output"] and (not val or val.startswith("-") or not _plain(val)):
-                return f"{name} names {val[:60]!r}, not an output file"
-            continue
-        if w.startswith("-") or w[:1] in "<>|&;(){}":
-            return f"the word {w[:40]!r} is not one this check reads in a ruled download (a flag, --retry N, --proto =https, an output file)"
+        if w.startswith("-"):
+            return f"the option {w[:40]!r} is not one this check reads in a ruled download"
+        if not _address_ok(w, host):
+            return f"every address must start with https://{host}/ and expand only \"$NAME\" in its quoted path (no variable or other host, no glob): {w[:80]!r}"
         urls.append(w)
     if not urls:
         return "the download command names no address"
-    if host.startswith("lock:") and len(urls) != 1:
-        return f"a lock row's download takes exactly ONE address, the variable read from {host[5:]}: it names {len(urls)}"
-    for u in urls:
-        if host.startswith("lock:"):
-            if not re.fullmatch(r"\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\}", u):
-                return f"a lock row's address must be ONE variable read from {host[5:]} ($url), with no host on the line: {u[:80]!r}"
+    if not glob_off:
+        return "a ruled curl download needs -g (--globoff): no URL globbing"
+    if follows and not (row.get("redirects") is True and redir_https):
+        return "a download that follows redirects (-L) needs redirects: true on the row and --proto-redir =https on the line"
+    if row.get("redirects") is True and not follows:
+        return "the row says redirects: true but the line does not follow redirects"
+    return None
+
+
+def _shell_tokens(flat):
+    """The raw words and operators of a shell line ([word | ('op', text)]), or a str saying why it cannot be read: single quotes, backslashes, backticks,
+    command substitution, comments and unbalanced double quotes are refused."""
+    out, i, cur = [], 0, None
+    while i < len(flat):
+        c = flat[i]
+        if c in "'\\`" or flat.startswith("$(", i) or (c == "#" and cur is None):
+            return "a single quote, backslash, backtick, command substitution or comment on the line"
+        if c == '"':
+            j = flat.find('"', i + 1)
+            if j < 0:
+                return "an unbalanced double quote"
+            if any(x in flat[i + 1:j] for x in ("\\", "`", "$(")):
+                return "a backslash, backtick or command substitution in double quotes"
+            cur = (cur or "") + flat[i:j + 1]
+            i = j + 1
+            continue
+        if c == " ":
+            if cur is not None:
+                out.append(cur)
+                cur = None
+            i += 1
+            continue
+        if c in ";&|<>()":
+            if cur is not None:
+                out.append(cur)
+                cur = None
+            op = flat[i:i + 2] if flat[i:i + 2] in ("||", "&&", ";;", ">>") else c
+            out.append(("op", op))
+            i += len(op)
+            continue
+        cur = (cur or "") + c
+        i += 1
+    if cur is not None:
+        out.append(cur)
+    return out
+
+
+def _shell_shape(flat):
+    """(the command's raw words, None) when the WHOLE line is one of the closed shapes: CMD | CMD || exit N | CMD || die "MSG" [N] |
+    if CMD; then ok=1; break; fi (MSG without $); else (None, why not)."""
+    toks = _shell_tokens(flat)
+    if isinstance(toks, str):
+        return None, toks
+    semi = ("op", ";")
+    if toks[:1] == ["if"]:
+        if toks[-7:] != [semi, "then", "ok=1", semi, "break", semi, "fi"]:
+            return None, "an if line must be exactly: if CMD; then ok=1; break; fi"
+        cmd, tail = toks[1:-7], []
+    else:
+        n = next((j for j, t in enumerate(toks) if isinstance(t, tuple)), len(toks))
+        cmd, tail = toks[:n], toks[n:]
+    if any(isinstance(t, tuple) for t in cmd) or not cmd:
+        return None, "the line holds another command, a pipe, a redirect or a subshell"
+    num = lambda t: isinstance(t, str) and re.fullmatch(r"[0-9]{1,3}", t)
+    msg = lambda t: isinstance(t, str) and re.fullmatch(r'"[^"$]*"', t)
+    if tail and not (tail[0] == ("op", "||") and (len(tail) == 3 and tail[1] == "exit" and num(tail[2])
+                                                    or tail[1:2] == ["die"] and (len(tail) == 3 and msg(tail[2]) or len(tail) == 4 and msg(tail[2]) and num(tail[3])))):
+        return None, 'after the command the line may hold only || exit N or || die "MSG" [N] (no pipe, &&, ;, redirect or second command)'
+    return cmd, None
+
+
+def _python_words(flat):
+    """The curl words of the closed Python form [NAME =] subprocess.run(["curl", "LIT", ..., NAME, "https://HOST/..%s.." % (NAMES)], stdout=sys.stderr,
+    stderr=sys.stderr) as shell-like raw words, or a str saying why not. A NAME becomes "${NAME}"; a format string %s becomes ${NAME} in the quoted path."""
+    import ast
+    try:
+        mod = ast.parse(flat)
+    except (SyntaxError, ValueError):
+        return "the line is not one Python statement"
+    if len(mod.body) != 1:
+        return "the line is not ONE Python statement"
+    st = mod.body[0]
+    call = st.value if isinstance(st, (ast.Expr, ast.Assign)) else None
+    if isinstance(st, ast.Assign) and not (len(st.targets) == 1 and isinstance(st.targets[0], ast.Name)):
+        return "the call is assigned to something other than one name"
+    attr = lambda n, a, b: isinstance(n, ast.Attribute) and n.attr == b and isinstance(n.value, ast.Name) and n.value.id == a
+    if not (isinstance(call, ast.Call) and attr(call.func, "subprocess", "run") and len(call.args) == 1 and isinstance(call.args[0], ast.List)):
+        return "the line is not subprocess.run([...]) with one list"
+    kws = [k.arg for k in call.keywords]
+    if len(set(kws)) != len(kws) or not set(kws) <= {"stdout", "stderr"} or not all(attr(k.value, "sys", "stderr") for k in call.keywords):
+        return "subprocess.run takes only stdout=sys.stderr and stderr=sys.stderr here"
+    words = []
+    for e in call.args[0].elts:
+        if isinstance(e, ast.Constant) and isinstance(e.value, str) and _LITWORD.fullmatch(e.value):
+            words.append(e.value)
+        elif isinstance(e, ast.Name):
+            words.append('"${' + e.id + '}"')
+        elif (isinstance(e, ast.BinOp) and isinstance(e.op, ast.Mod) and isinstance(e.left, ast.Constant) and isinstance(e.left.value, str)
+              and isinstance(e.right, (ast.Name, ast.Tuple))):
+            names = [e.right] if isinstance(e.right, ast.Name) else e.right.elts
+            fmt = e.left.value
+            if not all(isinstance(n, ast.Name) for n in names) or "%" in fmt.replace("%s", "") or fmt.count("%s") != len(names) or "$" in fmt or '"' in fmt:
+                return "a formatted address takes only %s, one plain name per %s"
+            parts = fmt.split("%s")
+            words.append('"' + "".join(p + ("${" + n.id + "}" if j < len(names) else "") for j, (p, n) in enumerate(zip(parts, names + [None]))) + '"')
         else:
-            pre = f"https://{host}/"
-            if not u.startswith(pre) or not _plain(u[len(pre):]):
-                return f"every address must start with {pre} and expand only $NAME in its path (no variable host, no other host, no http://): {u[:80]!r}"
-    return None
+            return "a list element is not a literal word, a name or a formatted address"
+    return words
 
 
-# --- the authenticated draft download (host repo:self; the AC19 amendment, advisor Oct 10 step 5) ---------------------------------------------------------
-_GH_PREFIX = 'gh release download "$ver" '
-_GH_REPO = '"$GITHUB_REPOSITORY"'
-_ASSET = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")     # a literal exact asset name: no glob (* ? [ ] { }), no variable, no quote
-_ASSET_VER = re.compile(r'"(?:[A-Za-z0-9._+-]|\$\{ver\})*\$\{ver\}(?:[A-Za-z0-9._+-]|\$\{ver\})*"')   # "...${ver}...": ${ver} the ONLY expansion
-_LITPATH = re.compile(r"[A-Za-z0-9._/][A-Za-z0-9._/-]*")  # a literal path: no glob, no variable, no quote, no ~
-_TAG_RES = (r"^v[0-9]+\.[0-9]+\.[0-9]+$", r"^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$")
-_TAG_RE = "(?:" + "|".join(re.escape(x) for x in _TAG_RES) + ")"
-_VER = r'(?:"\$ver"|\$ver)'
-_MSG = r"(?:(?:echo|printf) [^;{}|&`()<>\\]*(?: >&2)?; )?"
-_VER_CHECK = re.compile(rf"\[\[ {_VER} =~ {_TAG_RE} \]\] \|\| (?:exit [1-9][0-9]?|\{{ {_MSG}exit [1-9][0-9]?; \}})"
-                        rf"|if \[\[ ! {_VER} =~ {_TAG_RE} \]\]; then {_MSG}exit [1-9][0-9]?; fi")
+def _heredocs(lines):
+    """(shell line numbers, python line numbers) of a shell file: the text outside heredoc bodies, and the bodies of heredocs whose opener runs python3
+    with a QUOTED tag (no expansion in the body). Every other heredoc body is data, in neither."""
+    shell, py, pend, i = [], [], [], 0
+    while i < len(lines):
+        if pend:
+            dash, tag, kind = pend[0]
+            if (lines[i].lstrip("\t") if dash else lines[i]) == tag:
+                pend.pop(0)
+            elif kind == "py":
+                py.append(i)
+            i += 1
+            continue
+        shell.append(i)
+        for m in re.finditer(r"(?<!<)<<(-?)[ \t]*(['\"]?)(" + _NAME + r")\2", lines[i]):
+            kind = "py" if m.group(2) and re.match(r"[ \t]*python3?[ \t]", lines[i]) else "data"
+            pend.append((bool(m.group(1)), m.group(3), kind))
+        i += 1
+    return shell, py
 
 
-def _gh_unruled(flat):
-    """None when the line is EXACTLY gh release download "$ver" --repo "$GITHUB_REPOSITORY" with one or more -p NAME and at most one -D PATH (literal), else why
-    not. The words it accepts hold no space or quote but the repository's, so the flattened line splits into them exactly."""
-    if not flat.startswith(_GH_PREFIX):
-        return 'the line is not gh release download "$ver" ... (another tag variable, an unquoted tag or another command)'
-    words, i, n = flat[len(_GH_PREFIX):].split(" "), 0, {"--repo": 0, "-p": 0, "-D": 0}
-    while i < len(words):
-        w, v = words[i], (words[i + 1] if i + 1 < len(words) else "")
-        if w not in n:
-            return f"the word {w[:40]!r} is not one of --repo \"$GITHUB_REPOSITORY\", -p NAME, -D PATH"
-        if w == "--repo" and v != _GH_REPO:
-            return f'--repo must be the literal text "$GITHUB_REPOSITORY" (this repository), not {v[:60]!r}'
-        if w == "-p" and not (_ASSET.fullmatch(v) or v[:1] == v[-1:] == '"' and _ASSET.fullmatch(v[1:-1]) or _ASSET_VER.fullmatch(v) and not v.startswith('"-')):
-            return f'-p takes a literal exact asset name, or one whose only expansion is ${{ver}} inside double quotes (no glob, other variable or substitution), not {v[:60]!r}'
-        if w == "-D" and not _LITPATH.fullmatch(v):
-            return f"-D takes a literal path (no glob, variable or quote), not {v[:60]!r}"
-        n[w] += 1
-        i += 2
-    if n["--repo"] != 1 or n["-p"] < 1 or n["-D"] > 1:
-        return f'the line needs exactly one --repo "$GITHUB_REPOSITORY", at least one -p and at most one -D (has {n["--repo"]}, {n["-p"]}, {n["-D"]})'
-    return None
+def _contexts(text, path):
+    """{"shell": [list of step line lists], "python": [line list]} : where a line runs. A .sh file is one shell step (outside heredocs) and the python3
+    heredoc bodies; a workflow or action gives one shell step per run: block, and is refused when anything there changes the shell (a shell: other than
+    bash, or a BASH_ENV, ENV, SHELLOPTS or BASHOPTS key anywhere). Else a str saying why not."""
+    lines = text.split("\n")
+    if path.endswith(".sh"):
+        shell, py = _heredocs(lines)
+        return {"shell": [[lines[i] for i in shell]], "python": [lines[i] for i in py], "raw": [lines]}
+    if path.endswith((".yml", ".yaml")):
+        try:
+            doc = inv.yaml.safe_load(text)
+        except inv.yaml.YAMLError:
+            return f"{path} does not parse"
+        bad = []
+
+        def walk(d):
+            if isinstance(d, dict):
+                for k, v in d.items():
+                    if k in _SHELL_KEYS or (k == "shell" and v != "bash"):
+                        bad.append(k)
+                    walk(v)
+            elif isinstance(d, list):
+                for v in d:
+                    walk(v)
+        walk(doc)
+        if bad:
+            return f"{path} sets {bad[0]} (only bash run: steps, with no BASH_ENV, ENV, SHELLOPTS or BASHOPTS, are read)"
+        runs = [t.split("\n") for t in _run_texts(doc)]
+        return {"shell": runs, "python": [], "raw": runs}
+    return f"{path} is neither a shell script nor a workflow or action"
 
 
 def _run_texts(doc):
@@ -751,96 +873,223 @@ def _run_texts(doc):
             yield from _run_texts(v)
 
 
-def _ver_unchecked(root, head, path, flat):
-    """None when, in every step that holds the line (the file for a .sh script, the run: block for a workflow or action), the line IMMEDIATELY before it is
-    a check of $ver against the release tag pattern that exits on a mismatch, that check line continues no line, and the step text before it holds no
-    heredoc and no unbalanced quote; else why not."""
-    text = _head_text(root, head, path)
-    if text is None:
-        return f"{path} is not a file in the head tree"
-    if path.endswith(".sh"):
-        steps = [text]
-    elif path.endswith((".yml", ".yaml")):
-        try:
-            steps = list(_run_texts(inv.yaml.safe_load(text)))
-        except inv.yaml.YAMLError:
-            return f"{path} does not parse"
-    else:
-        return f"{path} is neither a shell script nor a workflow or action"
+_flat = lambda s: " ".join(s.split())
+
+# --- the authenticated draft download (host repo:self; the AC19 amendment, advisor Oct 10 step 5) ---------------------------------------------------------
+_GH_PREFIX = 'gh release download "$ver" '
+_GH_REPO = '"$GITHUB_REPOSITORY"'
+_ASSET = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")     # a literal exact asset name: no glob (* ? [ ] { }), no variable, no quote
+_ASSET_VER = re.compile(r'"(?:[A-Za-z0-9._+-]|\$\{ver\})*\$\{ver\}(?:[A-Za-z0-9._+-]|\$\{ver\})*"')   # "...${ver}...": ${ver} the ONLY expansion
+_DIR = re.compile(r"(?:/tmp/)?[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*")   # /tmp/<name> or a relative name: every segment starts with a letter, digit or _ (no ., .., -, ~)
+_TAG_RES = (r"^v[0-9]+\.[0-9]+\.[0-9]+$", r"^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$")
+_TAG_RE = "(?:" + "|".join(re.escape(x) for x in _TAG_RES) + ")"
+_VER = r'(?:"\$ver"|\$ver)'
+_MSG = r"(?:(?:echo|printf) [^;{}|&`()<>\\]*(?: >&2)?; )?"
+_VER_CHECK = re.compile(rf"\[\[ {_VER} =~ {_TAG_RE} \]\] \|\| (?:exit [1-9][0-9]?|\{{ {_MSG}exit [1-9][0-9]?; \}})"
+                        rf"|if \[\[ ! {_VER} =~ {_TAG_RE} \]\]; then {_MSG}exit [1-9][0-9]?; fi")
+_PRE_LINES = re.compile(r"|#.*[^\\]|#|set -eu|set -euo pipefail|ver=\"\$(?:\{(" + _NAME + r")\}|(" + _NAME + r"))\"|mkdir (?:-p )?(" + _DIR.pattern + ")")
+
+
+def _gh_unruled(flat):
+    """None when the line is EXACTLY gh release download "$ver" --repo "$GITHUB_REPOSITORY" with one or more -p NAME and at most one -D PATH, else why
+    not. -p NAME: a literal exact asset name, or one in double quotes whose only expansion is ${ver}; -D PATH: /tmp/<name> or a relative name."""
+    if not flat.startswith(_GH_PREFIX):
+        return 'the line is not gh release download "$ver" ... (another tag variable, an unquoted tag or another command)'
+    words, i, n = flat[len(_GH_PREFIX):].split(" "), 0, {"--repo": 0, "-p": 0, "-D": 0}
+    while i < len(words):
+        w, v = words[i], (words[i + 1] if i + 1 < len(words) else "")
+        if w not in n:
+            return f"the word {w[:40]!r} is not one of --repo \"$GITHUB_REPOSITORY\", -p NAME, -D PATH"
+        if w == "--repo" and v != _GH_REPO:
+            return f'--repo must be the literal text "$GITHUB_REPOSITORY" (this repository), not {v[:60]!r}'
+        if w == "-p" and not (_ASSET.fullmatch(v) or v[:1] == v[-1:] == '"' and _ASSET.fullmatch(v[1:-1]) or _ASSET_VER.fullmatch(v) and not v.startswith('"-')):
+            return f'-p takes a literal exact asset name, or one whose only expansion is ${{ver}} inside double quotes (no glob, other variable or substitution), not {v[:60]!r}'
+        if w == "-D" and not _DIR.fullmatch(v):
+            return f"-D takes /tmp/<name> or a relative name (no variable, glob, . or ..), not {v[:60]!r}"
+        n[w] += 1
+        i += 2
+    if n["--repo"] != 1 or n["-p"] < 1 or n["-D"] > 1:
+        return f'the line needs exactly one --repo "$GITHUB_REPOSITORY", at least one -p and at most one -D (has {n["--repo"]}, {n["-p"]}, {n["-D"]})'
+    return None
+
+
+def _ver_unchecked(steps, flat):
+    """None when, in every step that holds the download line, the line IMMEDIATELY before it checks $ver against the release tag pattern and exits on
+    a mismatch, and EVERY line before that check is one of the closed list: blank, a comment (not ending in a backslash), set -eu, set -euo pipefail,
+    ver="$NAME" (NAME plain, not denied), mkdir [-p] PATH (/tmp/<name> or a relative name); else why not."""
     seen = 0
-    for step in steps:
-        lines = step.split("\n")
+    for lines in steps:
         for pos, line in enumerate(lines):
-            if " ".join(line.split()) != flat:
+            if _flat(line) != flat:
                 continue
             seen += 1
-            if pos == 0 or not _VER_CHECK.fullmatch(" ".join(lines[pos - 1].split())):
+            if pos == 0 or not _VER_CHECK.fullmatch(_flat(lines[pos - 1])):
                 return "the line before the download is not a check of $ver against the release tag pattern that exits on a mismatch"
-            if pos >= 2 and lines[pos - 2].rstrip().endswith("\\"):
-                return "the tag check continues the line before it"
-            before = "\n".join(lines[:pos - 1])
-            if "<<" in before:
-                return "the step holds a heredoc before the tag check (the check could be data)"
-            try:
-                lex = shlex.shlex(before, posix=True)
-                lex.whitespace_split = True
-                list(lex)
-            except ValueError:
-                return "the step text before the tag check does not read as shell words (an unbalanced quote)"
-    return None if seen else f"the line is not in a run: step of {path}"
+            for before in lines[:pos - 1]:
+                m = _PRE_LINES.fullmatch(_flat(before))
+                if not m or (m.group(1) or m.group(2) or "") and _DENIED.fullmatch(m.group(1) or m.group(2)) or "\r" in before:
+                    return f"the step holds {_flat(before)[:60]!r} before the tag check: only blank lines, comments, set -eu[o pipefail], ver=\"$NAME\" and mkdir [-p] PATH may"
+    return None if seen else "the line is not in a step that runs it"
 
 
-def _head_text(root, head, path):
-    """The text of a regular file in the head tree, or None (missing, a link, a directory, unreadable or too large: never a pass)."""
+def _head_bytes(root, head, path):
+    """The bytes of a regular file in the head tree, or None (missing, a link, a directory, unreadable or too large: never a pass)."""
     try:
-        r = subprocess.run(["git", "-C", root, "ls-tree", "-z", head, "--", path], capture_output=True, text=True, timeout=GH_TIMEOUT)
-        meta, _, name = r.stdout.rstrip("\0").partition("\t")
-        if r.returncode or name != path or "\0" in name or meta.split()[:2] not in (["100644", "blob"], ["100755", "blob"]):
+        r = subprocess.run(["git", "-C", root, "ls-tree", "-z", head, "--", path], capture_output=True, timeout=GH_TIMEOUT)
+        meta, _, name = r.stdout.rstrip(b"\0").partition(b"\t")
+        if r.returncode or name != path.encode() or meta.split()[:2] not in ([b"100644", b"blob"], [b"100755", b"blob"]):
             return None
-        b = subprocess.run(["git", "-C", root, "cat-file", "blob", meta.split()[2]], capture_output=True, text=True, errors="replace", timeout=GH_TIMEOUT)
+        b = subprocess.run(["git", "-C", root, "cat-file", "blob", meta.split()[2].decode()], capture_output=True, timeout=GH_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired, IndexError):
         return None
     return None if b.returncode or len(b.stdout) > inv.MAX_FILE else b.stdout
 
 
-def _defines(text, name):
-    """True when TEXT defines function NAME: shell (name() or function name), Python (def name() or Go (func name( / func (r T) name()."""
-    n = re.escape(name)
-    return bool(re.search(rf"(?m)^[ \t]*(?:function[ \t]+{n}(?![\w-])|{n}[ \t]*\([ \t]*\)|(?:async[ \t]+)?def[ \t]+{n}[ \t]*\(|"
-                          rf"func[ \t]+(?:\([^)\n]*\)[ \t]*)?{n}[ \t]*[\[(])", text))
+def _raw_refusal(root, head, path):
+    """Why a file can rule nothing (REQ-SUP-001-AC16 and AC19), or None: it must be a regular UTF-8 file with no carriage return (a lone CR splits a line
+    for this reader but not for bash)."""
+    data = _head_bytes(root, head, path)
+    if data is None:
+        return f"{path} is not a regular file in the head tree"
+    if b"\r" in data:
+        return f"{path} holds a carriage return (a lone CR hides text from the line split; CRLF too): it rules nothing"
+    try:
+        data.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"{path} is not UTF-8: it rules nothing"
+    return None
 
 
-def _fetch_unverified(root, head, row, flat):
-    """None when the head satisfies an input-fetch row (REQ-SUP-001-AC19), else why not: the address rule (b) on the download command and on the whole
-    line, the lock (a lock row), the verifier and the test (a), all read from the head tree."""
-    seg = next((s for s in _SEGMENTS.split(flat) if hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16] == row["key"]), None)
+def _head_text(root, head, path):
+    data = _head_bytes(root, head, path)
+    if data is None or b"\r" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+_TRIVIAL = {"", ":", "true", "return", "return 0", "return None", "return True", "return nil", "pass", "..."}
+
+
+def _body_real(lines):
+    """True when a function body holds a statement other than :, true, pass, ..., a bare return, a comment or a string."""
+    for x in lines:
+        s = x.split("#", 1)[0] if not x.lstrip().startswith(("'", '"')) else ""
+        for part in s.split(";"):
+            if part.strip() not in _TRIVIAL:
+                return True
+    return False
+
+
+def _defines(text, path, name):
+    """True when the file defines function NAME as CODE with a real body: a shell function outside heredocs (.sh), a Python def at column 0 in a .py
+    file or in the body of a python3 heredoc with a quoted tag (.sh), a Go func at column 0 (.go)."""
+    lines, n = text.split("\n"), re.escape(name)
+    if path.endswith(".sh"):
+        shell, py = _heredocs(lines)
+        sl = [lines[i] for i in shell]
+        for j, x in enumerate(sl):
+            m = re.match(rf"[ \t]*(?:function[ \t]+{n}(?:[ \t]*\([ \t]*\))?|{n}[ \t]*\([ \t]*\))[ \t]*\{{(.*)$", x)
+            if not m:
+                continue
+            rest = m.group(1)
+            if rest.rstrip().endswith("}"):
+                if _body_real([rest.rstrip()[:-1]]):
+                    return True
+                continue
+            body = []
+            for y in sl[j + 1:]:
+                if y.strip() == "}":
+                    break
+                body.append(y)
+            if _body_real([rest] + body):
+                return True
+        return _py_defines([lines[i] for i in py], n)
+    if path.endswith(".py"):
+        return _py_defines(lines, n)
+    if path.endswith(".go"):
+        for j, x in enumerate(lines):
+            if re.match(rf"func (?:\([^)\n]*\) )?{n}[\[(]", x):
+                body = []
+                for y in lines[j + 1:]:
+                    if y.startswith("}"):
+                        break
+                    body.append(y)
+                if _body_real(body):
+                    return True
+    return False
+
+
+def _py_defines(lines, n):
+    for j, x in enumerate(lines):
+        if re.match(rf"(?:async )?def {n}\(", x):
+            body = []
+            for y in lines[j + 1:]:
+                if y.strip() and not y[:1].isspace():
+                    break
+                body.append(y)
+            if _body_real(body):
+                return True
+    return False
+
+
+def _code_lines(text, path):
+    lines = text.split("\n")
+    if path.endswith(".sh"):
+        shell, py = _heredocs(lines)
+        return [lines[i] for i in sorted(shell + py)]
+    return lines
+
+
+def _fetch_unverified(root, head, row, flat, held_n):
+    """None when the head satisfies an input-fetch row (REQ-SUP-001-AC19), else why not: the closed line shapes and words, the contexts every copy of
+    the line sits in (all held_n of them), the verifier and the test, all read from the head tree."""
+    H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+    seg = (flat if H(flat) == row["key"] else None) if row["form"] == GH_FORM else next((s for s in _SEGMENTS.split(flat) if H(s) == row["key"]), None)
     if not flat or seg is None:
         return "the ruled download command is not on the line"
-    host = row["host"]
-    for m in re.finditer(r"([A-Za-z0-9+.-]*)://", flat):
-        if host.startswith(("lock:", "repo:")) or m.group(1) != "https" or not flat[m.end():].startswith(host + "/"):
-            return f"the line names an address other than https://{host}/" if not host.startswith(("lock:", "repo:")) else f"a {host.split(':')[0]} row's line names an address"
-    why = (_gh_unruled(flat) or _ver_unchecked(root, head, row["file"], flat)) if host == REPO_SELF else _address_unruled(seg, host)
+    if held_n > row.get("count", 1):
+        return f"the head holds the line {held_n} times, more than the row's count {row.get('count', 1)}"
+    host, path = row["host"], row["file"]
+    text = _head_text(root, head, path)
+    if text is None:
+        return f"{path} is not a readable regular file in the head tree"
+    ctx = _contexts(text, path)
+    if isinstance(ctx, str):
+        return ctx
+    if host != REPO_SELF:
+        for m in re.finditer(r"([A-Za-z0-9+.-]*)://", flat):
+            if m.group(1) != "https" or not flat[m.end():].startswith(host + "/"):
+                return f"the line names an address other than https://{host}/"
+    pyform = re.match(r"(?:" + _NAME + r" = )?subprocess\.run\(", flat)
+    kind = "python" if pyform else "shell"
+    where = ctx["python"] if pyform else [x for step in ctx["shell"] for x in step]
+    if sum(1 for x in where if _flat(x) == flat) != held_n:
+        return (f"every copy of the line must be {'in the body of a python3 heredoc with a quoted tag' if pyform else 'shell text: a run: step of bash, or a .sh file outside heredocs'}"
+                f" ({kind} form)")
+    if host == REPO_SELF:
+        why = _gh_unruled(flat) or _ver_unchecked(ctx["shell"], flat)
+    elif pyform:
+        words = _python_words(flat)
+        why = words if isinstance(words, str) else _curl_unruled(words, host, row)
+    else:
+        cmd, why = _shell_shape(flat)
+        why = why or _curl_unruled(cmd, host, row)
     if why:
         return why
-    if host.startswith("lock:"):
-        lock = _head_text(root, head, host[5:])
-        if lock is None:
-            return f"the lock {host[5:]} is not a file in the head tree"
-        schemes = re.findall(r"([A-Za-z0-9+.-]*)://", lock)
-        if not schemes or any(s != "https" for s in schemes):
-            return f"the lock {host[5:]} holds an address that is not https:// (or none)"
     v, t = row["verifier"], row["test"]
     vt = _head_text(root, head, v["file"])
     if vt is None:
-        return f"the verifier file {v['file']} is not a file in the head tree"
-    if "function" in v and not _defines(vt, v["function"]):
-        return f"the verifier file {v['file']} does not define {v['function']}"
-    if "line" in v and " ".join(v["line"].split()) not in {" ".join(x.split()) for x in vt.split("\n")}:
-        return f"the verifier file {v['file']} holds no line {v['line'][:80]!r}"
+        return f"the verifier file {v['file']} is not a readable regular file in the head tree"
+    if "function" in v and not _defines(vt, v["file"], v["function"]):
+        return f"the verifier file {v['file']} does not define {v['function']} as code with a real body"
+    if "line" in v and _flat(v["line"]) not in {_flat(x) for x in _code_lines(vt, v["file"])}:
+        return f"the verifier file {v['file']} holds no code line {v['line'][:80]!r}"
     tt = _head_text(root, head, t["file"])
     if tt is None:
-        return f"the test file {t['file']} is not a file in the head tree"
+        return f"the test file {t['file']} is not a readable regular file in the head tree"
     if t["case"] not in tt:
         return f"the test file {t['file']} has no case {t['case'][:80]!r}"
     return None
@@ -864,10 +1113,14 @@ def _run(a, moved, fx, now):
     for k in sorted(lines):
         text = _covered(rulings, k, lines[k])
         fetch = None if text else _covered(fetches, k, lines[k])    # an item is ruled by ONE list: lines split between the two lists are not ruled
-        if text:
+        raw = _raw_refusal(a.root, a.head, k[0]) if text or fetch else None   # a file with a carriage return, or not UTF-8, rules nothing (AC16 and AC19)
+        if raw:
+            added.append((k, raw))
+        elif text:
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in text))))
         elif fetch:
-            why = next((w for w in (_fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), "")) for lh, r in zip(lines[k], fetch)) if w), None)
+            why = next((w for w in (_fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), ""), held.get(k, {}).get(lh, 0))
+                                    for lh, r in zip(lines[k], fetch)) if w), None)
             if why:
                 added.append((k, why))
             else:
@@ -881,7 +1134,7 @@ def _run(a, moved, fx, now):
             r = fetches.get((k[0], k[1], k[2].split(":", 1)[0], lh))
             if k in named or lh in lines.get(k, {}) or not r:
                 continue
-            why = _fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), ""))
+            why = _raw_refusal(a.root, a.head, k[0]) or _fetch_unverified(a.root, a.head, r[2], flats.get((k, lh), ""), per[lh])
             if why:
                 added.append((k, why))
                 named.add(k)
@@ -900,8 +1153,8 @@ def _run(a, moved, fx, now):
             print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
         else:
             rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
-                         "reason": f"{what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_input_fetch, but the head does not hold what the row requires: {why}"})
-            print(f"  FAIL unmeasured:{path}: {what} ({line[:60]}): input fetch not verified (REQ-SUP-001-AC19): {why}")
+                         "reason": f"{what} in {path} ({line[:100]}) is listed in the base branch's rulings, but the head does not hold what the row requires: {why}"})
+            print(f"  FAIL unmeasured:{path}: {what} ({line[:60]}): input fetch not verified, or ruling not applied (REQ-SUP-001-AC16, AC19): {why}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
