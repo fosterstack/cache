@@ -153,6 +153,9 @@ ALLOW_PATTERNS=(
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/install-kind\.sh$'
+  # the suite guard: no empty test file, a printed case count held to a committed floor that only rises
+  '^bin/suite-guard(-test)?\.sh$'
+  '^test-evidence/suite-floors\.json$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the

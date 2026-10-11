@@ -256,6 +256,15 @@ jobs:
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: bash bin/check-file-allowlist-test.sh
 
+      - name: suite guard (no tracked test file is empty; the guard's own regressions)
+        run: bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh
+
+      - name: suite floors only rise (against the merge base on a pull request)
+        if: ${{ github.base_ref != '' }}
+        env:
+          BASE: ${{ github.base_ref }}
+        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+
       - name: branch sweep and local prune regressions
         run: bash bin/branch-sweep-test.sh
 
