@@ -577,7 +577,15 @@ got=$(cd "$hw" && find . -path './witness-*' -type f | sed 's|^\./||' | sort | t
 if [ "$got" = "witness-acceptance/acceptance-collection.json witness-runtime/runtime-collection.json witness-scanners/scanners-collection.json " ]; then ok "AC12 the three steps are accepted and leave exactly three records, one per step (the next stage verifies the list)"; else bad "AC12 the records: $got"; fi
 # ---- REQ-CHAIN-006-AC3 / AC11: bin/check-stage.sh, the fixed dispatcher (verify first, then only the phase's checks) -------------------
 dp="$work/dp"; mkdir -p "$dp/bin"; cp "$root/bin/check-stage.sh" "$dp/bin/" 2> /dev/null || true
-printf '#!/usr/bin/env bash\necho "verify $*" >> "$DP_LOG"\nexit "${VERIFY_RC:-0}"\n' > "$dp/bin/chain-verify.py"
+cat > "$dp/bin/chain-verify.py" <<'EOF'
+#!/usr/bin/env bash
+echo "verify $*" >> "$DP_LOG"
+[ "${VERIFY_FAIL:-}" != "$1" ] || exit 1
+if [ "${VERIFY_STRICT:-}" = 1 ]; then   # a record that is not there is refused, as the real verifier refuses it
+  for a in "$@"; do case "$prev" in --record|--digests) [ -f "$a" ] || { echo "missing $a" >&2; exit 1; };; esac; prev=$a; done
+fi
+exit "${VERIFY_RC:-0}"
+EOF
 for s in check-scan check-fips check-artifacts check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n' "$s" > "$dp/bin/$s.sh"; done
 cat > "$dp/bin/python3" <<'EOF'
 #!/usr/bin/env bash
@@ -586,6 +594,25 @@ shift 3; bash "bin/chain-verify.py" "$@"
 EOF
 chmod +x "$dp/bin/python3"
 drun() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" VERIFY_RC="${VERIFY_RC:-0}" GITHUB_REF_NAME=v0.3.0 bash bin/check-stage.sh "$@") 2>&1) || rc=$?; }   # a release run always has its tag (Q5)
+# ---- REQ-CHAIN-006-AC17 and rule 58: the arm64 target verifies Build's record and Sign's provenance BEFORE it loads or runs anything ----------
+cp "$root/bin/check-phase-arm64.sh" "$dp/bin/" 2> /dev/null || true
+printf '#!/usr/bin/env bash\necho "docker $*" >> "$DP_LOG"\n' > "$dp/bin/docker"; chmod +x "$dp/bin/docker"
+mkdir -p "$dp/witness-build" "$dp/provenance"; : > "$dp/witness-build/build-collection.json"; : > "$dp/witness-build/digests.json"; : > "$dp/provenance/provenance.json"; : > "$dp/provenance/provenance.rekor.json"
+arun64() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && env "$@" PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" GITHUB_REF_NAME=v0.3.0 bash bin/check-phase-arm64.sh) 2>&1) || rc=$?; }
+arun64 X=1
+if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start verify " ] && [ "$(grep -c '^check-artifacts' "$work/dplog")" = 1 ] \
+   && grep -q '^check-artifacts --arch arm64 --digests witness-build/digests.json ' "$work/dplog" && grep -n '' "$work/dplog" | awk -F: '/verify stage-start/{a=$1} /verify verify/{b=$1} /check-artifacts/{c=$1} END{exit !(a<b && b<c)}'; then ok "AC17 the arm64 target makes the policy, verifies Build's record, verifies Sign's provenance, then runs the arm64 artifact checks on the digest file it verified (rule 58)"; else bad "AC17 arm64 target ran: $(tr '\n' '|' < "$work/dplog" | cut -c1-300)"; fi
+arm_stops() { # arm_stops LABEL ENV... : the target fails and nothing of the candidate is loaded or run
+  local l=$1; shift; arun64 "$@"
+  if [ "$rc" != 0 ] && ! grep -Eq '^(check-artifacts|docker)' "$work/dplog"; then ok "$l"; else bad "$l -> rc=$rc, log: $(tr '\n' '|' < "$work/dplog" | cut -c1-200)"; fi; }
+arm_stops "rule 58 a forged Build record (stage-start refuses it): no artifact is loaded, no binary runs" VERIFY_FAIL=stage-start
+arm_stops "rule 58 a Sign provenance of the wrong identity (verify refuses it): no artifact is loaded, no binary runs" VERIFY_FAIL=verify
+arm_stops "rule 58 no policy for the tag: no artifact is loaded, no binary runs" VERIFY_FAIL=policy
+rm -f "$dp/witness-build/build-collection.json"
+arm_stops "rule 58 a missing Build record: no artifact is loaded, no binary runs" VERIFY_STRICT=1
+: > "$dp/witness-build/build-collection.json"; rm -f "$dp/provenance/provenance.json"
+arm_stops "rule 58 a missing Sign provenance: no artifact is loaded, no binary runs" VERIFY_STRICT=1
+: > "$dp/provenance/provenance.json"
 drun scanners; d_ok=0; [ "$rc" = 0 ] && grep -q '^check-scan' "$work/dplog" && d_ok=1
 drun nosuch
 if [ "$d_ok" = 1 ] && [ "$rc" = 2 ] && grep -Fq 'unknown phase: nosuch' <<< "$out" && ! grep -q '^check-' "$work/dplog"; then ok "AC3 an unknown phase is refused (exit 2) naming it, and no check runs"; else bad "AC3 unknown phase -> rc=$rc: ${out:0:100}"; fi
@@ -597,7 +624,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=130
+EXPECT=136
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

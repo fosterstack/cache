@@ -96,7 +96,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents:
 stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
           f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
           "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
-          + dn("digests", "witness-build") + dn("dist", "dist") + dn("images", "images")
+          + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("provenance", "provenance") + dn("dist", "dist") + dn("images", "images")
           + "      - name: arm64 under Witness\n        run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh\n"
           + up("witness-check-arm64", "witness-arm64"))
 open(w + "/stage.yml", "w").write(stage)
@@ -214,12 +214,31 @@ expect caught "AC3 a phase target with a second command" "exactly the one line" 
 printf '#!/usr/bin/env bash\nbash bin/check-stage.sh scanners || true\n' > "$work/ph_swallow.sh"
 expect caught "AC3 a phase target that swallows a failure" "exactly the one line" phase "$work/ph_swallow.sh" scanners
 expect caught "AC3 a phase outside the closed list" "unknown phase" phase "$work/ph_scanners.sh" checks
-printf '#!/usr/bin/env bash\nbash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results\n' > "$work/ph_arm64.sh"
-expect ok "fixture: the arm64 target passes the phase judge" "" phase "$work/ph_arm64.sh" arm64
-printf '#!/usr/bin/env bash\nbash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results\n' > "$work/ph_arm64b.sh"
-expect caught "AC17 an arm64 target without --arch arm64" "exactly the one line" phase "$work/ph_arm64b.sh" arm64
-printf '#!/usr/bin/env bash\nbash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results || true\n' > "$work/ph_arm64c.sh"
-expect caught "AC17 an arm64 target that swallows a failure" "exactly the one line" phase "$work/ph_arm64c.sh" arm64
+ARMV='python3 -I -B bin/chain-verify.py'
+ARML='bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results'
+armt() { # armt FILE LINE... : an arm64 target holding exactly these lines after the shebang
+  local f=$1; shift; { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$@"; } > "$f"; }
+P1="$ARMV policy make --template .github/policy/release-policy.template.json --tag \"\$GITHUB_REF_NAME\" --out policy.json"
+P2="$ARMV stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"
+P3="$ARMV verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json"
+armt "$work/ph_arm64.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "$ARML"
+expect ok "fixture: the arm64 target passes the phase judge (rule 58: it verifies Build and Sign, then the artifact checks)" "" phase "$work/ph_arm64.sh" arm64
+armt "$work/ph_arm64b.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "${ARML/ --arch arm64/}"
+expect caught "AC17 an arm64 target without --arch arm64" "exactly" phase "$work/ph_arm64b.sh" arm64
+armt "$work/ph_arm64c.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "$ARML || true"
+expect caught "AC17 an arm64 target that swallows a failure" "exactly" phase "$work/ph_arm64c.sh" arm64
+armt "$work/ph_arm64d.sh" "set -euo pipefail" "$P1" "$P3" "$ARML"
+expect caught "rule 58 an arm64 target that does not verify Build's record (no stage-start)" "exactly" phase "$work/ph_arm64d.sh" arm64
+armt "$work/ph_arm64e.sh" "set -euo pipefail" "$P1" "$P2" "$ARML"
+expect caught "rule 58 an arm64 target that does not verify Sign's provenance" "exactly" phase "$work/ph_arm64e.sh" arm64
+armt "$work/ph_arm64f.sh" "set -euo pipefail" "$P1" "$P2" "$ARML" "$P3"
+expect caught "rule 58 an arm64 target that checks the artifacts before it verifies Sign" "exactly" phase "$work/ph_arm64f.sh" arm64
+armt "$work/ph_arm64g.sh" "set -euo pipefail" "$P1" "${P2/python3 -I -B/python3}" "$P3" "$ARML"
+expect caught "rule 58 an arm64 target whose verifier is not isolated" "exactly" phase "$work/ph_arm64g.sh" arm64
+armt "$work/ph_arm64h.sh" "set -euo pipefail" "$P1" "${P2/witness-build\/digests.json/other\/digests.json}" "$P3" "$ARML"
+expect caught "rule 58 an arm64 target that verifies other digests than the ones it checks" "exactly" phase "$work/ph_arm64h.sh" arm64
+armt "$work/ph_arm64i.sh" "$P1" "$P2" "$P3" "$ARML"
+expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64i.sh" arm64
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
 expect ok "fixture: plain scripts that only use scanners, docker and curl pass the plain judge" "" plain "$work"/plain/check-*.sh
@@ -278,13 +297,14 @@ m a_pkg    'ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-t
 m a_sec    'name: arm64 under Witness\n'                       'name: arm64 under Witness\n        env:\n          K: ${{ secrets.SNYK_TOKEN }}\n' 'secret'  "AC1 a secret in the arm64 job"
 m a_extra  'name: arm64 under Witness\n'                       'name: extra\n        run: bash bin/install-kind.sh\n      - name: arm64 under Witness\n' 'check-arm64' "AC1 an extra step in the arm64 job"
 m a_nokind '      - name: arm64 under Witness\n        run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh\n' '' 'check-arm64' "AC1 the arm64 job without its witnessed step"
-m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "AC1 the arm64 job without the Witness install"
+m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' 'check-arm64' "AC1 the arm64 job without the Witness install"
+m a_nowb   '          name: witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job without the Build record download"
 m a_stepwhat 'run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed.sh arm64 bin/check-phase-runtime.sh' 'check-arm64' "AC1 the arm64 step with another target"
 m a_stepname 'run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh' 'check-arm64' "AC1 the arm64 job running another step"
 m a_upname 'name: witness-check-arm64'                         'name: check-results'                                    'check-arm64'       "AC1 the arm64 upload under another artifact name"
 m a_uppath 'path: witness-arm64'                               'path: witness-scanners'                                 'check-arm64'       "AC1 the arm64 upload of another directory"
-m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
-m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
+m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
+m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
 m s_kindno '      - name: install kind and kubectl \(pinned by sha256\)\n        run: bash bin/install-kind.sh\n' '' 'install kind' "AC14 no kind install step"
 # ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
 hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
@@ -461,7 +481,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=184
+EXPECT=191
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
