@@ -600,6 +600,8 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
         if path not in rows:
             errs.append("line %d: %s: %s is not listed in .github/policy/chain-scripts.json" % (n, line[:90], path)); continue
         am, aw = rows[path].get("arg_map"), rows[path].get("arg_words")
+        if isinstance(am, dict) and cmd != "bash":
+            errs.append("line %d: %s: %s has an arg_map: it runs only as `bash %s STEP TARGET` (found %r)" % (n, line[:90], path, path, cmd))
         if isinstance(am, dict):                # round 3 (2): the wrapper's line is EXACTLY `bash WRAPPER STEP TARGET`, STEP bound to its one TARGET
             args = words[2:]
             raw0, raw1 = (args[0][0], args[1][0]) if len(args) == 2 else (None, None)
