@@ -1452,6 +1452,35 @@ guard 1 "releasE is refused" releasE
 guard 1 "release with a trailing space is refused" "release "
 guard 1 "an empty mode is refused" ""
 guard 1 "no argument is refused"
+# Codex A r1 F1: the snapshot callers consume only what Build uploads (images, dist, digests, items), the images are Build's <variant>.tar archives of production and fips
+# (no debug variant: owner, Oct 9), and the checksum text is rebuilt from the digests.json output (Build has no checksums output)
+cat > "$work/f1.py" <<'PY'
+import re, sys, yaml
+text = open(sys.argv[1]).read()
+d = yaml.load(text, Loader=yaml.BaseLoader)
+bad = []
+for jn, j in (d.get("jobs") or {}).items():
+    for s in (j.get("steps") or []):
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items"):
+            bad.append("%s downloads %r, which Build never uploads" % (jn, (s.get("with") or {}).get("name")))
+for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
+    if gone in text: bad.append("still names %s" % gone)
+if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
+if re.search(r"\.oci\b", text): bad.append("still reads a <variant>.oci archive (Build's images artifact holds <variant>.tar)")
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+PY
+f1() { # f1 ok|caught LABEL FILE [sed-expr]
+  local f="$work/f1-$$.yml" out rc=0
+  if [ -n "${4:-}" ]; then sed -e "$4" "$3" > "$f"; else cp "$3" "$f"; fi
+  out=$(python3 "$work/f1.py" "$f") || rc=$?
+  if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC14/F1 $2${out:+ ($out)}"; else bad "AC14/F1 $2 -> $out"; fi; }
+for w in scan main-candidate-rescan; do f1 ok "the real $w.yml consumes only Build's artifacts, no debug, no .oci, no checksums output" "$root/.github/workflows/$w.yml"; done
+f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
+f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
+f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
+f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
+f1 caught "a <variant>.oci archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#/tmp/oci/${v}.tar#/tmp/oci/${v}.oci#'
+f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
@@ -1664,7 +1693,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=568
+EXPECT=576
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

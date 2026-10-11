@@ -18,7 +18,7 @@ jobs = d.get("jobs", {})
 bad = []
 def text(j): return "\n".join((s.get("run") or "") for s in jobs.get(j, {}).get("steps", []))
 def uses(j): return [str(s.get("uses", "")) for s in jobs.get(j, {}).get("steps", [])]
-VAR = ("production", "debug", "fips")
+VAR = ("production", "fips")
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google", "panel"):
     if j not in jobs:
         bad.append(f"no {j} job")
@@ -27,12 +27,12 @@ if bad:
 # rule 1: the fixed image set, written in the workflow
 for j in ("panel-grype", "panel-scout", "panel-inspector"):
     t = text(j)
-    if "for v in production debug fips" not in t or "for arch in amd64 arm64" not in t:
-        bad.append(f"{j} does not scan the six images, fixed in the workflow")
+    if "for v in production fips" not in t or "for arch in amd64 arm64" not in t:
+        bad.append(f"{j} does not scan the four images (production and fips, each on both architectures), fixed in the workflow")
 tg = text("panel-google")
-if "for v in production debug fips" not in tg or "arm64" in tg or "for arch" in tg \
+if "for v in production fips" not in tg or "arm64" in tg or "for arch" in tg \
         or "--override-arch amd64" not in tg or 'cand-${v}-amd64"' not in tg:
-    bad.append("panel-google does not scan exactly the three variants on linux/amd64 (and never arm64)")
+    bad.append("panel-google does not scan exactly the two variants on linux/amd64 (and never arm64)")
 for j in jobs:
     # scanner-reports hands the auditor its inputs; manifests/rescan are the PUBLISHED-release rescan (merged from
     # daily-rescan.yml, consolidation 3 of 4; REQ-REL-003), which runs only the scanners in .github/policy/scanners.json —
@@ -170,9 +170,9 @@ else:
     scouts = [l for l in log if l.startswith("docker scout cves")]
     want = ["docker scout cves --format gitlab --vex-location .vex/fosterstack-cache.openvex.json --vex-author "
             "\\^FosterStack\\ LLC\\$ local://ghcr.io/fosterstack/cache:cand-%s-%s" % (v, a)
-            for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
+            for v in ("production", "fips") for a in ("amd64", "arm64")]
     if scouts != want:
-        bad.append("Scout's scan does not run with our VEX and author on our six images: %s" % scouts)
+        bad.append("Scout's scan does not run with our VEX and author on our four images: %s" % scouts)
 for j in ("panel-grype", "panel-scout", "panel-inspector", "panel-google"):
     if re.search(r"--(ignore|only-fixed|exclude|ignore-base|only-severity|severity)\b|\.grype\.yaml|suppress", text(j)):
         bad.append(f"{j} carries an ignore or severity option")
@@ -334,7 +334,7 @@ if python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); s=d["statements"
 else failn=$((failn+1)); echo "FAIL probe-document"; fi
 case_ real                    ok  ""
 case_ google-arm64            bad "s=$(step_of panel-google 'for v in'); s['run'] = s['run'].replace('--override-arch amd64', '--override-arch arm64')"
-case_ grype-five-images       bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production debug fips', 'for v in production debug')"
+case_ grype-three-images      bad "s=$(step_of panel-grype 'for v in'); s['run'] = s['run'].replace('for v in production fips', 'for v in production')"
 case_ computed-images         bad "s=$(step_of panel-scout 'for v in'); s['run'] = s['run'].replace('for arch in amd64 arm64', 'for arch in \$ARCHES')"
 case_ trivy-back              bad "$J['trivy-main'] = {'runs-on': 'ubuntu-latest', 'steps': [{'run': 'trivy image x'}]}"
 case_ google-secret           bad "[s.__setitem__('with', {'credentials_json': '\${{ secrets.GCP_KEY }}'}) for s in $J['panel-google']['steps'] if str(s.get('uses','')).startswith('google-github-actions/auth@')]"
