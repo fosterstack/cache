@@ -1580,6 +1580,20 @@ for c in "ok:ev-ok:0" "part:ev-part:1" "none:ev-none:1"; do
   ( cd "$kg" && python3 "$KR" base-check --base base --event "$work/kr/$evf.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
   [ "$rc" = "$want" ] && ok "known-red base-check ($nm): entries added since the merge base need the PR body to name them" || bad "known-red base-check ($nm): exit $rc, wanted $want"
 done
+# an entry kept under its id but changed (suite, case, reason or green_by) is an added entry: it needs its known-red-add line too
+cp "$kg/test-evidence/known-red.json" "$work/kr/committed.json"
+for fld in case suite reason green_by; do
+  python3 - "$kg/test-evidence/known-red.json" "$fld" <<'PY'
+import json, sys
+p, fld = sys.argv[1:3]
+d = json.load(open(p)); d["entries"][0][fld] += " changed"; json.dump(d, open(p, "w"))
+PY
+  rc=0; ( cd "$kg" && git add -A && git -c commit.gpgsign=false commit -qm "chg-$fld" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = 1 ] && ok "known-red base-check: an existing id whose $fld changed counts as added and needs its line" || bad "known-red base-check: a changed $fld under a kept id was not refused (exit $rc)"
+done
+printf '{"pull_request":{"body":"known-red-add: KR-1\\n"}}' > "$work/kr/ev-kr1.json"
+rc=0; ( cd "$kg" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-kr1.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: a changed entry passes when the PR body names its id" || bad "known-red base-check: a named changed entry gave exit $rc"
 rc=0; ( cd "$kg" && python3 "$KR" base-check --base HEAD --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
 [ "$rc" = 0 ] && ok "known-red base-check: no entry added since the base passes without a PR body" || bad "known-red base-check: unchanged list gave exit $rc"
 rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789abcdef01234567 --event "$work/kr/ev-ok.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
@@ -1805,7 +1819,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=618
+EXPECT=623
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
