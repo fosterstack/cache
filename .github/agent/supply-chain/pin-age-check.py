@@ -462,12 +462,16 @@ def _line_hash(flat):
     return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16]
 
 
+_LINE_TEXT = {}   # whole-line hash -> the flattened line (the check-call rule reads the line's shape)
+
+
 def _occurrences(root, rev):
     """{key: {whole-line hash: occurrences}}. A line bash reads differently from the flattening (whitespace other than space or tab, a continuation) gets
     a group no row can name ('unruled:' + its hash)."""
     out = {}
     for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
+        _LINE_TEXT[lh] = flat
         per = out.setdefault(k, {})
         per[lh] = per.get(lh, 0) + 1
     return out
@@ -495,6 +499,71 @@ def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 MAX_RULED_COUNT = 100
+# REQ-SUP-001-AC16, third form (advisor step 5 and coordinator, Oct 11): a CHECK CALL line, t "RULE" "TITLE" CALLEE CHECK "$VAR" [ # comment], calls a
+# function of a library. No parser decides what that runs: its row carries two hash pins, context (the sha256 of the WHOLE file the line sits in) and
+# callee {file, sha256} (the library that defines CALLEE), and both must hold in the HEAD tree, so any edit of either file voids the row (the row author
+# and the reviewers read both files whole). CALL_FORM is the same grammar as HARNESS_WHITELIST's call keys in the suite (a test holds them equal).
+_ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+CALL_FORM = {"call_title_chars": _ALNUM + " :.,-=<", "call_callees": ["y"], "call_callee_defs": {"y": 'y() { ROOT="$root" python3 "$work/chk.py" "$@"; }'},
+             "call_checks": ["mel-go", "mel-pinned"], "call_vars": ["M", "MF"], "call_comment": "#"}
+_TC = "[" + re.escape(CALL_FORM["call_title_chars"]) + "]*"
+_CALL_SHAPE = re.compile(r' *t "' + _TC + r'" "' + _TC + r'" (' + "|".join(map(re.escape, CALL_FORM["call_callees"])) + r') (?:' + "|".join(map(re.escape, CALL_FORM["call_checks"]))
+                         + r') "\$(?:' + "|".join(map(re.escape, CALL_FORM["call_vars"])) + r')"(?: +' + re.escape(CALL_FORM["call_comment"]) + r'.*)?')
+_CALL_LIKE = re.compile(r'\s*t\s+"[^"]*"\s+"[^"]*"\s+(?!bash(\s|$))\S')   # any harness call that is not the bash -c assertion form needs the pins
+_PIN_FILE = re.compile(r"(?!\.{1,2}(/|$))[A-Za-z0-9_.-]+(/(?!\.{1,2}(/|$))[A-Za-z0-9_.-]+)*")
+_SHEBANGS = (b"#!/usr/bin/env bash\n", b"#!/bin/bash\n")
+
+
+def _head_bytes(root, rev, f):
+    """The bytes of file f in the head (rev None: the working tree) when it is a regular file (not a symlink, not a directory), else None."""
+    if rev is None:
+        p = os.path.join(root, f)
+        if os.path.islink(p) or not os.path.isfile(p):
+            return None
+        with open(p, "rb") as fh:
+            return fh.read()
+    r = subprocess.run(["git", "-C", root, "ls-tree", "-z", rev, "--", f], capture_output=True, timeout=GH_TIMEOUT)
+    ent = [e for e in r.stdout.split(b"\0") if e]
+    if r.returncode or len(ent) != 1:
+        return None
+    meta, _, name = ent[0].partition(b"\t")
+    mode, kind, blob = meta.split()
+    if name != f.encode() or kind != b"blob" or mode not in (b"100644", b"100755"):
+        return None
+    b = subprocess.run(["git", "-C", root, "cat-file", "blob", blob.decode()], capture_output=True, timeout=GH_TIMEOUT)
+    return None if b.returncode else b.stdout
+
+
+def _text_file(data):
+    if data is None or b"\r" in data:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _row_applies(root, rev, path, lh, row):
+    """A row without pins applies to any line but a harness call; a row with pins applies only to an exact check-call line whose file and callee
+    library are, in the head, the pinned bytes (each a regular UTF-8 file with no CR; the line's file starts with a bash shebang; the library is another
+    file holding exactly one line equal to the callee's definition). Any doubt is 'not ruled'."""
+    text = _LINE_TEXT.get(lh, "")
+    pinned = row[2] is not None
+    if bool(_CALL_LIKE.match(text)) != pinned:
+        return False
+    if not pinned:
+        return True
+    context, callee = row[2]
+    m = _CALL_SHAPE.fullmatch(text)
+    if not m or callee["file"] == path:
+        return False
+    own, lib = _head_bytes(root, rev, path), _head_bytes(root, rev, callee["file"])
+    if _text_file(own) is None or not own.startswith(_SHEBANGS) or hashlib.sha256(own).hexdigest() != context:
+        return False
+    lib_text = _text_file(lib)
+    if lib_text is None or hashlib.sha256(lib).hexdigest() != callee["sha256"]:
+        return False
+    return lib_text.split("\n").count(CALL_FORM["call_callee_defs"][m.group(1)]) == 1
 
 
 def _no_duplicate_keys(pairs):
@@ -509,7 +578,7 @@ def _no_constant(name):
 
 
 def load_ruled_text(path, required=False):
-    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
+    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count, (context, callee) or None)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
@@ -526,8 +595,8 @@ def load_ruled_text(path, required=False):
     out = {}
     for i, r in enumerate(rows):
         bad = lambda why: RuntimeError(f"{path}: unmeasured_text row {i} {why}")
-        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count"} or not set(_RULED_FIELDS) <= set(r):
-            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count)")
+        if not isinstance(r, dict) or set(r) - set(_RULED_FIELDS) - {"count", "context", "callee"} or not set(_RULED_FIELDS) <= set(r):
+            raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count; context and callee together)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
         if not re.fullmatch(r"[0-9a-f]{16}", r["key"]):
@@ -537,10 +606,17 @@ def load_ruled_text(path, required=False):
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
+        pins = None
+        if "context" in r or "callee" in r:
+            c, ce = r.get("context"), r.get("callee")
+            if not (isinstance(c, str) and re.fullmatch(r"[0-9a-f]{64}", c) and isinstance(ce, dict) and set(ce) == {"file", "sha256"}
+                    and isinstance(ce["file"], str) and _PIN_FILE.fullmatch(ce["file"]) and isinstance(ce["sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", ce["sha256"])):
+                raise bad("has malformed pins (context: 64 lowercase hex; callee: an object with exactly file, a relative path of plain segments, and sha256, 64 lowercase hex; both or neither)")
+            pins = (c, ce)
         k = (r["file"], r["form"], r["key"], r["line"])
         if k in out:
             raise bad("repeats an earlier row (file, form, key and line)")
-        out[k] = (r["ruling"].strip(), count)
+        out[k] = (r["ruling"].strip(), count, pins)
     return out
 
 
@@ -552,6 +628,7 @@ def _run(a, moved, fx, now):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
+        rs = [r if r and _row_applies(a.root, a.head, k[0], lh, r) else None for r, lh in zip(rs, lines[k])]
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:

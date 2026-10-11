@@ -1186,16 +1186,14 @@ HARNESS_WHITELIST = {
     "substitutions": {"grep": "-c", "cat": ""},                        # "$(grep -c OPTION... -- PATTERN "$N")" (a count) and "$(cat -- "$N")", whole and double-quoted
     "dquote_chars": ALNUM + " ^.*:/|()=-",                             # inside a double-quoted BODY word (a pattern)
     "dquote_escapes": ["\\.", "\\[", "\\]"],                         # the only backslash sequences inside a double-quoted BODY word
-    # the THIRD form, the CHECK CALL (advisor step 5, Oct 11): t "RULE" "TITLE" FN "LIT" "$VAR" [ # COMMENT], judged with --in FILE (its own file)
-    "call_shape": "t \"RULE\" \"TITLE\" FN \"LIT\" \"$VAR\" [ # COMMENT]; in FILE: FN() { CALLEE \"$@\"; } and VAR=\"$ROOT/SEG...\" once each, at top level",
+    # the THIRD form, the CHECK CALL (advisor step 5 and coordinator, Oct 11): t "RULE" "TITLE" CALLEE CHECK "$VAR" [ # COMMENT], the real lines as written.
+    # The parser decides the shape only; the row's pins (context: the whole file's sha256; callee: the defining library's) bind what runs (pin-age check).
+    "call_shape": "t \"RULE\" \"TITLE\" CALLEE CHECK \"$VAR\" [ # COMMENT]",
     "call_title_chars": ALNUM + " :.,-=<",                             # RULE and TITLE: exactly the characters of the real titles (bin/build-apk-test.sh)
-    "call_fn_chars": "abcdefghijklmnopqrstuvwxyz",                     # FN: lowercase letters
-    "call_callees": ["y"],                                             # the one command FN's definition may forward to: FN() { CALLEE "$@"; }
-    "call_lit_chars": "abcdefghijklmnopqrstuvwxyz-",                   # LIT: the one double-quoted literal argument
-    "call_lit_first_char_not": "-",                                    # LIT may not start with this
-    "call_var_chars": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",                    # VAR: the one double-quoted variable, last
-    "call_assign_roots": ["root"],                                     # VAR's one assignment: VAR="$ROOT/SEG/..." with ROOT from this list
-    "call_path_chars": "abcdefghijklmnopqrstuvwxyz.-",                 # SEG of that assignment
+    "call_callees": ["y"],                                             # CALLEE: unquoted, called directly
+    "call_callee_defs": {"y": 'y() { ROOT="$root" python3 "$work/chk.py" "$@"; }'},   # the one physical line the pinned callee file must hold for it
+    "call_checks": ["mel-go", "mel-pinned"],                           # CHECK: a bare check name, as the real lines write it
+    "call_vars": ["M", "MF"],                                          # VAR: double-quoted, last
     "call_comment": "#",                                               # after the call, only spaces and then this, then anything (a comment)
 }
 # END HARNESS_WHITELIST
@@ -1214,163 +1212,9 @@ for cmd, lead in W["substitutions"].items():
     SUBS.append((re.compile(r'"\$\(' + re.escape(cmd) + ((" " + re.escape(lead)) if lead else "") + extra + r' "\$([1-9])"\)"'), GSUB if cmd == "grep" else CSUB))
 SHAPE = re.compile(r' *t "(' + cls(W["rule_title_chars"]) + r'*)" "(' + cls(W["rule_title_chars"]) + r'*)" bash -c \'([^\']*)\' _((?: +"[^"]*")*)')
 ARG = re.compile(r'"\$' + alt(W["arg_names"]) + r'(?:/' + cls(W["arg_path_chars"]) + r'+)*"')
-# --- the THIRD form (advisor step 5, Oct 11): a HARNESS CHECK CALL. t "RULE" "TITLE" FN "LIT" "$VAR" [ # comment], where FN is defined in the SAME file
-# (--in FILE) by its one top-level, one-line definition FN() { CALLEE "$@"; } with no file sourced after it and no other definition, alias or unset of FN
-# anywhere in the file, and VAR is assigned in that file exactly once, at top level, on a line of literal-path assignments VAR="$ROOT/SEG/..." only.
-OPEN = {"if": "fi", "case": "esac", "for": "done", "while": "done", "until": "done", "select": "done", "{": "}"}
-STAYCMD = {"then", "do", "else", "elif", "if", "while", "until", "!", "{", "time"}
-class Scan:
-    """Which physical lines of a bash file begin at TOP LEVEL: outside every quote, heredoc body, comment, substitution, block and continuation.
-    A file whose structure does not resolve to a clean end (an open quote, heredoc, block or substitution, a closer with no opener) is refused."""
-    def __init__(s, src):
-        s.lines = src.split("\n"); s.top = set(); s.hd = []; s.pending = []; s.cmds = []; s.i = 0
-        s.st = [["code", [], True]]
-        cont = False
-        for i, line in enumerate(s.lines):
-            if s.hd:
-                delim, strip = s.hd[0]
-                if (line.lstrip("\t") if strip else line) == delim:
-                    s.hd.pop(0)
-                continue
-            if len(s.st) == 1 and not s.st[0][1] and not cont:
-                s.top.add(i)
-            s.i = i
-            cont = s.line(line + "\n")
-            s.hd.extend(s.pending); s.pending = []
-        if s.hd or len(s.st) != 1 or s.st[0][1] or cont:
-            raise Refused("the file's structure does not resolve to a clean end (an open quote, heredoc, block or substitution): fail closed")
-    def word(s, top, w):
-        if not w:
-            return
-        kw = top[1]
-        if top[2]:
-            if w in OPEN:
-                kw.append(OPEN[w]); top[2] = w in STAYCMD; return
-            if w in ("fi", "esac", "done", "}"):
-                if kw and kw[-1] == w:
-                    kw.pop(); top[2] = False; return
-                raise Refused("a closer %r with no matching opener in the file: fail closed" % w)
-            if w in STAYCMD or re.match(r"[A-Za-z_][A-Za-z0-9_]*\+?=", w):
-                return
-            s.cmds.append((s.i, w))                        # a command word, with the line it starts on
-        top[2] = False
-    def line(s, t):
-        n, k, w = len(t), 0, ""
-        while k < n:
-            c = t[k]; top = s.st[-1]; kind = top[0]
-            if kind == "sq":
-                if c == "'":
-                    s.st.pop()
-                k += 1; continue
-            if kind in ("dq", "bt"):
-                if c == "\\":
-                    k += 2; continue
-                if (kind == "dq" and c == '"') or (kind == "bt" and c == "`"):
-                    s.st.pop(); k += 1; continue
-                if kind == "dq" and c == "`":
-                    s.st.append(["bt"]); k += 1; continue
-                if t.startswith("$(", k):
-                    s.st.append(["sub", [], True]); k += 2; continue
-                if t.startswith("${", k):
-                    s.st.append(["param", 1]); k += 2; continue
-                k += 1; continue
-            if kind == "param":
-                if c == "\\":
-                    k += 2; continue
-                if c == "{":
-                    top[1] += 1
-                elif c == "}":
-                    top[1] -= 1
-                    if top[1] == 0:
-                        s.st.pop()
-                elif c == "'":
-                    s.st.append(["sq"])
-                elif c == '"':
-                    s.st.append(["dq"])
-                k += 1; continue
-            kw = top[1]                                    # code: the file itself ("code") or a $( ) substitution ("sub")
-            if c == "\\":
-                if t[k + 1:k + 2] == "\n":
-                    s.word(top, w); return True
-                w += t[k:k + 2]; k += 2; continue
-            if c == "#" and not w:
-                s.word(top, w); top[2] = True; return False
-            if c in "'\"`":
-                s.st.append({"'": ["sq"], '"': ["dq"], "`": ["bt"]}[c]); w += c; k += 1; continue
-            if t.startswith("${", k):
-                s.st.append(["param", 1]); w += "${"; k += 2; continue
-            if t.startswith("$(", k):
-                s.st.append(["sub", [], True]); w += "$("; k += 2; continue
-            if t.startswith("<<<", k):
-                s.word(top, w); w = ""; k += 3; continue
-            if t.startswith("<<", k):
-                s.word(top, w); w = ""
-                m = re.match(r"<<(-?)[ \t]*(?:'([^']*)'|\"([^\"]*)\"|\\?([A-Za-z0-9_]+))", t[k:])
-                if not m:
-                    raise Refused("a heredoc whose delimiter could not be read: fail closed")
-                s.pending.append((next(g for g in m.groups()[1:] if g is not None), m.group(1) == "-"))
-                k += m.end(); continue
-            if c in " \t":
-                s.word(top, w); w = ""; k += 1; continue
-            if c == "\n":
-                s.word(top, w); w = ""; top[2] = True; k += 1; continue
-            if c in ";&|":
-                if c == "&" and ((k and t[k - 1] in "<>") or t[k + 1:k + 2] == ">"):
-                    w += c; k += 1; continue
-                s.word(top, w); w = ""; top[2] = True; k += 1; continue
-            if c == "(":
-                if t.startswith("()", k) and w:
-                    s.word(top, w); w = ""; top[2] = True; k += 2; continue
-                s.word(top, w); w = ""; kw.append(")"); top[2] = True; k += 1; continue
-            if c == ")":
-                s.word(top, w); w = ""
-                if kw and kw[-1] == ")":
-                    kw.pop(); top[2] = False
-                elif kw and kw[-1] == "esac":
-                    top[2] = True
-                elif not kw and kind == "sub":
-                    s.st.pop()
-                else:
-                    raise Refused("a ) with no matching opener in the file: fail closed")
-                k += 1; continue
-            if c in "<>":
-                s.word(top, w); w = ""; k += 1; continue
-            w += c; k += 1
-        return False
-CALL = re.compile(r' *t "(' + cls(W["call_title_chars"]) + r'*)" "(' + cls(W["call_title_chars"]) + r'*)" (' + cls(W["call_fn_chars"]) + r'+) "('
-                  + ((r'(?!' + re.escape(W["call_lit_first_char_not"]) + r')') if W["call_lit_first_char_not"] else "") + cls(W["call_lit_chars"])
-                  + r'+)" "\$(' + cls(W["call_var_chars"]) + r'+)"((?: +' + re.escape(W["call_comment"]) + r'.*)?)')
-ASG1 = cls(W["call_var_chars"]) + r'+="\$' + alt(W["call_assign_roots"]) + r'(?:/' + cls(W["call_path_chars"]) + r'+)+"'
-ASG = re.compile(ASG1 + r'(?: ' + ASG1 + r')*')
-def judge_call(m, src):
-    if src is None:
-        raise Refused("a check call needs its own file (--in FILE): the called function must be defined in that same file")
-    fn, var = m.group(3), m.group(5)
-    S = Scan(src); L = S.lines
-    defs = [i for i in sorted(S.top) if re.fullmatch(re.escape(fn) + r'\(\) \{ ' + alt(W["call_callees"]) + r' "\$@"; \}', L[i])]
-    if len(defs) != 1:
-        raise Refused(f"the function {fn} has no single top-level one-line definition {fn}() {{ CALLEE \"$@\"; }} (CALLEE in call_callees) in this file")
-    d = defs[0]
-    again = re.compile(r'(^|[\s;&|(`{])' + re.escape(fn) + r'\s*\(\s*\)|\bfunction\s+' + re.escape(fn) + r'\b|\balias\s+' + re.escape(fn) + r'=|\bunset\b[^\n]*\b' + re.escape(fn) + r'\b')
-    other = [i for i, l in enumerate(L) if i != d and again.search(l)]
-    if other:
-        raise Refused(f"{fn} is defined, aliased or unset again at line {other[0] + 1}")
-    later = [i for i, w in S.cmds if i > d and w in (".", "source", "eval")]
-    if later:
-        raise Refused(f"a file is sourced after the definition of {fn} (or eval runs; line {later[0] + 1}): it could redefine it")
-    flat = " ".join(m.group(0).split())
-    before = [i for i, l in enumerate(L) if i < d and " ".join(l.split()) == flat]
-    if before:
-        raise Refused(f"the line calls {fn} before its definition (line {before[0] + 1})")
-    asg = [i for i in sorted(S.top) if ASG.fullmatch(L[i]) and var in re.findall(r'(?:^| )([^ =]+)="', L[i])]
-    if len(asg) != 1:
-        raise Refused(f"${var} has no single top-level literal-path assignment {var}=\"$ROOT/...\" (ROOT in call_assign_roots) in this file")
-    a = asg[0]; v = re.escape(var)
-    reset = re.compile(r'(^|[^A-Za-z0-9_$])' + v + r'(\+?=|\[)|\b(read|local|declare|typeset|export|readonly|unset|mapfile|readarray)\s+(-\w+\s+)*([A-Za-z_]\w*(=\S*)?\s+)*'
-                       + v + r'\b|\bfor\s+' + v + r'\b|\bprintf\s+-v\s*' + v + r'\b|\bgetopts\s+\S+\s+' + v + r'\b')
-    other = [i for i, l in enumerate(L) if i != a and reset.search(l)]
-    if other:
-        raise Refused(f"${var} is assigned again at line {other[0] + 1}")
+# --- the THIRD form: a HARNESS CHECK CALL. The shape only (a regex); what the call runs is bound by the row's pins, which the pin-age check verifies.
+CALL = re.compile(r' *t "(' + cls(W["call_title_chars"]) + r'*)" "(' + cls(W["call_title_chars"]) + r'*)" (' + alt(W["call_callees"]) + r') (' + alt(W["call_checks"])
+                  + r') "\$(' + alt(W["call_vars"]) + r')"((?: +' + re.escape(W["call_comment"]) + r'.*)?)')
 def tokens(body):                                          # [("sep", s)] or [("word", text, kind)]; kind: bare, dq, pos, gsub, csub
     out, i, n = [], 0, len(body)
     seps = sorted(W["separators"], key=len, reverse=True)
@@ -1403,15 +1247,14 @@ def test_expr(args):
     if len(args) == 3 and args[1][2] == "bare" and args[1][1] in W["test_string"] and operand(args[0]) and operand(args[2]): return
     if len(args) == 3 and args[1][2] == "bare" and args[1][1] in W["test_count"] and count(args[0]) and count(args[2]): return
     raise Refused("a test / [ expression outside test_unary (on a positional \"$N\"), test_string and test_count (with their operands)")
-def judge(line, src=None):
+def judge(line):
     bad = [c for c in line if c not in W["line_chars"]]
     if bad: raise Refused(f"a character outside the line character set ({bad[0]!r}): bash may read the line differently")
     m = SHAPE.fullmatch(line)
     if not m:
-        c = CALL.fullmatch(line)
-        if c:
-            judge_call(c, src); return "call"
-        raise Refused("not the shape t \"RULE\" \"TITLE\" bash -c 'BODY' _ ARG... nor the check call t \"RULE\" \"TITLE\" FN \"LIT\" \"$VAR\" [ # COMMENT] (or a RULE / TITLE character outside rule_title_chars / call_title_chars)")
+        if CALL.fullmatch(line):
+            return "call"
+        raise Refused("not the shape t \"RULE\" \"TITLE\" bash -c 'BODY' _ ARG... nor the check call t \"RULE\" \"TITLE\" CALLEE CHECK \"$VAR\" [ # COMMENT] (or a RULE / TITLE character outside rule_title_chars / call_title_chars)")
     args = re.findall(r' +("[^"]*")', m.group(4))
     if len(args) > W["max_args"]: raise Refused("more path arguments than max_args")
     for a in args:
@@ -1461,15 +1304,12 @@ def judge(line, src=None):
             for a in rest:
                 if a[2] not in ("dq", "pos"): raise Refused(f"the argument {a[1]!r} is not a double-quoted word or a positional")
 def main():
-    a, src = sys.argv[1:], None
-    if a[:1] == ["--in"]:                                  # --in FILE: the file the line sits in (a check call's function and variable are read from it)
-        src = open(a[1], encoding="utf-8", errors="surrogateescape", newline="").read(); a = a[2:]
     try:
-        kind = judge(open(a[1], encoding="utf-8", errors="surrogateescape", newline="").read() if a[0] == "--file" else a[0], src)
+        kind = judge(open(sys.argv[2], encoding="utf-8", errors="surrogateescape", newline="").read() if sys.argv[1] == "--file" else sys.argv[1])
     except Refused as e:
         print("refused: " + str(e)); sys.exit(1)
     if kind == "call":
-        print("harness check call: runs only a function defined in this file, with one literal and one literal-path variable"); sys.exit(0)
+        print("harness check call: the shape t RULE TITLE y CHECK VAR; what y runs is bound by the row's context and callee pins"); sys.exit(0)
     print("harness assertion: runs nothing but grep, test, cat and exit <digit>"); sys.exit(0)
 if __name__ == "__main__":
     main()
