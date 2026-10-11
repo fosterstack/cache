@@ -25,7 +25,8 @@
         "trap",
         "source",
         "git",
-        "at"
+        "at",
+        "tar"
       ],
       "runs": [],
       "signs": "other",
@@ -37,7 +38,8 @@
       "tools": [
         "curl",
         "bash",
-        "at"
+        "at",
+        "sed"
       ],
       "runs": [
         "bin/install-scanner.sh"

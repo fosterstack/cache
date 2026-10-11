@@ -207,11 +207,15 @@ def action_files(base):
         out += [os.path.join(dp, x) for x in fs if x.lower() in ("action.yml", "action.yaml")]
     return sorted(out)
 
-def signing_files(base):
-    """The ONE discovery routine of the chain judges (Codex #249 r7 B8; the wiring and records judges both use it, so they cannot drift):
-    every .yml/.yaml under .github/workflows/ (any depth), every composite action file anywhere (any case), and every other .yml/.yaml
-    file anywhere whose text has a top-level `jobs:` or `runs:` key (a workflow or action kept somewhere else is still read)."""
+def signing_files(base, errs=None):
+    """The ONE discovery routine of the chain judges (Codex #249 r7 B8, r8 B4; the wiring and records judges both use it, so they cannot
+    drift): every .yml/.yaml under .github/workflows/ (any depth), every composite action file anywhere (any case), and every other
+    .yml/.yaml anywhere (any case) whose PARSED root (duplicate-refusing loader: indentation, ---, comments, CRLF and flow style are the
+    parser's business, not a text pattern's) is a mapping with a `jobs` or `runs` key. Fail closed: a candidate under .github/, or one
+    whose text mentions a jobs:/runs: key, that does not parse is reported in `errs` (it cannot be classified, so it cannot be cleared)."""
+    errs = [] if errs is None else errs
     wf = os.path.join(base, ".github", "workflows")
+    gh = os.path.join(base, ".github")
     out = set(action_files(base))
     for dp, dirs, fs in os.walk(base):
         dirs[:] = [x for x in dirs if x != ".git"]
@@ -219,9 +223,15 @@ def signing_files(base):
             if not x.lower().endswith((".yml", ".yaml")): continue
             f = os.path.join(dp, x)
             if os.path.commonpath([f, wf]) == wf: out.add(f); continue
+            if f in out: continue
             try: text = open(f, errors="replace").read()
             except OSError: continue
-            if re.search(r"^(?:jobs|runs|\"jobs\"|\"runs\"|'jobs'|'runs')\s*:", text, re.M): out.add(f)
+            try: d = yload(text)
+            except Exception as ex:
+                if os.path.commonpath([f, gh]) == gh or re.search(r"[\"']?\b(?:jobs|runs)\b[\"']?\s*:", text):
+                    errs.append("%s does not parse as one YAML mapping (%s), so it cannot be classified as a workflow or not (fail closed)" % (os.path.relpath(f, base), type(ex).__name__))
+                continue
+            if isinstance(d, dict) and ({"jobs", "runs"} & set(d)): out.add(f)
     return sorted(out)
 
 def unresolved_signing(e, ctx):
@@ -336,9 +346,11 @@ def _arg_error(parts, envnames):
 
 PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > digests\.json")
 
-def check_run(run, envnames, rows):
-    """Grammar errors (list of 'line N: ...') for one stage-file `run:` text; also returns the listed paths it runs."""
+def check_run(run, envnames, rows, reads=None):
+    """Grammar errors (list of 'line N: ...') for one stage-file `run:` text; also returns the listed paths it runs. `reads` (a set, when
+    given) receives every env name the PARSED command words read whole (comments stripped; Codex #249 r8 B2), the only reads that count."""
     errs, ran = [], []
+    reads = set() if reads is None else reads
     # Sonnet #249 continuation (advisor: refuse, never model how bash joins or splits): a backslash-newline anywhere, and any character
     # outside printable ASCII and the newline (CR, tab, VT, FF, NUL, other controls, NBSP, U+200B, U+2028, ...), are refused before the
     # line is read, so the judge's words are bash's words. A backslash outside a single-quoted literal is refused by _words.
@@ -359,6 +371,7 @@ def check_run(run, envnames, rows):
             m = PRINTF_OK.fullmatch(line)
             if not m: errs.append("line %d: %s: a printf line must be exactly printf '%%s' \"$NAME\" > digests.json (the one write the Sign job needs)" % (n, line[:90]))
             elif m.group(1) not in envnames: errs.append("line %d: printf of $%s, which is not in this step's env:" % (n, m.group(1)))
+            else: reads.add(m.group(1))
             continue
         words, err = _words(line)
         if err: errs.append("line %d: %s: %s" % (n, line[:90], err)); continue
@@ -380,6 +393,9 @@ def check_run(run, envnames, rows):
         for rawa, parts in words[2:]:
             e = _arg_error(parts, envnames)
             if e: errs.append("line %d: %s: %s" % (n, line[:90], e))
+            elif len(parts) == 1 and parts[0][0] == "dq":
+                wm = re.fullmatch(r"\$(\w+)|\$\{(\w+)\}", parts[0][1])
+                if wm: reads.add(wm.group(1) or wm.group(2))
         ran.append(path)
     return errs, ran
 
@@ -478,19 +494,65 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
                     if e: errs.append("%s: upload-artifact %s" % (sp, e))
                 continue
             if w: errs.append("%s: a run step has `with`" % sp)
-            for k in env:
-                if not re.search(r"\"\$%s\"|\"\$\{%s\}\"" % (k, k), str(run)): errs.append("%s: env %s is not read whole (\"$%s\") by the step's run line" % (sp, k, k))
-            e, r = check_run(str(run), set(env.keys()), rows)
+            got = set()
+            e, r = check_run(str(run), set(env.keys()), rows, got)
+            for k in env:                       # Codex #249 r8 B2: read only by a whole word of the PARSED command (a comment never counts)
+                if k not in got: errs.append("%s: env %s is not read whole (\"$%s\") by the step's run line" % (sp, k, k))
             errs += ["%s: %s" % (sp, x) for x in e]; ran += r
     return errs, ran
 
 ENV_SET = re.compile(r"(?<![\w$])(?:(?:export|local|readonly|typeset)\s+|declare\s+(?:-\w+\s+)?)?(PATH|BASH_ENV|ENV|LD_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|NODE_OPTIONS|IFS|CDPATH|PROMPT_COMMAND|PS4|SHELLOPTS|BASHOPTS)\+?=")
 LAUNCHER = re.compile(r"\bwitness\b[^\n]*?\brun\b(?P<rest>[^\n]*)")
-LAUNCHERS = ("env", "command", "exec", "builtin", "nohup", "sudo", "doas", "timeout", "nice", "ionice", "xargs", "setsid", "stdbuf",
-             "chroot", "unshare", "nsenter", "flock", "time", "strace", "chrt", "taskset")
-# a launcher at command position (line start, or after ; & | ( ` $( or `then/do/else`), optionally by path, then a program word
-LAUNCH_PREFIX = re.compile(r"(?:^|[;&|(`]|\$\(|\b(?:then|do|else)\b)[ \t]*(?:[\w./-]*/)?(?:%s)\b(?:[ \t]+-[\w-]+(?:[ \t]+\d+)?)*[ \t]+(?:\d+[ \t]+)?[A-Za-z_./][\w./-]*"
-                           % "|".join(LAUNCHERS), re.M)
+# Codex #249 r8 B3 + Sonnet 2/6 (the class closed, positive): at ANY command position of a shell listed script, a LAUNCHER is refused
+# outright (whatever follows, whatever `tools` says: it runs another program the row cannot name), an EVALUATOR is refused unless the
+# row lists that exact word, and an INTERPRETER must be handed an exact listed path of `runs` as its first argument (no option, no -c,
+# no stdin). A path or ./word at command position must itself be an exact listed path.
+LAUNCH_OUTRIGHT = {"env", "command", "exec", "builtin", "nohup", "sudo", "doas", "timeout", "nice", "ionice", "xargs", "setsid", "stdbuf",
+                   "chroot", "unshare", "nsenter", "flock", "time", "strace", "chrt", "taskset", "eval", "source", ".", "busybox", "setpriv"}
+EVALUATORS = {"awk", "gawk", "mawk", "nawk", "sed", "perl", "ruby", "php", "lua", "node", "tar", "find", "ssh", "openssl"}
+SHELL_INTERP = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3"}
+CMDPOS = re.compile(r"(?:^|[;&|(){}!`]|\$\(|\b(?:then|do|else|elif|time|if|while|until)\b)[ \t]*"
+                    r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()]*)[ \t]+)*(?P<w>[^\s;&|(){}<>`\"'=!]+)", re.M)
+CMD_AT = re.compile(r"[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=(?:\"[^\"]*\"|'[^']*'|[^\s;&|()]*)[ \t]+)*(?P<w>[^\s;&|(){}<>`\"'=!]+)")
+RESERVED = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until", "case", "esac", "in", "time", "function", "select", "coproc"}
+
+def _is_python(path, text):
+    return path.endswith(".py") or bool(re.match(r"#!\S*(?:/|\s)python", text))
+
+def _mask(line):
+    """The line with every single-quoted string, every ${...} and every double-quoted string reduced to a placeholder, so their
+    contents are never read as command positions; the $( ) and backtick substitutions INSIDE a double-quoted string are returned as
+    extra segments (they are command positions)."""
+    extra = []
+    prev = None
+    while prev != line:
+        prev = line; line = re.sub(r"\$\{[^{}]*\}", "X", line)
+    line = re.sub(r"'[^']*'", "Q", line)
+    def dq(m):
+        extra.extend(re.findall(r"\$\(([^()]*)\)|`([^`]*)`", m.group(0)))
+        return "Q"
+    line = re.sub(r'"(?:[^"\\]|\\.)*"', dq, line)
+    return line, [a or b for a, b in extra]
+
+def command_words(text):
+    """(word, rest-of-command) at every command position of comment-stripped, continuation-joined shell text (quotes and ${...}
+    masked; substitutions inside double quotes scanned as their own segments)."""
+    out = []
+    todo = list(logical(strip(text)).splitlines())
+    while todo:
+        line, extra = _mask(todo.pop(0))
+        todo += extra
+        for m in CMDPOS.finditer(line):
+            w, end = m.group("w"), m.end()
+            while w in RESERVED:                  # a reserved word is not the command: the next word is (`elif setsid`, `time setsid`)
+                if w == "time": out.append((w, ""))
+                n2 = CMD_AT.match(line, end)
+                if not n2: w = None; break
+                w, end = n2.group("w"), n2.end()
+            if w is None: continue
+            rest = re.split(r"[;&|)`]", line[end:], 1)[0]
+            out.append((w, rest))
+    return out
 
 def scan_script(path, text, row, rows, base):
     """Errors for one LISTED script. Not a shell parser: a conservative TEXT scan over the raw file whatever its extension or shebang
@@ -518,14 +580,31 @@ def scan_script(path, text, row, rows, base):
         elif n in DENY and n not in tools:
             errs.append("%s: names the command %r, which is not in this script's `tools` list" % (path, t))
         is_script = n.endswith(SCRIPT_EXTS) or n in rows or name in listed_base
-        if not is_script and pathlike:
+        if not is_script and (pathlike or t.startswith("./")):
             full = os.path.join(base, n)
-            if os.path.isfile(full):
-                with open(full, "rb") as fh: is_script = fh.read(2) == b"#!"
+            if os.path.isfile(full):          # Sonnet 1: the existence, shebang and executable tests run on the normalised path
+                with open(full, "rb") as fh: is_script = fh.read(2) == b"#!" or os.access(full, os.X_OK)
         if is_script and n != path and n not in runs and not (n == selfbase):
             errs.append("%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
-    for m in LAUNCH_PREFIX.finditer(body):
-        errs.append("%s: %r launches another program (a launcher prefix hides what runs from the `tools` list)" % (path, m.group(0).strip()))
+    if not _is_python(path, text):
+        for w, rest in command_words(body):
+            n = w[2:] if w.startswith("./") else w
+            name = n.rsplit("/", 1)[-1]
+            if name in LAUNCH_OUTRIGHT:
+                errs.append("%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
+            if name in EVALUATORS and not (name == "openssl" and not re.match(r"\s*s_client\b", rest)):
+                if name not in tools: errs.append("%s: %r at command position is an evaluator not in this script's `tools` list" % (path, w))
+                continue
+            if name in SHELL_INTERP:
+                args = [x.strip("\"'") for x in rest.split()]
+                first = args[0] if args else ""
+                fn = first[2:] if first.startswith("./") else first
+                if "<" in rest or not first or first.startswith("-") or fn not in runs:
+                    errs.append("%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
+                continue
+            in_tree = ("/" in w or w.startswith("./")) and os.path.isfile(os.path.join(base, n))
+            if (w.startswith("./") or in_tree) and n != path and n not in runs:
+                errs.append("%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     for m in ENV_SET.finditer(text):
         errs.append("%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for ln in logical(text).splitlines():

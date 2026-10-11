@@ -403,7 +403,10 @@ def decoded_signer_calls(f, rel, bad):
 def direct_signers(base, files, frozen, allowed, bad):
     """001-AC1: "no other workflow, composite action ... signs provenance" (each workflow and composite action matched by the signer table)."""
     wfdir = os.path.join(base, ".github/workflows")
-    for f in signing_files(base):              # workflows, composite actions and any other jobs:/runs: YAML anywhere (Codex #249 r7 B8)
+    disc = []
+    found = signing_files(base, disc)          # workflows, composite actions and any other jobs:/runs: YAML anywhere (Codex #249 r7 B8, r8 B4)
+    bad += ["AC1: " + x for x in disc]
+    for f in found:
         rel = os.path.relpath(f, wfdir) if f in files else os.path.relpath(f, base)
         if os.path.relpath(f, base) in frozen or rel == "stage-sign.yml": continue
         for e, pv, line in signer_calls(open(f).read()) + decoded_signer_calls(f, rel, bad):

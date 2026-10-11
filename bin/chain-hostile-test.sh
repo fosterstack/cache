@@ -408,8 +408,13 @@ else:
         if "hostile-verify" not in need(hd): bad.append("hostile-verdict must need hostile-verify")
         if hv.get("permissions") != {"contents": "read"}: bad.append("hostile-verify permissions must be exactly {contents: read} (no id-token, nothing to write): %s" % hv.get("permissions"))
         if hd.get("permissions") != {"contents": "read"}: bad.append("hostile-verdict permissions must be exactly {contents: read}: %s" % hd.get("permissions"))
-        JOBKEYS = {"needs", "runs-on", "permissions", "if", "steps", "name", "timeout-minutes"}
-        STEPKEYS = {"name", "uses", "with", "run", "if"}
+        # Codex #249 r8 B1 (the class closed): the CLOSED key sets are exactly what the real file uses, and runs-on is the hosted set
+        JOBKEYS = {"needs", "runs-on", "permissions", "if", "steps"}
+        STEPKEYS = {"name", "uses", "with", "run"}
+        HOSTED = re.compile(r"ubuntu-(22\.04|24\.04)(-arm)?|ubuntu-latest")
+        for jn2, j2 in (("hostile-verify", hv), ("hostile-verdict", hd)):
+            if not isinstance(j2.get("runs-on"), str) or not HOSTED.fullmatch(j2["runs-on"]):
+                bad.append("%s runs-on %r is not in the closed hosted runner set" % (jn2, j2.get("runs-on")))
         for jn2, j2 in (("hostile-verify", hv), ("hostile-verdict", hd)):
             extra = sorted(set(j2) - JOBKEYS)
             if extra: bad.append("%s has job keys outside the allowlist %s (job env/defaults/container/strategy/services/outputs/continue-on-error can change what the pinned text executes)" % (jn2, extra))
@@ -428,7 +433,7 @@ else:
                 kinds.append("other"); bad.append("hostile-verify uses %r; only actions/checkout, download-artifact and upload-artifact at a 40-hex commit" % u); continue
             if act and act.group(1) == "checkout":
                 kinds.append("checkout")
-                if WITH(s).get("persist-credentials") != "false": bad.append("hostile-verify must check the repo out with persist-credentials: false (it runs the repo's verifier)")
+                if WITH(s) != {"persist-credentials": "false"}: bad.append("hostile-verify's checkout with: must be exactly {persist-credentials: false} (no repository, ref, token, path, fetch-depth: it runs this repository's verifier): %s" % WITH(s))
             elif act and act.group(1) == "download-artifact":
                 nm, pth = WITH(s).get("name"), WITH(s).get("path")
                 want = {"hostile-attempts": "attempts", "witness-build": "witness-build", "provenance": "provenance"}
@@ -436,6 +441,7 @@ else:
                 else: kinds.append("download:" + nm)
             elif act and act.group(1) == "upload-artifact":
                 kinds.append("upload")
+                if WITH(s) != {"name": "hostile-results", "path": "hostile-results.json"}: bad.append("hostile-verify's upload with: must be exactly {name: hostile-results, path: hostile-results.json}: %s" % WITH(s))
             elif re.fullmatch(POLICY_MAKE, run): kinds.append("policy")
             elif re.search(r"--attempt (\w+)", run): kinds.append("attempt:" + re.search(r"--attempt (\w+)", run).group(1))
             elif run == "python3 bin/chain-verify.py hostile-collect results --out hostile-results.json": kinds.append("collect")

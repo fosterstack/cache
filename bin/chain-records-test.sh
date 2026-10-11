@@ -63,7 +63,9 @@ else:
 import importlib.util
 _spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
 _cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
-files = _cts.signing_files(base)          # the ONE discovery routine, shared with chain-sign-wiring-test.sh (Codex #249 r7 B8)
+_disc = []
+files = _cts.signing_files(base, _disc)   # the ONE discovery routine, shared with chain-sign-wiring-test.sh (Codex #249 r7 B8, r8 B4)
+bad += _disc
 TABLE = _cts.load_table()
 strip, logical = _cts.strip, _cts.logical
 def scan(rel, text, raw=False):
