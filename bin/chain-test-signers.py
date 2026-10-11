@@ -393,7 +393,7 @@ def load_scripts(base):
             good, ee = exception_entries(p, r["exceptions"])
             errs += ee
             for e in good:
-                if e["text"] not in txt:
+                if e["text"] not in txt and e["text"] not in logical(txt):
                     errs.append("chain-scripts.json: %s exceptions entry %r (%s) matches nothing in the file (stale)" % (p, e["text"], e["rule"]))
         rows[p] = r
     for p, r in rows.items():
@@ -688,10 +688,28 @@ def _mask(line):
     cur = re.sub(r'"(?:[^"\\]|\\.)*"', dq, cur)
     return cur, extra
 
+def _cmd_end(line, i):
+    """Index where the simple command that continues at line[i:] ends (round 1 (3)): at the next ; & | (but not 2>&1, &>, >|), a backtick, a closing
+    ) or } that does not close a ( opened inside it (so <( ) and $( ) belong to the command), or the end of the line."""
+    depth, n = 0, len(line)
+    while i < n:
+        c = line[i]
+        if c == "(": depth += 1
+        elif c == ")":
+            if depth == 0: return i
+            depth -= 1
+        elif depth == 0:
+            if c in ";`}": return i
+            if c == "|" and not (i > 0 and line[i - 1] == ">"): return i
+            if c == "&" and not ((i > 0 and line[i - 1] in "<>") or (i + 1 < n and line[i + 1] == ">")): return i
+        i += 1
+    return n
+
 def command_items(text):
-    """(word, rest-of-command, original word, original next word) at every command position of comment-stripped, continuation-joined
-    shell text (quotes and ${...} masked; substitutions inside double quotes scanned as their own segments). The last two are the
-    text as written (quotes included), for a finding to name its exact span."""
+    """(word, rest-of-command, original word, WHOLE command text) at every command position of comment-stripped, continuation-joined
+    shell text (quotes and ${...} masked; substitutions inside double quotes scanned as their own segments). The last two are the text as
+    written (quotes and spacing kept): the command word through the end of the simple command (_cmd_end), for a finding to name its exact
+    span; an exception entry must equal it, so a changed tail makes the finding reappear."""
     out = []
     todo = list(logical(strip(text)).splitlines())
     while todo:
@@ -707,8 +725,7 @@ def command_items(text):
                 w, end, ws = n2.group("w"), n2.end(), n2.start("w")
             if w is None: continue
             rest = re.split(r"[;&|)`]", line[end:], 1)[0]
-            nm = re.match(r"[ \t]+(\S+)", rest)
-            out.append((w, rest, orig[ws:ws + len(w)], orig[end + nm.start(1):end + nm.end(1)] if nm else ""))
+            out.append((w, rest, orig[ws:ws + len(w)], orig[ws:_cmd_end(line, end)].rstrip()))
     return out
 
 def command_words(text):
@@ -755,7 +772,8 @@ def scan_script(path, text, row, rows, base):
     caller from the row's `signs` (raw text, comments and quotes included). Stated exclusion: a command or script path BUILT AT RUN
     TIME inside a listed script is not detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78).
     PR 1b, reviewed exceptions: a finding of rule launcher, evaluator, deny, script-name or witness-target carries the exact text it matched
-    (launcher / evaluator / script-name at a command position: the word and the word after it, as written; deny and a script token: the
+    (launcher / evaluator / script-name at a command position: the WHOLE simple command, command word through the next ; & | ) } or end of line, as
+    written; deny and a script token: the
     word; witness-target: everything after `witness run ... --`, or the `witness run` text when there is no `--`). A row's `exceptions`
     entry {rule, text, why} waives the FIRST finding with exactly that rule and exactly that text, and nothing else: a second finding
     with the same text, a different text, or a different rule stays a finding. An entry that waives nothing is itself an error. Findings
@@ -793,7 +811,7 @@ def scan_script(path, text, row, rows, base):
         for w, rest, ow, on in command_items(body):
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
-            span = ow + (" " + on if on else "")
+            span = on                              # the whole simple command, as written
             dq = ow.strip("\"'")                  # a COMMAND named by a path is refused whatever `tools` says (the row governs the bare name only)
             dn = dq[2:] if dq.startswith("./") else dq
             if "/" in dn and not dn.startswith(("-", "$")) and "://" not in dn and dn.rsplit("/", 1)[-1] in DENY:
@@ -812,7 +830,7 @@ def scan_script(path, text, row, rows, base):
                 continue
             in_tree = ("/" in w or w.startswith("./")) and os.path.isfile(os.path.join(base, n))
             if (w.startswith("./") or in_tree) and n != path and n not in runs and w not in tok_script:
-                add("script-name", w, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
+                add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     for m in ENV_SET.finditer(text):
         add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
     for x in protected_env_mentions(path, text, row): add(None, "", x)
