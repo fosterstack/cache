@@ -309,9 +309,10 @@ def cmd_items_merge(a):
         json.dump(items, f, sort_keys=True, indent=1)
         f.write("\n")
     if a.digests:
+        # compact, sorted, no trailing newline: these are the bytes `jq -c .` and a command substitution carry to Sign, which writes them with printf '%s' and
+        # compares their sha256 with the product hash of THIS file in the signed record (Codex B r2 B1); any other layout makes Sign refuse every release
         with open(a.digests, "w") as f:
-            json.dump(digests_of(items), f, sort_keys=True, indent=1)
-            f.write("\n")
+            json.dump(digests_of(items), f, sort_keys=True, separators=(",", ":"))
 
 
 # ---- rebuild-compare --------------------------------------------------------------------------------------------------------------
