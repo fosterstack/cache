@@ -1165,18 +1165,21 @@ d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ub
 d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-# AC5's runtime proof has a fixed place (advisor accepted Oct 10, lane AC): it runs and is linked when PR 2 (Build) lands on chain-v030 and
-# before the cutover pull request merges chain-v030 to main; the REQ-CHAIN-001 notes carry the CUTOVER CHECKLIST line so it cannot be forgotten
-python3 - "$root/requirements/requirements.yaml" <<'PY' 2>&1 && ok "001-AC5 the AC names when its GitHub proof runs (PR 2 on chain-v030, before the cutover pull request to main) and the notes carry the CUTOVER CHECKLIST line" || bad "001-AC5 the AC text or the CUTOVER CHECKLIST note does not place the GitHub proof"
+# AC5's runtime proof has a fixed place (advisor accepted Oct 10, lane AC; moved to a signed rc-tag run, advisor 0383): a green rc-tag run is linked
+# before the cutover pull request merges chain-v030 to main, and no v0.3.0 tag is pushed without one of the same commit's chain files; the REQ-CHAIN-001 notes carry the CUTOVER CHECKLIST line so it cannot be forgotten
+python3 - "$root/requirements/requirements.yaml" <<'PY' 2>&1 && ok "001-AC5 the AC names when its GitHub proof runs (a signed rc-tag run, before the cutover pull request to main) and the notes carry the CUTOVER CHECKLIST line" || bad "001-AC5 the AC text or the CUTOVER CHECKLIST note does not place the GitHub proof"
 import sys, yaml
 reqs = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
 r = reqs["REQ-CHAIN-001"]
 then = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["then"]
-for words in ("PR 2 (Build) lands on the integration branch chain-v030", "before the cutover pull request merges chain-v030 to main",
-              "PR 1 merges only to chain-v030", "bin/chain-hostile-test.sh", "the wiring tests judge the files"):
+for words in ("a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)", "before the cutover pull request merges chain-v030 to main",
+              "no v0.3.0 tag may be pushed unless an rc-tag run of that same commit's chain files", "a branch dry run does not satisfy this AC",
+              "bin/chain-hostile-test.sh", "the wiring tests judge the files"):
     assert words in then, "AC5 lacks: " + words
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
+assert "green rc-tag run of the same commit's chain files, linked" in r["notes"], "REQ-CHAIN-001 notes lack the rc-tag cutover checklist line (advisor 0383)"
+assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
 PY
 EXPECT=240
 echo "pass=$pass fail=$failn"
