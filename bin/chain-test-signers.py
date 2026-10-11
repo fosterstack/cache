@@ -184,6 +184,8 @@ FORBID_ENV = re.compile(r"(BASH_ENV|ENV|PATH|LD_[A-Z0-9_]*|PYTHON[A-Z0-9_]*|NODE
                         r"PS4|PROMPT_COMMAND|HOME|TMPDIR|GIT_[A-Z_]*|GITHUB_[A-Z_]*|RUNNER_[A-Z_]*|LC_[A-Z_]*|LANG|USER|"
                         r"RUBY[A-Z_]*|PERL[A-Z0-9_]*|CLASSPATH|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS)")
 SIGNS = (False, "provenance", "other")
+# PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
+EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 INTERPRETERS = {"bash", "sh", "dash", "zsh", "ksh", "python", "python3", "node", "ruby", "perl", "source", "eval", "exec",
                 "make", "gmake", "xargs", "run-parts", "npm", "yarn", "pnpm", "just", "task", "parallel", "env", "sudo", "nohup",
                 "timeout", "nice", "command", "builtin", "watch", "at", "find"}
@@ -267,6 +269,28 @@ def unresolved_signing(e, ctx):
         return "%s with an unresolved argument (its blob, and so its type, cannot be known) (fail closed)" % n
     return None
 
+def exception_entries(path, ex):
+    """([valid entries], [errors]) for a row's `exceptions` (PR 1b): a list of objects with exactly rule, text and why; rule in EXC_RULES;
+    text a non-empty string; why a non-blank string; no two entries with the same rule and text. Fail closed: an entry that is not valid is
+    reported and never used."""
+    if not isinstance(ex, list):
+        return [], ["chain-scripts.json: %s `exceptions` must be a list of {rule, text, why}" % path]
+    errs, good, seen = [], [], set()
+    for e in ex:
+        if not isinstance(e, dict) or set(e) != {"rule", "text", "why"}:
+            errs.append("chain-scripts.json: %s exceptions entry %r must be an object with exactly rule, text and why" % (path, e)); continue
+        rule, text, why = e["rule"], e["text"], e["why"]
+        if not isinstance(rule, str) or rule not in EXC_RULES:
+            errs.append("chain-scripts.json: %s exceptions entry has rule %r, which is not one of %s" % (path, rule, ", ".join(EXC_RULES))); continue
+        if not isinstance(text, str) or not text.strip():
+            errs.append("chain-scripts.json: %s exceptions entry (%s) needs a non-empty text string" % (path, rule)); continue
+        if not isinstance(why, str) or not why.strip():
+            errs.append("chain-scripts.json: %s exceptions entry %r (%s) has no reason (why)" % (path, text, rule)); continue
+        if (rule, text) in seen:
+            errs.append("chain-scripts.json: %s exceptions entry %r (%s) is listed twice" % (path, text, rule)); continue
+        seen.add((rule, text)); good.append(e)
+    return good, errs
+
 def load_scripts(base):
     """(rows by path, [errors], env_names) from .github/policy/chain-scripts.json, every row validated against the tree.
     env_names is the closed set of names a stage step may put in env: (never BASH_ENV, PATH, LD_*, PYTHON*, ...)."""
@@ -309,6 +333,13 @@ def load_scripts(base):
         em = r.get("env_mentions", [])
         if not isinstance(em, list) or not all(isinstance(e, dict) and set(e) == {"name", "text", "why"} and all(isinstance(e[k], str) for k in e) for e in em):
             errs.append("chain-scripts.json: %s `env_mentions` must be a list of {name, text, why} strings" % p)
+        if "exceptions" in r:
+            good, ee = exception_entries(p, r["exceptions"])
+            errs += ee
+            txt = open(full, errors="replace").read()
+            for e in good:
+                if e["text"] not in txt:
+                    errs.append("chain-scripts.json: %s exceptions entry %r (%s) matches nothing in the file (stale)" % (p, e["text"], e["rule"]))
         rows[p] = r
     for p, r in rows.items():
         for q in r.get("runs", []) if isinstance(r.get("runs", []), list) else []:
@@ -623,8 +654,15 @@ def scan_script(path, text, row, rows, base):
     (c) `witness run ... --`: the first word after `--` must be a literal path in `runs` (never $@, "$@", $*, a variable or
     substitution); (d) setting PATH, BASH_ENV, ENV, LD_*, PYTHON*, NODE_OPTIONS, IFS ... anywhere. Signing calls are judged by the
     caller from the row's `signs` (raw text, comments and quotes included). Stated exclusion: a command or script path BUILT AT RUN
-    TIME inside a listed script is not detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78)."""
-    errs = []
+    TIME inside a listed script is not detected; listed scripts are committed, sha256-bound and reviewed at PR time (row 78).
+    PR 1b, reviewed exceptions: a finding of rule launcher, evaluator, deny, script-name or witness-target carries the exact text it matched
+    (launcher / evaluator / script-name at a command position: the word and the word after it, as written; deny and a script token: the
+    word; witness-target: everything after `witness run ... --`, or the `witness run` text when there is no `--`). A row's `exceptions`
+    entry {rule, text, why} waives the FIRST finding with exactly that rule and exactly that text, and nothing else: a second finding
+    with the same text, a different text, or a different rule stays a finding. An entry that waives nothing is itself an error. Findings
+    that set PATH, BASH_ENV ... are never waived here (`env_mentions` is the only exception for those)."""
+    fnd = []                                       # (rule or None, exact text, message); rule None = never waived
+    def add(rule, txt, msg): fnd.append((rule, txt, msg))
     tools, runs = set(row.get("tools", [])), set(row.get("runs", []))
     selfbase = os.path.basename(path)
     py = _is_python(path, text)
@@ -633,57 +671,67 @@ def scan_script(path, text, row, rows, base):
     # Codex #249 r7 B3 (the class closed): a script token is compared to the manifest EXACTLY (only a leading ./ is normalised; no
     # basename match), a command named by ANY path is refused even when its bare name is in `tools` (the row governs the bare name only),
     # and a launcher prefix (env, command, exec, builtin, nohup, sudo, timeout, nice, xargs, ...) followed by another program is refused.
-    for t in dict.fromkeys(re.findall(r"[^\s;&|(){}<>`\"'=,]+", body)):
+    tok_script = set()                             # script tokens already reported (a command-position report of the same word is the same finding)
+    for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", body):
+        t = tm.group(0)
         n = t[2:] if t.startswith("./") else t
         name = n.rsplit("/", 1)[-1]
         pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
         if pathlike and name in DENY:
             # PR 1b: in a SHELL script a path-like word is judged as a command only at command position (below); an argument such as
             # archive/go is judged by the script rule alone. A Python script has no command position, so it keeps the word-level test.
-            if py: errs.append("%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
+            if py: add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
         elif n in DENY and n not in tools:
-            errs.append("%s: names the command %r, which is not in this script's `tools` list" % (path, t))
+            add("deny", t, "%s: names the command %r, which is not in this script's `tools` list" % (path, t))
         is_script = n.endswith(SCRIPT_EXTS) or n in rows or name in listed_base
         if not is_script and (pathlike or t.startswith("./")):
             full = os.path.join(base, n)
             if os.path.isfile(full):          # Sonnet 1: the existence, shebang and executable tests run on the normalised path
                 with open(full, "rb") as fh: is_script = fh.read(2) == b"#!" or os.access(full, os.X_OK)
         if is_script and n != path and n not in runs and not (n == selfbase):
-            errs.append("%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
+            add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t)); tok_script.add(t)
     if not py:
-        for w, rest, ow, _on in command_items(body):
+        for w, rest, ow, on in command_items(body):
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
+            span = ow + (" " + on if on else "")
             dq = ow.strip("\"'")                  # a COMMAND named by a path is refused whatever `tools` says (the row governs the bare name only)
             dn = dq[2:] if dq.startswith("./") else dq
             if "/" in dn and not dn.startswith(("-", "$")) and "://" not in dn and dn.rsplit("/", 1)[-1] in DENY:
-                errs.append("%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, dq))
+                add("deny", dq, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, dq))
             if name in LAUNCH_OUTRIGHT:
-                errs.append("%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
+                add("launcher", span, "%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
             if name in EVALUATORS and not (name == "openssl" and not re.match(r"\s*s_client\b", rest)):
-                if name not in tools: errs.append("%s: %r at command position is an evaluator not in this script's `tools` list" % (path, w))
+                if name not in tools: add("evaluator", span, "%s: %r at command position is an evaluator not in this script's `tools` list" % (path, w))
                 continue
             if name in SHELL_INTERP:
                 args = [x.strip("\"'") for x in rest.split()]
                 first = args[0] if args else ""
                 fn = first[2:] if first.startswith("./") else first
                 if "<" in rest or not first or first.startswith("-") or fn not in runs:
-                    errs.append("%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
+                    add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
                 continue
             in_tree = ("/" in w or w.startswith("./")) and os.path.isfile(os.path.join(base, n))
-            if (w.startswith("./") or in_tree) and n != path and n not in runs:
-                errs.append("%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
+            if (w.startswith("./") or in_tree) and n != path and n not in runs and w not in tok_script:
+                add("script-name", w, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     for m in ENV_SET.finditer(text):
-        errs.append("%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
-    errs += protected_env_mentions(path, text, row)
+        add(None, "", "%s: sets %s (it can make a shell, interpreter or tool load other code)" % (path, m.group(1)))
+    for x in protected_env_mentions(path, text, row): add(None, "", x)
     for ln in logical(text).splitlines():
         m = LAUNCHER.search(ln)
         if not m: continue
         rest = m.group("rest")
         if " -- " not in rest + " " and not rest.rstrip().endswith("--"):
-            errs.append("%s: `witness run` without `-- PATH` on the same logical line: %s" % (path, ln.strip()[:80])); continue
+            add("witness-target", ln[m.start():].strip(), "%s: `witness run` without `-- PATH` on the same logical line: %s" % (path, ln.strip()[:80])); continue
         after = (rest + " ").split(" -- ", 1)[1].strip() if " -- " in rest + " " else ""
         first = after.split()[0] if after.split() else ""
         if not LITERAL_PATH.fullmatch(first) or first not in runs:
-            errs.append("%s: after `witness run --` the command %r is not a literal path in this script's `runs` list ($@, \"$@\", $*, a variable or a substitution is an error)" % (path, first))
-    return errs
+            add("witness-target", after, "%s: after `witness run --` the command %r is not a literal path in this script's `runs` list ($@, \"$@\", $*, a variable or a substitution is an error)" % (path, first))
+    waived, errs = set(), []
+    for e in (exception_entries(path, row["exceptions"])[0] if "exceptions" in row else []):
+        for i, (rule, txt, _msg) in enumerate(fnd):
+            if i not in waived and rule == e["rule"] and txt == e["text"]:
+                waived.add(i); break
+        else:
+            errs.append("%s: exceptions entry %r (%s) waives nothing (no finding of that rule has exactly that text)" % (path, e["text"], e["rule"]))
+    return list(dict.fromkeys([m for i, (_r, _t, m) in enumerate(fnd) if i not in waived] + errs))
