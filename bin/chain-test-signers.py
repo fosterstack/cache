@@ -445,6 +445,7 @@ def load_scripts(base):
         if not isinstance(em, list) or not all(isinstance(e, dict) and set(e) == {"name", "text", "why"} and all(isinstance(e[k], str) for k in e) for e in em):
             errs.append("chain-scripts.json: %s `env_mentions` must be a list of {name, text, why} strings" % p)
         txt = read_script(full)
+        if "\r" in txt: errs.append("chain-scripts.json: %s contains a carriage return, which bash reads as part of a word" % p)
         if "reads_env" in r:
             re_ = r["reads_env"]
             if not isinstance(re_, list) or not all(isinstance(n, str) and re.fullmatch(r"[A-Z][A-Z0-9_]*", n) and not FORBID_ENV.fullmatch(n) for n in re_):
@@ -1139,7 +1140,10 @@ def scan_script(path, text, row, rows, base):
         while i_ + 1 < len(pcode) and len(pcode[i_]) - len(pcode[i_].rstrip("\\")) in range(1, len(pcode[i_]) + 1) and (len(pcode[i_]) - len(pcode[i_].rstrip("\\"))) % 2 == 1:
             i_ += 1
         i_ += 1
-    def phys(k): return None if exotic or k is None or k >= len(starts) else off + starts[k]
+    def phys(k):                                   # the physical line of a command-level finding: known only when its logical line is ONE physical line
+        if exotic or k is None or k >= len(starts): return None
+        end = starts[k + 1] if k + 1 < len(starts) else len(pcode)
+        return off + starts[k] if end - starts[k] == 1 else None
     cmds = [] if py else shell_commands(body)
     cw_budget = {}                                 # round 2 (1): a script path at a COMMAND POSITION is judged once, as the whole command (below),
     for c in cmds:                                 # never by its token: the token pass skips as many occurrences as there are commands named by it
