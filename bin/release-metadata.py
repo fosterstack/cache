@@ -4,7 +4,7 @@
   release-metadata.py images   --digests D --images-dir I --items ITEMS --out F
         the image input of vex-forms, {variant: {index, children}}, made ONLY from Build's verified digest list and Build's
         images/<variant>.digest and images/<variant>.manifests; never from a registry
-  release-metadata.py manifest --digests D --images-dir I --items ITEMS --vex-dir DIR --version V --commit SHA --ci-url U --workflow W --out F
+  release-metadata.py manifest --digests D --images-dir I --items ITEMS --vex-dir DIR --baseline-version V --repo-root DIR --version V --commit SHA --ci-url U --workflow W --out F
         release-manifest.json, deterministic (no clock): the images (`.images[].variant`, `.images[].digest` and both registry references,
         the shape the daily rescan reads), the archives and the apks as Build attested them
   release-metadata.py list     --version V --dir DIR --out F
@@ -142,6 +142,17 @@ def cmd_manifest(a):
     want = sorted("apk-%s-%s" % (v, ar) for v in ("standard", "fips") for ar in ARCHES)
     if apks != want:
         refuse("%s: the apk keys must be exactly %s (missing: %s)" % (a.digests, ", ".join(want), ", ".join(k for k in want if k not in d) or "none"))
+    if not FINAL.fullmatch(a.baseline_version or ""):
+        refuse("baseline version %r is not vX.Y.Z" % a.baseline_version)
+    base = {}
+    for key, rel in (("requirements_baseline", "requirements/releases/%s.yaml" % a.baseline_version), ("test_evidence", "test-evidence/mappings.yaml")):
+        p = os.path.join(a.repo_root, rel)
+        if os.path.islink(p):
+            refuse("%s is a symlink" % rel)
+        if not os.path.isfile(p):
+            refuse("%s is missing: the manifest records it" % rel)
+        base[key] = {"path": rel, "sha256": sha256_file(p)}
+    base["requirements_baseline"] = {"path": base["requirements_baseline"]["path"], "version": a.baseline_version, "sha256": base["requirements_baseline"]["sha256"]}
     img = image_input(d, a.images_dir, a.items)
     vex = []
     for form, name in (("openvex", "fosterstack-cache.openvex.json"), ("inspector-suppression-rules", "fosterstack-cache-%s.inspector-filters.json" % a.version),
@@ -157,6 +168,8 @@ def cmd_manifest(a):
                     "refs": ["%s@%s" % (REPO_GHCR, img[v]["index"]), "%s@%s" % (REPO_HUB, img[v]["index"])]} for v in VARIANTS],
         "archives": [{"name": k, "digest": d[k]} for k in sorted(d) if k.startswith("archive-")],
         "apks": [{"name": k, "digest": d[k]} for k in apks],
+        "requirements_baseline": base["requirements_baseline"],
+        "test_evidence": base["test_evidence"],
         "vex": vex,
     }
     write_atomic(a.out, json.dumps(doc, indent=2) + "\n")
@@ -280,7 +293,7 @@ def main(argv):
     sub = p.add_subparsers(dest="cmd", required=True)
     i = sub.add_parser("images"); i.add_argument("--digests", required=True); i.add_argument("--images-dir", required=True); i.add_argument("--items", required=True); i.add_argument("--out", required=True)
     m = sub.add_parser("manifest")
-    for k in ("digests", "images-dir", "items", "vex-dir", "version", "commit", "ci-url", "workflow", "out"):
+    for k in ("digests", "images-dir", "items", "vex-dir", "baseline-version", "repo-root", "version", "commit", "ci-url", "workflow", "out"):
         m.add_argument("--" + k, required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")

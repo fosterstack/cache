@@ -903,7 +903,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "9383b924860369cd905feba7835b8cbeb73a6f97d920d39464fe5b1cb0bdc9a6",
+      "sha256": "1e4cf8a5538d1180a277ca404f61e78814e2e71b774f5203f9a265c5f2f220b9",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -965,7 +965,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "c3b1b0174ff4fda03d008b97b83a65fdd16b28e9676e70211763281e2f353672"
+      "sha256": "79cfe26b36291e995480edd515a7713bf42df5e9e8367a99c5b679373723d328"
     },
     {
       "path": "bin/vex-forms.py",
