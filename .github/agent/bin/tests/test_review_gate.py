@@ -509,6 +509,12 @@ class StrictJson(unittest.TestCase):
             self.load_fails((self.body() + tail).encode(), "the record is not valid JSON")
 
     def test_nesting_too_deep_is_refused_not_raised(self):
+        ok = self.body().replace('"change": "test"', '"change": "test", "residuals": ' + "[" * 15 + "]" * 15, 1)
+        G.load_record(ok.encode())                                   # 16 levels: read (then refused as mistyped)
+        over = self.body().replace('"change": "test"', '"change": "test", "residuals": ' + "[" * 16 + "]" * 16, 1)
+        self.load_fails(over.encode(), "the record nests too deeply to read (more than 16 levels)")
+        quoted = self.body().replace('"change": "test"', '"change": "%s"' % ("[{" * 50 + '\\\"' + "]}" * 50), 1)
+        self.assertEqual(G.load_record(quoted.encode())["change"][:4], "[{[{")   # brackets inside a string do not count
         raw = self.body().replace('"change": "test"', '"change": "test", "residuals": ' + "[" * 200000 + "]" * 200000, 1)
         self.load_fails(raw.encode(), "the record nests too deeply to read")
 
@@ -630,7 +636,7 @@ class LegacyProvenance(unittest.TestCase):
     def test_a_record_path_that_is_not_a_regular_file_fails(self):
         path = self.future()
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        os.symlink("../../../src/y", path); self.r.git("add", "-A"); self.r.git("commit", "-qm", "link")
+        os.symlink(os.path.relpath(os.path.join(self.r.d, "src/y"), os.path.join(self.r.d, os.path.dirname(path))), path); self.r.git("add", "-A"); self.r.git("commit", "-qm", "link")
         rc, out, _ = self.r.judge()
         self.assertEqual(rc, 1, out)
         self.assertIn("not a regular file", out)
@@ -640,7 +646,7 @@ class LegacyProvenance(unittest.TestCase):
         path = ".github/agent/reviews/%s.json" % self.r.tree()
         self.r.write("src/rec.json", json.dumps(good(self.r.tree())))
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        os.symlink("../../../src/rec.json", path); self.r.git("add", "-A"); self.r.git("commit", "-qm", "link")
+        os.symlink(os.path.relpath(os.path.join(self.r.d, "src/rec.json"), os.path.join(self.r.d, os.path.dirname(path))), path); self.r.git("add", "-A"); self.r.git("commit", "-qm", "link")
         rc, out, _ = self.r.judge()
         self.assertEqual(rc, 1, out)
         self.assertIn("no valid review record", out)
@@ -916,7 +922,7 @@ class LegacyRecord(unittest.TestCase):
         path = self.merged_legacy()
         rc, out, _ = self.r.judge()
         self.assertEqual(rc, 0, out)
-        self.assertIn("already on the trusted revision", out)
+        self.assertIn("already at the merge base and on the trusted revision", out)
         self.assertIn(path, out)
 
     def test_the_merged_record_whose_substitute_expired_still_clears_it_is_never_re_judged(self):
