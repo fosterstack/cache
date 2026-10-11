@@ -159,6 +159,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestTLSBadPairRefusedAndDataDirNotCreated" }
       - { type: go-test, ref: "cmd/fscache:TestTLSBadPairLeavesExistingDataDirIdentical" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSKeyEncodingsAccepted" }
   - ac: REQ-TLS-001-AC4
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestTLSKeyNeverAppearsInOutput" }

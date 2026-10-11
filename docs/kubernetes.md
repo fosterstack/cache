@@ -532,8 +532,73 @@ ingress-nginx-family-specific; the universal requirement is that every proxy in
 the path allows bodies at least as large as the server's own
 `FSCACHE_MAX_BODY_BYTES` (1 GiB by default).
 
-**Terminate TLS in front.** The server speaks plain HTTP and has no certificate
-handling of its own, by design.
+## TLS: in front, or in the server
+
+There are two ways to serve HTTPS. Neither is preferred; use the one that fits
+how your cluster already handles certificates.
+
+**TLS in front.** A load balancer, Gateway or ingress terminates TLS and
+forwards plain HTTP to the Service, as in the examples above. The server needs
+no certificate, and the manifests on this page apply as written.
+
+**TLS in the server.** Set `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` to a PEM
+certificate file (it may hold the chain) and its private key file. The server
+then serves HTTPS only, on the same port, with TLS 1.2 as the minimum version;
+a plain-HTTP request to that port gets `400`. Setting only one of the two, or a
+file that is missing, unreadable, not PEM, or a key that does not match the
+certificate, stops the start with a message naming the variable and the path,
+before anything under the data directory is touched.
+
+Put the certificate in a Secret of type `kubernetes.io/tls` and mount it
+read-only:
+
+```sh
+kubectl -n fscache-ns create secret tls fscache-tls --cert=tls.crt --key=tls.key
+```
+
+Then add these lines to the Deployment above. Both probes switch to
+`scheme: HTTPS` (the kubelet does not verify the certificate of a probe), and a
+`startupProbe`, if you added one, needs the same:
+
+```yaml
+          env:
+            - name: FSCACHE_TLS_CERT
+              value: /etc/fscache/tls/tls.crt
+            - name: FSCACHE_TLS_KEY
+              value: /etc/fscache/tls/tls.key
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTPS
+            periodSeconds: 10
+          volumeMounts:
+            - name: tls
+              mountPath: /etc/fscache/tls
+              readOnly: true
+      volumes:
+        - name: tls
+          secret:
+            secretName: fscache-tls
+```
+
+The certificate must name the host your clients connect to (for in-cluster
+runners, the Service's DNS name, such as `fscache.fscache-ns.svc.cluster.local`),
+and a certificate from a private CA must be trusted by the build's JVM. Clients
+then use an `https://` URL and no longer need `isAllowInsecureProtocol`.
+
+The files are read only at startup. Kubernetes updates a mounted Secret's files
+in place, but the running server keeps presenting the certificate it started
+with: to rotate, update the Secret, then restart the pod
+(`kubectl -n fscache-ns rollout restart deploy/fscache`). The startup log line
+reports `tls` as `enabled` or `disabled`.
 
 ## Applying these manifests
 

@@ -16,6 +16,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -125,7 +126,7 @@ func TestTLSRoundTripAndPlainHTTPRefused(t *testing.T) {
 
 	for _, v := range []uint16{tls.VersionTLS12, tls.VersionTLS13} {
 		c := tlsClient(cert, v)
-		key := "https://" + addr + "/key-" + tls.VersionName(v)
+		key := "https://" + addr + "/key-" + strconv.FormatUint(uint64(v), 16)
 		if resp, _ := send(t, c, http.MethodPut, key, "payload", false); resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("%s: PUT without credentials = %d, want 401", tls.VersionName(v), resp.StatusCode)
 		}
@@ -194,11 +195,11 @@ func rawHello(t *testing.T, addr string, version uint16, suites ...uint16) hello
 	}
 	body = append(body, 1, 0) // compression: null only
 	var exts []byte
-	exts = ext(exts, 0x000a, []byte{0, 4, 0x00, 0x17, 0x00, 0x18})                                  // supported_groups: P-256, P-384
-	exts = ext(exts, 0x000b, []byte{1, 0})                                                          // ec_point_formats: uncompressed
+	exts = ext(exts, 0x000a, []byte{0, 4, 0x00, 0x17, 0x00, 0x18})                                      // supported_groups: P-256, P-384
+	exts = ext(exts, 0x000b, []byte{1, 0})                                                              // ec_point_formats: uncompressed
 	exts = ext(exts, 0x000d, []byte{0, 10, 0x04, 0x03, 0x05, 0x03, 0x08, 0x04, 0x04, 0x01, 0x05, 0x01}) // signature_algorithms
-	exts = ext(exts, 0x0017, nil)                                                                   // extended_master_secret
-	exts = ext(exts, 0xff01, []byte{0})                                                             // renegotiation_info
+	exts = ext(exts, 0x0017, nil)                                                                       // extended_master_secret
+	exts = ext(exts, 0xff01, []byte{0})                                                                 // renegotiation_info
 	body = append(u16(body, len(exts)), exts...)
 
 	hs := append([]byte{1, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)

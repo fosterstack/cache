@@ -78,15 +78,23 @@ func TestTLSDocsDescribeBothOptions(t *testing.T) {
 			t.Errorf("kubernetes.md does not show %q", want)
 		}
 	}
-	// Both probes of the TLS example use HTTPS: the example has at least
-	// two httpGet probes and each carries scheme: HTTPS.
-	i := strings.Index(k, "FSCACHE_TLS_CERT")
-	if i < 0 {
-		t.Fatal("kubernetes.md has no TLS example")
+	// The TLS example is the fenced yaml block that sets FSCACHE_TLS_CERT:
+	// it mounts the Secret read-only and both of its probes (at least two
+	// httpGet probes) carry scheme: HTTPS.
+	var example string
+	for _, m := range regexp.MustCompile("(?s)```yaml\n(.*?)```").FindAllStringSubmatch(k, -1) {
+		if strings.Contains(m[1], "FSCACHE_TLS_CERT") {
+			example = m[1]
+			break
+		}
 	}
-	example := k[i:]
-	if end := strings.Index(example, "```\n"); end >= 0 {
-		example = example[:end]
+	if example == "" {
+		t.Fatal("kubernetes.md has no yaml example setting FSCACHE_TLS_CERT")
+	}
+	for _, want := range []string{"FSCACHE_TLS_KEY", "secretName:", "readOnly: true"} {
+		if !strings.Contains(example, want) {
+			t.Errorf("the kubernetes.md TLS example does not set %q", want)
+		}
 	}
 	if n, m := strings.Count(example, "httpGet:"), strings.Count(example, "scheme: HTTPS"); n < 2 || m != n {
 		t.Errorf("kubernetes.md TLS example: %d httpGet probes, %d with scheme: HTTPS; want at least two, all HTTPS", n, m)

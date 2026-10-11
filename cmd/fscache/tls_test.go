@@ -6,6 +6,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -392,7 +393,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 // proves: REQ-TLS-001-AC4 — a key parser that panics is contained: the start is refused with a plain error, and no stack trace or key bytes are printed
 func TestTLSKeyParserPanicIsContained(t *testing.T) {
 	dir := t.TempDir()
-	p := writePair(t, dir, "panic", "MARKER-PANIC-3a6f50")
+	p := writePair(t, dir, "contained", "MARKER-PANIC-3a6f50")
 	orig := x509KeyPair
 	x509KeyPair = func(certPEM, keyPEM []byte) (tls.Certificate, error) {
 		panic("parser failure on input: " + string(keyPEM))
@@ -525,6 +526,59 @@ func TestStartupLineCarriesTLSState(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("no startup line in %q", buf.String())
+			}
+		})
+	}
+}
+
+// proves: REQ-TLS-001-AC3 — a valid key is not refused as unparseable in any encoding the TLS stack reads (PKCS #1, SEC 1, PKCS #8)
+func TestTLSKeyEncodingsAccepted(t *testing.T) {
+	dir := t.TempDir()
+	rsaKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecDER, err := x509.MarshalECPrivateKey(ecKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecPKCS8, err := x509.MarshalPKCS8PrivateKey(ecKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name     string
+		pub, key any
+		block    *pem.Block
+	}{
+		{"PKCS1", &rsaKey.PublicKey, rsaKey, &pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(rsaKey)}},
+		{"SEC1", &ecKey.PublicKey, ecKey, &pem.Block{Type: "EC PRIVATE KEY", Bytes: ecDER}},
+		{"PKCS8", &ecKey.PublicKey, ecKey, &pem.Block{Type: "PRIVATE KEY", Bytes: ecPKCS8}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmpl := &x509.Certificate{SerialNumber: big.NewInt(7), Subject: pkix.Name{CommonName: tc.name},
+				NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour)}
+			der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, tc.pub, tc.key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			certPath, keyPath := filepath.Join(dir, tc.name+".crt"), filepath.Join(dir, tc.name+".key")
+			if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(keyPath, pem.EncodeToMemory(tc.block), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cert, err := loadKeyPair(certPath, keyPath)
+			if err != nil {
+				t.Fatalf("a valid %s key was refused: %v", tc.name, err)
+			}
+			if len(cert.Certificate) != 1 || !bytes.Equal(cert.Certificate[0], der) {
+				t.Errorf("loaded a different certificate")
 			}
 		})
 	}

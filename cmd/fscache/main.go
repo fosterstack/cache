@@ -5,6 +5,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -39,6 +42,8 @@ type config struct {
 	roPassword           string
 	maxBodyBytes         int64
 	maxConcurrentUploads int64
+	tlsCert              string
+	tlsKey               string
 }
 
 func loadConfig() (config, error) {
@@ -64,6 +69,8 @@ func loadConfig() (config, error) {
 		roPassword:           os.Getenv("FSCACHE_RO_PASSWORD"),
 		maxBodyBytes:         maxBodyBytes,
 		maxConcurrentUploads: maxUploads,
+		tlsCert:              os.Getenv("FSCACHE_TLS_CERT"),
+		tlsKey:               os.Getenv("FSCACHE_TLS_KEY"),
 	}
 	if (cfg.username == "") != (cfg.password == "") {
 		return cfg, errors.New("FSCACHE_USERNAME and FSCACHE_PASSWORD must both be set or both be empty")
@@ -79,7 +86,90 @@ func loadConfig() (config, error) {
 			return cfg, errors.New("FSCACHE_RO_USERNAME must differ from FSCACHE_USERNAME: identical usernames make the credential tier ambiguous")
 		}
 	}
+	if cfg.tlsCert != "" && cfg.tlsKey == "" {
+		return cfg, fmt.Errorf("FSCACHE_TLS_CERT=%q is set without FSCACHE_TLS_KEY: set both (HTTPS) or neither (plain HTTP)", cfg.tlsCert)
+	}
+	if cfg.tlsKey != "" && cfg.tlsCert == "" {
+		return cfg, fmt.Errorf("FSCACHE_TLS_KEY=%q is set without FSCACHE_TLS_CERT: set both (HTTPS) or neither (plain HTTP)", cfg.tlsKey)
+	}
 	return cfg, nil
+}
+
+// x509KeyPair is tls.X509KeyPair behind a seam, so a test can stand in a
+// parser that panics (REQ-TLS-001-AC4). Production keeps the real one.
+var x509KeyPair = tls.X509KeyPair
+
+// loadKeyPair reads the certificate and key files once, at startup, and
+// builds the TLS certificate (REQ-TLS-001). A new certificate takes effect
+// on the next start; nothing watches the files.
+//
+// Every error names the variable(s) and the path and never any file
+// content. Errors from the standard library's parsers are deliberately not
+// passed through: their text is not ours to vet, and a key parse error
+// must not be a channel for key bytes. A panic in any parser is recovered
+// into the same kind of plain error, with no stack trace and no panic
+// value printed.
+func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
+	certPEM, err := os.ReadFile(certPath) // #nosec G304 -- the operator names this file in FSCACHE_TLS_CERT; reading it is the feature
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q cannot be read: %w", certPath, err)
+	}
+	keyPEM, err := os.ReadFile(keyPath) // #nosec G304 -- the operator names this file in FSCACHE_TLS_KEY; reading it is the feature
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_KEY=%q cannot be read: %w", keyPath, err)
+	}
+	defer func() {
+		if recover() != nil {
+			cert, err = tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q could not be parsed as a certificate and private key", certPath, keyPath)
+		}
+	}()
+	certDER := firstPEMBlock(certPEM, func(typ string) bool { return typ == "CERTIFICATE" })
+	if certDER == nil {
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q holds no PEM CERTIFICATE block", certPath)
+	}
+	if _, err := x509.ParseCertificate(certDER); err != nil {
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q: the certificate does not parse", certPath)
+	}
+	keyDER := firstPEMBlock(keyPEM, func(typ string) bool { return typ == "PRIVATE KEY" || strings.HasSuffix(typ, " PRIVATE KEY") })
+	if keyDER == nil {
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_KEY=%q holds no PEM PRIVATE KEY block", keyPath)
+	}
+	if !parsesAsPrivateKey(keyDER) {
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_KEY=%q: the private key does not parse", keyPath)
+	}
+	cert, err = x509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q are not a usable pair: the private key does not match the certificate, or is of a type TLS cannot use", certPath, keyPath)
+	}
+	return cert, nil
+}
+
+// firstPEMBlock returns the bytes of the first PEM block whose type want
+// accepts, or nil when there is none.
+func firstPEMBlock(data []byte, want func(string) bool) []byte {
+	for {
+		var b *pem.Block
+		b, data = pem.Decode(data)
+		if b == nil {
+			return nil
+		}
+		if want(b.Type) {
+			return b.Bytes
+		}
+	}
+}
+
+// parsesAsPrivateKey reports whether der is a private key in one of the
+// encodings tls.X509KeyPair reads (PKCS #1, PKCS #8, SEC 1).
+func parsesAsPrivateKey(der []byte) bool {
+	if _, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return true
+	}
+	if _, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		return true
+	}
+	_, err := x509.ParseECPrivateKey(der)
+	return err == nil
 }
 
 // knownEnv is the single source of truth for the FSCACHE_ names the
@@ -96,6 +186,8 @@ var knownEnv = []string{
 	"FSCACHE_PASSWORD",
 	"FSCACHE_RO_USERNAME",
 	"FSCACHE_RO_PASSWORD",
+	"FSCACHE_TLS_CERT",
+	"FSCACHE_TLS_KEY",
 }
 
 // warnUnknownEnv logs one warning per environment variable that starts
@@ -250,6 +342,7 @@ var (
 	cacheReconcile = (*cache.Cache).Reconcile
 	httpShutdown   = (*http.Server).Shutdown
 	httpServe      = (*http.Server).Serve
+	httpServeTLS   = func(s *http.Server, ln net.Listener) error { return s.ServeTLS(ln, "", "") }
 	clearMarkerFn  = clearMarker
 )
 
@@ -282,6 +375,16 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
+	}
+	// The TLS files are read and checked here, before the bind and before
+	// anything under the data directory (REQ-TLS-001, REQ-CFG-004).
+	var tlsCfg *tls.Config
+	if cfg.tlsCert != "" {
+		cert, err := loadKeyPair(cfg.tlsCert, cfg.tlsKey)
+		if err != nil {
+			return err
+		}
+		tlsCfg = server.TLSConfig(cert)
 	}
 	warnUnknownEnv(log, os.Environ())
 
@@ -377,11 +480,15 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 		MaxConcurrentUploads: int(cfg.maxConcurrentUploads),
 	})
 
-	httpServer := server.NewHTTPServer(cfg.addr, handler)
+	httpServer := server.NewHTTPServer(cfg.addr, handler, tlsCfg)
 
 	authNote := "disabled"
 	if cfg.username != "" {
 		authNote = "enabled"
+	}
+	tlsNote := "disabled"
+	if tlsCfg != nil {
+		tlsNote = "enabled"
 	}
 	// fips140 announces the one property the -fips build exists for.
 	// Until now the startup line reported addr, data_dir, max_bytes and
@@ -396,6 +503,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 		"data_dir", cfg.dataDir,
 		"max_bytes", cfg.maxBytes,
 		"auth", authNote,
+		"tls", tlsNote,
 		"fips140", bi.FIPSNote(),
 	)
 
@@ -405,7 +513,13 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	// to the package variable can race with it) and is always reaped before
 	// serve returns: the deferred Close stops Serve whatever path leaves
 	// this function, then waits for the goroutine to exit.
+	// With TLS on, the listener serves HTTPS only. A plain-HTTP request to
+	// it never reaches the handler: Go's server answers 400 ("Client sent
+	// an HTTP request to an HTTPS server") and closes the connection.
 	serveFn := httpServe
+	if tlsCfg != nil {
+		serveFn = httpServeTLS
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -97,10 +98,14 @@ const (
 // (REQ-HTTP-001) around the handler from New. Every timeout is explicit:
 // an unset Go timeout is infinite, and an infinite timeout is a resource
 // leak with a slow-enough client attached.
-func NewHTTPServer(addr string, h http.Handler) *http.Server {
+//
+// tlsCfg, when non-nil, is the TLS configuration from TLSConfig and the
+// server is then served with ServeTLS (REQ-TLS-001); nil keeps plain HTTP.
+func NewHTTPServer(addr string, h http.Handler, tlsCfg *tls.Config) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
+		TLSConfig:         tlsCfg,
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		ReadTimeout:       ReadTimeout,
 		WriteTimeout:      WriteTimeout,
