@@ -199,7 +199,7 @@ def frozen_files(base, bad):
     whose bytes differ is judged in full."""
     p = os.path.join(base, ".github/policy/legacy-stage-files.json")
     if not os.path.exists(p): return set()
-    try: listed = {r["path"]: r["sha256"] for r in json.load(open(p))["files"]}
+    try: listed = {r["path"]: r["sha256"] for r in _cts.jload(p)["files"]}
     except Exception as ex: bad.append("AC1: legacy-stage-files.json is malformed (%s)" % ex); return set()
     outside = sorted(x for x in listed if not re.fullmatch(r"\.github/workflows/[\w.-]+\.ya?ml", x) or ".." in x)
     if outside: bad.append("AC1: legacy-stage-files.json lists a path outside .github/workflows/: %s" % outside); return set()
@@ -233,7 +233,8 @@ def build_config(base, bad):
     one is a finding. .goreleaser.yaml (run with id-token: write by stage-build.yml) may not sign: no signs/docker_signs/binary_signs/notarize/
     publishers/after, no hooks but GORELEASER_HOOKS, no per-build hooks, no custom sboms command."""
     p = os.path.join(base, ".github/policy/build-config-files.json")
-    listed = {r["path"]: r["sha256"] for r in (json.load(open(p))["files"] if os.path.exists(p) else [])}
+    try: listed = {r["path"]: r["sha256"] for r in (_cts.jload(p)["files"] if os.path.exists(p) else [])}
+    except Exception as ex: bad.append("AC1: build-config-files.json is malformed (%s)" % ex); return
     present = sorted({os.path.relpath(f, base) for g in BUILD_CONFIG_GLOBS for f in glob.glob(os.path.join(base, g)) if os.path.isfile(f)})
     for x in present:
         if x not in listed: bad.append("AC1: build config file not listed: %s: add it to build-config-files.json with its sha256" % x)
@@ -326,7 +327,8 @@ def id_token_jobs(base, files, bad):
     the job's OIDC token, so this closes signers the text scans cannot see: remote reusable workflows, in-process libraries, files outside
     bin/ and .github/, tools missing from the signer table."""
     p = os.path.join(base, ".github/policy/id-token-jobs.json")
-    rows = json.load(open(p))["jobs"] if os.path.exists(p) else []
+    try: rows = _cts.jload(p)["jobs"] if os.path.exists(p) else []
+    except Exception as ex: bad.append("AC1: id-token-jobs.json is malformed (%s)" % ex); return
     listed = set()
     for r in rows:
         if not str(r.get("reason") or "").strip(): bad.append("AC1: id-token-jobs.json row without a reason: %s" % r)
@@ -365,7 +367,9 @@ def listed_signers(base, bad):
     """001-AC1: "every other signing call being listed with its reason in .github/policy/chain-signers.json" (never a provenance signer)."""
     allowed, sf = {}, os.path.join(base, ".github/policy/chain-signers.json")
     if not os.path.exists(sf): bad.append("AC1: missing .github/policy/chain-signers.json (the signing calls other than Sign's provenance, each with a reason)"); return allowed
-    for r in json.load(open(sf)).get("signers") or []:
+    try: srows = _cts.jload(sf).get("signers") or []
+    except Exception as ex: bad.append("AC1: chain-signers.json is malformed (%s)" % ex); return allowed
+    for r in srows:
         if not str(r.get("reason") or "").strip(): bad.append("AC1: signer row without a reason: %s" % r)
         if any(e["prov"] == "always" for e in TABLE if re.search(e["regex"], str(r.get("tool", "")))): bad.append("AC1: signer list names a provenance signer: %s" % r)
         allowed.setdefault(r.get("file"), set()).add(r.get("tool"))

@@ -33,8 +33,20 @@ Two small things, and nothing else:
 Modelled on: in-toto-witness options/run.go:64 (attestations flag forms), docs/commands.md."""
 import json, os, re
 
+def jload(path):
+    """json.load that REFUSES a repeated object key at any depth (round 1 (6)): a plain reader keeps only the last of two equal keys, so the
+    judged value need not be the one a reviewer read. ValueError names the file and the key. The ONE loader of the policy JSON files."""
+    def hook(pairs):
+        d = {}
+        for k, v in pairs:
+            if k in d: raise ValueError("%s: duplicate key %r (a JSON reader keeps only one of them)" % (path, k))
+            d[k] = v
+        return d
+    with open(path) as fh:
+        return json.load(fh, object_pairs_hook=hook)
+
 def load_table(path=None):
-    return json.load(open(path or os.environ["CHAIN_SIGNER_TABLE"]))["signers"]
+    return jload(path or os.environ["CHAIN_SIGNER_TABLE"])["signers"]
 
 def strip_line(l):
     if l.lstrip().startswith("#"):
@@ -312,7 +324,7 @@ def load_scripts(base):
         return {}, ["missing .github/policy/chain-scripts.json (the scripts a release-chain stage file may run, by path and sha256)"], set()
     errs, rows = [], {}
     try:
-        doc = json.load(open(f))
+        doc = jload(f)
         data = doc.get("scripts")
     except Exception as e:
         return {}, ["chain-scripts.json does not parse: %s" % e], set()

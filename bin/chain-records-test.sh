@@ -32,6 +32,9 @@ pass=0 failn=0
 cat > "$work/judge.py" <<'PY'
 import glob, json, os, re, sys
 base = sys.argv[1]
+import importlib.util
+_spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
+_cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
 STAGES = {"build", "sign", "rebuild", "check", "release", "customer"}
 COLL = "https://witness.testifysec.com/attestation-collection/v0.1"
 POLT = "https://witness.testifysec.com/policy/v0.1"
@@ -47,7 +50,9 @@ def frozen_paths():
     lp = os.path.join(base, ".github/policy/legacy-stage-files.json")
     if not os.path.exists(lp): return set()
     out = set()
-    for r in json.load(open(lp))["files"]:
+    try: lrows = _cts.jload(lp)["files"]
+    except Exception as ex: bad.append("legacy-stage-files.json is malformed (%s)" % ex); return out
+    for r in lrows:
         f = os.path.join(base, r["path"])
         if not os.path.isfile(f): bad.append("legacy file missing: %s" % r["path"])
         elif hashlib.sha256(open(f, "rb").read()).hexdigest() != r["sha256"]: bad.append("legacy file changed (judged in full): %s" % r["path"])
@@ -59,10 +64,8 @@ if not os.path.exists(rf):
     bad.append("missing: .github/policy/chain-records.json")
     rows = []
 else:
-    rows = json.load(open(rf)).get("records") or []
-import importlib.util
-_spec = importlib.util.spec_from_file_location("chain_test_signers", os.path.join(os.environ["CHAIN_ROOT"], "bin/chain-test-signers.py"))
-_cts = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_cts)
+    try: rows = _cts.jload(rf).get("records") or []
+    except Exception as ex: bad.append("chain-records.json is malformed (%s)" % ex); rows = []
 _bad_utf8 = _cts.non_utf8_yaml(base)        # final batch R-f: named, never a traceback
 if _bad_utf8:
     print("; ".join("%s is not valid UTF-8 (it cannot be read, so it cannot be judged)" % x for x in _bad_utf8)); sys.exit(1)
