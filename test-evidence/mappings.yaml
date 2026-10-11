@@ -188,6 +188,12 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestServeReconcileError" }
       - { type: go-test, ref: "cmd/fscache:TestServeReconcileResumesAfterAFailedStart" }
       - { type: go-test, ref: "cmd/fscache:TestServeReconcilePanicKeepsMarker" }
+  - ac: REQ-STORE-005-AC5
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestServeErrorKeepsMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServeShutdownErrorWithUploadInFlightKeepsMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServeShutdownErrorOrphanAdoptedOnNextStart" }
+      - { type: go-test, ref: "cmd/fscache:TestServeGracefulShutdown" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }

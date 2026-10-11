@@ -28,6 +28,7 @@ var (
 	errTestClose       = errors.New("test: close failed")
 	errTestShutdown    = errors.New("test: shutdown failed")
 	errTestClearMarker = errors.New("test: clear marker failed")
+	errTestServe       = errors.New("test: serve failed")
 )
 
 func quietLogger() *slog.Logger {
@@ -505,6 +506,188 @@ func TestServeShutdownError(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not return")
+	}
+}
+
+// countCloses wraps the cacheClose seam and counts the calls.
+func countCloses(t *testing.T) *int {
+	t.Helper()
+	orig := cacheClose
+	n := new(int)
+	cacheClose = func(c *cache.Cache) error { *n++; return orig(c) }
+	t.Cleanup(func() { cacheClose = orig })
+	return n
+}
+
+// REQ-STORE-005-AC5, the serving error: after the startup reconcile
+// completed, Serve fails; serve returns an error naming it, the stores are
+// closed once and the marker is still present.
+func TestServeErrorKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	if err := writeMarker(uncleanMarkerPath(dir)); err != nil { // the reconcile runs and completes
+		t.Fatalf("seed marker: %v", err)
+	}
+	closes := countCloses(t)
+	orig := httpServe
+	httpServe = func(*http.Server, net.Listener) error { return errTestServe }
+	defer func() { httpServe = orig }()
+
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	err := serve(context.Background(), log, nil)
+	if err == nil || !errors.Is(err, errTestServe) || !strings.Contains(err.Error(), "serve:") {
+		t.Fatalf("serve error = %v, want a serve error wrapping %v", err, errTestServe)
+	}
+	if !strings.Contains(logs.String(), "fscache: reconciled") {
+		t.Fatalf("the startup reconcile did not complete first:\n%s", logs.String())
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a serving error, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC5, the shutdown error with an upload in flight: a PUT
+// whose body has not finished arriving holds a handler open; the shutdown
+// fails (the grace period expired), the HTTP server is forced closed before
+// the handler finishes, and the marker is still present.
+func TestServeShutdownErrorWithUploadInFlightKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	addr := freePort(t)
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", addr)
+	closes := countCloses(t)
+	orig := httpShutdown
+	httpShutdown = func(*http.Server, context.Context) error { return context.DeadlineExceeded }
+	defer func() { httpShutdown = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	readyc := make(chan struct{})
+	errc := make(chan error, 1)
+	go func() { errc <- serve(ctx, quietLogger(), func() { close(readyc) }) }()
+	select {
+	case <-readyc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not become ready")
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	// Ten of the declared hundred bytes: the handler waits for the rest.
+	if _, err := io.WriteString(conn, "PUT /in-flight-key HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n0123456789"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	// The blob store creates its temporary file before it reads the body:
+	// once one exists, the handler is in flight.
+	tmpDir := filepath.Join(dir, "blobs", "+tmp")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if entries, _ := os.ReadDir(tmpDir); len(entries) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the upload never reached the blob store")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errc:
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "shutdown:") {
+			t.Fatalf("serve error = %v, want a shutdown error wrapping %v", err, context.DeadlineExceeded)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not return")
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a shutdown error with an upload in flight, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC5, the orphan: an upload whose blob was renamed into
+// place but never indexed when the stores closed after a shutdown error
+// (its record and its rollback delete both meet closed stores). The marker
+// is still present, so the next start reconciles, adopts the blob
+// (adopted_blobs=1) and, after its clean shutdown, clears the marker.
+func TestServeShutdownErrorOrphanAdoptedOnNextStart(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+
+	origShutdown := httpShutdown
+	httpShutdown = func(*http.Server, context.Context) error { return context.DeadlineExceeded }
+	origClose := cacheClose
+	// The stores close after the forced HTTP close; at that moment the
+	// in-flight upload's blob is in place with no index record. A second
+	// handle on the same blob directory puts it there, the way the
+	// handler's rename did.
+	cacheClose = func(c *cache.Cache) error {
+		b, err := blobstore.New(filepath.Join(dir, "blobs"))
+		if err != nil {
+			return err
+		}
+		if _, err := b.Put("orphan-key", strings.NewReader("stored, never indexed")); err != nil {
+			return err
+		}
+		if err := b.Close(); err != nil {
+			return err
+		}
+		return origClose(c)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := serve(ctx, quietLogger(), func() { cancel() })
+	httpShutdown, cacheClose = origShutdown, origClose
+	if err == nil || !strings.Contains(err.Error(), "shutdown:") {
+		t.Fatalf("first run error = %v, want a shutdown error", err)
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); !present {
+		t.Fatal("marker gone after the shutdown error")
+	}
+
+	// Next start: reconcile adopts the orphan; a clean shutdown clears the marker.
+	freshRegistry(t)
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	if err := serve(ctx2, log, func() { cancel2() }); err != nil {
+		t.Fatalf("next start returned %v", err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "fscache: reconciled") || !strings.Contains(out, "adopted_blobs=1") {
+		t.Errorf("next start log lacks the reconciled line with adopted_blobs=1:\n%s", out)
+	}
+	meta, err := metadata.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatalf("reopen the index: %v", err)
+	}
+	defer func() {
+		if err := meta.Close(); err != nil {
+			t.Errorf("close the index: %v", err)
+		}
+	}()
+	if n, err := meta.Count(); err != nil || n != 1 {
+		t.Errorf("index holds %d entries (err %v), want the adopted orphan", n, err)
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); present {
+		t.Error("marker still present after the clean next run")
 	}
 }
 

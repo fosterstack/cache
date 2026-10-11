@@ -675,7 +675,12 @@ requirements:
       panic inside the reconcile: the marker is marked to be kept before
       the reconcile is called and released only after it succeeds, so a
       panic propagates as before and the marker stays (review residual,
-      Oct 11; the AC text is unchanged).
+      Oct 11; the AC text is unchanged). AC5 added Oct 11 2026 (advisor
+      step 5): from the Codex round-2 consultation on PR #295. On a serving
+      or shutdown error the HTTP server is closed without waiting for
+      active handlers, so an upload can leave a blob with no index record;
+      the marker now stays so the next start reconciles. Draining active
+      handlers before the stores close is not part of this rule.
     acceptance_criteria:
       - id: REQ-STORE-005-AC1
         given: a store holding a blob with no metadata record (as after a crash between the two writes)
@@ -699,6 +704,12 @@ requirements:
         given: a data directory with an unclean-shutdown marker, and a startup reconciliation that fails partway, returning an error after some index changes
         when: the server starts
         then: it exits non-zero without serving, naming the reconciliation failure; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles again
+        verification: { method: component, release_blocking: true }
+        status: approved
+      - id: REQ-STORE-005-AC5
+        given: a started server (startup reconciliation completed) with an upload in flight, and a serving error or a shutdown error (the HTTP server is forced closed before the handler finishes)
+        when: the process exits through that error
+        then: it exits non-zero naming the serving or shutdown error; the stores are closed; the .unclean-shutdown marker is still present; the next start reconciles and adopts any blob that was stored but not indexed (adopted_blobs counted)
         verification: { method: component, release_blocking: true }
         status: approved
 
