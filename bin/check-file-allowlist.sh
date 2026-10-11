@@ -137,6 +137,16 @@ ALLOW_PATTERNS=(
   '^\.github/policy/(fulcio-chain|tsa-chain)\.pem$'
   '^\.github/policy/rekor\.pub$'
   '^results/\.gitkeep$'
+  # The v0.3.0 release chain, Build and Rebuild (PR 2): the Witness wrapper, the per-job stage scripts and their snapshot variants, the admission
+  # script (the former stage-admission.yml), the items and archive helpers, the list of the old admission steps the comparison test reads, and the
+  # suites with their two test helpers
+  '^bin/witnessed\.sh$'
+  '^bin/build-stage-(apk|assemble|rebuild-apk|rebuild-assemble|snapshot-apk|snapshot-assemble|snapshot-rebuild-apk|snapshot-rebuild-assemble)\.sh$'
+  '^bin/build-(admit|archives|version-check)\.py$'
+  '^bin/chain_items\.py$'
+  '^bin/chain-admission-old-steps\.txt$'
+  '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
+  '^bin/chain-test-(harness|shape)\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
