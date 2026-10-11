@@ -137,12 +137,15 @@ def git(root, *args):
 _BLOBS = {}  # blob id -> text: a history scan reads each distinct file version once, not once per commit
 
 
-def tree_files(root, rev):
-    """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
-    def wanted(n):
-        return (any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
+def wanted(n):
+    """True for every file the tree reader includes (tree_files): the inventory reads these, and the unmeasured-download scan reads exactly these too."""
+    return bool(any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS) or n == "bin/install-scanner.sh" or re.search(r"(^|/)action\.ya?ml$", n)
                 or (n.endswith(".sh") and not n.startswith(".github/agent/")) or n.rsplit("/", 1)[-1] in VERSION_FILES or re.search(r"(?i)(^|/)[\w.-]*(sha256|checksums?|sha256sums?)[\w.-]*(\.txt|\.sha256|\.sum)?$", n)
                 or re.search(r"(^|/)[\w.-]*requirements[\w.-]*\.txt$", n))
+
+
+def tree_files(root, rev):
+    """{path: text} for every file the inventory reads, at a revision (rev None: the working tree)."""
     out = {}
     if rev is None:
         for n in git(root, "-c", "core.quotePath=false", "ls-files", "-z").split("\0"):
@@ -546,8 +549,10 @@ def unmeasured_occurrences(files):
     line, not to the one downloader segment the key hashes. bashlike is False when the line holds whitespace other than a space or a tab, or was joined from
     a backslash-newline continuation: bash reads such a line differently from this flattening, so no row may ever match it."""
     for path, text in sorted(files.items()):
-        if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
+        if path.startswith(".github/agent/"):
             continue  # .github/agent/ is covered by the review-record gate (and its tests quote such commands as fixtures)
+        if not wanted(path):    # the scan reads EXACTLY the tree reader's files (an action.yml anywhere, not only under .github/): a file outside that set
+            raise RuntimeError(f"{path} is not a file the tree reader includes: the download scan and the tree reader disagree (refused, never skipped)")
         mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):

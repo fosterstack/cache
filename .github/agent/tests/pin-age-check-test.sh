@@ -2561,7 +2561,7 @@ ifrepo ifp0k "${SUPPORT[@]}" head bin/fetch.sh "$FETCH"'curl -fsSLO "https://pac
 ifx "$work/if-1.json" plain "$(ifrow "$work/ifp0k" bin/fetch.sh 'curl -fsSLO "https://packages.example.dev/os/i"' "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}")"; ifck ifp0k "$work/if-1.json"
 CASE="AC19'' (0) control: curl -fsSLO (listed, follows redirects) with a cosign verifier line passes: exit 0"
 check test "$rc" -eq 0
-for L in "curl --fail --silent --show-error --retry 3 --max-time 30 --output \"\$tmp/i\" $U0" "curl -fsS -o \"\$tmp/i\" $U0; bash \"\$tmp/i\"" "curl -fsS -o f $U0; bash f"; do
+for L in "curl --fail --silent --show-error --retry 3 --max-time 30 --output \"\$tmp/i\" $U0" "curl -fsS -o i $U0 && sha256sum -c i.sha256" "curl -fsS -o f $U0; bash f"; do
   one ifp0p "$FETCH$L"$'\n' "$L"
   CASE="AC19'' (0) control: $L (every word plain) with a checksum verifier line passes: exit 0"
   check test "$rc" -eq 0
@@ -2585,7 +2585,7 @@ LISTED = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsSL -o x https://h.e
           'r = subprocess.run(["curl", "-fsSL", "-o", part, %s], stdout=sys.stderr)' % U, 'subprocess.check_call(["curl", "--fail", %s])' % U,
           'r = subprocess.run(["curl", "--retry", "3", %s], check=True)' % U, 'r = subprocess.run([ "curl" , "-fsS", %s])' % U]
 UNLISTED = ['curl -fsS ~ https://h.example.dev/a', 'curl -fsS -o ~/x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo ~', 'curl -fsS https://h.example.dev/~a',
-            'curl -fsS -o x https://h.example.dev/a; bash $x', 'curl -fsS -o x https://h.example.dev/a && echo $HOME', 'curl -fsS -o x https://h.example.dev/a; echo `id`',
+            'curl -fsS -o x https://h.example.dev/a; bash $x', 'curl -fsS -o x https://h.example.dev/a; bash "$x"', 'curl -fsS -o x https://h.example.dev/a && echo $HOME', 'curl -fsS -o x https://h.example.dev/a; echo `id`',
             'curl -fsS "https://h.example.dev/{a,b}"', "curl -fsS 'https://h.example.dev/[1-2]'", 'curl -fsS -o x https://h.example.dev/a; [ -s x ]',
             'curl -fsS -o x https://h.example.dev/a && { echo; }', 'curl -fsS https://h.example.dev/a 2>&1', 'curl -fsS https://h.example.dev/a < in',
             'curl -fsS -o x https://h.example.dev/a?b', 'curl -fsS -o x https://h.example.dev/a; rm *.tmp', 'curl -fsS -o x https://h.example.dev/a; ls [ab]',

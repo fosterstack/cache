@@ -697,6 +697,17 @@ def _run_nodes(text):
     return [get(s, "run") for g in groups if isinstance(g, Seq) for s in g.value if isinstance(s, Map)]
 
 
+def _odd(line):
+    """True when a physical line holds a control character or whitespace other than a space or a tab."""
+    return any((ord(c) < 32 and c != "\t") or ord(c) == 127 or (c.isspace() and c not in " \t") for c in line)
+
+
+def _in_block(node, i):
+    """True when physical line i (0-based) lies inside the source lines of the block scalar NODE (after its indicator line, up to its end)."""
+    a, b = node.start_mark, node.end_mark
+    return a.line < i and (i < b.line or (i == b.line and b.column > 0))
+
+
 def _context(data, path, flat):
     """(context hash, copies of the line inside the block) or a str why the block cannot be isolated in exactly one way. A .sh file: the sha256 of the whole
     file (its first line a bash shebang), the copies counted over the whole file; a workflow or action: the sha256 of the ONE step whose run: holds the
@@ -706,7 +717,11 @@ def _context(data, path, flat):
     text, why = _text(data, path)
     if why:
         return why
-    physical = [i for i, x in enumerate(text.split("\n")) if _flat(x) == flat]
+    lines = text.split("\n")
+    physical = [i for i, x in enumerate(lines) if _flat(x) == flat]
+    odd = next((i for i in physical if _odd(lines[i])), None)
+    if odd is not None:    # bash reads such a copy differently from the flattening; the scan gives it an unruled hash (Codex A round 5 P3)
+        return f"the copy of the line at {path}:{odd + 1} holds a control character or whitespace other than a space or a tab"
     if path.endswith(".sh"):
         if text.split("\n", 1)[0] not in _SHEBANGS:
             return f"{path} does not start with #!/bin/bash or #!/usr/bin/env bash"
@@ -724,8 +739,7 @@ def _context(data, path, flat):
         step, n, node = hits[0]
         if not (isinstance(node, inv.yaml.ScalarNode) and node.style == "|"):
             return f"the step's run: in {path} is not a literal block (run: |): its lines cannot be bound to the file's lines"
-        a, b = node.start_mark, node.end_mark
-        inside = [i for i in physical if a.line < i and (i < b.line or (i == b.line and b.column > 0))]
+        inside = [i for i in physical if _in_block(node, i)]
         if not (len(inside) == len(physical) == n):
             return (f"a copy of the line lies outside its enclosing step's run: ({len(physical)} in {path}, {len(inside)} in the run: block's lines, "
                     f"{n} in its value)")
@@ -735,57 +749,158 @@ def _context(data, path, flat):
 
 _DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")    # the inventory's own recogniser of "a download" (pin-inventory.unmeasured_occurrences)
 _STR_PREFIX = re.compile(r"^[bBrRuUfFtT]{1,2}(?=[\"'])")
-# Fail closed (Codex rounds 3 and 4, advisor 0080): a downloader is NOT redirect-following only in one of two plain forms, each positively recognised word by
-# word; any shape this reader cannot resolve (a subscript, a slice, a comprehension, an attribute, an operator, a splat, an unclosed call, a backslash, a
-# quote or an expansion inside an option word, a redirection) is redirect-following: a false positive only asks for the cosign verifier line.
-_SHELL_PREFIX = re.compile(r"[A-Za-z0-9_ ./;&|!=-]*")    # before a shell command word: plain words only (no quote, $, bracket, brace, backtick, #, <, >)
-_SHELL_PREV = {"", "if", "then", "do", "else", "elif", "while", "until", "!", "&&", "||", ";", "|", "time"}
-_PY_WORDS = {"and", "or", "not", "is", "in", "if", "else", "for", "as", "lambda"}   # after curl, a Python operator word: curl is a name, not a command
-# a curl option that follows redirects or reads options it does not show (a config file): any word that is or abbreviates one of these long options
-_REDIRECT_LONG = ("--location", "--location-trusted", "--follow", "--config")
-# the words of a plain shell command after curl, each one of: an option spelled literally; a literal word (never starting with -, ?, * or a quote); a
-# single-quoted word not starting with -; a double-quoted word not starting with - whose only expansions are $name or ${name}, and which starts with $ only
-# as the value of -o or --output. A separator (; && || |, or a word ending in ;) ends the command.
-_SH_OPT = re.compile(r"-[A-Za-z0-9#]+|--[a-z0-9][a-z0-9-]*(?:=[A-Za-z0-9_./:%+@,~-]*)?")
-_SH_LIT = re.compile(r"[A-Za-z0-9_./:%+@,~=][A-Za-z0-9_./:%+@,~=?-]*")
-_SH_SQ = re.compile(r"'(?:[^'-][^']*)?'")
+# REQ-SUP-001-AC19 (0) (AC19'', advisor step 5, Oct 11, AC19 positive list): a row binds only a line in one of the LISTED plain forms; any other form is
+# refused, whatever it does (a cosign verifier does not admit it). The WHOLE line is read and every word on it must be positively plain (OPEN-2: nothing
+# after a ; is looser than the command). A shape this reader does not list is refused, fail closed (advisor 0080): a new shape the list does not refuse
+# is a defect in the list. The forms: (a) a plain shell line whose download is the command word curl with arguments from the curl option list;
+# (b) "curl" first in the list that is the whole first argument of a subprocess call that IS the line; (c) for repo:self, the gh release download prefix
+# followed by plain words, never -R or --repo (OPEN-1). wget is not listed (OPEN-3).
+_SH_KEYWORDS = {"if", "then", "do", "else", "elif", "while", "until", "!", "time", "fi", "done"}
+_SH_SEP = {";", "&&", "||", "|"}
+_SH_WORD = re.compile(r"""(?:"[^"]*"|'[^']*'|[^\s"'])+""")
+_SH_LIT = re.compile(r"[A-Za-z0-9_./:%+@,=][A-Za-z0-9_./:%+@,=-]*")    # no ~ ? * [ ] { } $ ` \ ! # & ; | < > ( ) or quote: nothing bash expands
+_SH_SQ = re.compile(r"'([^']*)'")
 _SH_DQ = re.compile(r'"((?:[^"\\`$]|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)*)"')
-_SH_SEP, _OUT = {";", "&&", "||", "|"}, ("-o", "--output")
-# the Python form: "curl" first in the list that is the FIRST argument of a subprocess call closed on the line, each later element a plain string literal
-# (or a name right after "-o"/"--output"), the list followed only by plain keyword arguments that cannot change the program or its arguments
-_PY_RUN = re.compile(r"(?:^|[^\w.])subprocess\.(?:run|call|check_call|check_output|Popen) ?$")
-_PY_STR = re.compile(r"""\s*[rRbBuU]{0,2}("[^"\\]*"|'[^'\\]*')\s*(?:,|$)""")
-_PY_NAME = re.compile(r"\s*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*(?:,|$)")
+_SH_OPTION = re.compile(r"-[A-Za-z0-9]+|--[a-z0-9][a-z0-9-]*")       # an option of a command other than curl, spelled plainly with no glued value
+# outside quotes, none of: a group, a subscript, a brace, a redirection, a quote left open, a tilde, a glob, a comment, an expansion, a backtick, a backslash
+_SH_UNQUOTED = set("()[]{}<>\"'~*?#$`\\")
+_PY_WORDS = {"and", "or", "not", "is", "in", "if", "else", "for", "as", "lambda"}   # after curl, a Python operator word: curl is a name, not a command
+# the curl option list (nothing else is listed: -K, --config, --expand-*, --proto, -g, -4, --connect-timeout, ... are not): a cluster of -f -s -S -L that
+# may end in o (its FILE is the next word) or O; --fail --silent --show-error --location; --output FILE; --retry N; --max-time N
+_CURL_SHORT = re.compile(r"-[fsSL]*[oO]?")
+_CURL_FLAGS = {"--fail", "--silent", "--show-error", "--location"}
+_CURL_VALUED = {"--output": "file", "--retry": "count", "--max-time": "count"}
+_COUNT = re.compile(r"[0-9]{1,5}")
+_GLOB = set("[]{}")                                                   # curl's own URL globbing: never in a curl argument, quoted or not
+_REDIRECT_LONG = ("--location", "--location-trusted", "--follow", "--config")
+# the Python form: the WHOLE line is one subprocess call (optionally assigned to a plain name), its first argument a list whose first element is "curl"
+_PY_HEAD = re.compile(r"(?:[A-Za-z_]\w* ?= ?)?subprocess\.(?:run|call|check_call|check_output|Popen) ?")
+_PY_STR = re.compile(r"""\s*([rRbBuU]{0,2})("[^"\\]*"|'[^'\\]*')\s*(?:,|$)""")
+_PY_NAME = re.compile(r"\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*(?:,|$)")
 _PY_KWARGS = re.compile(r"(?:\s*,\s*(?:stdout|stderr|check|timeout|capture_output|text)\s*=\s*[A-Za-z0-9_.]+)*\s*,?\s*")
 
 
-def _shell_command_curl(flat, s, e):
-    """True when curl at [s, e) is the command word of a plain shell line: a whole word, only plain words before it, the word before it none, a command
-    keyword or a separator (or ending in ;), the line outside quotes holding no bracket, brace, backtick, backslash, $( or redirection, and EVERY word
-    after it up to a separator positively resolved (_SH_OPT, _SH_LIT, _SH_SQ, _SH_DQ): curl = x, curl .x, curl - 1, if curl -x: f(), curl --lo"cation",
-    curl "$opt", curl $FLAGS, curl > f and a curl with no argument are not plain commands."""
-    pre, nxt = flat[:s], re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"'])+""", flat[e:])   # the words after curl, a quoted part kept in its word
-    if not ((s == 0 or flat[s - 1] == " ") and e < len(flat) and flat[e] == " " and nxt and _SHELL_PREFIX.fullmatch(pre)):
-        return False
-    if any(x in flat for x in ("$(", "`", "\\")) or any(c in re.sub(r'"[^"]*"|\'[^\']*\'', "", flat) for c in "()[]{}<>\"'"):
-        return False                                    # an unbalanced quote, a bracket, a brace or a redirection outside quotes: not read as shell
-    prev = (pre.split() or [""])[-1]
-    if not (prev in _SHELL_PREV or prev.endswith(";")) or nxt[0] in _PY_WORDS or nxt[0][0] in "=.([)],+*:<>%/&|^@!~" or re.fullmatch(r"[-+*/%&|^@<>!:]*=+", nxt[0]):
-        return False
-    before = "curl"
-    for w in nxt:
-        if w in _SH_SEP:
-            return before != "curl"
-        last = w.endswith(";")
-        w = w[:-1] if last else w
-        dq = _SH_DQ.fullmatch(w)
-        if not (_SH_OPT.fullmatch(w) or _SH_LIT.fullmatch(w) or _SH_SQ.fullmatch(w)
-                or (dq and not dq.group(1).startswith("-") and (not dq.group(1).startswith("$") or before in _OUT))):
-            return False
-        if last:
-            return True
-        before = w
-    return True
+def _sh_word(w, dollar=False):
+    """The text of a plain shell word, or None: a literal (nothing bash expands), a single-quoted word, or a double-quoted word whose only expansions are
+    $name or ${name}; never a word whose text starts with - (an option is read by its command's own rule), and a double-quoted word starts with $ only
+    where DOLLAR allows it (an option's value)."""
+    if _SH_LIT.fullmatch(w):
+        return w
+    m = _SH_SQ.fullmatch(w)
+    if m and not m.group(1).startswith("-"):
+        return m.group(1)
+    m = _SH_DQ.fullmatch(w)
+    if m and not m.group(1).startswith("-") and (dollar or not m.group(1).startswith("$")):
+        return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", r"$\1", m.group(1))     # ${name} is an expansion, not a brace curl could glob
+    return None
+
+
+def _option_list(items):
+    """None when curl's arguments are all on the curl option list or plain addresses, else why not. ITEMS, one per argument: ("opt", spelling) for an
+    option, ("word", text) for a plain word, ("value", text) for a word allowed only as a file name after -o or --output (a double-quoted word starting
+    with $, a Python name), ("bad", word) for anything else. One reader for the shell and the Python form."""
+    i = 0
+    while i < len(items):
+        k, a = items[i]
+        i += 1
+        if k == "opt":
+            kind = _CURL_VALUED.get(a) or ("file" if not a.startswith("--") and a.endswith("o") else None)
+            if not (a in _CURL_FLAGS or a in _CURL_VALUED or (not a.startswith("--") and len(a) > 1 and _CURL_SHORT.fullmatch(a))):
+                return f"the curl option {a} is not on the curl option list"
+            if kind:
+                vk, v = items[i] if i < len(items) else ("bad", "")
+                i += 1
+                if not ((vk == "word" or (vk == "value" and kind == "file")) and (kind != "count" or _COUNT.fullmatch(v))) or _GLOB & set(v) or _DOWNLOADER.search(v):
+                    return f"the curl option {a} has no plain {'number' if kind == 'count' else 'file name'} after it"
+            continue
+        if k != "word" or _GLOB & set(a) or _DOWNLOADER.search(a):
+            return f"the curl argument {a} is not a plain address (an option inside quotes, an expansion, a bracket or brace curl would glob, a downloader word)"
+    return None
+
+
+def _sh_items(args):
+    """The items of curl's shell words (see _option_list)."""
+    out = []
+    for a in args:
+        t, v = _sh_word(a), _sh_word(a, True)
+        out.append(("opt", a) if a.startswith("-") else ("word", t) if t is not None else ("value", v) if v is not None else ("bad", a))
+    return out
+
+
+def _gh_options(args):
+    """None when the words after the repo:self prefix are plain (options spelled plainly, never -R or --repo or any spelling of them: OPEN-1), else why."""
+    after_option = False
+    for a in args:
+        if a.startswith("-"):
+            name = a.split("=", 1)[0]
+            if not a.startswith("--") and "R" in a:
+                return f"{a} names a repository after the repo:self prefix (-R is refused by name)"
+            if a.startswith("--") and len(name) > 2 and ("--repo".startswith(name) or name.startswith("--repo")):
+                return f"{a} names a repository after the repo:self prefix (--repo is refused by name, any abbreviation too)"
+            if not _SH_OPTION.fullmatch(a):
+                return f"the option {a} is not spelled plainly"
+            after_option = True
+            continue
+        if _sh_word(a, after_option) is None or _DOWNLOADER.search(a):
+            return f"the word {a} is not a plain word"
+        after_option = False
+    return None
+
+
+def _shell_listed(flat, gh=False):
+    """None when FLAT is a plain shell line of form (a), or with GH of form (c), else why not: the whole line, every word positively plain."""
+    if "$(" in flat or any(c in flat for c in "`\\"):
+        return "the line holds $(, a backtick or a backslash"
+    bare = set(re.sub(r'"[^"]*"|\'[^\']*\'', " ", flat)) & _SH_UNQUOTED
+    if bare:
+        return f"outside quotes the line holds {''.join(sorted(bare))}"
+    if gh:
+        if not (flat == _GH_SELF or flat.startswith(_GH_SELF + " ")):
+            return f"a repo:self line begins with {_GH_SELF}"
+        flat = flat[len(_GH_SELF):]
+    toks = []
+    for w in _SH_WORD.findall(flat):
+        if w.endswith(";") and w != ";":
+            if w[:-1] in _SH_SEP or w[:-1].endswith(";"):
+                return f"{w} is not a plain separator"
+            toks += [w[:-1], ";"]
+        else:
+            toks.append(w)
+    (state, cmd, args), curls = (("args", "gh", []) if gh else ("start", None, [])), 0
+    finish = lambda: (_option_list(_sh_items(args)) if args else "curl with no argument") if cmd == "curl" else _gh_options(args) if cmd == "gh" else None
+    for t in toks:
+        if t in _SH_SEP:
+            if state == "start":
+                return f"an empty command before {t}"
+            why = finish()
+            if why:
+                return why
+            state, cmd, args = "start", None, []
+        elif state == "start":
+            if t in _SH_KEYWORDS:
+                continue
+            if t == "curl":
+                state, cmd, args, curls = "args", "curl", [], curls + 1
+                continue
+            if _DOWNLOADER.search(t):
+                return f"the downloader word in {t} is not the command word curl"
+            if _sh_word(t) is None:
+                return f"the command word {t} is not a plain word"
+            state, cmd = "args", "other"
+        elif cmd in ("curl", "gh"):
+            if cmd == "curl" and not args and t in _PY_WORDS:
+                return f"curl is followed by the Python word {t}: a name, not a command"
+            args.append(t)
+        elif _DOWNLOADER.search(t) or not (_sh_word(t) is not None or _SH_OPTION.fullmatch(t)):
+            return f"the word {t} is not a plain word (or holds a downloader word that is not a command word curl)"
+    if not toks and not gh:
+        return "no command"
+    if state == "start" and toks and toks[-1] in ("&&", "||", "|"):
+        return f"the line ends in {toks[-1]}: the command continues on the next line"
+    why = finish() if state == "args" else None
+    if why:
+        return why
+    return None if gh or curls else "no command word curl"
 
 
 def _brackets(flat):
@@ -816,56 +931,73 @@ def _brackets(flat):
     return out
 
 
-def _listed_curl(flat, s, e, br):
-    """True when "curl" at [s, e) is the WHOLE first element of the list that is the FIRST argument of subprocess.run, call, check_call, check_output or
-    Popen: the list and the call both close on the line (a call left open can be extended on the next line), every later element a plain string literal
-    or a name right after "-o"/"--output", and nothing between the list and the call's ) but plain keyword arguments (stdout, stderr, check, timeout,
-    capture_output, text). A list assigned, returned, grouped, nested, subscripted or passed to any other callee is not plain."""
+def _python_listed(flat):
+    """None when FLAT is form (b), else why not: the WHOLE line is one call of subprocess.run, call, check_call, check_output or Popen (optionally assigned
+    to a plain name), closed at the end of the line; its first argument is a list closed on the line whose first element is "curl" (double-quoted, no
+    prefix), every later element a plain string literal on the curl option list or a plain address (a name only right after "-o" or "--output"); and
+    nothing between the list and the call's ) but the keyword arguments stdout, stderr, check, timeout, capture_output or text with a plain value."""
+    ms = list(_DOWNLOADER.finditer(flat))
+    if len(ms) != 1 or ms[0].group() != "curl":
+        return "the line's downloader words are not exactly one curl"
+    s, e = ms[0].span()
+    br = _brackets(flat)
     if br is None or not (s >= 1 and flat[s - 1] == '"' and flat[e:e + 1] == '"'):
-        return False
+        return "curl is not a double-quoted list element on a line read as Python"
     j = len(flat[:s - 1].rstrip()) - 1
     if j < 0 or j not in br or br[j][0] != "[" or br[j][1] is None:
-        return False
+        return '"curl" is not the first element of a list closed on the line'
     p, close = br[j][2], br[j][1]
-    if p is None or br[p][0] != "(" or br[p][1] is None or flat[p + 1:j].strip() or not _PY_RUN.search(flat[:p]):
-        return False
+    if p is None or br[p][0] != "(" or br[p][1] != len(flat) - 1 or flat[p + 1:j].strip() or not _PY_HEAD.fullmatch(flat[:p]):
+        return "the list is not the first argument of a subprocess call that is the whole line"
     if not _PY_KWARGS.fullmatch(flat[close + 1:br[p][1]]):
-        return False
-    rest, prev = flat[e + 1:close], "curl"
+        return "the call holds an argument other than the plain keyword arguments"
+    rest, items = flat[e + 1:close], []
     if rest.strip():
         first = re.match(r"\s*,", rest)
         if not first:
-            return False
+            return '"curl" is not a whole list element'
         rest = rest[first.end():]
     while rest.strip():
         m = _PY_STR.match(rest)
         if m:
-            prev = m.group(1)[1:-1]
+            c = m.group(2)[1:-1]
+            items.append(("opt", c) if c.startswith("-") else ("word", c))
         else:
-            m, prev = _PY_NAME.match(rest) if prev in _OUT else None, None
+            m = _PY_NAME.match(rest)
             if not m:
-                return False
+                return "a list element is not a plain string literal or name"
+            items.append(("value", m.group(1)))
         rest = rest[m.end():]
-    return True
+    return _option_list(items)
 
 
-def _follows_redirects(flat):
-    """False ONLY when every downloader word the inventory recognises is curl in a plain form (the command word of a plain shell line whose every word is
-    resolved, or the WHOLE first element "curl" of the list that is the first argument of a subprocess call closed on the line) and no word holds an L or a
-    K (-K: a config file) after a single - or is, begins with or abbreviates --location, --follow or --config (a Python string prefix such as b"-L" or
-    rb'-L' is read through; ; | & end a word). Everything else (wget in any spelling, which follows redirects by default, /usr/bin/curl, curl.exe,
-    b"curl", 'curl', TOOLS["curl"], ["curl"][0:1], a comprehension, an f-string, an unclosed call, a list assigned or passed to another callee, -L, -fsSL,
-    -4fsSL, -#L, --location*, --loc, --follow, -K, --config, --lo"cation", "$opt", $FLAGS) counts as following redirects, fail closed: a false positive
-    only asks for the cosign verifier line."""
-    br = _brackets(flat)
-    for m in _DOWNLOADER.finditer(flat):
-        s, e = m.span()
-        if not (m.group() == "curl" and (_shell_command_curl(flat, s, e) or _listed_curl(flat, s, e, br))):
-            return True
+def _unlisted(flat, repo_self=False):
+    """None when the flattened line is in one of the listed plain forms (REQ-SUP-001-AC19 (0)), else why not: for a host row form (a) or (b), for a
+    repo:self row form (c). A control character, or whitespace other than a space, is in no form."""
+    if any(ord(c) < 32 or ord(c) == 127 or (c.isspace() and c != " ") for c in flat):
+        return "the line holds a control character or whitespace other than a space"
+    if repo_self:
+        return _shell_listed(flat, gh=True)
+    sh = _shell_listed(flat)
+    if sh is None:
+        return None
+    py = _python_listed(flat)
+    return None if py is None else f"as a shell line: {sh}; as a subprocess call: {py}"
+
+
+def _redirect_words(flat):
+    """True when a word of the line (split on whitespace, commas, brackets, parentheses, ;, | and &, a Python string prefix and quotes stripped) starts
+    with a single - and holds an L or a K, or is, begins with or abbreviates --location, --location-trusted, --follow or --config (AC19 (6))."""
     words = [_STR_PREFIX.sub("", x).strip("\"'") for x in re.split(r"[\s,\[\]();|&]+", flat)]
     long = lambda w: w.split("=", 1)[0]
     return any((w.startswith("-") and not w.startswith("--") and ("L" in w or "K" in w))
                or (w.startswith("--") and len(long(w)) > 2 and any(o.startswith(long(w)) or long(w).startswith(o) for o in _REDIRECT_LONG)) for w in words)
+
+
+def _follows_redirects(flat):
+    """True for a line that is not in a listed plain form (refused by (0) whatever it does) or that holds a redirect word (_redirect_words): False only
+    for a listed line with no redirect word."""
+    return _unlisted(flat) is not None or _redirect_words(flat)
 
 
 def _cosign(line):
@@ -907,22 +1039,34 @@ def _fetch_unverified(root, head, row, flat, held_n):
             return f"a repo:self line begins with {_GH_SELF}"
     elif f"https://{row['host']}/" not in flat:
         return f"the line does not name https://{row['host']}/ literally"
+    why = _unlisted(flat, row["host"] == REPO_SELF)
+    if why:
+        return (f"the line is not in one of the listed plain forms (REQ-SUP-001-AC19 (0)): {why}; a row binds only a listed line, any other form is "
+                "refused whatever it does, a cosign verifier included")
     v, t = row["verifier"], row["test"]
     vt, why = _text(_head_bytes(root, head, v["file"]), v["file"])
     if why:
         return f"the verifier file: {why}"
     if v["file"].endswith(".sh") and vt.split("\n", 1)[0] not in _SHEBANGS:
         return f"the verifier file {v['file']} does not start with a bash shebang"
+    vlines = vt.split("\n")      # (3) the verifier line is matched against PHYSICAL lines, never a parsed value (AC19'')
+    vphys = [i for i, x in enumerate(vlines) if _flat(x) == _flat(v["line"])]
+    if len(vphys) != 1:
+        return f"the verifier line is not exactly one physical line of {v['file']} ({len(vphys)} physical lines flatten to it)"
+    if _odd(vlines[vphys[0]]):
+        return f"the verifier line in {v['file']} holds a control character or whitespace other than a space or a tab"
     if _WORKFLOW.search(v["file"]):
         steps = _steps(vt, v["file"])
         if isinstance(steps, str):
             return f"the verifier file: {steps}"
-        vlines = [x for s in steps if isinstance(s.get("run"), str) for x in s["run"].split("\n")]
-    else:
-        vlines = vt.split("\n")
-    if sum(1 for x in vlines if _flat(x) == _flat(v["line"])) != 1:
-        return f"the verifier line is not exactly once in {v['file']}{' (in a step run:)' if _WORKFLOW.search(v['file']) else ''}"
-    if _follows_redirects(flat) and not _cosign(v["line"]):
+        nodes = _run_nodes(vt)
+        if len(nodes) != len(steps):
+            return f"the verifier file: the steps of {v['file']} cannot be paired with their source lines"
+        blocks = [n for n in nodes if isinstance(n, inv.yaml.ScalarNode) and n.style == "|" and _in_block(n, vphys[0])]
+        if len(blocks) != 1:
+            return (f"the verifier line in {v['file']} is not inside the literal-block run: (run: |, |- or |+) of exactly one step: it is matched against "
+                    "physical lines of a literal block, never a parsed value (a folded, plain or quoted run:, an escape, env: or with: is not a verifier line)")
+    if _redirect_words(flat) and not _cosign(v["line"]):
         return "the line follows redirects: its verifier line must be cosign verify-blob with --certificate-identity[-regexp] and --certificate-oidc-issuer"
     tt, why = _text(_head_bytes(root, head, t["file"]), t["file"])
     if why or t["case"] not in tt:
@@ -942,17 +1086,24 @@ def print_context(path, line, count="1"):
         ctx = _context(data, path, flat)
     if not isinstance(ctx, str):
         text = data.decode("utf-8")
-        per = {}
+        per, unruled = {}, 0
         try:
-            for k, f, _ in inv.unmeasured_occurrences({path: text}):    # EVERY scanner copy of the line, a continuation-joined one too (Codex round 4)
+            for k, f, bashlike in inv.unmeasured_occurrences({path: text}):    # EVERY scanner copy of the line, a continuation-joined one too (Codex round 4)
                 if f == flat:
                     per[k] = per.get(k, 0) + 1
+                    unruled += not bashlike
         except RuntimeError as e:
             per = {None: -1}
             print(f"pin-age: {e}", file=sys.stderr)
         counts = sorted(per.values())                 # EVERY per-key count must agree with the block count and COUNT (Codex round 3): never the largest
         repeats = _repeated_segment(path, flat)
-        if repeats or not (re.fullmatch(r"[1-9][0-9]?|100", count) and counts and set(counts) == {ctx[1]} == {int(count)}):
+        unlisted = _unlisted(flat) and _unlisted(flat, repo_self=True)
+        if unruled:       # the checker gives such a copy an 'unruled:' hash no row can name (Codex A round 5 P3, B round 4 P3): no context is printed
+            ctx = (f"{unruled} scanner copies of the line are ones no row can rule (joined from a continuation, or whitespace other than a space or a "
+                   f"tab; the scanner's per-key counts of the line are {counts})")
+        elif unlisted:
+            ctx = f"the line is not in one of the listed plain forms (REQ-SUP-001-AC19 (0)): {unlisted}"
+        elif repeats or not (re.fullmatch(r"[1-9][0-9]?|100", count) and counts and set(counts) == {ctx[1]} == {int(count)}):
             ctx = (f"the scanner's per-key counts of the line are {counts or [0]}, its block holds it {ctx[1]} times: they do not all equal {count}"
                    + (f" ({repeats})" if repeats else ""))
     if isinstance(ctx, str):
