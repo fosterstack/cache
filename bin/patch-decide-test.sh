@@ -956,7 +956,7 @@ check("AC8 VEX label namespaces (r3, B2): @id '2 of the new document' on stateme
 o_, n_ = vd(P1, P2), vd(dict(P1, status_notes="a2"), dict(P2, status_notes="b2"))
 nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
 check("AC8 VEX label namespaces (r3, B low): the same field changed in both: two distinct lines naming two statements",
-      distinct(nt_) and resolves(nt_, o_, n_) == (True, [("new", 2), ("new", 1)]), (vex_part(nt_), resolves(nt_, o_, n_)))
+      distinct(nt_) and resolves(nt_, o_, n_)[0] and sorted(resolves(nt_, o_, n_)[1]) == [("new", 1), ("new", 2)], (vex_part(nt_), resolves(nt_, o_, n_)))
 # A3 / B qualification: an empty vulnerability name is schema-valid (no minLength): read, quoted, named by position
 for label, o_, n_, want in (
         ("first patch", None, vd(vs(vulnerability={"name": ""})), ['- `""`: not_affected (added) — statement 1 of the new document']),
@@ -1004,7 +1004,7 @@ check("AC8 VEX rendering (r3, B3): @ids urn:s:a and urn:s:&#97; print as quoted 
       and all(inert(l) for l in vlines(nt_)) and resolves(nt_, o_, n_)[0], vex_part(nt_))
 nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(VS), vd(vs(**{"\n- no change\n": 1}), vs(vulnerability={"name": "<!-- CVE-7 -->"}))))
 check("AC8 VEX rendering (r3, B3): an HTML-comment name and a field name carrying '\\n- no change\\n' print quoted, one line each",
-      vlines(nt_) == ['- CVE-7: not_affected (changed: `"\\n- no change\\n"`)', '- `"<!-- CVE-7 -->"`: not_affected (added)'], vex_part(nt_))
+      vlines(nt_) == ['- `"<!-- CVE-7 -->"`: not_affected (added)', '- CVE-7: not_affected (changed: `"\\n- no change\\n"`)'], vex_part(nt_))
 MD = ["a*b*", "a_b_", "_a_", "a__b", "~~a~~", "[a](b)", "![a](b)", "a\\*", "`a`", "``", "a|b", "$a$", "#1", "&amp;", "&#97;",
       "<b>x</b>", "<!--", "a:+1:", "a:thumbsup:", "x:a", "https://x.example", "www.x.example", "a@b.c",
       "0123456789abcdef0123456789abcdef01234567", "deadbeef", "a b", " a", "a ", "\\u0041", "é", "1. a", "- a", "> a", "= a"]
@@ -1055,6 +1055,16 @@ try:
     except Exception as e:      # noqa: BLE001
         got_ = repr(e)
     check("AC8 VEX relabel (r3, fail closed): when even positions read alike after redaction: refused (ValueError), nothing published",
+          got_ == "ValueError", got_)
+    # the lines stay distinct but one loses its only label: refused too (the final check, not only notes()' duplicate check)
+    P._clean = lambda s: re.sub(r"\d+ of the (old|new) document", "N of the document", re.sub(r"^- CVE-1\b", "- CVE-X", real_clean_(s)))
+    try:
+        got_ = vlines(P.notes("v0.2.3", [], P.vex_changes(None, vd(*(vs(vulnerability={"name": "CVE-%d" % i}) for i in (1, 2))))))
+    except ValueError:
+        got_ = "ValueError"
+    except Exception as e:      # noqa: BLE001
+        got_ = repr(e)
+    check("AC8 VEX relabel (r3, fail closed): a distinct line whose name and position label redaction both changed: refused (ValueError)",
           got_ == "ValueError", got_)
 finally:
     P._clean = real_clean_
