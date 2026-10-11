@@ -2674,11 +2674,11 @@ d=$(wfix x_sname2 'echo bin/helper.py\n'); expm caught "$d" 'helper.py' "excepti
 d=$(wfix x_env 'echo "${PATH:=/x}"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"PATH","why":"x"})'; expm caught "$d" 'PATH' "exception: no exception rule waives an env-setting finding (env_mentions is the only way)"
 # (B) ambient env names
 afix() { # afix NAME : witnessed.sh + a stage script that runs bin/build-admit.py (reads GH_TOKEN from its own environment) + a step that passes GH_TOKEN
-  local d; d=$(wfix "$1")
-  printf '#!/usr/bin/env bash\nset -euo pipefail\npython3 bin/build-admit.py run\n' > "$d/bin/stage-apk.sh"
+  local d; d=$(wfix "$1" 'unset GH_TOKEN\n')
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nunset GH_TOKEN\npython3 bin/build-admit.py run\n' > "$d/bin/stage-apk.sh"
   printf '#!/usr/bin/env python3\nimport os\ntok = os.environ.get("GH_TOKEN", "")\n' > "$d/bin/build-admit.py"
-  edit_spec "$d" 'rows["bin/stage-apk.sh"]={"path":"bin/stage-apk.sh","tools":["python3"],"signs":False,"runs":["bin/build-admit.py"]}; rows["bin/build-admit.py"]={"path":"bin/build-admit.py","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'
-  printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"REQ-CHAIN-004-AC8"}]' > "$d/.ambient.json"
+  edit_spec "$d" 'rows["bin/stage-apk.sh"]={"path":"bin/stage-apk.sh","tools":["python3"],"signs":False,"runs":["bin/build-admit.py"],"reads_env":["GH_TOKEN"]}; rows["bin/witnessed.sh"]["reads_env"]=["GH_TOKEN"]; rows["bin/build-admit.py"]={"path":"bin/build-admit.py","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'
+  printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/stage-apk.sh","why":"REQ-CHAIN-004-AC8"}]' > "$d/.ambient.json"
   printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"
   gen "$d"; echo "$d"
 }
@@ -2857,7 +2857,164 @@ d=$(rfix t_py_ok '#!/usr/bin/env python3\nimport os\nx = os.environ.get("GH_TOKE
 d=$(rfix t_py_ok2 '#!/usr/bin/env python3\nimport os\nx = os.environ["GH_TOKEN"]\n'); expm ok "$d" - "round-1 (7): control: a Python os.environ[] read"
 
 
-EXPECT=841
+# ---- PR 1b round 2
+kc() { # kc NAME 'script lines' FRAG [tools-json] [runs-json] : a listed shell script that must be refused, naming FRAG
+  local d; d=$(cfix "$1" "$2" "${4:-[]}" "${5:-[]}"); expm caught "$d" "$3" "round-2 $1: $2 is refused"; }
+ko() { # ko NAME 'script lines' [tools-json] [runs-json] : admitted
+  local d; d=$(cfix "$1" "$2" "${3:-[]}" "${4:-[]}"); expm ok "$d" - "round-2 $1: $2 is admitted"; }
+# (1) a script-name waiver never survives a changed executable command
+d=$(cfix k1_a './bin/build-apk.sh --changed'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"./bin/build-apk.sh","why":"x"}]'; expm caught "$d" 'command position' "round-2 (1): entry ./bin/build-apk.sh does not waive ./bin/build-apk.sh --changed"
+d=$(cfix k1_b './bin/build-apk.sh; id'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"./bin/build-apk.sh","why":"x"}]'; expm caught "$d" 'command position' "round-2 (1): entry ./bin/build-apk.sh does not waive ./bin/build-apk.sh; id"
+d=$(cfix k1_c './bin/build-apk.sh --safe'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"./bin/build-apk.sh --safe","why":"x"}]'; expm ok "$d" - "round-2 (1): an entry with the whole command text waives exactly that command"
+d=$(cfix k1_d './bin/build-apk.sh --safe\n./bin/build-apk.sh --changed'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"./bin/build-apk.sh --safe","why":"x"}]'; expm caught "$d" 'command position' "round-2 (1): a second, different command of the same script stays a finding"
+d=$(cfix k1_e 'echo ./bin/build-apk.sh'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"./bin/build-apk.sh","why":"x"}]'; expm ok "$d" - "round-2 (1): a script path named as an operand (not a command) is still waived by its path"
+# (a, advisor) an exception is bound by the row's sha256
+d=$(wfix k1_hash); printf '# edited, the waived text still occurs\n' >> "$d/bin/witnessed.sh"; expm caught "$d" 'sha256' "round-2 (a): a script edited so the waived text still occurs, with the old sha256 kept in the row, is refused on the hash pin"
+# (2) the pinned step has a closed shape
+pfx() { # pfx NAME RUN-TEXT : a stage file whose digests step and whose pinned_steps entry both carry RUN-TEXT
+  local d; d=$(mk "$1"); DG2="$2" python3 - "$d" <<'PY'
+import json, os, sys
+d = sys.argv[1]; run = os.environ["DG2"]
+open(d + "/.github/workflows/stage-verify.yml", "w").write("jobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: x\n        run: '" + run.replace("'", "''") + "'\n")
+json.dump([{"file": ".github/workflows/stage-verify.yml", "job": "j", "id": "digests", "run": run, "why": "REQ-CHAIN-004-AC2"}], open(d + "/.pinned.json", "w"))
+PY
+  gen "$d"; echo "$d"; }
+d=$(pfx m_ok 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'); expm ok "$d" - "round-2 (2): the AC2 text is admitted"
+d=$(pfx m_ok2 'echo "d_1=$(jq -c . out/a-b.json)" >> "$GITHUB_OUTPUT"'); expm ok "$d" - "round-2 (2): another name and a relative file of the same shape are admitted"
+d=$(pfx m_curl 'curl https://example.invalid/payload'); expm caught "$d" 'pinned_steps' "round-2 (2): a curl command in both the entry and the step is an entry error"
+d=$(pfx m_semi 'echo "x=$(jq -c . a.json)" >> "$GITHUB_OUTPUT"; id'); expm caught "$d" 'pinned_steps' "round-2 (2): the shape followed by ; id is refused"
+d=$(pfx m_env 'echo "x=$(jq -c . a.json)" >> "$GITHUB_ENV"'); expm caught "$d" 'pinned_steps' "round-2 (2): >> GITHUB_ENV is refused"
+d=$(pfx m_cat 'echo "x=$(cat a.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): \$(cat ..) is refused"
+d=$(pfx m_dots 'echo "x=$(jq -c . ../a.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): a FILE with .. is refused"
+d=$(pfx m_abs 'echo "x=$(jq -c . /etc/passwd)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): an absolute FILE is refused"
+d=$(pfx m_upper 'echo "X=$(jq -c . a.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): an upper-case NAME is refused"
+d=$(pfx m_flag 'echo "x=$(jq -r . a.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): another jq option is refused"
+d=$(pfx m_two 'echo "x=$(jq -c . a.json b.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2): two files are refused"
+cat > "$work/pinpath.py" <<'PY'
+import importlib.util, json, os, sys, yaml
+spec = importlib.util.spec_from_file_location("cts", os.environ["CHAIN_ROOT"] + "/bin/chain-test-signers.py"); cts = importlib.util.module_from_spec(spec); spec.loader.exec_module(cts)
+base, path = sys.argv[1], sys.argv[2]
+rows, errs, envn = cts.load_scripts(base)
+d = cts.yload(open(base + "/.github/workflows/stage-verify.yml").read())
+e, _ = cts.stage_grammar("stage-verify.yml", d, rows, envn, path)
+print("; ".join(errs + e) or "ok"); sys.exit(1 if errs + e else 0)
+PY
+d=$(pfix m_path); out=$(python3 "$work/pinpath.py" "$d" .github/workflows/stage-verify.yml 2>&1) && { pass=$((pass + 1)); echo "ok   round-2 (2): the pin binds the full repo path (control: the right path)"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) pin full path control -> ${out:0:300}"; }
+d=$(pfix m_path2); out=$(python3 "$work/pinpath.py" "$d" tools/ci/stage-verify.yml 2>&1) && { failn=$((failn + 1)); echo "FAIL round-2 (2): a same-named stage file under another directory got the pin"; } || { grep -q 'GITHUB_OUTPUT' <<< "$out" && { pass=$((pass + 1)); echo "ok   round-2 (2): a same-named stage file under another directory gets no pin (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) other directory -> ${out:0:300}"; }; }
+# (3) the forbidden families are prefixes (no underscore needed), plus the proxy / TLS / Go / signing tool names
+for nm in GITASKPASS GITHUBTOKEN GITHUB RUNNERX RUNNER NODERUNTIME NODE GIT1 PYTHON PYTHON3 PYTHONX HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy SSL_CERT_FILE SSL_CERT_DIR2 CURL_CA_BUNDLE CURLOPT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GOTOOLCHAIN WITNESS_X WITNESSX COSIGN_EXPERIMENTAL SIGSTORE_ID_TOKEN TUF_ROOT TERM TERMX NPM_CONFIG BUNDLE_X GEM_HOME XDG_HOME GLOBIGNORE CDPATH IFS PROMPT_COMMAND SHELLOPTS BASHOPTS PS1 LD_X LC_ALL BASH_X; do
+  d=$(mk "n_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          %s: x\n        run: bash bin/build-stage.sh apk "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'never allowed' "round-2 (3): the env name $nm is forbidden in a step env"
+  d=$(mk "o_$nm"); printf '["DIGESTS","%s"]' "$nm" > "$d/.envnames.json"; gen "$d"; expm caught "$d" 'env_names' "round-2 (3): $nm in env_names is refused"
+done
+for nm in GITASKPASS GITHUBTOKEN RUNNERX NODERUNTIME PYTHON3 HTTPS_PROXY GOFLAGS SSL_CERT_FILE COSIGN_EXPERIMENTAL TUF_ROOT; do
+  d=$(afix "p_$nm"); printf '[{"name":"%s","script":"bin/build-admit.py","why":"x"}]' "$nm" > "$d/.ambient.json"; edit_spec "$d" 'rows["bin/build-admit.py"]["reads_env"]=["'"$nm"'"]'; expm caught "$d" 'ambient_env' "round-2 (3): $nm is refused as an ambient_env entry"
+done
+d=$(mk q_digests); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          DIGESTS: x\n        run: bash bin/build-stage.sh apk "$DIGESTS"\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-2 (3): control: DIGESTS stays an allowed env name"
+d=$(afix q_ghtoken); expm ok "$d" - "round-2 (3): control: GH_TOKEN stays an allowed ambient name"
+# (4) the literal arguments of a stage run line, and arg_words for a wrapper
+awfix() { local d; d=$(afix "$1"); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_words"]=["apk","build","rapk","rebuild"]'; echo "$d"; }
+aw() { # aw NAME 'run text' ok|caught FRAG
+  local d; d=$(awfix "$1"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: %s\n' "$2" > "$d/.github/workflows/stage-verify.yml"; expm "$3" "$d" "$4" "round-2 (4): $2"; }
+aw u_ok 'bash bin/witnessed.sh apk bin/stage-apk.sh' ok -
+aw u_ok2 'bash bin/witnessed.sh build bin/stage-apk.sh bin/build-admit.py' ok -
+aw u_evil 'bash bin/witnessed.sh apk bin/evil.sh' caught 'evil.sh'
+aw u_tmp 'bash bin/witnessed.sh apk /tmp/evil.sh' caught 'evil.sh'
+aw u_bogus 'bash bin/witnessed.sh bogus bin/stage-apk.sh' caught 'arg_words'
+aw u_dots 'bash bin/witnessed.sh apk ../bin/stage-apk.sh' caught 'stage-apk.sh'
+aw u_dslash 'bash bin/witnessed.sh apk bin//stage-apk.sh' caught 'stage-apk.sh'
+aw u_dotslash 'bash bin/witnessed.sh apk ./bin/stage-apk.sh' caught 'stage-apk.sh'
+aw u_third 'bash bin/witnessed.sh apk bin/stage-apk.sh bin/evil.sh' caught 'evil.sh'
+aw u_noext 'bash bin/witnessed.sh apk bin/evil' caught 'bin/evil'
+aw u_first 'bash bin/witnessed.sh bin/stage-apk.sh' caught 'arg_words'
+aw u_none 'bash bin/witnessed.sh' caught 'arg_words'
+aw u_data 'bash bin/witnessed.sh apk bin/stage-apk.sh out/x.json' ok -
+d=$(awfix u_shape1); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_words"]="apk"'; expm caught "$d" 'arg_words' "round-2 (4): arg_words that is not a list is an error"
+d=$(awfix u_shape2); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_words"]=["apk","a b"]'; expm caught "$d" 'arg_words' "round-2 (4): an arg_words member that is not a plain word is an error"
+d=$(awfix u_shape3); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_words"]=[]'; expm caught "$d" 'arg_words' "round-2 (4): an empty arg_words list is an error"
+d=$(afix u_free); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh anything bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-2 (4): control: a wrapper row without arg_words has no first-argument restriction"
+# (5) leading redirections and assignments before every command-position rule
+kc r5_a '2>/dev/null bash -c "$X"' 'handed' '["bash"]'
+kc r5_b '>/dev/null exec bash "$@"' 'launches another program' '["bash","exec"]'
+kc r5_c '>/dev/null timeout 5 bash -c "$X"' 'launches another program' '["bash","timeout"]'
+kc r5_d '>o xargs bash -c "$X"' 'launches another program' '["bash","xargs"]'
+kc r5_e '>o unshare -r bash -c "$X"' 'launches another program' '["bash","unshare"]'
+kc r5_f '>o setsid bash -c "$X"' 'launches another program' '["bash"]'
+kc r5_g '3>&1 bash -c "$X"' 'handed' '["bash"]'
+kc r5_h 'if >o bash -c "$X"; then :; fi' 'handed' '["bash"]'
+kc r5_i '&>o bash -c "$X"' 'handed' '["bash"]'
+kc r5_j '>|o bash -c "$X"' 'handed' '["bash"]'
+kc r5_k '{fd}>o bash -c "$X"' 'handed' '["bash"]'
+kc r5_l '<<<x bash -c "$X"' 'handed' '["bash"]'
+kc r5_m 'FOO=1 >o bash -c "$X"' 'handed' '["bash"]'
+kc r5_n '>o FOO=1 bash -c "$X"' 'handed' '["bash"]'
+kc r5_o '>o >p 2>&1 bash -c "$X"' 'handed' '["bash"]'
+kc r5_p '>o sed -n 1p f' 'evaluator' '["x"]'
+kc r5_q '>o ./bin/build-apk.sh' 'command position'
+kc r5_r 'bash -c "$X"' 'handed' '["bash"]'
+ko r5_ok1 '>o bash bin/build-apk.sh' '["bash"]' '["bin/build-apk.sh"]'
+ko r5_ok2 '2>&1 cp x y'
+ko r5_ok3 'echo a > out; cat out'
+# (6) the reviewed text starts at the first assignment or redirection of the simple command
+d=$(wfix t6_a 'GCONV_PATH=/x PERL5OPT=-Mevil exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"x"})'; expm caught "$d" 'launches another program' "round-2 (6): assignments before exec bash \"\$@\" are not waived by the plain entry"
+d=$(wfix t6_b '>o exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"x"})'; expm caught "$d" 'launches another program' "round-2 (6): a leading redirection is not waived by the plain entry"
+d=$(wfix t6_c 'GCONV_PATH=/x exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"GCONV_PATH=/x exec bash \"$@\"","why":"x"})'; expm ok "$d" - "round-2 (6): the entry with the assignment included waives that command"
+d=$(wfix t6_d 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"x"})'; expm ok "$d" - "round-2 (6): the plain entry still waives the plain command"
+# (7) ambient: the original value, and wrappers must be authorized too
+for v in "' \${{ github.token }}'" "'\${{ github.token }} '" '"\t${{ github.token }}"' '"${{ github.token }}\n"' '"${{ github.token }}\r"'; do
+  d=$(afix "v7_$RANDOM"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: %s\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' "$v" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'plain expression' "round-2 (7): the ambient value $v (surrounding whitespace) is not a plain expression"
+done
+d=$(afix w7_a); printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'not authorized' "round-2 (7): GH_TOKEN authorized only for bin/build-admit.py is refused when the step also runs a wrapper (bin/witnessed.sh) and a stage script"
+d=$(afix w7_b); printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"}]' > "$d/.ambient.json"; gen "$d"; expm caught "$d" 'not authorized' "round-2 (7): the stage script bin/stage-apk.sh named as an argument must be authorized too"
+d=$(afix w7_c); expm ok "$d" - "round-2 (7): authorized for the wrapper, the stage script and the reader is admitted"
+# (8) closed-list gaps
+kc s8_a 'install --strip-program dist/sed a b' 'by a path'
+kc s8_b 'tar -I dist/sed -cf x y' 'by a path' '["tar"]'
+kc s8_c 'tar --to-command dist/sed -xf a' 'by a path' '["tar"]'
+kc s8_d 'tar --checkpoint-action=exec=dist/sed -cf x y' 'by a path' '["tar"]'
+kc s8_e 'tar --rsh-command dist/sed -cf x y' 'by a path' '["tar"]'
+kc s8_f 'sort --compress-program dist/sed f' 'by a path'
+ko s8_ok1 'cp --reflink=auto x archive/go'
+ko s8_ok2 'cp x archive/*'
+kc s8_g 'dist/s?d x' 'by a path'
+kc s8_h 'dist/[s]ed x' 'by a path'
+kc s8_i '/usr/bin/s?d x' 'by a path'
+kc s8_j 'dist/\sed x' 'by a path'
+kc s8_k "\$'dist/sed' x" 'by a path'
+kc s8_l 'dist/"sed" x' 'by a path'
+kc s8_m "trap 'dist/s?d' EXIT" 'by a path' '["trap"]'
+kc s8_n 'python3.11 -c x' 'python3.11'
+kc s8_o '/usr/bin/python3.11 -c x' 'python3.11'
+kc s8_p '/usr/bin/perl5.38 -e x' 'perl5.38'
+kc s8_q 'rbash -c x' 'rbash'
+kc s8_r 'gsed e' 'gsed'
+kc s8_s 'lua5.3 x' 'lua5.3'
+kc s8_t 'vi -c :!id' 'vi'
+kc s8_u 'ex' 'ex'
+kc s8_v 'nodejs x.js' 'nodejs'
+kc s8_w 'ash -c x' 'ash'
+ko s8_ok3 'python3.11 bin/build-apk.sh' '["python3.11"]' '["bin/build-apk.sh"]'
+# (9) one left-to-right quote pass; an unterminated quote or brace leaves the rest of the line unmasked
+kc a9_a 'echo "it'"'"'s"; dist/sed p; echo '"'"'x'"'"'' 'by a path'
+kc a9_b 'echo "it'"'"'s"; bash -c "$X"; echo '"'"'x'"'"'' 'handed' '["bash"]'
+kc a9_c "x='\n'; setsid x" 'launches another program'
+kc a9_d "echo 'foo\nbar'; setsid x" 'launches another program'
+kc a9_e 'echo "foo\nbar"; setsid x' 'launches another program'
+kc a9_f "echo it's; setsid x" 'launches another program'
+kc a9_g 'echo "unterminated; setsid x' 'launches another program'
+kc a9_h "echo \$'a\\\\'b'; setsid x" 'launches another program'
+kc a9_i 'echo ${X:-"}"}; setsid x' 'launches another program'
+kc a9_j 'echo "$(echo ")")"; setsid x' 'launches another program'
+kc a9_k 'echo "$(echo "(")"; setsid x' 'launches another program'
+kc a9_l 'echo "${X:-$(setsid y)}"' 'launches another program'
+kc a9_m 'echo "`setsid y`"' 'launches another program'
+ko a9_ok1 'echo "it'"'"'s fine"; cp x y'
+ko a9_ok2 "echo 'a \"b\" c'; cp x y"
+ko a9_ok3 'echo "$(echo ")")"'
+ko a9_ok4 'echo ${X:-"}"}'
+ko a9_ok5 'echo "multi\nline"; cp x y'
+
+
+EXPECT=1058
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
