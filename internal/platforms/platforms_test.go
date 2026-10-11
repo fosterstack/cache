@@ -790,6 +790,13 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"checksum section removed":       edit("checksum:\n  name_template: \"checksums.txt\"\n", ""),
 		"checksum without a name":        edit("checksum:\n  name_template: \"checksums.txt\"\n", "checksum: {}\n"),
 		"second sbom definition":         edit("  - artifacts: archive\n", "  - artifacts: archive\n  - artifacts: archive\n"),
+		// Round-7 regressions (A7-6): the archive SBOMs are pinned by value: the section missing, empty, null or with
+		// another or an extra entry is refused.
+		"A7-6 sboms section removed":    edit("sboms:\n  - artifacts: archive\n", ""),
+		"A7-6 sboms empty list":         edit("sboms:\n  - artifacts: archive\n", "sboms: []\n"),
+		"A7-6 sboms null":               edit("sboms:\n  - artifacts: archive\n", "sboms:\n"),
+		"A7-6 sboms extra entry":        edit("  - artifacts: archive\n", "  - artifacts: archive\n  - artifacts: package\n"),
+		"A7-6 sboms entry as a mapping": edit("sboms:\n  - artifacts: archive\n", "sboms:\n  artifacts: archive\n"),
 		// Round-5 regressions (B1): every build's binary output path is resolved (dist/<id>_<os>_<arch>_<level>/<binary>)
 		// and enters the collision check; a binary name that leaves its build directory, holds a path separator or a
 		// template, or is missing is refused.
@@ -1566,6 +1573,24 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"up to four archives":                      install + "\nThe release ships up to four archives.\n",
 		"over four archives":                       install + "\nThe release ships over four archives.\n",
 		"about four archives":                      install + "\nThe release ships about four archives.\n",
+		// Round-7 regressions (A7-5, B7-3, B7-5): "no" before an archive is a count of zero in any clause (only the
+		// exact allowedCountClaims entry is excepted); a comparison is found across a determiner and after the count;
+		// a link destination with a backslash before a character it cannot escape is refused.
+		"A7-5 release has no archive":            install + "\nThis release has no archive.\n",
+		"A7-5 no archive exists":                 install + "\nNo archive exists for a release.\n",
+		"A7-5 no archive for any machine":        install + "\nThere is no archive for any machine.\n",
+		"A7-5 none of the archives shipped":      install + "\nThe release ships none of the archives.\n",
+		"B7-3 more than the four archives":       install + "\nEach release ships more than the four archives listed here.\n",
+		"B7-3 four or more after a colon":        install + "\nRelease archives: four or more.\n",
+		"B7-3 four or more archives":             install + "\nThe release ships four or more archives.\n",
+		"B7-3 at least the four archives":        install + "\nThe release ships at least the four archives.\n",
+		"B7-3 four archives at least":            install + "\nThe release ships four archives at least.\n",
+		"B7-3 four archives or fewer":            install + "\nThe release ships four archives or fewer.\n",
+		"B7-3 4+ archives":                       install + "\nThe release ships 4+ archives.\n",
+		"B7-3 up to the four archives":           install + "\nThe release ships up to the four archives.\n",
+		"B7-5 escaped space hides a count":       install + "\nRelease archives: [count](six\\ ).\n",
+		"B7-5 backslash before a letter":         install + "\nEvery release ships [four](a\\b) archives.\n",
+		"B7-5 backslash before a space in title": install + "\nEvery release ships [four](a \"x\\ y\") archives.\n",
 		// Round-7 decision (advisor, final): no Markdown structure is read; a tag-like "<" is refused anywhere, in a
 		// code span or fence too. The reviewer shapes (A7-1, A7-2, B7-1, B7-2) and the placeholders accepted until
 		// round 7 are each refused.
@@ -1614,6 +1639,10 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"The version is pinned for all four archives.\n<!-- pinned: historical -->",
 		"   ```sh\n   kubectl exec -it POD_NAME -- sh\n   ```",
 		"~~~ sh `x`\nkubectl exec -it POD_NAME -- sh\n~~~",
+		// Round-7 precision: the allowed "no archive for this machine" (docs/install.md:57's form) and an escaped
+		// parenthesis in a destination pass.
+		"If it prints anything else, there is no archive for this machine; run the container.",
+		"Every release ships [four](https://example.com/a\\(b) archives.",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
