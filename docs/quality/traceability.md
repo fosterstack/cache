@@ -400,6 +400,8 @@ Every release shall ship static (CGO_ENABLED=0) standard and FIPS-variant binari
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md "Supported platforms"; docs/install.md; docs/docker-deploy.md; RELEASING.md; docs/next-release-notes.md; .goreleaser.yaml*
 
+> The prose guards are a consistency check on documents this project writes and reviews, not a security control. They read plain Markdown text (words, counts, wrapped lines, entities, link text). Documents may not contain inline HTML or invisible or non-printing characters, and the check refuses them outright; findings that depend on such content are information, not blockers.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 10 item(s) |
