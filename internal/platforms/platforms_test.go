@@ -866,10 +866,11 @@ var markdownMarks = strings.NewReplacer("*", "", "_", "", "`", "", "~", "", "[",
 
 // The content guard. The prose checks are a consistency check on documents this project writes and reviews, not
 // a security control: they read plain Markdown text. So that plain text is all there is, the guard refuses outright,
-// naming file and line, what a plain-text reading would have to interpret: inline HTML (htmlStart: a tag, a comment,
-// a processing instruction, a declaration, CDATA, an autolink) outside a Markdown code span or code fence, other
-// than the exact allowedMarkup entries (an exception marker only where it ends its line); any character reference (charRef; the docs use none); and any invisible or
-// non-printing character (invisibleRune).
+// naming file and line, what a plain-text reading would have to interpret: any tag-like "<" (htmlStart: a "<" before
+// a letter, /, ! or ?, which opens a tag, a comment, a processing instruction, a declaration, CDATA or an autolink)
+// anywhere in the file, code spans and code fences included (the guard reads no Markdown structure, so nothing can
+// hide one), other than the exact allowedMarkup entries (an exception marker only where it ends its line); any
+// character reference (charRef; the docs use none); and any invisible or non-printing character (invisibleRune).
 var (
 	htmlStart = regexp.MustCompile(`<[A-Za-z/!?]`)
 	charRef   = regexp.MustCompile(`&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);`)
@@ -900,131 +901,12 @@ func markupFor(file string) []string {
 	return out
 }
 
-// codeMask returns, for each line of a Markdown file, the line with every byte inside a code fence or a code span
-// replaced by a space (so the guard does not read a placeholder such as `<pod>` there: a renderer shows it as
-// text). Fences are the lines fencedLines marks (CommonMark's fenced code blocks); a code span is a run of n backticks closed by the next run of
-// exactly n in the same paragraph (it may cross a soft line break); a backslash-escaped backtick opens nothing,
-// and an unclosed run is literal text.
-func codeMask(lines []string) []string {
-	out := make([]string, len(lines))
-	copy(out, lines)
-	blank := func(n, from, to int) {
-		out[n] = out[n][:from] + strings.Repeat(" ", to-from) + out[n][to:]
-	}
-	var para []int // the line numbers of the current paragraph
-	flush := func() {
-		if len(para) == 0 {
-			return
-		}
-		var text string
-		var at [][2]int // byte offset in text -> (line, column)
-		for k, n := range para {
-			if k > 0 {
-				text += "\n"
-				at = append(at, [2]int{-1, -1})
-			}
-			for c := 0; c < len(lines[n]); c++ {
-				at = append(at, [2]int{n, c})
-			}
-			text += lines[n]
-		}
-		for i := 0; i < len(text); {
-			switch {
-			case text[i] == '\\':
-				i += 2
-				continue
-			case text[i] != '`':
-				i++
-				continue
-			}
-			j := i
-			for j < len(text) && text[j] == '`' {
-				j++
-			}
-			end := -1
-			for k := j; k < len(text); {
-				if text[k] != '`' {
-					k++
-					continue
-				}
-				m := k
-				for m < len(text) && text[m] == '`' {
-					m++
-				}
-				if m-k == j-i {
-					end = m
-					break
-				}
-				k = m
-			}
-			if end < 0 {
-				i = j
-				continue
-			}
-			for k := i; k < end; k++ {
-				if p := at[k]; p[0] >= 0 {
-					blank(p[0], p[1], p[1]+1)
-				}
-			}
-			i = end
-		}
-		para = nil
-	}
-	fenced := fencedLines(lines)
-	for n, line := range lines {
-		if fenced[n] || strings.TrimSpace(line) == "" {
-			flush()
-			if fenced[n] {
-				blank(n, 0, len(line))
-			}
-			continue
-		}
-		para = append(para, n)
-	}
-	flush()
-	return out
-}
-
-var (
-	fenceOpen  = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})(.*)$")
-	fenceClose = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})[ \t]*$")
-)
-
-// fencedLines reports, for each line of a Markdown text, whether it belongs to a fenced code block as CommonMark
-// reads one, its fence lines included: an opening fence is three or more backticks or tildes indented 0-3 spaces
-// (a backtick fence's info string holds no backtick); the closing fence is a run of the same character at least as
-// long, indented 0-3 spaces, with nothing but spaces or tabs after it. A line indented four spaces or a tab is not a
-// fence. A fence that is never closed marks nothing: its lines are read as text (fail closed).
-func fencedLines(lines []string) []bool {
-	out := make([]bool, len(lines))
-	for n := 0; n < len(lines); n++ {
-		m := fenceOpen.FindStringSubmatch(lines[n])
-		if m == nil || (m[1][0] == '`' && strings.Contains(m[2], "`")) {
-			continue
-		}
-		for k := n + 1; k < len(lines); k++ {
-			c := fenceClose.FindStringSubmatch(lines[k])
-			if c != nil && c[1][0] == m[1][0] && len(c[1]) >= len(m[1]) {
-				for j := n; j <= k; j++ {
-					out[j] = true
-				}
-				n = k
-				break
-			}
-		}
-	}
-	return out
-}
-
-// guardText returns the guard's refusals for text, one per kind per line, each labelled by where(line). In a
-// Markdown file (.md) code spans and fences are not read for inline HTML; elsewhere (the YAML mappings file, its
-// decoded values) angle-bracket markup is refused wherever it is. The allowedMarkup texts for file are excepted.
+// guardText returns the guard's refusals for text, one per kind per line, each labelled by where(line). It reads no
+// Markdown structure: a tag-like "<" is refused wherever it is on a line, in a code span or a code fence too, in a
+// Markdown file and in the YAML mappings file (and its decoded values) alike. The allowedMarkup texts for file are
+// excepted (an exception marker only where it ends its line, on the original line).
 func guardText(where func(line int) string, file, text string) (problems []string) {
 	lines := strings.Split(text, "\n")
-	masked := lines
-	if strings.HasSuffix(file, ".md") {
-		masked = codeMask(lines)
-	}
 	allowed := markupFor(file)
 	for n, line := range lines {
 		for i := 0; i < len(line); {
@@ -1038,7 +920,7 @@ func guardText(where func(line int) string, file, text string) (problems []strin
 		if m := charRef.FindString(line); m != "" {
 			problems = append(problems, fmt.Sprintf("%s: character reference %s refused outright (write the character itself): %q", where(n+1), m, line))
 		}
-		scrub := masked[n]
+		scrub := line
 		for _, a := range allowed {
 			if !strings.HasPrefix(a, "<!--") {
 				scrub = strings.ReplaceAll(scrub, a, strings.Repeat(" ", len(a)))
@@ -1062,7 +944,7 @@ func guardText(where func(line int) string, file, text string) (problems []strin
 			}
 		}
 		if loc := htmlStart.FindStringIndex(scrub); loc != nil {
-			problems = append(problems, fmt.Sprintf("%s: inline HTML refused outright (only allowedMarkup, code spans and code fences may hold angle-bracket markup): %q", where(n+1), line))
+			problems = append(problems, fmt.Sprintf("%s: inline HTML refused outright: a tag-like \"<\" (before a letter, /, ! or ?) is refused anywhere, in code spans and code fences too (write a placeholder as a word, POD_NAME; only allowedMarkup is excepted): %q", where(n+1), line))
 		}
 	}
 	return problems
@@ -1368,7 +1250,7 @@ var docsScanned = []string{"README.md", "docs/install.md", "docs/docker-deploy.m
 
 // allowedLine is a run of text in a scanned doc that names a non-Linux platform without claiming a darwin or
 // windows binary exists. The text is matched exactly, with whitespace collapsed, inside one Markdown
-// paragraph (or one line of a code block), so it may span a soft line break; a platform name is excused only
+// paragraph (unit: consecutive non-blank lines), so it may span a soft line break; a platform name is excused only
 // if it lies wholly inside an allowed text. Each must still be present (a stale entry fails).
 type allowedLine struct {
 	file, text, why string
@@ -1419,9 +1301,9 @@ func releaseArchiveCount(t *testing.T) int {
 	return len(archives)
 }
 
-// unit is a run of Markdown a reader takes as one piece of text: a paragraph (consecutive non-blank lines
-// outside a code fence, so a sentence wrapped across a soft line break is one unit), or one line of a fenced
-// code block. text has its whitespace collapsed to single spaces; line is its first physical line.
+// unit is a run of text read as one piece: a paragraph, the consecutive non-blank lines between blank lines, so a
+// sentence wrapped across a soft line break is one unit. No Markdown structure is read (a fence line is a line of
+// text). text has its whitespace collapsed to single spaces; line is its first physical line.
 type unit struct {
 	line int
 	text string
@@ -1437,15 +1319,10 @@ func units(text string) []unit {
 			para = nil
 		}
 	}
-	lines := strings.Split(text, "\n")
-	fenced := fencedLines(lines)
-	for n, line := range lines {
+	for n, line := range strings.Split(text, "\n") {
 		l := strings.TrimSpace(line)
-		if fenced[n] || l == "" {
+		if l == "" {
 			flush()
-			if l != "" {
-				out = append(out, unit{n + 1, strings.Join(strings.Fields(l), " ")})
-			}
 			continue
 		}
 		if len(para) == 0 {
@@ -1557,10 +1434,10 @@ func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
 // noun, a label and its value across a colon, a partitive count in a shipping claim, two counts before the noun, a
 // count interrupted by a link destination or a URL, in any number word, digits, compound or vague), a darwin
 // archive name, and any inline HTML, character reference or invisible character (refused outright by the content
-// guard; an indented or invalid pseudo-fence hides none of it; an exception marker inside a line of prose is refused),
+// guard, a tag-like "<" anywhere, a code span or fence included; an exception marker inside a line of prose is refused),
 // an angle-bracket link destination, "no archives" and a count after a comparison (more than, at least, up to, ...) are
 // each refused; phrases that name archives without a wrong count pass (a count in a link destination or title is not
-// read; a marker ending its line; a real fence indented up to three spaces); the wrapped Apple Silicon mention in
+// read; a marker ending its line; a placeholder written as a word); the wrapped Apple Silicon mention in
 // docs/install.md passes only through its named exception.
 func TestDocsCheckRefusesMutants(t *testing.T) {
 	const f = "docs/install.md"
@@ -1665,10 +1542,10 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"combining grapheme joiner splits Windows": install + "\nNative binaries for Win͏dows are attached.\n",
 		"combining grapheme joiner splits six":     install + "\nEvery release ships si͏x archives.\n",
 		"entity for a joiner splits Windows":       install + "\nNative binaries for Win&#x034F;dows are attached.\n",
-		// Round-6 regressions (A1, B3, A2, B4, B2, A3): a fence is a fence only as CommonMark reads it (indented 0-3
-		// spaces; a backtick fence's info string holds no backtick), so a pseudo-fence hides nothing; an exception
-		// marker may only end its line, never sit inside a line of prose; an angle-bracket link destination is a link
-		// form the check does not read; "no archives" is a count of zero and a comparison is not resolved.
+		// Round-6 regressions (A1, B3, A2, B4, B2, A3): a pseudo-fence hides nothing (since round 7 no fence is read at
+		// all); an exception marker may only end its line, never sit inside a line of prose; an angle-bracket link
+		// destination is a link form the check does not read; "no archives" is a count of zero and a comparison is not
+		// resolved.
 		"indented pseudo-fence hides html":         install + "\n    ```\n\nNative binaries for Win<b>dows</b> are attached.\n",
 		"indented pseudo-fence hides a count":      install + "\n    ```\n\nEvery release ships si<b>x</b> archives.\n",
 		"backtick info string hides html":          install + "\n```bad`\nEvery release ships si<b>x</b> archives.\n",
@@ -1767,23 +1644,18 @@ const (
 	changelogFile = "docs/quality/releases/CHANGELOG.md"
 )
 
-// bulletEntries are the "- " entries of a notes or changelog text, read as bin/patch-decide.py reads them: a line
-// starting "- " opens one, and each following non-blank line indented two spaces continues it, joined by a space.
-// A line inside a fenced code block (fencedLines) is not a Markdown list entry: it opens none, continues none, and
-// ends the entry before it.
+// bulletEntries are the entries of a notes or changelog text, read on plain lines (no Markdown structure, no fence
+// concept): a line starting "- " or "* " after optional indentation (spaces or tabs) opens one, and each following
+// non-blank line indented two spaces that opens none continues it, joined by a space (as bin/patch-decide.py joins
+// continuation lines).
 func bulletEntries(text string) []string {
 	var out []string
-	lines := strings.Split(text, "\n")
-	fenced := fencedLines(lines)
-	open := false
-	for n, ln := range lines {
+	for _, ln := range strings.Split(text, "\n") {
+		item := strings.TrimLeft(ln, " \t")
 		switch {
-		case fenced[n]:
-			open = false
-		case strings.HasPrefix(ln, "- "):
-			out = append(out, strings.TrimSpace(ln[2:]))
-			open = true
-		case open && strings.HasPrefix(ln, "  ") && strings.TrimSpace(ln) != "":
+		case strings.HasPrefix(item, "- ") || strings.HasPrefix(item, "* "):
+			out = append(out, strings.TrimSpace(item[2:]))
+		case len(out) > 0 && strings.HasPrefix(ln, "  ") && strings.TrimSpace(ln) != "":
 			out[len(out)-1] += " " + strings.TrimSpace(ln)
 		}
 	}
@@ -1851,7 +1723,8 @@ const notesFixture = "# Notes for the next release\n\nBehavior changes since the
 // destination; inline HTML, character references and invisible characters are refused outright), a changed or
 // missing required sentence, the sentence outside an entry that starts with it and ends with the 0390 citation
 // (a paragraph, a prefixed or emphasized bullet, another citation), a repeated sentence and a wrong archive count
-// are each refused; notes cleared after publication pass only while the changelog carries the cited entry.
+// are each refused; notes cleared after publication pass only while the changelog carries the cited entry, read on
+// plain lines ("- " or "* " after optional indentation; no fence concept, so a fenced bullet line is an entry).
 func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 	notes := notesFixture
 	if ps := checkNotes(notes, "", releaseArchiveCount(t)); len(ps) > 0 {
@@ -2098,13 +1971,22 @@ func mappingsReadings(s string) []string {
 // one of this package's tests. The file is read twice and both readings must be clean: decoded by a YAML
 // loader (every document; every key, value, anchor, tag and comment, so a quoted, escaped, folded or wrapped
 // scalar is read as the text it means), and as raw text (so nothing the loader drops escapes); each is read
-// in every one of mappingsReadings. The one exception is the whole value of `ref` in an evidence item whose
+// in every one of mappingsReadings, and a link form linkParts does not read is refused (as checkDoc refuses it). The one exception is the whole value of `ref` in an evidence item whose
 // `type` is `go-test`, when that value is exactly internal/platforms:<name> and tests holds name. The content
 // guard reads the raw text and every decoded comment and value first, and refuses inline HTML, character
 // references and invisible characters outright.
 func checkEvidenceMappings(text string, tests map[string]bool) (problems []string) {
 	reported := map[string]bool{}
 	scan := func(where, s string) {
+		for _, v := range []string{s, strings.ReplaceAll(s, "#", "")} {
+			if _, _, ok := linkParts(v); !ok {
+				p := fmt.Sprintf("%s holds a link this check does not read (an unclosed destination or title, an angle-bracket destination): %s", where, collapse(v))
+				if !reported[p] {
+					reported[p] = true
+					problems = append(problems, p)
+				}
+			}
+		}
 		for _, r := range mappingsReadings(s) {
 			for _, loc := range platformWord.FindAllStringIndex(r, -1) {
 				from, to := max(0, loc[0]-60), min(len(r), loc[1]+60)
@@ -2185,7 +2067,8 @@ func TestEvidenceMappingsClaimNoDarwin(t *testing.T) {
 // across lines, split by a nested link destination, in a comment or wrapped across comment lines, and in a second
 // document; inline HTML, character references and invisible characters (raw or as a YAML escape) are refused
 // outright; a test declared only in a file the go tool does not select for linux/amd64 and linux/arm64 (with the
-// target's architecture feature tags) authorizes no reference.
+// target's architecture feature tags) authorizes no reference; a link form the plain-text reading does not read (an
+// angle-bracket destination) is refused.
 func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 	real := read(t, mappingsFile)
 	tests := packageTests(t)
@@ -2337,8 +2220,8 @@ func TestNotScannedListIsCurrent(t *testing.T) {
 	}
 }
 
-// allowedMarkup are the only pieces of angle-bracket markup the guard lets through outside a Markdown code span or
-// code fence, each matched exactly with its reason. A new entry is reviewed; each must still be used (a stale entry
+// allowedMarkup are the only pieces of angle-bracket markup the guard lets through anywhere (it reads no code span or
+// code fence), each matched exactly with its reason. A new entry is reviewed; each must still be used (a stale entry
 // fails). files is the files it applies to ("*.md": every Markdown file the guard reads).
 var allowedMarkup = []struct{ files, text, why string }{
 	{"*.md", "<!-- pinned: upstream -->", "the version-literals marker bin/check-version-literals.sh reads (an upstream version, not ours); renders nothing"},
@@ -2354,7 +2237,7 @@ func contentFiles() []string {
 
 // proves: REQ-PLAT-001-AC1
 // TestDocsHoldNoInlineHTMLOrInvisibleCharacters: the scanned docs, the next release notes and the evidence
-// mappings hold no inline HTML (outside Markdown code spans and code fences, other than the listed exceptions), no
+// mappings hold no tag-like "<" anywhere (code spans and code fences included; other than the listed exceptions), no
 // character reference and no invisible or non-printing character; each listed exception is still used.
 func TestDocsHoldNoInlineHTMLOrInvisibleCharacters(t *testing.T) {
 	used := map[string]bool{}
@@ -2384,11 +2267,12 @@ func TestDocsHoldNoInlineHTMLOrInvisibleCharacters(t *testing.T) {
 // non-printing character (Unicode Cc other than tab, Cf, Mn, Me, Mc, Zl, Zp, every space other than the ASCII
 // space, the default-ignorable letters, unassigned and private-use code points, invalid UTF-8), every form of inline
 // HTML (open and closing tags, comments other than the listed markers, processing instructions, declarations,
-// CDATA, autolinks, a backslash-escaped tag) outside a Markdown code span or fence as CommonMark reads a fence (an
-// indented, tab-indented, unclosed or backtick-info pseudo-fence hides nothing), every character reference, and an
-// exception marker anywhere but the end of its line; placeholders inside code spans (also across a soft line break)
-// and real code fences, the listed markers ending their lines and visible punctuation pass. In the mappings file (YAML, not Markdown) angle-bracket markup is refused everywhere but the
-// listed placeholder.
+// CDATA, autolinks, a backslash-escaped tag: any tag-like "<") anywhere, a code span or a code fence included (no
+// Markdown structure is read, so no fence, list, heading or code span hides one: the round-7 reviewer shapes and the
+// placeholders accepted until round 7 are refused), every character reference, and an exception marker anywhere but
+// the end of its line on the original line; placeholders written as words, the listed markers ending their lines and
+// visible punctuation (a "<" before a space, a digit, "=" or "-") pass. In the mappings file angle-bracket markup is
+// refused everywhere but the listed placeholder.
 func TestContentGuardRefusesMutants(t *testing.T) {
 	const md = "docs/install.md"
 	invisible := map[string]string{
@@ -2452,12 +2336,12 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 		"placeholder after an indented pseudo-close": {"```sh\nPOD_NAME\n    ```\n<container>\n```", 5},
 		// The round-7 reviewer shapes (A7-1/B7-1: a fence that CommonMark ends with its list item; A7-2/B7-1: a code
 		// span paired across a heading and a paragraph; B7-2: an exception marker between two code spans).
-		"A7-1/B7-1 list fence hides a tag":            {"- item\n  ```\n  harmless\n\nWin<b>dows</b> binaries are shipped.\n```", 6},
-		"A7-1 unindented line after a list fence":     {"- item\n  ```\nWin<b>dows</b>\n```", 4},
-		"A7-2/B7-1 heading code span hides a tag":     {"# `\nWin<b>dows</b> binaries are shipped.\n`", 3},
-		"B7-2 marker between code spans in Windows":   {"`Win`<!-- pinned: upstream -->`dows`", 2},
-		"B7-2 marker between code spans in six":       {"`si`<!-- pinned: upstream -->`x archives`", 2},
-		"B7-2 historical marker between code spans":   {"`Win`<!-- pinned: historical -->`dows`", 2},
+		"A7-1/B7-1 list fence hides a tag":          {"- item\n  ```\n  harmless\n\nWin<b>dows</b> binaries are shipped.\n```", 6},
+		"A7-1 unindented line after a list fence":   {"- item\n  ```\nWin<b>dows</b>\n```", 4},
+		"A7-2/B7-1 heading code span hides a tag":   {"# `\nWin<b>dows</b> binaries are shipped.\n`", 3},
+		"B7-2 marker between code spans in Windows": {"`Win`<!-- pinned: upstream -->`dows`", 2},
+		"B7-2 marker between code spans in six":     {"`si`<!-- pinned: upstream -->`x archives`", 2},
+		"B7-2 historical marker between code spans": {"`Win`<!-- pinned: historical -->`dows`", 2},
 	} {
 		for _, f := range []string{md, notesFile} {
 			ps := contentProblems(f, "a first line\n"+c.s+"\n")
@@ -2499,10 +2383,9 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 	if ps := contentProblems(notesFile, "Cut four times. <!-- pinned: upstream -->\n"); len(ps) > 0 {
 		t.Errorf("a listed marker in the notes is refused: %v", ps)
 	}
-	// Round-6 regressions (A1, B3, A2, B4): a fence is recognised as CommonMark reads it - an opening fence indented
-	// 0-3 spaces, a backtick fence whose info string holds no backtick, closed by a run of its own character at least
-	// as long, indented 0-3 spaces, with nothing after it; an unclosed fence masks nothing. An exception marker is
-	// allowed only where it ends its line (after a space, or alone on the line), never inside a line of prose.
+	// Round-6 regressions (A1, B3, A2, B4), kept since round 7 (no fence is read, so none of these hides anything): a
+	// pseudo-fence of any form before a tag. An exception marker is allowed only where it ends its line (after a space,
+	// or alone on the line), never inside a line of prose.
 	for _, f := range []string{md, notesFile} {
 		for name, s := range map[string]string{
 			"indented pseudo-fence":              "    ```\n\nWin<b>dows</b>",
