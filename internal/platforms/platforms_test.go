@@ -4,6 +4,7 @@
 package platforms
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -303,6 +305,25 @@ func yamlDocs(text string) ([]*yaml.Node, error) {
 	}
 }
 
+// explicitTags refuses, by name, every explicit YAML tag in docs other than the allowed ones: a tagged node
+// (!!binary, !!int, !!map, a local or verbatim tag) means what its tag decodes, which the raw text does not show, so
+// the checks read only untagged nodes (and the allowed tags, whose value is the text itself).
+func explicitTags(file string, docs []*yaml.Node, allowed ...string) (problems []string) {
+	var walk func(n *yaml.Node)
+	walk = func(n *yaml.Node) {
+		if n.Style&yaml.TaggedStyle != 0 && !slices.Contains(allowed, n.Tag) {
+			problems = append(problems, fmt.Sprintf("%s:%d: explicit YAML tag %s refused (only an untagged node is read%s)", file, n.Line, n.Tag, strings.Join(append([]string{""}, allowed...), ", or ")))
+		}
+		for _, c := range n.Content {
+			walk(c)
+		}
+	}
+	for _, d := range docs {
+		walk(d)
+	}
+	return problems
+}
+
 func keySet(keys ...string) map[string]bool {
 	m := map[string]bool{}
 	for _, k := range keys {
@@ -460,6 +481,7 @@ func releaseOutputs(text string, lineBuilds []relBuild) (archives []releaseArchi
 	if len(docs) != 1 || len(docs[0].Content) != 1 {
 		return nil, nil, []string{fmt.Sprintf("%d YAML documents, want exactly one", len(docs))}
 	}
+	problems = explicitTags(".goreleaser.yaml", docs)
 	top := yamlFields(docs[0].Content[0], "the top level", releaseTopKeys, &problems)
 	project := yamlString(top["project_name"], "project_name (without it GoReleaser takes a default)", &problems)
 	pinnedFields(top, "the top-level", pinnedTop, &problems)
@@ -925,13 +947,39 @@ func markupFor(file string) []string {
 	return out
 }
 
+// markupPlaced reports whether the allowed text a, found at byte i of the original (unscrubbed) line, stands where
+// its exception holds. An exception marker (an HTML comment) holds only where it ends the line: nothing but spaces or
+// tabs after it, and the line start or a space or tab before it; so two markers on one line are refused in either
+// order. The mappings placeholder holds only on a whole-line comment at column 0 ("# ") inside the leading comment
+// block (leading: every line up to it is blank or starts with "#" at column 0), never in a value, a key, a later or
+// indented comment or a line comment.
+func markupPlaced(a, line string, i int, leading bool) bool {
+	if strings.HasPrefix(a, "<!--") {
+		before, after := line[:i], line[i+len(a):]
+		return strings.Trim(after, " \t") == "" && (before == "" || strings.HasSuffix(before, " ") || strings.HasSuffix(before, "\t"))
+	}
+	return leading && strings.HasPrefix(line, "# ")
+}
+
+// leadingLines reports, for each line, whether it lies in the leading comment block: it and every line before it
+// is blank or starts with "#" at column 0.
+func leadingLines(lines []string) []bool {
+	out := make([]bool, len(lines))
+	leading := true
+	for n, line := range lines {
+		leading = leading && (strings.TrimSpace(line) == "" || strings.HasPrefix(line, "#"))
+		out[n] = leading
+	}
+	return out
+}
+
 // guardText returns the guard's refusals for text, one per kind per line, each labelled by where(line). It reads no
 // Markdown structure: a tag-like "<" is refused wherever it is on a line, in a code span or a code fence too, in a
-// Markdown file and in the YAML mappings file (and its decoded values) alike. The allowedMarkup texts for file are
-// excepted (an exception marker only where it ends its line, on the original line).
-func guardText(where func(line int) string, file, text string) (problems []string) {
+// Markdown file and in the YAML mappings file (and its decoded values) alike. The allowed texts are excepted only
+// where markupPlaced holds on the original line; every placement is decided before anything is scrubbed.
+func guardText(where func(line int) string, allowed []string, text string) (problems []string) {
 	lines := strings.Split(text, "\n")
-	allowed := markupFor(file)
+	leading := leadingLines(lines)
 	for n, line := range lines {
 		for i := 0; i < len(line); {
 			r, size := utf8.DecodeRuneInString(line[i:])
@@ -944,30 +992,24 @@ func guardText(where func(line int) string, file, text string) (problems []strin
 		if m := charRef.FindString(line); m != "" {
 			problems = append(problems, fmt.Sprintf("%s: character reference %s refused outright (write the character itself): %q", where(n+1), m, line))
 		}
-		scrub := line
+		scrub := []byte(line)
 		for _, a := range allowed {
-			if !strings.HasPrefix(a, "<!--") {
-				scrub = strings.ReplaceAll(scrub, a, strings.Repeat(" ", len(a)))
-				continue
-			}
-			// An exception marker (an HTML comment) is excepted only where it ends its line: alone on the line, or
-			// after a space or tab with nothing but spaces or tabs after it. Inside a line of prose it is refused.
 			for off := 0; ; {
-				i := strings.Index(scrub[off:], a)
+				i := strings.Index(line[off:], a)
 				if i < 0 {
 					break
 				}
 				i += off
-				before, after := scrub[:i], scrub[i+len(a):]
-				if strings.Trim(after, " \t") == "" && (strings.Trim(before, " \t") == "" || strings.HasSuffix(before, " ") || strings.HasSuffix(before, "\t")) {
-					scrub = before + strings.Repeat(" ", len(a)) + after
-				} else {
-					problems = append(problems, fmt.Sprintf("%s: exception marker %s refused inside a line of prose (it may only end its line, after a space, or stand alone): %q", where(n+1), a, line))
+				switch {
+				case markupPlaced(a, line, i, leading[n]):
+					copy(scrub[i:i+len(a)], strings.Repeat(" ", len(a)))
+				case strings.HasPrefix(a, "<!--"):
+					problems = append(problems, fmt.Sprintf("%s: exception marker %s refused where it does not end its line (it may only end its line, after a space, or stand alone, one per line): %q", where(n+1), a, line))
 				}
 				off = i + len(a)
 			}
 		}
-		if loc := htmlStart.FindStringIndex(scrub); loc != nil {
+		if loc := htmlStart.FindIndex(scrub); loc != nil {
 			problems = append(problems, fmt.Sprintf("%s: inline HTML refused outright: a tag-like \"<\" (before a letter, /, ! or ?) is refused anywhere, in code spans and code fences too (write a placeholder as a word, POD_NAME; only allowedMarkup is excepted): %q", where(n+1), line))
 		}
 	}
@@ -976,18 +1018,38 @@ func guardText(where func(line int) string, file, text string) (problems []strin
 
 // contentProblems is the content guard for one whole file, naming file:line.
 func contentProblems(file, text string) []string {
-	return guardText(func(n int) string { return fmt.Sprintf("%s:%d", file, n) }, file, text)
+	return guardText(func(n int) string { return fmt.Sprintf("%s:%d", file, n) }, markupFor(file), text)
+}
+
+// refDef is a Markdown link reference definition line ("[label]: destination", indented at most three spaces).
+var refDef = regexp.MustCompile(`(?m)^ {0,3}\[([^\]\\]+)\]:`)
+
+// refLabel is a reference label as CommonMark matches it: case-insensitive, whitespace collapsed.
+func refLabel(s string) string {
+	return strings.ToLower(collapse(s))
+}
+
+// refDefs are the reference labels text defines.
+func refDefs(text string) map[string]bool {
+	defs := map[string]bool{}
+	for _, m := range refDef.FindAllStringSubmatch(text, -1) {
+		defs[refLabel(m[1])] = true
+	}
+	return defs
 }
 
 // linkParts splits Markdown text into what a reader sees and what is hidden: an inline link's destination and
-// title ("](dest "title")", the destination with balanced parentheses, as CommonMark reads it) and a reference
-// label ("][label]") are hidden; everything else is visible. ok is false when a "](" starts a link form it does
-// not read (an unclosed destination or title, an angle-bracket destination, a backslash in a destination or title
-// before a character CommonMark cannot escape, which is anything but ASCII punctuation): the caller refuses it rather
-// than guess.
-func linkParts(s string) (visible, hidden string, ok bool) {
+// title ("](dest "title")", the destination with balanced parentheses, as CommonMark reads it) and a full reference
+// link's label ("][label]", when defs holds the label) are hidden; everything else is visible (a backslash escape is
+// visible text and opens or closes nothing). ok is false, and the text stays visible, when a "](" or "][" is a form
+// it does not read: no unescaped "[" before it (CommonMark renders it as text), a reference label that defs does not
+// define (a collapsed "[]" included), an unclosed destination or title, an angle-bracket destination, a backslash in a
+// destination or title before a character CommonMark cannot escape (anything but ASCII punctuation), or a
+// parenthesized title holding an unescaped "(": the caller refuses it rather than guess.
+func linkParts(s string, defs map[string]bool) (visible, hidden string, ok bool) {
 	var v, h strings.Builder
 	ok = true
+	opens := 0 // unescaped "[" not yet closed
 	skipSpace := func(j int) int {
 		for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n') {
 			j++
@@ -995,14 +1057,33 @@ func linkParts(s string) (visible, hidden string, ok bool) {
 		return j
 	}
 	for i := 0; i < len(s); {
+		if s[i] == '\\' && i+1 < len(s) {
+			v.WriteString(s[i : i+2])
+			i += 2
+			continue
+		}
+		if s[i] == '[' {
+			opens++
+		}
 		if s[i] != ']' || i+1 >= len(s) || (s[i+1] != '(' && s[i+1] != '[') {
+			if s[i] == ']' && opens > 0 {
+				opens--
+			}
 			v.WriteByte(s[i])
 			i++
 			continue
 		}
+		if opens == 0 {
+			ok = false
+			v.WriteByte(s[i])
+			i++
+			continue
+		}
+		opens--
 		if s[i+1] == '[' {
 			end := strings.IndexByte(s[i+2:], ']')
-			if end < 0 {
+			if end < 0 || !defs[refLabel(s[i+2:i+2+end])] {
+				ok = false
 				v.WriteByte(s[i])
 				i++
 				continue
@@ -1049,6 +1130,10 @@ func linkParts(s string) (visible, hidden string, ok bool) {
 			}
 			k := j + 1
 			for !odd && k < len(s) && s[k] != closer {
+				if closer == ')' && s[k] == '(' {
+					odd = true // a parenthesized title holds "(" only escaped
+					break
+				}
 				if s[k] == '\\' {
 					if k+1 >= len(s) || !asciiPunct(s[k+1]) {
 						odd = true
@@ -1085,14 +1170,35 @@ func collapse(s string) string {
 // plainText is Markdown text as a reader of the rendered page sees it: link destinations, titles and reference
 // labels removed (linkParts), the allowed markers removed (they render nothing), inline marks removed, whitespace
 // collapsed to single spaces. The content guard has refused anything else a renderer would interpret.
+// It reads no reference definitions, so a reference link's label stays visible (plainTextIn reads them).
 func plainText(s string) string {
-	visible, _, _ := linkParts(s)
+	return plainTextIn(s, nil)
+}
+
+// plainTextIn is plainText with the reference labels defs defines hidden, as linkParts hides them.
+func plainTextIn(s string, defs map[string]bool) string {
+	return collapse(markdownMarks.Replace(visibleText(s, defs)))
+}
+
+// visibleText is linkParts' visible text with the allowed markers removed (they render nothing).
+func visibleText(s string, defs map[string]bool) string {
+	visible, _, _ := linkParts(s, defs)
 	for _, m := range allowedMarkup {
 		if m.files == "*.md" {
 			visible = strings.ReplaceAll(visible, m.text, " ")
 		}
 	}
-	return collapse(markdownMarks.Replace(visible))
+	return visible
+}
+
+// comparisonSign is a comparison sign before a count (>, <, ≥, ≤, ≈ or ~, with an optional "=" and spaces): the
+// count is a bound, so countText writes the sign as the comparison phrase "at least".
+var comparisonSign = regexp.MustCompile(`[<>≤≥≈~]=?\s*([0-9A-Za-z*_` + "`" + `\[])`)
+
+// countText is the text the archive-count check reads: plainTextIn, with a comparison sign before a count written as
+// "at least" first (plainText removes "~" as a strikethrough mark, so the sign is read before the marks are removed).
+func countText(s string, defs map[string]bool) string {
+	return collapse(markdownMarks.Replace(comparisonSign.ReplaceAllString(visibleText(s, defs), " at least $1")))
 }
 
 // bareURL is a URL written out as text: its digits are not a count, so the count check reads the text without it.
@@ -1128,8 +1234,9 @@ var comparisonPhrases = keySet("or more", "or fewer", "or less", "or greater", "
 	"or under", "or so", "at least", "at most", "more than", "fewer than", "less than", "up to", "and up", "and above",
 	"and more", "and over")
 
-// plusCount is a count written with a trailing plus ("4+"): read as "4 or more".
-var plusCount = regexp.MustCompile(`\b([0-9A-Za-z]+)\+(\s|$)`)
+// plusCount is a count written with a trailing plus ("4+", also before punctuation, "4+." or "(4+)", and a fullwidth
+// or superscript plus): read as "4 or more".
+var plusCount = regexp.MustCompile(`\b([0-9A-Za-z]+)[+＋⁺]([^0-9A-Za-z]|$)`)
 
 // shippingWords make a clause a claim about what a release ships: a partitive count in such a clause ("each
 // release ships three of the four archives") is a total, not a subset.
@@ -1168,12 +1275,14 @@ var allowedCountClaims = map[string]string{
 //     clause that says what a release ships (shippingWords, before or after the count) it is a total;
 //   - a plain count must equal the archives; a plain count with another count between it and "archive(s)"
 //     ("six or four archives") cannot be resolved and is refused;
-//   - "a" or "an" after "only", "just" or "solely" is a count of one; "none" is a count of zero, and so is "no"
-//     with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end (only an exact
-//     allowedCountClaims entry, "no archive for this machine", excepts one);
+//   - "a" or "an" after "only", "just" or "solely" is a count of one; "none" and "zero" are counts of zero, and so is
+//     "no" with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end (only an exact
+//     allowedCountClaims entry, "no archive for this machine", excepts one); a count of zero is a total in any
+//     clause ("none of the archives exist"), so it must equal the archives;
 //   - a count after a comparison word, also across "the" or "of" ("more than the four", "over", "about", ...), or
-//     in a clause holding a comparison phrase anywhere ("four or more", "at least", "or fewer", "up to", "4+"), is a
-//     bound, not a count, and is refused;
+//     in a clause holding a comparison phrase anywhere ("four or more", "at least", "or fewer", "up to", "4+" also
+//     before punctuation and with a fullwidth or superscript plus, a comparison sign before the count that countText
+//     writes as "at least"), or followed by "plus" ("four-plus"), is a bound, not a count, and is refused;
 //   - a compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of", "some of the
 //     archives") cannot be resolved and are refused.
 //
@@ -1230,7 +1339,7 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		for ce < len(toks) && !boundary(toks[ce]) {
 			ce++
 		}
-		comparison := after(i, comparisonWords)
+		comparison := after(i, comparisonWords) || (i+1 < len(toks) && toks[i+1] == "plus") // "four-plus" is a bound
 		for k := cs; k+1 < ce; k++ {
 			comparison = comparison || comparisonPhrases[toks[k]+" "+toks[k+1]]
 		}
@@ -1294,7 +1403,7 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 			problems = append(problems, fmt.Sprintf("claims %q, a count this check cannot resolve", claim))
 		case comparison:
 			problems = append(problems, fmt.Sprintf("claims %q, a bound (a comparison) this check does not resolve", claim))
-		case total || limiting || zeroNo || nounAt < 0 || (partitive && shipping):
+		case total || limiting || n == 0 || nounAt < 0 || (partitive && shipping):
 			if n != archives {
 				problems = append(problems, fmt.Sprintf("claims %q, a total or limit (or a shipping claim), but .goreleaser.yaml produces %d archives", claim, archives))
 			}
@@ -1417,19 +1526,20 @@ func checkDoc(file, text string, allowed []allowedLine, archives int) (problems 
 	for _, p := range contentProblems(file, text) {
 		report(p)
 	}
+	defs := refDefs(text)
 	for _, u := range units(text) {
 		if strings.Contains(strings.ToLower(u.text), "_darwin_") {
 			report(fmt.Sprintf("%s:%d names a darwin archive: %s", file, u.line, u.text))
 		}
-		_, hidden, ok := linkParts(u.text)
+		_, hidden, ok := linkParts(u.text, defs)
 		if !ok {
-			report(fmt.Sprintf("%s:%d holds a link this check does not read (an unclosed destination or title, an angle-bracket destination): %s", file, u.line, u.text))
+			report(fmt.Sprintf("%s:%d holds a link this check does not read (no opening bracket, an undefined reference label, an unclosed destination or title, an angle-bracket destination, an unescaped \"(\" in a parenthesized title): %s", file, u.line, u.text))
 		}
 		for _, loc := range platformWord.FindAllStringIndex(hidden, -1) {
 			report(fmt.Sprintf("%s:%d names a non-Linux platform (%q) in a link destination, title or label: %s", file, u.line, hidden[loc[0]:loc[1]], u.text))
 		}
-		plain := plainText(u.text)
-		for _, p := range archiveCountProblems(bareURL.ReplaceAllString(plain, " "), archives) {
+		plain := plainTextIn(u.text, defs)
+		for _, p := range archiveCountProblems(bareURL.ReplaceAllString(countText(u.text, defs), " "), archives) {
 			report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
 		}
 		var spans [][2]int
@@ -1807,7 +1917,8 @@ func linuxOnly(text string) (entries, mentions int) {
 // only allowed text is notesSentence, matched exactly. The sentence may be in the notes only as one entry that
 // starts with it and ends with notesCitation, and nowhere else. When that entry is not in them, the release flow
 // has published it and removed it (bin/patch-decide.py changelog): the changelog, the durable record of what was
-// published, must then carry such an entry; nowhere at all is refused.
+// published, must then carry such an entry; nowhere at all is refused. In the changelog too the sentence may appear
+// only as such entries (its mentions equal its cited entries), on either path.
 func checkNotes(text, changelog string, archives int) []string {
 	problems, _ := checkDoc(notesFile, text, []allowedLine{{notesFile, notesSentence, "the REQ-PLAT-001 release-notes line", false}}, archives)
 	entries, mentions := linuxOnly(text)
@@ -1817,7 +1928,11 @@ func checkNotes(text, changelog string, archives int) []string {
 	case entries > 1:
 		problems = append(problems, fmt.Sprintf("%s says %q %d times, want at most once", notesFile, notesSentence, entries))
 	}
-	if published, _ := linuxOnly(changelog); entries == 0 && published == 0 {
+	published, pmentions := linuxOnly(changelog)
+	if pmentions != published {
+		problems = append(problems, fmt.Sprintf("%s says %q outside an entry that starts with it and ends with %q (%d mentions, %d such entries)", changelogFile, notesSentence, notesCitation, pmentions, published))
+	}
+	if entries == 0 && published == 0 {
 		problems = append(problems, fmt.Sprintf("neither %s nor %s has an entry that starts %q and ends %q (the notes until it is published, then the changelog)", notesFile, changelogFile, notesSentence, notesCitation))
 	}
 	return problems
@@ -2110,13 +2225,15 @@ func mappingsReadings(s string) []string {
 // in every one of mappingsReadings, and a link form linkParts does not read is refused (as checkDoc refuses it). The one exception is the whole value of `ref` in an evidence item whose
 // `type` is `go-test`, when that value is exactly internal/platforms:<name> and tests holds name. The content
 // guard reads the raw text and every decoded comment and value first, and refuses inline HTML, character
-// references and invisible characters outright.
+// references and invisible characters outright (the allowed placeholder only in its leading comment line, never in a
+// decoded key, value, anchor or tag). A YAML directive and any explicit tag other than !!str are refused by name;
+// a !!binary scalar's decoded text is read as well.
 func checkEvidenceMappings(text string, tests map[string]bool) (problems []string) {
 	reported := map[string]bool{}
 	scan := func(where, s string) {
 		for _, v := range []string{s, strings.ReplaceAll(s, "#", "")} {
-			if _, _, ok := linkParts(v); !ok {
-				p := fmt.Sprintf("%s holds a link this check does not read (an unclosed destination or title, an angle-bracket destination): %s", where, collapse(v))
+			if _, _, ok := linkParts(v, nil); !ok {
+				p := fmt.Sprintf("%s holds a link this check does not read (no opening bracket, a reference label, an unclosed destination or title, an angle-bracket destination, an unescaped \"(\" in a parenthesized title): %s", where, collapse(v))
 				if !reported[p] {
 					reported[p] = true
 					problems = append(problems, p)
@@ -2135,20 +2252,40 @@ func checkEvidenceMappings(text string, tests map[string]bool) (problems []strin
 		}
 	}
 	problems = contentProblems(mappingsFile, text)
+	for n, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "%") {
+			problems = append(problems, fmt.Sprintf("%s:%d: a YAML directive refused (a %%TAG directive can remap a tag): %s", mappingsFile, n+1, line))
+		}
+	}
 	docs, err := yamlDocs(text)
 	if err != nil {
 		return append(problems, mappingsFile+": the YAML loader cannot read it: "+err.Error())
 	}
+	problems = append(problems, explicitTags(mappingsFile, docs, "!!str")...)
 	exempt := map[string]bool{} // the exact references excepted
 	var walk func(n *yaml.Node, skip bool)
 	walk = func(n *yaml.Node, skip bool) {
 		where := fmt.Sprintf("%s:%d", mappingsFile, n.Line)
-		decoded := n.HeadComment + " \n " + n.LineComment + " \n " + n.FootComment + " \n " + n.Anchor + " \n " + n.Tag
-		// a decoded value can hold what the raw text spells as an escape ("\u200B", "\x3C"): guard it too
-		problems = append(problems, guardText(func(int) string { return where + " (decoded YAML)" }, mappingsFile, decoded+" \n "+n.Value)...)
+		comments := n.HeadComment + "\n" + n.LineComment + "\n" + n.FootComment
+		decoded := comments + " \n " + n.Anchor + " \n " + n.Tag
+		value := n.Value
+		if n.Tag == "!!binary" {
+			// a binary scalar means its decoded bytes (the explicit tag is refused by name): read those
+			b, err := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(n.Value), ""))
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("%s: a !!binary scalar that cannot be decoded: %v", where, err))
+			}
+			value += " \n " + string(b)
+		}
+		// a decoded value can hold what the raw text spells as an escape ("\u200B", "\x3C"): guard it too. The
+		// allowed placeholder is excepted only in a decoded comment line at its place; a key, value, anchor or tag
+		// gets no exception.
+		decodedWhere := func(int) string { return where + " (decoded YAML)" }
+		problems = append(problems, guardText(decodedWhere, markupFor(mappingsFile), comments)...)
+		problems = append(problems, guardText(decodedWhere, nil, n.Anchor+" \n "+n.Tag+" \n "+value)...)
 		scan(where, decoded)
 		if !skip {
-			scan(where, n.Value)
+			scan(where, value)
 		}
 		goTest := false
 		if n.Kind == yaml.MappingNode {
@@ -2272,6 +2409,7 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		{"N8 !!binary block scalar", edit(lastRef, lastRef+"      - type: inspection\n        ref: !!binary |\n          V2luZG93cw==\n"), "explicit YAML tag"},
 		{"N8 !!binary key", edit(lastRef, lastRef+"      - { type: inspection, ref: x, !!binary V2luZG93cw==: y }\n"), "explicit YAML tag"},
 		{"N8 tagged mapping", edit(lastRef, lastRef+"      - !!map { type: inspection, ref: x }\n"), "explicit YAML tag"},
+		{"N8 !!binary that is not base64", edit(lastRef, lastRef+"      - { type: inspection, ref: !!binary \"%%%\" }\n"), "cannot be decoded"},
 		{"N8 %TAG directive", "%TAG !! tag:example.com,2000:\n---\n" + real, "directive"},
 		{"N8 placeholder in a key", edit(lastRef, lastRef+"      - { type: inspection, ref: x, '\"<package dir>:<TestName>\"': y }\n"), "inline HTML"},
 		{"N8 placeholder in a block scalar comment-like line", edit(lastRef, lastRef+"      - type: inspection\n        ref: |\n          # \"<package dir>:<TestName>\"\n"), "inline HTML"},
@@ -2383,14 +2521,27 @@ func TestNotScannedListIsCurrent(t *testing.T) {
 var allowedMarkup = []struct{ files, text, why string }{
 	{"*.md", "<!-- pinned: upstream -->", "the version-literals marker bin/check-version-literals.sh reads (an upstream version, not ours); renders nothing"},
 	{"*.md", "<!-- pinned: historical -->", "the version-literals marker bin/check-version-literals.sh reads (a historical version); renders nothing"},
-	{mappingsFile, "\"<package dir>:<TestName>\"", "the placeholder form of a go-test ref, in a YAML comment; the mappings file is never rendered as HTML"},
+	{mappingsFile, "\"<package dir>:<TestName>\"", "the placeholder form of a go-test ref, only on a whole-line comment at column 0 in the file's leading comment block (markupPlaced); the mappings file is never rendered as HTML"},
 }
 
-// markupUsed reports whether the allowedMarkup text a applies to file and appears in text.
+// markupUsed reports whether the allowedMarkup text a applies to file and appears in text where its exception holds
+// (markupPlaced, on the original line): an occurrence anywhere else does not keep the exception current.
 func markupUsed(file, text, a string) bool {
-	for _, m := range markupFor(file) {
-		if m == a && strings.Contains(text, a) {
-			return true
+	if !slices.Contains(markupFor(file), a) {
+		return false
+	}
+	lines := strings.Split(text, "\n")
+	leading := leadingLines(lines)
+	for n, line := range lines {
+		for off := 0; ; {
+			i := strings.Index(line[off:], a)
+			if i < 0 {
+				break
+			}
+			if markupPlaced(a, line, off+i, leading[n]) {
+				return true
+			}
+			off += i + len(a)
 		}
 	}
 	return false
