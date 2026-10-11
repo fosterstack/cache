@@ -334,15 +334,26 @@ jobs:
           else
             echo "::error::no SBOM files in dist — the build stage should have produced them" >&2; exit 1
           fi
-          # REQ-REL-001-AC3: fetch back what the DRAFT release stores (this step's token; the release is not public
-          # yet), so the anonymous check below runs on the uploaded bytes, not on the local files. Exact names only.
-          mkdir /tmp/release-files-draft
+
+      # REQ-REL-001-AC3: fetch back what the DRAFT release stores (this job's token; the release is not public yet), so
+      # the anonymous check below runs on the uploaded bytes, not on the local files. Exact names only; the step has the
+      # closed AC19 shape (only set, ver, mkdir before the release-tag check; the download the very next line).
+      - name: Fetch the draft release files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ver="$VER"
+          mkdir -p /tmp/release-files-draft
           [[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::unexpected release tag" >&2; exit 1; }
           gh release download "$ver" --repo "$GITHUB_REPOSITORY" -D /tmp/release-files-draft -p release-files.sha256 -p release-files.sha256.bundle -p release-manifest.json -p fosterstack-cache.openvex.json -p "fosterstack-cache-${ver}.csaf.json" -p "fosterstack-cache-${ver}.inspector-filters.json"
           for f in release-files.sha256 release-files.sha256.bundle release-manifest.json fosterstack-cache.openvex.json \
                    "fosterstack-cache-${ver}.csaf.json" "fosterstack-cache-${ver}.inspector-filters.json"; do
             [ -f "/tmp/release-files-draft/$f" ] || { echo "::error::the draft release does not hold ${f}" >&2; exit 1; }
           done
+          # nothing else in the directory (mkdir -p may find one left over): exactly the six assets
+          [ "$(find /tmp/release-files-draft -mindepth 1 | wc -l)" -eq 6 ] || { echo "::error::/tmp/release-files-draft holds more than the six assets" >&2; exit 1; }
 
       # R09: the GH-attestation chain check (needs a token) is retained
       # as an internal gate, but the CUSTOMER-facing evidence must be the
@@ -534,20 +545,22 @@ jobs:
           # public assets can take seconds to appear: 6 tries per file, RETRY_SLEEP seconds apart, then fail
           for f in release-files.sha256 release-files.sha256.bundle release-manifest.json fosterstack-cache.openvex.json \
                    "fosterstack-cache-${ver}.csaf.json" "fosterstack-cache-${ver}.inspector-filters.json"; do
+            dest="$pub/${f}"
             ok=0
+            # github.com redirects a release download to its asset host: follow at most 3 redirects, https only
             for _ in 1 2 3 4 5 6; do
-              if curl -fsSL --connect-timeout 20 --max-time 120 -o "$pub/${f}" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi
+              if curl -q -fsSL -g --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o "$dest" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi
               sleep "${RETRY_SLEEP}"
             done
             [ "$ok" = 1 ] || fail "${f} was not downloadable after 6 tries"
           done
-          idflags=( --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"
-                    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' )
-          cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$pub/release-files.sha256" \
-            || fail "the release-files.sha256 bundle does not verify"
+          # the verifier of the download (one physical line: the bundle under this workflow's identity at this tag and the GitHub issuer)
+          cosign verify-blob --bundle "$pub/release-files.sha256.bundle" --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$pub/release-files.sha256" || fail "the release-files.sha256 bundle does not verify"
           (cd "$pub" && sha256sum -c release-files.sha256 --strict) \
             || fail "a published file does not match release-files.sha256"
-          # NEGATIVE CONTROL: a corrupted copy (proven made and different) MUST fail the bundle.
+          # NEGATIVE CONTROL: a corrupted copy (proven made and different) MUST fail the bundle (same identity and issuer).
+          idflags=( --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"
+                    --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' )
           neg=$(mktemp -d)
           cp "$pub/release-files.sha256" "$neg/release-files.sha256"
           printf 'tamper\n' >> "$neg/release-files.sha256"

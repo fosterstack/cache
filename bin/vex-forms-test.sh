@@ -312,6 +312,11 @@ DRAFT = "/tmp/release-files-draft"
 DL_PATTERNS = ["release-files.sha256", "release-files.sha256.bundle", "release-manifest.json", "fosterstack-cache.openvex.json",
                '"fosterstack-cache-${ver}.csaf.json"', '"fosterstack-cache-${ver}.inspector-filters.json"']
 TAG_CHECK = r'''[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]] || { echo "::error::unexpected release tag" >&2; exit 1; }'''
+FETCH = "Fetch the draft release files"
+PRE_OK = {"", "set -eu", "set -euo pipefail", 'ver="$VER"', "mkdir -p /tmp/release-files-draft"}   # AC19: all a step may hold before the tag check
+DL_ARGS = '-q -fsSL -g --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o "$dest" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi'
+VERIFY_PUB = ('cosign verify-blob --bundle "$pub/release-files.sha256.bundle" --certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"'
+              ' --certificate-oidc-issuer https://token.actions.githubusercontent.com "$pub/release-files.sha256" || fail "the release-files.sha256 bundle does not verify"')
 GOOD_ID = "https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v9.9.9"
 STUB_COSIGN = r'''#!/usr/bin/env bash
 # test stub: a "bundle" binds the blob's sha256 to the signer identity; verify-blob checks both and the issuer
@@ -383,7 +388,7 @@ def rel_case(missing=(), extra=True, identity=GOOD_ID):
         open(os.path.join(c, p), "w").write("x\n")
     env = dict(os.environ, PATH=os.path.join(c, "bin") + ":" + os.environ["PATH"], STUB_CALLS=os.path.join(c, "calls"),
                STUB_IDENTITY=identity, STUB_URLS=os.path.join(c, "urls"), STUB_PUB=os.path.join(c, "pub"),
-               GITHUB_REF_NAME="v9.9.9", GITHUB_REF="refs/tags/v9.9.9", GITHUB_REPOSITORY="fosterstack/cache")
+               GITHUB_REF_NAME="v9.9.9", VER="v9.9.9", GITHUB_REF="refs/tags/v9.9.9", GITHUB_REPOSITORY="fosterstack/cache")
     return c, env
 def rel_run(c, env, script, **extra):
     script = script.replace("/tmp/", c + "/tmp/")
@@ -433,18 +438,28 @@ def rel_judge(steps):
     ups = [l.split() for l in ul if l.startswith('gh release upload "$ver"')]
     if not ups or not {"release-files.sha256", "release-files.sha256.bundle"} <= set(ups[0]):
         bad.append("the release upload list does not carry release-files.sha256 and its bundle")
+    fd = at(FETCH)
+    if fd is None or None in (up, anon) or not up < fd < anon:
+        bad.append("the draft is not fetched in its own step between the upload and the anonymous check: %s" % ((up, fd, anon),))
+    elif steps[fd].get("env") != {"GH_TOKEN": "${{ github.token }}", "VER": "${{ github.ref_name }}"} or set(steps[fd]) - {"name", "env", "run"}:
+        bad.append("the draft fetch step is not exactly name, env (GH_TOKEN, VER) and run: %s" % sorted(steps[fd]))
+    if any((x.get("shell") not in (None, "bash")) or set(x.get("env") or {}) & {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"} for x in steps):
+        bad.append("a step sets a shell other than bash or a BASH_ENV, ENV, SHELLOPTS or BASHOPTS key")
+    ul = [l.strip() for l in flat(steps[fd]["run"] if fd is not None else "").splitlines()]
     dls = [i for i, l in enumerate(ul) if l.startswith("gh release download")]
     want_dl = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -D %s %s' % (DRAFT, " ".join("-p " + p for p in DL_PATTERNS))
-    lastup = max([i for i, l in enumerate(ul) if l.startswith("gh release upload")] or [10 ** 6])
+    lastup = -1     # the order against the upload is the order of the steps (checked above)
     if len(dls) != 1 or ul[dls[0]] != want_dl or dls[0] < lastup:
         bad.append("the draft's six assets are not downloaded by exact name after every upload: %s" % [ul[i] for i in dls])
-    if ("mkdir %s" % DRAFT) not in ul:
-        bad.append("the draft download directory is not created fresh (mkdir without -p)")
-    raw = [l.strip() for l in (steps[up]["run"] if up is not None else "").splitlines()]
+    if ("mkdir -p %s" % DRAFT) not in ul or 'ver="$VER"' not in ul:
+        bad.append("the draft fetch step does not take ver from VER and create its directory")
+    raw = [l.strip() for l in (steps[fd]["run"] if fd is not None else "").splitlines()]
     if want_dl not in raw:
         bad.append("the draft download is not one physical line")
-    elif TAG_CHECK not in raw or raw.index(TAG_CHECK) != raw.index(want_dl) - 1 or ("mkdir %s" % DRAFT) not in raw[:raw.index(TAG_CHECK)]:
+    elif TAG_CHECK not in raw or raw.index(TAG_CHECK) != raw.index(want_dl) - 1 or ("mkdir -p %s" % DRAFT) not in raw[:raw.index(TAG_CHECK)]:
         bad.append("the release-tag check is not the line just before the draft download (after its mkdir)")
+    elif any(l not in PRE_OK and not (l.startswith("#") and not l.endswith("\\")) for l in raw[:raw.index(TAG_CHECK)]):
+        bad.append("the draft fetch step holds a line before the tag check that AC19 does not allow: %s" % [l for l in raw[:raw.index(TAG_CHECK)] if l not in PRE_OK][:2])
     ps = at(PUBLISHED)
     if ps is None or undraft is None or ps < undraft:
         bad.append("no anonymous check of the PUBLISHED release-files after the undraft step: %s" % ((undraft, ps),))
@@ -456,15 +471,14 @@ def rel_judge(steps):
             bad.append("the published check is not credential-free (GH_TOKEN empty, no secret, no token): %s" % pst.get("env"))
         if not prun.startswith("set -euo pipefail\n") or "base=" in prun or "${base}" in prun:
             bad.append("the published check does not download anonymously from the published release as the docs do")
-        if not any("--connect-timeout 20 --max-time 120" in l and '"https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"' in l for l in prun.splitlines()):
+        if not any(l.strip().startswith("if ") and l.strip().endswith(" " + DL_ARGS) and len(l.split()) == len(DL_ARGS.split()) + 2 for l in prun.splitlines()):
             bad.append("the published download is not time-bounded or does not name this release's host on its own line")
         if "for _ in 1 2 3 4 5 6; do" not in pc or 'sleep "${RETRY_SLEEP}"' not in pc:
             bad.append("the published download retry is not bounded (6 tries, injectable sleep)")
         if "release-files-draft" in prun or 'pub=$(mktemp -d)' not in pc:
             bad.append("the published check does not run on freshly downloaded public files")
         if "idflags=( --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}\"" not in pc \
-                or 'cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$pub/release-files.sha256" \\' in pc \
-                or not any(l.startswith('cosign verify-blob --bundle "$pub/release-files.sha256.bundle" "${idflags[@]}" "$pub/release-files.sha256"') for l in pc) \
+                or VERIFY_PUB not in [l.strip() for l in prun.splitlines()] \
                 or not any(l.startswith('(cd "$pub" && sha256sum -c release-files.sha256 --strict)') for l in pc):
             bad.append("the published check does not run the documented verify-blob (exact identity) and sha256sum -c --strict")
         if 'cp "$pub/release-files.sha256" "$neg/release-files.sha256"' not in pc or "printf 'tamper\\n' >> \"$neg/release-files.sha256\"" not in pc \
@@ -505,6 +519,8 @@ def rel_pipeline(steps, identity=GOOD_ID, after_upload=None, before_published=No
         return "sign"
     if rel_run(c, env, steps[at("create the draft release")]["run"]).returncode:
         return "upload"
+    if at(FETCH) is None or rel_run(c, env, steps[at(FETCH)]["run"]).returncode:
+        return "fetch"
     if after_upload:
         try:
             after_upload(c)
@@ -570,8 +586,8 @@ def rel_behaviour(steps):
     cases = [("the release as signed and uploaded", {}, "ok"),
              ("the draft stores different bytes of the manifest", {"STUB_UPLOAD_FLIP": "release-manifest.json"}, "verify"),
              ("the draft stores different bytes of the list", {"STUB_UPLOAD_FLIP": "release-files.sha256"}, "verify"),
-             ("the draft lacks the CSAF file", {"STUB_UPLOAD_SKIP": "fosterstack-cache-v9.9.9.csaf.json"}, "upload"),
-             ("the draft lacks the bundle", {"STUB_UPLOAD_SKIP": "release-files.sha256.bundle"}, "upload"),
+             ("the draft lacks the CSAF file", {"STUB_UPLOAD_SKIP": "fosterstack-cache-v9.9.9.csaf.json"}, "fetch"),
+             ("the draft lacks the bundle", {"STUB_UPLOAD_SKIP": "release-files.sha256.bundle"}, "fetch"),
              ("a downloaded file differs from the list", {"after_upload": edit("tmp/release-files-draft/fosterstack-cache.openvex.json")}, "verify"),
              ("a corrupted downloaded list", {"after_upload": edit("tmp/release-files-draft/release-files.sha256")}, "verify"),
              ("an unsound verifier (accepts anything)", {"STUB_VERIFY_ALWAYS": "1"}, "verify"),
@@ -592,17 +608,17 @@ def rel_behaviour(steps):
         got_stage = rel_pipeline(steps, **kw)
         if got_stage != want_stage:
             bad.append("%s: stops at %s, want %s" % (name, got_stage, want_stage))
-    # an unexpected tag stops the upload step at the tag check: the draft is never downloaded
+    # an unexpected tag stops the fetch step at the tag check: the draft is never downloaded
     for tag in ("v1.2", "main", "v1.2.3-beta", "v1.2.3\n"):
         c6, env6 = rel_case()
-        r6 = rel_run(c6, env6, steps[at("create the draft release")]["run"], GITHUB_REF_NAME=tag)
+        r6 = rel_run(c6, env6, steps[at(FETCH)]["run"] if at(FETCH) is not None else "exit 0", VER=tag)
         g6 = open(env6["STUB_CALLS"] + ".gh").read().splitlines() if os.path.exists(env6["STUB_CALLS"] + ".gh") else []
         if r6.returncode == 0 or any(l.split()[2:3] == ["download"] for l in g6):
             bad.append("an unexpected tag %r does not stop the step before the draft is downloaded" % tag)
     for tag in ("v1.2.3", "v10.20.30-rc.4"):
         c7, env7 = rel_case()
         g7 = env7["STUB_CALLS"] + ".gh"
-        rel_run(c7, env7, steps[at("create the draft release")]["run"], GITHUB_REF_NAME=tag)
+        rel_run(c7, env7, steps[at(FETCH)]["run"] if at(FETCH) is not None else "exit 0", VER=tag)
         if not os.path.exists(g7) or not any(l.split()[2:3] == ["download"] for l in open(g7).read().splitlines()):
             bad.append("a release tag %r does not reach the draft download" % tag)
     # a missing public asset is retried a bounded number of times (6), then the step fails
@@ -614,7 +630,7 @@ def rel_behaviour(steps):
     elif not all(u.startswith("https://github.com/fosterstack/cache/releases/download/v9.9.9/") for u in open(urls5).read().splitlines()):
         bad.append("the published check downloads from somewhere other than this release")
     argv5 = open(urls5 + ".argv").read().splitlines() if os.path.exists(urls5 + ".argv") else []
-    want_argv = re.compile(r"-fsSL --connect-timeout 20 --max-time 120 -o (\S+)/([^/\s]+) https://github\.com/fosterstack/cache/releases/download/v9\.9\.9/\2")
+    want_argv = re.compile(r"-q -fsSL -g --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o (\S+)/([^/\s]+) https://github\.com/fosterstack/cache/releases/download/v9\.9\.9/\2")
     dirs = {m.group(1) for m in map(want_argv.fullmatch, argv5) if m}
     if not argv5 or not all(want_argv.fullmatch(a) for a in argv5) or len(dirs) != 1 or dirs & {os.path.join(c5, "work")}:
         bad.append("the published download is not -fsSL with both time bounds, -o into one fresh directory, from this release: %s" % argv5[:2])
@@ -622,7 +638,9 @@ def rel_behaviour(steps):
 def rel_pipeline_urls(steps, c, env, pub_extra):
     """the pipeline on a given case dir (so the caller can read the stub curl's URL log)"""
     at, sg = rel_steps(steps)
-    for name in (None, "create the draft release"):
+    if at(FETCH) is None:
+        return "before"
+    for name in (None, "create the draft release", FETCH):
         if rel_run(c, env, steps[sg[0]]["run"] if name is None else steps[at(name)]["run"]).returncode:
             return "before"
     if rel_run(c, env, anon_segment(steps[at("documented ANONYMOUS customer verification")]["run"])).returncode:
@@ -644,7 +662,16 @@ def mut_run(pred, old, new):
             x["run"] = x["run"].replace(old, new, 1)
     return f
 is_sign = lambda r: "sign-blob" in r and "release-files.sha256" in r
-is_up = lambda r: "gh release upload" in r
+is_up = lambda r: "gh release upload" in r or "mkdir -p /tmp/release-files-draft" in r      # the upload step and the draft fetch step
+is_fetch = lambda r: "mkdir -p /tmp/release-files-draft" in r
+def m_fetch_key(key, value):
+    def f(st):
+        x = next(y for y in st if is_fetch(y.get("run") or ""))
+        if key == "shell":
+            x["shell"] = value
+        else:
+            x["env"][key] = value
+    return f
 is_anon = lambda r: "release-files.corrupt" in r
 def m_drop(st):
     st[:] = [x for x in st if not is_sign(x.get("run") or "")]
@@ -705,7 +732,15 @@ MUTANTS = [
     ("the published check verifies the draft copies", mut_run(is_pub, "\ncosign verify-blob", "\npub=/tmp/release-files-draft\ncosign verify-blob")),
     ("the published check retries without bound", mut_run(is_pub, "for _ in 1 2 3 4 5 6; do", "while :; do")),
     ("the published download takes its host from a variable", m_pub_host_var),
-    ("tag check dropped", mut_run(is_up, TAG_CHECK + "\n", "")),
+    ("tag check dropped", mut_run(is_fetch, TAG_CHECK + "\n", "")),
+    ("a function defined before the tag check", mut_run(is_fetch, 'ver="$VER"\n', 'ver="$VER"\nf() { :; }\n')),
+    ("the fetch step runs another shell", m_fetch_key("shell", "sh")),
+    ("the fetch step sets BASH_ENV", m_fetch_key("BASH_ENV", "x")),
+    ("the published download without -q first", mut_run(is_pub, " -q -fsSL", " -fsSL")),
+    ("the published download without -g", mut_run(is_pub, "-fsSL -g ", "-fsSL ")),
+    ("redirects without --proto-redir", mut_run(is_pub, " --proto-redir =https", "")),
+    ("redirects without --max-redirs", mut_run(is_pub, " --max-redirs 3", "")),
+    ("another --max-redirs number", mut_run(is_pub, "--max-redirs 3", "--max-redirs 10")),
     ("the published download without a time bound", mut_run(is_pub, " --connect-timeout 20 --max-time 120", "")),
     ("the published check with a token", m_pub_token),
     ("the published check verifies a loose identity", mut_run(is_pub, '--certificate-identity "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/stage-promote.yml@refs/tags/${ver}"',
