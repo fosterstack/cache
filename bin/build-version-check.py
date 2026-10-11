@@ -58,7 +58,7 @@ def find_apk(apk_dir, variant):
 def extract_binary(apk, dest):
     r = subprocess.run([sys.executable, "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     if r.returncode != 0 or not r.stdout:
-        raise Refusal("apk", "apk-tool.py cat %s usr/bin/fscache failed (exit %d)" % (apk, r.returncode))
+        raise Refusal("apk", "reading usr/bin/fscache from %s failed (exit %d)" % (apk, r.returncode))
     with open(dest, "wb") as f:
         f.write(r.stdout)
 

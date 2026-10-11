@@ -1,4 +1,4 @@
-"""The Build and Rebuild subcommands of bin/chain-verify.py that deal with the files a stage produces (v0.3.0 rules 54, 58, 59;
+"""The Build and Rebuild subcommands of the chain verifier that deal with the files a stage produces (v0.3.0 rules 54, 58, 59;
 REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1, AC3):
 
   bind             every file of a downloaded artifact directory is the product the verified Witness record holds for it
@@ -8,8 +8,8 @@ REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1, AC3):
   record-env       a Witness record holds no token variable and no token value
 
 None of them checks a signature: the `verify` or `stage-start` line that runs right before in the stage script does that. They are
-tested against the REAL code by bin/chain-bind-test.sh and bin/chain-rebuild-test.sh, and the layout of the items is documented in
-bin/chain-test-harness.py (PROPOSED/UNVERIFIED; cache's apk-tool.py and assemble-image.sh fix the apk digest and the image digest).
+tested against the REAL code by the bind and rebuild test suites, and the layout of the items is documented in
+the test harness (PROPOSED/UNVERIFIED; cache's apk tool and image assembly script fix the apk digest and the image digest).
 A refusal is `refused at <stage>: <cause>: <names>` on stderr and exit 1; a usage problem is `usage: ...` and exit 2.
 """
 import hashlib
@@ -56,7 +56,7 @@ def check_snapshot_version(stage, names):
 
 
 def check_record_names(stage, payload):
-    """Called by chain-verify.py for every record a stage reads: applies both rules to a Witness collection (a provenance statement is left alone)."""
+    """Called by the verifier for every record a stage reads: applies both rules to a Witness collection (a provenance statement is left alone)."""
     try:
         statement = strict_json(payload)
     except ValueError:

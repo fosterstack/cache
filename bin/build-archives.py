@@ -38,7 +38,7 @@ def find_apk(repo, arch, pattern):
 def read_binary(apk):
     r = subprocess.run([sys.executable, "bin/apk-tool.py", "cat", apk, "usr/bin/fscache"], stdout=subprocess.PIPE)
     if r.returncode != 0 or not r.stdout:
-        refuse("apk-tool.py cat %s usr/bin/fscache failed (exit %d)" % (apk, r.returncode))
+        refuse("reading usr/bin/fscache from %s failed (exit %d)" % (apk, r.returncode))
     return r.stdout
 
 

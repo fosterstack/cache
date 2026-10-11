@@ -31,7 +31,7 @@ GITSIGN_VER=0.17.1
 # cosign signs the release provenance in stage-sign.yml (v0.3.0 rule 52): v3.1.3 linux binaries; the sums below were checked on Oct 9 2026
 # with `cosign verify-blob --bundle` against the release's own signatures (identity keyless@projectsigstore.iam.gserviceaccount.com)
 COSIGN_VER=3.1.3
-# Witness signs every Build and Rebuild step (v0.3.0 rule 68; bin/witnessed.sh). The two sums are the sha256 of the release tarballs of in-toto/witness
+# Witness signs every Build and Rebuild step (v0.3.0 rule 68, the Witness wrapper). The two sums are the sha256 of the release tarballs of in-toto/witness
 # v0.12.0, equal to the release's witness_0.12.0_checksums.txt; both tarballs were also checked on Oct 9 2026 with `cosign verify-blob --bundle` against
 # their .sigstore.json (identity https://github.com/in-toto/witness/.github/workflows/release.yml@refs/tags/v0.12.0, issuer token.actions.githubusercontent.com).
 WITNESS_VER=0.12.0
@@ -176,7 +176,7 @@ case "$TOOL" in
     verify "$tmp/w.tgz"
     tar -xzf "$tmp/w.tgz" -C "$tmp" witness || pipeline_fail "extract failed for witness"
     install -m 0755 "$tmp/witness" "${DEST}/witness" || pipeline_fail "install failed for witness"
-    "${DEST}/witness" version >/dev/null || pipeline_fail "witness does not run after install"
+    "${DEST}/witness" version >/dev/null || pipeline_fail "the installed witness binary does not start"
     ;;
   *)
     pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness)"
