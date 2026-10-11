@@ -308,8 +308,13 @@ def notes(version, fixes, vex_changes, behavior=()):
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
+    stmts = [v for v in vex_changes if "document" not in v]
     lines += ["- %s%s: %s (%s)" % (v["cve"], " [%s]" % ", ".join(v["products"]) if v.get("products") else "",
-                                   v["status"], v["change"]) for v in vex_changes] or ["- no change"]
+                                   v["status"], v["change"]) for v in stmts]
+    lines += ["- document fields changed (%s)%s" % (", ".join(v["document"]), "" if stmts else "; no statement changed")
+              for v in vex_changes if "document" in v]
+    if not vex_changes:
+        lines.append("- no change")
     for b in behavior:
         _check_entry(b)
     if behavior:
@@ -422,7 +427,8 @@ def vex_changes(old_doc, new_doc):
     the latest tag. A change to any field of a statement (products, status, justification, impact or action text,
     status_notes, anything else) is a change, named by field. A CVE may carry several statements (one per product
     set): they are matched by @id, then by product set, then a lone leftover pair is one statement changed; each
-    statement of a CVE that has several is also named by its products."""
+    statement of a CVE that has several is also named by its products. A change to the document's own fields (version,
+    timestamp, author, ...) adds one {"document": [fields]} entry, last (advisor ruling on 0389 (d))."""
     absent = object()
 
     def by_cve(doc):
@@ -465,6 +471,11 @@ def vex_changes(old_doc, new_doc):
                 found.append(entry(cve, n, "changed: " + ", ".join(fields), several))
         found += [entry(cve, n, "added", several) for n in news] + [entry(cve, o, "removed", several) for o in olds]
         out += sorted(found, key=lambda e: (e.get("products", []), e["change"]))
+    if old_doc is not None:     # advisor ruling (0389 (d)): a document-level change is a VEX change too, named by field
+        doc_fields = sorted(k for k in (set(old_doc) | set(new_doc or {})) - {"statements"}
+                            if old_doc.get(k, absent) != (new_doc or {}).get(k, absent))
+        if doc_fields:
+            out.append({"document": doc_fields})
     return out
 
 
