@@ -1,0 +1,36 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "0f0f92568c11e18cbb96b6e4de243128a14ba0958a7961f2a23aca588a920d0e",
+ "change": "Review gate: a recorded Opus substitute for Codex until Sat Oct 17 01:00 EDT (entry 0350, owner quote verbatim) with 21 new tests in test_review_gate.py, none dependent on the date (REQ-AUD-018-AC4) -- PR #261",
+ "reviewed_commit": "0f7f8ebf56f39f74703e00c6c14bfcdd1cb68869",
+ "closed_commit": "0f7f8ebf56f39f74703e00c6c14bfcdd1cb68869",
+ "rounds": [
+  {
+   "round": 5,
+   "label": "final head 0f7f8eb (rebased on main bbe08db): real Codex (no confirmed defect; entry, gate conditions and expiry confirmed; time-bomb audit found no remaining date-dependent 0350 test by source review) + Sonnet (0 blockers; 112/0; suite simulated at four clock times incl. after the expiry: all OK; helper mutants killed)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "571177e5a2f2c17b4c943055ae817ea5ff6a92e65e7f636f0d5bd4a68e9158ea"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "71f60aa31a7b39fad2aa3412c58b42b4a79b4b869981150abc0eae3035a8c46f"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX COULD NOT RUN THE CLI TESTS OR THE FULL SUITE (read-only sandbox: tempfile.mkdtemp finds no writable directory): in its round-5 run 59 of 112 tests passed, 53 errored on the temp directory; the nine new 0350 CLI tests, the full suite and the four-time simulation are NOT VERIFIED BY CODEX and are not a Codex pass; they are covered by the Sonnet run on 0f7f8eb: python3 -m unittest test_review_gate 112 OK, the suite simulated at 2026-10-18T00:00:00Z, 2026-10-17T05:00:00Z, 2026-10-17T04:59:59Z and the current date all OK, gate/helper mutants killed",
+  "Codex's suspected policy risk (not an AC4 defect): the allow-list entry has an expiry but no start condition, so once 0350 is on the default branch the gate accepts an otherwise valid substitute at once; the lane discipline (Opus only after the 99% notice and before 'codex back') is a process rule stated verbatim in the PR body, not a gate check; if CI must enforce the timing it needs a machine-checkable start condition (advisor's call)",
+  "Sonnet residuals: the static check that only wall_now() reads the wall clock is evadable by import aliasing, __import__ or subprocess date (guards against accidents, not a determined edit; nothing here is a security control); one possible skip in the ~1 s straddle window around the expiry instant",
+  "rounds 1-4 (Codex rounds 1-4: no defects in the entry or the gate conditions, Lows on test weaknesses and a clock expectation, all fixed; Sonnet rounds 1-4: 0 blockers each) are recorded in the ledger and the audit folder (codex-261-r1..r4.md), not repeated here; this record carries the final round 5 only",
+  "real Codex seat is openai; no Opus substitute is used in this record, as the file is in the gate's enforcement set"
+ ]
+}

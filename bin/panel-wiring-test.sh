@@ -6,9 +6,10 @@
 # options anywhere), Trivy and Snyk gone from the panel, and no audit in the rescan (the auditor judges unique findings). The
 # real workflow must pass; each mutated copy must be caught.
 set -euo pipefail
+TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 root=$(cd "$(dirname "$0")/.." && pwd)
 export PANEL_ROOT="$root"
-work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+work=$(mktemp -d); trap 'rm -rf "$work" "$TMPDIR"' EXIT
 pass=0 failn=0
 judge() { python3 - "$1" <<'PY'
 import re, sys, yaml

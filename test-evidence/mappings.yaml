@@ -69,6 +69,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetrics" }
       - { type: go-test, ref: "internal/server:TestStatuszReportsCacheStateAsJSON" }
+      - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetricsAfterRestart" }
   - ac: REQ-OBS-003-AC2
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszServesHTMLToBrowsers" }
@@ -253,6 +254,15 @@ mappings:
       - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
+  - ac: REQ-REL-004-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/rescan-current-only-test.sh" }
+  - ac: REQ-REL-004-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/rescan-statement-test.sh" }
+  - ac: REQ-REL-004-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/rescan-statement-test.sh" }
   - ac: REQ-REL-005-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
@@ -554,6 +564,12 @@ mappings:
   - ac: REQ-SUP-001-AC13
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pip-pin-test.sh" }
+  - ac: REQ-SUP-001-AC14
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
+  - ac: REQ-SUP-001-AC15
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
@@ -673,6 +689,110 @@ mappings:
   - ac: REQ-CHAIN-003-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-sign-wiring-test.sh" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC1 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier `bin/patch-decide.py` and its test `bin/patch-decide-test.sh`, which name the auditor directory as data and hold no auditor code.
+  - ac: REQ-AUD-018-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job allowlist: step auditor layout runs the layout check over git ls-files on every push/PR. Layout-check exemptions beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries; advisor to confirm). Amendments in the AC text: test-evidence/mappings.yaml and test-evidence/unmapped.yaml (owner, Oct 2 2026); bin/patch-decide.py and bin/patch-decide-test.sh (owner, Oct 3 2026, 'I ratify b.'). The layout check's docstring is stale on these (follow-up)" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC2 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   The Python under `.github/agent/` is held to the **100% coverage gate** in CI, the same as the Go.
+  - ac: REQ-AUD-018-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: inspection, ref: ".github/agent/tests/coverage-gate.sh (the gate script itself, run by the ci.yml coverage job; it carries the AC2 proves header but is not test-named, so the matrix cases req18-ac2-python-100pct-coverage-gate and req18-ac2-identity-claims-logging-stubbed are the shell-test evidence) (re-verified 2026-10-09)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job coverage: step auditor Python coverage, zero uncovered. KNOWN GAP (owner question pending): the gate honours the exclusion list in .github/agent/coverage-exclusions.txt, which the AC text does not mention, and it measures only the auditor bin directory (code to widen in a follow-up)" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC3 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   Every change under `.github/agent/` clears the **independent second review's stop rule** before merge.
+  - ac: REQ-AUD-018-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: inspection, ref: ".github/agent/bin/tests/test_review_gate.py covers every failing reason of the review gate; it still carries only the AC4 proves header because a change to it needs a real codex entry (header follow-up) (re-verified 2026-10-09)" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml: the auditor-review-gate check on pull_request_target" }
   - ac: REQ-AUD-018-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }
+  - ac: REQ-AUD-019-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-AUD-019-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-AUD-019-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-OBS-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHealthzStays200OnReadOnlyAndFullDisk" }
+  - ac: REQ-OBS-001-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHealthzTouchesNoFilesystem" }
+  - ac: REQ-OBS-001-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestDocsSayHealthzIsLivenessOnly" }
+  - ac: REQ-OBS-002-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestWritableGaugeHealthyIsOneAndDocumented" }
+  - ac: REQ-OBS-002-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestWritableGaugeZeroOnFullDiskAndRecovers" }
+      - { type: go-test, ref: "internal/server:TestWritableGaugeZeroOnReadOnlyDir" }
+      - { type: go-test, ref: "internal/server:TestFailedPutMarksTheSampleStale" }
+      - { type: go-test, ref: "internal/storesample:TestRecoversAfterFix" }
+      - { type: go-test, ref: "internal/storesample:TestStateChangeIsLoggedOnce" }
+      - { type: go-test, ref: "internal/storesample:TestEachProbeStepFailureReadsNotWritable" }
+  - ac: REQ-OBS-002-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestProbeFileIsNotAKeyNotCountedAndSweptAtStartup" }
+      - { type: go-test, ref: "internal/storesample:TestProbeStepsOrderAndTempName" }
+      - { type: go-test, ref: "internal/storesample:TestRealProbeLeavesNoFileAndFailsOnReadOnlyDir" }
+  - ac: REQ-OBS-002-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestProbeNotRunWhileSampleFresh" }
+      - { type: go-test, ref: "internal/storesample:TestFreshnessAndMarkStale" }
+      - { type: go-test, ref: "internal/storesample:TestOnlyOneProbeInFlightAndScrapeDoesNotWait" }
+      - { type: go-test, ref: "internal/storesample:TestProbeOverLimitReadsZeroAndIsNotDuplicated" }
+  - ac: REQ-OBS-002-AC6
+    evidence:
+      - { type: go-test, ref: "internal/server:TestFreeBytesGaugeAndStatfsFailure" }
+      - { type: go-test, ref: "internal/storesample:TestStatfsFailureReadsZeroAndNotWritable" }
+      - { type: go-test, ref: "internal/storesample:TestAvailIsBavailTimesBsize" }
+  - ac: REQ-OBS-002-AC7
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutErrorTaxonomyAndResponsesUnchanged" }
+      - { type: go-test, ref: "internal/server:TestPutErrorsTooLargeByDeclaredChunkedAndBodyLimit" }
+      - { type: go-test, ref: "internal/server:TestClientAbortMidBodyCountsClientAborted" }
+  - ac: REQ-OBS-002-AC8
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutErrorSeriesExistAtZeroAndNoOthers" }
+      - { type: go-test, ref: "internal/server:TestClassifyPutErrorTable" }
+      - { type: go-test, ref: "internal/server:TestPutErrorTaxonomyAndResponsesUnchanged" }
+  - ac: REQ-OBS-002-AC9
+    evidence:
+      - { type: go-test, ref: "internal/server:TestNonStoreRefusalsAndSuccessDoNotCount" }
+  - ac: REQ-OBS-002-AC10
+    evidence:
+      - { type: go-test, ref: "internal/server:TestGaugesSeededAtStartupHealthyAndBroken" }
+      - { type: go-test, ref: "cmd/fscache:TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets" }
+      - { type: go-test, ref: "cmd/fscache:TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing" }
+  - ac: REQ-OBS-002-AC11
+    evidence:
+      - { type: go-test, ref: "internal/server:TestRouteSurfaceIsCachePlusReadOnlyEndpoints" }
+  - ac: REQ-OBS-003-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszHasDiskFields" }
+  - ac: REQ-OBS-003-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetricsOnDiskSignalsInEveryState" }
+  - ac: REQ-OBS-003-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszAndMetricsShareOneSample" }
+  - ac: REQ-OBS-003-AC6
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszHTMLShowsDataDirRow" }
+  - ac: REQ-OBS-003-AC7
+    evidence:
+      - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }

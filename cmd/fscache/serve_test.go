@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -457,4 +459,223 @@ func TestServeClearMarkerError(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not return")
 	}
+}
+
+// serve() takes the first store sample BEFORE the listener opens: the first scrape, with no request before it, already holds measured values (REQ-OBS-002-AC10).
+func TestServeSeedsTheDiskGaugesBeforeAnyRequest(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+	addr := freePort(t)
+	t.Setenv("FSCACHE_ADDR", addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errc := make(chan error, 1)
+	var body string
+	go func() {
+		errc <- serve(ctx, quietLogger(), func() {
+			for i := 0; i < 100; i++ { // ready() runs as the listener goroutine starts: retry until it accepts
+				resp, err := http.Get("http://" + addr + "/metrics")
+				if err == nil {
+					b, _ := io.ReadAll(resp.Body)
+					_ = resp.Body.Close()
+					body = string(b)
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			cancel()
+		})
+	}()
+	select {
+	case <-errc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not shut down")
+	}
+	if !strings.Contains(body, "fscache_store_writable 1\n") {
+		t.Errorf("the first scrape does not show fscache_store_writable 1:\n%s", body)
+	}
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, "fscache_store_free_bytes ") && (strings.HasSuffix(l, " 0")) {
+			t.Errorf("fscache_store_free_bytes is 0 on a healthy start: %q", l)
+		}
+	}
+	if !strings.Contains(body, "fscache_store_free_bytes ") {
+		t.Errorf("fscache_store_free_bytes is absent from the first scrape")
+	}
+}
+
+// The first sample is taken at start, before the listener opens: with a data directory that cannot be written the "not writable" line is already in the log
+// when the ready hook runs, before any scrape could have triggered a lazy measurement (REQ-OBS-002-AC10).
+func TestServeTakesTheFirstSampleBeforeReady(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "blobs"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(filepath.Join(dir, "blobs"), 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(filepath.Join(dir, "blobs"), 0o700) }()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	var buf syncBuffer
+	log := slog.New(slog.NewTextHandler(&buf, nil))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var atReady string
+	errc := make(chan error, 1)
+	go func() { errc <- serve(ctx, log, func() { atReady = buf.String(); cancel() }) }()
+	select {
+	case <-errc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not shut down")
+	}
+	if !strings.Contains(atReady, "store_writable") {
+		t.Errorf("no 'store_writable' line was logged before the server announced it was ready:\n%s", atReady)
+	}
+}
+
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+func (s *syncBuffer) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.b.String() }
+
+// REQ-OBS-002-AC10, first case, on the REAL path: a server that started healthy and whose volume then stops accepting writes (here the blobs directory becomes
+// read-only for the process) reports fscache_store_writable 0 with the real free bytes within one refresh, counts the failed PUTs, and keeps serving GETs.
+func TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	addr := freePort(t)
+	t.Setenv("FSCACHE_ADDR", addr)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var putOK, putBad, getCode int
+	var body string
+	do := func(method, path, data string) (int, string) {
+		req, _ := http.NewRequest(method, "http://"+addr+path, strings.NewReader(data))
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return 0, ""
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return resp.StatusCode, string(b)
+	}
+	errc := make(chan error, 1)
+	go func() {
+		errc <- serve(ctx, quietLogger(), func() {
+			for i := 0; i < 100; i++ {
+				if c, _ := do(http.MethodGet, "/healthz", ""); c == 200 {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			putOK, _ = do(http.MethodPut, "/kgood", "good data")
+			_ = os.Chmod(filepath.Join(dir, "blobs"), 0o500) // the volume stops accepting writes
+			defer func() { _ = os.Chmod(filepath.Join(dir, "blobs"), 0o700) }()
+			putBad, _ = do(http.MethodPut, "/kbad", "bad data")
+			for i := 0; i < 100; i++ { // the failed PUT marked the sample stale: the next scrape measures again
+				_, body = do(http.MethodGet, "/metrics", "")
+				if strings.Contains(body, "fscache_store_writable 0\n") {
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			getCode, _ = do(http.MethodGet, "/kgood", "")
+			cancel()
+		})
+	}()
+	select {
+	case <-errc:
+	case <-time.After(15 * time.Second):
+		t.Fatal("serve did not shut down")
+	}
+	if putOK != http.StatusCreated && putOK != http.StatusOK && putOK != http.StatusNoContent {
+		t.Fatalf("the healthy PUT answered %d", putOK)
+	}
+	if putBad < 400 {
+		t.Errorf("the PUT on the bad volume answered %d; want an error", putBad)
+	}
+	if !strings.Contains(body, "fscache_store_writable 0\n") {
+		t.Errorf("the gauge does not read 0 after the volume went bad:\n%s", body)
+	}
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(dir, &st); err != nil {
+		t.Fatal(err)
+	}
+	fsFree := float64(st.Bavail) * float64(st.Bsize) // #nosec G115 -- block counts of a test filesystem fit a float64
+	var gauge float64
+	if _, err := fmt.Sscanf(metricLine(body, "fscache_store_free_bytes "), "fscache_store_free_bytes %g", &gauge); err != nil || gauge <= 0 {
+		t.Errorf("fscache_store_free_bytes is absent or not positive: %q\n%s", metricLine(body, "fscache_store_free_bytes "), body)
+	} else if d := gauge - fsFree; d > 256<<20 || d < -(256<<20) { // the disk keeps changing under the test: a generous tolerance, far below any wrong constant
+		t.Errorf("fscache_store_free_bytes %.0f is not close to the filesystem's %.0f", gauge, fsFree)
+	}
+	if got := metricLine(body, `fscache_put_errors_total{reason="read_only"} `); got != `fscache_put_errors_total{reason="read_only"} 1` {
+		t.Errorf("the failed PUT must count exactly once under read_only; got %q\n%s", got, body)
+	}
+	for _, other := range []string{"no_space", "too_large", "client_aborted", "other"} {
+		if got := metricLine(body, `fscache_put_errors_total{reason="`+other+`"} `); got != `fscache_put_errors_total{reason="`+other+`"} 0` {
+			t.Errorf("reason %s moved: %q", other, got)
+		}
+	}
+	if getCode != http.StatusOK {
+		t.Errorf("GET of a stored blob answered %d on the bad volume; want 200", getCode)
+	}
+}
+
+// REQ-OBS-002-AC10, second case, on the REAL path: a server asked to START on a read-only data directory exits at start with the fatal error naming the failed
+// write, serves nothing and never reports writable 1 for a volume it could not write.
+func TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop root")
+	}
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chmod(dir, 0o700) }()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	addr := freePort(t)
+	t.Setenv("FSCACHE_ADDR", addr)
+	ready := false
+	err := serve(context.Background(), quietLogger(), func() { ready = true })
+	if err == nil || !strings.Contains(err.Error(), "write shutdown marker") {
+		t.Fatalf("serve error = %v; want the fatal naming the failed write (write shutdown marker)", err)
+	}
+	if ready {
+		t.Error("the ready hook ran: the server started on a directory it could not write")
+	}
+	if c, cerr := net.DialTimeout("tcp", addr, 200*time.Millisecond); cerr == nil {
+		_ = c.Close()
+		t.Error("something listens on the address: the server served on a directory it could not write")
+	}
+}
+
+// metricLine returns the first line of a scrape that starts with prefix, or "".
+func metricLine(body, prefix string) string {
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, prefix) {
+			return l
+		}
+	}
+	return ""
 }

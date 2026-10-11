@@ -1,0 +1,36 @@
+{
+ "schema": "auditor-review-record/v1",
+ "tree": "9e18ac82e28af086ecaf1d341d08421f068139d1042dda35e66be9fd0c82d8dd",
+ "change": "Allowlist: three exact anchored patterns for the v0.3.0 customer guide (bin/verify-release-guide-test.sh, docs/verify-release.md, docs/verify-release.cannot-run.json), DECLARED 46, EXPECT_ALLOW 140, pin unchanged -- PR #269",
+ "reviewed_commit": "4921a0a2f41f694d59143776fd61dc57f1e88e7d",
+ "closed_commit": "4921a0a2f41f694d59143776fd61dc57f1e88e7d",
+ "rounds": [
+  {
+   "round": 1,
+   "label": "head 4921a0a: real Codex security tier (no actionable finding; 4,479 candidate paths, exactly one newly admitted path) + Sonnet (0 blockers; suite 610/0; own mutants killed)",
+   "reviewers": {
+    "sonnet": {
+     "vendor": "anthropic",
+     "blockers_open": 0,
+     "evidence_sha256": "ffce0250912e76cd44cfc5579d38e88578786778ec31c96060d045f1451eed62"
+    },
+    "codex": {
+     "vendor": "openai",
+     "blockers_open": 0,
+     "evidence_sha256": "5e70a7b683b310f6bbe461780c638e88eefa41587af569eff2202ed6e824d1ba"
+    }
+   }
+  }
+ ],
+ "stop": {
+  "codex": "clear",
+  "sonnet": "clear"
+ },
+ "residuals": [
+  "CODEX COULD NOT RUN THE SUITE (read-only sandbox, writes denied): the full allowlist test and its mutants are NOT VERIFIED BY CODEX and are not a Codex pass; covered by the Sonnet run (610 passed/0 failed, own mutants killed) and the author's run",
+  "Codex verified directly by in-memory probes: patterns anchored escaped literals, 4,479 candidate paths, 140 allow / 6 suppression / 46 declared, digest outside the region equals the pin, only the two files changed, no trailer",
+  "the two docs paths were already admitted by the generic docs pattern (case variants of them stay admitted by it: expected)",
+  "Sonnet residuals: no total-case-count pin, so a removed pass case is not detected (pre-existing); REQ-GUIDE-001 is referenced in test comments before it exists in requirements.yaml (the follow-up guide PR adds it)",
+  "the real Codex seat is openai; no Opus substitute is used in this record"
+ ]
+}
