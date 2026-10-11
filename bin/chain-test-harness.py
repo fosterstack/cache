@@ -84,13 +84,30 @@ def fragment(arch, tag):
     return {"arch": arch, "items": items}
 
 
+def oci_parts(image, sde, body):
+    """A REAL minimal OCI image index and its two child manifests, as JSON (the test oracle must parse like the real thing): returns
+    (index blob bytes, {arch: (child digest, child blob bytes)}). The child manifest names an empty config and no layers and carries the build facts as
+    annotations, so it is a pure function of (image, build date, apk bodies) like the digests of the real assemble."""
+    children = {}
+    for arch in ("amd64", "arm64"):
+        man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                          "config": {"mediaType": "application/vnd.oci.empty.v1+json", "digest": "sha256:" + sha(b"{}"), "size": 2}, "layers": [],
+                          "annotations": {"org.opencontainers.image.ref.name": image, "test.arch": arch, "test.build": sha(("%s|%s|%s|%s" % (image, arch, sde, body)).encode())}},
+                         sort_keys=True).encode()
+        children[arch] = ("sha256:" + sha(man), man)
+    index = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+                        "manifests": [{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": children[a][0], "size": len(children[a][1]),
+                                       "platform": {"architecture": a, "os": "linux"}} for a in ("amd64", "arm64")]}, sort_keys=True).encode()
+    return index, children
+
+
 def image_outputs(image, tag):
     """What assemble-image.sh writes for an image: a pure function of the apks it was given (both architectures) and the build date."""
     body = "|".join(apk_bytes(VARIANT_OF[image], a, tag).decode().split("\n", 1)[1] for _, a, _ in RUNNERS)
-    blob = ("image|%s|%s|%s" % (image, SDE, body)).encode()          # the image index blob: its sha256 is the image digest
+    blob, children = oci_parts(image, SDE, body)                      # the image index blob: its sha256 is the image digest
     digest = "sha256:" + sha(blob)
-    manifests = ["%s sha256:%s" % (g, sha(("m-%s|%s|%s" % (g, image, body)).encode())) for _, _, g in RUNNERS]
-    return {"digest": digest, "blob": blob, "manifests": manifests, "lock": ("lock|" + image).encode(), "sbom": ("sbom|" + image).encode()}
+    manifests = ["%s %s" % (g, children[g][0]) for _, _, g in RUNNERS]
+    return {"digest": digest, "blob": blob, "children": children, "manifests": manifests, "lock": ("lock|" + image).encode(), "sbom": ("sbom|" + image).encode()}
 
 
 def layout_files(image, tag):
@@ -100,7 +117,10 @@ def layout_files(image, tag):
     o = image_outputs(image, tag)
     hexd = o["digest"].split(":", 1)[1]
     index = {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": o["digest"], "size": len(o["blob"])}]}
-    return {"oci-layout": b'{"imageLayoutVersion": "1.0.0"}', "index.json": json.dumps(index).encode(), "blobs/sha256/" + hexd: o["blob"]}
+    files = {"oci-layout": b'{"imageLayoutVersion": "1.0.0"}', "index.json": json.dumps(index).encode(), "blobs/sha256/" + hexd: o["blob"]}
+    for dg, data in o["children"].values():
+        files["blobs/sha256/" + dg.split(":", 1)[1]] = data
+    return files
 
 
 def archive_files(tag):
@@ -239,16 +259,21 @@ body = "|".join(open(p).read().split("\\n", 1)[1] for arch in ("x86_64", "aarch6
 sde = os.environ.get("SOURCE_DATE_EPOCH", "unset")
 h = lambda s: hashlib.sha256(s.encode()).hexdigest()
 os.makedirs(out + "/" + image + "-sbom", exist_ok=True)
-open("%s/%s.digest" % (out, image), "w").write("sha256:%s\\n" % h("image|%s|%s|%s" % (image, sde, body)))
-open("%s/%s.manifests" % (out, image), "w").write("amd64 sha256:%s\\narm64 sha256:%s\\n"
-        % (h("m-amd64|%s|%s" % (image, body)), h("m-arm64|%s|%s" % (image, body))))
-# the OCI layout directory (PROPOSED/UNVERIFIED, cache P5): the descriptor of index.json is the digest recorded in <image>.digest
-blob = ("image|%s|%s|%s" % (image, sde, body)).encode()
+# the OCI layout directory (PROPOSED/UNVERIFIED, cache P5): the descriptor of index.json is the digest recorded in <image>.digest; the index blob and the two
+# child manifests are real JSON (the harness module builds them, so the oracle and the fake agree)
+import importlib.util
+_spec = importlib.util.spec_from_file_location("h", os.environ["HARNESS_DIR"] + "/chain-test-harness.py")
+_h = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(_h)
+blob, children = _h.oci_parts(image, sde, body)
 dg = hashlib.sha256(blob).hexdigest()
 os.makedirs("%s/%s/blobs/sha256" % (out, image), exist_ok=True)
 open("%s/%s/oci-layout" % (out, image), "w").write('{"imageLayoutVersion": "1.0.0"}')
 open("%s/%s/index.json" % (out, image), "w").write('{"schemaVersion": 2, "manifests": [{"digest": "sha256:%s"}]}' % dg)
 open("%s/%s/blobs/sha256/%s" % (out, image, dg), "wb").write(blob)
+for cd, cb in children.values():
+    open("%s/%s/blobs/sha256/%s" % (out, image, cd.split(":", 1)[1]), "wb").write(cb)
+open("%s/%s.digest" % (out, image), "w").write("sha256:%s\n" % dg)
+open("%s/%s.manifests" % (out, image), "w").write("amd64 %s\narm64 %s\n" % (children["amd64"][0], children["arm64"][0]))
 open("%s/%s.full.lock.json" % (out, image), "w").write("lock|" + image)
 open("%s/%s-sbom/sbom.json" % (out, image), "w").write("sbom|" + image)
 '''

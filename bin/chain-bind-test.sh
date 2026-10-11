@@ -408,6 +408,31 @@ def layout_refused(label, edit, fragment):
     refused("items-merge: " + label, dd, do_merge(dd), "layout", fragment)
 
 
+def child_digest(image, arch):
+    return h.image_outputs(image, "v0.3.0")["children"][arch][0]
+
+
+def flip_sidecar(dd):          # the sidecar names another amd64 child than the index blob does
+    p = dd + "/out/production.manifests"; lines = open(p).read().split("\n")
+    lines[0] = "amd64 sha256:" + "5" * 64; open(p, "w").write("\n".join(lines))
+
+
+def drop_child(dd):
+    os.remove("%s/out/production/blobs/sha256/%s" % (dd, child_digest("production", "arm64").split(":")[1]))
+
+
+def corrupt_child(dd):
+    open("%s/out/fips/blobs/sha256/%s" % (dd, child_digest("fips", "amd64").split(":")[1]), "ab").write(b" ")
+
+
+def non_json_index(dd):
+    # an index blob that is not JSON (the old test oracle's shape), with a descriptor and a name that match
+    blob = b"image|production|not json"; dg = hashlib.sha256(blob).hexdigest()
+    shutil.rmtree(dd + "/out/production/blobs"); h.write("%s/out/production/blobs/sha256/%s" % (dd, dg), blob)
+    h.write(dd + "/out/production/index.json", json.dumps({"manifests": [{"digest": "sha256:" + dg}]}))
+    h.write(dd + "/out/production.digest", "sha256:" + dg + "\n")
+
+
 def drop_layout(dd, image="production"):
     shutil.rmtree("%s/out/%s" % (dd, image))
 
@@ -434,6 +459,17 @@ layout_refused("a layout whose blob does not hash to its name is refused", bad_b
 def bad_version(dd):
     open(dd + "/out/production/oci-layout", "w").write('{"imageLayoutVersion": "2.0.0"}')
 layout_refused("an oci-layout file of another version is refused", bad_blob if False else bad_version, "production")
+# Codex A r3 F3: the sidecar digests are bound to the platform descriptors of the parsed index blob, and the child blobs exist and hash to their names
+d = merge_tree("idx-ok")
+rc, out, err = do_merge(d)
+ix = json.loads(open("%s/out/production/blobs/sha256/%s" % (d, h.image_outputs("production", "v0.3.0")["digest"].split(":")[1])).read())
+check("items-merge: the oracle's image index is real OCI JSON with a linux/amd64 and a linux/arm64 descriptor equal to the sidecar",
+      rc == 0 and sorted((m["platform"]["architecture"], m["platform"]["os"]) for m in ix["manifests"]) == [("amd64", "linux"), ("arm64", "linux")]
+      and sorted(m["digest"] for m in ix["manifests"]) == sorted(l.split()[1] for l in h.image_outputs("production", "v0.3.0")["manifests"]), "exit %s" % rc)
+layout_refused("a sidecar digest that is not the index's platform descriptor is refused", flip_sidecar, "production")
+layout_refused("a child manifest blob that is missing is refused", drop_child, "production")
+layout_refused("a child manifest blob that does not hash to its name is refused", corrupt_child, "fips")
+layout_refused("an index blob that is not JSON is refused", non_json_index, "production")
 d = merge_tree("m5")
 os.remove(d + "/dist/" + h.archive_files("v0.3.0")["archive-fips-linux-arm64"][0])
 refused("items-merge: a missing archive is refused", d, do_merge(d), "missing", "archive-fips-linux-arm64")
@@ -454,7 +490,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 65
+EXPECT = 70
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
