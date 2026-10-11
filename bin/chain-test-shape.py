@@ -221,6 +221,10 @@ VERDICT_ARTIFACT = "witness-rebuild"
 MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
+# Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod): ONE digest-pinned actions/setup-go
+# step, right after the mode guard and before the Witness install, with exactly these two `with:` keys (advisor, Codex A r2 blocker 4)
+SETUP_GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
+SETUP_GO_WITH = {"go-version-file": "go.mod", "cache": "false"}
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -233,7 +237,7 @@ HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True,
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True,
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
@@ -330,6 +334,10 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) != {"name", "env", "run"} or s.get("env") != MODE_GUARD_ENV or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
             bad.append("step %d must be exactly env %s, run: %s, and no if (the mode guard)" % (i, MODE_GUARD_ENV, MODE_GUARD_RUN))
+    if spec.get("setup_go"):
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"uses", "with", "name"} or (s.get("uses") or "").split(" ")[0] != SETUP_GO or (s.get("with") or {}) != SETUP_GO_WITH:
+            bad.append("step %d must be exactly actions/setup-go (the pinned digest) with %s (the Go toolchain of admission's verify-freeze)" % (i, SETUP_GO_WITH))
     s = steps[i] if i < len(steps) else {}; i += 1
     if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != "bash bin/install-scanner.sh witness":
         bad.append("step 2 must be exactly: run bash bin/install-scanner.sh witness (checksum-pinned Witness install)")

@@ -137,6 +137,7 @@ def stage_text(family):
         out += "          persist-credentials: false\n          fetch-depth: 0\n"
         if sp.get("mode"):
             out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
+        if sp.get("setup_go"): out += "      - uses: %s # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n" % S.SETUP_GO
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
@@ -274,6 +275,13 @@ st s_cred   "AC2 persisted credentials" "exactly" 'persist-credentials: false' '
 st s_ref    "AC2 checkout of another ref" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          ref: main'
 st s_repo   "AC2 checkout of another repository" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          repository: evil/fork'
 st s_token  "AC2 checkout with a token" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          token: ${{ secrets.X }}'
+SETGO='      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
+st s_go_gone  "AC4 the Go toolchain step of admission is missing from Build's apk job" "setup-go" "$SETGO" ''
+st s_go_key   "AC4 setup-go with a go-version key besides go-version-file" "setup-go" 'go-version-file: go.mod\n          cache: false\n' 'go-version-file: go.mod\n          go-version: 1.20\n          cache: false\n'
+st s_go_cache "AC4 setup-go with the module cache on" "setup-go" 'cache: false\n' 'cache: true\n'
+st s_go_file  "AC4 setup-go reading another version file" "setup-go" 'go-version-file: go.mod' 'go-version-file: tools/requirements/go.mod'
+st s_go_float "AC4 setup-go by a floating tag" "setup-go" 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0' 'actions/setup-go@v7'
+st s_go_after "AC4 setup-go after the Witness install (it must come before the admission step)" "setup-go" "$SETGO      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n" "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n$SETGO"
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
        'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
@@ -1736,7 +1744,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=590
+EXPECT=596
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

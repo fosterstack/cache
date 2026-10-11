@@ -132,6 +132,7 @@ cat > "$FB/go" <<'EOF'
 echo "go $*" >> "${FAKE_LOG:-/dev/null}"
 echo "GOTOOLCHAIN=${GOTOOLCHAIN:-unset}" >> "${FAKE_LOG:-/dev/null}"
 if [ "${1:-}" = version ] && [ "${2:-}" = -m ]; then cat "${FAKE_BUILDINFO:?}"; exit 0; fi
+[ -z "${FAKE_GO_MSG:-}" ] || echo "$FAKE_GO_MSG" >&2
 exit "${FAKE_GO_RC:-0}"
 EOF
 chmod +x "$FB/go"
@@ -601,6 +602,15 @@ fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse
 fresh;
 run_admit FAKE_GO_RC=1;
 expect_refuse "AC4 a baseline that fails the requirements tool's freeze check is refused" baseline freeze
+# Codex A r2 blocker 4: a runner whose Go is older than go.mod. With GOTOOLCHAIN=local the tool cannot switch, so the freeze check fails and admission is
+# refused naming the cause; the stage installs the go.mod toolchain (actions/setup-go, judged by the stage grammar) so this never happens on the chain
+fresh;
+run_admit FAKE_GO_RC=1 "FAKE_GO_MSG=go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)";
+n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && [ "$RC" = 1 ] && grep -q '^admission refused at baseline: ' < <(head -1 "$W/c/err") && grep -q 'go.mod requires go' "$W/c/err" \
+   && ! grep -q 'GOTOOLCHAIN=auto' "$W/c/calls.log" && ! grep -q Traceback "$W/c/err" && [ ! -e "$W/c/repo/admission.json" ]; then
+  ok "AC4 a runner Go older than go.mod fails admission at baseline, with GOTOOLCHAIN=local and no toolchain download"
+else bad "AC4 old runner Go: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
 fresh;
 run_admit;
 if grep -q 'go -C tools/requirements run . verify-freeze v0.3.0' "$W/c/calls.log" 2> /dev/null && grep -q 'GOTOOLCHAIN=local' "$W/c/calls.log";
@@ -721,6 +731,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=121
+EXPECT_TOTAL=122
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
