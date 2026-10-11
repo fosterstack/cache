@@ -1,0 +1,64 @@
+{
+ "records": [
+  {
+   "type": "https://slsa.dev/provenance/v1",
+   "claim": "how and from what the release was built, written and signed by the Sign job",
+   "consumer": "release"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/source-admission/v1",
+   "claim": "the tag and commit were admitted (old chain, removed in PR 2: admission becomes Build's first step)",
+   "consumer": "build"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/build/v1",
+   "claim": "what the old build stage built (old chain, replaced by Build's Witness record in PR 2)",
+   "consumer": "release"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/image-build/v1",
+   "claim": "the old image stage's image digests and base images (old chain, removed in PR 2)",
+   "consumer": "check"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/reproducibility/v1",
+   "claim": "the old rebuild reproduced the candidate digests (old chain, replaced by Rebuild's Witness record in PR 2)",
+   "consumer": "release"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/acceptance/v1",
+   "claim": "the acceptance suites passed for the candidate digests (old chain, replaced by Check's Witness record in PR 3)",
+   "consumer": "release"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/release-authorization/v1",
+   "claim": "the old authorization stage approved these digests for publication (old chain, removed in PR 4)",
+   "consumer": "release"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/publication/v1",
+   "claim": "what the old promotion stage published and where (old chain, replaced in PR 4)",
+   "consumer": "customer"
+  },
+  {
+   "type": "https://fosterstack.com/attestations/release-manifest/v1",
+   "claim": "the old release evidence bundle for customers (old chain, replaced in PR 4)",
+   "consumer": "customer"
+  },
+  {
+   "type": "urn:cosign:signature",
+   "claim": "a signature on the public images and release files, and the dry run's forged material signed to prove it is refused",
+   "consumer": "customer"
+  },
+  {
+   "type": "urn:gitsign:tag-signature",
+   "claim": "the keyless signature of the automatic patch tag, checked by admission",
+   "consumer": "build"
+  },
+  {
+   "type": "urn:action:sigstore",
+   "claim": "the cosign installer action the old promotion stage uses (no record of its own; removed in PR 4)",
+   "consumer": "release"
+  }
+ ]
+}

@@ -1,0 +1,50 @@
+{
+ "_note": "The build configuration outside bin/ and .github/ that the build tooling reads (the file allowlist's config files), pinned by the sha256 of its bytes. bin/chain-sign-wiring-test.sh fails on a changed, missing or unlisted one (REQ-CHAIN-001-AC1): a change is made visible by updating its row in the same pull request.",
+ "files": [
+  {
+   "path": ".githooks/pre-commit",
+   "sha256": "e747eb18100bf2036826cd84b1595861a70967a278678f97d3e1340a5e614c2a",
+   "reason": "a local developer hook (never run in CI)"
+  },
+  {
+   "path": ".gitignore",
+   "sha256": "236f50858ea84e2ff3d5db0ba427fdf328cee1c4a43c3c583a544955bd111a4a",
+   "reason": "git's ignore list"
+  },
+  {
+   "path": ".golangci.yml",
+   "sha256": "0fbb62e3ae91c5b67cdd754be4d1afbf906e10c4dfd5363171d7443046a3cd01",
+   "reason": "the Go linter configuration (lint job)"
+  },
+  {
+   "path": ".goreleaser.yaml",
+   "sha256": "ee61cbac9780d91fd871b587470fbe19bc6537739368e24d138c88d602dc0ea4",
+   "reason": "the release build: run by stage-build.yml's build job, which holds id-token: write"
+  },
+  {
+   "path": ".gremlins.yaml",
+   "sha256": "3df64cf8a28c95dc03fbe143cf3dcab82ed1ce199b3d8f284ae884acb0702919",
+   "reason": "the mutation-test configuration"
+  },
+  {
+   "path": ".grype.yaml",
+   "sha256": "cc0183aab1495abcf08889e81df796123703308d55f56a523300a28565db4d35",
+   "reason": "the grype scanner configuration"
+  },
+  {
+   "path": "build/docker/Dockerfile.debug",
+   "sha256": "7c773d6d362918e72c75a2da2e6fa63e9f41ee8b55268832ace433f7f8283982",
+   "reason": "an image build file"
+  },
+  {
+   "path": "build/docker/Dockerfile.fips",
+   "sha256": "0c80c4671c61dcdebbdfcbe127f5dbce9e9f9ef6acdcc3e23ac4b34e0b52860a",
+   "reason": "an image build file"
+  },
+  {
+   "path": "build/docker/Dockerfile.production",
+   "sha256": "92b2b0d7b1426299f6eaaa7bda58c56a5069314b8088aa7335821d7276d4e269",
+   "reason": "an image build file"
+  }
+ ]
+}

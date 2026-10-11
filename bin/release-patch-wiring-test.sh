@@ -27,14 +27,17 @@ if not any(re.fullmatch(r"\d{1,2} \d{1,2} \* \* \*", c.get("cron", "")) for c in
     bad.append("no daily schedule")
 jobs = d.get("jobs") or {}
 adm = jobs.get("admission") or {}
-if adm.get("if", "").replace(" ", "") != "${{startsWith(github.ref,'refs/tags/v')}}":
+# PR 1 of the v0.3.0 chain: the manual dry-run trigger adds two conjuncts that keep a dry run (or any manual dispatch) out of the chain
+if adm.get("if", "").replace(" ", "") != "${{startsWith(github.ref,'refs/tags/v')&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":
     bad.append("admission is not guarded to v* tags: %s" % adm.get("if"))
-chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes")]
+# the dry run's own jobs (sign, hostile-*) hang off the Sign boundary, not off admission; they are judged by bin/chain-hostile-test.sh
+chain = [j for j in jobs if j not in ("admission", "decide", "patch-failed", "patch-notes", "sign", "hostile-verify", "hostile-verdict")]
+BUILD_IF = "${{!cancelled()&&(needs.admission.result=='success'||inputs.dry-run)}}"   # a dry run has no admission; a release still needs it
 for j in chain:
-    if "if" in jobs[j] or not jobs[j].get("needs"):
+    if jobs[j].get("if", "").replace(" ", "") not in (("", "${{!inputs.dry-run}}") if j != "build" else (BUILD_IF,)) or not jobs[j].get("needs"):
         bad.append("chain job %s does not hang off admission unconditionally" % j)
 dec = jobs.get("decide") or {}
-if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'}}":
+if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":
     bad.append("decide does not run on main only: %s" % dec.get("if"))
 if dec.get("concurrency") != {"group": "patch-decide", "cancel-in-progress": "false"}:
     bad.append("decide runs are not serialized (a push and the daily run could both cut)")
@@ -153,7 +156,7 @@ if (dec.get("outputs") or {}).get("tagged") != "${{ steps.push.outputs.tagged }}
         push[0].get("id") != "push" or "tagged=true" not in push[0]["run"]:
     bad.append("decide does not say that it tagged")
 pn = jobs.get("patch-notes") or {}
-if pn.get("needs") != "decide" or pn.get("if", "").replace(" ", "") != "${{needs.decide.outputs.tagged=='true'}}":
+if pn.get("needs") != "decide" or pn.get("if", "").replace(" ", "") != "${{needs.decide.outputs.tagged=='true'&&!inputs.dry-run}}":
     bad.append("the notes PR job does not run exactly when decide tagged")
 for ref in set(re.findall(r"needs\.decide\.outputs\.([\w-]+)", yaml.safe_dump(pn))):
     if ref not in (dec.get("outputs") or {}):
@@ -255,7 +258,7 @@ if len([st for st in psteps if st.get("run")]) != 1:
 # review of #191 round 3 (execution context): the whole job and its steps are pinned, not only the run text. A `shell:` (it runs BEFORE the run
 # body with the step's token), a working-directory, a job env (BASH_ENV, PATH, ENV), defaults.run, a container or service, continue-on-error, an
 # extra step key, or a workflow-level env / defaults would all change what the whitelisted lines mean. Action digests are checked separately.
-_JOB = {"needs": "decide", "if": "${{ needs.decide.outputs.tagged == 'true' }}", "runs-on": "ubuntu-latest", "environment": "agent",
+_JOB = {"needs": "decide", "if": "${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}", "runs-on": "ubuntu-latest", "environment": "agent",
         "permissions": {"contents": "read"}}
 if {k: v for k, v in pn.items() if k != "steps"} != _JOB:
     bad.append("the notes PR job is not exactly the reviewed job (keys, env, defaults, container, services, environment): %s" % sorted(pn))

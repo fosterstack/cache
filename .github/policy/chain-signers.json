@@ -1,0 +1,80 @@
+{
+ "_note": "Every signing call other than the SLSA provenance Sign writes, with the reason it exists (REQ-CHAIN-001-AC1). Entries for the old chain disappear when PRs 2-4 replace those stage files.",
+ "signers": [
+  {
+   "file": "ci.yml",
+   "tool": "gitsign",
+   "reason": "keyless signs nothing customers verify: the CI patch tag of the automatic patch release is signed by gitsign under release.yml's identity (REQ-REL-009-AC5); ci.yml only installs/uses it in tests"
+  },
+  {
+   "file": "release.yml",
+   "tool": "gitsign",
+   "reason": "signs the automatic patch tag with release.yml's own keyless identity (REQ-REL-009-AC5)"
+  },
+  {
+   "file": "stage-acceptance-predicate.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs the acceptance predicate; removed when PR 3 replaces the acceptance stages"
+  },
+  {
+   "file": "stage-admission.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs the source-admission predicate; removed in PR 2 (admission moves into Build's first step)"
+  },
+  {
+   "file": "stage-admission.yml",
+   "tool": "gitsign",
+   "reason": "verifies/uses gitsign for the CI patch-tag identity check (REQ-REL-009-AC6); moves into Build's first step in PR 2"
+  },
+  {
+   "file": "stage-authorize.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs the release-authorization predicate; removed in PR 4"
+  },
+  {
+   "file": "stage-build.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs the build predicate; replaced by Witness in PR 2"
+  },
+  {
+   "file": "stage-image.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs the image-build predicate; removed in PR 2"
+  },
+  {
+   "file": "stage-promote.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs the publication-outcomes predicate; replaced in PR 4"
+  },
+  {
+   "file": "stage-promote.yml",
+   "tool": "cosign attest",
+   "reason": "old chain: attests the published images (SBOM, VEX); replaced in PR 4"
+  },
+  {
+   "file": "stage-promote.yml",
+   "tool": "cosign sign-blob",
+   "reason": "old chain: signs the release files; replaced in PR 4"
+  },
+  {
+   "file": "stage-promote.yml",
+   "tool": "cosign sign",
+   "reason": "old chain: signs the public images in both registries; replaced in PR 4"
+  },
+  {
+   "file": "stage-promote.yml",
+   "tool": "sigstore actions",
+   "reason": "old chain: installs cosign for the promotion stage; replaced in PR 4"
+  },
+  {
+   "file": "stage-reproducibility.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs the reproducibility predicate; replaced by Rebuild's Witness record in PR 2"
+  },
+  {
+   "file": "stage-verify.yml",
+   "tool": "actions/attest",
+   "reason": "old chain: signs one scan predicate per scanner; replaced by Check's Witness record in PR 3"
+  }
+ ]
+}
