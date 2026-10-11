@@ -1689,6 +1689,17 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"up to four archives":                      install + "\nThe release ships up to four archives.\n",
 		"over four archives":                       install + "\nThe release ships over four archives.\n",
 		"about four archives":                      install + "\nThe release ships about four archives.\n",
+		// Round-7 decision (advisor, final): no Markdown structure is read; a tag-like "<" is refused anywhere, in a
+		// code span or fence too. The reviewer shapes (A7-1, A7-2, B7-1, B7-2) and the placeholders accepted until
+		// round 7 are each refused.
+		"A7-1/B7-1 list fence hides Windows html":  install + "\n- Example\n  ```\n  harmless\n\nWin<b>dows</b> binaries are shipped.\n```\n",
+		"A7-2/B7-1 heading code span hides html":   install + "\n# `\nWin<b>dows</b> binaries are shipped.\n`\n",
+		"B7-2 marker between code spans (Windows)": install + "\n`Win`<!-- pinned: upstream -->`dows`\n",
+		"B7-2 marker between code spans (six)":     install + "\nEvery release ships `si`<!-- pinned: upstream -->`x archives`\n",
+		"placeholder in a code span":               install + "\nRun `kubectl exec -it <pod> -- sh` to look inside the four archives' container.\n",
+		"placeholder in an indented fence":         install + "\n   ```sh\n   kubectl exec -it <pod> -- sh\n   ```\n",
+		"placeholder in a four-backtick fence":     install + "\n````\n```\nkubectl exec -it <pod> -- sh\n````\n",
+		"placeholder in a tilde fence":             install + "\n~~~ sh `x`\nkubectl exec -it <pod> -- sh\n~~~\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -1719,14 +1730,13 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"Every release ships [four](https://example.com/a \"six)\") archives.",
 		"Release archives: four.",
 		"Two of the four archives are FIPS builds; each release ships all four archives.",
-		"Run `kubectl exec -it <pod> -- sh` to look inside the four archives' container.",
-		// Round-6 precision (A1, A2, A3): an exception marker ending its line, or on a line of its own, passes; a real
-		// fence indented up to three spaces still holds a placeholder; "no archive for this machine" is not a count.
+		"Run `kubectl exec -it POD_NAME -- sh` to look inside the four archives' container.",
+		// Round-6 precision (A2, A3): an exception marker ending its line, or on a line of its own, passes; "no archive
+		// for this machine" is not a count. Round 7: a placeholder written as a word passes in a fence.
 		"The version is pinned for all four archives. <!-- pinned: upstream -->",
 		"The version is pinned for all four archives.\n<!-- pinned: historical -->",
-		"   ```sh\n   kubectl exec -it <pod> -- sh\n   ```",
-		"````\n```\nkubectl exec -it <pod> -- sh\n````",
-		"~~~ sh `x`\nkubectl exec -it <pod> -- sh\n~~~",
+		"   ```sh\n   kubectl exec -it POD_NAME -- sh\n   ```",
+		"~~~ sh `x`\nkubectl exec -it POD_NAME -- sh\n~~~",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
@@ -1877,12 +1887,20 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"nested destination splits Windows": notes + "- A signed installer for Win[do](https://example.com/a(b))ws ships with this release (advisor 0130).\n",
 		"joiner splits Windows":             notes + "- A signed installer for Win͏dows ships with this release (advisor 0130).\n",
 		"image tag splits Windows":          notes + "- A signed installer for Win<img alt=\"\">dows ships with this release (advisor 0130).\n",
-		// Round-6 regressions (A2, B4, A4, A1): an exception marker inside a line splits nothing; a fenced line is not
-		// an entry; a pseudo-fence hides nothing.
+		// Round-6 regressions (A2, B4, A1): an exception marker inside a line splits nothing; a pseudo-fence hides
+		// nothing.
 		"marker splits Windows":            notes + "- A signed installer for Win<!-- pinned: upstream -->dows ships with this release (advisor 0130).\n",
 		"marker splits six":                notes + "- The release ships si<!-- pinned: upstream -->x archives (advisor 0130).\n",
-		"entry inside a code fence":        strings.Replace(notes, "- "+notesSentence, "```\n- "+notesSentence, 1) + "```\n",
 		"indented pseudo-fence hides html": notes + "\n    ```\n\n- A signed installer for Win<b>dows</b> ships with this release (advisor 0130).\n",
+		// Round-7 decision (advisor, final): no Markdown structure is read; a tag-like "<" is refused anywhere (the
+		// A7-1/B7-1, A7-2/B7-1 and B7-2 shapes, and a placeholder in a code span or fence); an entry is a plain line,
+		// so a "* " or indented entry with another citation is the sentence outside the cited entry.
+		"A7-1/B7-1 list fence hides Windows html": notes + "- An example (advisor 0130).\n  ```\n  harmless\n\nWin<b>dows</b> binaries are shipped.\n```\n",
+		"A7-2/B7-1 heading code span hides html":  notes + "\n# `\nWin<b>dows</b> binaries are shipped.\n`\n",
+		"B7-2 marker between code spans":          notes + "- A signed installer for `Win`<!-- pinned: upstream -->`dows` ships with this release (advisor 0130).\n",
+		"placeholder in a fence":                  notes + "\n```sh\nkubectl exec -it <pod> -- sh\n```\n",
+		"star entry with another citation":        notes + "* " + notesSentence + " (advisor 0130).\n",
+		"indented entry with another citation":    notes + "  - " + notesSentence + " (advisor 0130).\n",
 	}
 	for name, text := range mutants {
 		if text == notes {
@@ -1931,12 +1949,25 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"a prefixed changelog entry":           "# Changelog\n\n## v0.3.1 — patch release\n\n### Behavior changes\n- Note: " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
 		"a changelog entry split by a joiner":  strings.Replace(published, "macOS", "mac͏OS", 1),
 		"a changelog entry with no line start": "# Changelog\n\nSee: - " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
-		// Round-6 regression (A4): a line inside a code fence is not a Markdown list entry.
-		"a fenced changelog entry":       "# Changelog\n\n## v0.3.1 — patch release\n\n```\n" + strings.TrimRight(entry, "\n") + "\n```\n",
-		"a tilde-fenced changelog entry": "# Changelog\n\n~~~text\n" + strings.TrimRight(entry, "\n") + "\n~~~\n",
 	} {
 		if ps := checkNotes(cleared, cl, archives); len(ps) == 0 {
 			t.Errorf("the cleared notes pass with %s", name)
+		}
+	}
+	// Round-7 decision (advisor, final): the checks read no Markdown structure, so an entry is a plain line: a line
+	// starting "- " or "* " after optional indentation, whatever surrounds it (a fence line is plain text). These
+	// changelogs carry the cited entry as such a line and pass (A7-3/B7-4: an entry inside an unclosed or closed fence
+	// is read as a plain-line entry, by decision).
+	for name, cl := range map[string]string{
+		"a fenced changelog entry":            "# Changelog\n\n## v0.3.1 — patch release\n\n```\n" + strings.TrimRight(entry, "\n") + "\n```\n",
+		"a tilde-fenced changelog entry":      "# Changelog\n\n~~~text\n" + strings.TrimRight(entry, "\n") + "\n~~~\n",
+		"an unclosed-fence changelog entry":   "# Changelog\n\n```text\n" + strings.TrimRight(entry, "\n") + "\n",
+		"a star changelog entry":              "# Changelog\n\n* " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
+		"an indented changelog entry":         "# Changelog\n\n  - " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
+		"a tab-indented star changelog entry": "# Changelog\n\n\t* " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
+	} {
+		if ps := checkNotes(cleared, cl, archives); len(ps) > 0 {
+			t.Errorf("the cleared notes are refused with %s: %v", name, ps)
 		}
 	}
 }
@@ -2205,6 +2236,10 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		{"YAML escape decodes to a tag", edit(plat2, "so a missing variant/arch fails; Win\\x3Cb>dows is the documented equivalent\" }\n"), "inline HTML"},
 		{"entity for a joiner", edit(plat2, "so a missing variant/arch fails; Win&#x034F;dows is the documented equivalent\" }\n"), "character reference"},
 		{"image tag splits Windows", edit(plat2, "so a missing variant/arch fails; Win<img alt=''>dows is the documented equivalent\" }\n"), "inline HTML"},
+		// Round-7 regression (A7-4): a link form the plain-text reading does not read (an angle-bracket destination)
+		// is refused in the mappings as in the docs.
+		{"A7-4 angle-bracket destination splits Windows", edit(plat2, "so a missing variant/arch fails; Win[do](<./a)b>)ws is the documented equivalent\" }\n"), "link this check does not read"},
+		{"A7-4 angle-bracket destination in a comment", edit(lastRef, lastRef+"      # Win[do](<./a)b>)ws is a documented equivalent\n"), "link this check does not read"},
 	}
 	// A test function that is commented out, or that is not a top-level test, does not authorize a reference.
 	const fake = "package platforms\n\nimport \"testing\"\n\n/*\nfunc TestDarwin(t *testing.T) {\n}\n*/\n\n// func TestMacOS(t *testing.T) {\n\nvar s = `\nfunc TestWindows(t *testing.T) {\n`\n\nfunc TestReal(t *testing.T) {}\n"
@@ -2400,20 +2435,52 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 			}
 		}
 	}
+	// Round-7 decision (advisor, final): the guard reads no Markdown structure. A tag-like "<" (before a letter, /, !
+	// or ?) is refused wherever it is, in a code span or a code fence too; placeholders are written as words
+	// (POD_NAME). Each of these, accepted until round 7 as code, is now refused at the line holding the "<".
+	for name, c := range map[string]struct {
+		s    string
+		line int
+	}{
+		"placeholder in a code span":                 {"Run `kubectl exec -it <pod> -- sh`.", 2},
+		"placeholder in a code span across a break":  {"use `kubectl debug POD_NAME -it --copy-to=<new-name>\n--image=...`, and more", 2},
+		"placeholder in a backtick fence":            {"```sh\nkubectl debug -it <pod> --target=<container> -- sh\n```", 3},
+		"type argument in a tilde fence":             {"~~~\nremote<HttpBuildCache> {\n~~~", 3},
+		"placeholder in a fence indented 3 spaces":   {"   ```sh\n   kubectl exec <pod>\n   ```", 3},
+		"placeholder in a four-backtick fence":       {"````md\n```\n<pod>\n```\n````", 4},
+		"placeholder in a tilde fence with backtick": {"~~~ `info` with backticks\n<pod>\n~~~", 3},
+		"placeholder after an indented pseudo-close": {"```sh\nPOD_NAME\n    ```\n<container>\n```", 5},
+		// The round-7 reviewer shapes (A7-1/B7-1: a fence that CommonMark ends with its list item; A7-2/B7-1: a code
+		// span paired across a heading and a paragraph; B7-2: an exception marker between two code spans).
+		"A7-1/B7-1 list fence hides a tag":            {"- item\n  ```\n  harmless\n\nWin<b>dows</b> binaries are shipped.\n```", 6},
+		"A7-1 unindented line after a list fence":     {"- item\n  ```\nWin<b>dows</b>\n```", 4},
+		"A7-2/B7-1 heading code span hides a tag":     {"# `\nWin<b>dows</b> binaries are shipped.\n`", 3},
+		"B7-2 marker between code spans in Windows":   {"`Win`<!-- pinned: upstream -->`dows`", 2},
+		"B7-2 marker between code spans in six":       {"`si`<!-- pinned: upstream -->`x archives`", 2},
+		"B7-2 historical marker between code spans":   {"`Win`<!-- pinned: historical -->`dows`", 2},
+	} {
+		for _, f := range []string{md, notesFile} {
+			ps := contentProblems(f, "a first line\n"+c.s+"\n")
+			want := fmt.Sprintf("%s:%d: ", f, c.line)
+			found := false
+			for _, p := range ps {
+				found = found || (strings.HasPrefix(p, want) && (strings.Contains(p, "tag-like \"<\"") || strings.Contains(p, "exception marker")))
+			}
+			if !found {
+				t.Errorf("%s: %s is not refused at line %d for its \"<\": %v", f, name, c.line, ps)
+			}
+		}
+	}
 	for _, s := range []string{
-		"Run `kubectl exec -it <pod> -- sh`.",
-		"use `kubectl debug <pod> -it --copy-to=<new-name>\n--image=...`, and more",
-		"```sh\nkubectl debug -it <pod> --target=<container> -- sh\n```",
-		"~~~\nremote<HttpBuildCache> {\n~~~",
+		"Run `kubectl exec -it POD_NAME -- sh`.",
+		"use `kubectl debug POD_NAME -it --copy-to=NEW_POD_NAME\n--image=...`, and more",
+		"```sh\nkubectl debug -it POD_NAME --target=CONTAINER_NAME -- sh\n```",
+		"~~~\nremote(HttpBuildCache::class) {\n~~~",
 		"Built with `GOFIPS140=v1.0.0`, selecting the module. <!-- pinned: upstream -->",
 		"Cut four times. <!-- pinned: historical -->",
 		"<!-- pinned: historical -->",
 		"| a | b | <!-- pinned: upstream -->",
-		"   ```sh\n   kubectl exec <pod>\n   ```",
-		"````md\n```\n<pod>\n```\n````",
-		"~~~ `info` with backticks\n<pod>\n~~~",
-		"```sh\n<pod>\n    ```\n<container>\n```",
-		"Visible punctuation: a — b – c · d → e × f ✓ g § h, x < y and y > x.",
+		"Visible punctuation: a — b – c · d → e × f ✓ g § h, x < y and y > x, a <= b, c <- d, <3, < x.",
 		"\tan indented line with a tab",
 	} {
 		if ps := contentProblems(md, s+"\n"); len(ps) > 0 {
@@ -2422,6 +2489,9 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 	}
 	if ps := contentProblems(mappingsFile, "# go-test refs are \"<package dir>:<TestName>\" and the validator fails\n"); len(ps) > 0 {
 		t.Errorf("the listed mappings placeholder is refused: %v", ps)
+	}
+	if ps := contentProblems(mappingsFile, "# go-test refs are \"<package dir>:<TestName>\" or <x>\n"); !strings.Contains(strings.Join(ps, "\n"), mappingsFile+":1: inline HTML") {
+		t.Errorf("a tag-like \"<\" beside the listed mappings placeholder is not refused: %v", ps)
 	}
 	if ps := contentProblems(mappingsFile, "# run `kubectl exec <pod>` first\n"); !strings.Contains(strings.Join(ps, "\n"), mappingsFile+":1: inline HTML") {
 		t.Errorf("a placeholder in the mappings file (YAML, not Markdown: no code span) is not refused: %v", ps)
