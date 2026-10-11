@@ -11,41 +11,37 @@ content is what is bound: any later change to the auditor — a fix commit, or a
 brings in other auditor changes — changes <tree>, the old record no longer matches, and the
 check fails until the review loop's confirmation round is recorded for the new content.
 
-A record clears the gate when it names both vendors (codex = OpenAI, sonnet = Anthropic),
-its final round leaves each with zero open merge blockers and a sha256 of that reviewer's raw
-output (the evidence, kept in the private audit tree), and its stop verdict is "clear" for
-both. The record is an attestation by the agent that ran the loop (owner decision, option C,
-Sep 27: self-attested); the gate makes a missing, stale or non-clear one impossible to merge past.
+A record clears the gate (REQ-AUD-018 AC5, AC6) when its schema is auditor-review-record/v2, it binds <tree>, and
+its FINAL round's reviewers hold exactly two entries, codex_a and codex_b, and nothing else: each an object with
+exactly the fields reviewer (codex), vendor (openai), seat (A or B, matching its key), model and effort (each on the
+gate's own lists below), blockers_open (exactly the integer 0) and evidence_sha256 (64 lowercase hex: the sha256 of
+that seat's raw output, kept in the private audit tree). The two seats name two different models (SAME_MODEL
+below says which list entries count as one model); the two evidence hashes differ; the stop block holds exactly
+codex_a clear and codex_b clear. Every missing, extra, mistyped or malformed field fails with a message naming it. The record is an
+attestation by the agent that ran the loop (owner decision, option C, Sep 27): the gate checks its shape, never that
+a review ran or which model ran; the evidence hash lets a holder of the raw output check its header.
 
-It runs from .github/workflows/agent-review-gate.yml on pull_request_target: the workflow checks
+No substitute (AC4): an entry under any other key in the final round, and any field anywhere in the record whose
+name marks a substitute, fails, saying no substitute is accepted. The gate reads no allow-list and no clock and
+no environment; a Codex outage leaves the change waiting for both Codex reviews.
+
+Records merged before the dual-Codex gate (AC7): a record whose schema is not v2 clears only when the trusted
+revision holds the same record path with the same blob (same bytes); it is then not re-judged by any rule. Any other
+such record fails, saying a schema v2 record is required; a trusted revision that cannot be read fails closed.
+
+It runs from .github/workflows/agent-review-gate.yml on pull_request_target (AC8): the workflow checks
 out the BASE branch — so this file is always main's copy, never the PR's — fetches the PR head as
-git objects only (never checked out, never executed), and reads the record with `git show`.
+git objects only (never checked out, never executed), reads the record with `git show`, and runs this script
+with `python3 -I` (isolated: no script directory on sys.path, no PYTHON* env).
 
   --base REV       the base to diff against (the merge base of the PR with its base branch)
   --head REV       the reviewed commit (the PR head); default HEAD
   --print-tree     print <tree> for --head and exit (used to name the record)
-  --pr N           the pull request's number; needed only by a substitute whose scope is pr:N
-  --subs-rev REV   the TRUSTED revision whose reviews/substitutes.json is read (default: --base). The
-                   workflow passes the checked-out default branch, so a substitute merged after the PR
-                   branched still counts; the PR's own copy of the file is never read.
-
-REQ-AUD-018 AC4 (recorded second-seat substitute): while the owner has stopped the second vendor, the
-final round may carry an `opus` entry (vendor anthropic, model opus, effort medium, substitute_for
-codex, substitute_id, blockers_open 0, evidence_sha256) in place of `codex`, and the round a
-`completed_at` (YYYY-MM-DDTHH:MM:SSZ). It counts only if substitute_id names an entry of
-.github/agent/reviews/substitutes.json as read from the trusted revision (never the PR's copy: a PR
-cannot add or extend its own substitute; its edit of the file only changes <tree>), the entry is
-unexpired by the gate's own UTC clock (read from the system clock only; no environment variable or option can change it) AND by completed_at, and its
-scope (`all`, or `pr:N` with N equal to --pr) fits. Sonnet is never substitutable. A record with a
-codex entry is judged on codex alone. Anything malformed fails closed with a message naming it.
-
-ENFORCEMENT: a substitute never clears a change to anything the gate itself runs or reads — every path
-under .github/agent/bin/ and .github/agent/fixtures/testlib/ (by prefix, so new files count), the
-review-substitutes allow-list, the gate workflow, bin/check-file-allowlist.sh and
-.github/agent/tests/pin-wiring-test.sh. Such a change needs a real codex entry. The workflow runs this
-script and the pin checker with `python3 -I` (isolated: no script directory on sys.path, no PYTHON* env).
+  --pr N           the pull request's number (checked to be a positive integer; it changes no verdict)
+  --subs-rev REV   the TRUSTED revision, a default-branch commit, for AC7 (default: --base). The workflow passes
+                   the checked-out default branch; nothing of the PR is read from it.
 """
-import datetime, hashlib, json, re, subprocess, sys
+import hashlib, json, re, subprocess, sys
 
 AGENT = ".github/agent/"
 REVIEWS = AGENT + "reviews/"
@@ -54,28 +50,17 @@ REVIEWS = AGENT + "reviews/"
 # (ci.yml is NOT listed: its allowlist job is judged by this gate's workflow from main's copies.)
 GUARDED = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh",
            ".github/workflows/agent-review-gate.yml")
-VENDORS = {"codex": "openai", "sonnet": "anthropic"}
-SCHEMA = "auditor-review-record/v1"
-SUBS_PATH = REVIEWS + "substitutes.json"
-# ENFORCEMENT (B4-B6): a substitute never clears a change to anything the review gate itself runs or reads,
-# else a substitute-cleared change could remove the substitute's own time box. By PREFIX (so a NEW file
-# counts: a new .github/agent/bin/datetime.py would shadow the stdlib for a script run by path): every path under
-# bin/ and the test-lib fixtures the judge puts on PYTHONPATH; plus the exact files: the allow-list, the gate
-# workflow, and the two scripts the judge and sweep run. A change touching any needs a real codex entry.
-ENFORCEMENT_PREFIXES = (AGENT + "bin/", AGENT + "fixtures/testlib/")
-ENFORCEMENT = (SUBS_PATH, ".github/workflows/agent-review-gate.yml", "bin/check-file-allowlist.sh",
-               AGENT + "tests/pin-wiring-test.sh")
-
-
-def enforces(path):
-    """True if `path` is part of what the gate runs or reads (a change to it is never cleared by a substitute)."""
-    return path in ENFORCEMENT or path.startswith(ENFORCEMENT_PREFIXES)
-
-
-SUBS_SCHEMA = "review-substitutes/v1"
-_TIME = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
-_SCOPE = re.compile(r"all|pr:[1-9][0-9]*")
+SCHEMA = "auditor-review-record/v2"
+SEATS = {"codex_a": "A", "codex_b": "B"}
+FIELDS = ("reviewer", "vendor", "seat", "model", "effort", "blockers_open", "evidence_sha256")
+# The gate's own lists (AC5). SAME_MODEL maps a model to the one it counts as when the two seats are compared.
+CODEX_MODELS = ("gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra")
+SAME_MODEL = {"gpt-6.1-sol": "gpt-6-sol"}
+EFFORTS = ("medium", "high", "xhigh")
+NO_SUBSTITUTE = "no substitute is accepted"
+V2_REQUIRED = "a schema v2 record is required"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_SUBSTITUTE = re.compile(r"substitut", re.I)
 
 
 def _git(*a):
@@ -107,124 +92,51 @@ def auditor_changes(base, head):
             if (p.startswith(AGENT) or p in GUARDED) and not _is_record(p)]
 
 
-def _time(v):
-    """A strict UTC instant YYYY-MM-DDTHH:MM:SSZ, or None."""
-    if not isinstance(v, str) or not _TIME.fullmatch(v):
-        return None
-    try:
-        return datetime.datetime.strptime(v, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-    except ValueError:
-        return None
+def _substitute_marks(v, where):
+    """Every field name anywhere under `v` that marks a substitute (AC4), as 'where.field' paths."""
+    found = []
+    if isinstance(v, dict):
+        for k, x in v.items():
+            if _SUBSTITUTE.search(k):
+                found.append("%s.%s" % (where, k))
+            found += _substitute_marks(x, "%s.%s" % (where, k))
+    elif isinstance(v, list):
+        for i, x in enumerate(v):
+            found += _substitute_marks(x, "%s[%d]" % (where, i))
+    return found
 
 
-def _reviewer_problems(name, vendor, r, stop):
-    probs = []
-    if name != "opus" and ("substitute_for" in r or "substitute_id" in r):
-        probs.append("%s is marked as a substitute; only the codex seat can be substituted, and only by opus" % name)
-    if r.get("vendor") != vendor:
-        probs.append("%s vendor is %r, want %r" % (name, r.get("vendor"), vendor))
-    b = r.get("blockers_open")
-    if type(b) is not int or b != 0:      # exactly the integer 0 — not False, not 0.0
-        probs.append("%s has %r open merge blocker(s)" % (name, r.get("blockers_open")))
-    if not _HEX64.fullmatch(str(r.get("evidence_sha256", ""))):
-        probs.append("%s evidence_sha256 is not a sha256" % name)
-    if stop.get(name) != "clear":
-        probs.append("%s stop verdict is %r, want 'clear'" % (name, stop.get(name)))
-    return probs
-
-
-def _substitute_entry(subs, sid):
-    """(entry, problems): the substitutes.json entry `sid` names, validated field by field."""
-    if subs is None:
-        return None, ["opus substitute: no readable %s on the trusted revision" % SUBS_PATH]
-    try:
-        doc = json.loads(subs)
-    except ValueError:
-        return None, ["opus substitute: %s is not valid JSON" % SUBS_PATH]
-    if not isinstance(doc, dict) or doc.get("schema") != SUBS_SCHEMA:
-        return None, ["opus substitute: %s schema is not %s" % (SUBS_PATH, SUBS_SCHEMA)]
-    entries = doc.get("substitutes")
-    if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
-        return None, ["opus substitute: %s substitutes is not a list of objects" % SUBS_PATH]
-    if not isinstance(sid, str) or not sid:
-        return None, ["opus substitute: substitute_id is missing or not a string"]
-    hits = [e for e in entries if e.get("id") == sid]
-    if len(hits) != 1:
-        return None, ["opus substitute: substitute_id %r names %d entries of %s, want exactly 1" % (sid, len(hits), SUBS_PATH)]
-    e = hits[0]
-    probs = []
-    if e.get("for") != "codex":
-        probs.append("opus substitute: entry %s `for` is %r, want 'codex'" % (sid, e.get("for")))
-    if e.get("by") != "opus":
-        probs.append("opus substitute: entry %s `by` is %r, want 'opus'" % (sid, e.get("by")))
-    if e.get("vendor") != "anthropic":
-        probs.append("opus substitute: entry %s vendor is %r, want 'anthropic'" % (sid, e.get("vendor")))
-    q = e.get("owner_quote")
-    if not isinstance(q, str) or not q.strip():
-        probs.append("opus substitute: entry %s owner_quote is empty or not a string" % sid)
-    if _time(e.get("effective_until")) is None:
-        probs.append("opus substitute: entry %s effective_until %r is not YYYY-MM-DDTHH:MM:SSZ" % (sid, e.get("effective_until")))
-    if not isinstance(e.get("scope"), str) or not _SCOPE.fullmatch(e["scope"]):
-        probs.append("opus substitute: entry %s scope %r is not 'all' or 'pr:N'" % (sid, e.get("scope")))
-    return (None if probs else e), probs
-
-
-def _utcnow():
-    """The gate's clock: the system UTC clock, nothing else. Tests patch this name in-process."""
-    return datetime.datetime.now(datetime.timezone.utc)
-
-
-def _substitute_problems(final, rnd, stop, subs, pr, now):
-    """Every reason the final round's `opus` entry cannot stand in for `codex` (empty = it can)."""
-    r = final.get("opus")
+def _seat_problems(name, r):
+    """Every reason the seat entry `name` (codex_a or codex_b) is not a clear Codex review (AC5, AC6)."""
     if not isinstance(r, dict):
-        return ["final round has no codex review"]
-    probs = _reviewer_problems("opus", "anthropic", r, stop)
-    son = final.get("sonnet")
-    if isinstance(son, dict) and r.get("evidence_sha256") == son.get("evidence_sha256"):
-        probs.append("opus evidence_sha256 equals sonnet's: a copied entry is not an independent review")
-    if r.get("substitute_for") != "codex":
-        probs.append("opus substitute_for is %r, want 'codex'" % (r.get("substitute_for"),))
-    if r.get("model") != "opus":
-        probs.append("opus model is %r, want 'opus'" % (r.get("model"),))
-    if r.get("effort") != "medium":
-        probs.append("opus effort is %r, want 'medium'" % (r.get("effort"),))
-    done = _time(rnd.get("completed_at"))
-    if done is None:
-        probs.append("final round completed_at %r is missing or not YYYY-MM-DDTHH:MM:SSZ (required with a substitute)"
-                     % (rnd.get("completed_at"),))
-    if now is None:
-        now = _utcnow()
-    entry, bad = _substitute_entry(subs, r.get("substitute_id"))
-    probs += bad
-    if entry is None:
-        return probs
-    sid, until = entry["id"], _time(entry["effective_until"])
-    if now is not None and now >= until:
-        probs.append("opus substitute %s expired at %s (the gate's clock is %s)" % (sid, entry["effective_until"], now.strftime("%Y-%m-%dT%H:%M:%SZ")))
-    if done is not None:
-        if done >= until:      # implied by the clock and future checks below; kept as defense in depth
-            probs.append("final round completed_at %s is not before substitute %s expiry %s" % (rnd["completed_at"], sid, entry["effective_until"]))
-        if now is not None and done > now:
-            probs.append("final round completed_at %s is in the future of the gate's clock" % rnd["completed_at"])
-    if entry["scope"] != "all":
-        want = int(entry["scope"][3:])
-        if pr is None:
-            probs.append("opus substitute %s scope %s needs --pr, none given" % (sid, entry["scope"]))
-        elif pr != want:
-            probs.append("opus substitute %s scope %s does not cover PR #%s" % (sid, entry["scope"], pr))
+        return ["%s entry is not an object (%r)" % (name, r)]
+    probs = ["%s has no %s field" % (name, f) for f in FIELDS if f not in r]
+    probs += ["%s has an extra field %r" % (name, k) for k in r if k not in FIELDS and not _SUBSTITUTE.search(k)]
+    if "reviewer" in r and r["reviewer"] != "codex":
+        probs.append("%s reviewer is %r, want 'codex'" % (name, r["reviewer"]))
+    if "vendor" in r and r["vendor"] != "openai":
+        probs.append("%s vendor is %r, want 'openai'" % (name, r["vendor"]))
+    if "seat" in r and r["seat"] != SEATS[name]:
+        probs.append("%s seat is %r, want %r" % (name, r["seat"], SEATS[name]))
+    if "model" in r and (not isinstance(r["model"], str) or r["model"] not in CODEX_MODELS):
+        probs.append("%s model %r is not on the gate's list of Codex models" % (name, r["model"]))
+    if "effort" in r and (not isinstance(r["effort"], str) or r["effort"] not in EFFORTS):
+        probs.append("%s effort %r is not on the gate's list of efforts" % (name, r["effort"]))
+    b = r.get("blockers_open", 0)
+    if type(b) is not int or b != 0:      # exactly the integer 0: not False, not 0.0
+        probs.append("%s blockers_open is %r, want the integer 0" % (name, b))
+    if "evidence_sha256" in r and not (isinstance(r["evidence_sha256"], str) and _HEX64.fullmatch(r["evidence_sha256"])):
+        probs.append("%s evidence_sha256 is not 64 lowercase hex characters" % name)
     return probs
 
 
-def record_problems(rec, tree, subs=None, pr=None, now=None, enforcement_edits=()):
-    """Every reason `rec` does not clear the gate for content `tree` (empty = clears).
-    subs: the text of reviews/substitutes.json from the trusted revision (None = none); pr: the PR
-    number or None; enforcement_edits: the ENFORCEMENT files the change touches (any: no substitute applies); now: the gate's clock (default: the system UTC clock; tests pass it)."""
+def record_problems(rec, tree):
+    """Every reason the schema v2 record `rec` does not clear the gate for content `tree` (empty = clears)."""
     if not isinstance(rec, dict):
         return ["record is not a JSON object"]
-    probs = []
+    probs = ["record field %s marks a substitute: %s" % (m, NO_SUBSTITUTE) for m in _substitute_marks(rec, "record")]
     if rec.get("schema") != SCHEMA:
-        probs.append("schema is not %s" % SCHEMA)
+        probs.append("schema is %r, not %s: %s" % (rec.get("schema"), SCHEMA, V2_REQUIRED))
     if rec.get("tree") != tree:
         probs.append("record binds tree %s, the change is %s" % (rec.get("tree"), tree))
     rounds = rec.get("rounds")
@@ -233,21 +145,54 @@ def record_problems(rec, tree, subs=None, pr=None, now=None, enforcement_edits=(
     final = rounds[-1].get("reviewers") if isinstance(rounds[-1], dict) else None
     if not isinstance(final, dict):
         return probs + ["final round names no reviewers"]
-    stop = rec.get("stop") if isinstance(rec.get("stop"), dict) else {}
-    for name, vendor in sorted(VENDORS.items()):
-        r = final.get(name)
-        if not isinstance(r, dict):
-            if name in final:      # present but not an object: never the substitute path
-                probs.append("%s review entry is not an object (%r)" % (name, r))
-            elif name == "codex" and enforcement_edits:
-                probs.append("final round has no codex review: this change edits %s, so a substitute never applies (a real codex entry is required)" % ", ".join(sorted(enforcement_edits)))
-            elif name == "codex":      # the one seat a recorded owner decision may fill with `opus`
-                probs += _substitute_problems(final, rounds[-1], stop, subs, pr, now)
-            else:
-                probs.append("final round has no %s review" % name)
-            continue
-        probs += _reviewer_problems(name, vendor, r, stop)
+    probs += ["final round entry %r is not a seat (only codex_a and codex_b take a seat): %s" % (k, NO_SUBSTITUTE)
+              for k in final if k not in SEATS]
+    for name in SEATS:
+        if name not in final:
+            probs.append("final round has no %s entry" % name)
+        else:
+            probs += _seat_problems(name, final[name])
+    a, b = final.get("codex_a"), final.get("codex_b")
+    if isinstance(a, dict) and isinstance(b, dict):
+        ma, mb = a.get("model"), b.get("model")
+        if ma in CODEX_MODELS and mb in CODEX_MODELS and SAME_MODEL.get(ma, ma) == SAME_MODEL.get(mb, mb):
+            probs.append("codex_a and codex_b name the same model (%s and %s): the two seats run two different models" % (ma, mb))
+        if "evidence_sha256" in a and a["evidence_sha256"] == b.get("evidence_sha256"):
+            probs.append("codex_a and codex_b have the same evidence_sha256: a copied entry is not an independent review")
+    stop = rec.get("stop")
+    if not isinstance(stop, dict):
+        return probs + ["stop is missing or not an object"]
+    probs += ["stop holds an extra key %r" % k for k in stop if k not in SEATS and not _SUBSTITUTE.search(k)]
+    for name in SEATS:
+        if stop.get(name) != "clear":
+            probs.append("stop verdict for %s is %r, want 'clear'" % (name, stop.get(name)))
     return probs
+
+
+def _blob(rev, path):
+    """The blob id of `path` at `rev`, or None when the revision has no such file. A revision that is not a readable
+    commit raises RuntimeError (the caller fails closed); so does one that git could read as an option."""
+    if rev.startswith("-"):
+        raise RuntimeError("not a revision")
+    _git("rev-parse", "--verify", "--quiet", "%s^{commit}" % rev)
+    out = _git("ls-tree", "-z", rev, "--", path).split("\0")[0]
+    meta = out.split("\t", 1)[0].split()      # mode type id: a regular file only (never a link or a submodule)
+    return meta[2] if len(meta) == 3 and meta[1] == "blob" and meta[0] in ("100644", "100755") else None
+
+
+def legacy_problems(head, trusted, path, rec):
+    """AC7: a record that is not schema v2 clears only as the same blob already at `path` on the trusted revision,
+    and is then never re-judged. Returns the reasons it does not (empty = it is that merged file)."""
+    try:
+        want = _blob(trusted, path)
+    except RuntimeError as e:
+        return ["the trusted revision %r cannot be read (%s): an old-schema record cannot be honoured"
+                % (trusted, (str(e).splitlines() or ["git"])[0])]
+    if want is not None and want == _blob(head, path):
+        return []
+    schema = rec.get("schema") if isinstance(rec, dict) else None
+    return ["record %s has schema %r and is not the same file already on the trusted revision %s: %s"
+            % (path, schema, trusted, V2_REQUIRED)]
 
 
 def main(argv):
@@ -261,17 +206,21 @@ def main(argv):
     if "--print-tree" in argv:
         print(tree)
         return 0
-    pr = None
-    if "--pr" in argv:
+    if "--pr" in argv:      # accepted because the workflow passes it; it changes no verdict
         raw = opt("--pr")
         if raw is None or not re.fullmatch(r"[1-9][0-9]*", raw):
             print("::error::auditor-review-gate: --pr must be a positive integer", file=sys.stderr)
             return 2
-        pr = int(raw)
     base = opt("--base")
     if not base:
         print("::error::auditor-review-gate: --base is required", file=sys.stderr)
         return 2
+    trusted = base
+    if "--subs-rev" in argv:
+        trusted = opt("--subs-rev")
+        if not trusted:
+            print("::error::auditor-review-gate: --subs-rev needs the trusted revision", file=sys.stderr)
+            return 2
     changed = auditor_changes(base, head)
     if not changed:
         print("review gate: no change under %s — nothing to clear" % AGENT)
@@ -282,14 +231,17 @@ def main(argv):
     except (RuntimeError, ValueError) as e:
         why = (str(e).splitlines() or [type(e).__name__])[0]
         print("::error::review gate: %d auditor path(s) changed (e.g. %s) but no valid review "
-              "record at %s (%s). Run the second-vendor review loop on this exact content and "
-              "commit its record (REQ-AUD-18 AC3)." % (len(changed), changed[0], path, why))
+              "record at %s (%s). Run both Codex reviews (seat A and seat B, two different models) on this exact "
+              "content and commit its record (REQ-AUD-18 AC3)." % (len(changed), changed[0], path, why))
         return 1
-    try:
-        subs = _git("show", "%s:%s" % (opt("--subs-rev") or base, SUBS_PATH))
-    except RuntimeError:
-        subs = None
-    probs = record_problems(rec, tree, subs=subs, pr=pr, enforcement_edits=[c for c in changed if enforces(c)])
+    if isinstance(rec, dict) and rec.get("schema") == SCHEMA:
+        probs = record_problems(rec, tree)
+    else:
+        probs = legacy_problems(head, trusted, path, rec)
+        if not probs:
+            print("review gate: %d auditor path(s) changed; %s is the old-schema record already on the trusted "
+                  "revision %s (the same file): honoured as merged, not re-judged" % (len(changed), path, trusted))
+            return 0
     for p in probs:
         print("::error file=%s::review gate: %s (REQ-AUD-18 AC3)" % (path, p))
     if probs:
@@ -297,7 +249,6 @@ def main(argv):
     print("review gate: %d auditor path(s) changed; %s clears the stop rule (%d round(s))"
           % (len(changed), path, len(rec["rounds"])))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main(sys.argv[1:]))

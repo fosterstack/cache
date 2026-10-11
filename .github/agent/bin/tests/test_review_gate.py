@@ -627,7 +627,7 @@ class LegacyRecord(unittest.TestCase):
 
     def test_an_unreadable_trusted_revision_fails_closed(self):
         self.merged_legacy()
-        for bad in ("no-such-ref", "0" * 40, "HEAD:src"):
+        for bad in ("no-such-ref", "0" * 40, "HEAD:src", "-x", "--all"):
             rc, out, _ = self.r.judge("--subs-rev", bad)
             self.assertEqual(rc, 1, (bad, out))
             self.assertIn("the trusted revision %r cannot be read" % bad, out)
@@ -681,7 +681,8 @@ class Wiring(unittest.TestCase):
 
     @staticmethod
     def wf():
-        import yaml
+        sys.path.insert(0, os.path.join(os.path.dirname(BIN), "fixtures", "testlib"))
+        import pyyaml as yaml      # the vendored pure-Python PyYAML the matrix suite reads workflows with
         with open(WF) as fh:
             return yaml.safe_load(fh)
 

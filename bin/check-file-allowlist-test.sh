@@ -111,7 +111,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 140, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 139, 6
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -158,7 +158,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "bfc68b4909a394875ac571c28a139bd0c8ed3a18934859bdf22ba608c211eb5b"
+PINNED_SHA256 = "84c2d189f45969c9aac52619110724724333502f8cae2734b78549fd99a1f34f"
 if rstart and rend:
     import hashlib
     _b = _rawlines
