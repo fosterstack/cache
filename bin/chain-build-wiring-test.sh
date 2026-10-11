@@ -1617,6 +1617,29 @@ for c in "ok:ev-ok:0" "part:ev-part:1" "none:ev-none:1"; do
   ( cd "$kg" && python3 "$KR" base-check --base base --event "$work/kr/$evf.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
   [ "$rc" = "$want" ] && ok "known-red base-check ($nm): entries added since the merge base need the PR body to name them" || bad "known-red base-check ($nm): exit $rc, wanted $want"
 done
+# Codex A r5 #1 / B F1: the COMPLETE entry is compared, `findings` included
+kf="$work/kr/repo2"; rm -rf "$kf"; mkdir -p "$kf/test-evidence"
+( cd "$kf" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
+  && printf '{"entries":[{"id":"KF-1","suite":"s.sh","case":"c","reason":"r","green_by":"g","findings":["f1","f2","f2"]}]}\n' > test-evidence/known-red.json && git add -A && git commit -qm base )
+kfchg() { # kfchg NAME PYTHON-EDIT-OF-d  -> a commit that changes the entry; then base-check against HEAD~1 with and without the id in the PR body
+  python3 - "$kf/test-evidence/known-red.json" "$2" <<'PY'
+import json, sys
+p, edit = sys.argv[1:3]; d = json.load(open(p)); e = d["entries"][0]; exec(edit); json.dump(d, open(p, "w"))
+PY
+  ( cd "$kf" && git add -A && git -c commit.gpgsign=false commit -qm "kf-$1" )
+  local rc=0; ( cd "$kf" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = 1 ] && ok "known-red base-check: $1 in findings needs the PR body line" || bad "known-red base-check: $1 in findings was accepted without a line (exit $rc)"
+  printf '{"pull_request":{"body":"known-red-add: KF-1\\n"}}' > "$work/kr/ev-kf.json"; rc=0
+  ( cd "$kf" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-kf.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = 0 ] && ok "known-red base-check: $1 in findings passes when the PR body names KF-1" || bad "known-red base-check: $1 named but refused (exit $rc)"; }
+rc=0; ( cd "$kf" && python3 "$KR" base-check --base HEAD --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: an unchanged entry that carries findings passes against its own base" || bad "known-red base-check: an unchanged entry with findings was rejected (exit $rc)"
+kfchg "an added finding" 'e["findings"].append("f3")'
+kfchg "a removed finding" 'e["findings"].remove("f2")'
+kfchg "a substituted finding" 'e["findings"][0] = "other"'
+kfchg "a reordered finding list" 'e["findings"].reverse()'
+rc=0; python3 "$KR" base-check --base HEAD --event "$work/kr/ev-none.json" > /dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: the real committed list (entries with findings) passes against its own base" || bad "known-red base-check: the real committed list was rejected against HEAD (exit $rc)"
 # an entry kept under its id but changed (suite, case, reason or green_by) is an added entry: it needs its known-red-add line too
 cp "$kg/test-evidence/known-red.json" "$work/kr/committed.json"
 for fld in case suite reason green_by; do
@@ -1865,7 +1888,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=646
+EXPECT=656
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
