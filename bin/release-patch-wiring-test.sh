@@ -38,7 +38,7 @@ for g in ("build", "sign"):
 # acceptance*, authorization, promotion; replaced by PRs 3 and 4) are skipped in a dry run and need a chain job.
 chain = [j for j in jobs if j not in ("decide", "patch-failed", "patch-notes", "build", "sign", "rebuild", "hostile-verify", "hostile-verdict")]
 for j in chain:
-    if jobs[j].get("if", "").replace(" ", "") not in ("", "${{!inputs.dry-run}}") or not jobs[j].get("needs"):
+    if jobs[j].get("if", "").replace(" ", "") not in ("", "${{!inputs.dry-run}}", "${{!inputs.dry-run&&!contains(github.ref_name,'-rc')}}") or not jobs[j].get("needs"):
         bad.append("chain job %s is not skipped in a dry run or hangs off nothing" % j)
 dec = jobs.get("decide") or {}
 if dec.get("if", "").replace(" ", "") != "${{github.ref=='refs/heads/main'&&github.event_name!='workflow_dispatch'&&!inputs.dry-run}}":

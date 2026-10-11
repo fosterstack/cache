@@ -354,8 +354,10 @@ def conj(cond):
     # implementation step (PR 1): the exact status function `failure()` (no arguments, no grouping) is also allowed, because patch-failed
     # must run on a failed stage; it is a status check, not a grouping, so it cannot negate or hide a conjunct
     body = re.sub(r"(?<![\w.])failure\(\)", "FAILCALL", body)
+    # the exact rc-tag test (advisor 0383) is also one allowed call: a jobs's `!contains(github.ref_name, '-rc')` conjunct keeps an rc tag out of the old publishing path
+    body = re.sub(r"contains\(\s*github\.ref_name\s*,\s*'-rc'\s*\)", "RCCALL", body)
     if "(" in body or ")" in body: return None
-    return [re.sub(r"\s+", " ", c.strip()).replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()") for c in body.split("&&")]
+    return [re.sub(r"\s+", " ", c.strip()).replace("TAGCALL", TAGCONJ).replace("FAILCALL", "failure()").replace("RCCALL", "contains(github.ref_name, '-rc')") for c in body.split("&&")]
 OPEN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml"}
 POLICY_MAKE = r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --ref "\$GITHUB_REF" --out policy\.json'
 WITH = lambda s: s.get("with") or {}

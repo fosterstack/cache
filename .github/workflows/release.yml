@@ -365,7 +365,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/stage-build.yml
     with:
-      hostile: ${{ inputs.dry-run == true && github.ref_type == 'branch' }}   # the hostile Build step runs only in a dry run on a branch
+      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}   # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
 
   # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here, with the digests.json text Build wrote.
   sign:
@@ -387,7 +387,7 @@ jobs:
     uses: ./.github/workflows/stage-reproducibility.yml
 
   scans:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [build, rebuild]
     uses: ./.github/workflows/stage-verify.yml
     with:
@@ -397,7 +397,7 @@ jobs:
     secrets: inherit
 
   acceptance-artifacts:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [build, rebuild]
     uses: ./.github/workflows/stage-acceptance-artifacts.yml
     with:
@@ -407,28 +407,28 @@ jobs:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [rebuild]
     uses: ./.github/workflows/acceptance.yml
     with:
       image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}
 
   acceptance-egress:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [rebuild]
     uses: ./.github/workflows/stage-acceptance-egress.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance-k8s:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [rebuild]
     uses: ./.github/workflows/stage-acceptance-k8s.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance-predicate:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
     uses: ./.github/workflows/stage-acceptance-predicate.yml
     with:
@@ -441,7 +441,7 @@ jobs:
       baseline-version: ${{ needs.admission.outputs.baseline }}
 
   authorization:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [build, scans, acceptance-predicate]
     # The caller grants what stage-authorize's `authorize` job needs (a reusable workflow cannot
     # raise its caller's grant, R01): contents:read, id-token:write to sign the release-
@@ -461,7 +461,7 @@ jobs:
       expected-checksums: ${{ needs.build.outputs.checksums }}
 
   promotion:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ !inputs.dry-run && !contains(github.ref_name, '-rc') }}
     needs: [build, authorization]
     uses: ./.github/workflows/stage-promote.yml
     with:
@@ -476,7 +476,7 @@ jobs:
   # ACCEPTED by the same policy. The outcome of an attempt is the verifier's own exit code, captured per attempt, never a field
   # the hostile step wrote. A dry run neither tags nor publishes.
   hostile-verify:
-    if: ${{ inputs.dry-run }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
     needs: sign
     runs-on: ubuntu-24.04
     permissions:
@@ -542,7 +542,7 @@ jobs:
           path: hostile-results.json
 
   hostile-verdict:
-    if: ${{ inputs.dry-run }}
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
     needs: hostile-verify
     runs-on: ubuntu-24.04
     permissions:
@@ -557,6 +557,16 @@ jobs:
           path: hostile-results
       - name: every hostile attempt refused with its own cause, the positive control accepted
         run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
+
+  # An rc tag fails closed here until PR 4's verify-and-stop exists (advisor 0383): this job refuses it, and the old publishing path below skips it, so no
+  # registry credential step runs on an rc tag. It runs only on an rc-tag push.
+  rc-refusal:
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - run: echo "::error::a release-candidate tag is verified by the signed rc run and never published (Release is PR 4)" >&2; exit 1
 
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
