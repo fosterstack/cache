@@ -429,10 +429,10 @@ def check(moved_items, source, now, min_days):
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["--print-context"]:
-        if len(argv) != 3:
-            print("usage: pin-age-check.py --print-context FILE LINE", file=sys.stderr)
+        if len(argv) not in (3, 4):
+            print("usage: pin-age-check.py --print-context FILE LINE [COUNT]", file=sys.stderr)
             return 2
-        return print_context(argv[1], argv[2])
+        return print_context(*argv[1:])
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
     ap.add_argument("--base", required=True)
@@ -633,9 +633,21 @@ def _text(data, path):
     if b"\r" in data:
         return None, f"{path} holds a carriage return"
     try:
-        return data.decode("utf-8"), None
+        text = data.decode("utf-8")
     except UnicodeDecodeError:
         return None, f"{path} is not UTF-8"
+    bad = next((c for c in ("\u0085", "\u2028", "\u2029") if c in text), None)   # line breaks to YAML 1.1, not to the line split
+    return (None, f"{path} holds U+{ord(bad):04X}") if bad else (text, None)
+
+
+def _repeats_key(node):
+    """True when a composed YAML node holds a mapping that repeats a key (a later copy would silently win)."""
+    if isinstance(node, inv.yaml.MappingNode):
+        keys = [k.value for k, _ in node.value]
+        return len(set(map(str, keys))) != len(keys) or any(_repeats_key(v) for _, v in node.value)
+    if isinstance(node, inv.yaml.SequenceNode):
+        return any(_repeats_key(v) for v in node.value)
+    return False
 
 
 def _steps(text, path):
@@ -645,6 +657,8 @@ def _steps(text, path):
         for ev in inv.yaml.parse(text):
             if isinstance(ev, inv.yaml.AliasEvent) or getattr(ev, "anchor", None) or isinstance(ev, inv.yaml.ScalarEvent) and ev.value == "<<" and ev.style is None:
                 return f"{path} holds a YAML anchor, alias or merge key"
+        if _repeats_key(inv.yaml.compose(text, Loader=inv.yaml.BaseLoader)):
+            return f"{path} repeats a YAML key"
         doc = inv.yaml.load(text, Loader=inv.yaml.BaseLoader)
     except inv.yaml.YAMLError:
         return f"{path} does not parse"
@@ -678,7 +692,10 @@ def _context(data, path, flat):
 
 
 def _follows_redirects(flat):
-    return any(w.startswith("--location") or re.fullmatch(r"-[A-Za-z]*L[A-Za-z]*", w) for w in (x.strip("\"'") for x in re.split(r"[\s,\[\]()]+", flat)))
+    """True (fail closed) for wget, which follows redirects by default, for any word beginning --location, and for ANY single-dash word holding L
+    (-L, -fsSL, -4fsSL, -#L, -fsSLo"$out"): a false positive only asks for the cosign verifier line."""
+    words = [x.strip("\"'") for x in re.split(r"[\s,\[\]()]+", flat)]
+    return any(w == "wget" or w.endswith("/wget") or w.startswith("--location") or (w.startswith("-") and not w.startswith("--") and "L" in w) for w in words)
 
 
 def _cosign(line):
@@ -726,9 +743,12 @@ def _fetch_unverified(root, head, row, flat, held_n):
     return None
 
 
-def print_context(path, line):
-    """--print-context FILE LINE (run from the repository root): the context a rows author writes for LINE in FILE (the working tree)."""
+def print_context(path, line, count="1"):
+    """--print-context FILE LINE [COUNT] (run from the repository root): the context a rows author writes for LINE in FILE (the working tree); exit 2
+    and nothing on stdout unless the line is present exactly COUNT times (default 1) in one block that can be isolated."""
     ctx = _context(_head_bytes(".", None, path), path, _flat(line))
+    if not isinstance(ctx, str) and not (re.fullmatch(r"[1-9][0-9]?|100", count) and ctx[1] == int(count)):
+        ctx = f"the line is in its block {ctx[1]} times, not {count}"
     if isinstance(ctx, str):
         print(f"pin-age: cannot isolate the context: {ctx}", file=sys.stderr)
         return 2

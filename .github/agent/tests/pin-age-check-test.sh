@@ -2000,7 +2000,10 @@ def context(repo, f, line):   # an independent oracle of the context hash
     data = show(repo, f)
     if not f.endswith((".yml", ".yaml")):
         return hashlib.sha256(data).hexdigest()
-    doc = yaml.load(data.decode(), Loader=yaml.BaseLoader)
+    try:
+        doc = yaml.load(data.decode(), Loader=yaml.BaseLoader)
+    except yaml.YAMLError:
+        return "0" * 64
     steps = [s for j in (doc.get("jobs") or {}).values() for s in j.get("steps", [])] if "jobs" in doc else doc["runs"]["steps"]
     hit = [s for s in steps if isinstance(s, dict) and any(flat(x) == flat(line) for x in str(s.get("run", "")).split("\n"))]
     return hashlib.sha256(json.dumps(hit[0], sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest() if hit else "0" * 64
@@ -2258,6 +2261,39 @@ rcase "${COS/--certificate-oidc-issuer https:\/\/token.actions.githubusercontent
 rcase 'cosign verify-blob --bundle "$1.b" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$1"' 1 'a cosign verifier line without --certificate-identity fails'
 rcase 'cosign verify --certificate-identity x --certificate-oidc-issuer y img' 1 'cosign verify (not verify-blob) fails'
 rcase 'sha256sum -c "$1.sha256" --certificate-identity x --certificate-oidc-issuer y' 1 'a checksum line carrying the flag words but not cosign verify-blob fails'
+# Sonnet (rebuilt #290): ANY single-dash word holding L follows redirects (a cluster with a digit, # or a glued value too); wget always does
+for L in 'curl -4fsSL -o "$tmp/i" https://packages.example.dev/a.tgz' 'curl -6L -o "$tmp/i" https://packages.example.dev/a.tgz' 'curl -0L -o "$tmp/i" https://packages.example.dev/a.tgz' \
+         'curl -#L -o "$tmp/i" https://packages.example.dev/a.tgz' 'curl -fsSLo"$out" https://packages.example.dev/a.tgz' 'curl -fsSLo/dev/null https://packages.example.dev/a.tgz' \
+         'curl --location-trusted -o "$tmp/i" https://packages.example.dev/a.tgz' '    r = subprocess.run(["curl", "-4fsSL", "-o", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)' \
+         'wget -q -O "$tmp/i" https://packages.example.dev/a.tgz' '    r = subprocess.run(["wget", "-q", "-O", part, "https://packages.example.dev/a.tgz"], stdout=sys.stderr)'; do
+  one ifr2 "$FETCH$L"$'\n' "$L"
+  CASE="AC19' (6): $L follows redirects (a single-dash word holding L, --location*, or wget) and a checksum verifier line fails: exit 1"
+  refused 0; check grep -q 'redirect' "$work/if.out"
+done
+WL='wget -q -O "$tmp/i" https://packages.example.dev/os/i'
+ifrepo ifwg "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$WL"$'\n' head bin/verify.sh $'#!/bin/bash\n'"$COS"$'\n'
+ifx "$work/if-1.json" plain "$(ifrow "$work/ifwg" bin/fetch.sh "$WL" "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}")"; ifck ifwg "$work/if-1.json"
+CASE="AC19' (6) control: a wget line with a cosign verify-blob verifier line carrying identity and issuer passes: exit 0"
+check test "$rc" -eq 0
+# Sonnet residual 1: U+0085, U+2028 and U+2029 (line breaks to YAML 1.1, not to the line split) are refused like a carriage return
+for c in 0085 2028 2029; do
+  one ifu "$FETCH$LIT"$'\n'"# a$(python3 -c "import sys; sys.stdout.write(chr(0x$c))")b"$'\n' "$LIT"
+  CASE="AC19' (5): a .sh file holding U+$c fails: exit 1"
+  refused 0; check grep -q "U+$c" "$work/if.out"
+done
+ifrepo ifwu "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "${STEPW/name: fetch/name: \"fe$(python3 -c "import sys; sys.stdout.write(chr(0x2028))")tch\"}")"$'\n'
+ifx "$work/if-wu.json" plain "$(ifrow "$work/ifwu" .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifwu "$work/if-wu.json"
+CASE="AC19' (5): a workflow holding U+2028 fails: exit 1"
+refused 0; check grep -q 'U+2028' "$work/if.out"
+# Sonnet residual 2: a workflow or action that repeats a YAML key is refused
+ifrepo ifdk "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW"$'\n'"        run: echo second")"$'\n'
+ifx "$work/if-dk.json" plain "$(ifrow "$work/ifdk" .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifdk "$work/if-dk.json"
+CASE="AC19' (5): a step whose run: key appears twice fails: exit 1"
+refused 0; check grep -q 'repeats a YAML key' "$work/if.out"
+ifrepo ifdk2 "${SUPPORT[@]}" head .github/workflows/f.yml "$(wfs "$STEPW")"$'\n'"on: pull_request"$'\n'
+ifx "$work/if-dk.json" plain "$(ifrow "$work/ifdk2" .github/workflows/f.yml "$LIT" "$HOSTN")"; ifck ifdk2 "$work/if-dk.json"
+CASE="AC19' (5): a workflow repeating a top-level key fails: exit 1"
+refused 0
 # rows from the pull request itself, the trusted copy, malformed lists, both lists
 ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
 rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
@@ -2327,6 +2363,26 @@ ifrepo ifheld "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch
 ifx "$work/if-1.json" plain "$(ifrow "$work/ifstay" bin/fetch.sh "$LIT" "$HOSTN")"; ifck ifheld "$work/if-1.json"
 CASE="AC19' (held): a later pull request that edits the .sh holding a ruled fetch (context changed, line unchanged) fails: exit 1"
 check test "$rc" -eq 1
+# held recheck with NO pin moved and NOTHING added (the #297 finding): the check fails naming the row; it never prints "no pin moved" and passes
+heldcase() { # REPO WHY
+  ifck "$1" "$work/if-h0.json"
+  CASE="AC19' (held, no pin moved, nothing added): $2: exit 1, the fetch named, never 'no pin moved'"
+  check test "$rc" -eq 1; check grep -q 'input fetch not verified' "$work/if.out"; check grep -q 'FAIL unmeasured:' "$work/if.out"; check test "$(grep -c 'no pin moved' "$work/if.out")" -eq 0
+}
+ifrepo ifh0 "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head README.md 'x'
+ifx "$work/if-h0.json" plain "$(ifrow "$work/ifh0" bin/fetch.sh "$LIT" "$HOSTN")"
+ifrepo ifh1 "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch.sh "$FETCH"$'export X=1\n'"$LIT"$'\n'; heldcase ifh1 'the enclosing .sh file edited (the fetch line unchanged)'
+ifrepo ifh2 "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/verify.sh -; heldcase ifh2 'the verifier file deleted'
+ifrepo ifh3 "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch-test.sh -; heldcase ifh3 'the test file deleted'
+ifrepo ifh4 "${SUPPORT[@]}" base bin/fetch.sh "$FETCH$LIT"$'\n' head bin/fetch.sh "$FETCH$LIT"$'\n'"$LIT"$'\n'; ifck ifh4 "$work/if-h0.json"
+CASE="AC19' (held, no pin moved): a second copy of the fetch line (an addition beyond the count) fails: exit 1, the fetch named, never 'no pin moved'"
+check test "$rc" -eq 1; check grep -q 'FAIL unmeasured:bin/fetch.sh' "$work/if.out"; check test "$(grep -c 'no pin moved' "$work/if.out")" -eq 0
+ifck ifh0 "$work/if-h0.json"
+CASE="AC19' (held, no pin moved, nothing added) control: a pull request that touches nothing of the row passes: exit 0, 'no pin moved'"
+check test "$rc" -eq 0; check grep -q 'no pin moved' "$work/if.out"
+ifrepo ifhw0 "${SUPPORT[@]}" base .github/workflows/f.yml "$(wfs "$STEPW")"$'\n' head README.md 'x'
+ifx "$work/if-h0.json" plain "$(ifrow "$work/ifhw0" .github/workflows/f.yml "$LIT" "$HOSTN")"
+ifrepo ifhw1 "${SUPPORT[@]}" base .github/workflows/f.yml "$(wfs "$STEPW")"$'\n' head .github/workflows/f.yml "$(wfs "${STEPW/A: b/A: c}")"$'\n'; heldcase ifhw1 'the enclosing workflow step edited (env:) with the fetch line unchanged'
 # the documented context command: pin-age-check.py --print-context FILE LINE prints what the rows author writes as context
 CASE="AC19' --print-context: for a .sh file, the sha256 of the whole file (equals the independent oracle)"
 check test "$(cd "$work/ifm" && python3 "$chk" --print-context bin/fetch.sh "$LIT")" = "$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["context"])' "$RLIT")"
@@ -2335,6 +2391,17 @@ check test "$(cd "$work/ifw" && python3 "$chk" --print-context .github/workflows
 CASE="AC19' --print-context: a line in two steps cannot be isolated: exit 2, nothing printed on stdout"
 rc=0; out=$(cd "$work/ifw2" && python3 "$chk" --print-context .github/workflows/f.yml "$LIT" 2>/dev/null) || rc=$?
 check test "$rc" -eq 2; check test -z "$out"
+CASE="AC19' --print-context: a line ABSENT from the .sh file: exit 2, nothing on stdout"
+rc=0; out=$(cd "$work/ifm" && python3 "$chk" --print-context bin/fetch.sh 'curl https://packages.example.dev/not-there' 2>/dev/null) || rc=$?
+check test "$rc" -eq 2; check test -z "$out"
+CASE="AC19' --print-context: a line present twice, no COUNT given: exit 2, nothing on stdout"
+rc=0; out=$(cd "$work/ifc22" && python3 "$chk" --print-context bin/fetch.sh "$LIT" 2>/dev/null) || rc=$?
+check test "$rc" -eq 2; check test -z "$out"
+CASE="AC19' --print-context: a line present twice with COUNT 2 prints the context (the whole file's hash)"
+check test "$(cd "$work/ifc22" && python3 "$chk" --print-context bin/fetch.sh "$LIT" 2)" = "$(shasum -a 256 "$work/ifc22/bin/fetch.sh" | cut -d' ' -f1)"
+CASE="AC19' --print-context: COUNT that is not a whole number from 1 to 100: exit 2"
+rc=0; (cd "$work/ifm" && python3 "$chk" --print-context bin/fetch.sh "$LIT" x >/dev/null 2>&1) || rc=$?
+check test "$rc" -eq 2
 CASE="AC19' --print-context: a .sh file without a bash shebang: exit 2"
 rc=0; (cd "$work/ifsb" && python3 "$chk" --print-context bin/fetch.sh "$LIT" >/dev/null 2>&1) || rc=$?
 check test "$rc" -eq 2
