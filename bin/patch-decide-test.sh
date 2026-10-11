@@ -798,9 +798,9 @@ vc_ = P.vex_changes(vd(vs(products=[{"@id": "pkg:a"}], status_notes="u", **X_), 
 check("AC8 VEX dup-@id (A2): an @id held twice in the whole document never pairs, even when unique among the rest: removed + added",
       sorted(v["change"] for v in vc_) == ["added", "removed"], vc_)
 vc_ = P.vex_changes(vd(vs(products=[{"@id": "pkg:b"}], status_notes="old", **X_), vs(vulnerability={"name": "CVE-8"}, **X_)),
-                    vd(vs(products=[{"@id": "pkg:c"}], status_notes="new", **X_)))
+                    vd(vs(products=[{"@id": "pkg:c"}], status_notes="new", **X_), vs(products=[{"@id": "pkg:d"}])))
 check("AC8 VEX dup-@id (A2): an @id held twice across CVEs in the old document does not pair: removed + added",
-      sorted(v["change"] for v in vc_ if v["cve"] == "CVE-7") == ["added", "removed"], vc_)
+      sorted(v["change"] for v in vc_ if v["cve"] == "CVE-7") == ["added", "added", "removed"], vc_)
 for label, empty in (("absent", None), ("empty", [])):
     U_ = vs(drop=("products",)) if empty is None else vs(products=empty)
     vc_ = P.vex_changes(vd(vs(products=D1), dict(U_, status_notes="u1")), vd(vs(products=D1), dict(U_, status_notes="u2")))
