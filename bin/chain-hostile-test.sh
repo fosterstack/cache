@@ -399,6 +399,10 @@ if rl is None: bad.append("release.yml missing")
 else:
     jobs = rl.get("jobs") or {}
     if "workflow_dispatch" not in (rl.get("on") or {}): bad.append("release.yml has no workflow_dispatch (the dry run)")
+    # final batch R-d: among jobs named hostile* or sign* (any case) only sign, hostile-verify and hostile-verdict may exist
+    for _jn in jobs:
+        if str(_jn).lower().startswith(("hostile", "sign")) and _jn not in ("sign", "hostile-verify", "hostile-verdict"):
+            bad.append("release.yml has a job %r: among hostile*/sign* jobs only sign, hostile-verify and hostile-verdict are allowed" % _jn)
     hv, hd = jobs.get("hostile-verify"), jobs.get("hostile-verdict")
     if not hv or not hd: bad.append("jobs hostile-verify and hostile-verdict are required")
     else:
