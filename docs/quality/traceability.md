@@ -17,9 +17,9 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 | Metric | Value |
 |---|---|
 | Active requirements | 80 |
-| Acceptance criteria | 263 |
+| Acceptance criteria | 264 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 247 |
+| ACs with mapped evidence | 248 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
@@ -742,6 +742,8 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/release.yml; .github/workflows/stage-admission.yml*
 
+> AC14 (origin: advisor step 5 Oct 11, owner rule 5 engineering AC): the refusals protect AC8's owner sentence (rule 5, ops/docs/ratify/2026-10-02-automatic-patch-releases.md) and leave AC8's text untouched. The lines of each release block's '### VEX' section (printed by the code through _lit) are exempt from the changelog-input refusals, nothing else is; --published (every v* tag message and CHANGELOG.md) is not a source and is not checked for '-----BEGIN ' (each tag message carries its signature block). 'Letter' after '<' is any Unicode letter. For a value inside a JSON scan file the message names the file and the JSON key path instead of a line. 'Already published' is decided by whole line, never substring: an entry counts as published only when a whole line of the published text equals its published line, both compared without trailing whitespace (git's tag-message cleanup strips trailing whitespace; leading and interior whitespace stay significant). tag-notes exits 2 on a refused form like notes and changelog. The code reads the reference-definition shape also after any list or quote markers and any indentation, and refuses a '[' label left open at the line end (a definition can open inside a list item; wider than CommonMark, fail closed). No published text ever held a redaction marker form other than the current one (no CHANGELOG.md on main, no v* tag message holds 'redacted'), so the marker handling is the escape-whole-line rule only.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-REL-009-AC1 | Given the commits on main since the latest release tag; when release.yml's decide job classifies them; then each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue "auditor: main is not patch-clean" is opened or updated with the commits and why | unit |  | approved | 1 item(s) |
@@ -757,6 +759,7 @@ Fix-only changes on main shall be released automatically as vX.Y.(Z+1): cut at o
 | REQ-REL-009-AC11 | Given a CI patch release; when it is published; then it moves :X.Y to itself every time and moves :X and :latest only when it is the highest released version, on GHCR and the Docker Hub mirror alike, by digest | unit |  | approved | 1 item(s) |
 | REQ-REL-009-AC12 | Given a PR the lane labels patch-fix; when the label is applied; then both reviewers' step-8 records for that PR say no behavior change; otherwise only the owner applies it, or the change waits for a minor release | ci-workflow |  | approved | none mapped |
 | REQ-REL-009-AC13 | Given a CI-signed patch tag vX.Y.Z (owner RATIFIED amendment, Oct 2: which approved ACs a CI patch uses); when decide considers cutting it, and source admission admits it; then it uses the latest owner-approved ACs baseline of its own X.Y line, only when requirements/requirements.yaml is byte-for-byte unchanged since that baseline (same requirements hash); if anything changed, no automatic patch is cut and it waits for the owner; admission records which baseline it used; owner-signed tags keep needing their own approved baseline | unit |  | approved | 2 item(s) |
+| REQ-REL-009-AC14 | Given the notes sources of a patch release: the fix records the release scans and go.mod give, the entries of docs/next-release-notes.md, and the changelog inputs (the notes file the changelog step is handed and the existing docs/quality/releases/CHANGELOG.md); when the notes are generated (patch-decide notes) or the changelog is written (patch-decide changelog); then a source is refused outright, never decoded, escaped or rewritten, when any line of it holds (1) a '<' followed by a letter, '/', '!' or '?'; (2) the shape of a Markdown link reference definition: up to three spaces, '[', a label, ']' and ':'; (3) a character reference: '&#' digits ';', '&#x' or '&#X' hex digits ';', or '&' a letter, letters or digits and ';'; or (4) the text '-----BEGIN '; and (5) two entries whose published lines are the same line are refused before any entry is dropped as already published or cleared from docs/next-release-notes.md; the refusal message names the file and line of each offending source line (both, for a collision); on a refusal the command exits 2 and writes nothing, so no patch tag is cut (notes) or no changelog PR is opened (changelog) | unit |  | approved | 1 item(s) |
 
 ## SCAN
 
