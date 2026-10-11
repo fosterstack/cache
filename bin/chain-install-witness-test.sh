@@ -58,14 +58,16 @@ fi
 # PER ARCHITECTURE (values checked against go.dev's published checksums), unpacked to the fixed directory <dest-dir>/fscache-go (default /usr/local/bin/fscache-go),
 # refused on any mismatch. Offline: the tarball comes from a local file:// base (GO_BASE_URL). The SUCCESS path needs the real tarball; the dry run proves it.
 GOVER=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$sut" | head -1)
-GO_AMD=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
-GO_ARM=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
+# the installer's OWN pins are the source (Codex A r5 #3): a Go bump rewrites GO_VER and both sums in bin/install-scanner.sh, and this test then judges THAT
+# bump, so no version or sum is typed here; what stays independent is go.mod (the version must equal it) and the structure of the pin
+GO_AMD=$(grep -E 'go:x86_64\|go:amd64\) SUM=' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
+GO_ARM=$(grep -E 'go:aarch64\|go:arm64\) SUM=' "$sut" | grep -oE '[0-9a-f]{64}' | head -1)
 repo_gomod_ver=$(awk '$1 == "toolchain" {sub(/^go/, "", $2); t = $2} $1 == "go" && g == "" {g = $2} END {print (t != "" ? t : g)}' "$root/go.mod")
 gwork="$work/go"; mkdir -p "$gwork/rel" "$gwork/mod-ok" "$gwork/mod-tool" "$gwork/mod-old" "$gwork/mod-none"
-printf 'module x\n\ngo 1.27.2\n' > "$gwork/mod-ok/go.mod"
-printf 'module x\n\ngo 1.20\n\ntoolchain go1.27.2\n' > "$gwork/mod-tool/go.mod"
-printf 'module x\n\ngo 1.27.1\n' > "$gwork/mod-old/go.mod"
-echo "not the real go tarball" > "$gwork/rel/go1.27.2.linux-amd64.tar.gz"; echo "not the real go tarball either" > "$gwork/rel/go1.27.2.linux-arm64.tar.gz"
+printf 'module x\n\ngo %s\n' "${GOVER:-0}" > "$gwork/mod-ok/go.mod"
+printf 'module x\n\ngo 1.20\n\ntoolchain go%s\n' "${GOVER:-0}" > "$gwork/mod-tool/go.mod"
+printf 'module x\n\ngo 0.0.1\n' > "$gwork/mod-old/go.mod"
+echo "not the real go tarball" > "$gwork/rel/go${GOVER:-0}.linux-amd64.tar.gz"; echo "not the real go tarball either" > "$gwork/rel/go${GOVER:-0}.linux-arm64.tar.gz"
 gocheck() { # gocheck LABEL MODDIR REGEX ENV...   run the installer in a directory whose go.mod is MODDIR's
   local label=$1 mod=$2 re=$3; shift 3; local out rc=0
   out=$(cd "$mod" && env "$@" bash "$sut" go "$gwork/bin" 2>&1) || rc=$?
@@ -78,12 +80,12 @@ if ! grep -q '^GO_VER=' "$sut" 2> /dev/null; then
 else
   tools_gomod_ver=$(awk '$1 == "toolchain" && $2 ~ /^go[0-9]/ {sub(/^go/, "", $2); t = $2} $1 == "go" && g == "" {g = $2} END {print (t != "" ? t : g)}' "$root/tools/requirements/go.mod")
   [ "$tools_gomod_ver" = "$repo_gomod_ver" ] || repo_gomod_ver="$repo_gomod_ver (tools/requirements/go.mod says $tools_gomod_ver)"
-  if [ "$GOVER" = "$repo_gomod_ver" ] && grep -q "$GO_AMD" < <(grep -E 'go:x86_64\|go:amd64' "$sut") && grep -q "$GO_ARM" < <(grep -E 'go:aarch64\|go:arm64' "$sut"); then
-    ok "go: the pinned version ($GOVER) is the repo go.mod's and the two sha256 values are go.dev's published ones"
+  if [ "$GOVER" = "$repo_gomod_ver" ] && [[ "$GO_AMD" =~ ^[0-9a-f]{64}$ ]] && [[ "$GO_ARM" =~ ^[0-9a-f]{64}$ ]] && [ "$GO_AMD" != "$GO_ARM" ]; then
+    ok "go: the pinned version ($GOVER) is the repo go.mod's and the two sha256 values are 64-hex and different (go.dev's published values are checked by the bump script, which downloads and compares them)"
   else bad "go: pins: version '$GOVER' vs go.mod '$repo_gomod_ver'; amd64/arm64 values"; fi
   gocheck "go: a wrong checksum (amd64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
   gocheck "go: a wrong checksum (arm64) is refused" "$gwork/mod-ok" "checksum mismatch.*PIPELINE failure" INSTALL_SCANNER_ARCH=aarch64 GO_BASE_URL="file://$gwork/rel"
-  gocheck "go: a go.mod version that is not the pinned one is refused" "$gwork/mod-old" "go\\.mod.*(1\\.27\\.1).*pinned|pinned.*go\\.mod" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
+  gocheck "go: a go.mod version that is not the pinned one is refused" "$gwork/mod-old" "go\\.mod.*(0\\.0\\.1).*pinned|pinned.*go\\.mod" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
   gocheck "go: the toolchain line wins over the go line (it reaches the checksum, so the version matched)" "$gwork/mod-tool" "checksum mismatch" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
   gocheck "go: the go line is used when there is no toolchain line (it reaches the checksum)" "$gwork/mod-ok" "checksum mismatch" INSTALL_SCANNER_ARCH=x86_64 GO_BASE_URL="file://$gwork/rel"
   gocheck "go: an unknown architecture is refused" "$gwork/mod-ok" "unsupported architecture.*PIPELINE failure" INSTALL_SCANNER_ARCH=mips GO_BASE_URL="file://$gwork/rel"

@@ -13,7 +13,7 @@ B=chore/go-1.27.0
 LIST="gh pr list --head $B --base main --state all --json number,state,mergedAt"
 LSR="git ls-remote --exit-code --heads origin $B"
 CREATE="gh pr create --draft --base main --head $B --title chore(go): bump toolchain 1.26.6 -> 1.27.0 --body <body> --label dependencies"
-FRESH_GIT=$'git config user.name SLUG[bot]\ngit config user.email SLUG[bot]@users.noreply.github.com\ngit checkout -b '"$B"$'\ngit add go.mod tools/requirements/go.mod bin/install-scanner.sh\ngit commit -q -m chore(go): bump toolchain 1.26.6 -> 1.27.0\ngit push -u origin '"$B"
+FRESH_GIT=$'git config user.name SLUG[bot]\ngit config user.email SLUG[bot]@users.noreply.github.com\ngit checkout -b '"$B"$'\ngit add go.mod tools/requirements/go.mod bin/install-scanner.sh .github/policy/chain-scripts.json\ngit commit -q -m chore(go): bump toolchain 1.26.6 -> 1.27.0\ngit push -u origin '"$B"
 
 # run_case name sut prs branch_exists create_rc slug want_rc want_calls want_directive(new|old)
 run_case() {
@@ -24,6 +24,15 @@ run_case() {
   mkdir -p "$work/bin"; local log="$work/calls"; : > "$log"
   # the installer's Go pin (Codex B r4 F2): GO_VER and both per-arch checksums, bumped together with the go directives
   printf '#!/usr/bin/env bash\nGO_VER=1.26.6\ncase x in\n  go:x86_64|go:amd64) SUM=%s ;;\n  go:aarch64|go:arm64) SUM=%s ;;\nesac\n' "$(printf 'a%.0s' $(seq 64))" "$(printf 'b%.0s' $(seq 64))" > "$work/bin/install-scanner.sh"
+  # the policy row of the installer (.github/policy/chain-scripts.json): its sha256 must follow the installer's bytes in the same commit (Codex A r5 #3)
+  mkdir -p "$work/.github/policy"
+  python3 - "$work" <<'PY'
+import hashlib, json, sys
+w = sys.argv[1]
+h = hashlib.sha256(open(w + "/bin/install-scanner.sh", "rb").read()).hexdigest()
+json.dump({"scripts": [{"path": "bin/other.sh", "sha256": "0" * 64}, {"path": "bin/install-scanner.sh", "sha256": h, "tools": ["go"]}]}, open(w + "/.github/policy/chain-scripts.json", "w"), indent=2)
+open(w + "/.github/policy/chain-scripts.json", "a").write("\n")
+PY
   # go.dev, over HTTPS: the published list (mode=json) and the two linux tarballs, served by a mock curl; BUMP_CURL=down|mismatch|nolist|badhex breaks it
   local amd arm; amd=$(printf 'go1.27.0 amd64 tarball' | sha256sum | cut -d' ' -f1); arm=$(printf 'go1.27.0 arm64 tarball' | sha256sum | cut -d' ' -f1)
   [ "${BUMP_CURL:-ok}" = mismatch ] && amd=$(printf 'c%.0s' $(seq 64))
@@ -73,6 +82,10 @@ GIT
   want_amd=$(printf 'go1.27.0 amd64 tarball' | sha256sum | cut -d' ' -f1); want_arm=$(printf 'go1.27.0 arm64 tarball' | sha256sum | cut -d' ' -f1)
   have_ver=$(sed -n 's/^GO_VER=//p' "$work/bin/install-scanner.sh")
   have_amd=$(sed -n 's/.*go:x86_64|go:amd64) SUM=\([0-9a-f]*\) ;;/\1/p' "$work/bin/install-scanner.sh"); have_arm=$(sed -n 's/.*go:aarch64|go:arm64) SUM=\([0-9a-f]*\) ;;/\1/p' "$work/bin/install-scanner.sh")
+  local want_row have_row
+  want_row=$(sha256sum "$work/bin/install-scanner.sh" | cut -d' ' -f1)
+  have_row=$(python3 -c 'import json,sys; print([r["sha256"] for r in json.load(open(sys.argv[1]))["scripts"] if r["path"]=="bin/install-scanner.sh"][0])' "$work/.github/policy/chain-scripts.json")
+  [ "$have_row" = "$want_row" ] || why+=" the installer's row in chain-scripts.json is ${have_row:0:8}, the installer's sha256 is ${want_row:0:8} (they move together, in the same commit);"
   if [ "$want_dir" = new ]; then
     [ "$have_ver" = 1.27.0 ] && [ "$have_amd" = "$want_amd" ] && [ "$have_arm" = "$want_arm" ] || why+=" installer pin ${have_ver}/${have_amd:0:8}/${have_arm:0:8} not the bumped version and the sha256 of the downloaded tarballs;"
   else
@@ -110,6 +123,43 @@ else echo "FAIL: go.mod '$a', tools/requirements/go.mod '$b' and bin/install-sca
 # the pull request shows the three changes side by side
 if grep -q 'bin/install-scanner.sh' "$SUT" && grep -q 'GO_VER' "$SUT" && grep -q 'sha256' "$SUT" && grep -Eq 'linux-(amd64|\$\{?arch)' "$SUT"; then echo "ok: the bump script names the installer pin and checksums in the PR body"; pass=$((pass+1))
 else echo "FAIL: the bump script does not describe the installer pin in the PR body"; fail=$((fail+1)); fi
+
+# END TO END (Codex A r5 #3, B F2): a proposed bump, made by the script's real code path in a copy of the REAL files with a fake go.dev, leaves every
+# check that reads the pin green: the policy validator (load_scripts), the installer test and the go-freshness wiring test
+e2e="$(mktemp -d)"; rm -rf "$e2e"; mkdir -p "$e2e/bin" "$e2e/tools/requirements" "$e2e/.github/policy" "$e2e/.github/workflows" "$e2e/fake"
+root="$(cd "$here/.." && pwd)"
+cp "$root/go.mod" "$e2e/go.mod"; cp "$root/tools/requirements/go.mod" "$e2e/tools/requirements/go.mod"
+cp "$root/.github/policy/chain-scripts.json" "$e2e/.github/policy/"; cp "$root"/.github/workflows/*.yml "$e2e/.github/workflows/"
+cp "$root"/bin/*.sh "$root"/bin/*.py "$e2e/bin/" 2> /dev/null; cp "$root/bin/chain-test-signers.json" "$e2e/bin/" 2> /dev/null
+cur=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$e2e/bin/install-scanner.sh" | head -1); new="9.${cur#*.}"
+t_amd=$(printf 'e2e amd64' | sha256sum | cut -d' ' -f1); t_arm=$(printf 'e2e arm64' | sha256sum | cut -d' ' -f1)
+cat > "$e2e/fake/curl" <<CURL
+#!/usr/bin/env bash
+url=""; out=""; while [ \$# -gt 0 ]; do case "\$1" in -o) out="\$2"; shift ;; https://*) url="\$1" ;; esac; shift; done
+case "\$url" in
+  https://go.dev/dl/?mode=json*) printf '%s' '[{"version":"go${new}","files":[{"filename":"go${new}.linux-amd64.tar.gz","sha256":"${t_amd}"},{"filename":"go${new}.linux-arm64.tar.gz","sha256":"${t_arm}"}]}]' ;;
+  https://go.dev/dl/go${new}.linux-amd64.tar.gz) printf 'e2e amd64' > "\$out" ;;
+  https://go.dev/dl/go${new}.linux-arm64.tar.gz) printf 'e2e arm64' > "\$out" ;;
+  *) exit 22 ;;
+esac
+CURL
+printf '#!/usr/bin/env bash\ncase "$1 $2" in "pr list") echo "[]" ;; *) : ;; esac\n' > "$e2e/fake/gh"
+printf '#!/usr/bin/env bash\ncase "$1" in ls-remote) exit 2 ;; *) exit 0 ;; esac\n' > "$e2e/fake/git"
+chmod +x "$e2e/fake/"*
+( cd "$e2e" && sed -i.bak -E "s/^go [0-9.]+\$/go ${cur}/" go.mod && PATH="$e2e/fake:$PATH" bash "$SUT" "$cur" "$new" > "$e2e/bump.out" 2>&1 ) || { echo "FAIL: e2e: the bump script failed: $(tail -3 "$e2e/bump.out")"; fail=$((fail+1)); }
+e2e_check() { # e2e_check LABEL CMD...
+  local label=$1; shift; local o rc=0; o=$( cd "$e2e" && "$@" 2>&1 ) || rc=$?
+  if [ "$rc" = 0 ]; then echo "ok: e2e bump ${cur} -> ${new}: ${label}"; pass=$((pass+1)); else echo "FAIL: e2e bump: ${label}: ${o:0:300}"; fail=$((fail+1)); fi; }
+e2e_check "the policy validator (load_scripts) accepts the bumped installer's row" python3 -c '
+import importlib.util, sys
+s = importlib.util.spec_from_file_location("cts", "bin/chain-test-signers.py"); m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+rows, errs, names = m.load_scripts(".")
+bad = [e for e in errs if "install-scanner" in e]
+sys.exit(1 if bad else 0) if not bad else (print(bad), sys.exit(1))'
+e2e_check "bin/chain-install-witness-test.sh passes on the bumped tree" bash bin/chain-install-witness-test.sh
+e2e_check "bin/go-freshness-wiring-test.sh passes on the bumped tree" bash bin/go-freshness-wiring-test.sh
+e2e_check "bin/install-scanner-test.sh passes on the bumped tree" bash bin/install-scanner-test.sh
+rm -rf "$e2e"
 
 # the harness must catch these mutants of the script (each counted as a pass only when it is caught)
 mut="$(mktemp)"; trap 'rm -f "$mut"' EXIT
