@@ -205,6 +205,15 @@ EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # plain literal; never a secret, a glued expression or a substitution
 AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|matrix\.[A-Za-z_][\w-]*) ?\}\}|[A-Za-z0-9_./-]+")
 
+# STATED LIMITS of the PR 1b mechanisms (round 1 (8)); none of them is closed by a judge of this kind:
+#  - ambient reach is NAME-LEVEL: a listed script named as the step's script, as an ARGUMENT, or through the `runs` of either counts as run by
+#    the step, so `bash bin/x.sh bin/adm.py` hands an ambient name listed for bin/adm.py to bin/x.sh as well; the step's env reaches every
+#    process it starts, which no text judge can restrict to one script.
+#  - a path or command name SPLIT by quoting or built at run time (`"dist"/sed`, `b''ash`, a variable) is not seen; the path-like word test reads
+#    words as written.
+#  - an exception waives ONE occurrence of exactly its rule and text; repeated invocations of one listed script belong in a `runs` row, not in
+#    exceptions (a second occurrence of an excepted text stays a finding by design).
+#  - a command text that crosses a backslash-newline is named by its JOINED text (bash joins with nothing inserted).
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
