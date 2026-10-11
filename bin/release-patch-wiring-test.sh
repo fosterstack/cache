@@ -492,5 +492,46 @@ case_ ctx-checkout-persist    bad "[s['with'].__setitem__('persist-credentials',
 case_ ctx-wf-env              bad "d['env'] = {'BASH_ENV': 'bin/prep.sh'}"
 case_ ctx-wf-defaults         bad "d['defaults'] = {'run': {'shell': 'bash -c \"x; bash {0}\"'}}"
 case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
+# ---- REQ-REL-009-AC14 (cache #300; advisor): patch-decide.py refuses tag-like notes sources with exit 2 in EVERY sub-command. The two jobs that call it must
+# FAIL on a non-zero exit and post nothing: no `|| true`, no empty-notes fallback. Run the real step texts with a FAKE patch-decide.py that exits 2.
+behav_out=$(python3 - "$root" <<'PY'
+import os, re, stat, subprocess, sys, tempfile, yaml
+root = sys.argv[1]
+d = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)
+def step(job, needle):
+    return next(s for s in d["jobs"][job]["steps"] if needle in (s.get("name") or ""))
+bad = []
+def run(label, job, needle, calls_ok):
+    t = tempfile.mkdtemp(); os.makedirs(t + "/bin"); os.makedirs(t + "/fake"); os.makedirs(t + "/tmp"); os.makedirs(t + "/docs")
+    open(t + "/bin/patch-decide.py", "w").write("import sys, os\nopen(os.environ['LOG'], 'a').write('patch-decide ' + ' '.join(sys.argv[1:2]) + '\\n')\nsys.stderr.write('patch-decide: refused\\n'); sys.exit(2)\n")
+    open(t + "/bin/auditor-signed-commit.py", "w").write("import os\nopen(os.environ['LOG'], 'a').write('signed-commit\\n')\n")
+    for n in ("gh", "git", "grype"):
+        open(t + "/fake/" + n, "w").write("#!/usr/bin/env bash\necho \"%s $*\" >> \"$LOG\"\ncase \"$1 $2\" in 'cat-file tag') echo tagobject;; esac\nexit 0\n" % n)
+        os.chmod(t + "/fake/" + n, 0o755)
+    e = dict(os.environ, PATH=t + "/fake:" + os.environ["PATH"], LOG=t + "/log", RUNNER_TEMP=t + "/tmp", VERSION="v0.3.1", SINCE="v0.3.0",
+             GITHUB_STEP_SUMMARY=t + "/summary", GITHUB_REPOSITORY="o/r", GH_TOKEN="x", GITHUB_OUTPUT=t + "/out")
+    open(t + "/tmp/removed.json", "w").write("[]"); open(t + "/tmp/rel-0.3.0.json", "w").write("{}")
+    run_text = step(job, needle)["run"]
+    r = subprocess.run(["bash", "-c", run_text], cwd=t, env=e, capture_output=True, text=True)
+    log = open(t + "/log").read() if os.path.exists(t + "/log") else ""
+    if r.returncode == 0:
+        bad.append("%s: exit 0 although patch-decide.py exited 2 (a fallback swallowed it)" % label)
+    if "gh pr" in log or "signed-commit" in log or "gh release" in log:
+        bad.append("%s: posted or committed something after the refusal: %s" % (label, log.replace("\n", " | ")[:200]))
+    if os.path.exists(t + "/tmp/notes.md") and os.path.getsize(t + "/tmp/notes.md") == 0 and r.returncode == 0:
+        bad.append("%s: an empty notes file was accepted" % label)
+run("patch-notes job (tag-notes then changelog)", "patch-notes", "changelog-and-clear", None)
+run("decide job (the patch notes step)", "decide", "the patch notes", None)
+# the published list is never an input of a BEGIN check: it is built with %(contents) in the decide job only; the patch-notes job passes no --published
+txt = open(os.path.join(root, ".github/workflows/release.yml")).read()
+pn = d["jobs"]["patch-notes"]
+if "--published" in yaml.safe_dump(pn):
+    bad.append("the patch-notes job passes --published (tag signature blocks would reach cache's BEGIN check)")
+if re.search(r"tag-notes[^\n]*\|\|", txt) or re.search(r"patch-decide\.py (notes|changelog)[^\n]*\|\| *(true|:)", txt):
+    bad.append("a patch-decide.py call is followed by a fallback")
+print("; ".join(bad) or "ok")
+PY
+)
+if [ "$behav_out" = ok ]; then pass=$((pass+1)); echo "PASS patch-decide exit 2 fails both jobs and posts nothing (no fallback)"; else failn=$((failn+1)); echo "FAIL patch-decide exit 2 handling ($behav_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
