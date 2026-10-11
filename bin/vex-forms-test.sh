@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-010-AC1, REQ-SCAN-010-AC2, REQ-SCAN-010-AC3
+# proves: REQ-SCAN-010-AC1, REQ-SCAN-010-AC2, REQ-SCAN-010-AC3, REQ-SCAN-010-AC5, REQ-SCAN-010-AC6, REQ-SCAN-010-AC7, REQ-SCAN-010-AC8
 # Scanner-panel rule 10 (owner RATIFIED Oct 2; advisor 0076/0077): every release publishes our VEX three ways, all
 # generated from the one OpenVEX file. "The same statements", in the advisor's exact words: the CSAF file carries every
 # OpenVEX statement; the Inspector file carries one rule per suppressible statement (not_affected, fixed) and none for
 # affected or under_investigation. Offline: no network, no cloud call.
+# AC5-AC8 (advisor step 5, Oct 11, handoff 0389): the digest file holds exactly production and fips (v0.3.0 ships no
+# :debug image), is checked for shape and key set only, any other file is refused with nothing written, the same inputs
+# give the same bytes, and this test proves the generator alone: it reads no workflow's step names or step order
+# (Release's own test proves where the forms are generated, that the signed record covers them, and that the digests
+# are Build's verified ones).
 set -euo pipefail
 TMPDIR=$(mktemp -d); export TMPDIR; trap 'rm -rf "$TMPDIR"' EXIT  # python tempfile and mktemp dirs all live under this one, removed on exit
 here=$(cd "$(dirname "$0")" && pwd); root=$(cd "$here/.." && pwd)
-python3 - "$here/vex-forms.py" "$root" <<'PY'
+python3 - "$here/vex-forms.py" "$root" "$here/vex-forms-test.sh" <<'PY'
 import importlib.util, json, os, sys, tempfile
 spec = importlib.util.spec_from_file_location("vf", sys.argv[1]); V = importlib.util.module_from_spec(spec); spec.loader.exec_module(V)
 root = sys.argv[2]
@@ -17,8 +22,9 @@ def check(name, ok, got=""):
     if ok: passed += 1; print("ok:", name)
     else: failed += 1; print("FAIL:", name, "->", got)
 D = lambda c: "sha256:" + c * 64
+# AC5: exactly two variants, production and fips, each an index and its two linux children (6 digests)
 IMAGES = {v: {"index": D(a), "children": {"linux/amd64": D(b), "linux/arm64": D(c)}}
-          for v, a, b, c in (("production", "1", "2", "3"), ("debug", "4", "5", "6"), ("fips", "7", "8", "9"))}
+          for v, a, b, c in (("production", "1", "2", "3"), ("fips", "7", "8", "9"))}
 def st(cve, status, just=None):
     s = {"vulnerability": {"name": cve, "@id": "https://nvd.nist.gov/vuln/detail/" + cve}, "status": status,
          "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"}],
@@ -66,7 +72,7 @@ check("no vendor or model name in any generated text", not any(w in json.dumps([
 br = csaf["product_tree"]["branches"]
 pids = {b["product"]["product_id"] for b in br}
 check("CSAF branches are every released image digest, each named by the image path, its product by digest and purl",
-      len(br) == 9 and all(b["name"] == "ghcr.io/fosterstack/cache" and len(b["name"].split("/")) >= 3 and b["category"] == "product_version"
+      len(br) == 6 and all(b["name"] == "ghcr.io/fosterstack/cache" and len(b["name"].split("/")) >= 3 and b["category"] == "product_version"
                            and "ghcr.io/fosterstack/cache@sha256:" in b["product"]["name"]
                            and b["product"]["product_identification_helper"]["purl"].startswith("pkg:oci/cache@sha256:") for b in br), br)
 def google_validate(doc):          # the loader's own checks, as gcloud 587.0.0 vex_util._Validate makes them
@@ -103,7 +109,7 @@ def scoped(cve, status, products, just="component_not_present"):
     x = st(cve, status, just if status == "not_affected" else None); x["products"] = products; return x
 BB = [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache", "subcomponents": [{"@id": "pkg:generic/busybox@1.37.0"}]}]
 FOREIGN = [{"@id": "pkg:oci/other?repository_url=ghcr.io/someone/other"}]
-ONE = [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache" % D("5").replace(":", "%3A")}]
+ONE = [{"@id": "pkg:oci/cache@%s?repository_url=ghcr.io/fosterstack/cache" % D("8").replace(":", "%3A")}]   # a fips child
 SV = {"statements": [scoped("CVE-2099-10", "not_affected", BB), scoped("CVE-2099-11", "not_affected", FOREIGN),
                      scoped("CVE-2099-12", "not_affected", ONE)]}
 ri = {r["filterCriteria"]["vulnerabilityId"][0]["value"]: r["filterCriteria"] for r in V.inspector(SV, IMAGES, "v0.3.0")["filters"]}
@@ -111,7 +117,7 @@ check("a package-scoped statement suppresses only that package and version",
       ri.get("CVE-2099-10", {}).get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "busybox"},
                                                             "version": {"comparison": "EQUALS", "value": "1.37.0"}}], ri.get("CVE-2099-10"))
 check("a statement about another repository's product suppresses nothing here", "CVE-2099-11" not in ri, sorted(ri))
-check("a statement about one digest suppresses that digest only", [x["value"] for x in ri.get("CVE-2099-12", {}).get("ecrImageHash", [])] == [D("5")], ri.get("CVE-2099-12"))
+check("a statement about one digest suppresses that digest only", [x["value"] for x in ri.get("CVE-2099-12", {}).get("ecrImageHash", [])] == [D("8")], ri.get("CVE-2099-12"))
 cs = V.csaf(SV, IMAGES, "v0.3.0")
 rel = {r["full_product_name"]["product_id"]: r for r in cs["product_tree"].get("relationships", [])}
 v10 = next(v for v in cs["vulnerabilities"] if v["cve"] == "CVE-2099-10")
@@ -160,26 +166,184 @@ check("…and fails when a create-filter call fails", bad.returncode != 0)
 g = V.GUIDE_GOOGLE_COMMAND
 check("the guide's Google command renames the chosen digest's branch to the image it loads, then loads that file at that digest",
       "$DIGEST" in g and "load-vex" in g and '--uri="$IMAGE@$DIGEST"' in g, g)
-# --- refusal: an unknown status, a missing image digest
+# --- refusal: an unknown status, a missing variant
 try:
     V.inspector({"statements": [st("CVE-2099-9", "maybe")]}, IMAGES, "v0.3.0"); ok = False
 except ValueError:
     ok = True
 check("an unknown OpenVEX status is refused, never guessed", ok)
-try:
-    V.csaf(VEX, {"production": IMAGES["production"]}, "v0.3.0"); ok = False
-except ValueError:
-    ok = True
-check("all three variants' digests are required", ok)
-# --- the real OpenVEX file generates cleanly
-real = json.load(open(os.path.join(root, ".vex/fosterstack-cache.openvex.json")))
-check("the real OpenVEX file: CSAF carries all its statements", len(V.csaf(real, IMAGES, "v0.3.0")["vulnerabilities"]) == len(real["statements"]))
+for gone in ("fips", "production"):
+    try:
+        V.csaf(VEX, {k: v for k, v in IMAGES.items() if k != gone}, "v0.3.0"); ok = False
+    except ValueError as e:
+        ok = gone in str(e)
+    check("AC6 both variants' digests are required: digests without %s are refused, naming it" % gone, ok)
+# --- AC5, AC6, AC7: the generator as the release runs it, given a digest FILE by its path
+import re as _re
+GEN = sys.argv[1]
+OPENVEX = os.path.join(root, ".vex/fosterstack-cache.openvex.json")
+FORMS = ("fosterstack-cache-v0.3.0.inspector-filters.json", "fosterstack-cache-v0.3.0.csaf.json")
+SYN = os.path.join(tempfile.mkdtemp(), "synthetic.openvex.json"); json.dump(VEX, open(SYN, "w"))   # every statement on the whole image
+def run_gen(images_text, out, env=None, prelude="", openvex=SYN):
+    """`vex-forms.py --images <file>`, the digest file written byte for byte as given (so a repeated key survives)"""
+    f = os.path.join(tempfile.mkdtemp(), "digests.json"); open(f, "w").write(images_text)
+    argv = [GEN, "--openvex", openvex, "--images", f, "--version", "v0.3.0", "--out-dir", out]
+    code = prelude + "\nimport runpy, sys\nsys.argv = %r\nrunpy.run_path(%r, run_name='__main__')\n" % (argv, GEN)
+    return subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, stdin=subprocess.DEVNULL,
+                          env=env or dict(os.environ))
+def digests_in(out):
+    return {m.replace("%3A", ":") for f in FORMS if os.path.isfile(os.path.join(out, f))
+            for m in _re.findall(r"sha\d+(?::|%3A)[0-9a-fA-F]+", open(os.path.join(out, f)).read())}
+def six_of(imgs):
+    return {d for v in imgs.values() for d in [v["index"]] + list(v["children"].values())}
+J = json.dumps
+out = tempfile.mkdtemp(); r = run_gen(J(IMAGES), out)
+check("AC5 a digest file with exactly production and fips generates both forms",
+      r.returncode == 0 and all(os.path.isfile(os.path.join(out, f)) for f in FORMS), (r.returncode, r.stderr[-300:]))
+check("AC5 the forms name exactly the file's six digests and no other image digest", digests_in(out) == six_of(IMAGES),
+      sorted(digests_in(out) ^ six_of(IMAGES)))
+if r.returncode == 0:
+    fi, fc = (json.load(open(os.path.join(out, f))) for f in FORMS)
+    whole = [x for x in fi["filters"] if "vulnerablePackages" not in x["filterCriteria"]]
+    check("AC5 every whole-image Inspector rule's ecrImageHash set is exactly the file's six digests",
+          whole and all({c["value"] for c in x["filterCriteria"]["ecrImageHash"]} == six_of(IMAGES) for x in whole))
+    check("AC5 the CSAF branches are exactly the file's six digests",
+          sorted(b["product"]["product_identification_helper"]["purl"].split("@", 1)[1].split("?")[0] for b in fc["product_tree"]["branches"])
+          == sorted(six_of(IMAGES)))
+OTHER = {v: {"index": D(a), "children": {"linux/amd64": D(b), "linux/arm64": D(c)}}
+         for v, a, b, c in (("production", "a", "b", "c"), ("fips", "d", "e", "f"))}
+o2 = tempfile.mkdtemp(); r2 = run_gen(J(OTHER), o2)
+check("AC5 other valid digests: exactly those appear (none invented, none kept from the module)",
+      r2.returncode == 0 and digests_in(o2) == six_of(OTHER), (r2.returncode, sorted(digests_in(o2) ^ six_of(OTHER))))
+# AC6: every other digest file is refused, the error names the key path or the value at fault, and nothing is written
+P, F = IMAGES["production"], IMAGES["fips"]
+def fips_child(val):
+    return J({"production": P, "fips": {"index": F["index"], "children": {"linux/amd64": val, "linux/arm64": F["children"]["linux/arm64"]}}})
+BAD = [
+    ("a third key debug, well formed", J(dict(IMAGES, debug={"index": D("4"), "children": {"linux/amd64": D("5"), "linux/arm64": D("6")}})), "debug"),
+    ("a missing fips", J({"production": P}), "fips"),
+    ("a missing production", J({"fips": F}), "production"),
+    ("an empty object", "{}", "production"),
+    ("children without linux/arm64", J({"production": P, "fips": {"index": F["index"], "children": {"linux/amd64": F["children"]["linux/amd64"]}}}), "fips.children.linux/arm64"),
+    ("children with an extra linux/s390x", J({"production": {"index": P["index"], "children": dict(P["children"], **{"linux/s390x": D("4")})}, "fips": F}), "production.children.linux/s390x"),
+    ("children that are not an object", J({"production": P, "fips": {"index": F["index"], "children": sorted(F["children"].values())}}), "fips.children"),
+    ("a variant with a key beside index and children", J({"production": dict(P, sbom=D("4")), "fips": F}), "production.sbom"),
+    ("a variant without its index", J({"production": {"children": P["children"]}, "fips": F}), "production.index"),
+    ("a variant value that is not an object", J({"production": P["index"], "fips": F}), "production"),
+]
+for nm, val in (("sha256: and 63 hex", "sha256:" + "a" * 63), ("upper-case hex", "sha256:" + "A" * 64),
+                ("sha512: and 128 hex", "sha512:" + "a" * 128), ("a number", 7), ("null", None), ("an empty string", ""),
+                ("a digest and a newline", D("a") + "\n"), ("a digest without its sha256: prefix", "a" * 64)):
+    BAD.append(("a digest that is " + nm, fips_child(val), "fips.children.linux/amd64"))
+BAD += [
+    ("the same digest twice (production.index again as fips.index)", J({"production": P, "fips": dict(F, index=P["index"])}), P["index"]),
+    ("the same digest twice within one variant", J({"production": {"index": P["index"], "children": {"linux/amd64": P["index"], "linux/arm64": P["children"]["linux/arm64"]}}, "fips": F}), P["index"]),
+    ("a top-level array", J([P, F]), "object"),
+    ("a top-level string", J("production"), "object"),
+    ("invalid JSON", J(IMAGES)[:-1], "JSON"),
+    ("a repeated top-level key", '{"production": %s, "production": %s, "fips": %s}' % (J(P), J(P), J(F)), "production"),
+    ("a repeated key inside children", '{"production": %s, "fips": {"index": "%s", "children": {"linux/amd64": "%s", "linux/arm64": "%s", "linux/arm64": "%s"}}}'
+     % (J(P), F["index"], F["children"]["linux/amd64"], D("a"), F["children"]["linux/arm64"]), "fips.children.linux/arm64"),
+]
+for name, text, must in BAD:
+    empty = tempfile.mkdtemp(); r = run_gen(text, empty)
+    check("AC6 refused with a non-zero exit, the error naming %r: %s" % (must, name),
+          r.returncode != 0 and must in r.stderr and "Traceback" not in r.stderr, (r.returncode, r.stderr[-240:]))
+    check("AC6 no form file created: " + name, os.listdir(empty) == [], os.listdir(empty))
+    full = tempfile.mkdtemp()
+    for f in FORMS:
+        open(os.path.join(full, f), "w").write("PRE-EXISTING " + f)
+    run_gen(text, full)
+    check("AC6 a form file already in the output directory is unchanged: " + name,
+          sorted(os.listdir(full)) == sorted(FORMS) and all(open(os.path.join(full, f)).read() == "PRE-EXISTING " + f for f in FORMS))
+# AC5: no registry read and no network connection; the hook is proven to fire first (a control), so the pass is not vacuous
+NONET = """import os, sys
+def _deny(ev, args):
+    if ev in ("socket.__new__", "socket.connect", "socket.getaddrinfo", "socket.gethostbyname", "urllib.Request",
+              "subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork"):
+        os.write(2, ("FORBIDDEN " + ev + "\\n").encode()); os._exit(97)
+sys.addaudithook(_deny)
+"""
+ctl = run_gen(J(IMAGES), tempfile.mkdtemp(), prelude=NONET + "import socket\nsocket.getaddrinfo('localhost', 443)\n")
+check("AC5 control: the no-network hook stops a lookup", ctl.returncode == 97 and "FORBIDDEN socket.getaddrinfo" in ctl.stderr, ctl.stderr[-200:])
+nn = tempfile.mkdtemp(); r = run_gen(J(IMAGES), nn, prelude=NONET, openvex=OPENVEX)
+check("AC5 the generator runs with every socket, lookup and subprocess forbidden, and writes both forms",
+      r.returncode == 0 and "FORBIDDEN" not in r.stderr and sorted(os.listdir(nn)) == sorted(FORMS), (r.returncode, r.stderr[-200:]))
+# AC7: the same inputs give the same bytes, whatever the clock, time zone, locale, SOURCE_DATE_EPOCH or key order
+CLOCK = "import time\ntime.time = lambda: %d.5\ntime.time_ns = lambda: %d * 10**9\n"
+runs = []
+for env, t in ((dict(os.environ, TZ="UTC", LC_ALL="C", SOURCE_DATE_EPOCH="1"), 1),
+               (dict(os.environ, TZ="Pacific/Chatham", LC_ALL="de_DE.UTF-8", SOURCE_DATE_EPOCH="1999999999"), 2000000000)):
+    o = tempfile.mkdtemp(); runs.append((o, run_gen(J(IMAGES), o, env=env, prelude=CLOCK % (t, t), openvex=OPENVEX)))
+REORDERED = J({"fips": {"children": dict(reversed(list(F["children"].items()))), "index": F["index"]},
+               "production": {"children": dict(reversed(list(P["children"].items()))), "index": P["index"]}}, indent=3)
+o = tempfile.mkdtemp(); runs.append((o, run_gen(REORDERED, o, openvex=OPENVEX)))
+def same(a, b):
+    return all(open(os.path.join(a, f), "rb").read() == open(os.path.join(b, f), "rb").read() for f in FORMS)
+check("AC7 every run succeeded", all(x.returncode == 0 for _, x in runs), [(x.returncode, x.stderr[-160:]) for _, x in runs])
+if all(x.returncode == 0 for _, x in runs):
+    check("AC7 two runs at different clocks, time zones, locales and SOURCE_DATE_EPOCH give byte-identical forms", same(runs[0][0], runs[1][0]))
+    check("AC7 a digest file with the same content in another key order gives byte-identical forms", same(runs[0][0], runs[2][0]))
+import ast
+gsrc = ast.parse(open(GEN).read())
+mods = {a.name for n in ast.walk(gsrc) if isinstance(n, ast.Import) for a in n.names} | \
+       {n.module for n in ast.walk(gsrc) if isinstance(n, ast.ImportFrom)}
+env_reads = [n.attr for n in ast.walk(gsrc) if isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv", "environb")]
+check("AC7 the generator imports no clock, randomness or network module and reads no environment variable",
+      mods <= {"argparse", "json", "os", "re", "sys", "urllib.parse"} and not env_reads, (sorted(mods), env_reads))
+# --- AC1, AC2 on the real OpenVEX file. AC2 is read as the advisor's reading (a), handoff 0389: "all statements" means
+# every statement that applies to THIS release's images; a statement whose products are images the release does not ship
+# does not belong in its forms. "Applies" is computed here from the products alone, independent of the generator.
+real = json.load(open(OPENVEX))
+WHOLE = "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache"
+def applies(s, imgs):
+    for p in s.get("products") or []:
+        pid = p.get("@id") or (p.get("identifiers") or {}).get("purl", "")
+        m = _re.fullmatch(r"pkg:oci/cache@sha256%3A([0-9a-f]{64})\?repository_url=ghcr\.io/fosterstack/cache", pid)
+        if pid == WHOLE or (m and "sha256:" + m.group(1) in six_of(imgs)):
+            return True
+    return False
 rc = V.csaf(real, IMAGES, "v0.3.0")
+want = sorted(s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES))
+check("AC2 the real file: the CSAF carries every statement that applies to this release's images, and no other",
+      want and sorted(v["cve"] for v in rc["vulnerabilities"]) == want, (sorted(v["cve"] for v in rc["vulnerabilities"]), want))
+wsup = sorted({s["vulnerability"]["name"] for s in real["statements"] if applies(s, IMAGES) and s["status"] in ("not_affected", "fixed")})
+rcv = sorted({r["filterCriteria"]["vulnerabilityId"][0]["value"] for r in V.inspector(real, IMAGES, "v0.3.0")["filters"]})
+check("AC2 the real file: the Inspector file has a rule for each suppressible statement that applies, and no other", rcv == wsup, (rcv, wsup))
 check("the real file's CSAF passes the loader's checks; its busybox statements stay scoped to busybox 1.37.0",
-      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"]["relationships"]))
+      bool(google_validate(rc)) and all(r["product_reference"] == "component-busybox@1.37.0" for r in rc["product_tree"].get("relationships", [])))
 if src:
     ns["_Validate"](rc)
     check("the installed gcloud loader's own _Validate accepts the real file's CSAF", True)
+# DEFERRED, not weakened: the .vex digest-scoping edit (handoff 0389 (c); a separate PR, ordered after pipeline #299)
+# narrows the three busybox statements to the published :debug digests. That PR adds here, on this v0.3.0 fixture:
+# the CSAF carries no CVE-2025-60876, CVE-2025-46394 or CVE-2024-58251 and no relationships, and the Inspector file
+# has no rule for them. Today's file names the whole repository, so those statements still apply to every digest and
+# that assertion would be false today; the AC2 check above already holds the rule and follows the file (`want` drops to
+# CVE-2024-51744 alone once the edit lands).
+# The published :debug images (GHCR; final AC file C.3): v0.2.2's in the production slot and v0.2.1's in the fips
+# slot. The generator's shape names slots, not content; these six images all carry busybox 1.37.0. This holds today
+# (whole repository) and after the edit (the statements name exactly these digests, among others).
+BUSYBOX = {"CVE-2025-60876", "CVE-2025-46394", "CVE-2024-58251"}
+DEBUG = {"production": {"index": "sha256:87887f55ffa41cc63d4aa6f6d9459fd0dbf919491b83f1d3c8b7fc5444b5a081",
+                        "children": {"linux/amd64": "sha256:9e8268329d7266b64a1a4258c83b23140ff8f266b283b835ce591deb1e3efad2",
+                                     "linux/arm64": "sha256:ecc1d78cb8227f7c0496afc3db453c3e75fccebfa1ac631f54b2d4624ced4cab"}},
+         "fips": {"index": "sha256:e2e502f44d8bd9e6967cb160aabeb012e8520ebba0faa88e130143fe534f282e",
+                  "children": {"linux/amd64": "sha256:fd52446f5bb30b17c7b20e5d4b381722180f63911f678937e75b16b6f080ac5a",
+                               "linux/arm64": "sha256:596adb2363f907a62634a24aeea0295e147bf45e4c4a3bb44b1c75963bad5653"}}}
+dc = V.csaf(real, DEBUG, "v0.2.2")
+check("the real file on the published :debug images: each busybox CVE is present", BUSYBOX <= {v["cve"] for v in dc["vulnerabilities"]})
+p2d = {b["product"]["product_id"]: b["product"]["product_identification_helper"]["purl"].split("@", 1)[1].split("?")[0]
+       for b in dc["product_tree"]["branches"]}
+rels = dc["product_tree"].get("relationships", [])
+check("…every relationship is busybox 1.37.0 on one of those :debug digests",
+      rels and all(x["product_reference"] == "component-busybox@1.37.0" and p2d.get(x["relates_to_product_reference"]) in six_of(DEBUG) for x in rels))
+bb = [x for x in V.inspector(real, DEBUG, "v0.2.2")["filters"] if x["filterCriteria"]["vulnerabilityId"][0]["value"] in BUSYBOX]
+check("…each busybox Inspector rule carries busybox 1.37.0 and only those digests",
+      {x["filterCriteria"]["vulnerabilityId"][0]["value"] for x in bb} == BUSYBOX
+      and all(x["filterCriteria"].get("vulnerablePackages") == [{"name": {"comparison": "EQUALS", "value": "busybox"},
+                                                                  "version": {"comparison": "EQUALS", "value": "1.37.0"}}]
+              and {c["value"] for c in x["filterCriteria"]["ecrImageHash"]} == six_of(DEBUG) for x in bb))
 # --- AC3: our own pipeline keeps filtering against the OpenVEX file itself, never a derived form
 rescan = open(os.path.join(root, ".github/workflows/main-candidate-rescan.yml")).read()
 check("the rescan filters grype, docker scout and the tally against the OpenVEX file",
@@ -195,6 +359,13 @@ check("the three forms are generated before the manifest that the release signs"
 check("generated from the one OpenVEX file by bin/vex-forms.py", gen != -1 and "--out-dir release-metadata" in sign[gen:man])
 check("the manifest records all three files' sha256 (it reads the directory the forms were written to)", "--vex-dir release-metadata" in sign[man:lst])
 check("the release uploads the three files the manifest hashed", "release-metadata/fosterstack-cache*.json" in assets and "release-metadata/release-manifest.json" in assets)
+# --- AC8: this test proves the generator, not the workflow. It reads no workflow file's step names or step order;
+# where the forms are generated, that the signed release record covers them and that the digests are Build's verified
+# ones are proven by the release workflow's own test. AC3's contents check of the rescan workflow stays.
+me = open(sys.argv[3]).read()
+wf = set(_re.findall(r"\.github/workflows/([A-Za-z0-9._-]+)", me))
+check("AC8 this test names no workflow file but the rescan's (AC3's contents check)", wf == {"main-candidate-rescan.yml"}, wf)
+check("AC8 this test reads no workflow's steps", ('["' + 'steps"]') not in me and ("import " + "yaml") not in me and ("yaml" + ".") not in me)
 # --- Codex #165 r2: SEC-165-01 (version wildcards, qualifiers), SEC-165-07 (component identity), SEC-165-02 (titles),
 #     SEC-165-06 (the Google step binds the chosen digest; exactly one branch matches)
 def pkgst(cve, status, purl):
