@@ -83,9 +83,13 @@ credential-less client produce 401s (see §5).
 
 ## 3. Trying it out without TLS
 
-The examples above use `https://` deliberately. Real deployments terminate TLS
-at a proxy, ingress, or load balancer, and Gradle sends Basic Auth credentials
-preemptively — over plain HTTP they go out in cleartext to whatever answers.
+The examples above use `https://` deliberately. Real deployments serve HTTPS,
+either from a proxy, ingress, or load balancer in front of the server, or from
+the server itself with `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` set (see the
+[configuration table](../README.md#build-and-run-from-source); the files are
+read only at startup, so a new certificate needs a restart). Gradle sends Basic
+Auth credentials preemptively — over plain HTTP they go out in cleartext to
+whatever answers.
 
 For a throwaway test rig against a bare IP, Gradle needs an explicit opt-out.
 It refuses plain HTTP to any host except the loopback address `127.0.0.1`

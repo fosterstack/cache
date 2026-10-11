@@ -532,8 +532,161 @@ ingress-nginx-family-specific; the universal requirement is that every proxy in
 the path allows bodies at least as large as the server's own
 `FSCACHE_MAX_BODY_BYTES` (1 GiB by default).
 
-**Terminate TLS in front.** The server speaks plain HTTP and has no certificate
-handling of its own, by design.
+## TLS: in front, or in the server
+
+There are two ways to serve HTTPS. Neither is preferred; use the one that fits
+how your cluster already handles certificates.
+
+**TLS in front.** A load balancer, Gateway or ingress terminates TLS and
+forwards plain HTTP to the Service, as in the examples above. The server needs
+no certificate, and the manifests on this page apply as written.
+
+**TLS in the server.** Set `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` to a PEM
+certificate file (it may hold the chain) and its private key file. The server
+then serves HTTPS only, on the same port, with TLS 1.2 as the minimum version;
+a plain-HTTP request to that port gets `400`. HTTP/2 is not offered. Setting only one of the two, or a
+file that is missing, unreadable, not PEM, or a key that does not match the
+certificate, stops the start with a message naming the variable and the path,
+before anything under the data directory is touched. Each file may be at most
+1 MiB, and each must be a regular file (a symlink to one, as in a Secret
+volume, is fine).
+
+Put the certificate in a Secret of type `kubernetes.io/tls` and mount it
+read-only. Both files must be readable by the container's non-root user
+(UID 65532 in the manifest above); the server makes no permission check of its
+own, and a Secret volume's default file mode (0644) is readable:
+
+```sh
+kubectl -n fscache-ns create secret tls fscache-server-tls --cert=tls.crt --key=tls.key
+```
+
+This is the Deployment above with the TLS entries merged into its existing
+lists: the two variables join `env`, both probes gain `scheme: HTTPS` (the
+kubelet does not verify the certificate of a probe; a `startupProbe`, if you
+added one, needs the same), and the Secret joins `volumeMounts` and `volumes`
+beside the data volume. Apply it in place of the Deployment above:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fscache
+  labels:
+    app.kubernetes.io/name: fscache
+spec:
+  replicas: 1                     # single-writer bbolt — see above
+  strategy:
+    type: Recreate                # never two pods on one volume
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fscache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fscache
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532            # makes the PVC writable by the image user
+        seccompProfile:
+          # Applies the container runtime's default syscall filter. It is
+          # required by the restricted Pod Security Standard, and free
+          # hardening for a static Go binary that makes no exotic syscalls.
+          type: RuntimeDefault
+      containers:
+        - name: fscache
+          image: ghcr.io/fosterstack/cache:X.Y.Z
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: FSCACHE_DATA_DIR
+              value: /data        # required — see "The data directory"
+            - name: FSCACHE_TLS_CERT
+              value: /etc/fscache/tls/tls.crt
+            - name: FSCACHE_TLS_KEY
+              value: /etc/fscache/tls/tls.key
+            - name: FSCACHE_MAX_BYTES
+              value: "42949672960"   # 40 GiB, under the 50Gi PVC above
+            # Credentials come from the fscache-auth Secret below. Both keys
+            # must be set or neither; the server refuses to start with one.
+            - name: FSCACHE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: fscache-auth
+                  key: username
+            - name: FSCACHE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fscache-auth
+                  key: password
+            # Optional (see docs/docker-deploy.md#configuration).
+            # These are commented out so this manifest applies verbatim as tested;
+            # uncomment to enable.
+            # - name: FSCACHE_MAX_CONCURRENT_UPLOADS   # bound PUTs in flight; default 32, 0 disables; the request past the limit gets 429 + Retry-After
+            #   value: "32"
+            # - name: FSCACHE_RO_USERNAME              # optional read-only pair: reads cache entries but not writes them (a write gets 403)
+            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-username } }
+            # - name: FSCACHE_RO_PASSWORD
+            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-password } }
+            # An entry larger than FSCACHE_MAX_BYTES is refused with 413 and
+            # X-FSCache-Reject: entry-exceeds-cache-cap; nothing is evicted to make room.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTPS
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tls
+              mountPath: /etc/fscache/tls
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: fscache-data
+        - name: tls
+          secret:
+            secretName: fscache-server-tls
+```
+
+The certificate must name the host your clients connect to (for in-cluster
+runners, the Service's DNS name, such as `fscache.fscache-ns.svc.cluster.local`),
+and a certificate from a private CA must be trusted by the build's JVM. Clients
+then use an `https://` URL and no longer need `isAllowInsecureProtocol`.
+
+The files are read only at startup. Kubernetes updates a mounted Secret's files
+in place, but the running server keeps presenting the certificate it started
+with: to rotate, update the Secret, then restart the pod
+(`kubectl -n fscache-ns rollout restart deploy/fscache`). The startup log line
+reports `tls` as `enabled` or `disabled`.
+
+If clients cannot connect over TLS, check from the client side:
+`openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
+chain, the negotiated version and cipher, and the alert). The server does not
+log handshake failures at the default log level.
 
 ## Applying these manifests
 
