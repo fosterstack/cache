@@ -47,6 +47,13 @@
 # Modelled on: this repo's bin/workflow-consolidation-test.sh (judge + mutation pattern); in-toto-witness docs/commands.md
 # (witness run / sign flags) and docs/attestors/slsa.md for the signing-call patterns.
 set -euo pipefail
+# the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
+if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
+  _out=$(CHAIN_KNOWN_RED_INNER=1 bash "$0" "$@" 2>&1) || true
+  printf '%s\n' "$_out"
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-sign-wiring-test.sh
+  exit $?
+fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0

@@ -146,7 +146,8 @@ ALLOW_PATTERNS=(
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
-  '^bin/chain-test-(harness|shape)\.py$'
+  '^bin/chain-(test-(harness|shape)|known-red)\.py$'
+  '^test-evidence/known-red\.json$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'

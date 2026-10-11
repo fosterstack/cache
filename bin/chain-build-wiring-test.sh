@@ -52,6 +52,13 @@
 #   so a build longer than the 10-minute certificate may not verify (harness spike (d)); `timeout 540` is the answer in the tests.
 # INTEGRATION BRANCH (advisor 0341): PR 2 targets chain-v030; the real-tree cases are RED here and become green on chain-v030 after PR 1 and PR 2 merge.
 set -euo pipefail
+# the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
+if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
+  _out=$(CHAIN_KNOWN_RED_INNER=1 bash "$0" "$@" 2>&1) || true
+  printf '%s\n' "$_out"
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-build-wiring-test.sh
+  exit $?
+fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 shape="$root/bin/chain-test-shape.py"; harness="$root/bin/chain-test-harness.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -1537,8 +1544,8 @@ rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-g
 # passes only when the set of red cases EQUALS the list. The helper is proven here on synthetic output and a throw-away git repository.
 KR="$root/bin/chain-known-red.py"
 krj() { # krj WANT-EXIT LABEL FILE-LIST SUITE-OUTPUT-TEXT [FRAGMENT]
-  local rc=0 out; out=$(printf '%s\n' "$5" | python3 "$KR" judge --suite s.sh --list "$3" 2>&1) || rc=$?
-  if [ "$rc" = "$1" ] && { [ -z "${6:-}" ] || grep -F -q -- "$6" <<< "$out"; }; then ok "known-red $2"; else bad "known-red $2 (exit $rc: ${out:0:160})"; fi; }
+  local rc=0 out; out=$(printf '%s\n' "$4" | python3 "$KR" judge --suite s.sh --list "$3" 2>&1) || rc=$?
+  if [ "$rc" = "$1" ] && { [ -z "${5:-}" ] || grep -F -q -- "$5" <<< "$out"; }; then ok "known-red $2"; else bad "known-red $2 (exit $rc: ${out:0:160})"; fi; }
 mkdir -p "$work/kr"
 printf '{"entries":[{"id":"KR-1","suite":"s.sh","case":"the real tree: a","reason":"r","green_by":"PR 3"},{"id":"KR-2","suite":"s.sh","case":"shrink: b","reason":"r","green_by":"P4"},{"id":"KR-9","suite":"other.sh","case":"x","reason":"r","green_by":"P5"}]}\n' > "$work/kr/list.json"
 SUM=$'pass=5 fail=2'
@@ -1572,7 +1579,7 @@ rc=0; ( cd "$kg" && python3 "$KR" base-check --base HEAD --event "$work/kr/ev-no
 rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789abcdef01234567 --event "$work/kr/ev-ok.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
 [ "$rc" = 1 ] && ok "known-red base-check: an unresolvable base fails closed" || bad "known-red base-check: unresolvable base gave exit $rc"
 # the committed list and the two suites' own wrapper
-rc=0; python3 "$KR" base-check --base "${KNOWN_RED_BASE:-HEAD}" --event /nonexistent > /dev/null 2>&1 || rc=$?
+rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull request event names the base and the body; locally the base is origin/chain-v030 and KNOWN_RED_ADD names new ids
 [ "$rc" = 0 ] && ok "known-red: the committed list is well formed and compares with the base" || bad "known-red: the committed test-evidence/known-red.json (exit $rc)"
 for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null; then ok "known-red: $sfile judges its own output against the list"; else bad "known-red: $sfile does not judge its output against the list"; fi
