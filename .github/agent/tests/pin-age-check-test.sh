@@ -1174,7 +1174,7 @@ HARNESS_WHITELIST = {
     "negation": ["!"],                                                 # may precede a command, or a test expression
     "commands": ["grep", "test", "[", "cat", "exit"],                  # the command words of BODY, unquoted
     "pipe_into": ["grep"],                                             # the only command after a |
-    "grep_options": ["-E", "-q", "-v", "-Eq", "-vq", "--"],            # unquoted grep arguments
+    "grep_options": ["-E", "-q", "-v", "-Eq", "--"],            # unquoted grep arguments
     "grep_bare_patterns": ["."],                                       # the only unquoted grep pattern
     "test_unary": ["-f", "-s", "-e", "-d", "-r"],                      # test / [ : OP X
     "test_string": ["=", "!="],                                        # test / [ : X OP Y
@@ -1412,6 +1412,7 @@ a backslash in the title	t "r" "x \$y" bash -c 'grep -q . "$1"' _ "$CALLS"
 an array subscript in an argument path	t "r" "x" bash -c 'grep -q . "$1"' _ "$work/a[1]"
 $(( )) in an argument	t "r" "x" bash -c 'grep -q . "$1"' _ "$((1))"
 more ARGs than max_args (ten)	t "r" "x" bash -c 'grep -q . "$1"' _ "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS"
+grep -vq as one word (the whitelist lists -v and -q, one option per word)	t "r" "x" bash -c 'grep -vq "a" "$1"' _ "$CALLS"
 EOF
 while IFS=$'\t' read -r what line; do
   hf "$line"
@@ -1448,7 +1449,7 @@ for f in "$work"/ctl-*.txt; do
 done
 cat >"$work/hf-accepted.tsv" <<'EOF'
 the whole vocabulary	t "r" "x" bash -c 'grep -q "a" "$1" && ! grep -E "b|c" "$1" || test "$(grep -c "a" "$1")" -ge 3; [ "$(cat "$1")" = 2 ] | grep -q .' _ "$CALLS"
-exit with one literal digit	t "r" "x" bash -c 'grep "a" "$1" | grep -vq "b" && exit 1; exit 0' _ "$CALLS"
+exit with one literal digit	t "r" "x" bash -c 'grep "a" "$1" | grep -v -q "b" && exit 1; exit 0' _ "$CALLS"
 the file tests -f -s -e -d -r and !	t "r" "x" bash -c 'test -f "$1" && [ -s "$1" ] && test -e "$1" && ! test -d "$1" && test ! -d "$1" && [ -r "$1" ]' _ "$CALLS"
 string = and != on $(cat ...)	t "r" "x" bash -c 'test "$(cat "$1")" != "b" && [ "$(cat "$2")" = "a" ]' _ "$work/rc" "$CALLS"
 arithmetic on digits and on $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c "a" "$1")" -eq 1 && [ 3 -ne 4 ] && test 1 -lt 2 && test 2 -le 2 && test 3 -gt 2' _ "$CALLS"
@@ -1467,8 +1468,8 @@ cat >"$work/hf-real.txt" <<'EOF'
 # url characters, curl flags and caps
 t "rule 32" "refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)" bash -c 'test "$(cat "$1")" = 0 && grep -Eq "^curl .*https://packages\.wolfi\.dev/os/.*wolfi-signing\.rsa\.pub" "$2"' _ "$work/rc" "$CALLS"
 t "rule 32" "refresh: a url with a character outside the plain set is refused (exit 2), never fetched" bash -c 'test "$(cat "$1")" = 2 && ! grep -E "^curl .*tzdata" "$2"' _ "$work/rc" "$CALLS"
-t "rule 32" "refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)" bash -c 'grep "^curl " "$1" | grep -vq -- "--proto =https --tlsv1.2" && exit 1; test "$(grep -c "^curl " "$1")" -ge 3' _ "$CALLS"
-t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c 'grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -v -E -- "(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)" | grep -q . && exit 1; grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -q -- "--max-time"' _ "$CALLS"
+t "rule 32" "refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)" bash -c 'grep "^curl " "$1" | grep -v -q -- "--proto =https --tlsv1.2" && exit 1; test "$(grep -c "^curl " "$1")" -ge 3' _ "$CALLS"
+t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c 'grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -v -E -- "(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)" | grep -q . && exit 1; grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -v -- "--max-time" | grep -q . && exit 1; test "$(grep -c -E "^curl .*(tzdata|APKINDEX)" "$1")" -ge 1' _ "$CALLS"
 EOF
 while IFS= read -r line; do
   case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
@@ -1481,6 +1482,71 @@ real = {H(" ".join(l.split())) for l in open(sys.argv[1]).read().split("\n") if 
 rows = {r["line"] for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["file"] == "bin/refresh-inputs-test.sh"}
 assert real == rows, (sorted(real ^ rows))
 PY
+# --- what each committed harness line ASSERTS (Codex, PR 289 round 2: a ruling must describe the line's real check). Each real line is run under bash 5
+# against call logs written here: a log that meets the rule must pass (exit 0), and each log that breaks it in one way must fail (exit 1). Every harness
+# line of the committed rows needs a case set (a new line without one fails), so the rulings' prose is checked by execution, not by reading.
+cat >"$work/hf_sem.py" <<'PY'
+import json, os, subprocess, sys, tempfile
+real, w = sys.argv[1], sys.argv[2]
+def bash5():
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        p = os.path.join(d, "bash")
+        if d and os.access(p, os.X_OK):
+            r = subprocess.run([p, "-c", "echo ${BASH_VERSINFO[0]}"], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            if r.returncode == 0 and r.stdout.strip().isdigit() and int(r.stdout) >= 5:
+                return p
+b5 = bash5()
+OK3 = ["curl -q -fsS -g --proto =https --tlsv1.2 -o a https://packages.wolfi.dev/os/wolfi-signing.rsa.pub",
+       "curl -q -fsS -g --max-filesize 1 --max-time 1 --proto =https --tlsv1.2 -o b https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz",
+       "curl -q -fsS -g --max-filesize 1 --max-time 1 --proto =https --tlsv1.2 -o c https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"]
+CASES = {   # a title fragment -> [(what, rc file text, call-log lines, expected exit)]
+ "every curl call is HTTPS-only": [
+    ("three calls, each with --proto =https --tlsv1.2", "0", OK3, 0),
+    ("one call without --proto =https --tlsv1.2", "0", OK3 + ["curl -q -fsS -g -o d https://packages.wolfi.dev/os/x86_64/x.apk"], 1),
+    ("only two calls", "0", OK3[:2], 1)],
+ "every package and index download is globoff": [
+    ("every tzdata and APKINDEX call has -g, --max-filesize and --max-time", "0", OK3, 0),
+    ("Codex R2: one matching call without --max-time", "0", ["curl -g --max-filesize 100 --max-time 10 https://example.invalid/tzdata", "curl -g --max-filesize 100 https://example.invalid/APKINDEX"], 1),
+    ("one matching call without -g", "0", OK3[1:2] + ["curl -q --max-filesize 1 --max-time 1 https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"], 1),
+    ("one matching call without --max-filesize", "0", OK3[1:2] + ["curl -q -g --max-time 1 https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"], 1),
+    ("no tzdata or APKINDEX call at all", "0", OK3[:1], 1)],
+ "a url with a character outside the plain set is refused": [
+    ("exit 2 and no curl call for tzdata", "2", OK3[:2], 0),
+    ("exit 2 but a curl call for tzdata", "2", OK3, 1),
+    ("exit 0 (not refused)", "0", OK3[:2], 1)],
+ "refresh compares the live Wolfi key": [
+    ("exit 0 and a curl call for the live signing key", "0", OK3, 0),
+    ("exit 0 but no call for the signing key", "0", OK3[1:], 1),
+    ("the key fetched but exit 3", "3", OK3, 1)],
+}
+out = {"bash5": b5, "lines": [], "unmatched": []}
+for line in [l for l in open(real).read().split("\n") if l.startswith("t ")]:
+    keys = [k for k in CASES if k in line]
+    if len(keys) != 1:
+        out["unmatched"].append(line[:80]); continue
+    for what, rc, log, want in CASES[keys[0]]:
+        d = tempfile.mkdtemp(dir=w, prefix="hfsem.")
+        open(os.path.join(d, "rc"), "w").write(rc + "\n"); open(os.path.join(d, "calls"), "w").write("\n".join(log) + "\n")
+        r = subprocess.run([b5, "-c", 't() { shift 2; "$@"; }\n' + line], cwd=d, env={"PATH": os.environ["PATH"], "work": d, "CALLS": os.path.join(d, "calls"), "LC_ALL": "C"},
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+        out["lines"].append({"line": keys[0], "what": what, "want": want, "got": r.returncode})
+json.dump(out, open(os.path.join(w, "hf-sem.json"), "w"), indent=1)
+PY
+python3 "$work/hf_sem.py" "$work/hf-real.txt" "$work" </dev/null
+CASE="AC16 harness semantics: every harness line of the committed rows has a case set (no line asserts something untested)"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['bash5'] and not r['unmatched'] and len({x['line'] for x in r['lines']}) == 4, r['unmatched']" "$work/hf-sem.json"
+while IFS=$'\t' read -r ln what; do
+  CASE="AC16 harness semantics: the committed line '$ln' on a log where $what"
+  check python3 -c "import json,sys; x=[x for x in json.load(open(sys.argv[1]))['lines'] if x['line'] == sys.argv[2] and x['what'] == sys.argv[3]]; assert len(x) == 1 and x[0]['got'] == x[0]['want'], x" "$work/hf-sem.json" "$ln" "$what"
+done < <(python3 - "$work/hf_sem.py" <<'PY'
+import sys
+src = open(sys.argv[1]).read(); ns = {}
+exec(src[src.index("OK3 = "):src.index("out = {")], ns)
+for k, cs in ns["CASES"].items():
+    for c in cs:
+        print(k + "\t" + c[0])
+PY
+)
 # --- RUNTIME proof (Sonnet R1): every corpus line is EXECUTED under every bash on PATH (one per version: bash 5, whose test -v / -R / arithmetic operands
 # evaluate $(...) even in single quotes, and, where present, an older bash such as 3.2), with a stub directory first on PATH whose curl, wget, touch, cmd and
 # ls only write a marker file; the inner bash is the same shell. Then: every line that wrote the marker was refused by the parser, the planted reproductions
@@ -1677,27 +1743,30 @@ case("more ARGs than max_args", 't "r" "x" bash -c \'grep -q . "$1"\' _' + ' "$C
 for l in open(sys.argv[3]).read().split("\n"):
     if l:
         what, line = l.split("\t", 1); case("the refused corpus: " + what, line)
-out = {"classes": {}, "total": len(L), "accepted": 0}
+out = {"classes": {}, "total": len(L), "accepted": 0, "wrong_reason": 0}   # accepted: an expected refusal was ACCEPTED; wrong_reason: refused, but not for the expected reason
 for cls, line, reason in L:
+    d = out["classes"].setdefault(cls, {"n": 0, "accepted": [], "wrong_reason": []}); d["n"] += 1
     try:
-        J.judge(line); ok = False; why = "accepted"
+        J.judge(line)
     except J.Refused as e:
-        ok = reason is None or reason in str(e); why = str(e)
-    d = out["classes"].setdefault(cls, {"n": 0, "bad": []}); d["n"] += 1
-    if not ok:
-        d["bad"].append(repr(line)[:160]); out["accepted"] += 1
+        if reason is not None and reason not in str(e):
+            d["wrong_reason"].append(repr(line)[:160]); out["wrong_reason"] += 1
+        continue
+    d["accepted"].append(repr(line)[:160]); out["accepted"] += 1
 json.dump(out, open(sys.argv[4], "w"), indent=1)
 PY
 python3 "$work/hf_enum.py" "$work/harness_form.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$work/hf-enum.json" </dev/null
-python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('harness enumeration:', r['total'], 'lines in', len(r['classes']), 'classes,', r['accepted'], 'accepted')" "$work/hf-enum.json"
+python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('harness enumeration:', r['total'], 'lines in', len(r['classes']), 'classes,', r['accepted'], 'unexpectedly accepted,', r['wrong_reason'], 'refused for another reason')" "$work/hf-enum.json"
 while IFS= read -r cls; do
   CASE="AC16 harness enumeration: refused in every case ($cls)"
-  check python3 -c "import json,sys; d=json.load(open(sys.argv[1]))['classes'][sys.argv[2]]; assert d['n'] > 0 and not d['bad'], d['bad'][:5]" "$work/hf-enum.json" "$cls"
+  check python3 -c "import json,sys; d=json.load(open(sys.argv[1]))['classes'][sys.argv[2]]; assert d['n'] > 0 and not d['accepted'] and not d['wrong_reason'], (d['accepted'][:5], d['wrong_reason'][:5])" "$work/hf-enum.json" "$cls"
 done < <(python3 -c "import json,sys; [print(k) for k in json.load(open(sys.argv[1]))['classes'] if not k.startswith('the refused corpus: ')]" "$work/hf-enum.json")
-CASE="AC16 harness enumeration: at least 3000 lines in at least 30 classes, none accepted"
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['total'] >= 3000 and len([k for k in r['classes'] if not k.startswith('the refused')]) >= 30 and r['accepted'] == 0, (r['total'], r['accepted'])" "$work/hf-enum.json"
+CASE="AC16 harness enumeration: at least 3000 lines in at least 30 classes, none accepted and none refused for another reason"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['total'] >= 3000 and len([k for k in r['classes'] if not k.startswith('the refused')]) >= 30 and r['accepted'] == 0 and r['wrong_reason'] == 0, (r['total'], r['accepted'], r['wrong_reason'])" "$work/hf-enum.json"
 # --- MUTATION run (like pip-pin's): a temp copy of harness_form.py with HARNESS_WHITELIST widened by ONE token; the enumeration (positions and skips from
-# the real whitelist) and the refused corpus must then find at least one accepted line. A surviving mutant means the suite does not pin the whitelist.
+# the real whitelist) and the refused corpus must then report at least one line the real whitelist refuses for the expected reason that the mutant either
+# ACCEPTS (an unexpected acceptance) or refuses for ANOTHER reason (the newline and CR line_chars mutants: the shape still refuses those lines, so they
+# change the reason, not the verdict). The two counts are reported apart. A mutant with neither means the suite does not pin the whitelist.
 cat >"$work/hf-mut.tsv" <<'EOF'
 commands + curl	HARNESS_WHITELIST["commands"].append("curl")
 commands + sh	HARNESS_WHITELIST["commands"].append("sh")
@@ -1740,10 +1809,17 @@ import sys
 s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"; assert s.count(m) == 1
 open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
 PY
-  python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null
-  CASE="AC16 harness mutation: widening HARNESS_WHITELIST by one token ($what) is caught (the enumeration finds an accepted line)"
-  check python3 -c "import json,sys; assert json.load(open(sys.argv[1]))['accepted'] > 0" "$hfm/e.json"
+  python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null; cp "$hfm/e.json" "$hfm/e-$what.json"
+  CASE="AC16 harness mutation: widening HARNESS_WHITELIST by one token ($what) is caught (an unexpected acceptance, or a refusal for another reason)"
+  check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] > 0 or r['wrong_reason'] > 0, r" "$hfm/e.json"
+  python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('harness mutation', sys.argv[2] + ':', r['accepted'], 'unexpectedly accepted,', r['wrong_reason'], 'refused for another reason')" "$hfm/e.json" "$what"
 done <"$work/hf-mut.tsv"
+CASE="AC16 harness mutation: the enumeration reports unexpected acceptances and refusals for a different reason separately (fields accepted and wrong_reason)"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert 'wrong_reason' in r and 'accepted' in r and all('accepted' in d and 'wrong_reason' in d for d in r['classes'].values())" "$work/hf-enum.json"
+for m in newline CR; do
+  CASE="AC16 harness mutation: line_chars + $m is caught as refusals for a different reason, with 0 unexpected acceptances (the shape still refuses the line)"
+  check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] > 0, (r['accepted'], r.get('wrong_reason'))" "$hfm/e-line_chars + $m.json"
+done
 CASE="AC16 harness mutation: the unmutated copy (a no-op patch) is NOT flagged (the mutation run detects widening, not noise)"
 python3 - "$work/harness_form.py" "$hfm/m.py" "pass" <<'PY'
 import sys
@@ -1751,7 +1827,7 @@ s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"
 open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
 PY
 python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null
-check python3 -c "import json,sys; assert json.load(open(sys.argv[1]))['accepted'] == 0" "$hfm/e.json"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] == 0, r" "$hfm/e.json"
 CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts"
 check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" <<'PY'
 import hashlib, json, re, shlex, subprocess, sys
@@ -1772,10 +1848,11 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
     # harness assertion lines (the second allowed form): t, a quoted rule and title, one single-quoted bash -c body in the fixed vocabulary, _ and path arguments
-    "d06b3645a61e8513": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -vq -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
-    "d49076bd54b51a9d": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -vq -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
-    "0d1a60b407af424e": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -q -- \"--max-time\"' _ \"$CALLS\"",
-    "eff84a7dd0088415": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -q -- \"--max-time\"' _ \"$CALLS\"",
+    "d06b3645a61e8513": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -v -q -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
+    "d49076bd54b51a9d": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -v -q -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
+    "0d1a60b407af424e": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -- \"--max-time\" | grep -q . && exit 1; test \"$(grep -c -E \"^curl .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$CALLS\"",
+    "eff84a7dd0088415": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -- \"--max-time\" | grep -q . && exit 1; test \"$(grep -c -E \"^curl .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$CALLS\"",
+    "477739e1982533ea": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -- \"--max-time\" | grep -q . && exit 1; test \"$(grep -c -E \"^curl .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$CALLS\"",
     "f9eaea7a39f58987": "t \"rule 32\" \"refresh: a url with a character outside the plain set is refused (exit 2), never fetched\" bash -c 'test \"$(cat \"$1\")\" = 2 && ! grep -E \"^curl .*tzdata\" \"$2\"' _ \"$work/rc\" \"$CALLS\"",
     "2c19bb4de480a2f0": "t \"rule 32\" \"refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)\" bash -c 'test \"$(cat \"$1\")\" = 0 && grep -Eq \"^curl .*https://packages\\.wolfi\\.dev/os/.*wolfi-signing\\.rsa\\.pub\" \"$2\"' _ \"$work/rc\" \"$CALLS\"",
 }
