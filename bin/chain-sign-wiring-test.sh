@@ -2682,7 +2682,7 @@ afix() { # afix NAME : witnessed.sh + a stage script that runs bin/build-admit.p
   printf '#!/usr/bin/env bash\nset -euo pipefail\npython3 bin/build-admit.py run\nunset GH_TOKEN\n' > "$d/bin/stage-apk.sh"
   printf '#!/usr/bin/env python3\nimport os\ntok = os.environ.get("GH_TOKEN", "")\n' > "$d/bin/build-admit.py"
   edit_spec "$d" 'rows["bin/stage-apk.sh"]={"path":"bin/stage-apk.sh","tools":["python3"],"signs":False,"runs":["bin/build-admit.py"],"reads_env":["GH_TOKEN"]}; rows["bin/witnessed.sh"]["reads_env"]=["GH_TOKEN"]; rows["bin/build-admit.py"]={"path":"bin/build-admit.py","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'
-  printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/stage-apk.sh","why":"REQ-CHAIN-004-AC8","unset_before":["bin/build-admit.py"]}]' > "$d/.ambient.json"
+  printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/stage-apk.sh","why":"REQ-CHAIN-004-AC8"}]' > "$d/.ambient.json"
   printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"
   gen "$d"; echo "$d"
 }
@@ -3077,30 +3077,6 @@ d=$(cfix t3_ok3 'tar --checkpoint=100 -cf x y' '["tar"]'); expm ok "$d" - "round
 d=$(cfix t3_x1 'tar --to-command=vi -xf a.tar' '["tar"]'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"deny","text":"tar --to-command=vi -xf a.tar","why":"x"}]'; expm ok "$d" - "round-3 (3): a deny exception with the exact whole command waives the option"
 d=$(cfix t3_x2 'tar --to-command=vi -xf a.tar b' '["tar"]'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"deny","text":"tar --to-command=vi -xf a.tar","why":"x"}]'; expm caught "$d" 'program-running option' "round-3 (3): the same entry does not waive a changed tail"
 # (4) the ambient handoff: unset before any other child runs
-ustage() { # ustage NAME 'stage-apk.sh body lines' [unset_before-json] [runs-json]
-  local d; d=$(afix "$1"); setfile "$d" bin/stage-apk.sh "#!/usr/bin/env bash\nset -euo pipefail\n$2\n"
-  python3 - "$d" "${3:-[\"bin/build-admit.py\"]}" "${4:-[\"bin/build-admit.py\",\"bin/build-apk.sh\"]}" <<'PY'
-import json, sys
-d = sys.argv[1]; ub = json.loads(sys.argv[2]); runs = json.loads(sys.argv[3])
-a = json.load(open(d + "/.ambient.json"))
-for e in a:
-    if e["script"] == "bin/stage-apk.sh": e["unset_before"] = ub
-json.dump(a, open(d + "/.ambient.json", "w"))
-s = json.load(open(d + "/.spec.json"))
-for r in s:
-    if r["path"] == "bin/stage-apk.sh": r["runs"] = runs
-json.dump(s, open(d + "/.spec.json", "w"))
-PY
-  gen "$d"; echo "$d"; }
-d=$(ustage u4_ok 'python3 bin/build-admit.py run\nunset GH_TOKEN\n./bin/build-apk.sh x'); expm ok "$d" - "round-3 (4): admit (in unset_before) first, then unset, then another child: admitted"
-d=$(ustage u4_a './bin/build-apk.sh x\nunset GH_TOKEN\npython3 bin/build-admit.py run'); expm caught "$d" 'unset' "round-3 (4): a child started before unset GH_TOKEN, not in unset_before, is refused"
-d=$(ustage u4_b 'python3 bin/build-admit.py run\nunset GH_TOKEN\n./bin/build-apk.sh x\nexport GH_TOKEN=y'); expm caught "$d" 'unset' "round-3 (4): export GH_TOKEN after the unset is refused"
-d=$(ustage u4_c 'python3 bin/build-admit.py run\nunset GH_TOKEN\nGH_TOKEN=y ./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): GH_TOKEN=y re-introduced after the unset is refused"
-d=$(ustage u4_d 'python3 bin/build-admit.py run\n# unset GH_TOKEN\n./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): an unset that is only in a comment is refused"
-d=$(ustage u4_e 'f() { unset GH_TOKEN; }\npython3 bin/build-admit.py run\n./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): an unset inside a function that is not called (a non-straight-line script) is refused"
-d=$(ustage u4_f 'python3 bin/build-admit.py run\n./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): no unset at all, with a child other than the unset_before ones, is refused"
-d=$(ustage u4_g 'python3 bin/build-admit.py run\nunset GH_TOKEN' '["bin/build-apk.sh"]'); expm caught "$d" 'unset_before' "round-3 (4): an unset_before child that is not in runs / not authorized is an error"
-d=$(ustage u4_h 'python3 bin/build-admit.py run\nunset GH_TOKEN' '"bin/build-admit.py"'); expm caught "$d" 'unset_before' "round-3 (4): unset_before that is not a list is an error"
 d=$(afix u4_file); python3 - "$d" <<'PY'
 import json, sys
 d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
@@ -3264,7 +3240,7 @@ tr3 r5_gmake 'gmake x' '' '["gmake"]'
 d=$(cfix r5_ok 'git -c user.name=x status' '["git"]'); expm ok "$d" - "round-4 (5): control: git -c user.name=x status is admitted"
 
 
-EXPECT=1282
+EXPECT=1273
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

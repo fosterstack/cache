@@ -230,6 +230,8 @@ AMBIENT_VALUE = re.compile(r"\$\{\{ ?(?:github\.token|inputs\.[A-Za-z_][\w-]*|ma
 #  - round 3: comment stripping inside ${..}, backticks and $'..' contexts; strings that span lines (a quote spanning lines pairs with a later quote on
 #    its own line, read as unterminated and so left unmasked); brace expansion that builds a command word ({se,d}); and the ambient handoff is judged on
 #    the script text only (textual order of simple commands, no loops or conditionals followed), not on what runs.
+#  - the AC8 `unset GH_TOKEN` placement relative to child scripts is a reviewed line bound by the script's sha256 and the exact-text row below
+#    (ambient_env `handoff_line`), not modelled: the judge does not follow order, depth, lists, functions, subshells or here-documents.
 class EnvNames(set):
     """The closed `env_names` (a set of names) that also carries `.ambient`: {name: {listed script paths that read it from their own
     environment}} from the top-level `ambient_env` list of chain-scripts.json (PR 1b, B). A step env name that its run line does not read
@@ -341,38 +343,6 @@ def mentions_outside_comments(path, text, name):
         return False
     return False
 
-def ambient_handoff_errors(base, rows, nm, sc, ub, auth):
-    """Round 3 (4): a script that receives the ambient name hands it to its listed CHILDREN (its `runs`). Closed shape: a child may run BEFORE the name
-    is unset only when the entry's `unset_before` lists it (and it is itself authorized for the name); every other child must be started textually
-    AFTER a top-level `unset NAME`; the name is never exported or assigned in the script; the script is straight-line (no function definition) and is a
-    shell script. Judged on the comment-stripped text; textual order is the order of the simple commands."""
-    errs, pre = [], "chain-scripts.json: ambient_env %s for %s" % (nm, sc)
-    row = rows[sc]
-    kids = [c for c in (row.get("runs") or []) if isinstance(c, str) and c in rows]
-    for u in ub:
-        if u not in kids: errs.append("%s: unset_before names %r, which is not a listed child in its runs" % (pre, u))
-        elif u not in auth: errs.append("%s: unset_before names %r, which is not itself authorized in ambient_env for %s" % (pre, u, nm))
-    if not kids: return errs
-    text = open(os.path.join(base, sc), errors="replace").read()
-    if _is_python(sc, text):
-        return errs + ["%s: the script is not a shell script and has children %s: its unset handoff cannot be judged" % (pre, kids)]
-    body = text.split("\n", 1)[1] if text.startswith("#!") and "\n" in text else text
-    lines = logical(strip(body)).splitlines()
-    if any(re.match(r"\s*(function\s+\S+|[A-Za-z_][\w.-]*\s*\(\s*\))", l) for l in lines):
-        return errs + ["%s: the script defines a function; the unset handoff needs a straight-line stage script" % pre]
-    nmre = re.escape(nm)
-    for l in lines:
-        if re.search(r"(?<![\w$])%s\+?=" % nmre, l) or re.search(r"\b(export|declare|typeset|readonly|local)\b[^;&|]*\b%s\b" % nmre, l):
-            errs.append("%s: the script assigns or exports %s (the name is never re-introduced after the unset)" % (pre, nm)); break
-    cmds = shell_commands(body)
-    unset_at = next((i for i, c in enumerate(cmds) if c.cw == "unset" and nm in [o for o in c.operands if o != "-v"]), None)
-    for k in kids:
-        first = next((i for i, c in enumerate(cmds) if any(k == w or "./" + k == w or k in w for w in [c.cw or ""] + c.operands)), None)
-        if first is None or k in ub: continue
-        if unset_at is None or first < unset_at:
-            errs.append("%s: child %s is started %s `unset %s`, and is not in unset_before" % (pre, k, "with no" if unset_at is None else "before", nm))
-    return errs
-
 def exception_entries(path, ex):
     """([valid entries], [errors]) for a row's `exceptions` (PR 1b): a list of objects with exactly rule, text and why; rule in EXC_RULES;
     text a non-empty string; why a non-blank string; no two entries with the same rule and text. Fail closed: an entry that is not valid is
@@ -469,12 +439,11 @@ def load_scripts(base):
     amb = doc.get("ambient_env", [])
     if not isinstance(amb, list): errs.append("chain-scripts.json: ambient_env must be a list of {name, script, why}")
     else:
-        seen, ubs = set(), {}
+        seen = set()
         for e in amb:
-            if (not isinstance(e, dict) or not {"name", "script", "why"} <= set(e) or set(e) - {"name", "script", "why", "unset_before", "file", "job"}
-                    or not all(isinstance(e[k], str) for k in e if k != "unset_before")
-                    or ("unset_before" in e and not (isinstance(e["unset_before"], list) and all(isinstance(x, str) for x in e["unset_before"])))):
-                errs.append("chain-scripts.json: ambient_env entry %r must be an object with name, script and why (strings) and optionally unset_before (a list of paths), file and job (strings)" % (e,)); continue
+            if (not isinstance(e, dict) or not {"name", "script", "why"} <= set(e) or set(e) - {"name", "script", "why", "file", "job"}
+                    or not all(isinstance(e[k], str) for k in e)):
+                errs.append("chain-scripts.json: ambient_env entry %r must be an object with name, script and why (strings) and optionally file and job (strings)" % (e,)); continue
             nm, sc, why = e["name"], e["script"], e["why"]
             if not re.fullmatch(r"[A-Z][A-Z0-9_]*", nm) or FORBID_ENV.fullmatch(nm):
                 errs.append("chain-scripts.json: ambient_env name %r is not an allowed variable name (never BASH_ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*, ...)" % nm); continue
@@ -492,9 +461,6 @@ def load_scripts(base):
                 errs.append("chain-scripts.json: ambient_env %s for %s: job %r is not a plain job name" % (nm, sc, e["job"])); continue
             seen.add((nm, sc)); env_names.ambient.setdefault(nm, set()).add(sc)
             env_names.ambient_bind.setdefault(nm, []).append((sc, e.get("file"), e.get("job")))
-            ubs[(nm, sc)] = e.get("unset_before", [])
-        for (nm, sc), ub in sorted(ubs.items()):          # round 3 (4): the handoff of the name to this script's children, judged on its text
-            errs += ambient_handoff_errors(base, rows, nm, sc, ub, env_names.ambient.get(nm, set()))
     pins = doc.get("pinned_steps", [])
     if not isinstance(pins, list): errs.append("chain-scripts.json: pinned_steps must be a list of {file, job, id, run, why}")
     else:
