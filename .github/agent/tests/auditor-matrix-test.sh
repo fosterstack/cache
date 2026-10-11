@@ -3265,7 +3265,7 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
-begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both Codex seats (two different models) are clear; no record, a stale record (content changed after review), an open blocker or an old-schema record the PR adds fails; a change outside .github/agent/ needs none"
+begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both review seats (two different models) are clear; no record, a stale record (content changed after review), an open blocker, an old-schema record the PR adds (also in a record-only PR) or a record with a repeated key fails; a change outside .github/agent/ needs none"
 RG="$repo/$BIN/auditor-review-gate.py"; rg="$WORK/req18-ac3"; rm -rf "$rg"; mkdir -p "$rg/.github/agent/bin" "$rg/src"
 gt(){ git -C "$rg" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
 gate(){ ( cd "$rg" && "$PY" "$RG" --base "$1" >/dev/null 2>&1 ); echo $?; }
@@ -3293,8 +3293,19 @@ echo c > "$rg/.github/agent/bin/x.py"; gt commit -qam fixup; stale="$(gate "$bas
 mkrec 0; base2="$(git -C "$rg" rev-parse HEAD)"; gt mv .github/agent/bin/x.py src/x.py; gt commit -qm moveout; moved="$(gate "$base2")"
 mkrec 0; base3="$(git -C "$rg" rev-parse HEAD)"; mkdir -p "$rg/.github/agent/reviews"; echo "print(1)" > "$rg/.github/agent/reviews/not-a-record.py"; gt add -A; gt commit -qm smuggle; smuggled="$(gate "$base3")"
 base4="$(git -C "$rg" rev-parse HEAD)"; echo d > "$rg/.github/agent/bin/x.py"; gt commit -qam v1change; mkrec -1; oldschema="$(gate "$base4")"
-{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1" && eq "$oldschema" "1"; } \
-  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1 v1-added-by-pr=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled v1=$oldschema"
+# a record-only PR seeding an old-schema record for a tree a later PR would produce (REQ-AUD-018 AC7)
+mkrec 0; base5="$(git -C "$rg" rev-parse HEAD)"; printf '{"schema":"auditor-review-record/v1"}' > "$rg/.github/agent/reviews/$(printf 'e%.0s' $(seq 64)).json"; gt add -A; gt commit -qm seed; seeded="$(gate "$base5")"
+# a repeated key hiding an open blocker (strict JSON: REQ-AUD-018 AC5)
+gt reset -q --hard "$base5"; echo e > "$rg/.github/agent/bin/x.py"; gt commit -qam dupchange; mkrec 0
+( cd "$rg" && "$PY" - "$("$PY" "$RG" --print-tree)" <<'RR'
+import sys
+f = ".github/agent/reviews/%s.json" % sys.argv[1]
+s = open(f).read()
+open(f, "w").write(s.replace('"blockers_open": 0', '"blockers_open": 1, "blockers_open": 0', 1))
+RR
+); gt add -A; gt commit -qm dup; dupkey="$(gate "$base5")"
+{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1" && eq "$oldschema" "1" && eq "$seeded" "1" && eq "$dupkey" "1"; } \
+  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1 v1-added-by-pr=1 v1-seeded-by-record-only-pr=1 repeated-key=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled v1=$oldschema seeded=$seeded dupkey=$dupkey"
 
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"

@@ -1,9 +1,10 @@
 # proves: REQ-AUD-018-AC3, REQ-AUD-018-AC4, REQ-AUD-018-AC5, REQ-AUD-018-AC6, REQ-AUD-018-AC7, REQ-AUD-018-AC8
 """auditor-review-gate.py (REQ-AUD-18 AC3, option C): every reason a review record fails to clear the gate, and the
-CLI's argument and no-change paths, against a real temporary git repository. A record clears only with two Codex
-seats on two different models (AC5, AC6); no substitute is accepted (AC4); a record merged before the dual-Codex gate
-counts only as the same file already on the trusted revision (AC7); the workflow runs the gate in isolated mode from
-the default branch's copy (AC8). Each test class names the AC it proves."""
+CLI's argument and no-change paths, against a real temporary git repository. A record clears only with its two
+review seats on two different listed models (AC5, AC6); no substitute is accepted (AC4); a record merged before the
+schema v2 gate counts only as the same file already at the merge base and on the trusted revision, unchanged by the pull
+request (AC7); the workflow runs the gate in isolated mode from the default branch's copy (AC8). Each test class names
+the AC it proves."""
 import ast, contextlib, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -20,6 +21,8 @@ TREE = "ab" * 32
 EVA = "cd" * 32
 EVB = "ef" * 32
 FIELDS = ("reviewer", "vendor", "seat", "model", "effort", "blockers_open", "evidence_sha256")
+NO_SUB = "no substitute is accepted"
+PERMITTED_ONLY = "only the permitted fields are read, and no substitute is accepted"
 
 
 def seat(letter, model, effort="xhigh", **over):
@@ -30,7 +33,7 @@ def seat(letter, model, effort="xhigh", **over):
 
 
 def good(tree=TREE):
-    """A complete schema v2 record: seat A gpt-6.1-sol, seat B gpt-6-astra, both xhigh, both clear."""
+    """A complete schema v2 record: seats A and B on two different listed models, both clear."""
     return {"schema": V2, "tree": tree, "change": "test",
             "rounds": [{"round": 1, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol"),
                                                   "codex_b": seat("B", "gpt-6-astra")}}],
@@ -38,7 +41,7 @@ def good(tree=TREE):
 
 
 def legacy(tree=TREE):
-    """A schema v1 record of the shape merged before the dual-Codex gate."""
+    """A schema v1 record of the shape merged before the schema v2 gate."""
     ev = "12" * 32
     return {"schema": V1, "tree": tree,
             "rounds": [{"round": 1, "reviewers": {
@@ -98,7 +101,7 @@ class ClearingRecord(unittest.TestCase):
             self.assertEqual(problems(r), ["no review rounds recorded"], rounds)
 
     def test_final_round_without_reviewers(self):
-        for fin in ("round", {"round": 2}, {"reviewers": ["codex_a", "codex_b"]}, None):
+        for fin in ("round", {"round": 2}, {"round": 2, "reviewers": ["codex_a", "codex_b"]}, None):
             r = good(); r["rounds"].append(fin)
             self.assertEqual(problems(r), ["final round names no reviewers"], fin)
 
@@ -108,7 +111,8 @@ class ClearingRecord(unittest.TestCase):
                                                        "codex_b": seat("B", "gpt-6-astra")}})
         self.assertTrue(named(problems(r), "codex_a blockers_open is 1"))
         r = good()        # a dirty first round and a clean final round clears
-        r["rounds"].insert(0, {"round": 0, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol", blockers_open=3)}})
+        r["rounds"][0]["round"] = 2
+        r["rounds"].insert(0, {"round": 1, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol", blockers_open=3)}})
         self.assertEqual(problems(r), [])
 
     def test_every_missing_seat_field_fails_naming_it(self):
@@ -121,7 +125,7 @@ class ClearingRecord(unittest.TestCase):
     def test_an_extra_seat_field_fails_naming_it(self):
         for extra in ("tier", "note", "evidence", "Model"):
             r = good(); final(r)["codex_b"][extra] = "x"
-            self.assertIn("codex_b has an extra field %r" % extra, problems(r), extra)
+            self.assertIn("codex_b has an extra field %r: %s" % (extra, PERMITTED_ONLY), problems(r), extra)
 
     def test_a_missing_or_malformed_stop_fails_naming_it(self):
         for stop in ("clear", None, [], ...):
@@ -237,7 +241,7 @@ class Refusals(unittest.TestCase):
                 self.assertIn("stop verdict for %s is %r, want 'clear'" % (name, v), problems(r), (name, v))
         for k in ("sonnet", "codex", "opus", "codex_c"):
             r = good(); r["stop"][k] = "clear"
-            self.assertEqual(problems(r), ["stop holds an extra key %r" % k], k)
+            self.assertEqual(problems(r), ["stop holds an extra key %r: %s" % (k, PERMITTED_ONLY)], k)
 
     def test_a_seat_entry_that_is_not_an_object_fails_naming_it(self):
         for bad in (None, [], "codex", 0, True):
@@ -285,7 +289,8 @@ class NoSubstitute(unittest.TestCase):
             elif where == "stop":
                 r["stop"]["substitute"] = "0350"
             elif where == "earlier":
-                r["rounds"].insert(0, {"round": 0, "reviewers": {"opus": dict(self.OPUS)}})
+                r["rounds"][0]["round"] = 2
+                r["rounds"].insert(0, {"round": 1, "reviewers": {"opus": dict(self.OPUS)}})
             else:
                 r["residuals"] = [{"Substitute_For": "codex"}]
             self.assertTrue(named(problems(r), "no substitute is accepted"), where)
@@ -331,6 +336,316 @@ class NoSubstitute(unittest.TestCase):
         self.assertEqual(bad, [])
 
 
+# ---- REQ-AUD-018-AC5 and AC4: the permitted fields, at every level ----------------------------------------------
+class PermittedFields(unittest.TestCase):
+    """REQ-AUD-018-AC5 ("any missing, extra, mistyped or malformed field fails") and AC4 ("a record that names a
+    substitutes allow-list entry"): the record, every round and every seat entry hold only their permitted fields;
+    anything else is refused, naming it and saying that no substitute is accepted."""
+
+    def test_the_permitted_field_sets_are_exactly_these(self):
+        self.assertEqual(sorted(G.RECORD_REQUIRED), ["rounds", "schema", "stop", "tree"])
+        self.assertEqual(sorted(G.RECORD_OPTIONAL), ["change", "residuals", "reviewed_commit"])
+        self.assertEqual(sorted(G.ROUND_REQUIRED), ["reviewers", "round"])
+        self.assertEqual(sorted(G.ROUND_OPTIONAL), ["label"])
+        self.assertEqual(tuple(G.FIELDS), FIELDS)
+
+    def test_a_complete_record_with_every_optional_field_clears(self):
+        r = good(); r["reviewed_commit"] = "1f" * 20; r["residuals"] = ["one", "two"]
+        r["rounds"][0]["label"] = "head 1f1f1f1: both seats clear"
+        self.assertEqual(problems(r), [])
+
+    def test_an_extra_top_level_field_fails_naming_it_and_saying_no_substitute(self):
+        # other ways a record could name an allow-list entry: none is a permitted field
+        for key in ("allowlist_entry", "allow_list", "allowlist", "allow-list", "exception", "exceptions", "waiver",
+                    "override", "entry", "entry_id", "ref", "references", "approved_by", "owner_decision",
+                    "evidence_location", "closed_commit", "completed_at", "x", "", "Schema"):
+            for v in ("0317", ["0350"], {"id": "0350"}, None, 1):
+                r = good(); r[key] = v
+                ps = problems(r)
+                self.assertIn("record has an extra field %r: %s" % (key, PERMITTED_ONLY), ps, (key, v, ps))
+
+    def test_an_extra_field_in_the_final_or_an_earlier_round_fails(self):
+        for key in ("allowlist_entry", "completed_at", "exception", "x"):
+            r = good(); r["rounds"][-1][key] = "0317"
+            self.assertIn("rounds[0] has an extra field %r: %s" % (key, PERMITTED_ONLY), problems(r), key)
+            r = good(); r["rounds"][0]["round"] = 2
+            r["rounds"].insert(0, {"round": 1, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol")}, key: "0317"})
+            self.assertIn("rounds[0] has an extra field %r: %s" % (key, PERMITTED_ONLY), problems(r), key)
+
+    def test_an_allow_list_reference_in_a_seat_or_the_stop_block_fails(self):
+        for key in ("allowlist_entry", "exception", "waiver"):
+            r = good(); final(r)["codex_a"][key] = "0317"
+            self.assertIn("codex_a has an extra field %r: %s" % (key, PERMITTED_ONLY), problems(r), key)
+            r = good(); r["stop"][key] = "0317"
+            self.assertIn("stop holds an extra key %r: %s" % (key, PERMITTED_ONLY), problems(r), key)
+
+    def test_a_string_value_that_names_a_substitute_fails(self):
+        for where in ("change", "label", "residuals"):
+            for text in (".github/agent/reviews/substitutes.json#0350", "SUBSTITUTE 0317", "a substitution"):
+                r = good()
+                if where == "change":
+                    r["change"] = text
+                elif where == "label":
+                    r["rounds"][0]["label"] = text
+                else:
+                    r["residuals"] = ["fine", text]
+                ps = problems(r)
+                self.assertTrue(named(ps, "names a substitute"), (where, text, ps))
+                self.assertTrue(named(ps, NO_SUB), (where, text, ps))
+
+    def test_the_optional_fields_are_typed(self):
+        for f, bad, msg in (("change", 5, "record change is not a string"),
+                            ("change", ["x"], "record change is not a string"),
+                            ("reviewed_commit", "1F" * 20, "record reviewed_commit is not 40 lowercase hex characters"),
+                            ("reviewed_commit", "1f" * 32, "record reviewed_commit is not 40 lowercase hex characters"),
+                            ("reviewed_commit", None, "record reviewed_commit is not 40 lowercase hex characters"),
+                            ("residuals", "none", "record residuals is not a list of strings"),
+                            ("residuals", [1], "record residuals is not a list of strings"),
+                            ("residuals", [["x"]], "record residuals is not a list of strings"),
+                            ("residuals", {"a": "b"}, "record residuals is not a list of strings")):
+            r = good(); r[f] = bad
+            self.assertIn(msg, problems(r), (f, bad))
+        for bad in (5, None, ["x"], {"x": 1}):
+            r = good(); r["rounds"][0]["label"] = bad
+            self.assertIn("rounds[0] label is not a string", problems(r), bad)
+
+    def test_every_round_needs_a_positive_increasing_round_number(self):
+        for bad in (..., None, 0, -1, True, "1", 1.0, [1]):
+            r = good()
+            if bad is ...:
+                del r["rounds"][0]["round"]
+                want = "rounds[0] has no round field"
+            else:
+                r["rounds"][0]["round"] = bad
+                want = "rounds[0] round is %r, want a positive integer" % (bad,)
+            self.assertIn(want, problems(r), bad)
+        for first, second in ((2, 2), (3, 2)):
+            r = good(); r["rounds"][0]["round"] = second
+            r["rounds"].insert(0, {"round": first, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol")}})
+            self.assertIn("rounds[1] round %d does not follow round %d" % (second, first), problems(r), (first, second))
+
+    def test_an_earlier_round_is_held_to_the_same_fields(self):
+        def with_earlier(rv):
+            r = good(); r["rounds"][0]["round"] = 2
+            r["rounds"].insert(0, {"round": 1, "reviewers": rv})
+            return problems(r)
+        self.assertEqual(with_earlier({"codex_b": seat("B", "gpt-6-astra", blockers_open=4)}), [])
+        for rv, want in (({}, "rounds[0] reviewers is not a non-empty object"),
+                         (None, "rounds[0] reviewers is not a non-empty object"),
+                         (["codex_a"], "rounds[0] reviewers is not a non-empty object"),
+                         ({"opus": {}}, "rounds[0] entry 'opus' is not a seat (only codex_a and codex_b take a seat): " + NO_SUB),
+                         ({"codex_a": {k: v for k, v in seat("A", "gpt-6.1-sol").items() if k != "model"}}, "rounds[0].codex_a has no model field"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", vendor="anthropic")}, "rounds[0].codex_a vendor is 'anthropic', want 'openai'"),
+                         ({"codex_a": seat("A", "some-model")}, "rounds[0].codex_a model 'some-model' is not on the gate's list of Codex models"),
+                         ({"codex_a": seat("B", "gpt-6.1-sol")}, "rounds[0].codex_a seat is 'B', want 'A'"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", evidence_sha256="x")}, "rounds[0].codex_a evidence_sha256 is not 64 lowercase hex characters"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open=-1)}, "rounds[0].codex_a blockers_open is -1, want a non-negative integer"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open=True)}, "rounds[0].codex_a blockers_open is True, want a non-negative integer"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", blockers_open="2")}, "rounds[0].codex_a blockers_open is '2', want a non-negative integer"),
+                         ({"codex_a": seat("A", "gpt-6.1-sol", note="x")}, "rounds[0].codex_a has an extra field 'note': " + PERMITTED_ONLY),
+                         ({"codex_a": "clear"}, "rounds[0].codex_a entry is not an object ('clear')")):
+            self.assertIn(want, with_earlier(rv), rv)
+        r = good(); r["rounds"].insert(0, "round one")
+        self.assertIn("rounds[0] is not an object", problems(r))
+
+    def test_a_tree_that_is_not_a_string_fails(self):
+        for bad in (None, 1, [TREE], {"tree": TREE}):
+            r = good(); r["tree"] = bad
+            self.assertIn("record binds tree %r, the change is %s" % (bad, TREE), problems(r), bad)
+
+    def test_a_deeply_nested_value_is_reported_not_raised(self):
+        deep = "x"
+        for _ in range(5000):
+            deep = [deep]
+        r = good(); r["residuals"] = deep
+        ps = problems(r)
+        self.assertIn("record residuals is not a list of strings", ps)
+
+
+# ---- REQ-AUD-018-AC4, AC5, AC6: the record is read as strict JSON ------------------------------------------------
+class StrictJson(unittest.TestCase):
+    """REQ-AUD-018-AC5 ("any ... malformed field fails ... naming it"), AC4 and AC6: a record is strict JSON. A repeated
+    key at any level (which an ordinary JSON reader resolves by keeping the last, so an earlier substitute, blocker or
+    stop verdict would vanish before judging), NaN or Infinity, a byte order mark, bytes that are not UTF-8, anything
+    after the value, nesting too deep to read and a record over the size bound are refused, saying which."""
+
+    def body(self, tree=TREE):
+        return json.dumps(good(tree), indent=1)
+
+    def load_fails(self, raw, want):
+        with self.assertRaises(ValueError) as cm:
+            G.load_record(raw)
+        self.assertIn(want, str(cm.exception), raw[:80])
+
+    def test_a_good_record_loads(self):
+        self.assertEqual(G.load_record(self.body().encode()), good())
+
+    def test_a_repeated_key_is_refused_at_every_level(self):
+        b = self.body()
+        for before, after, key in (
+                ('"stop": {', '"stop": {"codex_a": {"substitute_id": "0350"}, ', "codex_a"),
+                ('"blockers_open": 0', '"blockers_open": 1, "blockers_open": 0', "blockers_open"),
+                ('"schema": ', '"schema": "auditor-review-record/v1", "schema": ', "schema"),
+                ('"reviewers": {', '"reviewers": {"codex_b": {"reviewer": "opus"}, ', "codex_b"),
+                ('"round": 1', '"round": 1, "round": 1', "round")):
+            raw = b.replace(before, after, 1)
+            self.assertNotEqual(raw, b, before)
+            self.load_fails(raw.encode(), "the record repeats the key %r" % key)
+
+    def test_nan_and_infinity_are_refused(self):
+        for c in ("NaN", "Infinity", "-Infinity"):
+            raw = self.body().replace('"change": "test"', '"change": "test", "residuals": [%s]' % c, 1)
+            self.load_fails(raw.encode(), "the record holds the non-standard constant %s" % c)
+
+    def test_a_byte_order_mark_is_refused(self):
+        self.load_fails(b"\xef\xbb\xbf" + self.body().encode(), "the record starts with a byte order mark")
+
+    def test_bytes_that_are_not_utf_8_are_refused(self):
+        for bad in (self.body().replace('"test"', '"t\xe9st"').encode("latin-1"), b"\xff\xfe{}", b'{"a": "\xc0\xaf"}'):
+            self.load_fails(bad, "the record is not UTF-8")
+
+    def test_anything_after_the_value_is_refused(self):
+        for tail in (" x", "{}", "\n{}", " //", "\x00"):
+            self.load_fails((self.body() + tail).encode(), "the record is not valid JSON")
+
+    def test_nesting_too_deep_is_refused_not_raised(self):
+        raw = self.body().replace('"change": "test"', '"change": "test", "residuals": ' + "[" * 200000 + "]" * 200000, 1)
+        self.load_fails(raw.encode(), "the record nests too deeply to read")
+
+    def test_a_record_over_the_size_bound_is_refused(self):
+        raw = self.body().replace('"change": "test"', '"change": "%s"' % ("x" * G.MAX_RECORD_BYTES), 1)
+        self.load_fails(raw.encode(), "the record is larger than %d bytes" % G.MAX_RECORD_BYTES)
+
+    def test_not_json_at_all(self):
+        self.load_fails(b"{not json", "the record is not valid JSON")
+        self.load_fails(b"", "the record is not valid JSON")
+
+    def test_the_cli_refuses_a_repeated_key_that_hides_a_substitute_naming_it(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        path = c.record(None, raw=lambda t: self.body(t).replace(
+            '"stop": {', '"stop": {"codex_a": {"substitute_id": "0350"}, ', 1).encode())
+        rc, out, _ = c.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn(path, out)
+        self.assertIn("the record repeats the key 'codex_a'", out)
+
+    def test_the_cli_refuses_a_repeated_key_that_hides_a_blocker(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        c.record(None, raw=lambda t: self.body(t).replace('"blockers_open": 0', '"blockers_open": 1, "blockers_open": 0', 1))
+        rc, out, _ = c.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the record repeats the key 'blockers_open'", out)
+
+    def test_the_cli_refuses_nan_a_bom_and_deep_nesting(self):
+        for make, want in ((lambda t: self.body(t).replace('"change": "test"', '"change": "test", "residuals": [NaN]', 1),
+                            "non-standard constant NaN"),
+                           (lambda t: b"\xef\xbb\xbf" + self.body(t).encode(), "byte order mark"),
+                           (lambda t: self.body(t).replace('"change": "test"', '"change": "test", "residuals": '
+                                                           + "[" * 100000 + "]" * 100000, 1), "nests too deeply")):
+            c = CliRepo(); c.start(self)
+            c.change(".github/agent/bin/x.py", "b\n")
+            c.record(None, raw=make)
+            rc, out, _ = c.judge()
+            self.assertEqual(rc, 1, (want, out))
+            self.assertIn(want, out)
+            self.assertIn("no valid review record", out)
+
+
+# ---- REQ-AUD-018-AC7 and AC3: a pull request cannot seed an old-schema record ------------------------------------
+class LegacyProvenance(unittest.TestCase):
+    """REQ-AUD-018-AC7 ("any other v1 record, including a v1 record added or edited by the pull request, fails") and
+    AC3: an old-schema record counts only when it is already at the merge base, unchanged by the pull request, and the
+    same blob on the trusted revision. Every record a pull request adds or changes must be schema v2, even when the
+    pull request changes nothing else, so a record-only pull request cannot seed an old-schema record for a tree a
+    later pull request will produce (the two-pull-request sequence of the round-1 review)."""
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+
+    def future(self, content="evil\n"):
+        """The record path of the tree the auditor will have once x.py holds `content` (computed, then undone)."""
+        self.r.change(".github/agent/bin/x.py", content)
+        t = self.r.tree()
+        self.r.git("reset", "-q", "--hard", self.r.base)
+        return ".github/agent/reviews/%s.json" % t
+
+    def test_a_record_only_pull_request_cannot_seed_an_old_schema_record(self):
+        path = self.future()
+        for body in ('{"schema": "auditor-review-record/v1"}', json.dumps(legacy()), "{}", "[]", '{"schema": null}'):
+            self.r.git("reset", "-q", "--hard", self.r.base)
+            self.r.change(path, body)                            # pull request 1: a record and nothing else
+            rc, out, _ = self.r.judge()
+            self.assertEqual(rc, 1, (body, out))
+            self.assertIn(path, out)
+            self.assertIn("a schema v2 record is required", out)
+
+    def test_the_two_pull_request_sequence_fails_at_both_steps(self):
+        path = self.future()
+        self.r.change(path, '{"schema": "auditor-review-record/v1"}')        # pull request 1
+        pr1 = self.r.rev()
+        self.assertEqual(self.r.judge()[0], 1)
+        # pull request 2 changes the auditor to that tree; even judged against a trusted revision that holds the
+        # seeded file (as if pull request 1 had been merged without the gate), the record is not at its merge base,
+        # so it is added by pull request 2 and needs schema v2
+        self.r.git("checkout", "-q", "-b", "pr2", self.r.base)
+        self.r.change(".github/agent/bin/x.py", "evil\n")
+        self.r.git("checkout", "-q", pr1, "--", path); self.r.git("commit", "-qm", "carry the seeded record")
+        rc, out, _ = self.r.judge("--subs-rev", pr1)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a schema v2 record is required", out)
+
+    def test_an_old_schema_record_added_beside_an_unrelated_change_fails(self):
+        path = self.future()
+        self.r.write(path, json.dumps(legacy())); self.r.change("src/y", "t\n")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn(path, out)
+
+    def test_a_record_only_pull_request_editing_a_merged_old_record_fails(self):
+        self.r.change(".github/agent/bin/x.py", "b\n"); path = self.r.record(legacy)
+        self.r.base = self.r.rev()
+        self.r.change(path, json.dumps(legacy(), indent=3))
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a schema v2 record is required", out)
+
+    def test_a_record_only_pull_request_with_a_strict_v2_record_or_a_deletion_passes(self):
+        path = self.future()
+        self.r.change(path, json.dumps(good()))
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 0, out)
+        self.r.base = self.r.rev()
+        self.r.git("rm", "-q", path); self.r.git("commit", "-qm", "drop")
+        self.assertEqual(self.r.judge()[0], 0)
+
+    def test_a_record_only_pull_request_with_a_malformed_record_fails_saying_which(self):
+        path = self.future()
+        self.r.change(path, json.dumps(good()).replace('"schema"', '"schema": "x", "schema"', 1))
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("the record repeats the key 'schema'", out)
+
+    def test_a_record_path_that_is_not_a_regular_file_fails(self):
+        path = self.future()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.symlink("../../../src/y", path); self.r.git("add", "-A"); self.r.git("commit", "-qm", "link")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("not a regular file", out)
+
+    def test_the_head_record_as_a_link_is_no_valid_record(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        path = ".github/agent/reviews/%s.json" % self.r.tree()
+        self.r.write("src/rec.json", json.dumps(good(self.r.tree())))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        os.symlink("../../../src/rec.json", path); self.r.git("add", "-A"); self.r.git("commit", "-qm", "link")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("no valid review record", out)
+
+
 # ---- the CLI over a real temporary git repository (AC3 to AC7) ---------------------------------------------------
 class CliRepo:
     """A temporary repository: main holds .github/agent/bin/x.py and src/y; helpers commit changes and records."""
@@ -355,6 +670,8 @@ class CliRepo:
     def write(self, p, t, mode="w"):
         if os.path.dirname(p):
             os.makedirs(os.path.dirname(p), exist_ok=True)
+        if isinstance(t, bytes):
+            mode = "wb"
         with open(p, mode) as fh:
             fh.write(t)
 
@@ -365,9 +682,11 @@ class CliRepo:
         return run_main("--print-tree")[1].strip()
 
     def record(self, make, raw=None):
-        """Write make(tree) (or raw bytes) as the record of the current content and commit it; returns its path."""
+        """Write make(tree) (or raw text or bytes) as the record of the current content and commit it; returns its path."""
         t = self.tree()
         path = ".github/agent/reviews/%s.json" % t
+        if callable(raw):
+            raw = raw(t)
         self.write(path, raw if raw is not None else json.dumps(make(t), indent=2) + "\n")
         self.git("add", "-A"); self.git("commit", "-qm", "record")
         return path
@@ -527,7 +846,7 @@ class GuardFiles(unittest.TestCase):
 
 class SubstituteCli(unittest.TestCase):
     """REQ-AUD-018-AC4: on the CLI, no substitute counts: not with an allow-list on the trusted revision, not with any
-    option, and a missing Codex seat (an outage) leaves the change failing."""
+    option, and a missing seat (an outage) leaves the change failing."""
 
     SUBS = {"schema": "review-substitutes/v1", "substitutes": [
         {"id": "0350", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": "2099-01-01T00:00:00Z",
@@ -576,7 +895,7 @@ class SubstituteCli(unittest.TestCase):
         self.assertIn("no substitute is accepted", p.stdout)
 
 
-# ---- REQ-AUD-018-AC7: records merged before the dual-Codex gate --------------------------------------------------
+# ---- REQ-AUD-018-AC7: records merged before the schema v2 gate -----------------------------------------------------
 class LegacyRecord(unittest.TestCase):
     """REQ-AUD-018-AC7: an old-schema record counts only as the same blob already on the trusted revision."""
 
@@ -653,8 +972,9 @@ class LegacyRecord(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("a schema v2 record is required", out)
 
-    def test_the_trusted_revision_can_be_main_s_tip_rather_than_the_merge_base(self):
-        # the record merged on main AFTER the PR branched: the merge base lacks it, main's tip (--subs-rev) has it
+    def test_a_record_on_the_trusted_tip_but_added_by_the_pull_request_fails(self):
+        # the record merged on main AFTER the PR branched: the merge base lacks it, so the pull request ADDS it
+        # (relative to its base) even though main's tip (--subs-rev) has the same blob: an added v1 record never counts
         self.r.change(".github/agent/bin/x.py", "b\n")
         path = self.r.record(legacy)
         tip = self.r.rev()
@@ -664,7 +984,15 @@ class LegacyRecord(unittest.TestCase):
         self.r.git("add", "-A"); self.r.git("commit", "-qm", "the same record")
         self.assertEqual(self.r.judge()[0], 1)                   # the merge base lacks it
         rc, out, _ = self.r.judge("--subs-rev", tip)
-        self.assertEqual(rc, 0, out)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a schema v2 record is required", out)
+
+    def test_a_record_at_the_merge_base_but_not_on_the_trusted_revision_fails(self):
+        root = self.r.base
+        self.merged_legacy()
+        rc, out, _ = self.r.judge("--subs-rev", root)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("a schema v2 record is required", out)
 
     def test_a_v2_record_is_judged_by_the_v2_rules_even_when_it_is_on_the_trusted_revision(self):
         def blocked(t):
