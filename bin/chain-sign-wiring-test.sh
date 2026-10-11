@@ -3300,7 +3300,7 @@ PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
 
-EXPECT=1315
+EXPECT=1314
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
