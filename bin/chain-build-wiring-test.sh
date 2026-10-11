@@ -556,6 +556,7 @@ probe assemble         "AC9 digests.json written by hand instead of by the merge
 probe assemble         "AC9 the archives built after the merge (their digests would not be in digests.json)" 'L[:-2] + L[-1:] + L[-2:-1]'
 probe rebuild-apk      "005-AC1 Build's record not verified FIRST (stage-start after the build)" 'L[:2] + L[3:5] + L[2:3] + L[5:]'
 probe rebuild-apk      "005-AC1 a command between the policy and stage-start"       'L[:2] + ["python3 bin/build-admit.py run"] + L[2:]'
+probe rebuild-assemble "005-AC1 stage-start AFTER the Rebuild apk records are verified (Build's record must come first)" 'L[:2] + L[3:5] + L[2:3] + L[5:]'
 probe rebuild-assemble "005-AC2 no comparison"                                      'L[:-1]'
 probe rebuild-assemble "005-AC2 the comparison against Rebuild's own items" \
        'L[:-1] + [L[-1].replace("--expected build-in/items.json", "--expected items.json")]'
@@ -1153,9 +1154,9 @@ beh_rebuild_assemble() { # beh_rebuild_assemble TAGNAME SCRIPT MODE VERSIONTAG
   n4=$(line_of '^image ' "$d")
   n5=$(line_of 'verify items-merge' "$d")
   n6=$(line_of 'verify rebuild-compare' "$d")
-  if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] && [ "$n1" -lt "$n2" ] \
-     && [ "$n2" -lt "$n3" ] && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
-    ok "005-AC2 $t rebuild-assemble $v: records verified, stage-start, binds, images, merge, compare in that order"
+  if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] && [ "$n2" -lt "$n1" ] \
+     && [ "$n1" -lt "$n3" ] && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
+    ok "005-AC2 $t rebuild-assemble $v: stage-start, records verified, binds, images, merge, compare in that order"
   else
     bad "005-AC2 $t rebuild-assemble $v: rc=$rc order=$n1 $n2 $n3 $n4 $n5 $n6"
   fi
@@ -1649,7 +1650,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=559
+EXPECT=560
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

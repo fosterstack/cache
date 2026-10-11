@@ -140,7 +140,7 @@ def expected_lines(kind):
     if kind == "rebuild-apk":
         return [H, POLICY, START] + SDE + [apk_cmd("standard"), apk_cmd("fips"), items_apk()]
     if kind == "rebuild-assemble":
-        return ([H, POLICY] + verify_records("rebuild", "rec-rapk", "rapk-collection.json") + [START]
+        return ([H, POLICY, START] + verify_records("rebuild", "rec-rapk", "rapk-collection.json")
                 + bind_files("rapk", "rec-rapk", "rapk-collection.json", "rapk") + melange_repo("rapk") + SDE
                 + [image_cmd("production"), image_cmd("fips"), archives(), merge("rapk", "--items items.json"),
                    "python3 bin/chain-verify.py rebuild-compare --build-record witness-build/build-collection.json "
