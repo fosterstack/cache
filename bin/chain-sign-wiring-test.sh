@@ -180,12 +180,8 @@ LEGACY_PINNED = {
     ".github/workflows/stage-acceptance-egress.yml": "17491901c831abf89435b82cff5c794c4be3d581394bde316d21966b2b72a018",
     ".github/workflows/stage-acceptance-k8s.yml": "727999814b7c7e561611f2c214b0ab12c5c922a99f79ca44eaaa214480f0ac60",
     ".github/workflows/stage-acceptance-predicate.yml": "6fc4b5e514cb054c20f4cc56eeebf123fdda54ec9cc985ffef1922c72e8be4a8",
-    ".github/workflows/stage-admission.yml": "d376ec4ebaae22a932d02ae4512abc5563d69d29462436e75ebe7d454a2c91a2",
     ".github/workflows/stage-authorize.yml": "2a0b7c7b6260a372d1d4f31c9de5fb78039b899aa9c4351065f658293523cfdf",
-    ".github/workflows/stage-build.yml": "34c39aba901c2e7b6685bd1d9419fa420b21a578239e65364ea5ecaf3f7c5998",
-    ".github/workflows/stage-image.yml": "450a303b13683bb78b8dbdf9f9ce147919c85c45e54551d0b171518d0b8160e2",
     ".github/workflows/stage-promote.yml": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393",
-    ".github/workflows/stage-reproducibility.yml": "dc3b6e77e232c093c40a1991058c027cfa73a46569f9f68eb09a7079dfa1ad16",
     ".github/workflows/stage-verify.yml": "4bd41b1e9563c3d0c35f9b1ab2f2dff5085615d4d96e545ae1750704a22fdc78",
 }
 LEGACY_EXPECTED = set(LEGACY_PINNED)
@@ -2398,7 +2394,7 @@ probe mytool "./mytool" "the real bin/chain-hostile-step.sh running ./mytool (an
   "printf '#!/usr/bin/env bash\\necho x\\n' > mytool; chmod +x mytool; printf './mytool\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 probe bashlib "mylib" "the real bin/chain-hostile-step.sh running bash mylib, its sha256 updated (Sonnet 3)" \
   "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
-probe missing  "legacy file missing: .github/workflows/stage-image.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-image.yml"
+probe missing  "legacy file missing: .github/workflows/stage-promote.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-promote.yml"
 # the legacy list can only SHRINK (advisor ruling, Oct 10): the suite pins each path AND its sha256, so a legacy file edited together with
 # its list hash, or a list entry given a new hash, is refused; a row is removed only together with its pinned entry here
 probe relisted "legacy hash is not the one this suite pins" "a legacy file edited TOGETHER with its sha256 in the list" \
@@ -2535,7 +2531,7 @@ probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-t
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
 # the isolation really works: with a bin/fractions.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
-iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$iso/bin/"
+iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$iso/bin/"
 cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
 printf 'print("SHADOW-MARKER-%s")\nfrom fractions import *\n' "$$" > "$iso/bin/fractions.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
@@ -2551,7 +2547,7 @@ rm -f "$iso/bin/fractions.py"
 python3 - "$iso/bin" <<'PYC'
 import os, py_compile, sys, tempfile
 b = sys.argv[1]
-for name in ("chain_common", "chain_hostile"):
+for name in ("chain_common", "chain_hostile", "chain_items"):
     src = open(os.path.join(b, name + ".py")).read()
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as t:
         t.write('print("MARKER-PYC-%s")\n' % name.upper() + src)
@@ -2586,42 +2582,54 @@ G=grep; printf 'x | %s --quiet y\n' "$G" > "$work/qp1.sh"; printf 'printf x \\\n
 [ -n "$(quiet_pipes "$work/qp2.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches a pipe continued with a backslash (and -qF)"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed a continued pipe"; }
 # the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
-[ "$rc" != 0 ] && grep -F -q "stage-build.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
+[ "$rc" != 0 ] && grep -F -q "stage-verify.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
 if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.json deleted the same case judges the whole tree (red today on the legacy signers)"; else failn=$((failn + 1)); echo "FAIL deleting legacy-stage-files.json did not bring the legacy files back into the judge: rc=$rc ${out:0:200}"; fi
 # only TRACKED files are judged: an untracked file with a signer in a working copy is not part of what CI checks out
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-# (Codex #249 r6 R8) the tag guard after Sign is carried by needs:, not by an `if:` conjunct: every release.yml job from build to promotion
-# that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on admission (tag-guarded) directly or through its needs
+# (Codex #249 r6 R8; PR 2: admission is the first step of Build's apk job, so the tag guard is Build's own gate G) every release.yml job after build
+# up to promotion that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build, which carries the gate G (a v* tag PUSH, or a dry run),
+# directly or through its needs
 cat > "$work/tagguard.py" <<'PY'
 import sys, yaml
+GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
 def needs(j):
     n = (jobs.get(j) or {}).get("needs") or []
     return [n] if isinstance(n, str) else list(n)
 def reaches(j, seen=()):
-    return any(x == "admission" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
-order = list(jobs); chain = order[order.index("build"):order.index("promotion") + 1]
+    return any(x == "build" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
+order = list(jobs); chain = order[order.index("build") + 1:order.index("promotion") + 1]
 bad = [j for j in chain if str(jobs[j].get("if", "")).strip() != "${{ inputs.dry-run }}" and not reaches(j)]
-if "admission" not in jobs or not str(jobs["admission"].get("if", "")).startswith("${{ startsWith(github.ref, 'refs/tags/v')"): bad.append("admission is not tag-guarded")
+if "admission" in jobs: bad.append("an admission job is back (admission is Build's first step)")
+if str(jobs["build"].get("if", "")).strip() != GATE: bad.append("build is not tag-guarded by the gate G")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 tg() { local rc=0 out; out=$(python3 "$work/tagguard.py" "$2") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then pass=$((pass + 1)); echo "ok   $3${out:+ ($out)}"; else failn=$((failn + 1)); echo "FAIL $3 -> $out"; fi; }
-tg ok "$root/.github/workflows/release.yml" "R8 release.yml: every job from build to promotion that is not dry-run-only depends on the tag-guarded admission through needs"
+tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build carries the tag gate and every job from sign to promotion that is not dry-run-only depends on build through needs"
 cp "$root/.github/workflows/release.yml" "$work/rel-noadm.yml"
 python3 - "$work/rel-noadm.yml" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()
-for j in ("promotion", "authorization", "acceptance-predicate"):
-    t = re.sub(r"(\n  %s:\n(?:    .*\n|\s*\n)*?    needs: )(.*)" % re.escape(j), lambda m: m.group(1) + "[" + ", ".join(x for x in re.findall(r"[\w-]+", m.group(2)) if x != "admission") + "]", t, count=1)
-t = re.sub(r"(\n  build:\n(?:    .*\n|\s*\n)*?    needs: )admission", r"\1[]", t, count=1)
+for j in ("sign", "promotion", "authorization", "acceptance-predicate", "scans", "acceptance-artifacts"):
+    t = re.sub(r"(\n  %s:\n(?:    .*\n|\s*\n)*?    needs: )(.*)" % re.escape(j), lambda m: m.group(1) + "[" + ", ".join(x for x in re.findall(r"[\w-]+", m.group(2)) if x not in ("build", "rebuild")) + "]", t, count=1)
+t = re.sub(r"(\n  rebuild:\n(?:    .*\n|\s*\n)*?    needs: )build", r"\1[]", t, count=1)
 open(sys.argv[1], "w").write(t)
 PY
-tg caught "$work/rel-noadm.yml" "R8 mutation: with admission removed from every needs list, the build-to-promotion jobs no longer reach admission and are caught"
+tg caught "$work/rel-noadm.yml" "R8 mutation: with build removed from the needs lists, the jobs after it no longer reach the tag gate and are caught"
+cp "$root/.github/workflows/release.yml" "$work/rel-nogate.yml"
+python3 - "$work/rel-nogate.yml" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+g = "if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
+t = t.replace(g, "if: ${{ inputs.dry-run == true }}", 1)
+open(sys.argv[1], "w").write(t)
+PY
+tg caught "$work/rel-nogate.yml" "R8 mutation: a build without the tag gate is caught"
 
-EXPECT=648
+EXPECT=649
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
