@@ -11,16 +11,6 @@
    "consumer": "release"
   },
   {
-   "type": "https://fosterstack.com/attestations/acceptance/v1",
-   "claim": "the acceptance suites passed for the candidate digests (old chain, replaced by Check's Witness record in PR 3)",
-   "consumer": "release"
-  },
-  {
-   "type": "https://fosterstack.com/attestations/release-authorization/v1",
-   "claim": "the old authorization stage approved these digests for publication (old chain, removed in PR 4)",
-   "consumer": "release"
-  },
-  {
    "type": "https://fosterstack.com/attestations/publication/v1",
    "claim": "what the old promotion stage published and where (old chain, replaced in PR 4)",
    "consumer": "customer"

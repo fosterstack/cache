@@ -1615,33 +1615,12 @@ printf 'on:\n  pull_request:\njobs:\n' > "$work/jobsnull.yml"
 expect caught "AC14 an empty jobs key is refused" "jobs must be a non-empty mapping" callers "$work/jobsnull.yml"
 printf 'on:\n  pull_request:\njobs:\n  build: nonsense\n' > "$work/jobscalar.yml"
 expect caught "AC14 a job that is not a mapping is refused" "is not a mapping" callers "$work/jobscalar.yml"
-ACC="  artifact-acceptance:\n    needs: build\n    permissions:\n      contents: read\n      packages: read\n"
-ACC="$ACC    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist\n"
-ACC="$ACC      expected-checksums: \${{ needs.build.outputs.digests }}\n"
+# REQ-CHAIN-006-AC10 (PR 3): scan.yml no longer calls an acceptance stage (stage-acceptance-artifacts.yml is gone; the Linux-only archive set is checked by Check, REQ-PLAT-001-AC1)
+ACC="  artifact-acceptance:\n    needs: build\n    permissions:\n      contents: read\n      packages: read\n    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist\n"
 replace "$work/caller.yml" "$work/a13.yml" "  scanners:" "${ACC}  scanners:" \
-  && expect ok "AC14 allowlist: artifact-acceptance (what scan.yml calls today that is not Release; PR 3 moves it) is accepted" "" callers "$work/a13.yml"
+  && expect caught "AC14 allowlist: an artifact-acceptance call of the deleted stage is refused (PR 3 removed it)" "allowlist" callers "$work/a13.yml"
 mkdir -p "$work/a14"; cp "$work/a13.yml" "$work/a14/main-candidate-rescan.yml"
 expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-acceptance call" "allowlist" callers "$work/a14/main-candidate-rescan.yml"
-# artifact-acceptance gets the same ceiling and key check as the other calls (step-6 round 2, S4)
-cla() { replace "$work/a13.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" callers "$work/$1.yml"; return 0; }
-cla b1 "AC14 artifact-acceptance with packages: write" "      packages: read\n" "      packages: write\n" "static ceiling"
-cla b2 "AC14 artifact-acceptance with contents: write" "      contents: read\n      packages: read\n    uses: ./.github/workflows/stage-acceptance" \
-       "      contents: write\n      packages: read\n    uses: ./.github/workflows/stage-acceptance" "static ceiling"
-cla b3 "AC14 artifact-acceptance with an extra read grant (not exactly contents and packages read)" "      packages: read\n" \
-       "      packages: read\n      issues: read\n" "exactly the permissions"
-cla b4 "AC14 artifact-acceptance with secrets: inherit" "    with:\n      dist-artifact: dist\n" \
-       "    secrets: inherit\n    with:\n      dist-artifact: dist\n" "keys outside"
-cla b5 "AC14 artifact-acceptance with the OLD artifact name (dist-snapshot)" "      dist-artifact: dist\n" \
-       "      dist-artifact: dist-snapshot\n" \
-       "must pass exactly"
-cla b5b "AC14 artifact-acceptance whose expected-checksums is the old checksums output" "needs.build.outputs.digests" \
-        "needs.build.outputs.checksums" "must pass exactly"
-cla b5c "AC14 artifact-acceptance with a third input" "      dist-artifact: dist\n" "      dist-artifact: dist\n      mode: snapshot\n" "must pass exactly"
-cla b5d "AC14 artifact-acceptance with one input only" "      dist-artifact: dist\n" "" "must pass exactly"
-cla b5e "AC14 artifact-acceptance with no with block" \
-        "    with:\n      dist-artifact: dist\n      expected-checksums: \${{ needs.build.outputs.digests }}\n" "" "must pass exactly"
-cla b6 "AC14 artifact-acceptance with an if" "    with:\n      dist-artifact: dist\n" "    if: always()\n    with:\n      dist-artifact: dist\n" "keys outside"
-cla b7 "AC14 artifact-acceptance that needs nothing" "  artifact-acceptance:\n    needs: build\n" "  artifact-acceptance:\n" "must need exactly build"
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"

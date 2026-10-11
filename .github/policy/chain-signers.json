@@ -12,11 +12,6 @@
    "reason": "signs the automatic patch tag with release.yml's own keyless identity (REQ-REL-009-AC5)"
   },
   {
-   "file": "stage-acceptance-predicate.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs the acceptance predicate; removed when PR 3 replaces the acceptance stages"
-  },
-  {
    "file": "stage-admission.yml",
    "tool": "actions/attest",
    "reason": "old chain: signs the source-admission predicate; removed in PR 2 (admission moves into Build's first step)"
@@ -25,11 +20,6 @@
    "file": "stage-admission.yml",
    "tool": "gitsign",
    "reason": "verifies/uses gitsign for the CI patch-tag identity check (REQ-REL-009-AC6); moves into Build's first step in PR 2"
-  },
-  {
-   "file": "stage-authorize.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs the release-authorization predicate; removed in PR 4"
   },
   {
    "file": "stage-build.yml",

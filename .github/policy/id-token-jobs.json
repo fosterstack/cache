@@ -82,16 +82,6 @@
    "reason": "OpenSSF Scorecard publishes its results with the job's OIDC token"
   },
   {
-   "workflow": "stage-acceptance-predicate.yml",
-   "job": "predicate",
-   "reason": "legacy stage (frozen): actions/attest of the acceptance predicate; rewritten in PRs 2-4"
-  },
-  {
-   "workflow": "stage-authorize.yml",
-   "job": "authorize",
-   "reason": "legacy stage (frozen): actions/attest of the release authorization; rewritten in PRs 2-4"
-  },
-  {
    "workflow": "stage-build.yml",
    "job": "apk",
    "reason": "Build, job apk: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-004); signs no provenance"

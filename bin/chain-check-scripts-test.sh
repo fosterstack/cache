@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
+# proves: REQ-PLAT-001-AC1, REQ-CHAIN-006-AC15, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC4, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC6, REQ-CHAIN-006-AC7, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12 — AC5 interface only, see the gap below
 # RED until PR 3 is implemented (bin/check-scan.sh, bin/check-fips.sh, bin/check-acceptance.sh, bin/check-guide.sh, bin/check-stage.sh and PR 2's
 # bin/witnessed.sh do not exist): step 4.
 #
