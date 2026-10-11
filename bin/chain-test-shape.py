@@ -329,6 +329,20 @@ def job(j, family, name, allowed):
         for s_ in steps:
             u_ = (s_.get("uses") or "").split(" ")[0]
             if PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the allowed-actions list" % u_)
+    if spec.get("gh"):       # the admission job: the advisor's reading of rule 51 (admission is the first TRUST decision), made a test
+        first_wit = next((k for k, x in enumerate(steps) if "witnessed.sh" in str(x.get("run", ""))), len(steps))
+        if first_wit < len(steps) and (steps[first_wit].get("if") != MODE_RELEASE_IF or "witnessed.sh apk " not in str(steps[first_wit].get("run", ""))):
+            bad.append("the first step that runs bin/witnessed.sh must be the release admission step `bash bin/witnessed.sh apk ...` under if: %s; another Witness "
+                       "step before it runs before admission" % MODE_RELEASE_IF)
+        for k, x in enumerate(steps[:first_wit]):
+            run_ = str(x.get("run", "")).strip()
+            kind = ("checkout" if k == 0 and set(x) <= {"uses", "with", "name"} and pinned(x.get("uses"), "actions/checkout", allowed) and (x.get("with") or {}) == CHECKOUT_WITH
+                    else "guard" if set(x) == {"name", "env", "run"} and x.get("env") == MODE_GUARD_ENV and run_ == MODE_GUARD_RUN
+                    else "install" if set(x) <= {"name", "run"} and run_ in ("bash bin/install-scanner.sh witness", INSTALL_GO) else None)
+            if kind is None:
+                bad.append("step %d runs before admission (the first step that runs bin/witnessed.sh) and is not the checkout, the mode guard or a checksum-pinned "
+                           "install line: %s (nothing with an env, a token, a secret, a build command, a download or an upload may come before admission)"
+                           % (k + 1, sorted(x)))
     i = 0
     s = steps[i]; i += 1
     if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout", allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
