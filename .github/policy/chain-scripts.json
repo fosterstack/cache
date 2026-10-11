@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "cb511e491b4329099b7573cbc42d08702604230129995d993a1a3c0cfecb2a1c",
+      "sha256": "c5cbc1abb9c844ffb453eeb9cfd351d0d81bce84d12c874a81f51955a7c4d9dd",
       "tools": [
         "make",
         "at",
@@ -205,7 +205,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "efd9caf860ad4476324c52b1a2f2afbc5d42bf44e666f123516c8c4255f218bd",
+      "sha256": "4c0a21f9415b4f065efbe18b94ccd2314596a85bd860999dee3d5ecadcb63814",
       "reads_env": [
         "GH_TOKEN"
       ],

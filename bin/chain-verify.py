@@ -211,6 +211,11 @@ def first_cert_der(pem_text):
     return base64.b64decode(re.sub(r"-----(BEGIN|END) CERTIFICATE-----|\s", "", blocks[0]), validate=True), blocks
 
 
+# the ONE tag grammar of the chain (advisor 0383): vX.Y.Z or the release candidate vX.Y.Z-rcN, nothing else (no -RC1, -rc, -rc1x, -rc.1 or an rc in the middle);
+# the policy and the records carry the FULL tag string
+TAG_GRAMMAR = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?"
+
+
 def policy_make(a):
     tpl = load_json(a.template, "template")
     d = os.path.dirname(os.path.abspath(a.template))
@@ -221,18 +226,18 @@ def policy_make(a):
     if re.match(r"(refs/tags/)?v0\.0\.0($|-)", a.tag or a.ref or ""):
         refuse("policy", "snapshot version")      # no policy, hence no Sign or Release, can exist for a snapshot version (REQ-CHAIN-004-AC15)
     if a.tag:
-        if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", a.tag):
-            refuse("policy", "tag %r is not vX.Y.Z" % a.tag)
+        if not re.fullmatch(TAG_GRAMMAR, a.tag):
+            refuse("policy", "tag %r is not vX.Y.Z or vX.Y.Z-rcN" % a.tag)
         ref, tag, dry = "refs/tags/" + a.tag, a.tag, False
     else:
         ref = a.ref or ""
-        m = re.fullmatch(r"refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)", ref)
+        m = re.fullmatch(r"refs/tags/(%s)" % TAG_GRAMMAR, ref)
         if m:
             tag, dry = m.group(1), False
         elif ref.startswith("refs/heads/") and len(ref) > len("refs/heads/"):
             tag, dry = "", True
         else:
-            refuse("policy", "ref %r is neither refs/tags/vX.Y.Z nor a branch (tag)" % ref)
+            refuse("policy", "ref %r is neither refs/tags/vX.Y.Z[-rcN] nor a branch (tag)" % ref)
     trust = load_json(trust_p, "trust file")
     try:
         with open(fulcio_p) as f1, open(tsa_p) as f2, open(rekor_p) as f3:
@@ -866,12 +871,12 @@ def cmd_stage_start(a):
 def make_policy_from_template(a, tpl_path):
     ref = os.environ.get("GITHUB_REF", "")
     ev = os.environ.get("GITHUB_EVENT_NAME", "")
-    is_tag = re.fullmatch(r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+", ref)
+    is_tag = re.fullmatch(r"refs/tags/%s" % TAG_GRAMMAR, ref)
     is_branch = ref.startswith("refs/heads/") and len(ref) > len("refs/heads/")
     if is_tag and ev == "workflow_dispatch":
         refuse("sign", "a workflow_dispatch on the tag %s is not a production run: production tags come from a push (tag)" % ref)
     if not (is_tag and ev == "push") and not (is_branch and ev == "workflow_dispatch"):
-        refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z nor a workflow_dispatch on a branch (tag)" % (ref, ev))
+        refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z[-rcN] nor a workflow_dispatch on a branch (tag)" % (ref, ev))
     out = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     out.close()
     ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, trust=a.trust, fulcio_chain=a.fulcio_chain, tsa_chain=a.tsa_chain, rekor_key=a.rekor_key, out=out.name)

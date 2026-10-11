@@ -1274,9 +1274,10 @@ GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 templa
 # ---- production vs dry run (round 5): the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
 TPR() { echo sign --check --signer cosign --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" \
   --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$2"; }
-GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_ok "001-AC2/rc: refs/tags/v0.3.0-rc1 is a release-candidate tag (vX.Y.Z-rcN, advisor 0383): the per-tag policy is made for the FULL tag and Build's record signed at that ref verifies" $(TPR build_coll_rc tagrc)
-GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: an rc Build record presented for the final tag is refused" "v0.3.0-rc1|v0.3.0" $(TPR build_coll_rc tagrc2)
-GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: a final-tag Build record presented for the rc tag is refused" "v0.3.0" $(TPR build_coll tagrc3)
+CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json"; }
+GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_ok "001-AC2/rc: refs/tags/v0.3.0-rc1 is a release-candidate tag (vX.Y.Z-rcN, advisor 0383): Sign makes the per-tag policy for the FULL tag and Build's record signed at that ref verifies" $(CBR build_coll_rc)
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: an rc Build record presented for the final tag is refused" "v0.3.0-rc1|v0.3.0" $(CBR build_coll_rc)
+GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: a final-tag Build record presented for the rc tag is refused" "v0.3.0" $(CBR build_coll)
 for t in v0.3.0-RC1 v0.3.0-rc v0.3.0-rc1x v0.3.0-rc.1 v0.3.0rc1 v0.3.0-rc1-rc1 v0.3.0-1rc1 v0.3.0-rc-1 v0.3-rc1; do
   GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the near-miss ref $t is not a tag of the grammar and is refused by Sign" "tag" $(TPR build_coll_rc tagnm)
   expect_refuse "002-AC2/rc: policy make --tag $t is refused" "tag" policy make --template "$work/template.json" --tag "$t" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"

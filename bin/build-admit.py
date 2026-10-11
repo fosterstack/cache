@@ -29,7 +29,7 @@ CHECKS = [
     "commit-signature", "ancestor-of-main", "required-checks", "baseline", "admission-evidence",
 ]
 
-TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?")  # fullmatch: no trailing newline slips through
+TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")  # fullmatch: no trailing newline slips through
 SHA_SYNTAX = re.compile(r"[0-9a-f]{40}")
 BASE_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)$', re.M)
@@ -116,7 +116,7 @@ def check_tag_ref(ctx):
 def check_tag_syntax(ctx):
     """The strict release-version syntax, before anything else looks at the tag."""
     if not TAG_SYNTAX.fullmatch(ctx.tag):
-        raise Refusal("tag-syntax", "tag %r does not match vMAJOR.MINOR.PATCH[-rc.N]" % ctx.tag)
+        raise Refusal("tag-syntax", "tag %r does not match vMAJOR.MINOR.PATCH[-rcN]" % ctx.tag)
 
 
 def check_tag_points_at_sha(ctx):
