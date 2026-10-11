@@ -806,17 +806,18 @@ _SKIP_WORDS = {"if", "then", "elif", "else", "fi", "do", "done", "while", "until
 class Cmd:
     """One simple command: `text` as written from its first assignment or redirection (or its command word) to the separator; `cw` its command
     word (quotes removed, None when there is none); `operands` the other words (quotes removed); `redirs` [(operator, target)]."""
-    def __init__(self, text, cw, operands, redirs): self.text, self.cw, self.operands, self.redirs = text, cw, operands, redirs
+    def __init__(self, text, cw, operands, redirs, cwpos=None):
+        self.text, self.cw, self.operands, self.redirs, self.cwpos, self.line = text, cw, operands, redirs, cwpos, None
 
 def _flush(s, items, end, cmds):
     if not items: return
-    cw, ops, redirs = None, [], []
-    for kind, _st, _en, _raw, val in items:
+    cw, ops, redirs, cwpos = None, [], [], None
+    for kind, st, _en, _raw, val in items:
         if kind == "redir": redirs.append(val)
         elif kind == "word":
-            if cw is None: cw = val
+            if cw is None: cw, cwpos = val, st
             else: ops.append(val)
-    cmds.append(Cmd(s[items[0][1]:end].rstrip(), cw, ops, redirs))
+    cmds.append(Cmd(s[items[0][1]:end].rstrip(), cw, ops, redirs, cwpos))
     del items[:]
 
 def _bt(s, j, cmds):
@@ -825,7 +826,10 @@ def _bt(s, j, cmds):
     n, k = len(s), j + 1
     while k < n and s[k] != "`": k += 2 if s[k] == "\\" else 1
     body = re.sub(r"\\([`\\$])", r"\1", s[j + 1:min(k, n)])
-    _lex(body, 0, None, cmds)
+    tmp = []
+    _lex(body, 0, None, tmp)
+    for c in tmp: c.cwpos = None                   # round 5: a position in the unescaped body is not a position in the line
+    cmds.extend(tmp)
     return min(k + 1, n)
 
 def _brace(s, j, cmds):
@@ -946,8 +950,10 @@ def _lex(s, i, closer, cmds):
 def shell_commands(text):
     """The simple commands (Cmd) of comment-stripped, continuation-joined shell text, every logical line read on its own."""
     cmds = []
-    for line in logical(strip(text)).splitlines():
+    for k, line in enumerate(logical(strip(text)).splitlines()):
+        before = len(cmds)
         _lex(line, 0, None, cmds)
+        for c in cmds[before:]: c.line = k
     return cmds
 
 # Round 1 (4) + round 2 (8): fail closed by default for a path-like word whose LAST component is a deny-class command (or a glob that could be one).
@@ -1097,9 +1103,6 @@ def scan_script(path, text, row, rows, base):
     cw_budget = {}                                 # round 2 (1): a script path at a COMMAND POSITION is judged once, as the whole command (below),
     for c in cmds:                                 # never by its token: the token pass skips as many occurrences as there are commands named by it
         if c.cw is not None: cw_budget[c.cw] = cw_budget.get(c.cw, 0) + 1
-    deny_budget = {}                               # round 4 (1): a bare denied word that is a command word is judged ONCE, as the whole command (below)
-    for c in cmds:
-        if c.cw is not None and "/" not in c.cw and is_deny_token(c.cw) and c.cw not in tools: deny_budget[c.cw] = deny_budget.get(c.cw, 0) + 1
     def script_like(t):
         n = t[2:] if t.startswith("./") else t
         pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
@@ -1118,13 +1121,29 @@ def scan_script(path, text, row, rows, base):
             # PR 1b: in a SHELL script a path-like word is judged as a command only at command position (below); an argument such as
             # archive/go is judged by the script rule alone. A Python script has no command position, so it keeps the word-level test.
             if py: add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
-        elif is_deny_token(n) and n not in tools:
-            if deny_budget.get(t, 0) > 0: deny_budget[t] -= 1; continue
+        elif py and is_deny_token(n) and n not in tools:
             add("deny", t, "%s: names the command %r, which is not in this script's `tools` list" % (path, t))
         if script_like(t) and n != path and n not in runs and not (n == selfbase):
             if cw_budget.get(t, 0) > 0: cw_budget[t] -= 1; continue
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
     if not py:
+        # round 5: bare denied words of a shell script, read from the code lines (comments and continuations as the reader sees them) and from the
+        # comment remainders (over-reported by design). A word is NOT reported here only when it sits exactly at the source position of a command word:
+        # that command is judged once, as the whole command, below. No other occurrence is ever skipped.
+        phys = body.splitlines()
+        code = [strip_line(l) for l in phys]
+        at_cw = {(c.line, c.cwpos) for c in cmds if c.cw is not None and c.cwpos is not None and "/" not in c.cw}
+        for k, l in enumerate(logical("\n".join(code)).splitlines()):
+            for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", l):
+                if (k, tm.start()) in at_cw: continue
+                tn = tm.group(0)[2:] if tm.group(0).startswith("./") else tm.group(0)
+                if "/" not in tn and is_deny_token(tn) and tn not in tools:
+                    add("deny", tm.group(0), "%s: names the command %r, which is not in this script's `tools` list" % (path, tm.group(0)))
+        for l, c in zip(phys, code):
+            for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", l[len(c):]):
+                tn = tm.group(0)
+                if "/" not in tn and is_deny_token(tn) and tn not in tools:
+                    add("deny", tn, "%s: names the command %r, which is not in this script's `tools` list" % (path, tn))
         for t in pathlike_deny(cmds, rows, runs):
             add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t))
         for c in cmds:
