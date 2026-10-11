@@ -423,10 +423,8 @@ requirements:
       AC9 (HTTP/1.1 only with TLS on) was added at advisor step 5 on Oct 11,
       after the read-back: with TLS on the server negotiates only HTTP/1.1; a
       client offering only h2 by ALPN gets no h2 connection.
-      AC3 note (Sonnet step-8 residual R3, Oct 11): the server reads at most
-      1 MiB (1048576 bytes) of each file; a larger file is refused as one it
-      does not read, with the variable, the path and the limit named and no
-      contents. A file of exactly 1 MiB is read.
+      The 1 MiB file-size cap (Sonnet step-8 residual R3) is in AC3's text,
+      added at advisor step 5 on Oct 11.
       AC4 note (residual R2, Oct 11): Go's http.Server error log (TLS
       handshake errors and the like) is written through the process logger
       at DEBUG, so it is covered by the same capture and a flood of such
@@ -447,7 +445,7 @@ requirements:
       - id: REQ-TLS-001-AC3
         given: 'each of: only FSCACHE_TLS_CERT set; only FSCACHE_TLS_KEY set; a cert path that does not exist; a key file the process cannot read; a file that is not PEM; a valid certificate with a key from a different pair. Data directory absent in one run, present in another'
         when: the server starts
-        then: it exits non-zero with an error naming the variable(s) and the path, never the file contents. The absent data directory is still absent. The present one is byte-identical with no unclean-shutdown marker (same check as REQ-CFG-004-AC1/AC2)
+        then: it exits non-zero with an error naming the variable(s) and the path, never the file contents. The absent data directory is still absent. The present one is byte-identical with no unclean-shutdown marker (same check as REQ-CFG-004-AC1/AC2). A certificate or key file larger than 1 MiB is refused, naming the variable, the path and the limit; a file of exactly 1 MiB is read
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-TLS-001-AC4
