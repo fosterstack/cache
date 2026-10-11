@@ -414,13 +414,13 @@ fi
 # ---- tag-ref, tag-syntax ---------------------------------------------------------------------------------------------------------
 fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4 a branch ref is refused (tag pushes only)" tag-ref
 fresh; run_admit GITHUB_REF= GITHUB_REF_NAME=;                 expect_refuse "AC4 an empty ref is refused" tag-ref
-for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x "v0.3.0
+for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 "v0.3.0
 x"; do
   fresh;
   run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
   expect_refuse "AC4 the tag syntax gate refuses '$(printf '%s' "$t" | tr '\n' '|')'" tag-syntax
 done
-for t in v0.3.0-rc.1 v10.20.30;
+for t in v0.3.0-rc1 v0.3.0-rc01 v10.20.30;
 do fresh;
 run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
 [ -f "$BA" ] && { [ "$RC" = 0 ] || ! grep -q 'tag-syntax' "$W/c/err";
@@ -721,6 +721,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=115
+EXPECT_TOTAL=121
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

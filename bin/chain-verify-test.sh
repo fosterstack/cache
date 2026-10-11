@@ -1274,7 +1274,20 @@ GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 templa
 # ---- production vs dry run (round 5): the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
 TPR() { echo sign --check --signer cosign --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" \
   --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$2"; }
-GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/v0.3.0-rc1 is not vX.Y.Z and is refused (even with a Build record signed at that ref)" "tag" $(TPR build_coll_rc tagrc)
+GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_ok "001-AC2/rc: refs/tags/v0.3.0-rc1 is a release-candidate tag (vX.Y.Z-rcN, advisor 0383): the per-tag policy is made for the FULL tag and Build's record signed at that ref verifies" $(TPR build_coll_rc tagrc)
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: an rc Build record presented for the final tag is refused" "v0.3.0-rc1|v0.3.0" $(TPR build_coll_rc tagrc2)
+GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: a final-tag Build record presented for the rc tag is refused" "v0.3.0" $(TPR build_coll tagrc3)
+for t in v0.3.0-RC1 v0.3.0-rc v0.3.0-rc1x v0.3.0-rc.1 v0.3.0rc1 v0.3.0-rc1-rc1 v0.3.0-1rc1 v0.3.0-rc-1 v0.3-rc1; do
+  GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the near-miss ref $t is not a tag of the grammar and is refused by Sign" "tag" $(TPR build_coll_rc tagnm)
+  expect_refuse "002-AC2/rc: policy make --tag $t is refused" "tag" policy make --template "$work/template.json" --tag "$t" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
+  expect_refuse "002-AC2/rc: policy make --ref refs/tags/$t is refused" "tag" policy make --template "$work/template.json" --ref "refs/tags/$t" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
+done
+rc=0; run policy make --template "$work/template.json" --tag v0.3.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-rc.json" || rc=$?
+[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" and not p.get("dry_run") and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/tags/v0.3.0-rc1") else 1)' "$work/policy-rc.json" && ok "002-AC2/rc: policy make --tag v0.3.0-rc1 carries the FULL tag and ref, and its Sign identity ends @refs/tags/v0.3.0-rc1" || bad "002-AC2/rc: policy for v0.3.0-rc1 (exit $rc)"
+rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-rc-ref.json" || rc=$?
+[ "$rc" = 0 ] && cmp -s "$work/policy-rc.json" "$work/policy-rc-ref.json" && ok "002-AC2/rc: policy make --ref refs/tags/v0.3.0-rc1 is the same policy as --tag v0.3.0-rc1" || bad "002-AC2/rc: --ref rc differs from --tag rc (exit $rc)"
+expect_refuse "002-AC2/rc: the final-tag policy refuses a Build record signed at the rc ref (and the reverse is the case above)" "v0.3.0-rc1|v0.3.0" verify $(V) --stage build $(rec build_coll_rc)
+expect_refuse "002-AC2/rc: the snapshot version in the rc grammar (v0.0.0-rc1) has no policy" "snapshot" policy make --template "$work/template.json" --tag v0.0.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
 GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/x is refused" "tag" $(TPR build_coll_tagx tagx)
 GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: a branch on a push event is refused" "tag" $(TPR build_coll_branchx branchx)
 GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 a workflow_dispatch on a tag that is not vX.Y.Z is refused (dry run is for branches)" "tag" $(TPR build_coll_tagx dispx)
@@ -1303,7 +1316,7 @@ assert not st["predicate"].get("dryRun"), st["predicate"]
 PY
 rc=0; run policy make --template "$work/template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-br.json" || rc=$?
 [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p.get("dry_run") is True and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/heads/hostile-proof/x") else 1)' "$work/policy-br.json" && ok "002-AC2 policy make --ref <branch> makes a dry_run policy whose identities end @ that ref" || bad "002-AC2 policy make --ref <branch> (exit $rc)"
-for r in refs/tags/v0.3.0-rc1 refs/tags/x refs/pull/1/merge; do
+for r in refs/tags/x refs/pull/1/merge; do
   expect_refuse "002-AC2 policy make --ref $r is refused" "tag" policy make --template "$work/template.json" --ref "$r" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
 done
 rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-reftag.json" || rc=$?
@@ -1816,7 +1829,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=645
+EXPECT=677
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -287,9 +287,9 @@ check("items-apk: the same apk re-signed with another key has the same apk and b
 rc, frag3, err = fragment_of(apk_tree("apk3", edit=flip_a_byte))
 check("items-apk: one changed byte outside the signature changes the apk and the binary item",
       rc == 0 and frag1 and frag3 and all(frag1["items"][k] != frag3["items"][k] for k in ("apk-standard-x86_64", "binary-standard-x86_64")), "exit %s" % rc)
-rc, frag4, err = fragment_of(apk_tree("apk4", tag="v0.3.0-rc.1"))
+rc, frag4, err = fragment_of(apk_tree("apk4", tag="v0.3.0-rc1"))
 check("items-apk: a release candidate's apk (fscache-0.3.0_rc1-r0.apk, PROPOSED) is found by its variant",
-      rc == 0 and frag4 == h.fragment("x86_64", "v0.3.0-rc.1"), "exit %s %s" % (rc, err[:120]))
+      rc == 0 and frag4 == h.fragment("x86_64", "v0.3.0-rc1"), "exit %s %s" % (rc, err[:120]))
 rc, frag4b, err = fragment_of(apk_tree("apk4b", tag="v0.0.0-rc.1"))
 check("items-apk: a SNAPSHOT build's apks (fscache-0.0.0_rc1-r0.apk and the fips one) are found and itemized (the 0.0.0 refusal is the verifiers')",
       rc == 0 and frag4b == h.fragment("x86_64", "v0.0.0-rc.1"), "exit %s %s" % (rc, err[:120]))
@@ -410,10 +410,10 @@ rc, out, err = do_merge(d, tag="v0.0.0-rc.1")
 check("items-merge: a snapshot build's files (version 0.0.0-rc.1, archives fscache_0.0.0-rc.1_linux_*) merge to the oracle's items",
       rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.0.0-rc.1"),
       "exit %s %s" % (rc, err[:100]))
-d = merge_tree("m7", "v0.3.0-rc.1")
-rc, out, err = do_merge(d, tag="v0.3.0-rc.1")
+d = merge_tree("m7", "v0.3.0-rc1")
+rc, out, err = do_merge(d, tag="v0.3.0-rc1")
 check("items-merge: a release candidate's files merge to the oracle's items (PROPOSED names)",
-      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc.1"),
+      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1"),
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)

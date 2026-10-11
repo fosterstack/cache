@@ -33,8 +33,9 @@ def sha(b):
 
 
 def pkgver(tag):
-    """PROPOSED (cache-3f): 0.3.0 for v0.3.0, 0.3.0_rc1 for v0.3.0-rc.1."""
-    return re.sub(r"-rc\.(\d+)$", r"_rc\1", tag[1:])
+    """PROPOSED (cache-3f): 0.3.0 for v0.3.0, 0.3.0_rc1 for the release-candidate tag v0.3.0-rc1 (the tag grammar is vX.Y.Z-rcN, advisor 0383; the old dotted
+    spelling v0.3.0-rc.1 is still mapped, for the snapshot version 0.0.0-rc.1)."""
+    return re.sub(r"-rc\.?(\d+)$", r"_rc\1", tag[1:])
 
 
 def apk_name(variant, tag):
@@ -201,10 +202,10 @@ while [ $# -gt 0 ]; do
   case "$1" in --variant) variant=$2;; --arch) arch=$2;; --out) out=$2;; --version) version=$2;; esac
   shift
 done
-# cache's driver accepts X.Y.Z and X.Y.Z-rc.N only (PROPOSED, cache-3f); the apk package version maps -rc.N to _rcN
-[[ "$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$ ]] || { echo "refusal: version $version" >&2; exit 2; }
+# cache's driver accepts X.Y.Z and X.Y.Z-rcN only (PROPOSED, cache-3f: the tag grammar is vX.Y.Z-rcN, advisor 0383, and --version is the tag minus v); the apk package version maps -rcN to _rcN
+[[ "$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.?[0-9]+)?$ ]] || { echo "refusal: version $version" >&2; exit 2; }
 [ "${FAKE_APK_RC:-0}" = 0 ] || exit "$FAKE_APK_RC"
-pk=$(printf '%s' "$version" | sed -E 's/-rc\\.([0-9]+)$/_rc\\1/')
+pk=$(printf '%s' "$version" | sed -E 's/-rc\\.?([0-9]+)$/_rc\\1/')
 mkdir -p "$out/$arch"
 if [ "$variant" = fips ]; then name="fscache-fips-$pk-r0.apk"; suffix=-fips; else name="fscache-$pk-r0.apk"; suffix=; fi
 printf 'SIG:assembly\\napk|%s|%s|%s|%s' "$variant" "$arch" "${SOURCE_DATE_EPOCH:-unset}" "$pk" > "$out/$arch/$name"
@@ -253,6 +254,8 @@ open("calls.log", "a").write("verify " + " ".join(a) + "\\n")
 def arg(n): return a[a.index(n) + 1]
 rc, cmd = int(os.environ.get("FAKE_VERIFY_RC", "0")), a[0]
 if cmd == "policy":
+    if "-rc" in os.environ.get("GITHUB_REF_NAME", "").lower():      # an rc tag runs the REAL `policy make` (the rc grammar is the verifier's; the Build harness must not fake it)
+        os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
     open("policy.json", "w").write("{}"); sys.exit(0)
 if cmd in ("verify", "stage-start"):
     if rc: sys.stderr.write("refused at build: identity (fake)\\n")
@@ -335,6 +338,10 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
         write(d + "/build-in/digests.json", "{}")
     if kind in ("rebuild-assemble", "snapshot-rebuild-assemble"):
         write(d + "/build-in/items.json", json.dumps(expected(d, kind, "items", tag), sort_keys=True, indent=1))
+    if "-rc" in tag:        # the REAL template and trust files, so the real `policy make` of the rc cases has everything it reads
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for n in ("release-policy.template.json", "sigstore-trust.json", "fulcio-chain.pem", "tsa-chain.pem", "rekor.pub"):
+            shutil.copy(os.path.join(root, ".github", "policy", n), d + "/.github/policy/" + n)
     write(d + "/calls.log", "")
     return d
 
