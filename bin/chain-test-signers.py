@@ -441,7 +441,7 @@ def load_scripts(base):
     else:
         seen = set()
         for e in amb:
-            if (not isinstance(e, dict) or not {"name", "script", "why"} <= set(e) or set(e) - {"name", "script", "why", "file", "job"}
+            if (not isinstance(e, dict) or not {"name", "script", "why"} <= set(e) or set(e) - {"name", "script", "why", "file", "job", "handoff_line"}
                     or not all(isinstance(e[k], str) for k in e)):
                 errs.append("chain-scripts.json: ambient_env entry %r must be an object with name, script and why (strings) and optionally file and job (strings)" % (e,)); continue
             nm, sc, why = e["name"], e["script"], e["why"]
@@ -459,6 +459,13 @@ def load_scripts(base):
                 errs.append("chain-scripts.json: ambient_env %s for %s: file %r is not a stage file path (.github/workflows/stage-*.yml)" % (nm, sc, e["file"])); continue
             if "job" in e and not re.fullmatch(r"[A-Za-z0-9_-]+", e["job"]):
                 errs.append("chain-scripts.json: ambient_env %s for %s: job %r is not a plain job name" % (nm, sc, e["job"])); continue
+            hl = e.get("handoff_line")
+            if "handoff_line" in e and (not isinstance(hl, str) or any(not (" " <= ch <= "~") for ch in hl)):
+                errs.append("chain-scripts.json: ambient_env %s for %s: handoff_line must be one line of printable ASCII" % (nm, sc)); continue
+            if isinstance(hl, str) and hl.strip():       # round 4 (B): ONE exact source line, once, outside comments (its position is bound by the sha256 pin and review)
+                n_hl = sum(1 for l in strip(open(os.path.join(base, sc), errors="replace").read()).splitlines() if l.strip() == hl.strip())
+                if n_hl != 1:
+                    errs.append("chain-scripts.json: ambient_env %s for %s: handoff_line %r occurs %d times outside comments in %s (exactly once is required)" % (nm, sc, hl, n_hl, sc)); continue
             seen.add((nm, sc)); env_names.ambient.setdefault(nm, set()).add(sc)
             env_names.ambient_bind.setdefault(nm, []).append((sc, e.get("file"), e.get("job")))
     pins = doc.get("pinned_steps", [])

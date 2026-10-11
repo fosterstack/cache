@@ -3184,7 +3184,7 @@ d=$(hl h_twice 'unset GH_TOKEN\npython3 bin/build-admit.py run\nunset GH_TOKEN' 
 d=$(hl h_num 'unset GH_TOKEN' '5'); expm caught "$d" 'ambient_env' "round-4 (B): a handoff_line that is not a string is an error"
 d=$(hl h_nl 'unset GH_TOKEN' '"unset GH_TOKEN\nx"'); expm caught "$d" 'ambient_env' "round-4 (B): a multi-line handoff_line is an error"
 d=$(hl h_ctl 'unset GH_TOKEN' '"unset\u0001GH_TOKEN"'); expm caught "$d" 'ambient_env' "round-4 (B): a handoff_line with a control character is an error"
-d=$(hl h_blank 'python3 bin/build-admit.py run' '""'); expm ok "$d" - "round-4 (B): a blank handoff_line is no requirement"
+d=$(hl h_blank 'python3 bin/build-admit.py run\nunset GH_TOKEN\nunset GH_TOKEN' '""'); expm ok "$d" - "round-4 (B): a blank handoff_line is no requirement"
 d=$(hl h_stale 'python3 bin/build-admit.py run\nunset GH_TOKEN' '"unset GH_TOKEN"'); printf 'echo extra\n' >> "$d/bin/stage-apk.sh"; expm caught "$d" 'sha256' "round-4 (B): a script edited with the old sha256 kept in its row is refused on the hash pin"
 # (6) the wrapper tuple needs bash
 am g6_ok 'bash bin/witnessed.sh apk bin/stage-apk.sh' ok -
