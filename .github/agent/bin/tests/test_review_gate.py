@@ -345,13 +345,13 @@ class PermittedFields(unittest.TestCase):
 
     def test_the_permitted_field_sets_are_exactly_these(self):
         self.assertEqual(sorted(G.RECORD_REQUIRED), ["rounds", "schema", "stop", "tree"])
-        self.assertEqual(sorted(G.RECORD_OPTIONAL), ["residuals", "reviewed_commit"])
+        self.assertEqual(sorted(G.RECORD_OPTIONAL), ["reviewed_commit"])
         self.assertEqual(sorted(G.ROUND_REQUIRED), ["reviewers", "round"])
         self.assertEqual(sorted(G.ROUND_OPTIONAL), [])
         self.assertEqual(tuple(G.FIELDS), FIELDS)
 
     def test_a_complete_record_with_every_optional_field_clears(self):
-        r = good(); r["reviewed_commit"] = "1f" * 20; r["residuals"] = ["one", "two"]
+        r = good(); r["reviewed_commit"] = "1f" * 20
         self.assertEqual(problems(r), [])
 
     def test_an_extra_top_level_field_fails_naming_it_and_saying_no_substitute(self):
@@ -397,10 +397,7 @@ class PermittedFields(unittest.TestCase):
         for f, bad, msg in (("reviewed_commit", "1F" * 20, "record reviewed_commit is not 40 lowercase hex characters"),
                             ("reviewed_commit", "1f" * 32, "record reviewed_commit is not 40 lowercase hex characters"),
                             ("reviewed_commit", None, "record reviewed_commit is not 40 lowercase hex characters"),
-                            ("residuals", "none", "record residuals is not a list of strings"),
-                            ("residuals", [1], "record residuals is not a list of strings"),
-                            ("residuals", [["x"]], "record residuals is not a list of strings"),
-                            ("residuals", {"a": "b"}, "record residuals is not a list of strings")):
+                            ("reviewed_commit", "pr210", "record reviewed_commit is not 40 lowercase hex characters")):
             r = good(); r[f] = bad
             self.assertIn(msg, problems(r), (f, bad))
 
@@ -452,9 +449,9 @@ class PermittedFields(unittest.TestCase):
         deep = "x"
         for _ in range(5000):
             deep = [deep]
-        r = good(); r["residuals"] = deep
+        r = good(); r["reviewed_commit"] = deep
         ps = problems(r)
-        self.assertIn("record residuals is not a list of strings", ps)
+        self.assertIn("record reviewed_commit is not 40 lowercase hex characters", ps)
 
 
 # ---- REQ-AUD-018-AC4, AC5, AC6: the record is read as strict JSON ------------------------------------------------
@@ -489,7 +486,7 @@ class StrictJson(unittest.TestCase):
 
     def test_nan_and_infinity_are_refused(self):
         for c in ("NaN", "Infinity", "-Infinity"):
-            raw = self.body().replace(ANCHOR, ANCHOR + ', "residuals": [%s]' % c, 1)
+            raw = self.body().replace(ANCHOR, ANCHOR + ', "x": [%s]' % c, 1)
             self.load_fails(raw.encode(), "the record holds the non-standard constant %s" % c)
 
     def test_a_byte_order_mark_is_refused(self):
@@ -504,13 +501,13 @@ class StrictJson(unittest.TestCase):
             self.load_fails((self.body() + tail).encode(), "the record is not valid JSON")
 
     def test_nesting_too_deep_is_refused_not_raised(self):
-        ok = self.body().replace(ANCHOR, ANCHOR + ', "residuals": ' + "[" * 15 + "]" * 15, 1)
+        ok = self.body().replace(ANCHOR, ANCHOR + ', "x": ' + "[" * 15 + "]" * 15, 1)
         G.load_record(ok.encode())                                   # 16 levels: read (then refused as mistyped)
-        over = self.body().replace(ANCHOR, ANCHOR + ', "residuals": ' + "[" * 16 + "]" * 16, 1)
+        over = self.body().replace(ANCHOR, ANCHOR + ', "x": ' + "[" * 16 + "]" * 16, 1)
         self.load_fails(over.encode(), "the record nests too deeply to read (more than 16 levels)")
         quoted = self.body().replace(ANCHOR, ANCHOR + ', "change": "%s"' % ("[{" * 50 + '\\\"' + "]}" * 50), 1)
         self.assertEqual(G.load_record(quoted.encode())["change"][:4], "[{[{")   # brackets inside a string do not count
-        raw = self.body().replace(ANCHOR, ANCHOR + ', "residuals": ' + "[" * 200000 + "]" * 200000, 1)
+        raw = self.body().replace(ANCHOR, ANCHOR + ', "x": ' + "[" * 200000 + "]" * 200000, 1)
         self.load_fails(raw.encode(), "the record nests too deeply to read")
 
     def test_a_record_over_the_size_bound_is_refused(self):
@@ -540,10 +537,10 @@ class StrictJson(unittest.TestCase):
         self.assertIn("the record repeats the key 'blockers_open'", out)
 
     def test_the_cli_refuses_nan_a_bom_and_deep_nesting(self):
-        for make, want in ((lambda t: self.body(t).replace(ANCHOR, ANCHOR + ', "residuals": [NaN]', 1),
+        for make, want in ((lambda t: self.body(t).replace(ANCHOR, ANCHOR + ', "x": [NaN]', 1),
                             "non-standard constant NaN"),
                            (lambda t: b"\xef\xbb\xbf" + self.body(t).encode(), "byte order mark"),
-                           (lambda t: self.body(t).replace(ANCHOR, ANCHOR + ', "residuals": '
+                           (lambda t: self.body(t).replace(ANCHOR, ANCHOR + ', "x": '
                                                            + "[" * 100000 + "]" * 100000, 1), "nests too deeply")):
             c = CliRepo(); c.start(self)
             c.change(".github/agent/bin/x.py", "b\n")
@@ -682,9 +679,13 @@ class CliRepo:
     def tree(self):
         return run_main("--print-tree")[1].strip()
 
-    def record(self, make, raw=None):
-        """Write make(tree) (or raw text or bytes) as the record of the current content and commit it; returns its path."""
-        t = self.tree()
+    def legacy_tree(self):
+        return G.legacy_tree_hash("HEAD")
+
+    def record(self, make, raw=None, legacy=False):
+        """Write make(tree) (or raw text or bytes) as the record of the current content and commit it; returns its path.
+        legacy: at the path named by the legacy tree hash (where every record merged before schema v2 lives)."""
+        t = self.legacy_tree() if legacy else self.tree()
         path = ".github/agent/reviews/%s.json" % t
         if callable(raw):
             raw = raw(t)
@@ -903,11 +904,12 @@ class LegacyRecord(unittest.TestCase):
     def setUp(self):
         self.r = CliRepo().start(self)
 
-    def merged_legacy(self, make=legacy, raw=None):
-        """main: the content x.py=b was reviewed and its v1 record merged; then main moved on to x.py=c.
-        A pull request restoring x.py=b carries that same record, unchanged. Returns the record path."""
+    def merged_legacy(self, make=legacy, raw=None, at_legacy=True):
+        """main: the content x.py=b was reviewed and its record merged (a v1 record at the path named by the legacy tree
+        hash, as every record merged before schema v2 is; at_legacy=False: at the schema v2 tree hash's path); then
+        main moved on to x.py=c. A pull request restoring x.py=b carries that same record, unchanged. Returns its path."""
         self.r.change(".github/agent/bin/x.py", "b\n")
-        path = self.r.record(make, raw=raw)
+        path = self.r.record(make, raw=raw, legacy=at_legacy)
         self.r.change(".github/agent/bin/x.py", "c\n")
         self.r.base = self.trusted = self.r.rev()
         self.r.change(".github/agent/bin/x.py", "b\n")          # the PR: a pure revert to the reviewed tree
@@ -946,11 +948,17 @@ class LegacyRecord(unittest.TestCase):
         self.assertIn("a schema v2 record is required", out)
 
     def test_an_unreadable_trusted_revision_fails_closed(self):
+        # round 3: refused before anything is judged, a schema v2 record included (it once cleared beside it)
         self.merged_legacy()
-        for bad in ("no-such-ref", "0" * 40, "HEAD:src", "-x", "--all"):
-            rc, out, _ = self.r.judge("--subs-rev", bad)
-            self.assertEqual(rc, 1, (bad, out))
-            self.assertIn("the trusted revision %r cannot be read" % bad, out)
+        v2 = CliRepo().start(self); v2.change(".github/agent/bin/x.py", "b\n"); v2.record(good)
+        for repo in (self.r, v2):
+            os.chdir(repo.d)
+            self.assertEqual(repo.judge()[0], 0)
+            for bad in ("no-such-ref", "0" * 40, "HEAD:src", "-x", "--all", "HEAD~99"):
+                rc, out, err = repo.judge("--subs-rev", bad)
+                self.assertEqual(rc, 2, (bad, out, err))
+                self.assertIn("--subs-rev %s is not a commit the gate can read" % G._show(bad), err)
+                self.assertNotIn("clears", out)
 
     def test_a_pr_faking_the_old_shape_fails(self):
         self.r.change(".github/agent/bin/x.py", "b\n")
@@ -977,7 +985,7 @@ class LegacyRecord(unittest.TestCase):
         # the record merged on main AFTER the PR branched: the merge base lacks it, so the pull request ADDS it
         # (relative to its base) even though main's tip (--subs-rev) has the same blob: an added v1 record never counts
         self.r.change(".github/agent/bin/x.py", "b\n")
-        path = self.r.record(legacy)
+        path = self.r.record(legacy, legacy=True)
         tip = self.r.rev()
         self.r.git("checkout", "-q", "-b", "pr", self.r.base)
         self.r.change(".github/agent/bin/x.py", "b\n")
@@ -998,7 +1006,7 @@ class LegacyRecord(unittest.TestCase):
     def test_a_v2_record_is_judged_by_the_v2_rules_even_when_it_is_on_the_trusted_revision(self):
         def blocked(t):
             r = good(t); final(r)["codex_a"]["blockers_open"] = 1; return r
-        self.merged_legacy(make=blocked)
+        self.merged_legacy(make=blocked, at_legacy=False)
         rc, out, _ = self.r.judge()
         self.assertEqual(rc, 1)
         self.assertIn("codex_a blockers_open is 1", out)
@@ -1120,13 +1128,16 @@ def nested(depth, leaf="x"):
 
 class FreeText(unittest.TestCase):
     """REQ-AUD-018-AC4 ("a record that names a substitutes allow-list entry" fails, "naming the entry and saying that no
-    substitute is accepted"): a record holds no free text that could name an entry. change and label are not permitted
-    fields; residuals, the only free text, is plain descriptive text: letters, digits, spaces and a few punctuation
-    marks, at most 1000 characters each, with no run of 4 or more digits and no run of 7 or more hexadecimal characters
-    that holds a digit (no entry id, commit or hash)."""
+    substitute is accepted"): a record holds no free text at all (round 3: a pattern on free text cannot tell an entry id
+    from a word; the former allow-list's own id pr210 passed it). Every string field is an exact value from the gate's
+    lists or a fixed hex form; change, label and residuals are not permitted fields (residuals live in the pull request
+    body and the outbox, never in the machine record)."""
 
-    def test_change_and_label_are_not_permitted_fields(self):
-        for v in ("0317", "plain words"):
+    FORMER_IDS = ("pr210", "pr:210", "0317", "0350", "entry pr210 applies", "deadbeef" * 5, "abcdef" * 11,
+                  "plain words", "")
+
+    def test_change_label_and_residuals_are_not_permitted_fields(self):
+        for v in self.FORMER_IDS:
             r = good(); r["change"] = v
             self.assertIn("record has an extra field 'change': " + PERMITTED_ONLY, problems(r), v)
             r = good(); r["rounds"][0]["label"] = v
@@ -1134,25 +1145,21 @@ class FreeText(unittest.TestCase):
             r = good(); r["rounds"][0]["round"] = 2
             r["rounds"].insert(0, {"round": 1, "label": v, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol")}})
             self.assertIn("rounds[0] has an extra field 'label': " + PERMITTED_ONLY, problems(r), v)
+            for res in ([v], v, [], [[v]], {"id": v}):
+                r = good(); r["residuals"] = res
+                self.assertIn("record has an extra field 'residuals': " + PERMITTED_ONLY, problems(r), (v, res))
 
-    def test_a_residual_that_could_name_an_entry_a_commit_or_a_hash_fails_naming_it(self):
-        for bad in ("0317", "entry 0350 applies", "12345", "see ac34eaf", "1f1f1f1", "x" * 1001, "tab\there",
-                    "new\nline", "caf\u00e9", "{0}", "back\\slash", "a`b", "$X", "#12", "\ud800", "\x00"):
-            r = good(); r["residuals"] = ["fine", bad]
-            ps = problems(r)
-            hit = [p for p in ps if p.startswith("record residuals[1] ")]
-            self.assertEqual(len(hit), 1, (bad, ps))
-            self.assertIn("is not plain descriptive text", hit[0])
-            self.assertTrue(hit[0].endswith(NO_SUB), hit[0])
-            self.assertIn(G._show(bad), hit[0])
+    def test_the_former_allow_list_id_pr210_never_clears_through_main(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        for res in (["pr210"], ["pr:210"], ["entry pr210 applies"], ["deadbeef" * 5]):
+            c.record(lambda t, res=res: dict(good(t), residuals=res))
+            rc, out, err = run_main_utf8("--base", c.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, (res, out, err))
+            self.assertIn("record has an extra field 'residuals': " + PERMITTED_ONLY, out)
+            self.assertNotIn("clears", out)
 
-    def test_plain_residuals_clear(self):
-        r = good(); r["residuals"] = [
-            "crafted fixture only: REQ-AUD-018-AC16, PR 297, round 3 (line 143) - not reproduced on the candidate",
-            "deadbeef is only a word here; 7 days, 100% (A/B_C+D=E&F*G<H>I!J?K'L\"M)", "", "x" * 1000]
-        self.assertEqual(problems(r), [])
-
-    def test_no_other_string_field_takes_free_text(self):
+    def test_no_string_field_takes_free_text(self):
         def at(r, path):
             o = r
             for k in path[:-1]:
@@ -1163,9 +1170,10 @@ class FreeText(unittest.TestCase):
         paths += [("rounds", 0, "reviewers", s, f) for s in ("codex_a", "codex_b")
                   for f in FIELDS if isinstance(seat("A", "m")[f], str)]
         for path in paths:
-            r = json.loads(json.dumps(r0)); o, k = at(r, path)
-            o[k] = "plain words"
-            self.assertNotEqual(problems(r), [], path)
+            for v in self.FORMER_IDS:
+                r = json.loads(json.dumps(r0)); o, k = at(r, path)
+                o[k] = v
+                self.assertNotEqual(problems(r), [], (path, v))
 
 
 class Diagnostics(unittest.TestCase):
@@ -1197,7 +1205,6 @@ class Diagnostics(unittest.TestCase):
         S = "\\ud800"
         cases = [('"schema": "%s"' % V2, '"schema": "%s"' % S, "has schema '%s'" % S),
                  ('"tree": "', '"tree": "%s' % S, "record binds tree '"),
-                 ('"stop": {', '"residuals": ["%s"], "stop": {' % S, "record residuals[0] '%s'" % S),
                  ('"stop": {', '"reviewed_commit": "%s", "stop": {' % S, "record reviewed_commit is not 40"),
                  ('"reviewer": "codex"', '"reviewer": "%s"' % S, "codex_a reviewer is '%s'" % S),
                  ('"vendor": "openai"', '"vendor": "%s"' % S, "codex_a vendor is '%s'" % S),
@@ -1263,13 +1270,13 @@ class Diagnostics(unittest.TestCase):
     def test_a_deeply_nested_decoded_value_in_any_field_is_reported_not_raised(self):
         deep = nested(200000)
         def put(path):
-            r = good(); r["reviewed_commit"] = "1f" * 20; r["residuals"] = ["x"]
+            r = good(); r["reviewed_commit"] = "1f" * 20
             o = r
             for k in path[:-1]:
                 o = o[k]
             o[path[-1]] = deep
             return r
-        paths = [(k,) for k in ("schema", "tree", "reviewed_commit", "residuals", "rounds", "stop", "extra")]
+        paths = [(k,) for k in ("schema", "tree", "reviewed_commit", "rounds", "stop", "extra")]
         paths += [("rounds", 0), ("rounds", 0, "round"), ("rounds", 0, "reviewers"), ("stop", "codex_a"), ("stop", "extra")]
         paths += [("rounds", 0, "reviewers", "codex_a")] + [("rounds", 0, "reviewers", "codex_a", f) for f in FIELDS]
         paths += [("rounds", 0, "reviewers", "codex_a", "extra"), ("rounds", 0, "reviewers", "extra")]
@@ -1430,6 +1437,241 @@ class RevisionArguments(unittest.TestCase):
             self.assertIn("::error::review gate: the change could not be judged (%s" % type(exc).__name__, out)
             self.assertIn("it does not clear", out)
 
+
+
+# ---- round 3 (Oct 11): the tree hash, the trusted revision, paths and numbers in diagnostics -----------------------
+def plumb(*a, data=None):
+    """git over raw bytes (a path may hold any byte but NUL), in the current directory."""
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
+                          check=True, capture_output=True, input=data if data is not None else b"").stdout
+
+
+def index_commit(files, remove=(), msg="plumbed"):
+    """Commit `files` ({path bytes: content bytes}) and drop `remove` through the index only (no working-tree file is
+    made, so a path no file system takes, a newline or a byte that is not UTF-8, can be committed); returns the commit."""
+    for path in remove:
+        plumb("update-index", "--force-remove", "--", path)
+    for path, content in files.items():
+        blob = plumb("hash-object", "-w", "--stdin", data=content).strip().decode()
+        plumb("update-index", "--add", "--cacheinfo", "100644,%s,%s" % (blob, path.decode("utf-8", "surrogateescape")))
+    plumb("commit", "-qm", msg)
+    return plumb("rev-parse", "HEAD").strip().decode()
+
+
+def listing(rev):
+    """The hashed entries of `rev` as raw bytes, read independently of the gate."""
+    out = plumb("ls-tree", "-r", "-z", "--full-tree", rev, "--", ".github/agent/", *[g for g in G.GUARDED])
+    return [e for e in out.split(b"\0") if e and not re.fullmatch(rb"\.github/agent/reviews/[0-9a-f]{64}\.json",
+                                                                      e.split(b"\t", 1)[-1])]
+
+
+def old_gate_hash(rev):
+    """The tree hash as the gate merged before schema v2 computed it: entries joined with newlines."""
+    return __import__("hashlib").sha256(("\n".join(e.decode() for e in listing(rev)) + "\n").encode()).hexdigest()
+
+
+def blob_id(content):
+    return plumb("hash-object", "--stdin", data=content).strip().decode()
+
+
+class TreeHash(unittest.TestCase):
+    """REQ-AUD-018-AC3 ("every change ... clears the ... stop rule": a record binds exactly one content), AC5 ("the record
+    binds the pull request's tree") and AC7 (an old record clears only the content it was merged for). The tree hash
+    frames every entry with a NUL, which no entry can hold, after a version prefix: two different trees never share a
+    serialization. A schema v1 record is named by the legacy hash (entries joined with newlines), which is computed only
+    to find such a record and only for a tree with no control character and no byte that is not UTF-8 in any hashed
+    path, where the legacy serialization is unambiguous too."""
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+        self.P, self.Q = b".github/agent/bin/p", b".github/agent/bin/q"
+        self.A = index_commit({self.P: b"P\n", self.Q: b"Q\n"}, msg="tree A")
+        crafted = self.P + b"\n100644 blob " + blob_id(b"Q\n").encode() + b"\t" + self.Q
+        self.crafted = crafted
+
+    def make_b(self):
+        """Tree B: one path that holds tree A's second entry as text, with A's first blob."""
+        return index_commit({self.crafted: b"P\n"}, remove=(self.P, self.Q), msg="tree B")
+
+    def test_the_tree_hash_is_the_nul_framed_listing_after_a_version_prefix(self):
+        want = __import__("hashlib").sha256(b"auditor-tree/v2\0" + b"".join(e + b"\0" for e in listing("HEAD"))).hexdigest()
+        self.assertEqual(G.tree_hash("HEAD"), want)
+        self.assertEqual(run_main("--print-tree")[1].strip(), want)
+
+    def test_two_trees_the_legacy_hash_confuses_have_two_tree_hashes(self):
+        b = self.make_b()
+        self.assertEqual(old_gate_hash(self.A), old_gate_hash(b))             # the round-3 finding, on real trees
+        self.assertNotEqual(listing(self.A), listing(b))
+        self.assertNotEqual(G.tree_hash(self.A), G.tree_hash(b))
+        self.assertEqual(G.legacy_tree_hash(self.A), old_gate_hash(self.A))   # the legacy hash is the old gate's
+        self.assertIsNone(G.legacy_tree_hash(b))                              # a newline in a path: no legacy name
+
+    def test_no_legacy_name_for_a_path_with_a_control_character_or_not_utf_8(self):
+        for bad in (b"a\nb", b"a\rb", b"a\x1bb", b"a\x7fb", b"a\x01b", b"\xff", b"caf\xc3"):
+            plumb("reset", "-q", "--hard", self.A)
+            index_commit({b".github/agent/bin/" + bad: b"x\n"})
+            self.assertIsNone(G.legacy_tree_hash("HEAD"), bad)
+            self.assertRegex(G.tree_hash("HEAD"), "^[0-9a-f]{64}$")
+        plumb("reset", "-q", "--hard", self.A)
+        index_commit({".github/agent/bin/café x.py".encode(): b"x\n"})        # plain UTF-8: named as before
+        self.assertEqual(G.legacy_tree_hash("HEAD"), old_gate_hash("HEAD"))
+
+    def test_a_merged_v1_record_does_not_clear_a_tree_that_only_shares_its_legacy_hash(self):
+        legacy_path = (".github/agent/reviews/%s.json" % old_gate_hash(self.A)).encode()
+        index_commit({legacy_path: json.dumps(legacy(old_gate_hash(self.A))).encode()}, msg="v1 record for A")
+        index_commit({b".github/agent/bin/x.py": b"moved on\n"}, msg="main moves on")
+        main = plumb("rev-parse", "HEAD").strip().decode()
+        # a pull request back to tree A exactly: the v1 record clears it, as it did before (AC7)
+        index_commit({b".github/agent/bin/x.py": b"a\n"}, msg="revert to A")
+        rc, out, err = run_main_utf8("--base", main, "--head", "HEAD", "--subs-rev", main)
+        self.assertEqual(rc, 0, (out, err))
+        self.assertIn("honoured as merged, not re-judged", out)
+        # a pull request to tree B (the legacy hash of A, different content): refused
+        plumb("reset", "-q", "--hard", main)
+        index_commit({b".github/agent/bin/x.py": b"a\n"}, msg="x back")
+        self.make_b()
+        self.assertEqual(old_gate_hash("HEAD"), old_gate_hash(self.A))
+        rc, out, err = run_main_utf8("--base", main, "--head", "HEAD", "--subs-rev", main)
+        self.assertEqual(rc, 1, (out, err))
+        self.assertNotIn("honoured", out)
+        self.assertIn("no valid review record", out)
+
+    def test_a_path_that_is_not_utf_8_is_hashed_and_named_escaped(self):
+        index_commit({b".github/agent/bin/\xff.py": b"x\n"})
+        rc, out, _ = run_main_utf8("--print-tree")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out.strip(), "^[0-9a-f]{64}$")
+        rc, out, _ = run_main_utf8("--base", self.r.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertNotIn("could not be judged", out)
+        self.assertIn("no valid review record", out)
+
+    def test_a_v2_record_at_the_legacy_path_or_a_v1_record_at_the_tree_path_never_clears(self):
+        for at_legacy, make in ((True, good), (False, legacy)):
+            lr = LegacyRecord(); lr.r = CliRepo().start(self)
+            path = lr.merged_legacy(make=make, at_legacy=at_legacy)
+            rc, out, _ = run_main_utf8("--base", lr.r.base, "--head", "HEAD")
+            self.assertEqual(rc, 1, (at_legacy, out))
+            self.assertIn(path, out)
+            self.assertIn("a schema v2 record is required", out)
+            self.assertNotIn("honoured", out)
+
+    def test_a_record_at_the_tree_path_is_judged_even_beside_a_merged_v1_record(self):
+        lr = LegacyRecord(); lr.r = CliRepo().start(self)
+        lr.merged_legacy()
+        self.assertEqual(lr.r.judge()[0], 0)
+        lr.r.record(lambda t: dict(good(t), stop={"codex_a": "clear", "codex_b": "blocked"}))
+        rc, out, _ = lr.r.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("stop verdict for codex_b is 'blocked'", out)
+
+
+class ControlSafeDiagnostics(unittest.TestCase):
+    """REQ-AUD-018-AC5 and AC6 ("a message naming it"): every line the gate writes is one line of plain ASCII of bounded
+    length: a control character (newline, carriage return, escape, ...) anywhere in a line is written escaped, a changed
+    path is shown escaped and cut like any record value, and no path can forge a second annotation line."""
+
+    def test_say_escapes_every_control_character_and_bounds_the_line(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            G._say("a\nb\rc\x1bd\x7fe\x00f\tgéh i")
+        self.assertEqual(out.getvalue(), "a\\nb\\rc\\x1bd\\x7fe\\x00f\\tg\\xe9h\\u2028i\n")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            G._say("y" * 100000)
+        self.assertEqual(out.getvalue().count("\n"), 1)
+        self.assertLessEqual(len(out.getvalue()), G.SAY_CHARS + 60)
+        self.assertIn("100000 characters", out.getvalue())
+
+    def test_a_changed_path_cannot_forge_a_line_or_an_escape_sequence(self):
+        c = CliRepo(); c.start(self)
+        index_commit({b".github/agent/bin/a\n::notice::forged\x1b[31m\r" + b"z" * 3000: b"x\n"})
+        rc, out, err = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), 1, out)
+        self.assertTrue(lines[0].startswith("::error::review gate:"), lines[0][:200])
+        self.assertNotIn("\x1b", out + err)
+        self.assertNotIn("\r", out + err)
+        self.assertIn("a\\n::notice::forged\\x1b[31m\\r", out)
+        self.assertLess(len(lines[0]), 1000)
+
+    def test_a_changed_path_that_is_long_is_cut(self):
+        c = CliRepo(); c.start(self)
+        index_commit({b".github/agent/bin/" + b"w" * 3000: b"x\n"})
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out[:300])
+        self.assertLess(max(map(len, out.splitlines())), 1000)
+        self.assertIn("characters)", out)
+
+
+class BoundedNumbers(unittest.TestCase):
+    """REQ-AUD-018-AC5 ("any ... malformed field fails ... naming it") and AC3: a number in a record is at most
+    MAX_NUMBER_CHARS characters long, refused before it is converted (on every supported Python, the oldest included,
+    conversion of a long decimal takes time out of proportion to its length), by the strict reader and by the reader of
+    a merged old file alike; and every number in a diagnostic is shown bounded."""
+
+    def test_a_long_number_is_refused_before_conversion(self):
+        for tok in ("1" + "0" * G.MAX_NUMBER_CHARS, "-" + "9" * G.MAX_NUMBER_CHARS, "1." + "0" * G.MAX_NUMBER_CHARS,
+                    "1e" + "0" * G.MAX_NUMBER_CHARS):
+            with self.assertRaises(ValueError) as cm:
+                G.load_record(('{"schema": "%s", "x": %s}' % (V2, tok)).encode())
+            self.assertIn("the record holds a number longer than %d characters" % G.MAX_NUMBER_CHARS, str(cm.exception))
+        ok = G.load_record(('{"x": [%s, %s]}' % ("9" * G.MAX_NUMBER_CHARS, "-" + "9" * (G.MAX_NUMBER_CHARS - 1))).encode())
+        self.assertEqual(ok["x"][0], int("9" * G.MAX_NUMBER_CHARS))
+        self.assertGreaterEqual(G.MAX_NUMBER_CHARS, 19)                   # every 64-bit integer still reads
+
+    def test_a_merged_old_file_with_a_long_number_fails_closed(self):
+        kind, why = G.classify_merged(('{"schema": "%s", "schema": "%s", "x": 1%s}' % (V1, V1, "0" * 1000)).encode())
+        self.assertEqual(kind, "refused")
+        self.assertIn("its schema cannot be told", why)
+
+    def test_a_record_of_huge_numbers_is_refused_quickly_on_this_python(self):
+        code = ("import importlib.util,sys,time;s=importlib.util.spec_from_file_location('g',sys.argv[1]);"
+                "g=importlib.util.module_from_spec(s);s.loader.exec_module(g);t=time.time()\n"
+                "raws=[b'{\"rounds\": [{\"round\": 1'+b'0'*900000+b'}]}', b'['+b'1'*500000+b','+b'2'*500000+b']']\n"
+                "for raw in raws:\n"
+                "  try: g.load_record(raw)\n"
+                "  except ValueError: pass\n"
+                "  else: sys.exit('read')\n"
+                "  if g.classify_merged(raw)[0] != 'refused': sys.exit('classified')\n"
+                "print('refused in %.1fs' % (time.time()-t))")
+        p = subprocess.run([sys.executable, "-I", "-c", code, SCRIPT], capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("refused in", p.stdout)
+
+    def test_round_numbers_in_a_diagnostic_are_shown_bounded(self):
+        r = good(); r["rounds"][0]["round"] = 10 ** 3000
+        r["rounds"].insert(0, {"round": 10 ** 4000, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol")}})
+        ps = problems(r)
+        hit = [p for p in ps if "does not follow" in p]
+        self.assertEqual(len(hit), 1, ps)
+        self.assertLess(len(hit[0]), 200)
+        self.assertIn("bits", hit[0])
+
+
+class GlobalProblemBound(unittest.TestCase):
+    """REQ-AUD-018-AC7 ("any other v1 record, including a v1 record added or edited by the pull request, fails, naming
+    the record") and the bounded diagnostics: however many records a pull request adds, the gate writes at most
+    MAX_PROBLEMS problem lines and one count line in all, and stops reading added records once that many have failed."""
+
+    def test_many_bad_added_records_are_bounded_in_lines_and_reads(self):
+        c = CliRepo(); c.start(self)
+        for i in range(G.MAX_PROBLEMS * 3):
+            c.write(".github/agent/reviews/%064x.json" % i, '{"schema": "%s"}' % V1)
+        c.write(".github/agent/bin/x.py", "b\n"); c.git("add", "-A"); c.git("commit", "-qm", "many")
+        calls, real = [], G._git
+        def spy(*a, **k):
+            calls.append(a)
+            return real(*a, **k)
+        with unittest.mock.patch.object(G, "_git", spy):
+            rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1)
+        lines = out.splitlines()
+        self.assertLessEqual(len(lines), G.MAX_PROBLEMS + 1, len(lines))
+        self.assertIn("more problem(s) not shown", lines[-1])
+        self.assertLessEqual(len([a for a in calls if a[0] == "cat-file"]), G.MAX_PROBLEMS)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
