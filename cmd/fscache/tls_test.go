@@ -617,7 +617,10 @@ func TestTLSCertificateReadOnceAtStartup(t *testing.T) {
 	}
 }
 
-// proves: REQ-TLS-001-AC8 — the startup line carries tls=enabled or tls=disabled beside auth and fips140
+// proves: REQ-TLS-001-AC8 — the startup record ("fscache: starting") carries tls=enabled or tls=disabled beside auth and fips140
+//
+// The record is found by its message, not by position: an unknown-variable
+// warning (set here on purpose) or a reconcile warning is logged before it.
 func TestStartupLineCarriesTLSState(t *testing.T) {
 	p := writePair(t, t.TempDir(), "startup", "MARKER-START-0d0e0f")
 	for _, tc := range []struct {
@@ -635,18 +638,19 @@ func TestStartupLineCarriesTLSState(t *testing.T) {
 			for k, v := range tc.env {
 				t.Setenv(k, v)
 			}
+			t.Setenv("FSCACHE_NOT_A_SETTING", "x") // a warning record precedes the startup record
 			var buf bytes.Buffer
 			ctx, cancel := context.WithCancel(context.Background())
 			if err := serve(ctx, slog.New(slog.NewJSONHandler(&buf, nil)), func() { cancel() }); err != nil {
 				t.Fatalf("serve: %v", err)
 			}
-			var found bool
+			var found int
 			for _, line := range strings.Split(buf.String(), "\n") {
 				var rec map[string]any
 				if json.Unmarshal([]byte(line), &rec) != nil || rec["msg"] != "fscache: starting" {
 					continue
 				}
-				found = true
+				found++
 				if rec["tls"] != tc.want {
 					t.Errorf("tls = %v, want %q", rec["tls"], tc.want)
 				}
@@ -656,8 +660,8 @@ func TestStartupLineCarriesTLSState(t *testing.T) {
 					}
 				}
 			}
-			if !found {
-				t.Fatalf("no startup line in %q", buf.String())
+			if found != 1 {
+				t.Fatalf("%d startup records in %q, want exactly one", found, buf.String())
 			}
 		})
 	}
@@ -853,7 +857,11 @@ func TestTLSPathMustBeRegularFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	const C, K = "FSCACHE_TLS_CERT", "FSCACHE_TLS_KEY"
-	for _, bad := range []struct{ name, path string }{{"FIFO", fifo}, {"directory", subdir}, {"device", os.DevNull}} {
+	fifoLink := filepath.Join(dir, "fifo-link.pem")
+	if err := os.Symlink(fifo, fifoLink); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []struct{ name, path string }{{"FIFO", fifo}, {"FIFO behind a symlink", fifoLink}, {"directory", subdir}, {"device", os.DevNull}} {
 		for _, side := range []string{C, K} {
 			t.Run(bad.name+" at "+side, func(t *testing.T) {
 				clearEnv(t)
@@ -935,4 +943,44 @@ func TestTLSReadErrorRefused(t *testing.T) {
 		t.Fatal("a file that cannot be read was accepted")
 	}
 	checkRefusal(t, badPairCase{names: []string{"FSCACHE_TLS_CERT", p.certPath, "cannot be read"}, files: []string{p.certPath, p.keyPath}}, err.Error())
+}
+
+// proves: REQ-TLS-001-AC3 — a file swapped for a FIFO between the check and the open is refused at once: the open does not wait for a writer
+func TestTLSFileSwappedForFIFOIsRefusedWithoutBlocking(t *testing.T) {
+	dir := t.TempDir()
+	p := writePair(t, dir, "swapfifo", "MARKER-SWAPFIFO-b1b1b1")
+	orig := openTLSFile
+	openTLSFile = func(path string) (*os.File, error) {
+		// the path passed the stat as a regular file; it becomes a FIFO
+		// with no writer before the real open runs
+		if err := os.Remove(path); err != nil {
+			return nil, err
+		}
+		if err := syscall.Mkfifo(path, 0o600); err != nil {
+			return nil, err
+		}
+		return orig(path)
+	}
+	defer func() { openTLSFile = orig }()
+	t.Cleanup(func() {
+		// release an open that blocked (the red run) so no goroutine is left behind
+		if w, err := os.OpenFile(p.certPath, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+			_ = w.Close()
+		}
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := loadKeyPair(p.certPath, p.keyPath)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		want := fmt.Sprintf("FSCACHE_TLS_CERT=%q is not a regular file", p.certPath)
+		if err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want exactly %q", err, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the open blocked on a FIFO swapped in after the check")
+	}
 }
