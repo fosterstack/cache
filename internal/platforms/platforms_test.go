@@ -719,8 +719,8 @@ var wantArchiveNames = []string{
 // name (a path out of its build directory onto an archive's path, a separator, a template, missing), any admitted
 // field whose value is not the committed configuration's pinned literal (main, env, flags, ldflags, mod_timestamp,
 // binary, the hooks, release, changelog, version: a linker profile, an ellipsis main, an output redirect, a hook
-// writing into dist/, a template), or a form the check cannot read is refused (fail closed); the real configuration's
-// binary output paths are resolved.
+// writing into dist/, a template), any explicit YAML tag (also one decoding to the pinned value), a YAML directive, or
+// a form the check cannot read is refused (fail closed); the real configuration's binary output paths are resolved.
 func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 	real := read(t, ".goreleaser.yaml")
 	const fipsGoos = "      - GOFIPS140=v1.0.0\n    goos:\n      - linux\n"
@@ -1611,9 +1611,11 @@ func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
 // count interrupted by a link destination or a URL, in any number word, digits, compound or vague), a darwin
 // archive name, and any inline HTML, character reference or invisible character (refused outright by the content
 // guard, a tag-like "<" anywhere, a code span or fence included; an exception marker inside a line of prose is refused),
-// an angle-bracket link destination, "no archives" and a count after a comparison (more than, at least, up to, ...) are
-// each refused; phrases that name archives without a wrong count pass (a count in a link destination or title is not
-// read; a marker ending its line; a placeholder written as a word); the wrapped Apple Silicon mention in
+// an angle-bracket link destination, "no archives", "none of the archives" and a count after a comparison (more than,
+// at least, up to, 4+ also before punctuation, four-plus, a comparison sign, ...) are each refused, as are a link close
+// with no opener, a full reference link whose label the file does not define and a parenthesized title holding an
+// unescaped "("; phrases that name archives without a wrong count pass (a count in a link destination or title is not
+// read, nor a defined reference label; a marker ending its line; a placeholder written as a word); the wrapped Apple Silicon mention in
 // docs/install.md passes only through its named exception.
 func TestDocsCheckRefusesMutants(t *testing.T) {
 	const f = "docs/install.md"
@@ -1963,7 +1965,8 @@ const notesFixture = "# Notes for the next release\n\nBehavior changes since the
 // missing required sentence, the sentence outside an entry that starts with it and ends with the 0390 citation
 // (a paragraph, a prefixed or emphasized bullet, another citation), a repeated sentence and a wrong archive count
 // are each refused; notes cleared after publication pass only while the changelog carries the cited entry, read on
-// plain lines ("- " or "* " after optional indentation; no fence concept, so a fenced bullet line is an entry).
+// plain lines ("- " or "* " after optional indentation; no fence concept, so a fenced bullet line is an entry), and
+// only while the sentence appears in the changelog nowhere but in such entries.
 func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 	notes := notesFixture
 	if ps := checkNotes(notes, "", releaseArchiveCount(t)); len(ps) > 0 {
@@ -2341,7 +2344,9 @@ func TestEvidenceMappingsClaimNoDarwin(t *testing.T) {
 // document; inline HTML, character references and invisible characters (raw or as a YAML escape) are refused
 // outright; a test declared only in a file the go tool does not select for linux/amd64 and linux/arm64 (with the
 // target's architecture feature tags) authorizes no reference; a link form the plain-text reading does not read (an
-// angle-bracket destination) is refused.
+// angle-bracket destination) is refused; the placeholder outside its leading comment line (a value, a key, an anchor,
+// a later, indented or line comment), any explicit YAML tag other than !!str (a !!binary scalar, whose decoded text is
+// read too) and a YAML directive are refused.
 func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 	real := read(t, mappingsFile)
 	tests := packageTests(t)
@@ -2589,8 +2594,9 @@ func TestDocsHoldNoInlineHTMLOrInvisibleCharacters(t *testing.T) {
 // Markdown structure is read, so no fence, list, heading or code span hides one: the round-7 reviewer shapes and the
 // placeholders accepted until round 7 are refused), every character reference, and an exception marker anywhere but
 // the end of its line on the original line; placeholders written as words, the listed markers ending their lines and
-// visible punctuation (a "<" before a space, a digit, "=" or "-") pass. In the mappings file angle-bracket markup is
-// refused everywhere but the listed placeholder.
+// visible punctuation (a "<" before a space, a digit, "=" or "-") pass. Two markers on one line are refused in either
+// order. In the mappings file angle-bracket markup is refused everywhere but the listed placeholder on a whole-line
+// comment at column 0 in the leading comment block, and only that placement counts as the exception being used.
 func TestContentGuardRefusesMutants(t *testing.T) {
 	const md = "docs/install.md"
 	invisible := map[string]string{
