@@ -87,9 +87,20 @@ def fragment(arch, tag):
 def image_outputs(image, tag):
     """What assemble-image.sh writes for an image: a pure function of the apks it was given (both architectures) and the build date."""
     body = "|".join(apk_bytes(VARIANT_OF[image], a, tag).decode().split("\n", 1)[1] for _, a, _ in RUNNERS)
-    digest = "sha256:" + sha(("image|%s|%s|%s" % (image, SDE, body)).encode())
+    blob = ("image|%s|%s|%s" % (image, SDE, body)).encode()          # the image index blob: its sha256 is the image digest
+    digest = "sha256:" + sha(blob)
     manifests = ["%s sha256:%s" % (g, sha(("m-%s|%s|%s" % (g, image, body)).encode())) for _, _, g in RUNNERS]
-    return {"digest": digest, "manifests": manifests, "lock": ("lock|" + image).encode(), "sbom": ("sbom|" + image).encode()}
+    return {"digest": digest, "blob": blob, "manifests": manifests, "lock": ("lock|" + image).encode(), "sbom": ("sbom|" + image).encode()}
+
+
+def layout_files(image, tag):
+    """{path relative to out/<image>/: bytes}: the OCI layout directory assemble-image.sh leaves for an image (PROPOSED/UNVERIFIED, cache P5): oci-layout,
+    index.json with ONE descriptor (the image index) and blobs/sha256/<hex> holding that index. The digest is the descriptor's, so it does not change
+    between Build and a push of the directory (a docker-format tarball push does change it)."""
+    o = image_outputs(image, tag)
+    hexd = o["digest"].split(":", 1)[1]
+    index = {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": o["digest"], "size": len(o["blob"])}]}
+    return {"oci-layout": b'{"imageLayoutVersion": "1.0.0"}', "index.json": json.dumps(index).encode(), "blobs/sha256/" + hexd: o["blob"]}
 
 
 def archive_files(tag):

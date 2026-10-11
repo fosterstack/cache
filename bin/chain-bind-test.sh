@@ -309,6 +309,8 @@ def merge_tree(name, tag="v0.3.0"):
         h.write("%s/apk/%s/items-apk.json" % (d, runner), json.dumps(h.fragment(arch, tag)))
     for image in h.IMAGES:
         o = h.image_outputs(image, tag)
+        for rel, data in h.layout_files(image, tag).items():
+            h.write("%s/out/%s/%s" % (d, image, rel), data)
         h.write("%s/out/%s.digest" % (d, image), o["digest"] + "\n")
         h.write("%s/out/%s.manifests" % (d, image), "\n".join(o["manifests"]) + "\n")
         h.write("%s/out/%s.full.lock.json" % (d, image), o["lock"])
@@ -397,6 +399,41 @@ refused("items-merge: an architecture outside amd64 and arm64 in <image>.manifes
 d = merge_tree("m4d")
 edit_manifests(d, "production", lambda L: [L[0] + " extra"] + L[1:])
 refused("items-merge: a malformed line in <image>.manifests is refused, never a traceback", d, do_merge(d), "manifests", "production.manifests")
+# Build's images artifact ships each variant as an OCI LAYOUT directory out/<variant>/ (oci-layout, index.json, blobs/), so the digest does not change between
+# Build and a push (real crane runs: a docker-format tarball push changes the digest, a layout directory keeps it). PROPOSED/UNVERIFIED: cache P5 decides the
+# shape of assemble-image.sh's output; the judge pins this one.
+def layout_refused(label, edit, fragment):
+    dd = merge_tree("lay-" + label.split()[0])
+    edit(dd)
+    refused("items-merge: " + label, dd, do_merge(dd), "layout", fragment)
+
+
+def drop_layout(dd, image="production"):
+    shutil.rmtree("%s/out/%s" % (dd, image))
+
+
+d = merge_tree("lay-ok")
+rc, out, err = do_merge(d)
+check("items-merge: the digest Build records equals the descriptor of the image index in the uploaded layout (production and fips)",
+      rc == 0 and json.load(open(d + "/items.json"))["image-production"] == h.image_outputs("production", "v0.3.0")["digest"], "exit %s %s" % (rc, err[:120]))
+layout_refused("a docker-save tarball shape (manifest.json at the root, no oci-layout) is refused", lambda dd: (os.remove(dd + "/out/production/oci-layout"),
+               h.write(dd + "/out/production/manifest.json", "[]")), "production")
+layout_refused("a layout directory missing for a variant (only the old <variant>.tar file) is refused", lambda dd: (drop_layout(dd), h.write(dd + "/out/production.tar", "tar")), "production")
+def other_digest(dd):
+    p = dd + "/out/fips/index.json"; ix = json.load(open(p)); ix["manifests"][0]["digest"] = "sha256:" + "7" * 64; open(p, "w").write(json.dumps(ix))
+layout_refused("an index.json whose descriptor is not the recorded digest is refused", other_digest, "fips")
+def two_descriptors(dd):
+    p = dd + "/out/fips/index.json"; ix = json.load(open(p)); ix["manifests"] = ix["manifests"] * 2; open(p, "w").write(json.dumps(ix))
+layout_refused("an index.json with two descriptors is refused", two_descriptors, "fips")
+def no_blob(dd):
+    hexd = h.image_outputs("production", "v0.3.0")["digest"].split(":", 1)[1]; os.remove("%s/out/production/blobs/sha256/%s" % (dd, hexd))
+layout_refused("a layout whose index blob is missing is refused", no_blob, "production")
+def bad_blob(dd):
+    hexd = h.image_outputs("production", "v0.3.0")["digest"].split(":", 1)[1]; open("%s/out/production/blobs/sha256/%s" % (dd, hexd), "ab").write(b"x")
+layout_refused("a layout whose blob does not hash to its name is refused", bad_blob, "production")
+def bad_version(dd):
+    open(dd + "/out/production/oci-layout", "w").write('{"imageLayoutVersion": "2.0.0"}')
+layout_refused("an oci-layout file of another version is refused", bad_blob if False else bad_version, "production")
 d = merge_tree("m5")
 os.remove(d + "/dist/" + h.archive_files("v0.3.0")["archive-fips-linux-arm64"][0])
 refused("items-merge: a missing archive is refused", d, do_merge(d), "missing", "archive-fips-linux-arm64")
@@ -417,7 +454,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 57
+EXPECT = 65
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

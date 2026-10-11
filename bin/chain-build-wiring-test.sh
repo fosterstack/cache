@@ -1466,7 +1466,7 @@ guard 1 "releasE is refused" releasE
 guard 1 "release with a trailing space is refused" "release "
 guard 1 "an empty mode is refused" ""
 guard 1 "no argument is refused"
-# Codex A r1 F1: the snapshot callers consume only what Build uploads (images, dist, digests, items), the images are Build's <variant>.tar archives of production and fips
+# Codex A r1 F1: the snapshot callers consume only what Build uploads (images, dist, digests, items), the images are Build's OCI layout directories <variant>/ of production and fips
 # (no debug variant: owner, Oct 9), and the checksum text is rebuilt from the digests.json output (Build has no checksums output)
 cat > "$work/f1.py" <<'PY'
 import re, sys, yaml
@@ -1480,7 +1480,8 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-if re.search(r"\.oci\b", text): bad.append("still reads a <variant>.oci archive (Build's images artifact holds <variant>.tar)")
+if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", text): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
+if "/tmp/oci/" in text and not re.search(r"\boci:/tmp/oci/\$\{v\}|\boci:%s", text): bad.append("does not read the layout with skopeo oci:")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 f1() { # f1 ok|caught LABEL FILE [sed-expr]
@@ -1493,7 +1494,7 @@ f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflow
 f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
 f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
 f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
-f1 caught "a <variant>.oci archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#/tmp/oci/${v}.tar#/tmp/oci/${v}.oci#'
+f1 caught "a <variant>.tar archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#oci:/tmp/oci/${v}#oci-archive:/tmp/oci/${v}.tar#'
 f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
 # Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
 # harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build

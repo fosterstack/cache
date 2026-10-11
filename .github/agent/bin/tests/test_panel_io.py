@@ -44,6 +44,16 @@ def tar_bytes(files, gz=True):
     return buf.getvalue()
 
 
+def write_layout(path, files):
+    """An OCI image LAYOUT directory (Build's images artifact: images/<variant>/): oci-layout, index.json, blobs/sha256/<hex>."""
+    os.makedirs(path, exist_ok=True)
+    for name, data, _mode in [("oci-layout", b'{"imageLayoutVersion": "1.0.0"}', 0o644)] + list(files):
+        p = os.path.join(path, name)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as fh:
+            fh.write(data)
+
+
 def oci_archive(path, layers, arch="arm64"):
     blobs = {}
 
@@ -62,8 +72,7 @@ def oci_archive(path, layers, arch="arm64"):
         {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": put(empty_index)},
         {"mediaType": "application/vnd.oci.image.index.v1+json", "digest": put(inner)}]}).encode()
     files = [("index.json", index, 0o644)] + [("blobs/" + d.replace(":", "/"), b, 0o644) for d, b in blobs.items()]
-    with open(path, "wb") as fh:
-        fh.write(tar_bytes(files, gz=False))
+    write_layout(path, files)
 
 
 STATUS = b"Package: tzdata\nVersion: 2026c-0+deb13u1\nStatus: install ok installed\n\nPackage: base-files\nVersion: 13.8\n"
@@ -83,8 +92,8 @@ class Image(Tmp):
                         ("usr/bin/cache", GO_BIN, 0o755), ("usr/bin/tool", b"\x7fELF no go", 0o755),
                         ("etc/old-tzdata.conf", b"x", 0o644)])
         l2 = tar_bytes([("etc/.wh.old-tzdata.conf", b"", 0o644), ("var/lib/dpkg/status", b"Package: netbase\n", 0o644)])
-        oci_archive(os.path.join(self.d, "fips.oci"), [l1, l2])
-        return os.path.join(self.d, "fips.oci")
+        oci_archive(os.path.join(self.d, "fips"), [l1, l2])
+        return os.path.join(self.d, "fips")
 
     def test_layers_apply_in_order_and_whiteouts_remove(self):
         facts = P.read_image(self.make(), "arm64")
@@ -157,7 +166,7 @@ class Image(Tmp):
         B = P.Bundles(self.d, read=read, buildinfo=lambda g: {})
         f = {"image": "fips-arm64", "package": "tzdata", "version": "1", "seen_by": ["scout"]}
         B(f); B(f)
-        self.assertEqual(calls, [("fips.tar", "arm64")])
+        self.assertEqual(calls, [("fips", "arm64")])
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertIn("could not be read", B(dict(f, image="debug-amd64")))
         self.assertIn("no evidence from image debug-amd64", err.getvalue())
@@ -324,15 +333,10 @@ def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readab
     read_image() for `arch` (Codex #177 r2, B2: a present member alone proves nothing; the evidence must actually
     parse the same way Bundles() reads it), unless blob=False (no blob at all) or readable=False (present but not a
     real manifest — the getmember-only check of r1's fix passed this, r2 correctly still refuses it)."""
-    path = os.path.join(d, variant + ".tar")
+    path = os.path.join(d, variant)
     if not readable:
-        with tarfile.open(path, "w") as t:
-            ti = tarfile.TarInfo("index.json")
-            raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
-            ti.size = len(raw); t.addfile(ti, io.BytesIO(raw))
-            if blob:
-                bi = tarfile.TarInfo("blobs/" + digest.replace(":", "/")); bi.size = 1
-                t.addfile(bi, io.BytesIO(b"{"))   # present, but not parseable JSON
+        raw = json.dumps({"schemaVersion": 2, "manifests": [{"digest": digest}]}).encode()
+        write_layout(path, [("index.json", raw, 0o644)] + ([("blobs/" + digest.replace(":", "/"), b"{", 0o644)] if blob else []))   # a blob that is not parseable JSON
         return
     man = json.dumps({"layers": []}).encode()
     man_digest = "sha256:" + hashlib.sha256(man).hexdigest()
@@ -340,8 +344,7 @@ def rescan_oci(d, variant="fips", digest=DIGEST, blob=True, arch="arm64", readab
     files = [("index.json", index, 0o644), ("blobs/" + digest.replace(":", "/"), man, 0o644)]
     if digest != man_digest:
         files.append(("blobs/" + man_digest.replace(":", "/"), man, 0o644))
-    with open(path, "wb") as fh:
-        fh.write(tar_bytes(files, gz=False))
+    write_layout(path, files)
 
 
 def binding(d, **kw):
@@ -401,7 +404,7 @@ class Judge(Tmp):
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=empty)), 2)
         self.assertIn("no image digest", err.getvalue())
-        bad_oci = os.path.join(self.d, "bad"); os.makedirs(bad_oci); open(os.path.join(bad_oci, "x.tar"), "w").write("junk")
+        bad_oci = os.path.join(self.d, "bad"); os.makedirs(bad_oci); os.makedirs(os.path.join(bad_oci, "production")); open(os.path.join(bad_oci, "production", "manifest.json"), "w").write("[]")   # a docker-save shape
         with mock.patch("sys.stderr", new=io.StringIO()) as err:
             self.assertEqual(P.cmd_judge(self.a(oci=bad_oci)), 2)
         self.assertIn("no image digest", err.getvalue())
