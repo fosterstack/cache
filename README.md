@@ -179,7 +179,7 @@ documentation only (details at the end of this section).
 pod (stable since Kubernetes v1.25):
 
 ```sh
-kubectl debug -it <pod> --image=busybox:1.37 --target=<container> -- sh
+kubectl debug -it POD_NAME --image=busybox:1.37 --target=CONTAINER_NAME -- sh
 # inside it:
 wget -qO- http://127.0.0.1:8080/healthz
 ps
@@ -193,14 +193,14 @@ the Deployment in [docs/kubernetes.md](docs/kubernetes.md) (`runAsNonRoot`, user
 65532) it runs as that non-root user, so it cannot install packages (an image
 such as `wolfi-base` with `apk add` needs a pod that allows root). An ephemeral container
 cannot be changed or removed once added; it goes away with the pod. To debug a
-modified copy instead, use `kubectl debug <pod> -it --copy-to=<new-name>
---image=...`, and for the node itself `kubectl debug node/<node> -it
+modified copy instead, use `kubectl debug POD_NAME -it --copy-to=NEW_POD_NAME
+--image=...`, and for the node itself `kubectl debug node/NODE_NAME -it
 --image=...`.
 
 **Docker: `docker debug`.**
 
 ```sh
-docker debug <container>
+docker debug CONTAINER_NAME
 ```
 
 This opens a shell in a toolbox attached to the container, even though the image
@@ -219,7 +219,7 @@ namespaces. (This is the no-shell route; the `:debug` image variant and its
 [troubleshooting section](docs/docker-deploy.md#troubleshooting-with-the-debug-image).)
 
 ```sh
-docker run --rm -it --network=container:<name> --pid=container:<name> \
+docker run --rm -it --network=container:CONTAINER_NAME --pid=container:CONTAINER_NAME \
   cgr.dev/chainguard/wolfi-base sh
 # inside it: apk add curl procps, then curl http://127.0.0.1:8080/healthz
 ```
@@ -260,7 +260,7 @@ on the URL is all that's needed):
 
 ```kotlin
 buildCache {
-    remote<HttpBuildCache> {
+    remote(HttpBuildCache::class) {
         url = uri("https://cache.example.com/")
         isPush = true
         // credentials { username = "..."; password = "..." } // if auth is enabled
@@ -270,7 +270,7 @@ buildCache {
 
 ## Maven setup
 
-Basic Auth credentials come from `settings.xml` `<server>` conventions, the
+Basic Auth credentials come from `settings.xml` `server` conventions, the
 Apache extension's standard pattern. See [Maven setup in 10 minutes](docs/maven.md)
 for the full walkthrough.
 
@@ -311,7 +311,7 @@ before implementation. CI fails if the matrix drifts from its sources.
   features ship, traffic you configure will exist (an identity provider for
   SSO, peer replicas for replication) — connections to endpoints you
   choose, never to FosterStack. Check the current behavior yourself:
-  `lsof -nP -a -p <pid> -i` against a running server shows one listening
+  `lsof -nP -a -p PID -i` against a running server shows one listening
   socket and accepted inbound connections, nothing else.
 - See [`SECURITY.md`](SECURITY.md) for the vulnerability disclosure process
   and patch SLA once published.

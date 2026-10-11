@@ -338,7 +338,7 @@ image, because there is not one to exec. On Kubernetes, with a pod running
 the `:debug` tag:
 
 ```sh
-kubectl exec -it <pod> -- /busybox/sh
+kubectl exec -it POD_NAME -- /busybox/sh
 ```
 
 `/busybox` is on the image `PATH`, so bare `sh` also resolves. The full

@@ -111,7 +111,7 @@ The image pull and the **cosign** verification below are the fully
 anonymous routes; use those where "no credentials" is the requirement.
 
 The individual statements, all verifiable with the same command shape
-(`--predicate-type <type>`):
+(`--predicate-type PREDICATE_TYPE`):
 
 | Predicate type | Signed by | Says |
 |---|---|---|
@@ -214,7 +214,7 @@ docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
 
 ```sh
 # a pod already running the :debug tag
-kubectl exec -it <pod> -- /busybox/sh
+kubectl exec -it POD_NAME -- /busybox/sh
 ```
 
 `/busybox` is on the image's `PATH`, so bare `sh` resolves too
