@@ -223,6 +223,9 @@ MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
 # Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod): ONE digest-pinned actions/setup-go
 # step, right after the mode guard and before the Witness install, with exactly these two `with:` keys (advisor, Codex A r2 blocker 4)
+# admission.json is written once per apk leg (the Witness record of each leg holds it as a product) but uploaded ONCE, from the leg on ubuntu-24.04 and only in a
+# release run, under the fixed name `admission` (PR 4's Release reads the baseline a CI patch tag used from it; a matrix upload under one name would clash)
+ADMISSION_IF = "${{ inputs.mode == 'release' && matrix.runner == 'ubuntu-24.04' }}"
 SETUP_GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
 SETUP_GO_WITH = {"go-version-file": "go.mod", "cache": "false"}
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
@@ -238,7 +241,7 @@ HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
     ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True,
-        up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk")]),
+        up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("dist", "dist"), ("images", "out")]),
@@ -376,12 +379,12 @@ def job(j, family, name, allowed):
             bad.append("step %d must be a pinned actions/upload-artifact of %s under if: %s" % (i, HOSTILE_UP, HOSTILE_IF))
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        want_if = ALWAYS if nm == VERDICT_ARTIFACT else None      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
+        want_if = ALWAYS if nm == VERDICT_ARTIFACT else (ADMISSION_IF if nm == "admission" else None)      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
         if (set(s) - {"uses", "with", "name", "if"} or s.get("if") != want_if or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
                 or (s.get("with") or {}) != {"name": nm, "path": path_}):
             bad.append("step %d must be a pinned actions/upload-artifact with exactly name %s and the ONE path %s%s "
                        "(the artifact is rooted at its common ancestor, so a second path changes every file name in it)"
-                       % (i, nm, path_, " under if: always()" if want_if else " and no if"))
+                       % (i, nm, path_, " under if: %s" % want_if if want_if else " and no if"))
     if i != len(steps):
         bad.append("%d steps, the grammar has %d (no extra step)" % (len(steps), i))
     return bad

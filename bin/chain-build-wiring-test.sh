@@ -155,7 +155,7 @@ def stage_text(family):
             out += "        uses: %s # v7.0.1\n        with:\n" % UPLOAD
             out += "          name: hostile-attempts\n          path: attempts\n          if-no-files-found: error\n"
         for name, path in sp["up"]:
-            guard = "        if: always()\n" if name == S.VERDICT_ARTIFACT else ""
+            guard = "        if: always()\n" if name == S.VERDICT_ARTIFACT else ("        if: %s\n" % S.ADMISSION_IF if name == "admission" else "")
             out += "      - uses: %s # v7.0.1\n%s        with:\n          name: %s\n          path: %s\n" % (UPLOAD, guard, name, path)
     return out
 
@@ -283,6 +283,11 @@ st s_ref    "AC2 checkout of another ref" "exactly" 'persist-credentials: false'
 st s_repo   "AC2 checkout of another repository" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          repository: evil/fork'
 st s_token  "AC2 checkout with a token" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          token: ${{ secrets.X }}'
 SETGO='      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
+ADMUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        if: ${{ inputs.mode == '"'release'"' && matrix.runner == '"'ubuntu-24.04'"' }}\n        with:\n          name: admission\n          path: admission.json\n'
+st s_adm_gone "AC8 Build's admission record is not uploaded (Release could not read the baseline a patch tag used)" "admission" "$ADMUP" ''
+st s_adm_all  "AC8 admission.json uploaded from every apk leg (one fixed name from a matrix clashes)" "admission" " && matrix.runner == 'ubuntu-24.04'" ''
+st s_adm_name "AC8 admission.json uploaded under another name" "admission" 'name: admission\n' 'name: admission-record\n'
+st s_adm_snap "AC8 admission.json uploaded in a snapshot run too (no admission ran: the upload would fail)" "admission" "inputs.mode == 'release' && matrix.runner" "matrix.runner"
 st s_go_gone  "AC4 the Go toolchain step of admission is missing from Build's apk job" "setup-go" "$SETGO" ''
 st s_go_key   "AC4 setup-go with a go-version key besides go-version-file" "setup-go" 'go-version-file: go.mod\n          cache: false\n' 'go-version-file: go.mod\n          go-version: 1.20\n          cache: false\n'
 st s_go_cache "AC4 setup-go with the module cache on" "setup-go" 'cache: false\n' 'cache: true\n'
@@ -1800,7 +1805,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=614
+EXPECT=618
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
