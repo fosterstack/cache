@@ -156,7 +156,11 @@ func TestTakenPortRefusedAndDataDirUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	defer held.Close()
+	t.Cleanup(func() {
+		if err := held.Close(); err != nil {
+			t.Errorf("close the held listener: %v", err)
+		}
+	})
 	addr := held.Addr().String()
 
 	t.Run("nonexistent", func(t *testing.T) {

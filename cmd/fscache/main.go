@@ -359,7 +359,7 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	}
 
 	// The store sample (writable, free bytes) is taken once here, before the
-	// listener opens, and then lazily on read (REQ-OBS-002-AC10). It probes the
+	// bound listener is served, and then lazily on read (REQ-OBS-002-AC10). It probes the
 	// blob store's root, on the same volume as the metadata index.
 	sampler := storesample.New(filepath.Join(cfg.dataDir, "blobs"), storesample.Deps{}, storesample.Options{Log: log})
 	sampler.Start()
