@@ -1921,9 +1921,11 @@ class NoSubstituteStatement(unittest.TestCase):
     BAD = ("pr210", "pr:210", "0317", "0350", "opus", "sonnet", "claude", "gpt-6-sol-mini", "codex-opus", "",
            "entry pr210 applies", None, True, 1.5, [], ["pr210"], {}, {"id": "pr210"})
     # the lines stated plainly: a relation between permitted values, or a field or seat that is missing (an empty
-    # object in place of a seat or of the final round's reviewers is a seat with every field missing)
+    # object in place of a seat, a round or the final round's reviewers is one with every field missing)
     RELATION = re.compile(r"name the same model|have the same evidence_sha256|does not follow round"
-                          r"|^(rounds\[\d+\]\.)?codex_[ab] has no \w+ field$|^final round has no codex_[ab] entry$")
+                          r"|^(rounds\[\d+\]\.)?codex_[ab] has no \w+ field$|^final round has no codex_[ab] entry$"
+                          r"|^rounds\[\d+\] has no round field$|^rounds\[\d+\] reviewers is not a non-empty object$"
+                          r"|^final round names no reviewers$|^stop verdict for codex_[ab] is None, want 'clear'$")
 
     def full(self):
         """A clearing record with every permitted field and an earlier round holding both seats."""

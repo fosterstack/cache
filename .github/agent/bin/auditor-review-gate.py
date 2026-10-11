@@ -26,7 +26,8 @@ depth is counted by one pass that skips strings).
 Every diagnostic is plain ASCII and bounded: a value from the record and a path from the change are shown by _show (a
 string escaped, then cut to SHOW_CHARS written characters, a list or object by its kind and size, never rendered, an
 integer of more than 64 bits by its size), at most MAX_PROBLEMS problems are written in all (every added record and the
-record under judgement together; past that, the rest are counted and no further added record is read), every line is
+record under judgement together, every problem of a seat entry added to the one shared count; past that, the rest are
+counted exactly and no further added record is read), every line is
 written with every control character and every non-ASCII character escaped (one line, never a forged second one) and
 then cut to SAY_CHARS (the bound applies after escaping, which writes one character as up to ten), and a failure to
 judge is a named refusal (exit 1), never a pass.
@@ -47,7 +48,11 @@ the raw output check its header.
 
 No substitute (AC4): an entry under any other key in any round, any field outside the permitted sets (whatever its
 name: allowlist_entry, exception, waiver, change, label, residuals, ...), and any key or string value anywhere in the
-record that contains "substitut" (any case) fails, naming it and saying no substitute is accepted. The record holds no
+record that contains "substitut" (any case) fails, naming it and saying no substitute is accepted. So does every other
+refusal of a key or a value the gate does not permit (round 5): a former allow-list id or a model alias in any string
+field, a value of the wrong type, a record that is not an object, an old-schema record; the statement is written by the
+one helper _no_substitute. Only a missing field or seat, an integer out of range and a relation between permitted values
+(the same model, the same evidence, round order, a well-formed tree that is another tree) are stated plainly. The record holds no
 free text at all (round 3: no pattern on free text tells an entry id from a word): every string field is an exact value
 from the gate's lists (schema, reviewer, vendor, seat, model, effort, the stop verdicts) or a fixed hex form (tree,
 reviewed_commit, evidence_sha256), and every key is from a closed set. Residuals live in the pull request body and the
@@ -117,9 +122,9 @@ TREE_PREFIX = b"auditor-tree/v2\0"      # the hashed bytes' version; it holds a 
 CODEX_MODELS = ("gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra")
 SAME_MODEL = {"gpt-6.1-sol": "gpt-6-sol"}
 EFFORTS = ("medium", "high", "xhigh")
-NO_SUBSTITUTE = "no substitute is accepted"
-PERMITTED_ONLY = "only the permitted fields are read, and " + NO_SUBSTITUTE
-V2_REQUIRED = "a schema v2 record is required"
+NO_SUBSTITUTE = "no substitute is accepted"      # read only by _no_substitute (round 5: no refusal spells its own)
+PERMITTED = "only the permitted fields are read, and "      # a reason given to _no_substitute
+V2_REQUIRED = "a schema v2 record is required, and "        # a reason given to _no_substitute
 _HEX64 = re.compile(r"[0-9a-f]{64}")
 _HEX40 = re.compile(r"[0-9a-f]{40}")
 _SUBSTITUTE = re.compile(r"substitut", re.I)
@@ -150,6 +155,12 @@ def _show(v):
 def _key(k):
     """A record key for a field path: as is when it is a short plain name, else shown by _show."""
     return k if _KEY.fullmatch(k) else _show(k)
+
+
+def _no_substitute(line, why=""):
+    """The one place a refusal says that no substitute is accepted (AC4, round 5): `line` names the key or value refused,
+    `why` (PERMITTED or V2_REQUIRED, each ending ", and ") what else holds; the statement always ends the refusal."""
+    return "%s: %s%s" % (line, why, NO_SUBSTITUTE)
 
 
 class _Problems(list):
@@ -315,47 +326,46 @@ def _substitute_marks(v, where):
             for k, y in x.items():
                 child = (frame, "." + _key(k))
                 if _SUBSTITUTE.search(k):
-                    yield "record field %s marks a substitute: %s" % (_path(child), NO_SUBSTITUTE)
+                    yield _no_substitute("record field %s marks a substitute" % _path(child))
                 stack.append((y, child))
         elif isinstance(x, list):
             stack.extend((y, (frame, "[%d]" % i)) for i, y in enumerate(x))
         elif isinstance(x, str) and _SUBSTITUTE.search(x):
-            yield "record field %s names a substitute (%s): %s" % (_path(frame), _show(x), NO_SUBSTITUTE)
+            yield _no_substitute("record field %s names a substitute (%s)" % (_path(frame), _show(x)))
 
 
 def _extras(where, obj, permitted):
     """An 'extra field' problem for every key of `obj` outside `permitted` (a key marking a substitute is already
     named by _substitute_marks)."""
-    return ("%s has an extra field %s: %s" % (where, _show(k), PERMITTED_ONLY)
+    return (_no_substitute("%s has an extra field %s" % (where, _show(k)), PERMITTED)
             for k in obj if k not in permitted and not _SUBSTITUTE.search(k))
 
 
-def _seat_problems(name, r, final=True):
-    """Every reason the seat entry `name` (codex_a or codex_b, prefixed with its round when not final) is not a
-    clear review (AC5, AC6). In an earlier round, blockers_open may be any non-negative integer."""
+def _seat_problems(name, r, probs, final=True):
+    """Adds to `probs` (the record's one bounded list, so every problem is counted once, round 5) every reason the seat
+    entry `name` (codex_a or codex_b, prefixed with its round when not final) is not a clear review (AC5, AC6). In an
+    earlier round, blockers_open may be any non-negative integer."""
     key = name.rsplit(".", 1)[-1]
     if not isinstance(r, dict):
-        return ["%s entry is not an object (%s)" % (name, _show(r))]
-    probs = _Problems("%s has no %s field" % (name, f) for f in FIELDS if f not in r)
+        probs.append(_no_substitute("%s entry is not an object (%s)" % (name, _show(r))))
+        return
+    probs += ("%s has no %s field" % (name, f) for f in FIELDS if f not in r)
     probs += _extras(name, r, FIELDS)
-    if "reviewer" in r and r["reviewer"] != "codex":
-        probs.append("%s reviewer is %s, want 'codex'" % (name, _show(r["reviewer"])))
-    if "vendor" in r and r["vendor"] != "openai":
-        probs.append("%s vendor is %s, want 'openai'" % (name, _show(r["vendor"])))
-    if "seat" in r and r["seat"] != SEATS[key]:
-        probs.append("%s seat is %s, want %r" % (name, _show(r["seat"]), SEATS[key]))
+    for f, want in (("reviewer", "codex"), ("vendor", "openai"), ("seat", SEATS[key])):
+        if f in r and r[f] != want:
+            probs.append(_no_substitute("%s %s is %s, want %r" % (name, f, _show(r[f]), want)))
     if "model" in r and (not isinstance(r["model"], str) or r["model"] not in CODEX_MODELS):
-        probs.append("%s model %s is not on the gate's list of Codex models" % (name, _show(r["model"])))
+        probs.append(_no_substitute("%s model %s is not on the gate's list of Codex models" % (name, _show(r["model"]))))
     if "effort" in r and (not isinstance(r["effort"], str) or r["effort"] not in EFFORTS):
-        probs.append("%s effort %s is not on the gate's list of efforts" % (name, _show(r["effort"])))
+        probs.append(_no_substitute("%s effort %s is not on the gate's list of efforts" % (name, _show(r["effort"]))))
     b = r.get("blockers_open", 0)
-    if final and (type(b) is not int or b != 0):      # exactly the integer 0: not False, not 0.0
-        probs.append("%s blockers_open is %s, want the integer 0" % (name, _show(b)))
-    if not final and (type(b) is not int or b < 0):
-        probs.append("%s blockers_open is %s, want a non-negative integer" % (name, _show(b)))
+    line = "%s blockers_open is %s, want %s" % (name, _show(b), "the integer 0" if final else "a non-negative integer")
+    if type(b) is not int:      # exactly an integer: not False, not 0.0, not a string
+        probs.append(_no_substitute(line))
+    elif (b != 0) if final else (b < 0):      # an integer out of range is stated plainly
+        probs.append(line)
     if "evidence_sha256" in r and not (isinstance(r["evidence_sha256"], str) and _HEX64.fullmatch(r["evidence_sha256"])):
-        probs.append("%s evidence_sha256 is not 64 lowercase hex characters" % name)
-    return probs.done()
+        probs.append(_no_substitute("%s evidence_sha256 is not 64 lowercase hex characters" % name))
 
 
 def _rounds_problems(rounds, probs):
@@ -367,13 +377,15 @@ def _rounds_problems(rounds, probs):
         at = "rounds[%d]" % i
         if not isinstance(rd, dict):
             if i < len(rounds) - 1:      # a final round that is not an object is "final round names no reviewers"
-                probs.append("%s is not an object" % at)
+                probs.append(_no_substitute("%s is not an object" % at))
             continue
         probs += _extras(at, rd, ROUND_REQUIRED + ROUND_OPTIONAL)
         n = rd.get("round")
         if "round" not in rd:
             probs.append("%s has no round field" % at)
-        elif type(n) is not int or n < 1:
+        elif type(n) is not int:
+            probs.append(_no_substitute("%s round is %s, want a positive integer" % (at, _show(n))))
+        elif n < 1:
             probs.append("%s round is %s, want a positive integer" % (at, _show(n)))
         else:
             if last is not None and n <= last:
@@ -383,13 +395,14 @@ def _rounds_problems(rounds, probs):
             continue
         rv = rd.get("reviewers")
         if not isinstance(rv, dict) or not rv:
-            probs.append("%s reviewers is not a non-empty object" % at)
+            line = "%s reviewers is not a non-empty object" % at
+            probs.append(_no_substitute(line) if "reviewers" in rd else line)
             continue
         for k, entry in rv.items():
             if k not in SEATS:
-                probs.append("%s entry %s is not a seat (only codex_a and codex_b take a seat): %s" % (at, _show(k), NO_SUBSTITUTE))
+                probs.append(_no_substitute("%s entry %s is not a seat (only codex_a and codex_b take a seat)" % (at, _show(k))))
             else:
-                probs += _seat_problems("%s.%s" % (at, k), entry, final=False)
+                _seat_problems("%s.%s" % (at, k), entry, probs, final=False)
 
 
 def record_problems(rec, tree):
@@ -400,33 +413,35 @@ def record_problems(rec, tree):
 def _judge(rec, tree):
     """record_problems as the bounded _Problems itself (its count of problems not kept included)."""
     if not isinstance(rec, dict):
-        return _Problems(["record is not a JSON object"])
+        return _Problems([_no_substitute("record is not a JSON object")])
     probs = _Problems(_substitute_marks(rec, "record"))
     probs += _extras("record", rec, RECORD_REQUIRED + RECORD_OPTIONAL)
     if rec.get("schema") != SCHEMA:
-        probs.append("schema is %s, not %s: %s" % (_show(rec.get("schema")), SCHEMA, V2_REQUIRED))
+        probs.append(_no_substitute("schema is %s, not %s" % (_show(rec.get("schema")), SCHEMA), V2_REQUIRED))
     if rec.get("tree") != tree:
         t = rec.get("tree")
-        probs.append("record binds tree %s, the change is %s" % (
-            t if isinstance(t, str) and _HEX64.fullmatch(t) else _show(t), tree))
+        hex64 = isinstance(t, str) and _HEX64.fullmatch(t)
+        line = "record binds tree %s, the change is %s" % (t if hex64 else _show(t), tree)
+        probs.append(line if hex64 or "tree" not in rec else _no_substitute(line))      # another tree, or none: plainly
     if "reviewed_commit" in rec and not (isinstance(rec["reviewed_commit"], str) and _HEX40.fullmatch(rec["reviewed_commit"])):
-        probs.append("record reviewed_commit is not 40 lowercase hex characters")
+        probs.append(_no_substitute("record reviewed_commit is not 40 lowercase hex characters"))
     rounds = rec.get("rounds")
     if not isinstance(rounds, list) or not rounds:
-        probs.append("no review rounds recorded")
+        probs.append(_no_substitute("no review rounds recorded") if "rounds" in rec else "no review rounds recorded")
         return probs
     _rounds_problems(rounds, probs)
     final = rounds[-1].get("reviewers") if isinstance(rounds[-1], dict) else None
     if not isinstance(final, dict):
-        probs.append("final round names no reviewers")
+        absent = isinstance(rounds[-1], dict) and "reviewers" not in rounds[-1]      # a missing field: plainly
+        probs.append("final round names no reviewers" if absent else _no_substitute("final round names no reviewers"))
         return probs
-    probs += ("final round entry %s is not a seat (only codex_a and codex_b take a seat): %s" % (_show(k), NO_SUBSTITUTE)
+    probs += (_no_substitute("final round entry %s is not a seat (only codex_a and codex_b take a seat)" % _show(k))
               for k in final if k not in SEATS)
     for name in SEATS:
         if name not in final:
             probs.append("final round has no %s entry" % name)
         else:
-            probs += _seat_problems(name, final[name])
+            _seat_problems(name, final[name], probs)
     a, b = final.get("codex_a"), final.get("codex_b")
     if isinstance(a, dict) and isinstance(b, dict):
         ma, mb = a.get("model"), b.get("model")      # compared only as strings: no value is compared deeply
@@ -438,12 +453,14 @@ def _judge(rec, tree):
             probs.append("codex_a and codex_b have the same evidence_sha256: a copied entry is not an independent review")
     stop = rec.get("stop")
     if not isinstance(stop, dict):
-        probs.append("stop is missing or not an object")
+        probs.append(_no_substitute("stop is missing or not an object") if "stop" in rec else "stop is missing or not an object")
         return probs
-    probs += ("stop holds an extra key %s: %s" % (_show(k), PERMITTED_ONLY) for k in stop if k not in SEATS and not _SUBSTITUTE.search(k))
+    probs += (_no_substitute("stop holds an extra key %s" % _show(k), PERMITTED)
+              for k in stop if k not in SEATS and not _SUBSTITUTE.search(k))
     for name in SEATS:
         if stop.get(name) != "clear":
-            probs.append("stop verdict for %s is %s, want 'clear'" % (name, _show(stop.get(name))))
+            line = "stop verdict for %s is %s, want 'clear'" % (name, _show(stop.get(name)))
+            probs.append(_no_substitute(line) if name in stop else line)
     return probs
 
 
@@ -498,10 +515,10 @@ def classify_merged(raw):
             raise ValueError
         top = json.loads(raw.decode("utf-8"), object_pairs_hook=_Pairs, parse_int=_INT, parse_float=_FLOAT)
     except ValueError:      # not UTF-8, too large or deep, a number too long, or not JSON (a decode error is one)
-        return "refused", "it cannot be read (%s), so its schema cannot be told: %s" % (strict, V2_REQUIRED)
+        return "refused", _no_substitute("it cannot be read (%s), so its schema cannot be told" % strict, V2_REQUIRED)
     if isinstance(top, _Pairs) and any(k == "schema" and v == SCHEMA for k, v in top):
-        return "refused", ("it claims schema v2 but is not strict JSON (%s): a schema v2 record is read as strict JSON, "
-                           "and %s" % (strict, V2_REQUIRED))
+        return "refused", _no_substitute("it claims schema v2 but is not strict JSON (%s); a schema v2 record is read as "
+                                         "strict JSON" % strict, V2_REQUIRED)
     return "old", None
 
 
@@ -548,7 +565,7 @@ def added_record_problems(head, touched, skip, probs):
                 probs.more += judged.more
                 continue
             why = "its schema is %s, not %s" % (_show(rec.get("schema") if isinstance(rec, dict) else None), SCHEMA)
-        probs.append(at + "%s: %s (REQ-AUD-18 AC7)" % (why, V2_REQUIRED))
+        probs.append(at + _no_substitute(why, V2_REQUIRED) + " (REQ-AUD-18 AC7)")
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -657,9 +674,9 @@ def _main(argv):
             rec = got
         else:
             probs = ["record %s is the merged file (the same at the merge base and on the trusted revision %s) but %s"
-                     % (path, _show(trusted), got if kind == "refused" else
-                        "it is an old-schema record at the path the tree hash names (an old-schema record is named by "
-                        "the legacy tree hash): " + V2_REQUIRED)]
+                     % (path, _show(trusted), got if kind == "refused" else _no_substitute(
+                         "it is an old-schema record at the path the tree hash names (an old-schema record is named by "
+                         "the legacy tree hash)", V2_REQUIRED))]
     elif here is None:      # nothing at the tree's path: an old record merged for this content?
         legacy = legacy_tree_hash(head)
         where = REVIEWS + legacy + ".json" if legacy else path
@@ -673,15 +690,15 @@ def _main(argv):
                 return 0
             probs = [] if kind == "old" else [
                 "record %s is the merged file (the same at the merge base and on the trusted revision %s) but %s" % (
-                    where, _show(trusted), got if kind == "refused" else
-                    "it is a schema v2 record at the path the legacy tree hash names (a schema v2 record is named by "
-                    "the tree hash): %s at %s" % (V2_REQUIRED, path))]
+                    where, _show(trusted), got if kind == "refused" else _no_substitute(
+                        "it is a schema v2 record at the path the legacy tree hash names (a schema v2 record is named "
+                        "by the tree hash, %s)" % path, V2_REQUIRED))]
         elif legacy and _blob(head, where) is NOT_REGULAR:
             return _no_record(report, changed, where, NON_REGULAR)
         elif legacy and _blob(head, where) is not None:
-            probs = ["record %s, named by the legacy tree hash, is not the same file, unchanged by this pull request, at "
-                     "the merge base %s and on the trusted revision %s: %s" % (where, _show(base), _show(trusted),
-                                                                                V2_REQUIRED)]
+            probs = [_no_substitute("record %s, named by the legacy tree hash, is not the same file, unchanged by this "
+                                    "pull request, at the merge base %s and on the trusted revision %s"
+                                    % (where, _show(base), _show(trusted)), V2_REQUIRED)]
         else:
             return _no_record(report, changed, path, "no regular file there")
     else:
@@ -690,8 +707,8 @@ def _main(argv):
         except (RuntimeError, ValueError) as e:
             return _no_record(report, changed, path, (str(e).splitlines() or [type(e).__name__])[0])
         if not (isinstance(rec, dict) and rec.get("schema") == SCHEMA):
-            probs = ["record %s has schema %s, not %s: %s" % (
-                path, _show(rec.get("schema") if isinstance(rec, dict) else None), SCHEMA, V2_REQUIRED)]
+            probs = [_no_substitute("record %s has schema %s, not %s" % (
+                path, _show(rec.get("schema") if isinstance(rec, dict) else None), SCHEMA), V2_REQUIRED)]
             rec = None
     if rec is not None:
         judged = _judge(rec, tree)
