@@ -728,6 +728,53 @@ def command_items(text):
             out.append((w, rest, orig[ws:ws + len(w)], orig[ws:_cmd_end(line, end)].rstrip()))
     return out
 
+# Round 1 (4), fail closed by default: a path-like word (it holds a /) whose LAST component is a deny-class command is refused wherever it appears,
+# unless it is an OPERAND (not the command word) of (a) an interpreter run on an exact listed path of `runs` (bash|python3 LISTED ...), (b) a
+# listed script invoked by its exact path, or (c) a closed list of data-only commands with no option that runs a program. That covers the
+# command word after a leading redirection or an assignment, find -exec/-execdir/-ok, xargs, trap, env/command/exec/nohup/time operands,
+# bash -c strings, here-document bodies and eval, none of which the command-position reader can follow.
+DENYCLASS = DENY | LAUNCH_OUTRIGHT | EVALUATORS
+DATA_ONLY = {"cp", "mv", "rm", "mkdir", "rmdir", "ls", "cat", "echo", "printf", "test", "[", "[[", "sha256sum", "shasum", "tar", "mktemp", "touch",
+             "chmod", "ln", "readlink", "basename", "dirname", "head", "tail", "wc", "sort", "grep", "cut", "tr", "diff", "cmp", "install", "du",
+             "stat", "date", "sleep", "true", "false"}
+EXECY = ("-exec", "-execdir", "-ok", "-okdir", "--exec", "--to-command", "--use-compress-program", "--compress-program", "--checkpoint-action",
+         "--rsh-command", "--info-script", "--new-volume-script", "-I", "-F", "--use-compress")
+TOKEN = re.compile(r"[^\s;&|(){}<>`\"'=,]+")
+
+def pathlike_deny(text, rows, runs):
+    """The path-like words (see above) of comment-stripped, continuation-joined shell text that are neither the command word of their command
+    (judged by the command-word rule) nor an admitted operand. Every observed line is judged on its own (a substitution inside a double-quoted
+    string is its own line); a word no command claims is refused."""
+    out = []
+    todo = list(logical(strip(text)).splitlines())
+    while todo:
+        orig = todo.pop(0)
+        line, extra = _mask(orig); todo += extra
+        segs = []
+        for m in CMDPOS.finditer(line):
+            w, end, ws = m.group("w"), m.end(), m.start("w")
+            while w in RESERVED:
+                n2 = CMD_AT.match(line, end)
+                if not n2: w = None; break
+                w, end, ws = n2.group("w"), n2.end(), n2.start("w")
+            if w is not None: segs.append((ws, end, _cmd_end(line, end), w))
+        for tm in TOKEN.finditer(orig):
+            t = tm.group(0); n = t[2:] if t.startswith("./") else t
+            if "/" not in n or n.startswith(("-", "$")) or "://" in n or n.rsplit("/", 1)[-1] not in DENYCLASS: continue
+            p = tm.start()
+            inner = [g for g in segs if g[0] <= p < g[2]]
+            if inner:
+                ws, end, cend, w = max(inner, key=lambda g: g[0])
+                if p < ws + len(w): continue                     # the command word itself
+                cw = w[2:] if w.startswith("./") else w
+                words = [x.strip("\"'") for x in orig[end:cend].split()]
+                first = words[0] if words else ""
+                if cw in rows: continue                          # (b) a listed script invoked by its exact path
+                if cw in SHELL_INTERP and (first[2:] if first.startswith("./") else first) in runs: continue      # (a)
+                if w in DATA_ONLY and not any(x.startswith(EXECY) for x in TOKEN.findall(orig[end:cend])): continue   # (c)
+            out.append(t)
+    return out
+
 def command_words(text):
     """(word, rest-of-command) at every command position (see command_items)."""
     return [(w, rest) for w, rest, _ow, _on in command_items(text)]
@@ -808,13 +855,15 @@ def scan_script(path, text, row, rows, base):
         if is_script and n != path and n not in runs and not (n == selfbase):
             add("script-name", t, "%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t)); tok_script.add(t)
     if not py:
+        for t in pathlike_deny(body, rows, runs):
+            add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)" % (path, t))
         for w, rest, ow, on in command_items(body):
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
             span = on                              # the whole simple command, as written
             dq = ow.strip("\"'")                  # a COMMAND named by a path is refused whatever `tools` says (the row governs the bare name only)
             dn = dq[2:] if dq.startswith("./") else dq
-            if "/" in dn and not dn.startswith(("-", "$")) and "://" not in dn and dn.rsplit("/", 1)[-1] in DENY:
+            if "/" in dn and not dn.startswith(("-", "$")) and "://" not in dn and dn.rsplit("/", 1)[-1] in DENYCLASS:
                 add("deny", dq, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, dq))
             if name in LAUNCH_OUTRIGHT:
                 add("launcher", span, "%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
