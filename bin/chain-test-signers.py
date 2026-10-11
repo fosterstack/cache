@@ -1110,7 +1110,7 @@ def scan_script(path, text, row, rows, base):
         n = t[2:] if t.startswith("./") else t
         name = n.rsplit("/", 1)[-1]
         pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
-        if pathlike and name in DENY:
+        if pathlike and (name in DENY or (py and (name in DENYCLASS or VERSIONED.fullmatch(name)))):     # round 4 (8): Python strings get the whole deny class
             # PR 1b: in a SHELL script a path-like word is judged as a command only at command position (below); an argument such as
             # archive/go is judged by the script rule alone. A Python script has no command position, so it keeps the word-level test.
             if py: add("deny", t, "%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
