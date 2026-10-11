@@ -511,12 +511,18 @@ try:
 except ValueError as e:
     real_ents, real_err = [], e
 check("0130 the repository's docs/next-release-notes.md passes the notes validator", real_err is None, real_err)
-def linux_only_ok(ents):
-    """While the Linux-only entry is in the notes it is there once and ends with the 0390 citation; once the release flow
-    has published it and removed it, there is nothing to assert here (the Go check then requires it in the changelog)."""
-    lo = [e for e in ents if e.startswith("No macOS or Windows binaries are shipped")]
-    return len(lo) <= 1 and all(e.endswith("(owner decision, Oct 9; advisor 0390).") for e in lo)
-check("0390 the Linux-only entry, while present, cites advisor 0390", linux_only_ok(real_ents), real_ents)
+LO_SENT = "No macOS or Windows binaries are shipped; use the container image."
+LO_CITE = "(owner decision, Oct 9; advisor 0390)."
+def linux_only_ok(text):
+    """While the Linux-only sentence is in the notes it is there once, as an entry that starts with it and ends with the
+    0390 citation, and nowhere else (Codex #293 r5 B5: not an uncited paragraph, a prefixed or emphasized bullet, another
+    citation); once the release flow has published the entry and removed it, there is nothing to assert here (the Go
+    check then requires it in the changelog)."""
+    ents = P.behavior_entries(text)
+    exact = [e for e in ents if e.startswith(LO_SENT) and e.endswith(LO_CITE)]
+    named = [e for e in ents if re.search(r"(?i)mac\s?os|windows", e)]
+    return len(exact) <= 1 and named == exact and " ".join(text.split()).count(LO_SENT) == len(exact)
+check("0390 the Linux-only entry, while present, cites advisor 0390", real_err is None and linux_only_ok(real_nrn), real_ents)
 # Codex #293 r4 B2: after the entry is published, the release flow's changelog step removes it from the notes; the
 # cleared notes still pass the validator and the Linux-only assertion (it applies to the entry only while present)
 LO_ENTRY = ("No macOS or Windows binaries are shipped; use the container image. The release archives are fscache and fscache-fips "
@@ -529,23 +535,22 @@ try:
 except ValueError as e:
     lo_ents, lo_err = [], e
 check("0390 the notes carrying the Linux-only entry pass the validator and the Linux-only assertion",
-      linux_only_ok(P.behavior_entries(LO_NRN)), P.behavior_entries(LO_NRN))
+      linux_only_ok(LO_NRN), P.behavior_entries(LO_NRN))
 check("0390 publication moves the Linux-only entry into the changelog and out of the notes",
       ("- " + LO_ENTRY) in lo_cl and "No macOS" not in lo_cleared, (lo_cl, lo_cleared))
 check("0390 the cleared notes pass the validator", lo_err is None, lo_err)
-check("0390 the cleared notes pass the Linux-only assertion (the entry is gone, not uncited)", linux_only_ok(lo_ents), lo_ents)
+check("0390 the cleared notes pass the Linux-only assertion (the entry is gone, not uncited)", linux_only_ok(lo_cleared), lo_ents)
 check("0390 an uncited Linux-only entry fails the Linux-only assertion",
-      not linux_only_ok(["No macOS or Windows binaries are shipped; use the container image (advisor 0130)."]))
-check("0390 a repeated Linux-only entry fails the Linux-only assertion", not linux_only_ok([LO_ENTRY, LO_ENTRY]))
+      not linux_only_ok(NRN + "- No macOS or Windows binaries are shipped; use the container image (advisor 0130).\n"))
+check("0390 a repeated Linux-only entry fails the Linux-only assertion", not linux_only_ok(NRN + "- " + LO_ENTRY + "\n- " + LO_ENTRY + "\n"))
 # Codex #293 r5 B5: the sentence counts only as the start of a notes entry ending with the 0390 citation; an uncited
 # paragraph, a prefixed or emphasized bullet and an entry with another citation each fail the Linux-only assertion
-LO_SENT = "No macOS or Windows binaries are shipped; use the container image."
 for name, bad in [("an uncited paragraph", NRN + "\n" + LO_SENT + "\n"),
                   ("a prefixed bullet", NRN + "- Note: " + LO_ENTRY + "\n"),
                   ("an emphasized bullet", NRN + "- **" + LO_SENT + "**" + LO_ENTRY[len(LO_SENT):] + "\n"),
                   ("another citation", NRN + "- " + LO_SENT + " (advisor 0130).\n")]:
     check("0390 %s carrying the Linux-only sentence fails the Linux-only assertion" % name,
-          not linux_only_ok(P.behavior_entries(bad)), bad)
+          not linux_only_ok(bad), bad)
 check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
 for bad in ["- A change nobody judged.\n", "- A change (owner said so).\n", "- A change (advisor 15).\n"]:
     try:
