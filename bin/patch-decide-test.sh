@@ -852,7 +852,7 @@ for i_, (o_, n_) in enumerate((((TA, TB), (dict(TB, status_notes="t2"), TA)),
 # statement is exactly one line; a value the document supplies prints bare only when nothing renders it differently, else
 # as a quoted JSON literal in a code span; an @id label never shares a namespace with a position label; an empty
 # vulnerability name (the schema allows it) is read and named by position; redaction is line-local
-import collections, random, unicodedata
+import collections, itertools, random, unicodedata
 CTRL_CATS = ("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn")
 def no_ctrl(t):
     return all(ch == "\n" or unicodedata.category(ch) not in CTRL_CATS for ch in t)
@@ -928,13 +928,37 @@ def spans_split(text, sep):
     return out
 def field_diff(a, b):
     return sorted(k for k in set(a) | set(b) if k not in a or k not in b or canon_(a[k]) != canon_(b[k]))
+def span_of(v):
+    """the documented quoted form of a value: its JSON string (ASCII, backtick escaped) in a code span"""
+    return "`%s`" % json.dumps(v, ensure_ascii=True).replace("`", "\\u0060")
+def tok_is(tok, v):
+    """Codex #300 r5 (A R4-3, B F2): a printed token names the source value v: it decodes (bare or quoted) to exactly v;
+    a lossy (redacted) token is allowed only when the SOURCE value is one the redactor changes, and then it must be
+    exactly that value's bare or quoted form redacted — permission comes from the document, never from a marker in the
+    candidate line"""
+    if "(redacted)" not in tok and lit_val(tok) == v:
+        return True
+    return P._clean(v) != v and tok in (P._clean_md(v), P._clean_md(span_of(v)))
+def bij(xs, ys, eq):
+    """xs and ys pair one to one under eq (a multiset match, order aside)"""
+    if len(xs) != len(ys):
+        return False
+    if not xs:
+        return True
+    return any(eq(xs[0], y) and bij(xs[1:], ys[:j] + ys[j + 1:], eq) for j, y in enumerate(ys))
+def label_is(text, vals):
+    """a printed component label (its values joined by ' ') names exactly the values vals (an @id, or the identifiers);
+    a redaction that spans two values of one label (the redactor reads 'google gpt' as one name) is allowed only when the
+    source values joined are text the redactor changes, and the label is exactly a printed form of them, redacted"""
+    if bij(spans_split(text, " "), list(vals), tok_is):
+        return True
+    return "(redacted)" in text and any(
+        P._clean(" ".join(perm)) != " ".join(perm) and text == P._clean_md(" ".join(f))
+        for perm in itertools.permutations(vals) for f in itertools.product(*[(v, span_of(v)) for v in perm]))
 def names_fields(text, fields):
     """the printed field list names exactly these fields (decoded from bare text or JSON code spans, order aside); a
-    list the redactor touched is only counted"""
-    got = spans_split(text, ", ")
-    if any(r in text for r in REDACTED):
-        return len(got) == len(fields)
-    return sorted((lit_val(g) for g in got), key=repr) == sorted(fields, key=repr)
+    redacted field is matched against a source field the redactor changes, every visible one exactly (r5)"""
+    return bij(spans_split(text, ", "), list(fields), tok_is)
 def claim_fits(change, o, n):
     """the change a 'changed' line claims is exactly the difference between old statement o and new statement n"""
     fields = field_diff(o, n)
@@ -950,24 +974,89 @@ def comp_values(c):
     if isinstance(c.get("@id"), str):
         return [c["@id"]]
     return list(c.get("identifiers", {}).values())
-def products_fit(line, st):
-    """a printed product list names exactly the statement's products and subcomponents (decoded; a list the redactor
-    touched is not compared)"""
+def comp_ok(c):
+    """a product or subcomponent the notes can name (OpenVEX: a string @id, or identifiers holding only purl / cpe23 /
+    cpe22 strings)"""
+    if not isinstance(c, dict) or ("@id" in c and not isinstance(c["@id"], str)):
+        return False
+    if "identifiers" in c:
+        idf = c["identifiers"]
+        if not isinstance(idf, dict) or not idf or not all(k in ("purl", "cpe23", "cpe22") and isinstance(x, str) for k, x in idf.items()):
+            return False
+    return isinstance(c.get("@id"), str) or "identifiers" in c
+def readable(st):
+    ps = st.get("products", [])
+    return isinstance(ps, list) and all(comp_ok(p) and isinstance(p.get("subcomponents", []), list)
+                                        and all(comp_ok(s) for s in p.get("subcomponents", [])) for p in ps)
+def top_split(text, sep):
+    """text split at sep outside code spans and outside parentheses"""
+    spans_ = CSPAN.findall(text)
+    shape, out, depth, cur, i = CSPAN.sub("\x00", text), [], 0, "", 0
+    while i < len(shape):
+        if depth == 0 and shape.startswith(sep, i):
+            out.append(cur); cur = ""; i += len(sep); continue
+        depth += {"(": 1, ")": -1}.get(shape[i], 0)
+        cur += shape[i]; i += 1
+    out.append(cur)
+    res = []
+    for piece in out:
+        while "\x00" in piece:
+            piece = piece.replace("\x00", spans_.pop(0), 1)
+        res.append(piece)
+    return res
+def group_is(text, p):
+    """one printed product group 'LABEL' or 'LABEL (subcomponents: S, ...)' names exactly product p with exactly its
+    subcomponents (r5, A R4-3 / B F2: products and subcomponents compare as groups, never flattened)"""
+    pieces = spans_split(text, " (subcomponents: ")
+    subs = p.get("subcomponents", [])
+    if len(pieces) == 1:
+        return not subs and label_is(pieces[0], comp_values(p))
+    if len(pieces) != 2 or not pieces[1].endswith(")") or not subs:
+        return False
+    return label_is(pieces[0], comp_values(p)) and bij(top_split(pieces[1][:-1], ", "), list(subs),
+                                                       lambda t, s: label_is(t, comp_values(s)))
+def products_fit(line, st, several):
+    """the product list a line prints is exactly the one the documents call for (r5, A R4-3): '[products unreadable]'
+    when the statement's products cannot be read; else, when its CVE has several statements in either document and it
+    has products, every product with its own subcomponents; else no list at all"""
     shape = CSPAN.sub(lambda m_: "C" * len(m_.group(0)), line)
     m_ = re.match(r"- \S+ \[(.*?)\]: ", shape)
-    if not m_:
-        return True                             # no product list printed: nothing claimed
-    text = line[m_.start(1):m_.end(1)]
-    if text == "products unreadable":
-        ps = st.get("products")
-        return not (isinstance(ps, list) and all(isinstance(p, dict) and comp_values(p) for p in ps))
-    if any(r in text for r in REDACTED):
-        return True
-    flat = ", ".join(spans_split(text, " (subcomponents: "))
-    flat = "".join(spans_split(flat, ")"))
-    toks = [t for piece in spans_split(flat, ", ") for t in spans_split(piece, " ")]
-    want = [v for p in st.get("products", []) for c in [p] + p.get("subcomponents", []) for v in comp_values(c)]
-    return sorted((lit_val(t) for t in toks), key=repr) == sorted(want, key=repr)
+    text = line[m_.start(1):m_.end(1)] if m_ else None
+    if not readable(st):
+        return text == "products unreadable"
+    if not several or not st.get("products"):
+        return text is None
+    return text is not None and bij(top_split(text, ", "), list(st["products"]), group_is)
+def several_of(o_doc, n_doc):
+    """the CVE names that have more than one statement in either document"""
+    out = set()
+    for d in (o_doc or {}, n_doc):
+        cnt = collections.Counter(s["vulnerability"]["name"] for s in d.get("statements", []))
+        out |= {k for k, n in cnt.items() if n > 1}
+    return out
+def structure(nt, fixes=0, behavior=0):
+    """r5 (A R4-3 low, B F1): the whole notes, not only up to the first blank line: exactly the heading, the Fixes section
+    (the fix lines, or the one 'none' line), the VEX section and the behavior section (the entries, or the one
+    no-behavior-change paragraph); anything else anywhere — a forged line after a blank line included — is refused"""
+    if not nt.endswith("\n"):
+        return "no final newline"
+    secs = nt[:-1].split("\n\n")
+    if len(secs) != 4:
+        return "%d sections, want 4" % len(secs)
+    if not re.fullmatch(r"## \S+ — patch release", secs[0]):
+        return "heading: %r" % secs[0]
+    fl = secs[1].split("\n")
+    if fl[0] != "### Fixes" or (fl[1:] != ["- none (dependency or VEX maintenance only)"] if not fixes
+                                 else len(fl) - 1 != fixes or not all(l.startswith("- ") for l in fl[1:])):
+        return "fixes section: %r" % secs[1]
+    vl = secs[2].split("\n")
+    if vl[0] != "### VEX" or len(vl) < 2 or not all(l.startswith("- ") for l in vl[1:]):
+        return "VEX section: %r" % secs[2]
+    bl = secs[3].split("\n")
+    if (bl != ["No behavior change: this release contains fixes only."] if not behavior
+            else bl[0] != "### Behavior changes" or len(bl) - 1 != behavior or not all(l.startswith("- ") for l in bl[1:])):
+        return "behavior section: %r" % secs[3]
+    return None
 def diff_problems(nt, o_doc, n_doc):
     """Codex #300 r4 (A low, B medium): an oracle built from the two documents alone, not from vex_changes. Identical
     statements are interchangeable, so per identical class the surplus on each side is what must be reported: the lines
@@ -984,13 +1073,14 @@ def diff_problems(nt, o_doc, n_doc):
     doc_ls = [l for l in lines if l.startswith("- document fields changed (")]
     st_ls = [l for l in lines if l not in doc_ls and l != "- no change"]
     named, changed = [], []
+    sev = several_of(o_doc, n_doc)
     for l in st_ls:
         r_ = resolve(l, o_doc, n_doc)
         if not isinstance(r_, tuple):
             probs.append(r_); continue
         side, pos = r_
         st = (olds if side == "old" else news)[pos - 1]
-        if not products_fit(l, st):
+        if not products_fit(l, st, st["vulnerability"]["name"] in sev):
             probs.append("products disagree: %r" % l)
         change = re.search(r": (?:not_affected|affected|fixed|under_investigation) \((.*)\)$",
                            CSPAN.sub(lambda m_: "C" * len(m_.group(0)), l.partition(" — statement ")[0]))
@@ -1023,11 +1113,16 @@ def diff_problems(nt, o_doc, n_doc):
     if ("- no change" in lines) != (not st_ls and not want_doc) or ("- no change" in lines and len(lines) != 1):
         probs.append("'- no change' wrong")
     return probs
-def resolves(nt, o_doc, n_doc):
-    """every statement line of the final VEX section names exactly one statement, no two lines name the same one, and
-    the section agrees with diff_problems' independent reading of the documents"""
+def resolves(nt, o_doc, n_doc, fixes=0, behavior=0):
+    """the notes have exactly their four sections and nothing else (r5: fixes and behavior are how many fix lines and
+    behavior entries the caller handed notes()); every statement line of the final VEX section names exactly one
+    statement, no two lines name the same one, and the section agrees with diff_problems' independent reading of the
+    documents"""
     got = [resolve(l, o_doc, n_doc) for l in vlines(nt) if not l.startswith("- document fields changed (") and l != "- no change"]
     probs = diff_problems(nt, o_doc, n_doc)
+    shape_ = structure(nt, fixes, behavior)
+    if shape_:
+        probs.append("notes structure: " + shape_)
     return all(isinstance(x, tuple) for x in got) and len(set(got)) == len(got) and not probs, got + probs
 # A1: a line break (any control character) in a name, @id, product, field name or document field never makes two lines
 F1, F2 = "CVE-A\n- forged: fixed (added)", "CVE-B\n- forged: fixed (added)"
@@ -1054,7 +1149,7 @@ for ch in CTRLS:
           "no control character, UTF-8 writable" % ch,
           enc_ and no_ctrl(nt_) and len(vlines(nt_)) == 4 and all(l.startswith("- ") for l in vlines(nt_))
           and len(secs_) == 4 and secs_[1].count("\n") == 1 and secs_[3].count("\n") == 2
-          and resolves(nt_, o_, n_)[0], nt_)
+          and resolves(nt_, o_, n_, fixes=1, behavior=1)[0], nt_)
 # A2 / B2: an @id shaped like a position label never reads as one
 U7 = vs(products=[{"@id": PC}], status="fixed", status_notes="u")
 C7 = vs(products=[{"@id": PC}], status="fixed", status_notes="c", **{"@id": "1 of the new document"})
@@ -1107,12 +1202,13 @@ check("AC8 VEX line-local redaction (r3, B1): 'urn:chat' then a CVE named 'gpt':
       and resolves(nt_, o_, n_) == (True, [("new", 1), ("new", 3)]), (vex_part(nt_), resolves(nt_, o_, n_)))
 raw_ = "## v0.2.2 — patch release\n\n### VEX\n- CVE-1: fixed (changed: x) — statement urn:chat\n- gpt: fixed (added)\n"
 cl_, _ = P.changelog(raw_, None, "")
-check("AC8 VEX line-local redaction (r3, B1): the changelog cleans line by line, never across a line break",
-      "— statement urn:chat\n- (redacted): fixed (added)\n" in cl_, cl_)
+check("AC8 VEX line-local redaction (r3, B1): the changelog cleans line by line, never across a line break "
+      "(r5: the redacted line is written escaped, A R4-4)",
+      "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n" in cl_, cl_)
 tr_ = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + raw_
        + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
 check("AC8 VEX line-local redaction (r3, B1): a patch tag's notes are cleaned line by line too",
-      "— statement urn:chat\n- (redacted): fixed (added)\n" in (P.tag_notes(tr_) or ""), P.tag_notes(tr_))
+      "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n" in (P.tag_notes(tr_) or ""), P.tag_notes(tr_))
 # B3: Markdown and GitHub rendering never make two values read alike, hide a value or add a line
 E1, E2 = (vs(products=[{"@id": PC}], status="fixed", status_notes="old", **{"@id": i}) for i in ("urn:s:a", "urn:s:&#97;"))
 o_, n_ = vd(E1, E2), vd(dict(E1, status_notes="new"), dict(E2, status_notes="new"))
@@ -1289,14 +1385,83 @@ for fab_ in ("- CVE-2: fixed (changed: status_notes)", "- CVE-1: fixed (changed:
 check("AC8 VEX oracle (r4): a dropped line and an extra '- no change' are refused",
       not resolves(nt_.replace(vlines(nt_)[0] + "\n", ""), o_, n_)[0]
       and not resolves(nt_.replace(vlines(nt_)[0], "- no change"), o_, n_)[0])
+# r5 (A R4-3 low, B F1 medium): the oracle reads the WHOLE notes; a line inserted after a blank line is refused
+SA_, SB_ = vs(products=[{"@id": "pkg:a"}], status="fixed"), vs(products=[{"@id": "pkg:b"}], status="fixed")
+o_, n_ = vd(SA_, SB_), vd(SA_, dict(SB_, status_notes="n2"))
+for beh_ in ([], ["A change (advisor 0130)."]):
+    nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_), behavior=beh_)
+    l_ = vlines(nt_)[0]
+    ok_ = resolves(nt_, o_, n_, behavior=len(beh_))
+    check("AC8 VEX oracle (r5, B F1): the true notes (behavior entries: %d) resolve" % len(beh_), ok_ == (True, [("new", 2)]), ok_)
+    for what_, ins_ in (("a forged bullet", "- CVE-FORGED: fixed (added)"), ("a duplicate statement bullet", l_),
+                        ("an extra '- no change'", "- no change")):
+        bad_nt_ = nt_.replace(l_ + "\n", l_ + "\n\n" + ins_ + "\n", 1)
+        check("AC8 VEX oracle (r5, B F1): %s after a blank line below the VEX bullet is refused (behavior entries: %d)" % (what_, len(beh_)),
+              bad_nt_ != nt_ and not resolves(bad_nt_, o_, n_, behavior=len(beh_))[0], resolves(bad_nt_, o_, n_, behavior=len(beh_)))
+    for where_, bad_nt_ in (("at the end", nt_ + "\n- CVE-FORGED: fixed (added)\n"), ("at the end, no blank", nt_ + "- CVE-FORGED: fixed (added)\n"),
+                            ("in the Fixes section", nt_.replace("### Fixes\n", "### Fixes\n- CVE-FORGED: fixed (added)\n", 1)),
+                            ("as a section of its own", nt_.replace("\n\n### VEX", "\n\n- CVE-FORGED: fixed (added)\n\n### VEX", 1))):
+        check("AC8 VEX oracle (r5, B F1): a forged line %s is refused (behavior entries: %d)" % (where_, len(beh_)),
+              bad_nt_ != nt_ and not resolves(bad_nt_, o_, n_, behavior=len(beh_))[0], resolves(bad_nt_, o_, n_, behavior=len(beh_)))
+# r5 (A R4-3 medium): a line with no product list where the documents call for one, and one with a list where they do not
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX oracle (r5, A R4-3): the true line names its products",
+      vlines(nt_) == ["- CVE-7 [pkg:b]: fixed (changed: status_notes) — statement 2 of the new document"], vex_part(nt_))
+for fab_ in ("- CVE-7: fixed (changed: status_notes) — statement 2 of the new document",
+             "- CVE-7 [pkg:b, pkg:a]: fixed (changed: status_notes) — statement 2 of the new document",
+             "- CVE-7 [products unreadable]: fixed (changed: status_notes) — statement 2 of the new document"):
+    check("AC8 VEX oracle (r5, A R4-3): fabricated %r is refused" % fab_, not resolves(nt_.replace(vlines(nt_)[0], fab_), o_, n_)[0],
+          resolves(nt_.replace(vlines(nt_)[0], fab_), o_, n_))
+o1_, n1_ = vd(VS), vd(vs(status_notes="n2"))
+nt1_ = P.notes("v0.2.3", [], P.vex_changes(o1_, n1_))
+check("AC8 VEX oracle (r5, A R4-3): a CVE with one statement prints no list, and a fabricated list is refused",
+      vlines(nt1_) == ["- CVE-7: not_affected (changed: status_notes)"] and resolves(nt1_, o1_, n1_)[0]
+      and not resolves(nt1_.replace("- CVE-7: ", "- CVE-7 [pkg:oci/cache?tag=debug]: "), o1_, n1_)[0], vex_part(nt1_))
+# r5 (A R4-3, B F2): products and their subcomponents compare as groups
+GA_ = vs(products=[{"@id": "pkg:a", "subcomponents": [{"@id": "pkg:sa"}]}, {"@id": "pkg:b", "subcomponents": [{"@id": "pkg:sb"}]}], status="fixed")
+GB_ = vs(products=[{"@id": "pkg:a", "subcomponents": [{"@id": "pkg:b"}]}], status="fixed", impact_statement="other")
+o_, n_ = vd(GA_, GB_), vd(dict(GA_, status_notes="n2"), dict(GB_, status_notes="n2"))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+ls_ = vlines(nt_)
+check("AC8 VEX oracle (r5): the true product groups print and resolve",
+      "[pkg:a (subcomponents: pkg:sa), pkg:b (subcomponents: pkg:sb)]" in nt_ and "[pkg:a (subcomponents: pkg:b)]" in nt_
+      and resolves(nt_, o_, n_)[0], (vex_part(nt_), resolves(nt_, o_, n_)))
+for true_, fab_ in (("[pkg:a (subcomponents: pkg:sa), pkg:b (subcomponents: pkg:sb)]", "[pkg:a (subcomponents: pkg:sb), pkg:b (subcomponents: pkg:sa)]"),
+                    ("[pkg:a (subcomponents: pkg:sa), pkg:b (subcomponents: pkg:sb)]", "[pkg:a, pkg:sa, pkg:b, pkg:sb]"),
+                    ("[pkg:a (subcomponents: pkg:sa), pkg:b (subcomponents: pkg:sb)]", "[pkg:a (subcomponents: pkg:sa, pkg:b, pkg:sb)]"),
+                    ("[pkg:a (subcomponents: pkg:b)]", "[pkg:b (subcomponents: pkg:a)]"),
+                    ("[pkg:a (subcomponents: pkg:b)]", "[pkg:a, pkg:b]"),
+                    ("[pkg:a (subcomponents: pkg:b)]", "[pkg:a]")):
+    check("AC8 VEX oracle (r5, A R4-3 / B F2): %s fabricated as %s is refused" % (true_, fab_),
+          true_ in nt_ and not resolves(nt_.replace(true_, fab_, 1), o_, n_)[0], resolves(nt_.replace(true_, fab_, 1), o_, n_))
+# r5 (A R4-3, B F2): a redacted field or product is allowed only where the SOURCE value is one the redactor changes;
+# every visible one is compared exactly
+o_, n_ = vd(VS), vd(vs(status_notes="n2", gpt=1))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX oracle (r5, A R4-3): a field 'gpt' and status_notes print '(redacted), status_notes' and resolve",
+      vlines(nt_) == ["- CVE-7: not_affected (changed: (redacted), status_notes)"] and resolves(nt_, o_, n_)[0], vex_part(nt_))
+check("AC8 VEX oracle (r5, A R4-3): the visible field beside a redacted one is still compared (impact_statement for status_notes refused)",
+      not resolves(nt_.replace("(redacted), status_notes", "(redacted), impact_statement"), o_, n_)[0])
+o_, n_ = vd(VS), vd(vs(status_notes="n2"))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX oracle (r5, B F2): 'changed: (redacted)' for a real, unredacted status_notes change is refused",
+      resolves(nt_, o_, n_)[0] and not resolves(nt_.replace("changed: status_notes", "changed: (redacted)"), o_, n_)[0])
+RA_, RB_ = vs(products=[{"@id": "pkg:gpt"}], status="fixed"), vs(products=[{"@id": "pkg:b"}], status="fixed")
+o_, n_ = vd(RA_, RB_), vd(dict(RA_, status_notes="n2"), dict(RB_, status_notes="n2"))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX oracle (r5): a redacted product resolves; the same marker on a product the redactor leaves alone is refused",
+      "[pkg:(redacted)]" in nt_ and "[pkg:b]" in nt_ and resolves(nt_, o_, n_)[0]
+      and not resolves(nt_.replace("[pkg:b]", "[pkg:(redacted)]"), o_, n_)[0]
+      and not resolves(nt_.replace("[pkg:(redacted)]", "[(redacted)]"), o_, n_)[0]
+      and not resolves(nt_.replace("[pkg:(redacted)]", "[pkg:b]"), o_, n_)[0], (vex_part(nt_), resolves(nt_, o_, n_)))
 # r4 (A R3-4, B low): redaction never consumes ANY line boundary str.splitlines() knows; each is written back as LF
 TERMS = ["\r", "\r\n", "\x0b", "\x0c", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"]
 for t_ in TERMS:
     raw_ = "## v0.2.2 — patch release\n\n### VEX\n- CVE-1: fixed (changed: x) — statement urn:chat" + t_ + "- gpt: fixed (added)\n"
-    want_ = "— statement urn:chat\n- (redacted): fixed (added)\n"
+    want_ = "— statement urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)\n"      # r5: the redacted line escaped (A R4-4)
     got_ = P._clean_lines("urn:chat" + t_ + "- gpt: fixed (added)")
     check("AC8 line-local redaction (r4, A R3-4): %r between two lines: both kept, the boundary written as LF" % t_,
-          got_ == "urn:chat\n- (redacted): fixed (added)", got_)
+          got_ == "urn:chat\n- \\(redacted\\)\\: fixed \\(added\\)", got_)
     cl_, _ = P.changelog(raw_, None, "")
     check("AC8 line-local redaction (r4, A R3-4): the changelog splits at %r too" % t_, want_ in cl_ and t_ not in cl_.replace("\n", ""), cl_)
     tr_ = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + raw_
@@ -1330,8 +1495,8 @@ check("AC8 VEX redaction marker (r4, B low): a name and a document field 'gpt' p
       vlines(nt_) == ["- (redacted): fixed (added) — statement 2 of the new document", "- document fields changed ((redacted))"]
       and "<redacted>" not in nt_ and all(inert(l) for l in vlines(nt_)), vex_part(nt_))
 old_ = "## v0.2.2 — patch release\n\n### VEX\n- <redacted>: fixed (added)\n"
-check("AC8 VEX redaction marker (r4, B low): an older tag's '<redacted>' is shown as '(redacted)' in the changelog",
-      "- (redacted): fixed (added)\n" in P.changelog(old_, None, "")[0], P.changelog(old_, None, "")[0])
+check("AC8 VEX redaction marker (r4, B low; r5 escaped, A R4-4): an older tag's '<redacted>' is shown as '(redacted)' in the changelog",
+      "- \\(redacted\\)\\: fixed \\(added\\)\n" in P.changelog(old_, None, "")[0], P.changelog(old_, None, "")[0])
 ent_ = ["A gpt-assisted fix (advisor 0130)."]
 pub_old_ = "- %s\n" % P._clean(ent_[0])
 check("0135 + r4: an entry published under either marker is not published again",
@@ -1348,6 +1513,88 @@ vc_ = P.vex_changes(None, vd(vs(products=[{"@id": "pkg:z z"}, {"@id": "pkg:a"}, 
 check("AC8 VEX order (r4, B): one statement's products print in the order of their values, not of their printed forms",
       vc_[0].get("products") == ["pkg:a", "pkg:b@1", "pkg:z z"]
       and vlines(P.notes("v0.2.3", [], vc_))[0].startswith('- CVE-7 [pkg:a, `"pkg:b@1"`, `"pkg:z z"`]: '), (vc_, vlines(P.notes("v0.2.3", [], vc_))))
+# r5 (B F4): entries sort by the raw change (kind, field names), products with equal labels by their source content;
+# how a value prints never reorders anything
+T1_ = vs(products=[{"@id": "pkg:a"}], status="fixed", **{"@id": "urn:x"})
+T2_ = vs(products=[{"@id": "pkg:a", "identifiers": {"purl": "pkg:a"}}], status="fixed")
+ls_ = vlines(P.notes("v0.2.3", [], P.vex_changes(vd(T1_, T2_), vd(dict(T1_, **{"@id": "urn:y"}), dict(T2_, A=1)))))
+check("AC8 VEX order (r5, B F4): equal product labels: 'changed: @id' sorts before 'changed: A' as the raw names do ('@' < 'A')",
+      len(ls_) == 2 and '(changed: `"@id"`)' in ls_[0] and "(changed: A)" in ls_[1], ls_)
+vc_ = P.vex_changes(None, vd(vs(products=[{"identifiers": {"purl": "a b"}}, {"identifiers": {"purl": "a", "cpe23": "b"}}]), vs()))
+check("AC8 VEX order (r5, B F4): two products with the same raw label 'a b' order by their source content, not their printed form",
+      vc_[0].get("products") == ["a b", "a b"] and '[a b, `"a b"`]: ' in vlines(P.notes("v0.2.3", [], vc_))[0], vlines(P.notes("v0.2.3", [], vc_)))
+# r5 (A R4-4, B F3): the redaction marker stays visible beside any Markdown in free text (behavior entries, fix lines, a tag's
+# own text): a line holding a marker is written with every ASCII punctuation character backslash-escaped, so no link,
+# image, HTML, comment or other construct can take the marker as its own; a line without a marker is unchanged
+PUNCT_ = r"!-/:-@\[-`{-~"
+def esc_line(l):
+    body = l[2:] if l.startswith("- ") else l
+    return re.fullmatch(r"(?:\\[%s]|[^%s])*" % (PUNCT_, PUNCT_), body) is not None and "\\(redacted\\)" in body
+def mktag(tag, body):
+    return ("object 0123\ntype commit\ntag %s\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" % tag + body
+            + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+nt_ = P.notes("v0.2.3", [], [], behavior=["[click]gpt (advisor 0130)."])
+check("AC8 redaction marker (r5, A R4-4 / B F3): '[click]gpt' in a behavior entry prints '\\[click\\]\\(redacted\\)', never a link",
+      "- \\[click\\]\\(redacted\\) \\(advisor 0130\\)\\.\n" in nt_ and "](redacted)" not in nt_, nt_)
+BEH_ = ["[click]gpt (advisor 0130).", "![x](gpt) (advisor 0130).", "<gpt> (advisor 0130).", "[a](https://gpt.example) (advisor 0130).",
+        "<!-- gpt --> (advisor 0130).", "[x][gpt] and `gpt` (advisor 0130).", "gpt in google.golang.org/protobuf (advisor 0130)."]
+FX_ = [{"cve": "CVE-1", "package": "[click]gpt", "old": "v1", "new": "v2", "severity": "high", "variants": ["default"]}]
+nt_ = P.notes("v0.2.3", FX_, [], behavior=BEH_)
+secs_ = nt_.split("\n\n")
+check("AC8 redaction marker (r5): every fix line and behavior entry holding a marker is fully escaped and shows '(redacted)'",
+      len(secs_) == 4 and all(esc_line(l) for l in secs_[1].split("\n")[1:] + secs_[3].rstrip("\n").split("\n")[1:])
+      and "<redacted>" not in nt_, nt_)
+check("AC8 redaction marker (r5): an unredacted line keeps its Markdown as written",
+      "- Go 1.27 [see](https://example.invalid) (advisor 0130).\n" in P.notes("v0.2.3", [], [], behavior=["Go 1.27 [see](https://example.invalid) (advisor 0130)."]))
+old_tag_ = ("## v0.2.2 — patch release\n\n### Fixes\n- CVE-1 in [click]<redacted>: v1 → v2 (severity high; variants: default)\n\n### VEX\n"
+            "- no change\n\n### Behavior changes\n- [click]<redacted> (advisor 0130).\n")
+got_ = P.tag_notes(mktag("v0.2.2", old_tag_)) or ""
+check("AC8 redaction marker (r5): an older tag's '[click]<redacted>' is shown escaped in its notes and the changelog, never as a link",
+      "- \\[click\\]\\(redacted\\) \\(advisor 0130\\)\\.\n" in got_ and "\\[click\\]\\(redacted\\)\\:" in got_ and "](redacted)" not in got_
+      and "- \\[click\\]\\(redacted\\) \\(advisor 0130\\)\\.\n" in P.changelog(old_tag_, None, "")[0], got_)
+check("AC8 redaction marker (r5): the escaped form is stable: a tag of the notes reads back as the notes byte for byte",
+      P.tag_notes(mktag("v0.2.3", nt_)) == nt_, P.tag_notes(mktag("v0.2.3", nt_)))
+cl1_, nn1_ = P.changelog(nt_, None, "- [click]gpt (advisor 0130).\n- Another change (advisor 0131).\n")
+check("0130 + r5: a published entry holding a marker leaves next-release-notes; an unpublished one stays",
+      nn1_ == "- Another change (advisor 0131).\n", nn1_)
+check("0135 + r5: an entry holding a marker is not published again (escaped form, older '<redacted>' form, round-4 form)",
+      P.unpublished(["[click]gpt (advisor 0130)."], nt_) == []
+      and P.unpublished(["[click]gpt (advisor 0130)."], "- [click]<redacted> (advisor 0130).\n") == []
+      and P.unpublished(["[click]gpt (advisor 0130)."], "- [click](redacted) (advisor 0130).\n") == []
+      and P.unpublished(["[click]gpt (advisor 0130)."], "") == ["[click]gpt (advisor 0130)."])
+# r5 (B low): a generated tag's heading ends in LF and nothing else: CR, CRLF, VT, FF, FS, GS, RS, NEL, LS or PS after it is
+# refused (as in round 3)
+for t_ in TERMS:
+    body_ = "## v0.2.2 — patch release" + t_ + "\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+    check("AC8 tag-notes heading (r5, B low): %r after the heading is refused" % t_, P.tag_notes(mktag("v0.2.2", body_)) is None,
+          P.tag_notes(mktag("v0.2.2", body_)))
+check("AC8 tag-notes heading (r5): the generated LF heading is still read",
+      P.tag_notes(mktag("v0.2.2", "## v0.2.2 — patch release\n\n### VEX\n- no change\n")) == "## v0.2.2 — patch release\n\n### VEX\n- no change\n")
+# r5 (A R4-1, B low): the changelog's existing history is copied unchanged, never rewritten; a history this code would not
+# have written (a line boundary other than LF, a vendor name, an unescaped marker) is refused, nothing written (fail closed)
+HIST_ = "# Changelog\n\n## v0.2.1 — patch release\n\n### VEX\n- (redacted): fixed (added) — statement 2 of the new document\n"
+cl_, _ = P.changelog(nt_, HIST_, "")
+check("AC8 changelog history (r5): a clean history is copied byte for byte below the new notes",
+      cl_.endswith("\n" + HIST_[len("# Changelog\n\n"):]) and cl_.startswith("# Changelog\n\n## v0.2.3"), cl_)
+check("AC8 changelog history (r5): the changelog this code writes is clean history for the next one",
+      P.changelog(nt_.replace("v0.2.3", "v0.2.4"), cl_, "")[0].endswith(cl_[len("# Changelog\n\n"):]))
+for what_, h_ in (("a CR line end", HIST_.replace("\n### VEX", "\r\n### VEX")), ("A's CR then a vendor line", HIST_ + "x\r- gpt: fixed (added)\n"),
+                  ("a vendor name", HIST_ + "- gpt helper\n"), ("an older '<redacted>' marker", HIST_ + "- <redacted>: fixed (added)\n"),
+                  ("U+2028", HIST_ + "a b\n"), ("NEL", HIST_ + "a\x85b\n")):
+    try:
+        P.changelog(nt_, h_, ""); got_ = "accepted"
+    except ValueError:
+        got_ = "ValueError"
+    check("AC8 changelog history (r5): a history with %s is refused, not rewritten" % what_, got_ == "ValueError", got_)
+cd5_ = tempfile.mkdtemp()
+open(os.path.join(cd5_, "n.md"), "w").write(nt_)
+open(os.path.join(cd5_, "CL.md"), "w", newline="").write(HIST_ + "- gpt helper\n")
+open(os.path.join(cd5_, "nn.md"), "w").write("- [click]gpt (advisor 0130).\n")
+rc_ = P.main(["changelog", "--notes", os.path.join(cd5_, "n.md"), "--changelog", os.path.join(cd5_, "CL.md"), "--next-notes", os.path.join(cd5_, "nn.md")])
+check("AC8 CLI changelog (r5): an unclean history exits 2 and writes nothing",
+      rc_ == 2 and open(os.path.join(cd5_, "CL.md"), newline="").read() == HIST_ + "- gpt helper\n"
+      and open(os.path.join(cd5_, "nn.md")).read() == "- [click]gpt (advisor 0130).\n", rc_)
+import shutil; shutil.rmtree(cd5_)
 pub ="## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
