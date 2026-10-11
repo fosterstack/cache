@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "82154f39e35fa8410ecaa66bf8e31b12e52273bce2010116b94b7190c2f88283",
+      "sha256": "2613e56cdab7c7b668869fb7db273329a32bf4f3519216b0ba840580dd867a20",
       "tools": [
         "make",
         "at",
@@ -834,7 +834,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
-      "sha256": "a00378cdcb3bdaa54104c69b0f2590f12eff35cd18818dc8627215fdb6c6778b",
+      "sha256": "40ab4d8e6e70c112f32da040658f4c6d1e4f9a7ee01126863a3480c220ce8cfa",
       "exceptions": [
         {
           "rule": "deny",

@@ -108,6 +108,18 @@ open(os.environ["LOG"], "a").write("chain-verify %s\n" % " ".join(a))
 if a[0] == "policy":
     if os.environ.get("POLICY_FAIL"): print("refused at release: policy", file=sys.stderr); sys.exit(1)
     open(a[a.index("--out") + 1], "w").write("{}"); sys.exit(0)
+if a[0] == "bind-items":     # items.json must be a product of Build's record: modelled as the two files existing
+    prev = "items"
+    if os.environ.get("FAIL_STAGE") == prev: print("refused at build: items: items.json is not the file Build's record holds", file=sys.stderr); sys.exit(1)
+    for f in (a[a.index("--record") + 1], a[a.index("--items") + 1]):
+        if not os.path.exists(f): print("refused at build: missing %s" % f, file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+if a[0] == "check-list":     # exactly four records, one per slot
+    d = a[a.index("--dir") + 1]
+    if os.environ.get("FAIL_STAGE") == "check": print("refused at check: a record is invalid", file=sys.stderr); sys.exit(1)
+    for n in ("scanners", "acceptance", "runtime", "arm64"):
+        if not os.path.exists(os.path.join(d, "witness-" + n, n + "-collection.json")): print("refused at check: missing the %s record" % n, file=sys.stderr); sys.exit(1)
+    sys.exit(0)
 prev = a[a.index("--previous") + 1]; rec = a[a.index("--record") + 1]
 if not os.path.exists(rec): print("refused at %s: missing record %s" % (prev, rec), file=sys.stderr); sys.exit(1)
 if os.environ.get("FAIL_STAGE") == prev: print("refused at %s: the record is invalid" % prev, file=sys.stderr); sys.exit(1)''',
@@ -152,8 +164,8 @@ def tree(extra_env=None):
         items.update({"image-" + v: DIG["image-" + v], "lock-" + v: "sha256:" + hashlib.sha256(("lock " + v).encode()).hexdigest(), "sbom-" + v: "sha256:" + hashlib.sha256(("sbom " + v).encode()).hexdigest(),
                       "image-%s-manifest-amd64" % v: "sha256:" + "1" * 64, "image-%s-manifest-arm64" % v: "sha256:" + "2" * 64})
     json.dump(items, open(os.path.join(t, "witness-build/items.json"), "w"))
-    for f in ("witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "witness-check/check-collection.json", "provenance/provenance.json", "dist/checksums.txt"):
-        open(os.path.join(t, f), "w").write("{}")
+    for f in ["witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "provenance/provenance.json", "dist/checksums.txt"] + ["witness-check/witness-%s/%s-collection.json" % (n, n) for n in ("scanners", "acceptance", "runtime", "arm64")]:
+        os.makedirs(os.path.dirname(os.path.join(t, f)), exist_ok=True); open(os.path.join(t, f), "w").write("{}")
     os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w").write("[]")
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
     return t
@@ -178,12 +190,13 @@ def tree_text(t):
     return out
 def first(s): return s.strip().split("\n")[0] if s.strip() else ""
 # ---- AC4/AC5: release-verify.sh ------------------------------------------------------------------------------------------------------
-STAGES = ["build", "sign", "rebuild", "check"]
+STAGES = ["build", "items", "sign", "rebuild", "check"]     # items: bind-items (REQ-CHAIN-007-AC16); check: the list verifier of the four Check records
+def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else ("items" if c.startswith("chain-verify bind-items") else "check" if c.startswith("chain-verify check-list") else None)
 t = tree(); rc, so, se = run(t, "release-verify")
 calls = [l for l in log(t) if l.startswith("chain-verify")]
 check(rc == 0, "AC5 a good v0.3.0 passes", se)
-check([c.split("--previous ")[1].split()[0] for c in calls if "--previous" in c] == STAGES and calls and calls[0].startswith("chain-verify policy make"), "AC4 the policy is made first, then build, sign, rebuild, check are verified in that order", str(calls))
-check(all("--digests witness-build/digests.json" in c for c in calls if "--previous" in c) and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
+check([stage_of(c) for c in calls if stage_of(c)] == STAGES and calls and calls[0].startswith("chain-verify policy make"), "AC4 the policy is made first, then build, sign, rebuild, check are verified in that order", str(calls))
+check(all("--digests witness-build/digests.json" in c for c in calls if stage_of(c) and stage_of(c) != "items") and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
 # REQ-CHAIN-007-AC14 (advisor 0383/0386): a release candidate is exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; leading zeros as for vX.Y.Z); the old -rc.N form is gone
 for tag in ("v0.3.0-rc1", "v10.20.30-rc12", "v01.02.03-rc01"):
     t = tree(); rc, so, se = run(t, "release-verify", tag=tag); check(rc == 0, "AC14 the release candidate %s passes release-verify exactly like a final" % tag, se)
@@ -194,11 +207,11 @@ for s in STAGES:
     t = tree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": s})
     after = STAGES[STAGES.index(s) + 1:]
     seen = " ".join(l for l in log(t) if l.startswith("chain-verify"))
-    check(rc != 0 and first(se).startswith("refused at " + s + ":") and not any("--previous " + a in seen for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
-    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/check-collection.json"}[s]
+    check(rc != 0 and first(se).startswith("refused at " + ("build" if s == "items" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
+    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/witness-arm64/arm64-collection.json", "items": "witness-build/items.json"}[s]
     os.remove(os.path.join(t, rec)); rc, so, se = run(t, "release-verify")
-    check(rc != 0 and "refused at " + s in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
-t = tree(); rc, so, se = run(t, "release-verify", env={"POLICY_FAIL": "1"}); check(rc != 0 and not [l for l in log(t) if "--previous" in l], "AC5 a policy that cannot be made stops release before any record is checked")
+    check(rc != 0 and "refused at " + ("build" if s == "items" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
+t = tree(); rc, so, se = run(t, "release-verify", env={"POLICY_FAIL": "1"}); check(rc != 0 and not [l for l in log(t) if stage_of(l)], "AC5 a policy that cannot be made stops release before any record is checked")
 t = tree(); rc, so, se = run(t, "release-verify", creds=list(SENT))
 check(rc == 0 and not [l for l in log(t) if l.split(" ")[0] in ("crane", "cosign", "gh", "melange")], "AC5 the verify script calls no registry, signing or release tool")
 # ---- AC6: release-apks.sh (maps Build's names through the fixed table, checks the four attested digests, then calls cache's release-sign-apks.sh) ---------------
@@ -357,7 +370,7 @@ def full_assets():
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
 for what in ("release upload v0.3.0", "release-upload/amd64-a.apk", "release-upload/arm64-a.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
-             "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/check-collection.json"):
+             "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json"):
     check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
 t2 = full_assets(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_FAIL_ON": "release view"})
 check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(l.endswith("--verify-tag") for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
@@ -464,7 +477,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "222"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "227"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

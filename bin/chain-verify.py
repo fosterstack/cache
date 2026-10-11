@@ -861,6 +861,102 @@ def cmd_stage_start(a):
     print("ok")
 
 
+# ---- Release's two refuse-only bindings (PR 4; advisor read-back verifier-bindings) -------------------------------------------------------
+# Both are new commands run by Release's first witnessed step only. They add refusals and change no existing command, pin or message.
+CHECK_RECORDS = ("scanners", "acceptance", "runtime", "arm64")        # the four Check records, by step name (REQ-CHAIN-007-AC16)
+MATERIAL = "https://witness.dev/attestations/material/v0.1/file:witness-build/digests.json"
+ITEMS_PRODUCT = "https://witness.dev/attestations/product/v0.1/file:items.json"
+
+
+def _sha256_bytes_of(path, stage, what):
+    try:
+        with open(path, "rb") as f:
+            return hashlib.sha256(f.read()).hexdigest()
+    except OSError:
+        refuse(stage, "%s is missing or unreadable" % what)
+
+
+def _release_policy(a, stage):
+    pol = load_json(a.policy, "policy")
+    if pol.get("dry_run"):
+        refuse(stage, "the policy is a dry-run policy (dry): Release verifies nothing against it")
+    return pol
+
+
+def cmd_bind_items(a):
+    """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
+    pol = _release_policy(a, "build")
+    now = parse_now(a.now)
+    have = _sha256_bytes_of(a.items, "build", "items.json")
+    with tempfile.TemporaryDirectory() as tmp:
+        stmt, _payload, dsse = verify_record(pol, "build", a.record, None, now, tmp)
+    if dsse["payloadType"] == POLT:
+        refuse("build", "predicate: a signed release policy is not Build's record")
+    hits = [s for s in typed_subjects("build", stmt) if s["name"] == ITEMS_PRODUCT]
+    if len(hits) != 1:
+        refuse("build", "items.json: Build's record holds %d product subjects named file:items.json, exactly one is required" % len(hits))
+    if hits[0]["digest"].get("sha256") != have:
+        refuse("build", "digest: items.json is not the file Build's record holds")
+    print("ok")
+
+
+def cmd_check_list(a):
+    """Exactly the four Check records, scanners, acceptance, runtime and arm64, each verified under Check's identity at the tag and each tied by its
+    material digest list to the digest list Build attested; a missing, extra, duplicated, substituted, unverifiable or wrong-job record is refused."""
+    pol = _release_policy(a, "check")
+    now = parse_now(a.now)
+    try:
+        with open(a.digests, "rb") as f:
+            d_bytes = f.read()
+    except OSError:
+        refuse("check", "the digest list is missing or unreadable")
+    chain_items.check_digest_bytes("check", d_bytes)
+    parse_digest_bytes(d_bytes, "check")
+    want = hashlib.sha256(d_bytes).hexdigest()
+    try:
+        names = sorted(os.listdir(a.dir))
+    except OSError:
+        refuse("check", "missing: the Check records directory %s is unreadable" % a.dir)
+    expected = ["witness-" + n for n in CHECK_RECORDS]
+    for n in names:
+        if n not in expected:
+            refuse("check", "extra: %s is not one of the four Check records (%s)" % (n, ", ".join(CHECK_RECORDS)))
+    for n in CHECK_RECORDS:
+        d = os.path.join(a.dir, "witness-" + n)
+        if os.path.islink(d) or not os.path.isdir(d):
+            refuse("check", "missing: the %s record (witness-%s/%s-collection.json)" % (n, n, n))
+        inside = sorted(os.listdir(d))
+        if inside != ["%s-collection.json" % n]:
+            if "%s-collection.json" % n not in inside:
+                refuse("check", "missing: the %s record (witness-%s/%s-collection.json)" % (n, n, n))
+            refuse("check", "extra: witness-%s holds %s besides its record" % (n, ", ".join(x for x in inside if x != "%s-collection.json" % n)))
+        if os.path.islink(os.path.join(d, inside[0])):
+            refuse("check", "the %s record is a symlink" % n)
+    seen = set()
+    for n in CHECK_RECORDS:
+        path = os.path.join(a.dir, "witness-" + n, "%s-collection.json" % n)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                stmt, _payload, dsse = verify_record(pol, "check", path, None, now, tmp)
+        except Refuse as r:
+            refuse("check", "the %s record: %s" % (n, r.reason))
+        if dsse["payloadType"] == POLT:
+            refuse("check", "predicate: the %s record is a signed release policy" % n)
+        step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
+        if step != n:
+            refuse("check", "the %s record is the record of step %r (a record is accepted only in the slot of its own step)" % (n, step))
+        mats = [s for s in typed_subjects("check", stmt) if s["name"] == MATERIAL]
+        if len(mats) != 1:
+            refuse("check", "digests: the %s record names %d material subjects file:witness-build/digests.json, exactly one is required" % (n, len(mats)))
+        if mats[0]["digest"].get("sha256") != want:
+            refuse("check", "digest: the %s record is about another digest list than the one Build attested" % n)
+        h = _sha256_bytes_of(path, "check", n)
+        if h in seen:
+            refuse("check", "the %s record is a duplicate of another record" % n)
+        seen.add(h)
+    print("ok")
+
+
 def make_policy_from_template(a, tpl_path):
     ref = os.environ.get("GITHUB_REF", "")
     ev = os.environ.get("GITHUB_EVENT_NAME", "")
@@ -1291,6 +1387,16 @@ def build_parser():
     st.add_argument("--policy", required=True)
     st.add_argument("--now")
     st.add_argument("--rekor-stub")
+    bi = sub.add_parser("bind-items")
+    bi.add_argument("--policy", required=True)
+    bi.add_argument("--record", required=True)
+    bi.add_argument("--items", required=True)
+    bi.add_argument("--now")
+    cl = sub.add_parser("check-list")
+    cl.add_argument("--policy", required=True)
+    cl.add_argument("--digests", required=True)
+    cl.add_argument("--dir", required=True)
+    cl.add_argument("--now")
     ac = sub.add_parser("actions")
     ac.add_argument("workflow")
     ac.add_argument("--allowed", required=True)
@@ -1326,6 +1432,10 @@ def main(argv):
             cmd_check_build_record(a)
         elif a.cmd == "stage-start":
             cmd_stage_start(a)
+        elif a.cmd == "bind-items":
+            cmd_bind_items(a)
+        elif a.cmd == "check-list":
+            cmd_check_list(a)
         elif a.cmd == "actions":
             cmd_actions(a)
         elif a.cmd in chain_items.COMMANDS:
