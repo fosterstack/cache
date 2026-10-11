@@ -567,6 +567,7 @@ _HOST = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z](?:[a-z0-9-
 _FUNC = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,127}")
 _TEST_FILE = re.compile(r"(?:^|/)(?:[^/]+-test\.sh|[^/]+_test\.go|[^/]+_test\.py|test_[^/]+\.py)$")
 _CODE_FILE = (".sh", ".py", ".go")
+_WF_FILE = (".yml", ".yaml")
 MIN_CASE = 12
 
 
@@ -591,8 +592,8 @@ def _check_fetch_row(r, bad):
     v = r["verifier"]
     if not isinstance(v, dict) or set(v) not in ({"file", "function"}, {"file", "line"}):
         raise bad("verifier must be an object with file and exactly one of function or line")
-    if not _rel_path(v["file"]) or not v["file"].endswith(_CODE_FILE):
-        raise bad("verifier file is not a relative path to a shell, Python or Go file")
+    if not _rel_path(v["file"]) or not (v["file"].endswith(_CODE_FILE) or "line" in v and v["file"].endswith(_WF_FILE)):
+        raise bad("verifier file is not a relative path to a shell, Python or Go file (or, for the line form only, a workflow or action)")
     if "function" in v and not (isinstance(v["function"], str) and _FUNC.fullmatch(v["function"])):
         raise bad("verifier function is not a function name")
     if "line" in v and not (isinstance(v["line"], str) and v["line"].strip() and not any(c in v["line"] for c in "\r\n")):
@@ -626,10 +627,13 @@ _NAME = r"[A-Za-z_][A-Za-z0-9_]*"
 _DENIED = re.compile(r"(?:GITHUB_ENV|GITHUB_PATH|GITHUB_OUTPUT|GITHUB_STEP_SUMMARY|HOME|PATH|BASH_ENV|ENV|CURL_HOME|XDG_CONFIG_HOME|SSL_CERT_FILE|NODE_OPTIONS"
                      r"|LD_\w*|PYTHON\w*)")
 _SHELL_KEYS = {"BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS"}
+_ENV_DENY = {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy", "CURL_CA_BUNDLE", "SSL_CERT_FILE",
+             "SSL_CERT_DIR", "CURL_HOME", "XDG_CONFIG_HOME", "GH_HOST", "GH_REPO", "GH_ENTERPRISE_TOKEN", "BASH_ENV", "ENV", "PATH", "LD_PRELOAD",
+             "LD_LIBRARY_PATH", "PYTHONPATH", "PYTHONSTARTUP", "PYTHONHOME", "PYTHONUSERBASE"}
 _CURL = {"letters": set("fsSLg"), "flags": {"--fail", "--fail-with-body", "--silent", "--show-error", "--location", "--globoff", "--compressed",
                                              "--create-dirs", "--retry-all-errors", "--retry-connrefused", "--http1.1", "--http2", "--tlsv1.2", "--tlsv1.3"},
          "output": {"-o", "--output"}, "number": {"--retry", "--retry-delay", "--retry-max-time", "--max-time", "-m", "--connect-timeout", "--max-filesize"},
-         "proto": {"--proto", "--proto-redir"}}
+         "proto": {"--proto", "--proto-redir"}, "redirs": {"--max-redirs"}}
 _LITWORD = re.compile(r"[A-Za-z0-9_./:=+,%@-]+")
 _RELPATH = r"[A-Za-z0-9_.][A-Za-z0-9_./-]*"
 _URLCH = r"[A-Za-z0-9._~/%+,=:@-]"
@@ -670,7 +674,7 @@ def _curl_unruled(words, host, row):
     redirects: true and --proto-redir =https."""
     if len(words) < 2 or words[0] != "curl" or words[1] not in ("-q", "--disable"):
         return "a ruled download is curl with -q (or --disable) as its FIRST argument, so no ~/.curlrc is read"
-    i, urls, glob_off, follows, redir_https = 2, [], False, False, False
+    i, urls, glob_off, follows, redir_https, max_redirs, proto_https = 2, [], False, False, False, False, False
     while i < len(words):
         w = words[i]
         i += 1
@@ -678,17 +682,21 @@ def _curl_unruled(words, host, row):
             glob_off |= w == "--globoff" or (not w.startswith("--") and "g" in w)
             follows |= w == "--location" or (not w.startswith("--") and "L" in w)
             continue
-        if w in _CURL["output"] | _CURL["number"] | _CURL["proto"]:
+        if w in _CURL["output"] | _CURL["number"] | _CURL["proto"] | _CURL["redirs"]:
             if i == len(words):
                 return f"{w} has no value"
             v, i = words[i], i + 1
-            if w in _CURL["number"] and not re.fullmatch(r"\d{1,12}", v):
+            if w in _CURL["number"] and not re.fullmatch(r"[0-9]{1,12}", v):
                 return f"{w} takes a number"
             if w in _CURL["proto"] and v != "=https":
                 return f"{w} must be =https"
+            if w in _CURL["redirs"] and v != "3":
+                return f"{w} must be exactly 3"
+            max_redirs |= w in _CURL["redirs"]
             if w in _CURL["output"] and not _output_ok(v):
                 return f"{w} names {v[:60]!r}: an output is a literal relative path or \"$NAME[/path]\" (no glob, no .., not absolute, not a denied name)"
             redir_https |= w == "--proto-redir"
+            proto_https |= w == "--proto"
             continue
         if w.startswith("-"):
             return f"the option {w[:40]!r} is not one this check reads in a ruled download"
@@ -699,10 +707,12 @@ def _curl_unruled(words, host, row):
         return "the download command names no address"
     if not glob_off:
         return "a ruled curl download needs -g (--globoff): no URL globbing"
-    if follows and not (row.get("redirects") is True and redir_https):
-        return "a download that follows redirects (-L) needs redirects: true on the row and --proto-redir =https on the line"
-    if row.get("redirects") is True and not follows:
-        return "the row says redirects: true but the line does not follow redirects"
+    if not proto_https:
+        return "a ruled curl download needs --proto =https"
+    if follows and not (row.get("redirects") is True and redir_https and max_redirs):
+        return "a download that follows redirects (-L) needs redirects: true on the row and --proto-redir =https and --max-redirs 3 on the line"
+    if (row.get("redirects") is True or max_redirs) and not follows:
+        return "the row says redirects: true, or the line says --max-redirs, but the line does not follow redirects"
     return None
 
 
@@ -761,7 +771,7 @@ def _shell_shape(flat):
     if any(isinstance(t, tuple) for t in cmd) or not cmd:
         return None, "the line holds another command, a pipe, a redirect or a subshell"
     num = lambda t: isinstance(t, str) and re.fullmatch(r"[0-9]{1,3}", t)
-    msg = lambda t: isinstance(t, str) and re.fullmatch(r'"[^"$]*"', t)
+    msg = lambda t: isinstance(t, str) and re.fullmatch(r'"[A-Za-z0-9 .,:_-]*"', t)
     if tail and not (tail[0] == ("op", "||") and (len(tail) == 3 and tail[1] == "exit" and num(tail[2])
                                                     or tail[1:2] == ["die"] and (len(tail) == 3 and msg(tail[2]) or len(tail) == 4 and msg(tail[2]) and num(tail[3])))):
         return None, 'after the command the line may hold only || exit N or || die "MSG" [N] (no pipe, &&, ;, redirect or second command)'
@@ -807,23 +817,30 @@ def _python_words(flat):
     return words
 
 
+_PY_OPENER = re.compile(r'python3(?: -)?(?: (?:"\$' + _NAME + r'"|"\$\(cd "\$\(dirname "\$0"\)" && pwd\)"))* <<\'(' + _NAME + r')\'(?: \|\| exit \$\?)?')
+
+
 def _heredocs(lines):
-    """(shell line numbers, python line numbers) of a shell file: the text outside heredoc bodies, and the bodies of heredocs whose opener runs python3
-    with a QUOTED tag (no expansion in the body). Every other heredoc body is data, in neither."""
-    shell, py, pend, i = [], [], [], 0
+    """(shell line numbers, python line numbers) of a shell file, or None. The ONLY heredoc read is the exact opener python3 [-] ["$NAME" |
+    "$(cd "$(dirname "$0")" && pwd)"]... <<'TAG' [|| exit $?] as a whole line (a quoted tag: no expansion in the body), whose body runs to a line that is
+    exactly TAG; any other << anywhere outside such a body (a data heredoc, a here-string, a shift, a << in a comment or a string) makes the file
+    unreadable (None): fail closed."""
+    shell, py, i = [], [], 0
     while i < len(lines):
-        if pend:
-            dash, tag, kind = pend[0]
-            if (lines[i].lstrip("\t") if dash else lines[i]) == tag:
-                pend.pop(0)
-            elif kind == "py":
+        m = _PY_OPENER.fullmatch(_flat(lines[i]))
+        if m:
+            shell.append(i)
+            i += 1
+            while i < len(lines) and lines[i] != m.group(1):
                 py.append(i)
+                i += 1
+            if i == len(lines):
+                return None
             i += 1
             continue
+        if "<<" in lines[i]:
+            return None
         shell.append(i)
-        for m in re.finditer(r"(?<!<)<<(-?)[ \t]*(['\"]?)(" + _NAME + r")\2", lines[i]):
-            kind = "py" if m.group(2) and re.match(r"[ \t]*python3?[ \t]", lines[i]) else "data"
-            pend.append((bool(m.group(1)), m.group(3), kind))
         i += 1
     return shell, py
 
@@ -834,7 +851,12 @@ def _contexts(text, path):
     bash, or a BASH_ENV, ENV, SHELLOPTS or BASHOPTS key anywhere). Else a str saying why not."""
     lines = text.split("\n")
     if path.endswith(".sh"):
-        shell, py = _heredocs(lines)
+        hd = _heredocs(lines)
+        if hd is None:
+            return f"{path} holds a << this check does not read (only the exact python3 - ... <<'TAG' opener is read): it rules nothing"
+        if "${{" in text:
+            return f"{path} holds ${{{{: it rules nothing"
+        shell, py = hd
         return {"shell": [[lines[i] for i in shell]], "python": [lines[i] for i in py], "raw": [lines]}
     if path.endswith((".yml", ".yaml")):
         try:
@@ -848,13 +870,15 @@ def _contexts(text, path):
                 for k, v in d.items():
                     if k in _SHELL_KEYS or (k == "shell" and v != "bash"):
                         bad.append(k)
+                    if k == "env" and isinstance(v, dict):
+                        bad.extend(x for x in v if x in _ENV_DENY)
                     walk(v)
             elif isinstance(d, list):
                 for v in d:
                     walk(v)
         walk(doc)
         if bad:
-            return f"{path} sets {bad[0]} (only bash run: steps, with no BASH_ENV, ENV, SHELLOPTS or BASHOPTS, are read)"
+            return f"{path} sets {bad[0]} (only bash run: steps are read, and no env: may set a proxy, CA, gh host, shell, PATH or loader variable)"
         runs = [t.split("\n") for t in _run_texts(doc)]
         return {"shell": runs, "python": [], "raw": runs}
     return f"{path} is neither a shell script nor a workflow or action"
@@ -884,7 +908,8 @@ _DIR = re.compile(r"(?:/tmp/)?[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z
 _TAG_RES = (r"^v[0-9]+\.[0-9]+\.[0-9]+$", r"^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$")
 _TAG_RE = "(?:" + "|".join(re.escape(x) for x in _TAG_RES) + ")"
 _VER = r'(?:"\$ver"|\$ver)'
-_MSG = r"(?:(?:echo|printf) [^;{}|&`()<>\\]*(?: >&2)?; )?"
+_MSGTEXT = r'(?:"[A-Za-z0-9 .,:_-]*"|[A-Za-z0-9.,:_-]+(?: [A-Za-z0-9.,:_-]+)*)'   # letters, digits, space and . , : _ - only (no #, quote, $, ...)
+_MSG = rf"(?:(?:echo|printf) {_MSGTEXT}(?: >&2)?; )?"
 _VER_CHECK = re.compile(rf"\[\[ {_VER} =~ {_TAG_RE} \]\] \|\| (?:exit [1-9][0-9]?|\{{ {_MSG}exit [1-9][0-9]?; \}})"
                         rf"|if \[\[ ! {_VER} =~ {_TAG_RE} \]\]; then {_MSG}exit [1-9][0-9]?; fi")
 _PRE_LINES = re.compile(r"|#.*[^\\]|#|set -eu|set -euo pipefail|ver=\"\$(?:\{(" + _NAME + r")\}|(" + _NAME + r"))\"|mkdir (?:-p )?(" + _DIR.pattern + ")")
@@ -983,12 +1008,15 @@ def _body_real(lines):
     return False
 
 
-def _defines(text, path, name):
-    """True when the file defines function NAME as CODE with a real body: a shell function outside heredocs (.sh), a Python def at column 0 in a .py
-    file or in the body of a python3 heredoc with a quoted tag (.sh), a Go func at column 0 (.go)."""
-    lines, n = text.split("\n"), re.escape(name)
+def _bodies(text, path, name):
+    """[(language, body lines)] for every definition of function NAME as CODE with a real body: a shell function outside heredocs (.sh), a Python def
+    at column 0 in a .py file or in the body of a python3 heredoc with a quoted tag (.sh), a Go func at column 0 (.go)."""
+    lines, n, out = text.split("\n"), re.escape(name), []
     if path.endswith(".sh"):
-        shell, py = _heredocs(lines)
+        hd = _heredocs(lines)
+        if hd is None:
+            return []
+        shell, py = hd
         sl = [lines[i] for i in shell]
         for j, x in enumerate(sl):
             m = re.match(rf"[ \t]*(?:function[ \t]+{n}(?:[ \t]*\([ \t]*\))?|{n}[ \t]*\([ \t]*\))[ \t]*\{{(.*)$", x)
@@ -996,19 +1024,18 @@ def _defines(text, path, name):
                 continue
             rest = m.group(1)
             if rest.rstrip().endswith("}"):
-                if _body_real([rest.rstrip()[:-1]]):
-                    return True
-                continue
-            body = []
-            for y in sl[j + 1:]:
-                if y.strip() == "}":
-                    break
-                body.append(y)
-            if _body_real([rest] + body):
-                return True
-        return _py_defines([lines[i] for i in py], n)
+                body = [rest.rstrip()[:-1]]
+            else:
+                body = [rest]
+                for y in sl[j + 1:]:
+                    if y.strip() == "}":
+                        break
+                    body.append(y)
+            if _body_real(body):
+                out.append(("sh", body))
+        return out + _py_bodies([lines[i] for i in py], n)
     if path.endswith(".py"):
-        return _py_defines(lines, n)
+        return _py_bodies(lines, n)
     if path.endswith(".go"):
         for j, x in enumerate(lines):
             if re.match(rf"func (?:\([^)\n]*\) )?{n}[\[(]", x):
@@ -1018,11 +1045,12 @@ def _defines(text, path, name):
                         break
                     body.append(y)
                 if _body_real(body):
-                    return True
-    return False
+                    out.append(("go", body))
+    return out
 
 
-def _py_defines(lines, n):
+def _py_bodies(lines, n):
+    out = []
     for j, x in enumerate(lines):
         if re.match(rf"(?:async )?def {n}\(", x):
             body = []
@@ -1031,16 +1059,83 @@ def _py_defines(lines, n):
                     break
                 body.append(y)
             if _body_real(body):
+                out.append(("py", [x] + body))
+    return out
+
+
+def _defines(text, path, name):
+    return bool(_bodies(text, path, name))
+
+
+_IDENT = ("--certificate-identity", "--certificate-identity-regexp")
+_ISSUER = ("--certificate-oidc-issuer",)
+
+
+def _has_flags(words):
+    has = lambda names: any(w in names or w.split("=", 1)[0] in names and "=" in w for w in words)
+    return has(_IDENT) and has(_ISSUER)
+
+
+def _sh_signature(lines):
+    """True when the shell lines run (as a COMMAND, not text) cosign verify-blob with --certificate-identity[-regexp] and --certificate-oidc-issuer:
+    continuations joined, comments dropped, each command of each line read; a command is the segment itself, after if / ! / then / { only."""
+    joined = re.sub(r"\\\n\s*", " ", "\n".join(lines))
+    for line in joined.split("\n"):
+        flat = _flat(line)
+        if flat.startswith("#"):
+            continue
+        for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):
+            words = seg.split(" ")
+            while words and words[0] in ("if", "!", "then", "{", "elif", "while", "until"):
+                words = words[1:]
+            if words[:2] == ["cosign", "verify-blob"] and _has_flags(words):
                 return True
     return False
 
 
+def _py_signature(lines):
+    """True when the Python def CALLS a list ["cosign", "verify-blob", ...] holding --certificate-identity[-regexp] and --certificate-oidc-issuer."""
+    import ast, textwrap
+    try:
+        tree = ast.parse(textwrap.dedent("\n".join(lines)))
+    except (SyntaxError, ValueError):
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for a in node.args:
+                if isinstance(a, ast.List):
+                    words = [e.value for e in a.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+                    if words[:2] == ["cosign", "verify-blob"] and _has_flags(words):
+                        return True
+    return False
+
+
+def _signature_unverified(vt, v):
+    """None when the verifier of a redirects row is a SIGNATURE check (advisor ruling 3b), else why not: a function whose body runs cosign verify-blob
+    with the certificate identity and issuer (shell or Python), or a line verifier that is such a shell command; checksum-only checks are not enough."""
+    why = (f"a redirects row needs a signature check: the verifier {v['file']}:{v.get('function') or 'line'} does not run cosign verify-blob with"
+           " --certificate-identity[-regexp] and --certificate-oidc-issuer as code (a checksum, a comment, a heredoc or an echo string is not enough)")
+    if "function" in v:
+        ok = any(_sh_signature(b) if lang == "sh" else _py_signature(b) if lang == "py" else False for lang, b in _bodies(vt, v["file"], v["function"]))
+    else:
+        ok = _sh_signature([v["line"]]) and not _flat(v["line"]).startswith("#")
+    return None if ok else why
+
+
 def _code_lines(text, path):
+    """The lines a verifier LINE may be: code, never a comment. A .sh file: outside heredocs, or in a python3 heredoc (none at all if the file holds
+    a << this reader does not read); a workflow or action: the lines of its bash run: blocks that hold no << and no ${{ (none if the file sets a shell,
+    a shell variable or a denied env: key); .py and .go: every line."""
     lines = text.split("\n")
     if path.endswith(".sh"):
-        shell, py = _heredocs(lines)
-        return [lines[i] for i in sorted(shell + py)]
-    return lines
+        hd = _heredocs(lines)
+        out = [] if hd is None else [lines[i] for i in sorted(hd[0] + hd[1])]
+    elif path.endswith(_WF_FILE):
+        ctx = _contexts(text, path)
+        out = [] if isinstance(ctx, str) else [x for b in ctx["shell"] if "<<" not in "\n".join(b) and "${{" not in "\n".join(b) for x in b]
+    else:
+        out = lines
+    return [x for x in out if not _flat(x).startswith(("#", "//"))]
 
 
 def _fetch_unverified(root, head, row, flat, held_n):
@@ -1066,11 +1161,13 @@ def _fetch_unverified(root, head, row, flat, held_n):
     pyform = re.match(r"(?:" + _NAME + r" = )?subprocess\.run\(", flat)
     kind = "python" if pyform else "shell"
     where = ctx["python"] if pyform else [x for step in ctx["shell"] for x in step]
+    if path.endswith(_WF_FILE) and any("${{" in "\n".join(b) or "<<" in "\n".join(b) for b in ctx["shell"] if any(_flat(x) == flat for x in b)):
+        return "a run: block holding the line holds ${{ (expanded by GitHub before bash) or a <<: it rules nothing"
     if sum(1 for x in where if _flat(x) == flat) != held_n:
         return (f"every copy of the line must be {'in the body of a python3 heredoc with a quoted tag' if pyform else 'shell text: a run: step of bash, or a .sh file outside heredocs'}"
                 f" ({kind} form)")
     if host == REPO_SELF:
-        why = _gh_unruled(flat) or _ver_unchecked(ctx["shell"], flat)
+        why = _gh_unruled(flat) or _ver_unchecked(ctx["raw"], flat)
     elif pyform:
         words = _python_words(flat)
         why = words if isinstance(words, str) else _curl_unruled(words, host, row)
@@ -1087,6 +1184,10 @@ def _fetch_unverified(root, head, row, flat, held_n):
         return f"the verifier file {v['file']} does not define {v['function']} as code with a real body"
     if "line" in v and _flat(v["line"]) not in {_flat(x) for x in _code_lines(vt, v["file"])}:
         return f"the verifier file {v['file']} holds no code line {v['line'][:80]!r}"
+    if row.get("redirects") is True:
+        why = _signature_unverified(vt, v)
+        if why:
+            return why
     tt = _head_text(root, head, t["file"])
     if tt is None:
         return f"the test file {t['file']} is not a readable regular file in the head tree"

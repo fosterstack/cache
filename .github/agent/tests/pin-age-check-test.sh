@@ -1289,10 +1289,12 @@ ifx() { python3 "$work/if.py" file "$@"; }
 ifck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/if.json" --exceptions "$2" >"$work/if.out" 2>&1 || rc=$?; }
 HOSTN=packages.example.dev
 LIT='curl -q -fsS -g --max-time 60 --proto =https -o "$tmp/APKINDEX.tar.gz" "https://packages.example.dev/os/${arch}/APKINDEX.tar.gz"'
-KEY='curl -q -fsS -g --max-filesize 65536 -o "$tmp/key.pub" https://packages.example.dev/key.rsa.pub || die "could not fetch the key" 1'
+KEY='curl -q -fsS -g --proto =https --max-filesize 65536 -o "$tmp/key.pub" https://packages.example.dev/key.rsa.pub || die "could not fetch the key" 1'
 FETCH=$'#!/bin/sh\nset -eu\nverify_sha256() { echo "$2  $1" | sha256sum -c - >/dev/null || { rm -f "$1"; exit 1; }; }\n'
 TESTT=$'#!/bin/sh\nCASE="a package whose bytes fail verify_sha256 is removed before use"\n'
-SUPPORT=(base bin/fetch.sh "$FETCH" base bin/fetch-test.sh "$TESTT")
+SIGT=$'#!/bin/sh\n# the signature check a redirects row needs (advisor ruling 3b): cosign verify-blob with the certificate identity and issuer\nverify_sig() {\n  cosign verify-blob --bundle "$1.bundle" \\\n    --certificate-identity "https://github.com/o/r/.github/workflows/rel.yml@refs/heads/main" \\\n    --certificate-oidc-issuer https://token.actions.githubusercontent.com "$1" || { rm -f "$1"; exit 1; }\n}\n'
+SUPPORT=(base bin/fetch.sh "$FETCH" base bin/fetch-test.sh "$TESTT" base bin/sig.sh "$SIGT")
+SIGV='"verifier": {"file": "bin/sig.sh", "function": "verify_sig"}'
 ifrepo ifm "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n'
 RLIT=$(ifrow bin/fetch.sh "$LIT" "$HOSTN"); RKEY=$(ifrow bin/fetch.sh "$KEY" "$HOSTN")
 ifx "$work/if-ok.json" plain "$RLIT" "$RKEY"
@@ -1402,13 +1404,13 @@ hostcase() { # LINE EXPECTED-RC WHY [OVERRIDES-JSON]
   check test "$rc" -eq "$2"
   if [ "$2" -eq 0 ]; then check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 1; else check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0; check grep -q 'input fetch not verified' "$work/if.out"; fi
 }
-C='curl -q -fsS -g'; O='-o "$tmp/i"'; U='"https://packages.example.dev/os/i"'
+C='curl -q -fsS -g --proto =https'; O='-o "$tmp/i"'; U='"https://packages.example.dev/os/i"'
 hostcase "$LIT" 0 'control: the literal https://packages.example.dev/ with a quoted ${arch} in the path and a quoted "$tmp/..." output passes'
 hostcase "$C $O $U || exit 1" 0 'control (shape): CMD || exit N passes'
 hostcase "$C $O $U"' || die "could not fetch the index" 1' 0 'control (shape): CMD || die "MSG" N passes'
 hostcase "if $C $O $U; then ok=1; break; fi" 0 'control (shape): if CMD; then ok=1; break; fi passes'
 hostcase "echo go; $C $O $U" 1 'F1: a command before the download on the line is refused'
-hostcase "curl --disable -fsS -g $O $U" 0 'control (F2): --disable as the first argument passes'
+hostcase "curl --disable -fsS -g --proto =https $O $U" 0 'control (F2): --disable as the first argument passes'
 hostcase "$C $O $U | sh" 1 'F1: piping the download into sh is refused'
 hostcase "$C -o a.sh $U && sh a.sh" 1 'F1: CMD && sh a.sh is refused'
 hostcase "$C -o a.sh $U; bash a.sh" 1 'F1: CMD; bash a.sh is refused'
@@ -1425,7 +1427,7 @@ hostcase "$C $O $U"' || die "mirror at https://evil.example/" 1' 1 'every :// on
 hostcase "$C -k $O $U" 1 'F3: an option the check does not read and that takes no value (-k) is refused'
 hostcase "$C --insecure $O $U" 1 'F3: --insecure is refused'
 hostcase "$C $O \"https://packages.example.dev/\$HOME/x\"" 1 'F3: a denied name ($HOME) in the address path is refused'
-hostcase "wget -q -g -o \"\$tmp/i\" $U" 1 'F2: a wget line that would otherwise read as a curl command is refused (wget is not read)'
+hostcase "wget -q -g --proto =https -o \"\$tmp/i\" $U" 1 'F2: a wget line that would otherwise read as a curl command is refused (wget is not read)'
 hostcase "$C $O $U &" 1 'F1: a background & is refused'
 hostcase "( $C $O $U )" 1 'F1: a subshell is refused'
 hostcase "curl -fsS -g $O $U" 1 'F2: curl without -q first (it would read ~/.curlrc) is refused'
@@ -1454,11 +1456,46 @@ hostcase "$C $O $U >\"\$tmp/log\"" 1 'F3: an output redirect is refused'
 hostcase "$C $O $U 2>/dev/null" 1 'F3: a stderr redirect is refused'
 hostcase "$C $O $U <\"\$cfg\"" 1 'F3: an input redirect is refused'
 hostcase "$C $O 'https://packages.example.dev/os/i'" 1 'F3: a single-quoted word (not read by this check) is refused'
-hostcase "curl -q -fsSL -g $O $U" 1 'F11: -L without redirects: true on the row is refused'
-hostcase "curl -q -fsSL -g $O $U" 1 'F11: -L with redirects: true but no --proto-redir =https is refused' '{"redirects": true}'
-hostcase "curl -q -fsSL -g --proto-redir =https $O $U" 0 'control (F11): -L with --proto-redir =https and redirects: true passes' '{"redirects": true}'
-hostcase "$C --location --proto-redir =https $O $U" 0 'control (F11): --location the same' '{"redirects": true}'
-hostcase "$C $O $U" 1 'F11: redirects: true on a line that does not follow redirects is refused' '{"redirects": true}'
+hostcase "curl -q -fsSL -g --proto =https $O $U" 1 'F11: -L without redirects: true on the row is refused'
+R='--proto-redir =https --max-redirs 3'
+hostcase "curl -q -fsSL -g --proto =https --max-redirs 3 $O $U" 1 'F11: -L with redirects: true and --max-redirs 3 but no --proto-redir =https is refused' "{\"redirects\": true, $SIGV}"
+hostcase "curl -q -fsSL -g --proto =https $R $O $U" 0 'control (ruling 3): -L, --proto-redir =https, --max-redirs 3, redirects: true and a cosign verify-blob verifier pass' "{\"redirects\": true, $SIGV}"
+hostcase "$C --location $R $O $U" 0 'control (ruling 3): --location the same' "{\"redirects\": true, $SIGV}"
+hostcase "curl -q -fsSL -g --proto =https --proto-redir =https $O $U" 1 'ruling 3a: a redirects row without --max-redirs is refused' "{\"redirects\": true, $SIGV}"
+hostcase "curl -q -fsSL -g --proto =https --proto-redir =https --max-redirs 5 $O $U" 1 'ruling 3a: --max-redirs 5 (not exactly 3) is refused' "{\"redirects\": true, $SIGV}"
+hostcase "curl -q -fsSL -g --proto =https --proto-redir =https --max-redirs 0 $O $U" 1 'ruling 3a: --max-redirs 0 (not exactly 3) is refused' "{\"redirects\": true, $SIGV}"
+hostcase "curl -q -fsSL -g --proto =https --proto-redir =https --max-redirs \"\$n\" $O $U" 1 'ruling 3a: --max-redirs with a variable is refused' "{\"redirects\": true, $SIGV}"
+hostcase "$C --max-redirs 3 $O $U" 1 'ruling 3a: --max-redirs on a line that does not follow redirects is refused'
+hostcase "curl -q -fsSL -g --proto =https $R $O $U" 1 'ruling 3b: a redirects row whose verifier is checksum-only (sha256sum -c) is refused' '{"redirects": true}'
+hostcase "$C $R $O $U" 1 'F11: redirects: true on a line that does not follow redirects is refused' "{\"redirects\": true, $SIGV}"
+# ruling 3b/3c: the verifier of a redirects row is a SIGNATURE check: code holding cosign verify-blob with --certificate-identity[-regexp] and --certificate-oidc-issuer
+sigcase() { # VERIFIER-FILE-TEXT VERIFIER-JSON EXPECTED-RC WHY
+  ifrepo ifs "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$RLL"$'\n' head bin/v2.sh "$1"
+  ifx "$work/if-s.json" plain "$(ifrow bin/fetch.sh "$RLL" "$HOSTN" "{\"redirects\": true, \"verifier\": $2}")"; ifck ifs "$work/if-s.json"
+  CASE="AC19 (redirects verifier, ruling 3b): $4: exit $3"
+  check test "$rc" -eq "$3"; if [ "$3" -ne 0 ]; then check grep -qE 'input fetch not verified.*(signature|as code)' "$work/if.out"; fi
+}
+RLL="curl -q -fsSL -g --proto =https $R $O $U"
+vj() { python3 -c 'import json,sys; print(json.dumps({"file": "bin/v2.sh", "line": sys.argv[1]}))' "$1"; }   # a line verifier as JSON
+VF='{"file": "bin/v2.sh", "function": "vs"}'
+CO='cosign verify-blob --bundle "$1.b" --certificate-identity "https://github.com/o/r/.github/workflows/r.yml@refs/heads/main" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$1"'
+sigcase $'#!/bin/sh\nvs() { '"$CO"$' || exit 1; }\n' "$VF" 0 'control: a one-line function running cosign verify-blob with the identity and issuer passes'
+sigcase $'#!/bin/sh\nvs() {\n  if ! '"$CO"$'; then exit 1; fi\n}\n' "$VF" 0 'control: cosign verify-blob inside if ! ...; then exit 1; fi passes'
+sigcase $'#!/bin/sh\nvs() {\n  '"${CO/--certificate-identity /--certificate-identity-regexp }"$' || exit 1\n}\n' "$VF" 0 'control: --certificate-identity-regexp passes'
+sigcase $'#!/bin/sh\nvs() {\n  sha256sum -c "$1.sha256" || exit 1\n}\n' "$VF" 1 'a checksum-only function (sha256sum -c) is refused'
+sigcase $'#!/bin/sh\nvs() {\n  shasum -a 256 -c "$1.sha256" || exit 1\n}\n' "$VF" 1 'a checksum-only function (shasum) is refused'
+CONOID='cosign verify-blob --bundle "$1.b" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$1"'; sigcase $'#!/bin/sh\nvs() {\n  '"$CONOID"$' || exit 1\n}\n' "$VF" 1 'cosign verify-blob without --certificate-identity is refused'
+CONOISS='cosign verify-blob --bundle "$1.b" --certificate-identity "https://github.com/o/r/.github/workflows/r.yml@refs/heads/main" "$1"'; sigcase $'#!/bin/sh\nvs() {\n  '"$CONOISS"$' || exit 1\n}\n' "$VF" 1 'cosign verify-blob without --certificate-oidc-issuer is refused'
+sigcase $'#!/bin/sh\nvs() {\n  # '"$CO"$'\n  sha256sum -c "$1.sha256" || exit 1\n}\n' "$VF" 1 'verify-blob only in a comment is refused'
+sigcase $'#!/bin/sh\nvs() {\n  cat >/dev/null <<EOF\n'"$CO"$'\nEOF\n  sha256sum -c "$1.sha256" || exit 1\n}\n' "$VF" 1 'verify-blob only in a heredoc is refused'
+sigcase $'#!/bin/sh\nvs() {\n  echo "'"${CO//\"/}"$'" >&2\n  sha256sum -c "$1.sha256" || exit 1\n}\n' "$VF" 1 'verify-blob only in an echo string is refused'
+sigcase $'#!/bin/sh\nvs() {\n  sha256sum -c "$1.sha256" || exit 1\n}\nother() {\n  '"$CO"$' || exit 1\n}\n' "$VF" 1 'verify-blob in ANOTHER function of the file is refused'
+sigcase $'#!/bin/sh\n'"$CO"$' || exit 1\n' "$(vj "$CO || exit 1")" 0 'control: a verifier LINE that is the cosign verify-blob command passes'
+COE="echo \"${CO//\"/}\""; sigcase $'#!/bin/sh\n'"$COE"$'\n' "$(vj "$COE")" 1 'a verifier LINE that only echoes the cosign command is refused'
+sigcase $'#!/bin/sh\npython3 - <<\'PY\'\nimport subprocess\ndef vs(p):\n    if subprocess.run(["cosign", "verify-blob", "--bundle", p + ".b", "--certificate-identity", "https://github.com/o/r/.github/workflows/r.yml@refs/heads/main", "--certificate-oidc-issuer", "https://token.actions.githubusercontent.com", p]).returncode:\n        raise SystemExit(1)\nPY\n' "$VF" 0 'control: a Python def calling subprocess.run(["cosign", "verify-blob", ... identity, issuer ...]) passes'
+sigcase $'#!/bin/sh\npython3 - <<\'PY\'\nimport subprocess\ndef vs(p):\n    print("cosign verify-blob --certificate-identity x --certificate-oidc-issuer y")\n    raise SystemExit(1)\nPY\n' "$VF" 1 'a Python def that only prints the cosign command is refused'
+sigcase $'#!/bin/sh\npython3 - <<\'PY\'\nimport subprocess\ndef vs(p):\n    if subprocess.run(["echo", "--certificate-identity", "x", "--certificate-oidc-issuer", "y", p]).returncode:\n        raise SystemExit(1)\nPY\n' "$VF" 1 'a Python call holding the identity and issuer flags but not cosign verify-blob is refused'
+sigcase $'#!/bin/sh\nvs() { sha256sum -c x || exit 1; }\n' '{"file": "bin/sig.sh", "function": "verify_sig"}' 0 'control: the signature verifier in another file than the fetch (bin/sig.sh) passes'
 hostcase 'curl -q -fsS -g -o "$tmp/i" "https://$HOST/os/x86_64/APKINDEX.tar.gz"' 1 'a variable host (https://$HOST/) is refused'
 hostcase 'curl -q -fsS -g -o "$tmp/i" "https://${HOST}/os/x86_64/APKINDEX.tar.gz"' 1 'a variable host (https://${HOST}/) is refused'
 hostcase 'curl -q -fsS -g -o "$tmp/i" "$URL"' 1 'a URL that is wholly a variable ($URL) is refused'
@@ -1471,14 +1508,20 @@ hostcase "$C $O $U \"\$EVIL\"" 1 'a second URL from a variable on the same comma
 hostcase "$C $O $U https://evil.example/x" 1 'a second literal URL to another host is refused'
 hostcase "$C --url \"\$EVIL\" $O $U" 1 '--url VALUE is refused'
 hostcase "$C -K \"\$cfg\" $O $U" 1 '-K (a config file that can name any URL) is refused'
-hostcase "curl -q -fsSK \"\$cfg\" -g $O $U" 1 'K hidden in a short-option cluster is refused'
+hostcase "curl -q -fsSK \"\$cfg\" -g --proto =https $O $U" 1 'K hidden in a short-option cluster is refused'
 hostcase "$C --resolve packages.example.dev:443:10.0.0.1 $O $U" 1 '--resolve is refused'
 hostcase "$C -x \"\$PROXY\" $O $U" 1 '-x (a proxy) is refused'
 hostcase "https_proxy=\$P $C $O $U" 1 'an environment assignment before the command is refused'
 hostcase "$C $O \"https://packages.example.dev/\$(cat /tmp/p)\"" 1 'a command substitution in the address is refused'
 hostcase "$C $O \"https://packages.example.dev/os/i" 1 'an unbalanced quote is refused'
 hostcase "$C $O \"HTTPS://packages.example.dev/os/i\"" 1 'an upper-case scheme is refused'
-hostcase "$C --proto =all $O $U" 1 '--proto other than =https is refused'
+hostcase "curl -q -fsS -g --proto =all $O $U" 1 '--proto other than =https is refused'
+hostcase "curl -q -fsS -g $O $U" 1 'proto: a ruled curl line WITHOUT --proto =https is refused'
+hostcase "curl -q -fsS -g --proto =https,http $O $U" 1 'proto: --proto =https,http is refused'
+hostcase "curl -q -fsS -g --proto +all $O $U" 1 'proto: --proto +all is refused'
+hostcase "curl -q -fsS -g --proto-redir =https $O $U" 1 'proto: --proto-redir alone (no --proto =https) is refused'
+hostcase "$C --max-time ٣ $O $U" 1 'a number in another script (Arabic-Indic digits) is refused'
+hostcase "curl -q -fsSL -g --proto =https --proto-redir =https --max-redirs ٣ $O $U" 1 'ruling 3a: --max-redirs in Arabic-Indic digits is refused' "{\"redirects\": true, $SIGV}"
 hostcase "$C --max-time x $O $U" 1 'a number option with no number is refused'
 ifx "$work/if-hw.json" plain "$(ifrow bin/fetch.sh "$LIT" other.example.dev)" "$RKEY"; ifck ifm "$work/if-hw.json"
 CASE="AC19 (host row): a host row naming another host than the line's does not apply: that fetch fails (exit 1)"
@@ -1498,12 +1541,23 @@ pycase "$PYF" 0 'control: subprocess.run(["curl", "-q", ...literal options..., "
 pycase "${PYF/r = /}" 0 'control: the same call without an assignment passes'
 pycase "${PYF/\"-q\", /}" 1 'F2: the Python form without "-q" first is refused'
 pycase "${PYF/\"-g\", /}" 1 'F3: the Python form without "-g" is refused'
+pycase "${PYF/\"--proto\", \"=https\", /}" 1 'proto: the Python form without "--proto", "=https" is refused'
+pycase "${PYF/\"=https\"/\"=https,http\"}" 1 'proto: the Python form with "--proto", "=https,http" is refused'
 pycase "${PYF/https:\/\/packages.example.dev/https://%s}" 1 'a host from a % argument is refused'
 pycase "${PYF/\"https:\/\/packages.example.dev\/os\/%s\/%s-%s.apk\" % (arch, name, ver)/e[\"url\"]}" 1 'an address read from a variable (e["url"]) is refused'
 pycase "$(printf '%s' "$PYF" | sed 's/%s-%s.apk/%d-%s.apk/')" 1 'a format other than %s is refused'
 CASE="AC19 (Python form): the %d variant really differs from the control line"
 check test "$(printf '%s' "$PYF" | sed 's/%s-%s.apk/%d-%s.apk/')" != "$PYF"
 pycase "${PYF/stdout=sys.stderr/shell=True}" 1 'shell=True (or any keyword but stdout/stderr=sys.stderr) is refused'
+pycase "${PYF/stdout=sys.stderr/shell=False}" 1 'ruling 2: shell= with ANY value (shell=False) is refused'
+pycase "${PYF/stderr=sys.stderr)/stderr=sys.stderr, check=True)}" 1 'ruling 2: another keyword (check=True) is refused'
+pycase '    r = subprocess.run("curl -q -fsS -g -o x https://packages.example.dev/os/i", stdout=sys.stderr, stderr=sys.stderr)' 1 'ruling 2: a STRING command (not the list form) is refused'
+pycase '    r = subprocess.run(["curl", "-q", "-fsS", "-g", "-o", part, url], stdout=sys.stderr, stderr=sys.stderr)' 1 'ruling 2: the address as a variable (url) is refused'
+pycase '    r = subprocess.run(["curl", "-q", "-fsS", "-g", "-o", part, "https://" + host + "/os/i"], stdout=sys.stderr, stderr=sys.stderr)' 1 'ruling 2: a + concatenation producing the host is refused'
+pycase '    r = subprocess.run(["curl", "-q", "-fsS", "-g", "-o", part, "https://packages.example.dev/os/" + name], stdout=sys.stderr, stderr=sys.stderr)' 1 'ruling 2: a + concatenation in the path is refused (only % names)'
+pycase '    r = subprocess.run(["curl", "-q", "-fsS", "-g", *args, "https://packages.example.dev/os/i"], stdout=sys.stderr, stderr=sys.stderr)' 1 'ruling 2: *args in the list is refused'
+pycase '    r = subprocess.run(["curl", "-q", "-fsS", "-g", "-o", part, "https://packages.example.dev/os/i"], **kw)' 1 'ruling 2: **kwargs is refused'
+pycase '    r = subprocess.run(["curl", "-q", "-fsS", "-g", "-o", part, f"https://packages.example.dev/os/{name}"], stdout=sys.stderr, stderr=sys.stderr)' 1 'ruling 2: an f-string address is refused (only % names)'
 pycase "${PYF/\"=https\", /\"=https\", \"-K\", cfg, }" 1 'an option the check does not read (-K) is refused'
 pycase "${PYF/\"-o\", part/\"-o\", \"/etc/x\"}" 1 'an absolute literal output path is refused'
 pycase "$PYF; os.system(\"sh x\")" 1 'a second statement on the line is refused'
@@ -1562,6 +1616,8 @@ vdef $'#!/bin/sh\ncat >/dev/null <<\'PY\'\ndef vfy(p):\n    raise SystemExit(1)\
 vdef $'#!/bin/sh\npython3 - <<\'PY\'\ndef vfy(p):\n    pass\nPY\n' 'a Python def whose body is only pass'
 vdef $'#!/bin/sh\npython3 - <<\'PY\'\n  def vfy(p):\n      raise SystemExit(1)\nPY\n' 'a Python def not at column 0'
 vdef $'#!/bin/sh\n# vfy() { sha256sum -c x || exit 1; }\n' 'a definition in a comment'
+vdef $'#!/bin/sh\npython3 - <<\'PY\'\nvfy() { sha256sum -c x || exit 1; }\nPY\n' 'a shell function written only inside a python3 heredoc body'
+vdef $'#!/bin/sh\ndef vfy(p):\n    raise SystemExit(1)\n' 'a Python def in the shell text of a .sh file (not in a python3 heredoc)'
 ifrepo ifv "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head bin/verify.sh $'#!/bin/sh\ncat >/dev/null <<EOF\nsha256sum -c x || exit 1\nEOF\n'
 vtcase '{"verifier": {"file": "bin/verify.sh", "line": "sha256sum -c x || exit 1"}}' 'F8: a verifier LINE found only inside a data heredoc' ifv
 ifrepo ifvok "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head bin/verify.sh $'#!/bin/sh\nvfy() {\n  sha256sum -c "$1" || exit 1\n}\npython3 - <<\'PY\'\ndef pvfy(p):\n    raise SystemExit(1)\nPY\n'
@@ -1645,7 +1701,7 @@ ghcase() { # STEP-TEXT-BEFORE DOWNLOAD-LINE EXPECTED-RC WHY [PREAMBLE]: bin/rel.
 }
 ghcase "$CHK"$'\n' "$GHD" 0 'control: the tag check on the line before, two literal -p names and a literal -D pass'
 ghcase $'mkdir -p dist/draft\n# fetch the draft\n\n'"$CHK"$'\n' "$GHD" 0 'control: mkdir -p LITERAL, a comment and a blank line before the check pass'
-ghcase '[[ $ver =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag: $ver" >&2; exit 2; }'$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json' 0 'control: the { echo MSG >&2; exit N; } form, the plain-release pattern and one -p pass'
+ghcase '[[ $ver =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a release tag" >&2; exit 2; }'$'\n' 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json' 0 'control: the { echo MSG >&2; exit N; } form, the plain-release pattern and one -p pass'
 ghcase 'if [[ ! "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then echo "bad tag" >&2; exit 1; fi'$'\n' "$GHD" 0 'control: the if [[ ! ... ]]; then ... exit N; fi form passes'
 ghcase "$CHK"$'\n' 'gh release download "$ver" --repo other/repo -p manifest.json' 1 'a literal repository (--repo other/repo) is refused'
 ghcase "$CHK"$'\n' 'gh release download "$ver" --repo "$X" -p manifest.json' 1 'another repository variable (--repo "$X") is refused'
@@ -1715,6 +1771,92 @@ ghwf "${STEP276/        run: |/        shell: python${NL}        run: |}" 1 'the
 ghwf "${STEP276/          VER:/          BASH_ENV: \/tmp\/x${NL}          VER:}" 1 'the same step with BASH_ENV in its env: is refused'
 ghwf $'      - run: |\n          ver=x\n          '"$CHK276"$'\n      - run: |\n          '"$GH276" 1 'the check in ANOTHER step is refused'
 ghwf "${STEP276/          mkdir -p/          gh() { :; }${NL}          mkdir -p}" 1 'a function defined in the step before the check is refused'
+# Sonnet R2 F5: the message of the tag check (and of die) holds only letters, digits, space and . , : _ - (a # would comment out the exit)
+for c in '#' '"' "'" '~' '!' '$' '\' '`' '%' '@' '=' ';' '&' '(' '<'; do
+  ghcase "[[ \"\$ver\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+\$ ]] || { echo bad${c}x >&2; exit 1; }"$'\n' "$GHD" 1 "R2 F5: the character $c in the { echo MSG; exit N; } message is refused"
+done
+ghcase '[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo bad #; exit 1; }'$'\n' "$GHD" 1 'R2 F5: a # that comments out ; exit 1; } is refused'
+ghcase 'if [[ ! "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo bad #; exit 1; fi'$'\n' "$GHD" 1 'R2 F5: a # in the if form message is refused'
+ghcase '[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad >&2; exit 1; }'$'\n' "$GHD" 1 'R2 F5: an unbalanced quote in the message is refused'
+ghcase '[[ "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo bad >&2; exit 1;'$'\n' "$GHD" 1 'R2 F5: a check whose closing } is not on the same line is refused'
+hostcase "$C $O $U"' || die "bad # x" 1' 1 'R2 F5: a # in a die message is refused'
+hostcase "$C $O $U"' || die "bad=x" 1' 1 'R2 F5: an = in a die message is refused'
+# R2 F5 end to end: the accepted check forms, run by bash with a stub gh, download for a release tag and stop (exit 1, no download) for anything else
+mkdir -p "$work/e2e/bin"; printf '#!/bin/sh\necho "gh $*" >>"$E2E_LOG"\n' >"$work/e2e/bin/gh"; chmod +x "$work/e2e/bin/gh"
+e2e() { # CHECK-LINE VER EXPECTED-RC EXPECTED-CALLS WHY
+  printf '%s\n' '#!/bin/bash' 'set -euo pipefail' 'ver="$VER"' "$1" 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" -p manifest.json' >"$work/e2e/run.sh"
+  : >"$work/e2e/log"; rc=0; env -i PATH="$work/e2e/bin:/usr/bin:/bin" VER="$2" GITHUB_REPOSITORY=o/r E2E_LOG="$work/e2e/log" bash "$work/e2e/run.sh" </dev/null >/dev/null 2>&1 || rc=$?
+  CASE="AC19 (repo:self, R2 F5 end to end): $5 (ver=$2): exit $3, $4 download(s)"
+  check test "$rc" -eq "$3"; check test "$(wc -l <"$work/e2e/log" | tr -d ' ')" -eq "$4"
+}
+for form in "$CHK" "$CHK276" 'if [[ ! "$ver" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$ ]]; then echo bad tag >&2; exit 1; fi' '[[ $ver =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1'; do
+  for good in v1.2.3 v10.0.1; do e2e "$form" "$good" 0 1 "${form:0:40}"; done
+  for evil in 'v1.2.3;x' 'v1.2' 'main' '' 'v1.2.3 x' $'v1.2.3\nx' '-rc.1' '../v1.2.3'; do e2e "$form" "$evil" 1 0 "${form:0:40}"; done
+done
+hostpre() { # PREFIX-LINES LINE EXPECTED-RC WHY: bin/fetch.sh = FETCH, PREFIX-LINES, LINE; the row names LINE
+  ifrepo ifh "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$1$2"$'\n'
+  ifx "$work/if-h.json" plain "$(ifrow bin/fetch.sh "$2" "$HOSTN")"; ifck ifh "$work/if-h.json"
+  CASE="AC19 (host row): $4: exit $3"
+  check test "$rc" -eq "$3"; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq 0; check grep -q 'input fetch not verified' "$work/if.out"
+}
+# Sonnet R2 F4: any << this reader does not recognise (not the exact python3 opener at the start of a line) makes the file rule nothing
+ghcase $'# n <<\'true\'\nexport GITHUB_REPOSITORY=evil/x\nexit() { :; }\ntrue\n'"$CHK"$'\n' "$GHD" 1 'R2 F4: the Sonnet reproduction (a << in a comment hiding export, exit() and true from the step whitelist) is refused'
+hostpre "x=\$((1<<2))"$'\n' "$LIT" 1 'R2 F4: a << the reader does not recognise ($((1<<2))) in the file refuses its rulings'
+hostpre $'cat <<\'EOF\'\nhello\nEOF\n' "$LIT" 1 'R2 F4: a data heredoc anywhere in the file refuses its rulings'
+hostpre $'echo x <<<"y"\n' "$LIT" 1 'R2 F4: a here-string in the file refuses its rulings'
+pycase "$PYF" 1 'R2 F4: a python3 opener after a comment (# x; python3 ...) is refused' "# x; python3 - \"\$tmp\" <<'PY'"
+pycase "$PYF" 1 'R2 F4: a python3 opener after another command (x=1; python3 ...) is refused' "x=1; python3 - \"\$tmp\" <<'PY'"
+pycase "$PYF" 1 'R2 F4: a python3 opener with an argument outside the closed list is refused' "python3 - \$tmp <<'PY'"
+pycase "$PYF" 0 'R2 F4 control: the P3 opener shape python3 - "$a" "$(cd "$(dirname "$0")" && pwd)" <<'"'PY'"' || exit $? passes' "python3 - \"\$a\" \"\$(cd \"\$(dirname \"\$0\")\" && pwd)\" <<'PY' || exit \$?"
+# Sonnet R2 F6: ${{ }} is expanded by GitHub BEFORE bash: none in the ruled step's run: text (env: values are not script text)
+ghwf "${STEP276/          mkdir -p/          # \${{ github.event.pull_request.body }}${NL}          mkdir -p}" 1 'R2 F6: ${{ }} in a comment of the ruled step is refused'
+ghwf "${STEP276/          mkdir -p/          echo \"\${{ github.ref_name }}\"${NL}          mkdir -p}" 1 'R2 F6: ${{ }} anywhere in the ruled step run: text is refused'
+wfcase "      - run: |"$'\n'"          # \${{ github.event.issue.title }}"$'\n'"          $LIT" 1 'R2 F6: ${{ }} in the run: block of a ruled curl line is refused'
+hostpre "# \${{ github.token }}"$'\n' "$LIT" 1 'R2 F6: ${{ in a .sh file holding a ruled line is refused'
+# Sonnet R2 R-A: a workflow whose env: (step, job or workflow level) sets a proxy, a CA bundle, a gh host, a shell or loader variable rules nothing
+ghwf "${STEP276/          VER:/          SHELLOPTS: xtrace${NL}          VER:}" 1 "the step env: setting SHELLOPTS is refused"
+for key in HTTP_PROXY HTTPS_PROXY ALL_PROXY NO_PROXY http_proxy https_proxy all_proxy CURL_CA_BUNDLE SSL_CERT_FILE SSL_CERT_DIR CURL_HOME XDG_CONFIG_HOME GH_HOST GH_REPO GH_ENTERPRISE_TOKEN BASH_ENV ENV PATH LD_PRELOAD LD_LIBRARY_PATH PYTHONPATH PYTHONSTARTUP PYTHONHOME PYTHONUSERBASE; do
+  ghwf "${STEP276/          VER:/          $key: x${NL}          VER:}" 1 "R-A: the step env: setting $key is refused"
+done
+ifrepo ifwj "${SUPPORT[@]}" head .github/workflows/rel.yml "$(printf 'on: push\nenv:\n  GH_HOST: evil.example\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n%s\n' "$STEP276")"
+ifx "$work/if-w.json" plain "$(ifrow .github/workflows/rel.yml "$GH276" repo:self)"; ifck ifwj "$work/if-w.json"
+CASE="AC19 (repo:self, workflow, R-A): a workflow-level env: GH_HOST is refused: exit 1"
+check test "$rc" -eq 1; check grep -q 'GH_HOST' "$work/if.out"
+ifrepo ifwj2 "${SUPPORT[@]}" head .github/workflows/rel.yml "$(printf 'on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    env:\n      HTTPS_PROXY: http://evil.example\n    steps:\n%s\n' "$STEP276")"
+ifx "$work/if-w.json" plain "$(ifrow .github/workflows/rel.yml "$GH276" repo:self)"; ifck ifwj2 "$work/if-w.json"
+CASE="AC19 (repo:self, workflow, R-A): a job-level env: HTTPS_PROXY is refused: exit 1"
+check test "$rc" -eq 1; check grep -q 'HTTPS_PROXY' "$work/if.out"
+wfcase "      - env:"$'\n'"          CURL_CA_BUNDLE: /tmp/ca"$'\n'"        run: |"$'\n'"          $LIT" 1 'R-A: a curl step whose env: sets CURL_CA_BUNDLE is refused'
+# A workflow or action as a VERIFIER file (the #276 helper, Oct 10): the line form only, the line a physical line of a bash run: block of that file
+# (not a comment, not an env:/with: value, not in a run: block holding a <<); a function verifier stays .sh/.py/.go. The #276 curl line (final shape:
+# --proto =https added) is a redirects row, so its verifier line must run cosign verify-blob with the identity and issuer on that same physical line.
+CURL276='if curl -q -fsSL -g --proto =https --proto-redir =https --max-redirs 3 --connect-timeout 20 --max-time 120 -o "$dest" "https://github.com/${GITHUB_REPOSITORY}/releases/download/${ver}/${f}"; then ok=1; break; fi'
+VLINE='cosign verify-blob --bundle "$dest.bundle" --certificate-identity "https://github.com/o/r/.github/workflows/stage-promote.yml@refs/heads/main" --certificate-oidc-issuer https://token.actions.githubusercontent.com "$dest"'
+VIDF='cosign verify-blob --bundle "$dest.bundle" "${idflags[@]}" "$dest" \'
+yv() { python3 -c 'import json,sys; print(json.dumps({"file": ".github/workflows/sp.yml", "line": sys.argv[1]}))' "$1"; }
+yvcase() { # WORKFLOW-STEPS FETCH-LINE ROW-HOST VERIFIER-LINE REDIRECTS(true|-) EXPECTED-RC WHY
+  ifrepo ify "${SUPPORT[@]}" head .github/workflows/sp.yml "$(wfr "$1")"
+  local ov; if [ "$5" = true ]; then ov="{\"redirects\": true, \"verifier\": $(yv "$4")}"; else ov="{\"verifier\": $(yv "$4")}"; fi
+  ifx "$work/if-y.json" plain "$(ifrow .github/workflows/sp.yml "$2" "$3" "$ov")"; ifck ify "$work/if-y.json"
+  CASE="AC19 (workflow verifier line): $7: exit $6"
+  check test "$rc" -eq "$6"; if [ "$6" -ne 0 ]; then check grep -q 'input fetch not verified' "$work/if.out"; fi
+}
+FSTEP="      - run: |"$'\n'"          for f in a b; do"$'\n'"            dest=\"\$pub/\${f}\""$'\n'"            $CURL276"$'\n'"          done"
+VSTEP="      - run: |"$'\n'"          $VLINE"
+yvcase "$FSTEP"$'\n'"$VSTEP" "$CURL276" github.com "$VLINE" true 0 'control: the #276 curl line (redirects row) with a cosign verify-blob line carrying identity and issuer in a run: block passes'
+yvcase "$FSTEP"$'\n'"      - run: |"$'\n'"          $VIDF" "$CURL276" github.com "$VIDF" true 1 'a redirects row whose verifier line uses "${idflags[@]}" (flags not on the line) is refused'
+yvcase "$FSTEP"$'\n'"      - run: |"$'\n'"          # $VLINE"$'\n'"          true" "$CURL276" github.com "# $VLINE" true 1 'a verifier line that is a comment in the run: block is refused'
+yvcase "$FSTEP"$'\n'"      - env:"$'\n'"          V: '$VLINE'"$'\n'"        run: |"$'\n'"          true" "$CURL276" github.com "$VLINE" true 1 'a verifier line found only in an env: value is refused'
+yvcase "$FSTEP"$'\n'"      - name: v"$'\n'"        with:"$'\n'"          script: '$VLINE'" "$CURL276" github.com "$VLINE" true 1 'a verifier line found only in a with: value (not a run: block) is refused'
+yvcase "$FSTEP"$'\n'"      - run: |"$'\n'"          cat >/dev/null <<EOF"$'\n'"          $VLINE"$'\n'"          EOF" "$CURL276" github.com "$VLINE" true 1 'a verifier line inside a heredoc in the run: block is refused'
+yvcase "$FSTEP"$'\n'"      - shell: python"$'\n'"        run: |"$'\n'"          $VLINE" "$CURL276" github.com "$VLINE" true 1 'a verifier line in a run: block whose file sets shell: python is refused'
+# repo:self (no redirects): a cosign verify-blob line with "${idflags[@]}" is an acceptable verifier line (the signature rule binds redirects rows only)
+yvcase "$STEP276"$'\n'"      - run: |"$'\n'"          $VIDF"$'\n'"            --output-signature x" "$GH276" repo:self "$VIDF" - 0 'control: the #276 draft download (repo:self) verified by a cosign verify-blob line using "${idflags[@]}" ending in a backslash passes'
+ifx "$work/if-bad.json" plain "$(ifrow bin/fetch.sh "$LIT" "$HOSTN" '{"verifier": {"file": ".github/workflows/sp.yml", "function": "verify"}}')" "$RKEY"; ifck ifm "$work/if-bad.json"
+CASE="AC19 (workflow verifier): a FUNCTION verifier in a workflow file stops the check (exit 2): only the line form may name a workflow or action"
+check test "$rc" -eq 2; check grep -q 'unmeasured_input_fetch' "$work/if.out"
+ifrepo ifvc "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n'"# sha256sum -c x || exit 1"$'\n'
+vtcase '{"verifier": {"file": "bin/fetch.sh", "line": "# sha256sum -c x || exit 1"}}' 'a verifier line that is a comment in a .sh file' ifvc
 for ov in '{"host": "repo:other"}' '{"host": "repo:"}' '{"form": "a download"}'; do
   ifx "$work/if-bad.json" plain "$(ifrow bin/rel.sh "$GHD" repo:self "$ov")"; ifck ifm "$work/if-bad.json"
   CASE="AC19 (repo:self): a malformed row ($ov) stops the check fail-closed: exit 2, names the list"
