@@ -36,13 +36,10 @@ SSH_GOOD = re.compile(r'^Good "git" signature for (\S+) with .* key (SHA256:\S+)
 KEYLESS = "release-workflow-keyless"
 OWNER_SSH = "owner-ssh"
 ISSUER = "https://token.actions.githubusercontent.com"
-POLICY_FILES = {
-    "allowed_signers": ".github/policy/allowed_signers",
-    "github-web-flow.gpg": ".github/policy/github-web-flow.gpg",
-    "required-checks.json": ".github/policy/required-checks.json",
-    "admission-tag-signer.py": "bin/admission-tag-signer.py",
-    "install-scanner.sh": "bin/install-scanner.sh",
-}
+SIGNER = "bin/admission-tag-signer.py"
+INSTALLER = "bin/install-scanner.sh"
+# the policy inputs read from origin/main, each copied into the policy directory under its file name
+POLICY_FILES = (".github/policy/allowed_signers", ".github/policy/github-web-flow.gpg", ".github/policy/required-checks.json", SIGNER, INSTALLER)
 
 
 class Refusal(Exception):
@@ -141,11 +138,11 @@ def check_policy_from_main(ctx):
     rc, _, err = run_cmd(["git", "fetch", "--no-tags", "origin", "main"])
     if rc != 0:
         raise Refusal("policy-from-main", "cannot fetch origin main: %s" % one_line(text(err)))
-    for name, path in POLICY_FILES.items():
+    for path in POLICY_FILES:
         data = git_show("origin/main:" + path)
         if data is None:
             raise Refusal("policy-from-main", "%s is not on origin/main" % path)
-        with open(os.path.join(ctx.policy, name), "wb") as fh:
+        with open(os.path.join(ctx.policy, os.path.basename(path)), "wb") as fh:
             fh.write(data)
 
 
@@ -172,7 +169,7 @@ def route_tag(ctx):
     _, tags, _ = run_cmd(["git", "tag", "-l", "v*"])
     with open(tags_file, "wb") as fh:
         fh.write(tags)
-    rc, out, err = run_cmd(["python3", os.path.join(ctx.policy, "admission-tag-signer.py"), "route", "--tag", ctx.tag,
+    rc, out, err = run_cmd(["python3", os.path.join(ctx.policy, os.path.basename(SIGNER)), "route", "--tag", ctx.tag,
                             "--tag-object", obj_file, "--tags", tags_file])
     if rc != 0:
         raise Refusal("tag-signature", "the signer router failed: %s" % one_line(text(err)))
@@ -211,7 +208,7 @@ def x509_fingerprint(tag_object):
 
 def verify_tag_keyless(ctx, tag_object):
     """The release workflow's keyless identity on a patch tag, via gitsign. Returns (principal, fingerprint)."""
-    rc, _, err = run_cmd(["bash", os.path.join(ctx.policy, "install-scanner.sh"), "gitsign"])
+    rc, _, err = run_cmd(["bash", os.path.join(ctx.policy, os.path.basename(INSTALLER)), "gitsign"])
     if rc != 0:
         raise Refusal("tag-signature", "installing gitsign failed: %s" % one_line(text(err)))
     identity = "https://github.com/%s/.github/workflows/release.yml@refs/heads/main" % ctx.repo
@@ -395,7 +392,7 @@ def check_required_checks(ctx):
 
 def patch_baseline_version(ctx):
     """A CI-signed patch tag uses the latest OWNER-signed baseline of its line, by main's signer script. Returns the version."""
-    script = os.path.join(ctx.policy, "admission-tag-signer.py")
+    script = os.path.join(ctx.policy, os.path.basename(SIGNER))
     owner_dir = os.path.join(ctx.tmp, "owner-baselines")
     rc, _, err = run_cmd(["python3", script, "owner-baselines", "--tag", ctx.tag, "--allowed-signers", ctx.allowed, "--out", owner_dir])
     if rc != 0:
@@ -489,6 +486,8 @@ def read_environment():
     missing = [n for n in names if n not in os.environ]
     if missing:
         raise EnvError("environment variables not set: %s" % " ".join(missing))
+    if not os.environ.get("GH_TOKEN"):      # the token the apk step hands this script (REQ-CHAIN-004-AC8); gh inherits it, it is never printed
+        raise EnvError("environment variable not set: GH_TOKEN")
     for n in ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT"):
         if not re.fullmatch(r"[0-9]+", os.environ[n]):
             raise EnvError("%s is not a number" % n)
