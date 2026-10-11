@@ -3266,8 +3266,44 @@ print("; ".join(errs) or "ok"); sys.exit(1 if errs else 0)
 PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
+# ---- the named secrets of Release (rule 56: only Release holds a stored secret; advisor 0386 J, the corrected binding list) ----------------------------
+# ONE closed list, five rows: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
+# pull-requests read + id-token write (Witness); in stage-promote.yml job release (contents/packages/id-token write): (2) APK_RELEASE_SIGNING_KEY -> release-apks.sh,
+# (3) DOCKERHUB_USERNAME and (4) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (5) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh, release-assets.sh,
+# release-postverify.sh. bin/witnessed.sh is bound for GH_TOKEN at exactly those two places and for the three secrets in Release. Every other name, place or script is refused.
+repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
+RCIF="if: \${{ !contains(github.ref_name, '\\''-'\\'') }}"
+for f in stage-sign stage-reproducibility stage-verify stage-build; do
+  probe "sec_$f" "stored secret outside Release" "a stored secret (secrets.X_KEY) in a step env of $f.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/$f.yml"
+done
+probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step other than the admission step" \
+  "repl .github/workflows/stage-build.yml '      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness' '      - name: install Witness (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh witness'"
+probe gh_check "GH_TOKEN is allowed only" "the run's token in Check" \
+  "repl .github/workflows/stage-verify.yml '      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness' '      - name: install Witness (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh witness'"
+probe perm_apk "must hold exactly the permissions" "a write permission (packages) on Build's apk job" \
+  "repl .github/workflows/stage-build.yml '      pull-requests: read\n      id-token: write\n' '      pull-requests: read\n      packages: write\n      id-token: write\n'"
+probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
+  "repl .github/workflows/stage-promote.yml '      id-token: write\n    steps:' '      id-token: write\n      attestations: write\n    steps:'"
+probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
+  "repl .github/workflows/stage-promote.yml '      - name: release-sign under Witness\n        $RCIF\n        env:\n' '      - name: release-sign under Witness\n        $RCIF\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
+probe apk_wrong_step "not in the closed secret list" "the apk signing key on the publish step" \
+  "repl .github/workflows/stage-promote.yml '      - name: release-publish under Witness\n        $RCIF\n        env:\n' '      - name: release-publish under Witness\n        $RCIF\n        env:\n          APK_RELEASE_SIGNING_KEY: \${{ secrets.APK_RELEASE_SIGNING_KEY }}\n'"
+probe token_unlisted_script "not in the closed secret list" "DOCKERHUB_TOKEN bound to release-apks.sh (an unlisted script)" \
+  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"DOCKERHUB_TOKEN\",\"script\":\"bin/release-apks.sh\",\"why\":\"x\",\"file\":\".github/workflows/stage-promote.yml\",\"job\":\"release\"});[r.__setitem__(\"reads_env\",[\"APK_RELEASE_SIGNING_KEY\",\"DOCKERHUB_TOKEN\"]) for r in d[\"scripts\"] if r[\"path\"]==\"bin/release-apks.sh\"];json.dump(d,open(p,\"w\"))'"
+probe name_twice "listed twice" "the same name listed twice at one place" \
+  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));e=[x for x in d[\"ambient_env\"] if x[\"name\"]==\"GH_TOKEN\" and x[\"script\"]==\"bin/release-assets.sh\"][0];d[\"ambient_env\"].append(dict(e));json.dump(d,open(p,\"w\"))'"
+probe sixth_row "not in the closed secret list" "a sixth row: SIXTH_SECRET bound to release-sign.sh in Release" \
+  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"SIXTH_SECRET\",\"script\":\"bin/release-sign.sh\",\"why\":\"x\",\"file\":\".github/workflows/stage-promote.yml\",\"job\":\"release\"});json.dump(d,open(p,\"w\"))'"
+probe value_glued "must be exactly" "DOCKERHUB_TOKEN with a glued value" \
+  "repl .github/workflows/stage-promote.yml 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}' 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}x'"
+probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret instead of the run's own token" \
+  "repl .github/workflows/stage-promote.yml 'GH_TOKEN: \${{ github.token }}' 'GH_TOKEN: \${{ secrets.GH_TOKEN }}'"
+probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
+  "repl .github/workflows/stage-promote.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
+probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
+  "repl .github/workflows/stage-promote.yml '      - name: release-assets under Witness\n        $RCIF' '      - name: release-assets under Witness\n        if: \${{ !contains(github.ref_name, \"-\") && secrets.DOCKERHUB_TOKEN != \"\" }}'"
 
-EXPECT=1304
+EXPECT=1321
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
