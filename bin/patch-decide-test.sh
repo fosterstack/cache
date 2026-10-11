@@ -1038,6 +1038,15 @@ try:
         got_ = repr(e)
     check("AC8 VEX relabel (r3, B gap): three FINAL lines that read alike are each relabelled by position",
           got_ == ["- CVE-N: not_affected (added) — statement %d of the new document" % i for i in (1, 2, 3)], got_)
+    # names and labels intact, only the change text redacted alike: the relabel loop alone tells the two lines apart
+    P._clean = lambda s: re.sub(r"\((added|removed)\)", "(-)", real_clean_(s))
+    try:
+        got_ = vlines(P.notes("v0.2.3", [], P.vex_changes(vd(vs(products=5)), vd(vs(products=5, status_notes="n2")))))
+    except Exception as e:      # noqa: BLE001
+        got_ = repr(e)
+    check("AC8 VEX relabel (r3, B gap): removed + added lines that read alike only after redaction: each relabelled by position",
+          got_ == ["- CVE-7 [products unreadable]: not_affected (-) — statement 1 of the new document",
+                   "- CVE-7 [products unreadable]: not_affected (-) — statement 1 of the old document"], got_)
     P._clean = lambda s: re.sub(r"\d+ of the (old|new) document", "N of the document", re.sub(r"^- CVE-\d+", "- CVE-N", real_clean_(s)))
     try:
         got_ = vlines(P.notes("v0.2.3", [], P.vex_changes(None, vd(*(vs(vulnerability={"name": "CVE-%d" % i}) for i in (1, 2))))))
