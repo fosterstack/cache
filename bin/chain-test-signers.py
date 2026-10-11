@@ -688,7 +688,9 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
                 if k in amb and not FORBID_ENV.fullmatch(k):    # PR 1b (B): an ambient name is read by a listed script from its own environment
                     if not (amb[k] & reach):
                         errs.append("%s: env %s is listed ambient only for %s, which this step does not run (as its script, an argument or through `runs`)" % (sp, k, ", ".join(sorted(amb[k]))))
-                    elif not isinstance(v, str) or not AMBIENT_VALUE.fullmatch(v.strip()):
+                    elif (set(r) | argp) - amb[k]:
+                        errs.append("%s: env %s reaches %s, which is not authorized in ambient_env for it (the step's command script and every listed script named as an argument receive the environment too; each needs its own ambient_env entry with a reason and reads_env)" % (sp, k, ", ".join(sorted((set(r) | argp) - amb[k]))))
+                    elif not isinstance(v, str) or not AMBIENT_VALUE.fullmatch(v):
                         errs.append("%s: ambient env %s has the value %r, which is not one plain expression (github.token, inputs.X, matrix.X) or a plain literal" % (sp, k, v))
                 else:
                     errs.append("%s: env %s is not read whole (\"$%s\") by the step's run line" % (sp, k, k))
