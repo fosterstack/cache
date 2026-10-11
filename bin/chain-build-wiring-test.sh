@@ -134,10 +134,10 @@ def stage_text(family):
         if sp.get("expose"): out += "    outputs:\n      digests: %s\n" % S.JOB_OUTPUT
         out += "    steps:\n"
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
-        out += "          persist-credentials: false\n          fetch-depth: 0\n          fetch-tags: true\n"
+        out += "          persist-credentials: false\n          fetch-depth: 0\n"
         if sp.get("mode"):
-            out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
-        out += "      - name: install Witness (pinned by checksum)\n        run: ./bin/install-scanner.sh witness\n"
+            out += "      - name: the mode is release or snapshot\n        if: %s\n        run: %s\n" % (S.MODE_GUARD_IF, S.MODE_GUARD_RUN)
+        out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -271,11 +271,11 @@ st s_unpin  "AC2 checkout not pinned by digest" checkout 'actions/checkout@3d3c4
 st s_unlist "AC2 an action digest that is not on the allowed-actions list" "allowed-actions" \
        'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' 'actions/upload-artifact@1111111111111111111111111111111111111111'
 st s_cred   "AC2 persisted credentials" "exactly" 'persist-credentials: false' 'persist-credentials: true'
-st s_ref    "AC2 checkout of another ref" "exactly" 'fetch-tags: true' 'fetch-tags: true\n          ref: main'
-st s_repo   "AC2 checkout of another repository" "exactly" 'fetch-tags: true' 'fetch-tags: true\n          repository: evil/fork'
-st s_token  "AC2 checkout with a token" "exactly" 'fetch-tags: true' 'fetch-tags: true\n          token: ${{ secrets.X }}'
+st s_ref    "AC2 checkout of another ref" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          ref: main'
+st s_repo   "AC2 checkout of another repository" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          repository: evil/fork'
+st s_token  "AC2 checkout with a token" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          token: ${{ secrets.X }}'
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
-st s_install "AC2 Witness installed by an unpinned download" install 'run: ./bin/install-scanner.sh witness' \
+st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
        'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
 st s_mid "AC2 a third-party action between the install and Witness (rule 68)" "step" '      - name: apk under Witness' \
        '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n      - name: apk under Witness'
@@ -307,8 +307,7 @@ st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "host
 st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ inputs.hostile }}\n        uses:' '        uses:'
 # REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
-GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: '
-GUARD_STEP="$GUARD_STEP"'case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac\n'
+GUARD_STEP='      - name: the mode is release or snapshot\n        if: ${{ inputs.mode != '"'release'"' && inputs.mode != '"'snapshot'"' }}\n        run: bash bin/build-stage-refuse-mode.sh\n'
 SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
 RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-rapk.sh\n"
@@ -320,12 +319,11 @@ st s_mode_bool "AC12 the mode is a boolean" "on: must be" 'type: string' 'type: 
 st s_mode_req  "AC12 the mode is required" "on: must be" '        default: release\n' '        default: release\n        required: true\n'
 st s_guard_none "AC12 the mode guard is missing (any other mode would skip both Witness steps and upload nothing, green)" "mode guard" \
               "$GUARD_STEP" ''
-st s_guard_open "AC12 the mode guard lets any mode through" "mode guard" 'release|snapshot) ;; *)' 'release|snapshot|*) ;; *)'
-st s_guard_env "AC12 the mode guard reads another value than the input" "mode guard" '          MODE: ${{ inputs.mode }}\n' '          MODE: release\n'
-st s_guard_if "AC12 the mode guard carries an if (it could be skipped)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
-              '          MODE: ${{ inputs.mode }}\n        if: always()\n'
-st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
-              '          MODE: ${{ inputs.mode }}\n        continue-on-error: true\n'
+st s_guard_open "AC12 the mode guard lets any mode through (its if never fires)" "mode guard" "inputs.mode != 'snapshot' }}\n        run: bash bin/build-stage-refuse-mode.sh" "inputs.mode != 'snapshot' && false }}\n        run: bash bin/build-stage-refuse-mode.sh"
+st s_guard_env "AC12 the mode guard's if reads another value than the input" "mode guard" "inputs.mode != 'release' &&" "'x' != 'release' &&"
+st s_guard_if "AC12 the mode guard fires also on a legal mode (it would refuse a release)" "mode guard" "inputs.mode != 'release' && inputs.mode != 'snapshot'" "inputs.mode != 'release'"
+st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" "        run: bash bin/build-stage-refuse-mode.sh\n" \
+              "        run: bash bin/build-stage-refuse-mode.sh\n        continue-on-error: true\n"
 st s_rel_noif  "AC12 the release Witness step has no if (it would run in a snapshot, with admission)" "release Witness step" \
               '      - name: apk under Witness\n        if: ${{ inputs.mode == '"'release'"' }}\n' '      - name: apk under Witness\n'
 st s_rel_snap  "AC12 the release Witness step runs in snapshot mode" "release Witness step" \

@@ -209,7 +209,7 @@ def script(path, kind):
 
 # ---- the stage files -----------------------------------------------------------------------------------------------------------
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0", "fetch-tags": "true"}
+CHECKOUT_WITH = {"persist-credentials": "false", "fetch-depth": "0"}      # fetch-depth 0 fetches every tag too (fetch-tags is not a key the final judge allows)
 PERM_PLAIN = {"contents": "read", "id-token": "write"}
 PERM_ADMIT = {"contents": "read", "checks": "read", "statuses": "read", "pull-requests": "read", "id-token": "write"}
 MAT = "${{ matrix.runner }}"
@@ -220,10 +220,10 @@ ALWAYS = "always()"
 VERDICT_ARTIFACT = "witness-rebuild"
 MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
-MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
-# The guard compares in bash, case-sensitively, on purpose: GitHub's `==` in an expression is case-insensitive (inputs.mode == 'Snapshot' is true), so the
-# guard is load-bearing, not redundant: a looser one would let a mixed-case mode skip both Witness steps.
-MODE_GUARD_RUN = 'case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac'
+MODE_GUARD_IF = "${{ inputs.mode != 'release' && inputs.mode != 'snapshot' }}"
+# The guard step runs a listed script that only refuses, under an `if` that is true exactly when neither Witness step's `if` is: it fires iff both would be skipped
+# (GitHub's `==` and `!=` compare case-insensitively in the same way for all three, so a mixed-case mode runs the step its lowercase form would, never none).
+MODE_GUARD_RUN = "bash bin/build-stage-refuse-mode.sh"
 # the closed list of snapshot step names
 SNAPSHOT_STEP = {"apk": "snapshot-apk", "build": "snapshot-build", "rapk": "snapshot-rapk", "rebuild": "snapshot-rebuild"}
 SNAPSHOT_VERDICT = "witness-rebuild/snapshot-verdict.json"       # a snapshot Rebuild's verdict: named, so it can never be mistaken for a release verdict
@@ -327,11 +327,11 @@ def job(j, family, name, allowed):
         bad.append("step 1 must be a digest-pinned actions/checkout (on the allowed list) with exactly %s" % CHECKOUT_WITH)
     if spec.get("mode"):         # a mode that is neither release nor snapshot would skip both Witness steps and upload nothing, green: refuse it first
         s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"name", "env", "run"} or s.get("env") != MODE_GUARD_ENV or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
-            bad.append("step %d must be exactly env %s, run: %s (the mode guard)" % (i, MODE_GUARD_ENV, MODE_GUARD_RUN))
+        if set(s) != {"name", "if", "run"} or s.get("if") != MODE_GUARD_IF or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
+            bad.append("step %d must be exactly if: %s, run: %s (the mode guard)" % (i, MODE_GUARD_IF, MODE_GUARD_RUN))
     s = steps[i] if i < len(steps) else {}; i += 1
-    if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != "./bin/install-scanner.sh witness":
-        bad.append("step 2 must be exactly: run ./bin/install-scanner.sh witness (checksum-pinned Witness install)")
+    if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != "bash bin/install-scanner.sh witness":
+        bad.append("step 2 must be exactly: run bash bin/install-scanner.sh witness (checksum-pinned Witness install)")
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)

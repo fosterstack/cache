@@ -3,7 +3,7 @@
 # archives on an ubuntu-24.04 VM from them. Every command runs through bin/witnessed.sh, which signs a Witness record keylessly (Fulcio) for the step; the
 # scripts it runs are listed with their sha256 in .github/policy/chain-scripts.json. Nothing here is published: Sign gets the digests.json text (the stage
 # output `digests`), Rebuild and Check get the artifacts.
-# `mode` is release (the default) or snapshot (REQ-CHAIN-004-AC12): the first step refuses any other value, and each job has one Witness step per mode,
+# `mode` is release (the default) or snapshot (REQ-CHAIN-004-AC12): the guard step refuses any other value, and each job has one Witness step per mode,
 # gated by `if`. A snapshot has no tag, no admission and no Sign; its records carry a snapshot- step name that every verifier refuses (AC13).
 # `hostile` is true only in a dry run on a branch (PR 1's REQ-CHAIN-001-AC5): the hostile step tries to defeat Sign and writes the raw
 # material of its attempts; it never runs in a release.
@@ -43,13 +43,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-          fetch-tags: true
       - name: the mode is release or snapshot
-        env:
-          MODE: ${{ inputs.mode }}
-        run: case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac
+        if: ${{ inputs.mode != 'release' && inputs.mode != 'snapshot' }}
+        run: bash bin/build-stage-refuse-mode.sh
       - name: install Witness (pinned by checksum)
-        run: ./bin/install-scanner.sh witness
+        run: bash bin/install-scanner.sh witness
       - name: apk under Witness
         if: ${{ inputs.mode == 'release' }}
         env:
@@ -79,13 +77,11 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-          fetch-tags: true
       - name: the mode is release or snapshot
-        env:
-          MODE: ${{ inputs.mode }}
-        run: case "$MODE" in release|snapshot) ;; *) echo "::error::mode must be release or snapshot" >&2; exit 1 ;; esac
+        if: ${{ inputs.mode != 'release' && inputs.mode != 'snapshot' }}
+        run: bash bin/build-stage-refuse-mode.sh
       - name: install Witness (pinned by checksum)
-        run: ./bin/install-scanner.sh witness
+        run: bash bin/install-scanner.sh witness
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: apk-ubuntu-24.04
