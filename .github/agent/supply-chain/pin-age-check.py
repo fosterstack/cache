@@ -779,13 +779,39 @@ _REDIRECT_LONG = ("--location", "--location-trusted", "--follow", "--config")
 # the Python form: the WHOLE line is one subprocess call (optionally assigned to a plain name), its first argument a list whose first element is "curl"
 _PY_HEAD = re.compile(r"(?:([A-Za-z_][A-Za-z0-9_]*) ?= ?)?subprocess\.(?:run|call|check_call|check_output|Popen) ?")
 # a list element: a plain string literal with an optional ONE-letter r, b or u prefix (rr, bu, rb, f, t are not listed: Codex round 6 P3), or a NAME
-# (never an attribute, a subscript or a call: Codex A round 6 P2) only as the FILE after "-o" or "--output"
-_PY_STR = re.compile(r"""\s*([rRbBuU]?)("[^"\\]*"|'[^'\\]*')\s*(?:,|$)""")
+# (never an attribute, a subscript or a call: Codex A round 6 P2) only as the FILE after "-o" or "--output" (that literal spelling, never a cluster
+# ending in o: Codex B round 7 P3); a string holds no backslash and no quote of EITHER kind (Codex B round 7 P3)
+_PY_STR = re.compile(r"""\s*([rRbBuU]?)("[^"'\\]*"|'[^"'\\]*')\s*(?:,|$)""")
 _PY_NAME = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:,|$)")
 # a plain NAME (the FILE after "-o"/"--output", an assignment target): an ASCII identifier that is not a keyword and not None, True or False (Codex B
 # round 6 P3: class, lambda, None, x\u00b2 are not names a reader can take as a variable); a builtin such as print is a plain name
 _PY_NOT_NAME = frozenset(keyword.kwlist) | {"None", "True", "False"}    # kwlist holds None, True, False; named for the reader
-_PY_KWARGS = re.compile(r"(?:\s*,\s*(?:stdout|stderr|check|timeout|capture_output|text)\s*=\s*[A-Za-z0-9_.]+)*\s*,?\s*")
+# the keyword arguments after the list: each of stdout, stderr, check, timeout, capture_output, text at most once (a repeat is a Python syntax error),
+# each with a PLAIN VALUE (Codex A round 8 P3): a number (0 or digits not starting with 0, optionally . and digits: 30, 1.5), True, False, None, or a
+# dotted name of plain NAMEs (sys.stderr, subprocess.PIPE); nothing else (1.2.3, ., 1., .5, 010, 1e3, -1, 1_0, class, x.class, True.x, a call)
+_PY_KWARG = re.compile(r"\s*,\s*(stdout|stderr|check|timeout|capture_output|text)\s*=\s*([^\s,]+)\s*")
+_PY_NUMBER = re.compile(r"(?:0|[1-9][0-9]*)(?:\.[0-9]+)?")
+
+
+def _py_kwargs(text):
+    """None when TEXT (between the list and the call's closing parenthesis) is only the listed keyword arguments, each once, with a plain value, and
+    an optional trailing comma; else why not."""
+    seen, i = set(), 0
+    while True:
+        m = _PY_KWARG.match(text, i)
+        if not m:
+            break
+        k, v = m.groups()
+        if k in seen:
+            return f"the keyword argument {k} is given twice"
+        if not (_PY_NUMBER.fullmatch(v) or v in ("True", "False", "None")
+                or all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n) and n not in _PY_NOT_NAME for n in v.split("."))):
+            return f"the keyword argument {k}={v} has no plain value (a number, True, False, None or a dotted name)"
+        seen.add(k)
+        i = m.end()
+    if not re.fullmatch(r"\s*,?\s*", text[i:]):
+        return "the call holds an argument other than the plain keyword arguments"
+    return None
 
 
 def _sh_word(w, dollar=False):
@@ -805,8 +831,9 @@ def _sh_word(w, dollar=False):
 
 def _option_list(items):
     """None when curl's arguments are all on the curl option list or plain addresses, else why not. ITEMS, one per argument: ("opt", spelling) for an
-    option, ("word", text) for a plain word, ("value", text) for a word allowed only as a file name after -o or --output (a double-quoted word starting
-    with $, a Python name), ("bad", word) for anything else. One reader for the shell and the Python form."""
+    option, ("word", text) for a plain word, ("value", text) for a shell word allowed only as curl's FILE (a double-quoted word starting with $, after
+    -o, --output or a cluster ending in o), ("name", text) for a Python NAME, allowed only as the FILE after the literal "-o" or "--output", ("bad",
+    word) for anything else. One reader for the shell and the Python form."""
     i = 0
     while i < len(items):
         k, a = items[i]
@@ -818,7 +845,8 @@ def _option_list(items):
             if kind:
                 vk, v = items[i] if i < len(items) else ("bad", "")
                 i += 1
-                if not ((vk == "word" or (vk == "value" and kind == "file")) and (kind != "count" or _COUNT.fullmatch(v))) or _GLOB & set(v) or _DOWNLOADER.search(v):
+                name_ok = vk == "name" and a in ("-o", "--output")      # a Python NAME only after the literal "-o" or "--output" (Codex B round 7 P3)
+                if not ((vk == "word" or (vk == "value" and kind == "file") or name_ok) and (kind != "count" or _COUNT.fullmatch(v))) or _GLOB & set(v) or _DOWNLOADER.search(v):
                     return f"the curl option {a} has no plain {'number' if kind == 'count' else 'file name'} after it"
             continue
         if k != "word" or _GLOB & set(a) or _DOWNLOADER.search(a):
@@ -836,6 +864,7 @@ def _sh_items(args):
 
 
 _GH_WORD = re.compile(r"\bgh\b")
+_GIT_WORD = re.compile(r"\bgit\b")
 
 
 # the options of the repo:self prefix's gh release download whose next word is a value (a pattern, a directory, a file, an archive format): a gh word
@@ -857,6 +886,10 @@ def _repo_selector(t, value=False):
         return f"{t} names a repository after the repo:self prefix (--repo is refused by name, any abbreviation too, in every command of the line)"
     if not value and _GH_WORD.search(a):
         return f"{t} runs gh after the repo:self prefix (the prefix is the only listed gh on a repo:self line)"
+    if not value and _GIT_WORD.search(a):
+        return f"{t} runs git after the repo:self prefix (a repo:self line holds no git at all: its only fetch is the prefix; Codex A round 8 P2)"
+    if _DOWNLOADER.search(a):
+        return f"{t} runs curl or wget after the repo:self prefix (a repo:self line holds no other download: its only fetch is the prefix; Codex A round 8 P2)"
     return None
 
 
@@ -896,10 +929,11 @@ def _shell_listed(flat, gh=False):
             toks += [w[:-1], ";"]
         else:
             toks.append(w)
-    (state, cmd, args), curls = (("args", "gh", []) if gh else ("start", None, [])), 0
+    (state, cmd, args), curls, word0 = (("args", "gh", []) if gh else ("start", None, [])), 0, None
     finish = lambda: (_option_list(_sh_items(args)) if args else "curl with no argument") if cmd == "curl" else _gh_options(args) if cmd == "gh" else None
     prev = None
     for t in toks:
+        prev_t = prev
         value = cmd == "gh" and prev in _GH_VALUED          # the value of a value option of the prefix's own gh release download (Codex A round 7 P3)
         if gh and t not in _SH_SEP and _repo_selector(t, value):    # OPEN-1 and OPEN-2: every segment of a repo:self line, not only the first (Codex round 6)
             return _repo_selector(t, value)
@@ -921,12 +955,13 @@ def _shell_listed(flat, gh=False):
                 return f"the downloader word in {t} is not the command word curl"
             if _sh_word(t) is None:
                 return f"the command word {t} is not a plain word"
-            state, cmd = "args", "other"
+            state, cmd, word0 = "args", "other", t
         elif cmd in ("curl", "gh"):
             if cmd == "curl" and not args and t in _PY_WORDS:
                 return f"curl is followed by the Python word {t}: a name, not a command"
             args.append(t)
-        elif _DOWNLOADER.search(t) or not (_sh_word(t) is not None or _SH_OPTION.fullmatch(t)):
+        # a double-quoted word starting with $ is listed as the value of a gh option (the word after an option of the command gh: Codex B round 7 P3)
+        elif _DOWNLOADER.search(t) or not (_sh_word(t, word0 == "gh" and _SH_OPTION.fullmatch(prev_t or "")) is not None or _SH_OPTION.fullmatch(t)):
             return f"the word {t} is not a plain word (or holds a downloader word that is not a command word curl)"
     if not toks and not gh:
         return "no command"
@@ -987,8 +1022,9 @@ def _python_listed(flat):
         return "the list is not the first argument of a subprocess call that is the whole line"
     if head.group(1) in _PY_NOT_NAME:
         return f"the assignment target {head.group(1)} is not a plain name (a keyword, None, True or False)"
-    if not _PY_KWARGS.fullmatch(flat[close + 1:br[p][1]]):
-        return "the call holds an argument other than the plain keyword arguments"
+    why = _py_kwargs(flat[close + 1:br[p][1]])
+    if why:
+        return why
     rest, items = flat[e + 1:close], []
     if rest.strip():
         first = re.match(r"\s*,", rest)
@@ -1004,7 +1040,7 @@ def _python_listed(flat):
             m = _PY_NAME.match(rest)
             if not m or m.group(1) in _PY_NOT_NAME:
                 return "a list element is not a plain string literal or name (an ASCII identifier, not a keyword, None, True or False)"
-            items.append(("value", m.group(1)))
+            items.append(("name", m.group(1)))
         rest = rest[m.end():]
     return _option_list(items)
 
