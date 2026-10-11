@@ -170,7 +170,7 @@ All configuration is environment variables (see the main
 `/home/nonroot/data` in the image), `FSCACHE_MAX_BYTES`,
 `FSCACHE_USERNAME` / `FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
 
-Three more:
+Four more:
 
 - **Read-only credentials** — `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD`, an
   optional second username/password pair that can read cache entries but not
@@ -186,6 +186,21 @@ Three more:
   `X-FSCache-Reject: entry-exceeds-cache-cap`, and nothing is evicted to make
   room. Gradle and Maven builds carry on; the oversized output simply isn't
   cached.
+- **HTTPS from the server itself** — `FSCACHE_TLS_CERT` / `FSCACHE_TLS_KEY`,
+  a PEM certificate file (it may hold the chain) and its private key file,
+  required together and unset by default. With both set, the server serves
+  HTTPS only, on `FSCACHE_ADDR`, with TLS 1.2 as the minimum version, and
+  HTTP/2 is not offered. A plain-HTTP request to that port gets `400`, and
+  `/healthz` checks move to `https://`. Mount the files read-only, for example
+  `-v /etc/fscache/tls:/etc/fscache/tls:ro` with
+  `-e FSCACHE_TLS_CERT=/etc/fscache/tls/tls.crt -e FSCACHE_TLS_KEY=/etc/fscache/tls/tls.key`.
+  Each file may be at most 1 MiB. The files are read only at startup: replace
+  them, then restart the container. Terminating TLS in a reverse proxy in front
+  of the server remains the other option, and needs neither variable.
+  If clients cannot connect over TLS, check from the client side:
+  `openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
+  chain, the negotiated version and cipher, and the alert). The server does not
+  log handshake failures at the default log level.
 
 A bad numeric value in any of these stops the server at startup with a message
 naming the variable, rather than silently falling back to a default.
