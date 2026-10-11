@@ -367,13 +367,15 @@ var pinnedBuilds = map[string]map[string]any{
 // pinnedTop are the committed configuration's values of the admitted top-level sections the archive model does not
 // resolve, compared exactly by decoded value (missing, another value or another type is refused): the config
 // version, the project name, the hooks GoReleaser runs before building (a hook can write anything), the release
-// target and the changelog.
+// target, the changelog and the archive SBOMs (exactly one definition, artifacts: archive: a missing, empty or other
+// section would drop or change the per-archive SBOMs the release promotes).
 var pinnedTop = map[string]any{
 	"version":      2,
 	"project_name": "fscache",
 	"before":       map[string]any{"hooks": []any{"go mod verify", "git diff --exit-code go.mod go.sum"}},
 	"release":      map[string]any{"github": map[string]any{"owner": "fosterstack", "name": "cache"}, "draft": true},
 	"changelog":    map[string]any{"sort": "asc", "filters": map[string]any{"exclude": []any{"^docs:", "^test:", "^ci:"}}},
+	"sboms":        []any{map[string]any{"artifacts": "archive"}},
 }
 
 // pinnedValue refuses a node that is missing, cannot be decoded, or decodes to anything but want.
@@ -965,7 +967,9 @@ func contentProblems(file, text string) []string {
 // linkParts splits Markdown text into what a reader sees and what is hidden: an inline link's destination and
 // title ("](dest "title")", the destination with balanced parentheses, as CommonMark reads it) and a reference
 // label ("][label]") are hidden; everything else is visible. ok is false when a "](" starts a link form it does
-// not read (an unclosed destination or title, an angle-bracket destination): the caller refuses it rather than guess.
+// not read (an unclosed destination or title, an angle-bracket destination, a backslash in a destination or title
+// before a character CommonMark cannot escape, which is anything but ASCII punctuation): the caller refuses it rather
+// than guess.
 func linkParts(s string) (visible, hidden string, ok bool) {
 	var v, h strings.Builder
 	ok = true
@@ -1001,9 +1005,14 @@ func linkParts(s string) (visible, hidden string, ok bool) {
 			i++
 			continue
 		}
+		odd := false // a backslash before a character it cannot escape: a form this check does not read
 		for ; j < len(s); j++ {
 			c := s[j]
 			if c == '\\' {
+				if j+1 >= len(s) || !asciiPunct(s[j+1]) {
+					odd = true
+					break
+				}
 				j++
 				continue
 			}
@@ -1024,15 +1033,19 @@ func linkParts(s string) (visible, hidden string, ok bool) {
 				closer = ')'
 			}
 			k := j + 1
-			for k < len(s) && s[k] != closer {
+			for !odd && k < len(s) && s[k] != closer {
 				if s[k] == '\\' {
+					if k+1 >= len(s) || !asciiPunct(s[k+1]) {
+						odd = true
+						break
+					}
 					k++
 				}
 				k++
 			}
 			j = skipSpace(k + 1)
 		}
-		if depth != 0 || j >= len(s) || s[j] != ')' {
+		if odd || depth != 0 || j >= len(s) || s[j] != ')' {
 			ok = false
 			v.WriteByte(s[i])
 			i++
@@ -1042,6 +1055,11 @@ func linkParts(s string) (visible, hidden string, ok bool) {
 		i = j + 1
 	}
 	return v.String(), h.String(), ok
+}
+
+// asciiPunct reports an ASCII punctuation character, the only characters a CommonMark backslash escapes.
+func asciiPunct(c byte) bool {
+	return strings.IndexByte("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~", c) >= 0
 }
 
 // collapse is s with its whitespace collapsed to single spaces.
@@ -1089,6 +1107,15 @@ var limitingWords = keySet("only", "just", "solely")
 var comparisonWords = keySet("than", "least", "most", "over", "under", "about", "around", "approximately", "nearly",
 	"almost", "roughly", "exceeding", "beyond")
 
+// comparisonPhrases anywhere in a clause make every count in it a bound, before or after the count ("more than the
+// four archives", "four or more", "four archives at least", "4+" read as "4 or more"): refused, not resolved.
+var comparisonPhrases = keySet("or more", "or fewer", "or less", "or greater", "or above", "or over", "or below",
+	"or under", "or so", "at least", "at most", "more than", "fewer than", "less than", "up to", "and up", "and above",
+	"and more", "and over")
+
+// plusCount is a count written with a trailing plus ("4+"): read as "4 or more".
+var plusCount = regexp.MustCompile(`\b([0-9A-Za-z]+)\+(\s|$)`)
+
 // shippingWords make a clause a claim about what a release ships: a partitive count in such a clause ("each
 // release ships three of the four archives") is a total, not a subset.
 var shippingWords = keySet("ship", "ships", "shipped", "shipping", "publish", "publishes", "published", "produce",
@@ -1110,6 +1137,7 @@ var allowedCountClaims = map[string]string{
 	"archives are fscache and fscache fips for linux/amd64 and linux/arm64 owner decision oct 9":                                                    "docs/next-release-notes.md: the 9 of the citation's date (Oct 9), not a count",
 	"archive against that signed predicate before opening it assembles each variant with a copy only dockerfile digest pinned distroless base zero": "RELEASING.md: zero RUN instructions in the Dockerfile, not a count of archives",
 	"archive against it is a complete chain not two":                                                                                                "RELEASING.md: not two half-measures, not a count of archives",
+	"no archive for this machine": "docs/install.md: the architecture check's failure branch (no archive for this machine's architecture), not a count of the release's archives",
 }
 
 // archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Every
@@ -1126,15 +1154,18 @@ var allowedCountClaims = map[string]string{
 //   - a plain count must equal the archives; a plain count with another count between it and "archive(s)"
 //     ("six or four archives") cannot be resolved and is refused;
 //   - "a" or "an" after "only", "just" or "solely" is a count of one; "none" is a count of zero, and so is "no"
-//     before "archives" or in a shipping claim;
-//   - a count after a comparison ("more than", "fewer than", "at least", "at most", "up to", "over", "about", ...)
-//     is a bound, not a count, and is refused;
+//     with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end (only an exact
+//     allowedCountClaims entry, "no archive for this machine", excepts one);
+//   - a count after a comparison word, also across "the" or "of" ("more than the four", "over", "about", ...), or
+//     in a clause holding a comparison phrase anywhere ("four or more", "at least", "or fewer", "up to", "4+"), is a
+//     bound, not a count, and is refused;
 //   - a compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of", "some of the
 //     archives") cannot be resolved and are refused.
 //
 // A claim this reading gets wrong is excepted only by an exact entry in allowedCountClaims.
 func archiveCountProblems(text string, archives int) (problems []string) {
 	var toks []string
+	text = plusCount.ReplaceAllString(text, "$1 or more$2")
 	for _, m := range countToken.FindAllString(text, -1) {
 		toks = append(toks, strings.ToLower(strings.TrimSpace(m)))
 	}
@@ -1177,7 +1208,17 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		case !article:
 			n = value(w)
 		}
-		comparison := (i > 0 && comparisonWords[toks[i-1]]) || (i > 1 && toks[i-2] == "up" && toks[i-1] == "to")
+		cs, ce := i, i+1 // the clause holding the count: [cs, ce)
+		for cs > 0 && !boundary(toks[cs-1]) {
+			cs--
+		}
+		for ce < len(toks) && !boundary(toks[ce]) {
+			ce++
+		}
+		comparison := after(i, comparisonWords)
+		for k := cs; k+1 < ce; k++ {
+			comparison = comparison || comparisonPhrases[toks[k]+" "+toks[k+1]]
+		}
 		vague := vagueCounts[w]
 		total := after(i, all)
 		limiting := article || after(i, limitingWords)
@@ -1202,9 +1243,10 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 				nounBefore = k
 			}
 		}
-		// "no" is a count of zero when it says the release has no archives: before "archives", or before "archive"
-		// in a shipping claim ("ships no archive"). "There is no archive for this machine" is not a count.
-		if zeroNo && (nounAt < 0 || (toks[nounAt] != "archives" && !shipping)) {
+		// "no" is a count of zero wherever an archive follows it in its clause ("ships no archive", "has no
+		// archive", "no archive exists"); its claim runs from "no" to the clause end, so only an exact
+		// allowedCountClaims entry excepts it ("no archive for this machine").
+		if zeroNo && nounAt < 0 {
 			continue
 		}
 		if partitive && wholeAt >= 0 && !vagueCounts[toks[wholeAt]] {
@@ -1218,6 +1260,8 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		}
 		var claim string
 		switch {
+		case zeroNo:
+			claim = strings.Join(toks[i:ce], " ")
 		case nounAt >= 0:
 			claim = strings.Join(toks[i:nounAt+1], " ")
 		case nounBefore >= 0:
@@ -1235,7 +1279,7 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 			problems = append(problems, fmt.Sprintf("claims %q, a count this check cannot resolve", claim))
 		case comparison:
 			problems = append(problems, fmt.Sprintf("claims %q, a bound (a comparison) this check does not resolve", claim))
-		case total || limiting || nounAt < 0 || (partitive && shipping):
+		case total || limiting || zeroNo || nounAt < 0 || (partitive && shipping):
 			if n != archives {
 				problems = append(problems, fmt.Sprintf("claims %q, a total or limit (or a shipping claim), but .goreleaser.yaml produces %d archives", claim, archives))
 			}
