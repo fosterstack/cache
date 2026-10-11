@@ -216,6 +216,20 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"quoted goos key":                   edit(fipsGoos, "      - GOFIPS140=v1.0.0\n    \"goos\":\n      - freebsd\n"),
 		"targets key":                       edit(fipsGoos, fipsGoos+"    targets:\n      - freebsd_amd64\n"),
 		"merge key":                         edit(fipsGoos, fipsGoos+"    <<: *other\n"),
+		"darwin goos added":                 edit(fipsGoos, fipsGoos+"      - darwin\n"),
+		"ignore key":                        edit(fipsGoos, fipsGoos+"    ignore:\n      - goos: linux\n"),
+		"second empty builds section":       real + "\nbuilds:\n",
+		"second builds section, flow":       real + "\nbuilds: []\n",
+		"second builds section, one build":  real + "\nbuilds:\n  - id: fscache\n    goos:\n      - linux\n    goarch:\n      - amd64\n      - arm64\n",
+		"double-quoted builds key":          real + "\n\"builds\": []\n",
+		"single-quoted builds key":          real + "\n'builds': []\n",
+		"builds key with a space":           real + "\nbuilds : []\n",
+		"explicit-key builds":               real + "\n? builds\n: []\n",
+		"flow mapping at top level":         real + "\n{builds: []}\n",
+		"second document":                   real + "\n---\nbuilds: []\n",
+		"tab-indented top-level line":       real + "\n\tbuilds: []\n",
+		"repeated other top-level key":      real + "\nrelease:\n  draft: true\n",
+		"no builds section":                 edit("\nbuilds:\n", "\nbuildz:\n"),
 	}
 	for name, text := range mutants {
 		ps := checkReleaseConfig(text)
@@ -244,6 +258,7 @@ var allowedLines = []allowedLine{
 	{"README.md", "resolves the right image by itself on Apple Silicon and Graviton. Windows is", "the multi-arch container image runs on an Apple Silicon host; Windows is stated as not built", false},
 	{"README.md", "runners; develop on Windows via WSL2, which is `linux/amd64`.", "WSL2 runs the Linux binary", false},
 	{"docs/install.md", "**No macOS or Windows binaries are shipped.** On a Mac, run the container", "the REQ-PLAT-001 statement itself", false},
+	{"docs/install.md", "`docker pull` resolves the right one automatically — including on Apple Silicon and Graviton.", "the multi-arch container image runs on an Apple Silicon host (the name wraps across two lines)", false},
 	{"docs/install.md", "**Windows is not built and not planned.** This is a server-side cache that", "states that no Windows build exists", false},
 	{"docs/install.md", "lives next to your CI runners; there's no meaningful market for a Windows", "states that no Windows build exists", false},
 	{"docs/install.md", "build. If you develop on Windows, run the server under WSL2 — that's", "WSL2 runs the Linux binary", false},
@@ -270,45 +285,65 @@ var notScanned = map[string]string{
 	".github/workflows/stage-acceptance-artifacts.yml": "frozen legacy stage file (legacy-stage-files.json); its archive check is rewritten by the release-chain pull requests",
 }
 
+// releaseArchiveCount is the number of archives the real .goreleaser.yaml produces: one per build, goos and
+// goarch. It fails the test if the config cannot be read.
+func releaseArchiveCount(t *testing.T) int {
+	t.Helper()
+	builds, problems := parseBuilds(read(t, ".goreleaser.yaml"))
+	if len(problems) > 0 {
+		t.Fatalf(".goreleaser.yaml cannot be read: %v", problems)
+	}
+	n := 0
+	for _, b := range builds {
+		n += len(b.goos) * len(b.goarch)
+	}
+	return n
+}
+
+// checkDoc returns every problem in one scanned doc and the allowed texts it found.
+func checkDoc(file, text string, allowed []allowedLine, archives int) (problems []string, seen map[string]bool) {
+	_ = archives
+	ok := map[string]bool{}
+	for _, a := range allowed {
+		if a.file == file {
+			ok[a.text] = true
+		}
+	}
+	seen = map[string]bool{}
+	for n, line := range strings.Split(text, "\n") {
+		l := strings.TrimSpace(line)
+		if strings.Contains(strings.ToLower(l), "_darwin_") {
+			problems = append(problems, fmt.Sprintf("%s:%d names a darwin archive: %s", file, n+1, l))
+		}
+		if !platformWord.MatchString(l) {
+			continue
+		}
+		if ok[l] {
+			seen[l] = true
+			continue
+		}
+		problems = append(problems, fmt.Sprintf("%s:%d names a non-Linux platform and is not an allowed line: %s", file, n+1, l))
+	}
+	return problems, seen
+}
+
 // proves: REQ-PLAT-001-AC1
 // TestDocsClaimNoDarwinOrWindowsBinary: every line of the public docs that names darwin, macOS, a Mac,
 // Apple Silicon, OS X or Windows is one of the named allowed lines (none of which claims such a binary);
 // darwin archive names are gone, and each allowed line is still present.
 func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
-	allowed := map[string]map[string]bool{}
-	optional := map[string]bool{}
-	for _, a := range allowedLines {
-		if allowed[a.file] == nil {
-			allowed[a.file] = map[string]bool{}
-		}
-		allowed[a.file][a.text] = true
-		if a.optional {
-			optional[a.file+"\x00"+a.text] = true
-		}
-	}
+	archives := releaseArchiveCount(t)
 	for _, f := range docsScanned {
 		if _, skip := notScanned[f]; skip {
 			t.Fatalf("%s is both scanned and listed as not scanned", f)
 		}
-		text := read(t, f)
-		seen := map[string]bool{}
-		for n, line := range strings.Split(text, "\n") {
-			l := strings.TrimSpace(line)
-			if strings.Contains(strings.ToLower(l), "_darwin_") {
-				t.Errorf("%s:%d names a darwin archive: %s", f, n+1, l)
-			}
-			if !platformWord.MatchString(l) {
-				continue
-			}
-			if allowed[f][l] {
-				seen[l] = true
-				continue
-			}
-			t.Errorf("%s:%d names a non-Linux platform and is not an allowed line: %s", f, n+1, l)
+		problems, seen := checkDoc(f, read(t, f), allowedLines, archives)
+		for _, p := range problems {
+			t.Error(p)
 		}
-		for l := range allowed[f] {
-			if !seen[l] && !optional[f+"\x00"+l] {
-				t.Errorf("%s: allowed line no longer present (remove it from allowedLines): %s", f, l)
+		for _, a := range allowedLines {
+			if a.file == f && !seen[a.text] && !a.optional {
+				t.Errorf("%s: allowed line no longer present (remove it from allowedLines): %s", f, a.text)
 			}
 		}
 	}
@@ -320,13 +355,106 @@ func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
 }
 
 // proves: REQ-PLAT-001-AC1
-// TestNextReleaseNotesSayLinuxOnly: the next release's notes say that no macOS or Windows binaries are
-// shipped and point to the container image.
+// TestDocsCheckRefusesMutants: a platform claim wrapped across a Markdown soft line break, an OS X claim, an
+// archive count that disagrees with .goreleaser.yaml, and a darwin archive name are each refused; the
+// wrapped Apple Silicon mention in docs/install.md passes only through its named exception.
+func TestDocsCheckRefusesMutants(t *testing.T) {
+	const f = "docs/install.md"
+	install := read(t, f)
+	archives := releaseArchiveCount(t)
+	mutants := map[string]string{
+		"wrapped Apple Silicon claim": install + "\nNative binaries are available for Apple\nSilicon.\n",
+		"wrapped Mac OS claim":        install + "\nNative binaries are available for Mac\nOS hosts.\n",
+		"OS X claim":                  install + "\nAn OS X build is attached to each release.\n",
+		"OSX claim":                   install + "\nAn OSX build is attached to each release.\n",
+		"six archives":                install + "\nEvery release ships six archives.\n",
+		"wrapped six archives":        install + "\nEvery release ships six\nrelease archives.\n",
+		"digit archive count":         install + "\nEvery release ships 6 archives.\n",
+		"darwin archive name":         install + "\nDownload `fscache_1.0.0_darwin_arm64.tar.gz`.\n",
+		"claim inside a code fence":   install + "\n```sh\n# macOS: fscache_1.0.0_mac.tar.gz\n```\n",
+	}
+	for name, text := range mutants {
+		ps, _ := checkDoc(f, text, allowedLines, archives)
+		if len(ps) == 0 {
+			t.Errorf("mutant %q passes the docs check", name)
+		}
+		t.Logf("%s: refused: %v", name, ps)
+	}
+	var without []allowedLine
+	for _, a := range allowedLines {
+		if a.file != f || !strings.Contains(a.text, "Apple Silicon") {
+			without = append(without, a)
+		}
+	}
+	if len(without) != len(allowedLines)-1 {
+		t.Fatalf("want exactly one Apple Silicon exception for %s, found %d", f, len(allowedLines)-len(without))
+	}
+	ps, _ := checkDoc(f, install, without, archives)
+	if !strings.Contains(strings.Join(ps, "\n"), "Apple Silicon") {
+		t.Errorf("%s: without its exception the wrapped Apple Silicon mention is not flagged: %v", f, ps)
+	}
+}
+
+// notesFile is the next release's notes; notesSentence is the one platform mention they may carry.
+const (
+	notesFile     = "docs/next-release-notes.md"
+	notesSentence = "No macOS or Windows binaries are shipped; use the container image."
+)
+
+// checkNotes returns every reason the next release notes fail REQ-PLAT-001.
+func checkNotes(text string, archives int) []string {
+	_ = archives
+	if !strings.Contains(strings.Join(strings.Fields(text), " "), strings.TrimSuffix(notesSentence, ".")) {
+		return []string{fmt.Sprintf("%s does not say %q", notesFile, notesSentence)}
+	}
+	return nil
+}
+
+// proves: REQ-PLAT-001-AC1
+// TestNextReleaseNotesSayLinuxOnly: the next release's notes say, exactly once, that no macOS or Windows
+// binaries are shipped and point to the container image; nothing else in them names a non-Linux platform
+// or claims an archive count other than the one .goreleaser.yaml produces.
 func TestNextReleaseNotesSayLinuxOnly(t *testing.T) {
-	const want = "No macOS or Windows binaries are shipped; use the container image"
-	text := strings.Join(strings.Fields(read(t, "docs/next-release-notes.md")), " ")
-	if !strings.Contains(text, want) {
-		t.Errorf("docs/next-release-notes.md does not say %q", want)
+	for _, p := range checkNotes(read(t, notesFile), releaseArchiveCount(t)) {
+		t.Error(p)
+	}
+}
+
+// proves: REQ-PLAT-001-AC1
+// TestNextReleaseNotesCheckRefusesMutants: a second line claiming a macOS binary, a changed or missing
+// required sentence, a repeated sentence and a wrong archive count are each refused.
+func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
+	notes := read(t, notesFile)
+	archives := releaseArchiveCount(t)
+	mutants := map[string]string{
+		"second line claims macOS binaries": notes + "- macOS binaries for Apple Silicon are attached to the release.\n",
+		"wrapped Windows claim":             notes + "- A signed installer for\n  Windows ships with this release.\n",
+		"sentence missing":                  strings.Replace(notes, notesSentence, "Linux only.", 1),
+		"sentence extended":                 strings.Replace(notes, notesSentence, strings.TrimSuffix(notesSentence, ".")+", or the macOS archive.", 1),
+		"sentence repeated":                 notes + "- " + notesSentence + "\n",
+		"archive count":                     notes + "- The release ships six archives.\n",
+	}
+	for name, text := range mutants {
+		if text == notes {
+			t.Fatalf("mutant %q does not change the notes", name)
+		}
+		ps := checkNotes(text, archives)
+		if len(ps) == 0 {
+			t.Errorf("mutant %q passes the release-notes check", name)
+		}
+		t.Logf("%s: refused: %v", name, ps)
+	}
+}
+
+// proves: REQ-PLAT-001-AC1
+// TestEvidenceMappingsClaimNoDarwin: test-evidence/mappings.yaml names no darwin, macOS, Mac, Apple Silicon,
+// OS X or Windows platform as evidence; the only mentions allowed are the names of this package's tests.
+func TestEvidenceMappingsClaimNoDarwin(t *testing.T) {
+	names := regexp.MustCompile(`internal/platforms:Test[A-Za-z]+`)
+	for n, line := range strings.Split(read(t, "test-evidence/mappings.yaml"), "\n") {
+		if m := platformWord.FindString(names.ReplaceAllString(line, "")); m != "" {
+			t.Errorf("test-evidence/mappings.yaml:%d names %q: %s", n+1, m, strings.TrimSpace(line))
+		}
 	}
 }
 
