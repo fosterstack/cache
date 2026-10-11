@@ -1649,10 +1649,11 @@ ASRT = 't "r" "y" bash -c \'grep -q -- "wget" "$1"\' _ "$CALLS"'
 COM = "# a comment that names wget"
 TEST = ('#!/usr/bin/env bash\n. "$(cd "$(dirname "$0")" && pwd)/lib.sh"\nM="$root/build/melange.yaml"\n' + CALL + "\n" + ASRT + "\n" + COM + "\n").encode()
 LIBS = {"libcr": LIB.replace(b"\n", b"\r\n"), "libnotutf8": LIB + b"# \xff\n", "libychanged": LIB.replace(b"python3", b"python2"),
-        "libytwice": LIB + b'y() { ROOT="$root" python3 "$work/chk.py" "$@"; }\n', "libnoy": LIB.replace(b"y() {", b"z() {")}
+        "libytwice": LIB + b'y() { ROOT="$root" python3 "$work/chk.py" "$@"; }\n', "libnoy": LIB.replace(b"y() {", b"z() {"),
+        "libbom": b"\xef\xbb\xbf" + LIB}
 # the head changes after review; the Sonnet reproductions of pull request 297 (B1-B4) are among them: each is a same-file change the shape check never sees
 TESTS = {"tedit": TEST + b"#", "tcr": TEST.replace(b"\n", b"\r\n"), "tnoshebang": TEST.replace(b"#!/usr/bin/env bash\n", b"# no shebang\n"),
-         "tnotutf8": TEST + b"# \xff\n",
+         "tnotutf8": TEST + b"# \xff\n", "tbom": b"\xef\xbb\xbf" + TEST,
          "B1-redefine-y": TEST.replace(b"M=", b'y() { curl -s https://e.example/x; }\nM='),
          "B1-redefine-t": TEST.replace(b"M=", b't() { curl -s https://e.example/x; }\nM='),
          "B1-alias": TEST.replace(b"M=", b"shopt -s expand_aliases; alias y=curl\nM="),
@@ -1680,7 +1681,7 @@ def build(root, mode):
     g("add", "-A"); g("commit", "-q", "-m", "head")
 def rows(out, mode):
     H = lambda s: hashlib.sha256(s.encode()).hexdigest()[:16]; S = lambda b: hashlib.sha256(b).hexdigest()
-    test = TESTS[mode] if mode in ("tcr", "tnoshebang", "tnotutf8", "twocopies", "twocopies2") else TEST     # those three: the pin MATCHES the head; the file property refuses
+    test = TESTS[mode] if mode in ("tcr", "tnoshebang", "tnotutf8", "tbom", "twocopies", "twocopies2") else TEST     # tcr .. tbom: the pin MATCHES the head; the file property refuses
     lib = LIBS.get(mode, LIB)
     pins = {"context": S(test), "callee": {"file": "bin/libdir" if mode == "dir" else "bin/lib.sh", "sha256": S(lib)}}
     if mode == "wrongcontext": pins["context"] = S(TEST + b"\n")
@@ -1751,6 +1752,15 @@ cccase libsymlink ok 1 "the library a symlink in the head (to the pinned bytes)"
 cccase dir dir 1 "the callee pin naming a directory"
 for m in tcr tnoshebang tnotutf8; do cccase "$m" "$m" 1 "the test file is $m, with a context pin that MATCHES it"; done
 for m in libcr libnotutf8 libychanged libytwice libnoy; do cccase "$m" "$m" 1 "the library is $m, with a callee pin that MATCHES it"; done
+# a UTF-8 byte order mark (EF BB BF) at the start of either pinned file (Codex B round 1, pull request 297: a BOM-bearing library with its matching sha256
+# was ruled): the check refuses to run (exit 2) and names the mark, whatever the pins say
+for m in libbom tbom; do
+  cccase "$m" "$m" 2 "the $( [ "$m" = libbom ] && echo library || echo test file ) starts with a UTF-8 byte order mark, with a pin that MATCHES it"
+  CASE="AC16 check call (enforcement): $m: the refusal names the byte order mark and the file"
+  check grep -q "byte order mark.*bin/$( [ "$m" = libbom ] && echo lib.sh || echo x-test.sh )\|bin/$( [ "$m" = libbom ] && echo lib.sh || echo x-test.sh ).*byte order mark" "$work/rt.out"
+  CASE="AC16 check call (enforcement): $m: nothing is ruled"
+  check test "$(grep -c 'ruled text' "$work/rt.out")" -eq 0
+done
 for m in B1-redefine-y B1-redefine-t B1-alias B2-command-source B2-builtin-source B2-command-eval B3-arith-shift B4-ansi-c; do
   cccase "$m" ok 1 "Sonnet reproduction $m (pull request 297): the call line itself is unchanged and its shape still passes, but the test file is not the pinned one, so the row is void"
   hf 't "r" "x wget" y mel-go "$M"'
@@ -1793,7 +1803,7 @@ cat >"$work/hf-real.txt" <<'EOF'
 # url characters, curl flags and caps
 t "rule 12" "melange.yaml: Go from go.dev, one sha256-pinned fetch per arch, no Wolfi go apk, wget present, go.mod go <= archived Go" y mel-go "$M" # fetch.yaml:4-6 (needs wget), :78-80 (a checksum is required), :85-90 (cache lookup), :108-111 (verification)
 t "rule 15" "melange.yaml build packages pinned name=version incl. git, busybox, ca-certificates-bundle, wget" y mel-pinned "$M"
-t "rule 15" "the inputs manifest holds the melange lock and the environment read back from the apk" bash -c 'grep -q -- "busybox=1.37.0-r5" "$1" && grep -q -- "wget=1.25.0-r0" "$1"' _ "$work/o1-inputs-manifest.json"
+t "rule 15" "the inputs manifest holds the melange lock and the environment read back from the apk" bash -c 'test "$(grep -c -E -- "^ *.busybox=1\.37\.0-r5.," "$1")" -gt "$(grep -c -E -- "^ *.busybox=1\.37\.0-r5.,." "$1")" && test "$(grep -c -E -- "^ *.wget=1\.25\.0-r0." "$1")" -gt "$(grep -c -E -- "^ *.wget=1\.25\.0-r0.." "$1")"' _ "$work/o1-inputs-manifest.json"
 EOF
 while IFS= read -r line; do
   case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
@@ -1813,19 +1823,38 @@ CASE="AC16 check call semantics: the rule 12 line calls y with exactly mel-go an
 check test "$(hcall "$(grep -F 'y mel-go' "$work/hf-real.txt")")" = "$(printf 'mel-go\n/r/build/melange.yaml')"
 CASE="AC16 check call semantics: the rule 15 line calls y with exactly mel-pinned and the melange.yaml path"
 check test "$(hcall "$(grep -F 'y mel-pinned' "$work/hf-real.txt")")" = "$(printf 'mel-pinned\n/r/build/melange.yaml')"
-# --- what the committed build-apk harness line ASSERTS (P4): the ruled line is run, as written, against manifests under a scratch $work. Both package pins
-# present -> exit 0; either pin missing, a different version of either, or an empty file -> exit 1. Its ruling says exactly this, so the prose is checked by execution.
+# --- what the committed build-apk harness line ASSERTS (P4): the ruled line is run, as written, against manifests under a scratch $work. The manifest is
+# the layout bin/apk-tool.py writes (json.dump, indent=1, sort_keys: one package per line, "busybox=..." followed by a comma, "wget=..." the last of its list).
+# The line holds EXACTLY the two package values (Codex B round 1, pull request 297: an unanchored grep accepted busybox=1.37.0-r50, wget=1.25.0-r01 and a
+# dot read as any character): a busybox line that ends right after its closing quote and comma, and a wget line that ends right after its closing quote
+# (each counted: more lines with that start than with a longer tail). Both pins present -> exit 0; a pin missing, another version, a longer version (a
+# suffix), a prefixed name, a dot replaced by another character, the compact one-line JSON, or an empty file -> exit 1. Its ruling says exactly this.
 grep -F 'bash -c' "$work/hf-real.txt" | grep -F 'o1-inputs-manifest.json' >"$work/hf-p4-line.txt"
 hp4() {   # hp4 MANIFEST-TEXT: runs the committed line with $work pointing at a scratch dir holding o1-inputs-manifest.json; sets rc
   local d; d=$(mktemp -d "$work/hp4.XXXXXX"); printf '%s' "$1" >"$d/o1-inputs-manifest.json"; rc=0
   work="$d" bash -c 't() { shift 2; "$@"; }; '"$(cat "$work/hf-p4-line.txt")" </dev/null >/dev/null 2>&1 || rc=$?; }
+mf() {    # mf PACKAGE...: a manifest in the layout bin/apk-tool.py writes, with these packages in both lists (in the order given)
+  python3 -c 'import json, sys; p = sys.argv[1:]; sys.stdout.write(json.dumps({"apk_environment": p, "melange_lock": p}, indent=1, sort_keys=True) + "\n")' "$@"; }
 CASE="AC16 harness semantics (bin/build-apk-test.sh): exactly one committed line reads o1-inputs-manifest.json"
 check test "$(wc -l <"$work/hf-p4-line.txt")" -eq 1
-hp4 '{"melange": ["busybox=1.37.0-r5", "wget=1.25.0-r0"]}'
-CASE="AC16 harness semantics (bin/build-apk-test.sh): a manifest with both pins (busybox=1.37.0-r5, wget=1.25.0-r0) passes: exit 0"
+CASE="AC16 harness semantics (bin/build-apk-test.sh): bin/apk-tool.py still writes the manifest with json.dump(..., indent=1, sort_keys=True) (the layout the cases below use)"
+check test "$(grep -cF 'json.dump({"melange_lock": sorted(lock), "apk_environment": sorted(env)}, f, indent=1, sort_keys=True)' "$root/bin/apk-tool.py")" -eq 1
+P4C=ca-certificates-bundle=20260102-r0 P4G=git=2.50.1-r0
+hp4 "$(mf busybox=1.37.0-r5 $P4C $P4G wget=1.25.0-r0)"
+CASE="AC16 harness semantics (bin/build-apk-test.sh): a manifest with both pins (busybox=1.37.0-r5, wget=1.25.0-r0) in apk-tool's layout passes: exit 0"
 check test "$rc" -eq 0
-for v in 'without busybox=1.37.0-r5	{"melange": ["wget=1.25.0-r0"]}' 'without wget=1.25.0-r0	{"melange": ["busybox=1.37.0-r5"]}' \
-         'with busybox at another version	{"melange": ["busybox=1.37.0-r6", "wget=1.25.0-r0"]}' 'with wget at another version	{"melange": ["busybox=1.37.0-r5", "wget=1.25.0-r1"]}' \
+for v in "without busybox=1.37.0-r5	$(mf $P4C $P4G wget=1.25.0-r0)" "without wget=1.25.0-r0	$(mf busybox=1.37.0-r5 $P4C $P4G)" \
+         "with busybox at another version (r6)	$(mf busybox=1.37.0-r6 $P4C $P4G wget=1.25.0-r0)" "with wget at another version (r1)	$(mf busybox=1.37.0-r5 $P4C $P4G wget=1.25.0-r1)" \
+         "with busybox=1.37.0-r50 (a suffix; Codex B round 1)	$(mf busybox=1.37.0-r50 $P4C $P4G wget=1.25.0-r0)" \
+         "with wget=1.25.0-r01 (a suffix; Codex B round 1)	$(mf busybox=1.37.0-r5 $P4C $P4G wget=1.25.0-r01)" \
+         "with busybox=1.37.0-r50 as the last entry (a suffix where no comma follows)	$(mf $P4C $P4G wget=1.25.0-r0 busybox=1.37.0-r50)" \
+         "with wget=1.25.0-r0x before another entry (a suffix where a comma follows)	$(mf busybox=1.37.0-r5 $P4C $P4G wget=1.25.0-r0x zlib=1-r0)" \
+         "with busybox=1x37.0-r5 (a dot replaced by another character; Codex B round 1)	$(mf busybox=1x37.0-r5 $P4C $P4G wget=1.25.0-r0)" \
+         "with wget=1.25x0-r0 (a dot replaced by another character)	$(mf busybox=1.37.0-r5 $P4C $P4G wget=1.25x0-r0)" \
+         "with xbusybox=1.37.0-r5 (a prefix)	$(mf xbusybox=1.37.0-r5 $P4C $P4G wget=1.25.0-r0)" \
+         "with xwget=1.25.0-r0 (a prefix)	$(mf busybox=1.37.0-r5 $P4C $P4G xwget=1.25.0-r0)" \
+         'Codex B round 1 verbatim: {"melange":["busybox=1.37.0-r50","wget=1.25.0-r01"]}	{"melange":["busybox=1.37.0-r50","wget=1.25.0-r01"]}' \
+         'in compact one-line JSON, not the layout apk-tool writes	{"melange": ["busybox=1.37.0-r5", "wget=1.25.0-r0"]}' \
          'empty	'; do
   hp4 "${v#*	}"
   CASE="AC16 harness semantics (bin/build-apk-test.sh): a manifest ${v%%	*} fails: exit 1"
@@ -2285,7 +2314,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
     # the flattened lines of the apk build driver tests (bin/build-apk-test.sh, P4) the P4 rows are written for: one harness assertion, two check calls of y (pinned by context and callee)
-    "619c2a8b2dd62bf2": "t \"rule 15\" \"the inputs manifest holds the melange lock and the environment read back from the apk\" bash -c 'grep -q -- \"busybox=1.37.0-r5\" \"$1\" && grep -q -- \"wget=1.25.0-r0\" \"$1\"' _ \"$work/o1-inputs-manifest.json\"",
+    "08a71916c8b753c5": "t \"rule 15\" \"the inputs manifest holds the melange lock and the environment read back from the apk\" bash -c 'test \"$(grep -c -E -- \"^ *.busybox=1\\.37\\.0-r5.,\" \"$1\")\" -gt \"$(grep -c -E -- \"^ *.busybox=1\\.37\\.0-r5.,.\" \"$1\")\" && test \"$(grep -c -E -- \"^ *.wget=1\\.25\\.0-r0.\" \"$1\")\" -gt \"$(grep -c -E -- \"^ *.wget=1\\.25\\.0-r0..\" \"$1\")\"' _ \"$work/o1-inputs-manifest.json\"",
     "4684882b967c2a82": "t \"rule 12\" \"melange.yaml: Go from go.dev, one sha256-pinned fetch per arch, no Wolfi go apk, wget present, go.mod go <= archived Go\" y mel-go \"$M\" # fetch.yaml:4-6 (needs wget), :78-80 (a checksum is required), :85-90 (cache lookup), :108-111 (verification)",
     "2dfd6c9d49a401fa": "t \"rule 15\" \"melange.yaml build packages pinned name=version incl. git, busybox, ca-certificates-bundle, wget\" y mel-pinned \"$M\"",
 }
