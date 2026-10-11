@@ -931,10 +931,11 @@ requirements:
     notes: >
       The prose guards are a consistency check on documents this project
       writes and reviews, not a security control. They read plain Markdown
-      text (words, counts, wrapped lines, entities, link text). Documents
-      may not contain inline HTML or invisible or non-printing characters,
-      and the check refuses them outright; findings that depend on such
-      content are information, not blockers.
+      text (words, counts, wrapped lines, link text) and the documents
+      contain text with no character references (any character reference
+      is refused). Documents may not contain inline HTML or invisible or
+      non-printing characters, and the check refuses them outright;
+      findings that depend on such content are information, not blockers.
     acceptance_criteria:
       - id: REQ-PLAT-001-AC1
         given: a release's artifact set

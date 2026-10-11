@@ -400,7 +400,7 @@ Every release shall ship static (CGO_ENABLED=0) standard and FIPS-variant binari
 
 *Introduced v0.1.0 · tier community · confidence documented · source: README.md "Supported platforms"; docs/install.md; docs/docker-deploy.md; RELEASING.md; docs/next-release-notes.md; .goreleaser.yaml*
 
-> The prose guards are a consistency check on documents this project writes and reviews, not a security control. They read plain Markdown text (words, counts, wrapped lines, entities, link text). Documents may not contain inline HTML or invisible or non-printing characters, and the check refuses them outright; findings that depend on such content are information, not blockers.
+> The prose guards are a consistency check on documents this project writes and reviews, not a security control. They read plain Markdown text (words, counts, wrapped lines, link text) and the documents contain text with no character references (any character reference is refused). Documents may not contain inline HTML or invisible or non-printing characters, and the check refuses them outright; findings that depend on such content are information, not blockers.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
