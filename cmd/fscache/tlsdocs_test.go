@@ -96,6 +96,17 @@ func TestTLSDocsDescribeBothOptions(t *testing.T) {
 			t.Errorf("the kubernetes.md TLS example does not set %q", want)
 		}
 	}
+	// The example's Secret has a name no other example on the page uses
+	// (the ingress example has its own), and the page says the files must
+	// be readable by the container's non-root user.
+	if m := regexp.MustCompile(`secretName:\s*(\S+)`).FindStringSubmatch(example); m == nil {
+		t.Error("the kubernetes.md TLS example names no Secret")
+	} else if n := strings.Count(k, "secretName: "+m[1]); n != 1 {
+		t.Errorf("the TLS example's Secret %q is named %d times on the page, want once (a name of its own)", m[1], n)
+	}
+	if !strings.Contains(kflat, "readable by the container's non-root user") {
+		t.Error("kubernetes.md does not say the files must be readable by the container's non-root user")
+	}
 	if n, m := strings.Count(example, "httpGet:"), strings.Count(example, "scheme: HTTPS"); n < 2 || m != n {
 		t.Errorf("kubernetes.md TLS example: %d httpGet probes, %d with scheme: HTTPS; want at least two, all HTTPS", n, m)
 	}

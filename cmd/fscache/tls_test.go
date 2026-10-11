@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log"
 	"log/slog"
@@ -414,7 +415,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		t.Setenv("FSCACHE_TLS_CERT", p.certPath)
 		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
 		stderr := captureStderr(t)
-		var logs bytes.Buffer
+		var logs syncBuffer
 		var surfaces []string
 		ctx, cancel := context.WithCancel(context.Background())
 		err := serve(ctx, slog.New(slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})), func() {
@@ -430,7 +431,7 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 			induceHandshakeErrors(t, addr)
 			// The server logs handshake errors from its connection
 			// goroutines; wait for all four before shutting it down.
-			for deadline := time.Now().Add(5 * time.Second); strings.Count(stderr(), "TLS handshake error") < 4 && time.Now().Before(deadline); {
+			for deadline := time.Now().Add(5 * time.Second); strings.Count(logs.String(), "TLS handshake error") < 4 && time.Now().Before(deadline); {
 				time.Sleep(20 * time.Millisecond)
 			}
 		})
@@ -440,14 +441,56 @@ func TestTLSKeyNeverAppearsInOutput(t *testing.T) {
 		if len(surfaces) != 3 {
 			t.Fatalf("captured %d surfaces, want 3", len(surfaces))
 		}
-		errLog := stderr()
-		if n := strings.Count(errLog, "http: TLS handshake error"); n < 4 {
-			t.Fatalf("captured stderr holds %d TLS handshake-error lines, want at least 4 (one per induced error):\n%s", n, errLog)
+		// Go's http.Server error log (TLS handshake errors) goes through the
+		// process logger at DEBUG, never to bare stderr: four induced errors,
+		// four DEBUG records, none on stderr. That makes the check below
+		// cover the path those lines really take, and proves it non-empty.
+		var handshake int
+		for _, line := range strings.Split(logs.String(), "\n") {
+			var rec struct{ Level, Msg string }
+			if json.Unmarshal([]byte(line), &rec) == nil && strings.Contains(rec.Msg, "http: TLS handshake error") {
+				handshake++
+				if rec.Level != "DEBUG" {
+					t.Errorf("a TLS handshake error was logged at %s, want DEBUG: %s", rec.Level, line)
+				}
+			}
 		}
-		t.Logf("captured stderr:\n%s", errLog)
+		if handshake < 4 {
+			t.Fatalf("the log holds %d TLS handshake-error records, want at least 4 (one per induced error):\n%s", handshake, logs.String())
+		}
+		errLog := stderr()
+		if strings.Contains(errLog, "TLS handshake error") {
+			t.Errorf("TLS handshake errors reached bare stderr:\n%s", errLog)
+		}
 		for _, s := range append(surfaces, logs.String(), errLog) {
 			if leak := p.leaks(s); leak != "" {
 				t.Errorf("%s appears in:\n%s", leak, s)
+			}
+		}
+	})
+
+	t.Run("handshake errors stay out of an INFO-level log and stderr", func(t *testing.T) {
+		clearEnv(t)
+		freshRegistry(t)
+		addr := freePort(t)
+		t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+		t.Setenv("FSCACHE_ADDR", addr)
+		t.Setenv("FSCACHE_TLS_CERT", p.certPath)
+		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+		stderr := captureStderr(t)
+		var logs syncBuffer
+		ctx, cancel := context.WithCancel(context.Background())
+		err := serve(ctx, slog.New(slog.NewJSONHandler(&logs, nil)), func() {
+			defer cancel()
+			induceHandshakeErrors(t, addr)
+			time.Sleep(300 * time.Millisecond)
+		})
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+		for _, s := range []string{logs.String(), stderr()} {
+			if strings.Contains(s, "TLS handshake error") {
+				t.Errorf("a handshake error was written at the default level:\n%s", s)
 			}
 		}
 	})
@@ -709,5 +752,89 @@ func TestTLSServeOffersOnlyHTTP11(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("serve: %v", err)
+	}
+}
+
+// proves: REQ-TLS-001-AC3 — a certificate or key file larger than 1 MiB is refused unread past the cap, naming the variable and path; files of exactly 1 MiB load
+func TestTLSFileSizeCap(t *testing.T) {
+	const limit = 1 << 20
+	dir := t.TempDir()
+	p := writePair(t, dir, "cap", "MARKER-CAP-5b5b5b")
+	pad := func(src, dst string, size int) string {
+		b, err := os.ReadFile(src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(b) > size {
+			t.Fatalf("%s is already %d bytes", src, len(b))
+		}
+		b = append(b, bytes.Repeat([]byte("#"), size-len(b)-1)...)
+		b = append(b, '\n')
+		path := filepath.Join(dir, dst)
+		if err := os.WriteFile(path, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	certAt, keyAt := pad(p.certPath, "cert-at.pem", limit), pad(p.keyPath, "key-at.pem", limit)
+	certOver, keyOver := pad(p.certPath, "cert-over.pem", limit+1), pad(p.keyPath, "key-over.pem", limit+1)
+
+	if _, err := loadKeyPair(certAt, keyAt); err != nil {
+		t.Fatalf("files of exactly 1 MiB were refused: %v", err)
+	}
+	for _, c := range []badPairCase{
+		{"certificate over the cap", map[string]string{"FSCACHE_TLS_CERT": certOver, "FSCACHE_TLS_KEY": p.keyPath}, []string{"FSCACHE_TLS_CERT", certOver, "1048576"}, []string{certOver, p.keyPath}},
+		{"key over the cap", map[string]string{"FSCACHE_TLS_CERT": p.certPath, "FSCACHE_TLS_KEY": keyOver}, []string{"FSCACHE_TLS_KEY", keyOver, "1048576"}, []string{keyOver, p.certPath}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clearEnv(t)
+			freshRegistry(t)
+			dataDir := filepath.Join(t.TempDir(), "never-created")
+			t.Setenv("FSCACHE_DATA_DIR", dataDir)
+			t.Setenv("FSCACHE_ADDR", freePort(t))
+			for k, v := range c.env {
+				t.Setenv(k, v)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			err := serve(ctx, quietLogger(), cancel) // a start that wrongly succeeds shuts down at once
+			if err == nil {
+				t.Fatal("serve accepted an over-cap file")
+			}
+			checkRefusal(t, c, err.Error())
+			if _, statErr := os.Stat(dataDir); !os.IsNotExist(statErr) {
+				t.Errorf("the data directory was created (stat err = %v)", statErr)
+			}
+		})
+	}
+}
+
+// proves: REQ-TLS-001-AC3, REQ-TLS-001-AC4 — the refusal text is the fixed wording with only variable names and paths: no parser error text is appended
+func TestTLSRefusalTextIsFixed(t *testing.T) {
+	dir := t.TempDir()
+	a := writePair(t, dir, "fixed-a", "MARKER-FIXA-6c6c6c")
+	b := writePair(t, dir, "fixed-b", "MARKER-FIXB-7d7d7d")
+	badKey := filepath.Join(dir, "malformed.key")
+	if err := os.WriteFile(badKey, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: []byte{0x30, 0x03, 0x02, 0x01, 0x00}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name, cert, key, want string
+	}{
+		{"mismatched pair", a.certPath, b.keyPath, fmt.Sprintf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q are not a usable pair: the private key does not match the certificate, or is of a type TLS cannot use", a.certPath, b.keyPath)},
+		{"malformed key", a.certPath, badKey, fmt.Sprintf("FSCACHE_TLS_KEY=%q: the private key does not parse", badKey)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			clearEnv(t)
+			freshRegistry(t)
+			t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
+			t.Setenv("FSCACHE_ADDR", freePort(t))
+			t.Setenv("FSCACHE_TLS_CERT", c.cert)
+			t.Setenv("FSCACHE_TLS_KEY", c.key)
+			err := serve(context.Background(), quietLogger(), nil)
+			if err == nil || err.Error() != c.want {
+				t.Fatalf("startup error = %v\nwant exactly  %s", err, c.want)
+			}
+		})
 	}
 }

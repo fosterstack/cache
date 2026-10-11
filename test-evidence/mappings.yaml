@@ -160,10 +160,13 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestTLSBadPairRefusedAndDataDirNotCreated" }
       - { type: go-test, ref: "cmd/fscache:TestTLSBadPairLeavesExistingDataDirIdentical" }
       - { type: go-test, ref: "cmd/fscache:TestTLSKeyEncodingsAccepted" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSFileSizeCap" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSRefusalTextIsFixed" }
   - ac: REQ-TLS-001-AC4
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestTLSKeyNeverAppearsInOutput" }
       - { type: go-test, ref: "cmd/fscache:TestTLSKeyParserPanicIsContained" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSRefusalTextIsFixed" }
   - ac: REQ-TLS-001-AC5
     evidence:
       - { type: go-test, ref: "internal/server:TestTLSFIPSModeNarrowsSuites" }
