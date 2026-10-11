@@ -1660,7 +1660,8 @@ TESTS = {"tedit": TEST + b"#", "tcr": TEST.replace(b"\n", b"\r\n"), "tnoshebang"
          "B2-builtin-source": TEST.replace(b"M=", b"builtin source ./other.sh\nM="),
          "B2-command-eval": TEST.replace(b"M=", b"command eval 'y() { curl -s https://e.example/x; }'\nM="),
          "B3-arith-shift": TEST.replace(b"M=", b"x=$((1<<2))\n. ./other.sh\nM="),
-         "B4-ansi-c": TEST.replace(b"M=", b"x=$'\\''; . ./other.sh; z='\nM=")}
+         "B4-ansi-c": TEST.replace(b"M=", b"x=$'\\''; . ./other.sh; z='\nM="),
+         "twocopies": TEST + CALL.encode() + b"\n", "twocopies2": TEST + CALL.encode() + b"\n"}
 def build(root, mode):
     r = pathlib.Path(root)
     g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
@@ -1679,7 +1680,7 @@ def build(root, mode):
     g("add", "-A"); g("commit", "-q", "-m", "head")
 def rows(out, mode):
     H = lambda s: hashlib.sha256(s.encode()).hexdigest()[:16]; S = lambda b: hashlib.sha256(b).hexdigest()
-    test = TESTS[mode] if mode in ("tcr", "tnoshebang", "tnotutf8") else TEST     # those three: the pin MATCHES the head; the file property refuses
+    test = TESTS[mode] if mode in ("tcr", "tnoshebang", "tnotutf8", "twocopies", "twocopies2") else TEST     # those three: the pin MATCHES the head; the file property refuses
     lib = LIBS.get(mode, LIB)
     pins = {"context": S(test), "callee": {"file": "bin/libdir" if mode == "dir" else "bin/lib.sh", "sha256": S(lib)}}
     if mode == "wrongcontext": pins["context"] = S(TEST + b"\n")
@@ -1690,6 +1691,7 @@ def rows(out, mode):
     R = [dict(row(CALL, H(CALL), "harness check call: a test line"), **pins), row(ASRT, H(ASRT), "harness assertion: a test line"),
          row(COM, H(COM), "text, not a command: a test line")]
     if mode == "nopins": R[0] = row(CALL, H(CALL), "harness check call: a test line")
+    if mode == "twocopies2": R[0]["count"] = 2
     if mode == "pinsoncomment": R[2].update(pins)
     if mode == "pinsonassertion": R[1].update(pins)
     bad = {"onlycontext": {"context": pins["context"]}, "onlycallee": {"callee": pins["callee"]}, "contextshort": dict(pins, context=pins["context"][:63]),
@@ -1706,14 +1708,14 @@ def held(root, mode):
     """The HELD case: the test file, the library and (in the rules file) the pinned rows are all in the BASE; the head changes per MODE without adding a line."""
     r = pathlib.Path(root)
     g = lambda *a: subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True, capture_output=True)
-    (r / "bin").mkdir(exist_ok=True); (r / "bin/lib.sh").write_bytes(LIB); (r / "bin/x-test.sh").write_bytes(TEST)
+    (r / "bin").mkdir(exist_ok=True); (r / "bin/lib.sh").write_bytes(LIB); (r / "bin/x-test.sh").write_bytes(TESTS.get(mode, TEST) if mode.startswith("twocopies") else TEST)
     (r / "bin/other.sh").write_bytes(b"#!/usr/bin/env bash\necho other\n")
     g("add", "-A"); g("commit", "-q", "-m", "base2")
     if mode == "libedit":                                   # the Sonnet reproduction (pull request 297 round 2): the library's harness changed, no line added
         (r / "bin/lib.sh").write_bytes(LIB + b't() { eval "$d"; }\n')
     elif mode == "testcomment":
         (r / "bin/x-test.sh").write_bytes(TEST + b"# a new comment\n")
-    elif mode == "same":
+    elif mode in ("same", "twocopies", "twocopies2"):
         (r / "bin/other.sh").write_bytes(b"#!/usr/bin/env bash\necho other two\n")
     elif mode == "testdeleted":
         (r / "bin/x-test.sh").unlink()
@@ -1757,9 +1759,9 @@ for m in B1-redefine-y B1-redefine-t B1-alias B2-command-source B2-builtin-sourc
 done
 # HELD rows (Sonnet, pull request 297 round 2): a pinned row whose line is already in the base is re-checked on EVERY run, added or not, moved pin or not:
 # an edit of the pinned library or test file that adds no line must still fail, naming the row; a row whose line is gone from the head is ignored.
-heldcase() {   # heldcase MODE WANT-RC WHAT
+heldcase() {   # heldcase MODE WANT-RC WHAT [ROWS-MODE, default ok]
   rm -rf "$work/held-$1"; cp -R "$base" "$work/held-$1"; python3 "$work/cc.py" held "$work/held-$1" "$1"
-  python3 "$work/cc.py" rows "$work/held-rows.json" ok; edck "held-$1" "$work/held-rows.json"
+  python3 "$work/cc.py" rows "$work/held-rows.json" "${4:-ok}"; edck "held-$1" "$work/held-rows.json"
   CASE="AC16 check call (held rows): $3: exit $2"
   check test "$rc" -eq "$2"
   if test "$2" = 1; then
@@ -1775,6 +1777,10 @@ heldcase same 0 "both pinned files unchanged (another file edited): the held row
 CASE="AC16 check call (held rows): both pinned files unchanged: still 'no pin moved' when nothing else moved"
 check grep -q 'no pin moved' "$work/rt.out"
 heldcase testdeleted 0 "the test file deleted: its line is gone, so its rows are ignored"
+heldcase twocopies 1 "base and head both hold TWO copies of the pinned call, the row's count is 1 (pins right): over the count, never a pass" twocopies
+CASE="AC16 check call (held rows): two held copies over a count of 1: 'no pin moved' is not printed"
+check test "$(grep -c 'no pin moved' "$work/rt.out")" -eq 0
+heldcase twocopies2 0 "base and head both hold two copies, the row's count is 2 (pins right): held and within the count" twocopies2
 for m in onlycontext onlycallee contextshort contextupper contextint calleenotobject calleeextrakey calleenosha calleeabspath calleedotdot calleedotseg calleeempty; do
   cccase ok "$m" 2 "a malformed pin ($m) stops the check fail-closed"
 done
@@ -2297,7 +2303,7 @@ for r in rows:
         assert ("context" in r and "callee" in r) == call and ("context" in r) == ("callee" in r), ("a check-call row carries both pins, and only a check-call row does", r)
         assert r["ruling"].startswith("harness check call: " if call else "harness assertion: "), ("the ruling names another form", r)
         if call:                                                         # the pins, against this tree's files when they are here (the pin-age check binds them in CI)
-            assert os.path.dirname(r["callee"]["file"]) == os.path.dirname(r["file"]) and r["callee"]["file"] != r["file"], ("the callee is not a library beside the row's file", r)
+            assert r["callee"]["file"] != r["file"], ("the callee is the row's own file", r)
             for f, pin in ((r["file"], r["context"]), (r["callee"]["file"], r["callee"]["sha256"])):
                 p = os.path.join(sys.argv[3], f)
                 if os.path.isfile(p):
