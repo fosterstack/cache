@@ -2667,6 +2667,81 @@ for line in GH_LISTED + GH_UNLISTED:
         bad.append(("repo:self", line, why))
 assert not bad, bad
 PYC6
+# Codex round 7 (d83a8ba): (A7-1, P2) another command's options are -x or --name with nothing glued: a single-dash word of more than one letter is listed
+# ONLY as a curl cluster (-fsSL forms), for any other command (and after the repo:self prefix) a single-dash word is exactly one letter; (A7-2, P2) an
+# address is ONE word: the redirect words are only words that start with - (a quoted word, a Python list element, an unquoted word whole, never split
+# at a comma, a ; or a ? inside it); (A7-3, P3) on a repo:self line a gh word is data as the value of an option of the prefix's own gh release download
+# (--pattern gh), and refused anywhere else (a command word, after a wrapper, with a path, inside bash -c, in any later segment); (B6-3, P3) a Python
+# NAME (the FILE after "-o"/"--output", an assignment target) is an ASCII identifier, never a keyword or None, True, False
+plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"-o\", None, \"$U0\"], stdout=sys.stderr)" 'Codex B6 P3 None as the FILE'
+plainrefused "curl -fsS $U0 ; git -Cforeign status" 'Codex A7 P2 a glued short option of another command'
+plainrefused "curl -fsS $U0 && tar -xvf x" 'Codex A7 P2 a short option cluster of another command'
+one ifa7 "$FETCH""curl -fsS $U0 ; git -C foreign status"$'\n' "curl -fsS $U0 ; git -C foreign status"
+CASE="AC19'' (0) Codex A7 P2 control: another command's one-letter option and its value (git -C foreign) with a checksum verifier line passes: exit 0"
+check test "$rc" -eq 0
+for L in "curl -fsS $U0,-L" "curl -fsS \"$U0;-L\"" "curl -fsS '$U0?x=-L'" "curl -fsS \"$U0#-L\"" \
+         "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0,-L\"], stdout=sys.stderr)" "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0;-L\"], stdout=sys.stderr)"; do
+  one ifa7r "$FETCH$L"$'\n' "$L"
+  CASE="AC19'' (6) Codex A7 P2: the address in $L is one word, not a redirect option: a checksum verifier line passes: exit 0"
+  check test "$rc" -eq 0
+done
+for P in '--pattern gh' '-p gh' '--dir gh' '-D gh/out' '--pattern "gh"'; do
+  one ifa7g "$FETCH$G0 $P"$'\n' "$G0 $P" repo:self
+  CASE="AC19'' (0) Codex A7 P3: gh as the value of an option of the prefix ($G0 $P) is data: exit 0"
+  check test "$rc" -eq 0
+done
+ghrefused "$G0 -p gh ; gh release download v1.0.0"
+ghrefused "$G0 ; bash -c gh"
+CASE="AC19'' (0) Codex round 7: other commands' options, redirect words of one-word addresses, gh as an option value, unit"
+check python3 - "$chk" <<'PYC7'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+A = 'curl -fsS https://h.example.dev/a'
+LISTED = [A + ' ; git -C foreign status', A + ' && tar -x -v -f x', A + ' ; make -j 4', A + ' ; sort -o /tmp/x y', A + ' ; ls --all', A + ' ; ls -l']
+UNLISTED = [A + ' ; git -Cforeign status', A + ';git -Cforeign status', A + ' && tar -xvf x', A + ' ; make -j4', A + ' ; sort -o/tmp/x y', A + ' ; ls -1',
+            A + ' ; ls -la', A + ' ; git -C=foreign status', A + ' ; ls --all=x', 'if curl -fsS https://h.example.dev/a; then tar -xzf x; fi']
+GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+GH_LISTED = [GHD + ' --pattern gh', GHD + ' -p gh', GHD + ' --dir gh', GHD + ' -D gh/out', GHD + ' --pattern "gh"', GHD + " -p 'gh*'", GHD + ' -p gh -D dist',
+             GHD + ' --pattern gh && echo done', GHD + ' -D dist ; git -C dist status']
+GH_UNLISTED = [GHD + ' -Ddist', GHD + ' -pa', GHD + ' -p a ; tar -xvf x', GHD + ' gh', GHD + ' --clobber gh release download v1', GHD + ' -p gh ; gh release download v1',
+               GHD + ' -p gh ; xargs gh', GHD + ' ; bash -c gh', GHD + ' ; sh -c gh', GHD + ' ; env -i gh api x', GHD + ' ; sudo -u x gh release download v1',
+               GHD + ' ; env GH_REPO=x gh', GHD + ' ; xargs gh', GHD + ' ; /usr/bin/gh release download v1', GHD + " ; bash -c 'gh release download v1'",
+               GHD + ' ; gh api repos/o/r', GHD + ' ; echo --pattern gh', GHD + ' -p gh -R foreign/repo', GHD + ' --pattern gh --repo foreign/repo']
+U = 'https://h.example.dev/a'
+NOREDIRECT = ['curl -fsS %s,-L' % U, 'curl -fsS "%s;-L"' % U, "curl -fsS '%s;-L'" % U, 'curl -fsS "%s?x=-L"' % U, 'curl -fsS "%s#-L"' % U, 'curl -fsS "%s -L"' % U,
+              'curl -fsS %s,--location' % U, 'curl -fsS -o x,-L %s' % U, 'curl -fsS %s ; git -C foreign status' % U,
+              'r = subprocess.run(["curl", "-fsS", "%s,-L"])' % U, 'r = subprocess.run(["curl", "-fsS", "%s;-L"])' % U, 'r = subprocess.run(["curl", "-fsS", "%s?x=-L"])' % U,
+              'r = subprocess.run(["curl", "-fsS", "%s#-L"])' % U, 'r = subprocess.run(["curl", "-fsS", "%s,--config"])' % U, "r = subprocess.run(['curl', '-fsS', '%s,-K'])".replace("'curl'", '"curl"') % U]
+REDIRECT = ['curl -fsSL %s' % U, 'curl -L %s' % U, 'curl --location %s' % U, 'curl -fsS %s ; ls -L' % U, 'curl -fsS %s ; ls --follow' % U,
+            'r = subprocess.run(["curl", "-L", "%s"])' % U, 'r = subprocess.run(["curl", b"-fsSL", "%s"])' % U, 'r = subprocess.run(["curl", "--location", "%s"])' % U,
+            'curl -fsS %s?x=-L' % U, 'curl -fsS %s#-L' % U, 'curl -fsS %s;-L' % U]   # the last three are not listed: they follow redirects by (0)
+# Codex B round 6 P3: a plain NAME (the FILE after "-o"/"--output", an assignment target) is an ASCII identifier that is not a Python keyword and not
+# None, True or False (a builtin such as print is a plain name)
+U0 = 'https://h.example.dev/a'
+for n in ['print', 'out_2', '_x', 'part', 'Out']:
+    LISTED.append('r = subprocess.run(["curl", "-o", %s, "%s"])' % (n, U0))
+    LISTED.append('%s = subprocess.run(["curl", "--output", x, "%s"])' % (n, U0))
+for n in ['None', 'True', 'False', 'class', 'lambda', 'yield', 'await', 'async', 'x²', 'xé', 'if', 'not', 'import', 'é']:
+    UNLISTED.append('r = subprocess.run(["curl", "-o", %s, "%s"])' % (n, U0))
+    UNLISTED.append('subprocess.run(["curl", "--output", %s, "%s"])' % (n, U0))
+    UNLISTED.append('%s = subprocess.run(["curl", "-o", x, "%s"])' % (n, U0))
+bad = []
+for line in LISTED + UNLISTED:
+    why = ac._unlisted(line)
+    if (why is None) != (line in LISTED):
+        bad.append(("host", line, why))
+for line in GH_LISTED + GH_UNLISTED:
+    why = ac._unlisted(line, repo_self=True)
+    if (why is None) != (line in GH_LISTED):
+        bad.append(("repo:self", line, why))
+for line in NOREDIRECT:
+    if ac._unlisted(line) is not None or ac._follows_redirects(line):
+        bad.append(("a listed line whose address only holds -L is not following redirects", line, ac._unlisted(line), ac._redirect_words(line)))
+for line in REDIRECT:
+    if not ac._follows_redirects(line):
+        bad.append(("follows redirects", line))
+assert not bad, bad
+PYC7
 # (3) the verifier line is matched against PHYSICAL lines of a literal-block run: (|, |-, |+) of exactly one step, never a parsed value (outbox 4a R1-R6)
 VC='cosign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out'
 vwcase() { # FILE TEXT EXPECTED-RC WHY
