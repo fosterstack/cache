@@ -106,9 +106,9 @@
         "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
         "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
         "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
-        "scanners": "bin/check-stage.sh",
-        "acceptance": "bin/check-stage.sh",
-        "runtime": "bin/check-stage.sh"
+        "scanners": "bin/check-phase-scanners.sh",
+        "acceptance": "bin/check-phase-acceptance.sh",
+        "runtime": "bin/check-phase-runtime.sh"
       },
       "exceptions": [
         {
@@ -814,6 +814,42 @@
           "why": "a fixture line of a syscall trace inside a heredoc: the comment marks are trace text, not a command (REQ-PRIV-001-AC1)"
         }
       ]
+    },
+    {
+      "path": "bin/check-phase-scanners.sh",
+      "sha256": "0eba74a24fcaefc173a068e6bd97f03493e8988ec6109b3a2c14f0601c7bf04c",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's scanners step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-acceptance.sh",
+      "sha256": "113c2da8fa43264754f1f4158b245583f8b9aa9a464653697de5f70c5da2831e",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's acceptance step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-runtime.sh",
+      "sha256": "7abe1474108348e53b56066422e51220b81db9ec387817c638331cfa6ea0067d",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's runtime step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
     }
   ],
   "ambient_env": [

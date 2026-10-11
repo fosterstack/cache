@@ -43,11 +43,11 @@ jobs:
           name: images
           path: images
       - name: scanners under Witness
-        run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners
+        run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh
       - name: acceptance under Witness
-        run: bash bin/witnessed.sh acceptance bin/check-stage.sh acceptance
+        run: bash bin/witnessed.sh acceptance bin/check-phase-acceptance.sh
       - name: runtime under Witness
-        run: bash bin/witnessed.sh runtime bin/check-stage.sh runtime
+        run: bash bin/witnessed.sh runtime bin/check-phase-runtime.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: witness-check

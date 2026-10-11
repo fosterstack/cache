@@ -81,7 +81,7 @@ UPL = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
 DWN = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1"
 def dn(name, path): return f"      - uses: {DWN}\n        with:\n          name: {name}\n          path: {path}\n"
 def up(name, path): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {path}\n"
-def wit(step): return f"      - name: {step}\n        run: bash bin/witnessed.sh {step} bin/check-stage.sh {step}\n"
+def wit(step): return f"      - name: {step}\n        run: bash bin/witnessed.sh {step} bin/check-phase-{step}.sh\n"
 stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n  check:\n    runs-on: ubuntu-24.04\n"
          "    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
@@ -190,12 +190,22 @@ jobs:
         run: bash bin/acceptance-maven-capped.sh
 """)
 os.makedirs(w + "/plain", exist_ok=True)
-for n in ("check-stage", "check-scan", "check-fips", "check-acceptance", "check-guide"):
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-acceptance", "check-guide"):
     open(f"{w}/plain/{n}.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
 expect ok "fixture: the known-good bin/witnessed.sh passes the helper judge (rule 68 seam)" "" helper "$work/witnessed.sh"
+# ---- the thin phase targets (ruling 0384): bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a one-line target ------------------
+for s in scanners acceptance runtime; do printf '#!/usr/bin/env bash\nbash bin/check-stage.sh %s\n' "$s" > "$work/ph_$s.sh"; done
+expect ok "fixture: a known-good phase target passes the phase judge" "" phase "$work/ph_scanners.sh" scanners
+printf '#!/usr/bin/env bash\nbash bin/check-stage.sh runtime\n' > "$work/ph_wrong.sh"
+expect caught "AC3 a phase target that runs another phase" "exactly the one line" phase "$work/ph_wrong.sh" scanners
+printf '#!/usr/bin/env bash\nbash bin/check-stage.sh scanners\ntrue\n' > "$work/ph_extra.sh"
+expect caught "AC3 a phase target with a second command" "exactly the one line" phase "$work/ph_extra.sh" scanners
+printf '#!/usr/bin/env bash\nbash bin/check-stage.sh scanners || true\n' > "$work/ph_swallow.sh"
+expect caught "AC3 a phase target that swallows a failure" "exactly the one line" phase "$work/ph_swallow.sh" scanners
+expect caught "AC3 a phase outside the closed list" "unknown phase" phase "$work/ph_scanners.sh" checks
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
 expect ok "fixture: plain scripts that only use scanners, docker and curl pass the plain judge" "" plain "$work"/plain/check-*.sh
@@ -229,12 +239,12 @@ m s_comp   '      - name: install Witness'                     '      - uses: ./
 m s_after  '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist2\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'after Witness' "AC1 a download after Witness started"
 m s_wf     'permissions:\n  contents: read\njobs'             'permissions:\n  contents: read\nenv: {A: b}\njobs'      'workflow keys'     "AC1 workflow env"
 m s_trig   'workflow_call:'                                    'workflow_call:\n  push:'                                  'workflow_call'     "AC1 an extra trigger"
-m s_direct 'run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners' 'run: witness run --step scanners -- ./bin/check-stage.sh'  'witnessed.sh' "AC11 a direct witness run in the stage file (the helper is the one place)"
-m s_tmo    'run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners' 'run: timeout 540 bash bin/witnessed.sh scanners bin/check-stage.sh scanners' 'witnessed.sh' "AC11 timeout boilerplate repeated in the stage file"
-m s_name   'witnessed.sh runtime bin/check-stage.sh runtime'  'witnessed.sh checks bin/check-stage.sh checks'  'exactly' "AC11 a step name outside the closed list"
-m s_mism   'witnessed.sh acceptance bin/check-stage.sh acceptance' 'witnessed.sh acceptance bin/check-stage.sh runtime' 'witnessed.sh' "AC11 the step name and the phase differ"
-m s_four   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - name: extra\n        run: bash bin/witnessed.sh extra bin/check-stage.sh extra\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'THREE' "AC11 a fourth witnessed step"
-m s_order  '      - name: scanners\n        run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners\n      - name: acceptance\n        run: bash bin/witnessed.sh acceptance bin/check-stage.sh acceptance\n' '      - name: acceptance\n        run: bash bin/witnessed.sh acceptance bin/check-stage.sh acceptance\n      - name: scanners\n        run: bash bin/witnessed.sh scanners bin/check-stage.sh scanners\n' 'in that order' "AC11 the steps run in another order"
+m s_direct 'run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh' 'run: witness run --step scanners -- ./bin/check-stage.sh'  'witnessed.sh' "AC11 a direct witness run in the stage file (the helper is the one place)"
+m s_tmo    'run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh' 'run: timeout 540 bash bin/witnessed.sh scanners bin/check-phase-scanners.sh' 'witnessed.sh' "AC11 timeout boilerplate repeated in the stage file"
+m s_name   'witnessed.sh runtime bin/check-phase-runtime.sh'  'witnessed.sh checks bin/check-phase-checks.sh'  'exactly' "AC11 a step name outside the closed list"
+m s_mism   'witnessed.sh acceptance bin/check-phase-acceptance.sh' 'witnessed.sh acceptance bin/check-phase-runtime.sh' 'witnessed.sh' "AC11 the step name and the phase differ"
+m s_four   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' '      - name: extra\n        run: bash bin/witnessed.sh extra bin/check-phase-extra.sh\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check' 'THREE' "AC11 a fourth witnessed step"
+m s_order  '      - name: scanners\n        run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh\n      - name: acceptance\n        run: bash bin/witnessed.sh acceptance bin/check-phase-acceptance.sh\n' '      - name: acceptance\n        run: bash bin/witnessed.sh acceptance bin/check-phase-acceptance.sh\n      - name: scanners\n        run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh\n' 'in that order' "AC11 the steps run in another order"
 m s_threeup 'witness-runtime\n' 'elsewhere\n' 'upload-artifact' "AC12 a record directory is not what witness-check uploads"
 m s_img2   'name: images\n          path: images\n' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images2\n' 'exactly one download of the images' "AC1 a second download of the images artifact (Q4)"
 m s_imgno  '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n' '' 'exactly one download of the images' "AC1 no download of the images artifact (Q4)"
@@ -338,14 +348,14 @@ import hashlib, json, os, sys
 w = sys.argv[1]
 os.makedirs(w + "/bin", exist_ok=True)
 rows = []
-for n in ("check-stage", "check-scan", "check-fips", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
           "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve", "install-kind"):
     p = f"bin/{n}.sh"; open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
     rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 os.makedirs(w + "/.github/policy", exist_ok=True)
 json.dump({"env_names": [], "scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"))
 PY
-expect ok "fixture: all thirteen Check scripts listed with their sha256 and signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
+expect ok "fixture: all sixteen Check scripts listed with their sha256 and signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
 cp -r "$work/l" "$work/l2"; python3 - "$work/l2" <<'PY'
 import json, sys
 p = sys.argv[1] + "/.github/policy/chain-scripts.json"; d = json.load(open(p)); d["scripts"] = d["scripts"][1:]; json.dump(d, open(p, "w"))
@@ -406,6 +416,7 @@ expect caught "AC10 ci.yml still runs the custom authorization verifier's test (
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
 expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
+for s in scanners acceptance runtime; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build and sign, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
@@ -416,7 +427,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=153
+EXPECT=161
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
