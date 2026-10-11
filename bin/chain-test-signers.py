@@ -400,6 +400,10 @@ def load_scripts(base):
         if "arg_words" in r and (not isinstance(r["arg_words"], list) or not r["arg_words"]
                                  or not all(isinstance(w, str) and re.fullmatch(r"[A-Za-z0-9_-]+", w) for w in r["arg_words"])):
             errs.append("chain-scripts.json: %s `arg_words` must be a non-empty list of plain words" % p)
+        if "arg_map" in r and (not isinstance(r["arg_map"], dict) or not r["arg_map"]
+                               or not all(isinstance(k, str) and re.fullmatch(r"[A-Za-z0-9_-]+", k) for k in r["arg_map"])
+                               or not all(isinstance(v, str) for v in r["arg_map"].values())):
+            errs.append("chain-scripts.json: %s `arg_map` must be a non-empty object of plain STEP words to listed script paths" % p)
         if not isinstance(r.get("runs", []), list):
             errs.append("chain-scripts.json: %s `runs` must be a list" % p)
         em = r.get("env_mentions", [])
@@ -422,6 +426,9 @@ def load_scripts(base):
                     errs.append("chain-scripts.json: %s exceptions entry %r (%s) matches nothing in the file (stale)" % (p, e["text"], e["rule"]))
         rows[p] = r
     for p, r in rows.items():
+        if isinstance(r.get("arg_map"), dict):
+            for k, v in r["arg_map"].items():
+                if isinstance(v, str) and v not in rows: errs.append("chain-scripts.json: %s arg_map %s names %r, which is not a listed row" % (p, k, v))
         for q in r.get("runs", []) if isinstance(r.get("runs", []), list) else []:
             if q not in rows: errs.append("chain-scripts.json: %s runs %r, which is not listed" % (p, q))
     amb = doc.get("ambient_env", [])
@@ -520,6 +527,16 @@ def _arg_error(parts, envnames):
 
 PRINTF_OK = re.compile(r"printf '%s' \"\$(\w+)\" > digests\.json")
 
+def _literal_value(parts):
+    """The shell word a quote-only word stands for (round 3 (1)): lit, single-quoted and double-quoted parts without an expansion, joined (bi'n/x' is
+    bin/x), or None when any part reads a variable or substitutes."""
+    out = []
+    for kind, t in parts:
+        if kind == "dq" and re.search(r"[$`!]", t): return None
+        if kind == "sq" and re.search(r"[$`]", t): return None
+        out.append(t)
+    return "".join(out)
+
 def check_run(run, envnames, rows, reads=None, argpaths=None):
     """Grammar errors (list of 'line N: ...') for one stage-file `run:` text; also returns the listed paths it runs. `reads` (a set, when
     given) receives every env name the PARSED command words read whole (comments stripped; Codex #249 r8 B2), the only reads that count."""
@@ -564,18 +581,22 @@ def check_run(run, envnames, rows, reads=None, argpaths=None):
             errs.append("line %d: %s: the script path must be a plain relative literal (no variable, glob, quote or `..`)" % (n, line[:90])); continue
         if path not in rows:
             errs.append("line %d: %s: %s is not listed in .github/policy/chain-scripts.json" % (n, line[:90], path)); continue
-        aw = rows[path].get("arg_words")
-        if isinstance(aw, list):                # round 2 (4b): a wrapper's FIRST argument is one of its closed words
-            f0 = "".join(t for _k, t in words[2][1]) if len(words) > 2 and len(words[2][1]) == 1 and words[2][1][0][0] != "dq" else None
+        am, aw = rows[path].get("arg_map"), rows[path].get("arg_words")
+        if isinstance(am, dict):                # round 3 (2): the wrapper's line is EXACTLY `bash WRAPPER STEP TARGET`, STEP bound to its one TARGET
+            args = words[2:]
+            raw0, raw1 = (args[0][0], args[1][0]) if len(args) == 2 else (None, None)
+            if len(args) != 2 or am.get(raw0) != raw1 or any(len(a[1]) != 1 or a[1][0][0] != "lit" for a in args):
+                errs.append("line %d: %s: %s takes exactly STEP TARGET as plain words with TARGET the one path its arg_map binds to STEP (%s)" % (n, line[:90], path, ", ".join("%s %s" % kv for kv in sorted(am.items()))))
+        elif isinstance(aw, list):              # round 2 (4b): a wrapper's FIRST argument is one of its closed words
+            f0 = _literal_value(words[2][1]) if len(words) > 2 else None
             if f0 is None or f0 not in aw:
                 errs.append("line %d: %s: the first argument of %s must be one of its arg_words %s" % (n, line[:90], path, aw))
         for rawa, parts in words[2:]:
             e = _arg_error(parts, envnames)
-            if len(parts) == 1 and parts[0][0] != "dq":      # round 2 (4a): a literal that names a script or a path under bin/ is an exact listed row path
-                a = parts[0][1]
-                if (a.startswith(("/", "./", "../", "bin/")) or ".." in a.split("/") or "//" in a or a.endswith(SCRIPT_EXTS)) and a not in rows:
-                    errs.append("line %d: %s: argument %r names a script or a path under bin/ that is not an exact listed row path of chain-scripts.json" % (n, line[:90], a))
-            if argpaths is not None and len(parts) == 1 and parts[0][0] == "lit" and parts[0][1] in rows: argpaths.add(parts[0][1])
+            a = _literal_value(parts)       # round 3 (1): quote-only words are normalized BEFORE the path and reach rules
+            if a is not None and (a.startswith(("/", "./", "../", "bin/")) or ".." in a.split("/") or "//" in a or a.endswith(SCRIPT_EXTS)) and a not in rows:
+                errs.append("line %d: %s: argument %r names a script or a path under bin/ that is not an exact listed row path of chain-scripts.json" % (n, line[:90], a))
+            if argpaths is not None and a is not None and a in rows: argpaths.add(a)
             if e: errs.append("line %d: %s: %s" % (n, line[:90], e))
             elif len(parts) == 1 and parts[0][0] == "dq":
                 wm = re.fullmatch(r"\$(\w+)|\$\{(\w+)\}", parts[0][1])
