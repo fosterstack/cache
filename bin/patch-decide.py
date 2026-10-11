@@ -18,7 +18,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           image no longer reports); unknown or unreadable never counts as removed.
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import argparse, json, os, re, subprocess, sys
+import argparse, json, os, re, subprocess, sys, unicodedata
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
@@ -265,6 +265,39 @@ def _clean(s):
     return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", str(s)))
 
 
+def _clean_lines(s):
+    """_clean one line at a time: no redaction ever matches across a line break and merges two lines (Codex #300 r3, B1)"""
+    return "\n".join(_clean(ln) for ln in str(s).split("\n"))
+
+
+UNPRINTED = ("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn")
+
+
+def _oneline(s):
+    """s with every control (C0, DEL, C1), format, line or paragraph separator, surrogate, private-use or unassigned
+    character written as a \\uXXXX escape: one printed line, UTF-8 writable (Codex #300 r3, A1)"""
+    return "".join(("\\u%04x" % ord(c) if ord(c) <= 0xFFFF else "\\U%08x" % ord(c))
+                   if unicodedata.category(c) in UNPRINTED else c for c in str(s))
+
+
+# A value the VEX document supplies prints bare only when no renderer (CommonMark, GFM, GitHub's emoji, autolink and
+# commit-SHA filters) can show it as anything else: identifier characters starting with a letter or @, an underscore only
+# inside a word, no emoji-shortcode shape, no autolink, no SHA-like hex run (Codex #300 r3, B3). Anything else (a control
+# character, a space, Markdown or HTML, an empty name, text shaped like a position label) prints as its JSON string in
+# a code span: one line, shown literally by every renderer, decoding back to exactly that value (fail closed).
+BARE = re.compile(r"[A-Za-z@][A-Za-z0-9.:/@?=%+_-]*\Z")
+NOT_BARE = re.compile(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])|:[A-Za-z0-9_+-]+:|://|(?i:www)\.|"
+                      r"(?<![A-Za-z0-9])[0-9a-fA-F]{7,40}(?![A-Za-z0-9])")
+
+
+def _lit(v, before_colon=False):
+    """the printed form of a document-supplied value; before_colon: the notes print ':' right after it (a CVE name)"""
+    v = str(v)
+    if BARE.match(v) and not NOT_BARE.search(v + (":" if before_colon else "")):
+        return v
+    return "`%s`" % json.dumps(v, ensure_ascii=True).replace("`", "\\u0060")
+
+
 CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
 
 
@@ -301,34 +334,38 @@ def _check_entry(e):
 
 
 def _vex_line(v):
-    """the notes line of one VEX statement entry, before redaction (vex_changes checks the redacted lines are distinct)"""
+    """the notes line of one VEX statement entry, before redaction (vex_changes checks the redacted lines name one
+    statement each and are distinct); the CVE name prints as _lit, everything else is one line whatever a caller hands in"""
     return "- %s%s: %s (%s)%s" % (
-        v["cve"], " [products unreadable]" if v.get("products_unreadable")
-        else " [%s]" % ", ".join(v["products"]) if v.get("products") else "",
-        v["status"], v["change"], " — %s" % v["statement"] if v.get("statement") else "")
+        _lit(v["cve"], before_colon=True), " [products unreadable]" if v.get("products_unreadable")
+        else " [%s]" % _oneline(", ".join(v["products"])) if v.get("products") else "",
+        _oneline(v["status"]), _oneline(v["change"]), " — %s" % _oneline(v["statement"]) if v.get("statement") else "")
 
 
 def notes(version, fixes, vex_changes, behavior=()):
-    lines = ["## %s — patch release" % version, "", "### Fixes"]
+    lines = ["## %s — patch release" % _oneline(version), "", "### Fixes"]
     for f in fixes:
-        lines.append("- %s in %s: %s → %s (severity %s; variants: %s)" % (
-            f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))
+        lines.append(_oneline("- %s in %s: %s → %s (severity %s; variants: %s)" % (
+            f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or []))))
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
     stmts = [v for v in vex_changes if "document" not in v]
-    lines += [_vex_line(v) for v in stmts]
-    lines += ["- document fields changed (%s)%s" % (", ".join(v["document"]), "" if stmts else "; no statement changed")
+    vl = [_vex_line(v) for v in stmts]
+    if len({_clean(x) for x in vl}) != len(vl):     # every published statement line is its own (Codex #300 r3)
+        raise ValueError("VEX notes: two statement lines read alike")
+    lines += vl
+    lines += ["- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]), "" if stmts else "; no statement changed")
               for v in vex_changes if "document" in v]
     if not vex_changes:
         lines.append("- no change")
     for b in behavior:
         _check_entry(b)
     if behavior:
-        lines += ["", "### Behavior changes"] + ["- %s" % b for b in behavior]
+        lines += ["", "### Behavior changes"] + ["- %s" % _oneline(b) for b in behavior]
     else:
         lines += ["", "No behavior change: this release contains fixes only."]
-    return _clean("\n".join(lines)) + "\n"
+    return _clean_lines("\n".join(lines)) + "\n"
 
 
 def _precedence(tag):
@@ -447,12 +484,17 @@ def vex_changes(old_doc, new_doc):
     identifiers; a statement whose products is anything else is unpairable beyond step (1) and is named "products
     unreadable", never iterated (A3). Each statement of a CVE that has several is named by its products and by its own
     @id (unique in its document), else its position in the new document (the old one when removed) (A1); a statement is
-    named by its position instead whenever redaction would change its @id or its CVE name, or two notes lines would read
-    the same after redaction (r2, A1/B). Entries sort by content, not input order (B F3). A change to the document's own
-    fields (version, timestamp, author, ...) adds one {"document": [fields]} entry, last (advisor ruling on 0389 (d)).
-    A document the notes cannot read is refused with ValueError: no notes, no patch (B F4) — not an object, no statements
-    array, a statement that is not an object, has no vulnerability name or a status outside OpenVEX's four (r2, A6). This
-    is what the notes read, not a full OpenVEX schema check."""
+    named by its position instead whenever redaction would change its CVE name, its FINAL line (cleaned line by line, as
+    notes() prints it) no longer carries its label or CVE name verbatim, or two final lines read the same (r2, A1/B; r3);
+    a line that still names no single statement is refused (ValueError). Every value the document supplies (CVE name,
+    @id, product and identifier, field name) prints through _lit: bare identifier text, or a quoted JSON literal in a code
+    span, so every statement is exactly one line, Markdown renders it literally, and an @id never reads as a position
+    label (r3, A1/A2/B2/B3). An empty vulnerability name is schema-valid: read, printed "", named by position (r3, A3).
+    Entries sort by content, not input order (B F3). A change to the document's own fields (version, timestamp, author,
+    ...) adds one {"document": [fields]} entry, last (advisor ruling on 0389 (d)). A document the notes cannot read is
+    refused with ValueError: no notes, no patch (B F4) — not an object, no statements array, a statement that is not an
+    object, has no string vulnerability name or a status outside OpenVEX's four (r2, A6). This is what the notes read,
+    not a full OpenVEX schema check."""
     def canon(v):
         return json.dumps(v, sort_keys=True)
 
@@ -462,7 +504,7 @@ def vex_changes(old_doc, new_doc):
         out, ids = {}, {}
         for pos, s_ in enumerate(doc["statements"], 1):
             v_ = s_.get("vulnerability") if isinstance(s_, dict) else None
-            if not isinstance(v_, dict) or not isinstance(v_.get("name"), str) or not v_["name"]:
+            if not isinstance(v_, dict) or not isinstance(v_.get("name"), str):    # "" is schema-valid (r3, A3)
                 raise ValueError("VEX %s document: statement %d has no vulnerability name" % (side, pos))
             if not isinstance(s_.get("status"), str) or s_["status"] not in VEX_STATUS:
                 raise ValueError("VEX %s document: statement %d has no OpenVEX status" % (side, pos))
@@ -481,8 +523,8 @@ def vex_changes(old_doc, new_doc):
                                    or not all(k in VEX_ID_FORMS and isinstance(v, str) for k, v in idf.items())):
             return None
         if isinstance(c.get("@id"), str):
-            return c["@id"]
-        return " ".join(idf[k] for k in VEX_ID_FORMS if k in idf) if idf else None
+            return _lit(c["@id"])
+        return " ".join(_lit(idf[k]) for k in VEX_ID_FORMS if k in idf) if idf else None
 
     def products(s_):
         """(display labels, scope key or None when there is no scope), or None when products is present but unreadable"""
@@ -550,9 +592,9 @@ def vex_changes(old_doc, new_doc):
                 e["products_unreadable"] = True
             elif several:
                 e["products"] = prod[0]
-            if several:
-                sid = own_id(s_, side)
-                e["statement"] = ("statement %s" % sid if sid is not None
+            if several or cve == "":
+                sid = own_id(s_, side) if cve != "" else None
+                e["statement"] = ("statement %s" % _lit(sid) if sid is not None
                                   else "statement %d of the %s document" % (pos, side))
             return (e.get("products", []), "products_unreadable" in e, change, e["status"], canon(s_)), (e, pos, side)
 
@@ -562,23 +604,34 @@ def vex_changes(old_doc, new_doc):
             others = [k for k in fields if k != "status"]
             if "status" in fields:
                 found.append(entry(n, "new", "changed from %s" % o["status"]
-                                   + ("; also " + ", ".join(others) if others else "")))
+                                   + ("; also " + ", ".join(_lit(k) for k in others) if others else "")))
             elif fields:
-                found.append(entry(n, "new", "changed: " + ", ".join(fields)))
+                found.append(entry(n, "new", "changed: " + ", ".join(_lit(k) for k in fields)))
         found += [entry(x, "new", "added") for x in news] + [entry(x, "old", "removed") for x in olds]
         recs += [r for _, r in sorted(found, key=lambda f: f[0])]
 
-    # r2 (A1/B): the published lines are the redacted ones; each must still name exactly one statement. A label redaction
-    # would change, or a line that reads like another after redaction, is replaced by the statement's position, which is
-    # unique: a new-document statement is in at most one entry (changed or added), an old one only in a removed one.
+    # r2 (A1/B), r3: the published lines are the redacted ones, cleaned line by line exactly as notes() prints them; each
+    # must still name exactly one statement. A statement whose CVE name redaction would change, or whose FINAL line no
+    # longer carries its own label (or, unlabelled, its CVE name) verbatim, or whose final line reads like another, is
+    # named by its position, which is unique: a new-document statement is in at most one entry (changed or added), an
+    # old one only in a removed one; a position label ("statement N of the new document") never shares a form with an
+    # @id label, which is bare identifier text or a quoted literal (r3, A2/B2). Anything still unresolved is refused.
     def by_position(r):
         e, pos, side = r
         label = "statement %d of the %s document" % (pos, side)
         changed_ = e.get("statement") != label
         e["statement"] = label
         return changed_
+
+    def names_one(e):
+        fin, lab = _clean(_vex_line(e)), e.get("statement")
+        if lab:
+            return fin.endswith(" — " + lab)
+        name = "- " + _lit(e["cve"], before_colon=True)
+        return fin.startswith(name + ": ") or fin.startswith(name + " [")
     for r in recs:
-        if _clean(r[0]["cve"]) != r[0]["cve"] or _clean(r[0].get("statement", "")) != r[0].get("statement", ""):
+        name = _lit(r[0]["cve"], before_colon=True)
+        if _clean(name) != name or not names_one(r[0]):
             by_position(r)
     while True:
         seen = {}
@@ -586,6 +639,8 @@ def vex_changes(old_doc, new_doc):
             seen.setdefault(_clean(_vex_line(r[0])), []).append(r)
         if not [by_position(r) for rs in seen.values() if len(rs) > 1 for r in rs if by_position(r)]:
             break
+    if not all(names_one(r[0]) for r in recs) or any(len(rs) > 1 for rs in seen.values()):
+        raise ValueError("VEX notes: a statement line that names no single statement after redaction")
     out = [r[0] for r in recs]
     if old_doc is not None:     # advisor ruling (0389 (d)): a document-level change is a VEX change too, named by field
         doc_fields = sorted(k for k in (set(old_doc) | set(new_doc)) - {"statements"}
@@ -598,7 +653,7 @@ def vex_changes(old_doc, new_doc):
 def unpublished(entries, published_text):
     """Advisor 0135: an entry an earlier patch already published (any v* tag message, CHANGELOG.md) is not published
     again — the clear-and-changelog PR may not have merged when the next patch is decided."""
-    return [e for e in entries if ("- %s" % _clean(e)) not in published_text]
+    return [e for e in entries if ("- %s" % _clean(_oneline(e))) not in published_text]
 
 
 PATCH_HEAD = re.compile(r"^## (v\d+\.\d+\.\d+) — patch release$")
@@ -626,13 +681,13 @@ def tag_notes(raw):
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
         return None
     m = PATCH_HEAD.match(body.split("\n", 1)[0])
-    return _clean(body) if m and m.group(1) == tag else None
+    return _clean_lines(body) if m and m.group(1) == tag else None
 
 
 def changelog(notes_text, changelog_text, next_notes_text):
     """AC8 + advisor 0130: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
     entries these notes published — an entry added since stays)."""
-    notes_text = _clean(notes_text)
+    notes_text = _clean_lines(notes_text)
     title = "# Changelog\n"
     rest = (changelog_text or title)
     rest = rest[len(title):].lstrip("\n") if rest.startswith(title) else rest
@@ -644,7 +699,7 @@ def changelog(notes_text, changelog_text, next_notes_text):
             while j < len(lines) and lines[j].startswith("  ") and lines[j].strip():
                 j += 1
             entry = " ".join(ln.strip() for ln in lines[i:j])[2:]
-            if ("- %s" % _clean(entry)) in notes_text:
+            if ("- %s" % _clean(_oneline(entry))) in notes_text:
                 i = j
                 continue
         keep += lines[i:j]
