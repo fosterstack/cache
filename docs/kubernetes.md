@@ -550,10 +550,12 @@ certificate, stops the start with a message naming the variable and the path,
 before anything under the data directory is touched.
 
 Put the certificate in a Secret of type `kubernetes.io/tls` and mount it
-read-only:
+read-only. Both files must be readable by the container's non-root user
+(UID 65532 in the manifest above); the server makes no permission check of its
+own, and a Secret volume's default file mode (0644) is readable:
 
 ```sh
-kubectl -n fscache-ns create secret tls fscache-tls --cert=tls.crt --key=tls.key
+kubectl -n fscache-ns create secret tls fscache-server-tls --cert=tls.crt --key=tls.key
 ```
 
 Then add these lines to the Deployment above. Both probes switch to
@@ -586,7 +588,7 @@ Then add these lines to the Deployment above. Both probes switch to
       volumes:
         - name: tls
           secret:
-            secretName: fscache-tls
+            secretName: fscache-server-tls
 ```
 
 The certificate must name the host your clients connect to (for in-cluster

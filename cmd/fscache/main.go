@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -110,13 +111,13 @@ var x509KeyPair = tls.X509KeyPair
 // into the same kind of plain error, with no stack trace and no panic
 // value printed.
 func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
-	certPEM, err := os.ReadFile(certPath) // #nosec G304 -- the operator names this file in FSCACHE_TLS_CERT; reading it is the feature
+	certPEM, err := readTLSFile("FSCACHE_TLS_CERT", certPath)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q cannot be read: %w", certPath, err)
+		return tls.Certificate{}, err
 	}
-	keyPEM, err := os.ReadFile(keyPath) // #nosec G304 -- the operator names this file in FSCACHE_TLS_KEY; reading it is the feature
+	keyPEM, err := readTLSFile("FSCACHE_TLS_KEY", keyPath)
 	if err != nil {
-		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_KEY=%q cannot be read: %w", keyPath, err)
+		return tls.Certificate{}, err
 	}
 	defer func() {
 		if recover() != nil {
@@ -142,6 +143,29 @@ func loadKeyPair(certPath, keyPath string) (cert tls.Certificate, err error) {
 		return tls.Certificate{}, fmt.Errorf("FSCACHE_TLS_CERT=%q and FSCACHE_TLS_KEY=%q are not a usable pair: the private key does not match the certificate, or is of a type TLS cannot use", certPath, keyPath)
 	}
 	return cert, nil
+}
+
+// maxTLSFileBytes caps each TLS file read (1 MiB: room for a long chain).
+// A larger file is refused rather than read whole into memory.
+const maxTLSFileBytes = 1 << 20
+
+// readTLSFile reads the file the variable name points at, at most
+// maxTLSFileBytes of it. Errors name the variable and the path and carry
+// only the operating system's error (which names the path), never content.
+func readTLSFile(name, path string) ([]byte, error) {
+	f, err := os.Open(path) // #nosec G304 -- the operator names this file in FSCACHE_TLS_CERT or FSCACHE_TLS_KEY; reading it is the feature
+	if err != nil {
+		return nil, fmt.Errorf("%s=%q cannot be read: %w", name, path, err)
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, maxTLSFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s=%q cannot be read: %w", name, path, err)
+	}
+	if len(b) > maxTLSFileBytes {
+		return nil, fmt.Errorf("%s=%q is larger than %d bytes, the most the server reads", name, path, maxTLSFileBytes)
+	}
+	return b, nil
 }
 
 // firstPEMBlock returns the bytes of the first PEM block whose type want
@@ -481,6 +505,11 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	})
 
 	httpServer := server.NewHTTPServer(cfg.addr, handler, tlsCfg)
+	// Go's own server errors (TLS handshake failures and the like) go
+	// through the process logger at DEBUG, not as bare lines on stderr: they
+	// carry only client-supplied values, and a client can cause them at will,
+	// so at the default level a flood of them writes nothing.
+	httpServer.ErrorLog = slog.NewLogLogger(log.Handler(), slog.LevelDebug)
 
 	authNote := "disabled"
 	if cfg.username != "" {
