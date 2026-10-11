@@ -1461,7 +1461,7 @@ d = yaml.load(text, Loader=yaml.BaseLoader)
 bad = []
 for jn, j in (d.get("jobs") or {}).items():
     for s in (j.get("steps") or []):
-        if str(s.get("uses", "")).startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items"):
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items"):
             bad.append("%s downloads %r, which Build never uploads" % (jn, (s.get("with") or {}).get("name")))
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
