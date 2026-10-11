@@ -242,7 +242,13 @@ os.makedirs(out + "/" + image + "-sbom", exist_ok=True)
 open("%s/%s.digest" % (out, image), "w").write("sha256:%s\\n" % h("image|%s|%s|%s" % (image, sde, body)))
 open("%s/%s.manifests" % (out, image), "w").write("amd64 sha256:%s\\narm64 sha256:%s\\n"
         % (h("m-amd64|%s|%s" % (image, body)), h("m-arm64|%s|%s" % (image, body))))
-open("%s/%s.tar" % (out, image), "w").write("tar|" + image)
+# the OCI layout directory (PROPOSED/UNVERIFIED, cache P5): the descriptor of index.json is the digest recorded in <image>.digest
+blob = ("image|%s|%s|%s" % (image, sde, body)).encode()
+dg = hashlib.sha256(blob).hexdigest()
+os.makedirs("%s/%s/blobs/sha256" % (out, image), exist_ok=True)
+open("%s/%s/oci-layout" % (out, image), "w").write('{"imageLayoutVersion": "1.0.0"}')
+open("%s/%s/index.json" % (out, image), "w").write('{"schemaVersion": 2, "manifests": [{"digest": "sha256:%s"}]}' % dg)
+open("%s/%s/blobs/sha256/%s" % (out, image, dg), "wb").write(blob)
 open("%s/%s.full.lock.json" % (out, image), "w").write("lock|" + image)
 open("%s/%s-sbom/sbom.json" % (out, image), "w").write("sbom|" + image)
 '''

@@ -244,10 +244,44 @@ def read_bytes(directory, name, what=None):
         return f.read()
 
 
+def check_layout(images_dir, image, digest):
+    """The image's OCI layout directory out/<image>/ (PROPOSED/UNVERIFIED, cache P5): oci-layout 1.0.0, an index.json with exactly ONE descriptor that
+    is the digest Build records, and that blob present and hashing to its name. A docker-save tarball (manifest.json, no oci-layout) is not a layout:
+    pushing it changes the digest, pushing the layout directory does not."""
+    root = os.path.join(images_dir, image)
+    if os.path.islink(root) or not os.path.isdir(root):
+        refuse("build", "layout: %s is not an OCI layout directory (out/%s/)" % (image, image))
+    try:
+        with open(os.path.join(root, "oci-layout"), "rb") as f:
+            if strict_json(f.read()) != {"imageLayoutVersion": "1.0.0"}:
+                raise ValueError
+    except (OSError, ValueError):
+        refuse("build", "layout: %s has no oci-layout file of imageLayoutVersion 1.0.0 (a docker-save tarball is not a layout)" % image)
+    try:
+        with open(os.path.join(root, "index.json"), "rb") as f:
+            index = strict_json(f.read())
+        descriptors = index["manifests"]
+        if not isinstance(descriptors, list) or len(descriptors) != 1 or descriptors[0]["digest"] != digest:
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        refuse("build", "layout: %s index.json does not hold exactly one descriptor, the digest %s" % (image, digest))
+    blob = os.path.join(root, "blobs", "sha256", digest.split(":", 1)[1])
+    try:
+        with open(blob, "rb") as f:
+            ok = hashlib.sha256(f.read()).hexdigest() == digest.split(":", 1)[1]
+    except OSError:
+        ok = False
+    if os.path.islink(blob) or not ok:
+        refuse("build", "layout: %s blobs/sha256/<digest> is missing or does not hash to its name" % image)
+
+
 def image_items(images_dir):
     items = {}
     for image in IMAGES:
         items["image-" + image] = read_bytes(images_dir, image + ".digest").decode().strip()
+        if not DIGEST.fullmatch(items["image-" + image]):
+            refuse("build", "layout: %s.digest is not a sha256 digest" % image)
+        check_layout(images_dir, image, items["image-" + image])
         seen = {}
         for line in read_bytes(images_dir, image + ".manifests").decode().split("\n"):
             if line.strip():
