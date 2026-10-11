@@ -2702,8 +2702,8 @@ UNLISTED = [A + ' ; git -Cforeign status', A + ';git -Cforeign status', A + ' &&
             A + ' ; ls -la', A + ' ; git -C=foreign status', A + ' ; ls --all=x', 'if curl -fsS https://h.example.dev/a; then tar -xzf x; fi']
 GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
 GH_LISTED = [GHD + ' --pattern gh', GHD + ' -p gh', GHD + ' --dir gh', GHD + ' -D gh/out', GHD + ' --pattern "gh"', GHD + " -p 'gh*'", GHD + ' -p gh -D dist',
-             GHD + ' --pattern gh && echo done', GHD + ' -D dist ; git -C dist status']
-GH_UNLISTED = [GHD + ' -Ddist', GHD + ' -pa', GHD + ' -p a ; tar -xvf x', GHD + ' gh', GHD + ' --clobber gh release download v1', GHD + ' -p gh ; gh release download v1',
+             GHD + ' --pattern gh && echo done']
+GH_UNLISTED = [GHD + ' -D dist ; git -C dist status', GHD + ' -Ddist', GHD + ' -pa', GHD + ' -p a ; tar -xvf x', GHD + ' gh', GHD + ' --clobber gh release download v1', GHD + ' -p gh ; gh release download v1',
                GHD + ' -p gh ; xargs gh', GHD + ' ; bash -c gh', GHD + ' ; sh -c gh', GHD + ' ; env -i gh api x', GHD + ' ; sudo -u x gh release download v1',
                GHD + ' ; env GH_REPO=x gh', GHD + ' ; xargs gh', GHD + ' ; /usr/bin/gh release download v1', GHD + " ; bash -c 'gh release download v1'",
                GHD + ' ; gh api repos/o/r', GHD + ' ; echo --pattern gh', GHD + ' -p gh -R foreign/repo', GHD + ' --pattern gh --repo foreign/repo']
@@ -2742,6 +2742,89 @@ for line in REDIRECT:
         bad.append(("follows redirects", line))
 assert not bad, bad
 PYC7
+# Codex round 8 (acd2834): (A8-1, P2) a git fetch after global options (git -C dir, -c k=v, --git-dir, --work-tree) is a fetch the inventory names, and
+# a repo:self line holds no later git, curl or wget at all (the prefix is its only fetch); (A8-2, P3) a Python keyword argument's plain value is a number
+# (digits, optionally . digits), True, False, None or a dotted ASCII name, each keyword at most once; (B7-1, P3) a Python string element holds no quote
+# of either kind; (B7-2, P3) on a host line a double-quoted $ word is listed as the value of a gh option, as the notes say; (B7-3, P3) a Python NAME is
+# listed only as the FILE after "-o" or "--output", never after a cluster ending in o
+G8="$G0 -p a.json"
+for L in "$G8 ; git -C foreign fetch https://github.com/foreign/repo" "$G8 ; git fetch https://github.com/foreign/repo" "$G8 && git -C dist status" \
+         "$G8 ; curl https://github.com/other/repo/releases/download/v1.0.0/a" "$G8 ; curl -fsS -o x https://h.example.dev/a"; do
+  ghrefused "$L"
+done
+L8="curl -fsS $U0 ; git -C foreign fetch https://github.com/foreign/repo"
+one ifa8 "$FETCH$L8"$'\n' "$L8"
+CASE="AC19'' Codex A8 P2: a host line whose later git -C foreign fetch names a foreign repository (ruled for its curl only): exit 1"
+check test "$rc" -eq 1; check grep -q 'git clone or remote fetch' "$work/if.out"
+plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0\"], timeout=1.2.3)" 'Codex A8 P3 a keyword value Python cannot read'
+plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0'b\"])" 'Codex B7 P3 a quote of the other kind inside a list string'
+plainrefused "    r = subprocess.run([\"curl\", \"-fso\", out, \"$U0\"])" 'Codex B7 P3 a name after a cluster ending in o'
+L8g="curl -fsS $U0 ; gh api --method \"\$METHOD\" repos/o/r"
+one ifb8 "$FETCH$L8g"$'\n' "$L8g"
+CASE="AC19'' (0) Codex B7 P3: on a host line a double-quoted \$ word as the value of a gh option is listed: exit 0"
+check test "$rc" -eq 0
+CASE="AC19'' (0) Codex round 8: git fetches after global options, the repo:self line's later commands, Python plain values and strings, gh option values, unit"
+check python3 - "$chk" <<'PYC8'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+bad = []
+# A8-1 (a): the inventory names a git fetch, clone, pull, ls-remote, submodule or remote add/set-url whatever global options come before it
+R = 'https://github.com/foreign/repo'
+FETCHES = ['git -C foreign fetch ' + R, 'git -c http.extraHeader=x fetch ' + R, 'git --git-dir=x/.git fetch ' + R, 'git --git-dir x/.git fetch ' + R,
+           'git --work-tree w -C d pull %s main' % R, 'git -C d ls-remote ' + R, 'git -C d clone ' + R, 'git clone ' + R, 'git -C d submodule update --init',
+           'git -C d remote add f ' + R, 'git -C d remote set-url origin ' + R, 'git fetch --depth 1 ' + R, 'git -C d fetch git@github.com:foreign/repo.git',
+           'git --no-pager -C d archive --remote=%s HEAD' % R, 'git fetch -q ssh://git@h.example.dev/r', 'git -C d -c a=b --no-pager fetch --no-tags ' + R,
+           'echo ok; git -C foreign fetch ' + R, 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" ; git -C foreign fetch ' + R]
+NOFETCH = ['git -C d status', 'git -C foreign rev-parse HEAD', 'git -c gpg.format=x509 tag -s v1', 'git log --oneline -1', 'git fetch --no-tags origin main']
+for ln in FETCHES + NOFETCH:
+    f = {"bin/x.sh": "#!/bin/bash\n" + ln + "\n"}
+    got = [k for k, _, _ in ac.inv.unmeasured_occurrences(f) if k[1] == "a git clone or remote fetch"]
+    if bool(got) != (ln in FETCHES):
+        bad.append(("git fetch named by the inventory", ln, got))
+GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+# A8-1 (b): a repo:self line holds no later git (any subcommand, any wrapper), curl or wget: the prefix is the line's only fetch
+GH_LISTED = [GHD + ' -p a.json && echo done', GHD + ' -p a.json; sha256sum -c a.sha256', GHD + ' -D dist; ls dist']
+GH_UNLISTED = [GHD + ' ; git -C foreign fetch ' + R, GHD + ' ; git fetch ' + R, GHD + ' -D dist ; git -C dist status', GHD + ' ; git rev-parse HEAD',
+               GHD + ' ; env git fetch ' + R, GHD + ' ; xargs git', GHD + " ; bash -c 'git fetch x'", GHD + ' ; /usr/bin/git fetch ' + R, GHD + ' && command git status',
+               GHD + ' ; curl https://github.com/other/repo/releases/download/v1.0.0/a', GHD + ' ; curl -fsS -o x https://h.example.dev/a', GHD + ' || curl -fsS https://h.example.dev/a',
+               GHD + ' ; wget https://h.example.dev/a', GHD + ' ; if true; then git fetch %s; fi' % R, GHD + ' -p a.json | git hash-object --stdin']
+for line in GH_LISTED + GH_UNLISTED:
+    why = ac._unlisted(line, repo_self=True)
+    if (why is None) != (line in GH_LISTED):
+        bad.append(("repo:self", line, why))
+U = '"https://h.example.dev/a"'
+C = 'r = subprocess.run(["curl", "-fsS", %s]' % U
+# A8-2: a keyword argument's plain value: digits (optionally . digits), True, False, None, or a dotted ASCII name of non-keywords; each keyword once
+LISTED = [C + ', timeout=30)', C + ', timeout=1.5)', C + ', timeout=0)', C + ', check=True)', C + ', check=False)', C + ', stdout=None)',
+          C + ', stdout=sys.stderr)', C + ', stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)', C + ', capture_output=True, text=True)', C + ', check=True,)',
+          C + ' , timeout = 30 )', C + ', timeout=T)',
+          # B7-1 control: a string element of either delimiter without a quote inside
+          'r = subprocess.run(["curl", \'-fsS\', \'https://h.example.dev/a\'])',
+          # B7-3 controls: a NAME after "-o" or "--output" (any listed string prefix)
+          'r = subprocess.run(["curl", "-o", out, %s])' % U, 'r = subprocess.run(["curl", "--output", out, %s])' % U, 'r = subprocess.run(["curl", r"-o", out, %s])' % U,
+          'r = subprocess.run(["curl", "-fso", "x", %s])' % U,
+          # B7-2: on a host line a double-quoted $ word is the value of a gh option
+          'curl -fsS https://h.example.dev/a ; gh api --method "$METHOD"', 'curl -fsS https://h.example.dev/a ; gh api -X "$METHOD" repos/o/r',
+          'curl -fsS https://h.example.dev/a && gh release view --json "${FIELDS}"']
+UNLISTED = [C + ', timeout=1.2.3)', C + ', timeout=.)', C + ', timeout=1.)', C + ', timeout=.5)', C + ', check=class)', C + ', check=lambda)', C + ', timeout=010)',
+            C + ', stdout=sys.)', C + ', stdout=.x)', C + ', stdout=sys..x)', C + ', stdout=x.class)', C + ', stdout=True.x)', C + ', stdout=x.None)', C + ', timeout=1e3)',
+            C + ', timeout=-1)', C + ', timeout=1_0)', C + ', check=Ture()', C + ', timeout=30, timeout=31)', C + ', check=True, check=True)', C + ', timeout=)',
+            C + ', ,timeout=1)', C + ', timeout=1,,)', C + ', timeout=é)', C + ', timeout=x²)',
+            # B7-1: a quote of the other kind inside a string element
+            'r = subprocess.run(["curl", "https://h.example.dev/a\'b"])', 'r = subprocess.run(["curl", \'https://h.example.dev/a"b\'])',
+            'r = subprocess.run(["curl", "-fsS", "x\'y", %s])' % U, 'r = subprocess.run(["curl", "-o", "a\'b", %s])' % U,
+            # B7-3: a NAME after anything but "-o" or "--output"
+            'r = subprocess.run(["curl", "-fso", out, %s])' % U, 'r = subprocess.run(["curl", "-so", out, %s])' % U, 'r = subprocess.run(["curl", "-Lo", out, %s])' % U,
+            'r = subprocess.run(["curl", "-fsSLo", out, %s])' % U, 'r = subprocess.run(["curl", "--retry", n, %s])' % U, 'r = subprocess.run(["curl", "--max-time", n, %s])' % U,
+            # B7-2 controls: a $ word is still refused as a command, after a non-option, unquoted, or for a command other than gh
+            'curl -fsS https://h.example.dev/a ; gh api "$P"', 'curl -fsS https://h.example.dev/a ; gh api --method $METHOD', 'curl -fsS https://h.example.dev/a ; tar -f "$F"',
+            'curl -fsS https://h.example.dev/a ; "$GH" api --method x', 'curl -fsS https://h.example.dev/a ; gh api --method "-$X"']
+for line in LISTED + UNLISTED:
+    why = ac._unlisted(line)
+    if (why is None) != (line in LISTED):
+        bad.append(("host", line, why))
+assert not bad, bad
+PYC8
 # (3) the verifier line is matched against PHYSICAL lines of a literal-block run: (|, |-, |+) of exactly one step, never a parsed value (outbox 4a R1-R6)
 VC='cosign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out'
 vwcase() { # FILE TEXT EXPECTED-RC WHY
