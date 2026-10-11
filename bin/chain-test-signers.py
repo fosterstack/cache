@@ -410,7 +410,8 @@ def _artifact_path_error(p, rows, download):
     for ln in p.splitlines():
         ln = ln.strip()
         if not ln: continue
-        if re.search(r"[$`*?\[{]|\.\.", ln) or ln.startswith("/") or ln in (".", "./"): return "path %r is not a plain relative literal" % ln
+        # final batch R-e: a plain relative literal of [A-Za-z0-9_./-] only (no ~ % $ ` * ? [ { or anything else), no .., no leading /
+        if not re.fullmatch(r"[A-Za-z0-9_./-]+", ln) or ".." in ln.split("/") or ln.startswith("/") or ln in (".", "./"): return "path %r is not a plain relative literal" % ln
         q = ln.rstrip("/")
         if download:
             if q == "bin" or q.startswith("bin/") or q.startswith(".github") or q.startswith("./"):
