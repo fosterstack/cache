@@ -221,6 +221,8 @@ mappings:
       - { type: go-test, ref: "internal/platforms:TestReleaseConfigBuildsOnlyLinux" }
       - { type: go-test, ref: "internal/platforms:TestDocsClaimNoDarwinOrWindowsBinary" }
       - { type: go-test, ref: "internal/platforms:TestNextReleaseNotesSayLinuxOnly" }
+      - { type: go-test, ref: "internal/platforms:TestReleaseConfigCheckRefusesMutants" }
+      - { type: go-test, ref: "internal/platforms:TestNotScannedListIsCurrent" }
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: archive set asserted, linux/amd64 binaries executed (a frozen legacy stage file: its six-archive count is rewritten to the four Linux archives by the release-chain pull request that replaces it)" }
   - ac: REQ-PLAT-003-AC1
     evidence:
