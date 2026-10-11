@@ -32,7 +32,7 @@ protocol (a plain content-addressed `GET`/`PUT` over HTTP) and the [Apache
 Maven Build Cache Extension][maven-cache]'s remote HTTP mode
 (`GET`/`PUT`/`HEAD`) — same server, same core. The Gradle path is
 acceptance-tested against a real multi-module build in CI, and so is the Maven
-path: a real multi-module Maven project with the extension (versions 1.2.0 and 1.2.3 <!-- pinned: upstream -->)
+path: a real multi-module Maven project with the extension (versions 1.2.0 and 1.2.3) <!-- pinned: upstream -->
 restores its second build from the remote cache with byte-identical jars,
 and wrong or missing credentials fail the documented way. The Maven suite is a
 release-blocking check.
@@ -224,7 +224,7 @@ docker run --rm -it --network=container:<name> --pid=container:<name> \
 # inside it: apk add curl procps, then curl http://127.0.0.1:8080/healthz
 ```
 
-What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47 <!-- pinned: upstream -->) gave a
+What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47) gave a <!-- pinned: upstream -->
 root shell on a running `fscache` container; the plain-Docker command above
 reached `/healthz` (HTTP 200) on `127.0.0.1:8080` and listed `fscache` as PID 1;
 `wolfi-base` runs as root and `apk add curl` works in it; `busybox:1.37` run as user 65532 (as the pod's security context would) read `/healthz` with `wget` and listed `fscache`. The tool images in the

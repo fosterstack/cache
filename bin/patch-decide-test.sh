@@ -521,7 +521,11 @@ def linux_only_ok(text):
     ents = P.behavior_entries(text)
     exact = [e for e in ents if e.startswith(LO_SENT) and e.endswith(LO_CITE)]
     named = [e for e in ents if re.search(r"(?i)mac\s?os|windows", e)]
-    return len(exact) <= 1 and named == exact and " ".join(text.split()).count(LO_SENT) == len(exact)
+    # Codex #293 r6 B6: mentions are counted in the whole text with the Markdown marks removed (as the Go check reads
+    # it), so an emphasized paragraph counts; the exact entries carry the only platform names (two per sentence)
+    plain = " ".join(re.sub(r"[*_`~\[\]\\]", "", text).split())
+    return (len(exact) <= 1 and named == exact and plain.count(LO_SENT) == len(exact)
+            and len(re.findall(r"(?i)mac\s?os|windows", plain)) == 2 * len(exact))
 check("0390 the Linux-only entry, while present, cites advisor 0390", real_err is None and linux_only_ok(real_nrn), real_ents)
 # Codex #293 r4 B2: after the entry is published, the release flow's changelog step removes it from the notes; the
 # cleared notes still pass the validator and the Linux-only assertion (it applies to the entry only while present)

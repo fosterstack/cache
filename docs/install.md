@@ -20,7 +20,7 @@ Every release builds all of these, from the same source in the same CI run.
 
 **FIPS builds**: `fscache-fips_X.Y.Z_linux_amd64.tar.gz` and
 `fscache-fips_X.Y.Z_linux_arm64.tar.gz`. The `-fips` variant is the same
-source built with `GOFIPS140=v1.0.0` <!-- pinned: upstream -->, selecting Go's CMVP FIPS 140-3
+source built with `GOFIPS140=v1.0.0`, selecting Go's CMVP FIPS 140-3 <!-- pinned: upstream -->
 validated cryptographic module (cert #5247).
 
 The FIPS build says so at startup, so the property is observable rather than
