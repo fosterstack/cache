@@ -169,7 +169,7 @@ jobs:
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"
               skopeo copy --override-arch "${arch}" --override-os linux \
-                "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}"
+                "oci:/tmp/oci/${v}" "docker-daemon:${ref}"
               echo "${ref}" >> /tmp/refs.txt
             done
           done

@@ -64,7 +64,7 @@ jobs:
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
               grype "docker:${ref}" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
                 || echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
@@ -194,7 +194,7 @@ jobs:
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
               docker scout sbom --format json "local://${ref}" > "${d}/sbom.json" \
                 && ./bin/scout-vex-scan.sh "${ref}" .vex/fosterstack-cache.openvex.json "${d}/cves.json" \
                 || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
@@ -301,7 +301,7 @@ jobs:
           for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
               inspector-sbomgen container --image "${ref}" --outfile "${d}/sbom.cdx.json" --disable-progress-bar \
                 && aws inspector-scan scan-sbom --sbom "file://${d}/sbom.cdx.json" --output-format CYCLONE_DX_1_5 > "${d}/scan.json" \
                 || echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"
@@ -349,7 +349,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
           for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
-            skopeo copy --override-arch amd64 --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
+            skopeo copy --override-arch amd64 --override-os linux "oci:/tmp/oci/${v}" "docker-daemon:${ref}" || continue
             if gcloud artifacts docker images scan "${ref}" --additional-package-types=GO --format=json --log-http \
                  > "${d}/scan.json" 2> "${d}/http.log"; then
               python3 bin/panel.py google-packages "${d}/http.log" > "${d}/packages.json"
@@ -457,11 +457,11 @@ jobs:
           import json, subprocess, os
           digs = {}
           for v in ("production", "fips"):
-              oci = "/tmp/oci/%s.tar" % v
+              oci = "/tmp/oci/%s" % v
               if not os.path.exists(oci):
                   continue
               ref = "ghcr.io/fosterstack/cache:cand-%s" % v
-              subprocess.run(["skopeo", "copy", "oci-archive:%s" % oci, "docker-daemon:%s" % ref], check=False)
+              subprocess.run(["skopeo", "copy", "oci:%s" % oci, "docker-daemon:%s" % ref], check=False)
               d = subprocess.run(["skopeo", "inspect", "--format", "{{.Digest}}", "docker-daemon:%s" % ref],
                                  capture_output=True, text=True).stdout.strip()
               if d:
