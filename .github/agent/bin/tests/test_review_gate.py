@@ -1133,7 +1133,7 @@ class FreeText(unittest.TestCase):
     lists or a fixed hex form; change, label and residuals are not permitted fields (residuals live in the pull request
     body and the outbox, never in the machine record)."""
 
-    FORMER_IDS = ("pr210", "pr:210", "0317", "0350", "entry pr210 applies", "deadbeef" * 5, "abcdef" * 11,
+    FORMER_IDS = ("pr210", "pr:210", "0317", "0350", "entry pr210 applies", "deadbeef" * 4, "abcdef" * 11,
                   "plain words", "")
 
     def test_change_label_and_residuals_are_not_permitted_fields(self):
@@ -1152,7 +1152,7 @@ class FreeText(unittest.TestCase):
     def test_the_former_allow_list_id_pr210_never_clears_through_main(self):
         c = CliRepo(); c.start(self)
         c.change(".github/agent/bin/x.py", "b\n")
-        for res in (["pr210"], ["pr:210"], ["entry pr210 applies"], ["deadbeef" * 5]):
+        for res in (["pr210"], ["pr:210"], ["entry pr210 applies"], ["deadbeef" * 5], ["deadbeef" * 8]):
             c.record(lambda t, res=res: dict(good(t), residuals=res))
             rc, out, err = run_main_utf8("--base", c.base, "--head", "HEAD")
             self.assertEqual(rc, 1, (res, out, err))
@@ -1507,13 +1507,13 @@ class TreeHash(unittest.TestCase):
         self.assertIsNone(G.legacy_tree_hash(b))                              # a newline in a path: no legacy name
 
     def test_no_legacy_name_for_a_path_with_a_control_character_or_not_utf_8(self):
-        for bad in (b"a\nb", b"a\rb", b"a\x1bb", b"a\x7fb", b"a\x01b", b"\xff", b"caf\xc3"):
+        for bad in (b"a\nb", b"a\rb", b"a\x1bb", b"a\x7fb", b"a\x01b", b"a\tb", b"\xff", b"caf\xc3"):
             plumb("reset", "-q", "--hard", self.A)
             index_commit({b".github/agent/bin/" + bad: b"x\n"})
             self.assertIsNone(G.legacy_tree_hash("HEAD"), bad)
             self.assertRegex(G.tree_hash("HEAD"), "^[0-9a-f]{64}$")
         plumb("reset", "-q", "--hard", self.A)
-        index_commit({".github/agent/bin/café x.py".encode(): b"x\n"})        # plain UTF-8: named as before
+        index_commit({".github/agent/bin/caf\u00e9 x.py".encode(): b"x\n"})        # plain UTF-8: named as before
         self.assertEqual(G.legacy_tree_hash("HEAD"), old_gate_hash("HEAD"))
 
     def test_a_merged_v1_record_does_not_clear_a_tree_that_only_shares_its_legacy_hash(self):
@@ -1574,7 +1574,7 @@ class ControlSafeDiagnostics(unittest.TestCase):
     def test_say_escapes_every_control_character_and_bounds_the_line(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            G._say("a\nb\rc\x1bd\x7fe\x00f\tgéh i")
+            G._say("a\nb\rc\x1bd\x7fe\x00f\tg\u00e9h\u2028i")
         self.assertEqual(out.getvalue(), "a\\nb\\rc\\x1bd\\x7fe\\x00f\\tg\\xe9h\\u2028i\n")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
