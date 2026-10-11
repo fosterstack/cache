@@ -1120,6 +1120,8 @@ def scan_script(path, text, row, rows, base):
                 add("deny", w, "%s: names the command %r by a pattern that could match a denied command (a path or pattern: name it bare)" % (path, w))
             if "/" not in n and is_deny_token(w) and w not in tools:     # the reader's NORMALIZED command word (\curl, cu""rl, c''url): whole command text
                 add("deny", span, "%s: names the command %r, which is not in this script's `tools` list" % (path, w))
+            if w.startswith(("/", "$(..)", "`..`")):         # round 4 (10): minimal: an absolute path or a substitution as the command word (a bare "$x" stays a stated limit)
+                add("script-name", span, "%s: %r is a command word that is an absolute path or built at run time: run time or absolute, it is not judged (name it bare or by an exact listed path)" % (path, w))
             kind = family_kind(name)
             po = program_option(name, c.operands)
             if po is not None:
