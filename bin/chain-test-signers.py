@@ -51,13 +51,15 @@ def load_table(path=None):
 def strip_line(l):
     if l.lstrip().startswith("#"):
         return ""
-    sq = dq = False
+    sq = dq = esc = prev_ws = False
     for i, ch in enumerate(l):
-        if ch == "\\": continue
+        if esc: esc = False; prev_ws = False; continue         # round 3 (8): a backslash outside single quotes escapes the next character
+        if ch == "\\" and not sq: esc = True; prev_ws = False; continue
         if ch == "'" and not dq: sq = not sq
         elif ch == '"' and not sq: dq = not dq
-        elif ch == "#" and not sq and not dq and i > 0 and l[i - 1].isspace():
+        elif ch == "#" and not sq and not dq and i > 0 and prev_ws:
             return l[:i]
+        prev_ws = ch.isspace()
     return l                                  # unbalanced quotes: do not guess where a comment starts
 
 def strip(text):
@@ -88,7 +90,7 @@ def yload(text):
 def logical(text):
     """Join backslash-newline continuations exactly as bash does: the two characters are removed and NOTHING is inserted
     (Sonnet #249: `cos\\<newline>ign sign` is `cosign sign` to bash; joining with a space would hide it from the signer scan)."""
-    return text.replace("\\\n", "")
+    return re.sub(r"(\\+)\n", lambda m: m.group(1)[:-1] if len(m.group(1)) % 2 else m.group(0), text)      # round 3 (8): only an ODD run of backslashes escapes the newline
 
 STEP_START = re.compile(r"^\s*-\s")
 FLAG_START = re.compile(r"^\s*--?[A-Za-z]")
