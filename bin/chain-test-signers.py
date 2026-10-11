@@ -205,8 +205,9 @@ FORBID_ENV = re.compile(r"(?:GIT.*|GITHUB.*|RUNNER.*|NODE.*|PYTHON.*|LD_.*|BASH_
                         re.IGNORECASE | re.DOTALL)
 SIGNS = (False, "provenance", "other")
 # PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
-# Round 2 (2): the ONE shape a pinned step may have (REQ-CHAIN-004-AC2): echo "NAME=$(jq -c . FILE)" >> "$GITHUB_OUTPUT"
-PINNED_SHAPE = re.compile(r'echo "[a-z][a-z0-9_]*=\$\(jq -c \. ([A-Za-z0-9_][A-Za-z0-9_./-]*)\)" >> "\$GITHUB_OUTPUT"')
+# Round 3 (5): the ONE pinned step REQ-CHAIN-004-AC2 ratifies, as an exact tuple (file, job, id) -> run text. An entry for any other tuple or text is
+# an error until a later reviewed change adds it HERE.
+PINNED_ALLOWED = {(".github/workflows/stage-build.yml", "assemble", "digests"): 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'}
 EXC_RULES = ("launcher", "evaluator", "deny", "script-name", "witness-target")
 # PR 1b (B): the value an AMBIENT env name may carry: one whole plain expression (the job token, a workflow input or a matrix key) or a
 # plain literal; never a secret, a glued expression or a substitution
@@ -457,9 +458,8 @@ def load_scripts(base):
                 errs.append("chain-scripts.json: pinned_steps job/id %r/%r must be plain names" % (j, i)); continue
             if not run.strip() or run != run.strip() or any(not (" " <= c <= "~") for c in run):
                 errs.append("chain-scripts.json: pinned_steps %s %s %s: run must be one line of printable ASCII with no edge space" % (f, j, i)); continue
-            pm = PINNED_SHAPE.fullmatch(run)
-            if not pm or ".." in pm.group(1).split("/") or "//" in pm.group(1):
-                errs.append("chain-scripts.json: pinned_steps %s %s %s: run must be exactly echo \"NAME=$(jq -c . FILE)\" >> \"$GITHUB_OUTPUT\" (NAME [a-z][a-z0-9_]*, FILE a plain relative path with no ..)" % (f, j, i)); continue
+            if PINNED_ALLOWED.get((f, j, i)) != run:
+                errs.append("chain-scripts.json: pinned_steps %s %s %s: only the ratified step is allowed (%s)" % (f, j, i, "; ".join("%s %s %s" % k for k in PINNED_ALLOWED))); continue
             if not why.strip():
                 errs.append("chain-scripts.json: pinned_steps %s %s %s has no reason (why)" % (f, j, i)); continue
             if (f, j, i) in env_names.pinned:
@@ -670,7 +670,7 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
             if pin is not None:
                 # round 1 (5), a REVIEWED PINNED STEP: exactly name/id/run, and the run text equal to the entry's; nothing else about it is relaxed
                 found.add((full, jn, s.get("id")))
-                if set(s) - {"name", "id", "run"}: errs.append("%s: pinned step %r has keys %s; a pinned step has only name, id and run" % (pre, s.get("id"), sorted(set(s) - {"name", "id", "run"})))
+                if set(s) != {"name", "id", "run"}: errs.append("%s: pinned step %r has keys %s; a pinned step has exactly name, id and run" % (pre, s.get("id"), sorted(s)))
                 elif s.get("run") != pin["run"]: errs.append("%s: pinned step %r has a run text that differs from its pinned_steps entry" % (pre, s.get("id")))
                 continue
             nm = s.get("name") or str(s.get("run") or s.get("uses") or "").strip().splitlines()[0][:40]
