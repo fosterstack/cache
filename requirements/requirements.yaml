@@ -474,8 +474,8 @@ requirements:
         status: approved
       - id: REQ-TLS-001-AC8
         given: a starting server
-        when: the first log line is emitted
-        then: it carries tls = enabled or disabled beside auth and fips140. This extends REQ-OBS-004-AC1, whose field list is additive ("contains")
+        when: 'the startup log record ("fscache: starting") is emitted'
+        then: it carries tls = enabled or disabled beside auth and fips140. Other records (an unknown-variable warning, a reconcile warning) may come before it. This extends REQ-OBS-004-AC1, whose field list is additive ("contains")
         verification: { method: component, release_blocking: false }
         status: approved
       - id: REQ-TLS-001-AC9
