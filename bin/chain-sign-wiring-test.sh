@@ -3315,25 +3315,27 @@ PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
 
-# ---- Codex A r2 blocker 4 (advisor): ONE actions/setup-go allowance, only in stage-build.yml job apk, before the admission step ----------------------
-# the stage grammar run on the REAL stage-build.yml (and on edited copies of it): the pinned step is accepted in its one place and refused anywhere else
+# ---- Codex A r2 blocker 4 / r3 F4 (advisor): NO actions/setup-go anywhere; Go comes from the checksum-pinned `bash bin/install-scanner.sh go` line -------------
+# the stage grammar run on the REAL stage-build.yml (and on edited copies): the installer line is accepted, every use of setup-go is refused
 cat > "$work/setupgo.py" <<'PY'
 import copy, importlib.util, os, sys, yaml
 root = os.environ["CHAIN_ROOT"]
 spec = importlib.util.spec_from_file_location("cts", root + "/bin/chain-test-signers.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 rows, errs, names = m.load_scripts(root)
-GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0"
+GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0"      # the digest the previous round allowed: now refused like any other action
 def load(f): return yaml.load(open(os.path.join(root, ".github/workflows", f)).read(), Loader=yaml.BaseLoader)
 def run(f, d):
     e, _ = m.stage_grammar(f, d, rows, names, ".github/workflows/" + f)
-    return [x for x in e if "setup-go" in x]
+    return [x for x in e if "setup-go" in x or "install-scanner" in x]
 def step(**kw): return dict({"uses": GO, "with": {"go-version-file": "go.mod", "cache": "false"}}, **kw)
 out = []
 def case(label, want_bad, got):
     out.append((label, bool(got) == want_bad, got[:1]))
 b = load("stage-build.yml")
-has = any("setup-go" in str(x.get("uses")) for x in b["jobs"]["apk"]["steps"])
-case("the real stage-build.yml: the pinned setup-go step in job apk before the Witness steps is present and accepted", False, run("stage-build.yml", b) + ([] if has else ["the step is missing"]))
+has = any(str(x.get("run", "")).strip() == "bash bin/install-scanner.sh go" for x in b["jobs"]["apk"]["steps"])
+none = not any("setup-go" in str(x.get("uses")) for j in b["jobs"].values() for x in j["steps"])
+case("the real stage-build.yml: the checksum-pinned `bash bin/install-scanner.sh go` line is present, accepted, and no setup-go is used", False,
+     run("stage-build.yml", b) + ([] if has and none else ["the installer line is missing or setup-go is used"]))
 def mut(f, edit):
     d = copy.deepcopy(load(f)); edit(d); return d
 def apk(d): return d["jobs"]["apk"]["steps"]
@@ -3341,6 +3343,11 @@ def go_index(d):
     for i, s in enumerate(apk(d)):
         if "setup-go" in str(s.get("uses")): return i
     apk(d).insert(2, step()); return 2      # the file has none yet: the mutation cases then judge the step they add, so a missing allowance fails every case
+def plain(d):
+    s = apk(d)
+    s[:] = [x for x in s if "setup-go" not in str(x.get("uses"))]; s.insert(2, step())
+case("the previous round's allowance, exactly (pinned digest, go-version-file go.mod, cache false, before the Witness step) is now refused", True, run("stage-build.yml", mut("stage-build.yml", plain)))
+case("the same exact step with a version comment in a stage-reproducibility.yml apk job is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["apk"]["steps"].insert(2, step()))))
 case("a with: key besides the two is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version": "1.20"}))))
 case("cache: true is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"cache": "true"}))))
 case("another go-version-file is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version-file": "x/go.mod"}))))
@@ -3362,7 +3369,7 @@ while IFS= read -r l; do
   case "$l" in ok*) pass=$((pass + 1)); echo "$l";; *) failn=$((failn + 1)); echo "$l";; esac
 done < <(python3 "$work/setupgo.py" 2>&1)
 
-EXPECT=1327
+EXPECT=1329
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

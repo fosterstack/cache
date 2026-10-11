@@ -316,7 +316,7 @@ run_admit() { # run_admit [ENV=VAL...]  -> sets RC; stderr in $W/c/err, stdout i
   (cd "$W/c/repo" && env GITHUB_REF=refs/tags/v0.3.0 GITHUB_REF_NAME=v0.3.0 GITHUB_SHA="$sha" GITHUB_REPOSITORY=fosterstack/cache GITHUB_RUN_ID=1 \
       GITHUB_RUN_ATTEMPT=1 \
      GH_TOKEN=SENTINEL-GH-TOKEN GH_FIXTURES="$W/c/gh" FAKE_LOG="$W/c/calls.log" FAKE_BUILDINFO="$W/buildinfo.txt" PATH="$FB:$PATH" "$@" \
-     python3 "$BA" run --out admission.json > "$W/c/out" 2> "$W/c/err") || RC=$?
+     python3 "$BA" run --out admission.json ${RUN_GO_ARG-"--go"} ${RUN_GO_ARG-"$FB/go"} > "$W/c/out" 2> "$W/c/err") || RC=$?
 }
 expect_ok() { n_cases=$((n_cases + 1)); if [ ! -f "$BA" ]; then bad "$1 (bin/build-admit.py does not exist: RED)"; return; fi
   if grep -q Traceback "$W/c/err" 2> /dev/null; then bad "$1 -> a Python traceback is a crash"; return; fi
@@ -602,21 +602,46 @@ fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse
 fresh;
 run_admit FAKE_GO_RC=1;
 expect_refuse "AC4 a baseline that fails the requirements tool's freeze check is refused" baseline freeze
-# Codex A r2 blocker 4: a runner whose Go is older than go.mod. With GOTOOLCHAIN=local the tool cannot switch, so the freeze check fails and admission is
-# refused naming the cause; the stage installs the go.mod toolchain (actions/setup-go, judged by the stage grammar) so this never happens on the chain
-fresh;
-run_admit FAKE_GO_RC=1 "FAKE_GO_MSG=go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)";
+# Codex A r2 blocker 4 / r3 F4: admission's freeze check runs the PINNED Go at its fixed path (`bash bin/install-scanner.sh go` puts it there), never the runner's
+# own `go` on PATH, which may be older than go.mod. GOTOOLCHAIN=local stays: no toolchain download.
+grep -q 'GO_BIN = "/usr/local/bin/fscache-go/bin/go"' "$BA" 2> /dev/null && ok "AC4 the freeze check's Go is the fixed path /usr/local/bin/fscache-go/bin/go (the installer's output)" || bad "AC4 build-admit.py has no fixed GO_BIN path"
+PINNED="$W/pinned/fscache-go/bin"; mkdir -p "$PINNED"
+cat > "$PINNED/go" <<'EOF'
+#!/usr/bin/env bash
+echo "PINNED-GO $*" >> "${FAKE_LOG:-/dev/null}"
+echo "GOTOOLCHAIN=${GOTOOLCHAIN:-unset}" >> "${FAKE_LOG:-/dev/null}"
+exit "${FAKE_GO_RC:-0}"
+EOF
+chmod +x "$PINNED/go"
+cat > "$FB/go" <<'EOF'
+#!/usr/bin/env bash
+echo "PATH-GO $*" >> "${FAKE_LOG:-/dev/null}"
+echo "GOTOOLCHAIN=${GOTOOLCHAIN:-unset}" >> "${FAKE_LOG:-/dev/null}"
+echo "go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)" >&2
+exit 1
+EOF
+chmod +x "$FB/go"
+fresh; RUN_GO_ARG= ; run_admit
 n_cases=$((n_cases + 1))
-if [ -f "$BA" ] && [ "$RC" = 1 ] && grep -q '^admission refused at baseline: ' < <(head -1 "$W/c/err") && grep -q 'go.mod requires go' "$W/c/err" \
-   && ! grep -q 'GOTOOLCHAIN=auto' "$W/c/calls.log" && ! grep -q Traceback "$W/c/err" && [ ! -e "$W/c/repo/admission.json" ]; then
-  ok "AC4 a runner Go older than go.mod fails admission at baseline, with GOTOOLCHAIN=local and no toolchain download"
-else bad "AC4 old runner Go: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
-fresh;
-run_admit;
-if grep -q 'go -C tools/requirements run . verify-freeze v0.3.0' "$W/c/calls.log" 2> /dev/null && grep -q 'GOTOOLCHAIN=local' "$W/c/calls.log";
-then ok "AC4 the freeze check is exactly go -C tools/requirements run . verify-freeze <tag> with GOTOOLCHAIN=local";
-else bad "AC4 the freeze check call is not the pinned one: $(grep -E 'go |GOTOOLCHAIN' "$W/c/calls.log" 2> /dev/null | head -3 | tr '\n' ' ')";
-fi
+if [ -f "$BA" ] && [ "$RC" = 2 ] && grep -q 'fscache-go' "$W/c/err" && ! grep -q 'PATH-GO' "$W/c/calls.log" 2> /dev/null; then
+  ok "AC4 with no pinned Go at the fixed path admission stops with an environment error and does not fall back to the runner's go"
+else bad "AC4 no pinned go: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
+unset RUN_GO_ARG
+fresh
+run_admit; n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && [ "$RC" = 1 ] && grep -q '^admission refused at baseline: ' < <(head -1 "$W/c/err") && grep -q 'go.mod requires go' "$W/c/err" && grep -q 'PATH-GO' "$W/c/calls.log"; then
+  ok "AC4 CONTROL: a runner Go older than go.mod, if it were used, fails the freeze check (this is what the pinned Go prevents)"
+else bad "AC4 control: exit $RC"; fi
+fresh
+run_admit_pinned() { local sha; sha=$(git -C "$W/c/repo" rev-parse HEAD); RC=0
+  (cd "$W/c/repo" && env GITHUB_REF=refs/tags/v0.3.0 GITHUB_REF_NAME=v0.3.0 GITHUB_SHA="$sha" GITHUB_REPOSITORY=fosterstack/cache GITHUB_RUN_ID=1 GITHUB_RUN_ATTEMPT=1 \
+     GH_TOKEN=SENTINEL-GH-TOKEN GH_FIXTURES="$W/c/gh" FAKE_LOG="$W/c/calls.log" FAKE_BUILDINFO="$W/buildinfo.txt" PATH="$FB:$PATH" "$@" \
+     python3 "$BA" run --out admission.json --go "$PINNED/go" > "$W/c/out" 2> "$W/c/err") || RC=$?; }
+run_admit_pinned; n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && grep -q 'PINNED-GO -C tools/requirements run . verify-freeze v0.3.0' "$W/c/calls.log" && ! grep -q 'PATH-GO' "$W/c/calls.log" && grep -q 'GOTOOLCHAIN=local' "$W/c/calls.log" \
+   && ! grep -q 'GOTOOLCHAIN=auto' "$W/c/calls.log"; then
+  ok "AC4 a runner Go older than go.mod on PATH is NOT used: the freeze check runs the pinned Go, with GOTOOLCHAIN=local and no toolchain download"
+else bad "AC4 pinned go used? $(grep -E 'GO ' "$W/c/calls.log" 2> /dev/null | head -3 | tr '\n' ' ')"; fi
 # the ACs baseline of a CI patch (REQ-REL-009-AC13) goes through bin/admission-tag-signer.py baseline: its own tests and cache's auto-baseline PR
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
@@ -731,6 +756,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=122
+EXPECT_TOTAL=125
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

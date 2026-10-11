@@ -221,13 +221,13 @@ VERDICT_ARTIFACT = "witness-rebuild"
 MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
-# Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod): ONE digest-pinned actions/setup-go
-# step, right after the mode guard and before the Witness install, with exactly these two `with:` keys (advisor, Codex A r2 blocker 4)
+# Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod) the way the chain installs Witness: a
+# checksum-pinned `bash bin/install-scanner.sh go` run line, AFTER the Witness install (rule 68: Witness first) and before the downloads and the Witness step
+# (advisor, Codex A r3 F4: no setup-go action; the toolchain bytes are pinned by a committed sha256)
 # admission.json is written once per apk leg (the Witness record of each leg holds it as a product) but uploaded ONCE, from the leg on ubuntu-24.04 and only in a
 # release run, under the fixed name `admission` (PR 4's Release reads the baseline a CI patch tag used from it; a matrix upload under one name would clash)
 ADMISSION_IF = "${{ inputs.mode == 'release' && matrix.runner == 'ubuntu-24.04' }}"
-SETUP_GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e"
-SETUP_GO_WITH = {"go-version-file": "go.mod", "cache": "false"}
+INSTALL_GO = "bash bin/install-scanner.sh go"
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -337,13 +337,13 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) != {"name", "env", "run"} or s.get("env") != MODE_GUARD_ENV or str(s.get("run") or "").strip() != MODE_GUARD_RUN:
             bad.append("step %d must be exactly env %s, run: %s, and no if (the mode guard)" % (i, MODE_GUARD_ENV, MODE_GUARD_RUN))
-    if spec.get("setup_go"):
-        s = steps[i] if i < len(steps) else {}; i += 1
-        if set(s) - {"uses", "with", "name"} or (s.get("uses") or "").split(" ")[0] != SETUP_GO or (s.get("with") or {}) != SETUP_GO_WITH:
-            bad.append("step %d must be exactly actions/setup-go (the pinned digest) with %s (the Go toolchain of admission's verify-freeze)" % (i, SETUP_GO_WITH))
     s = steps[i] if i < len(steps) else {}; i += 1
     if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != "bash bin/install-scanner.sh witness":
-        bad.append("step 2 must be exactly: run bash bin/install-scanner.sh witness (checksum-pinned Witness install)")
+        bad.append("step 2 must be exactly: run bash bin/install-scanner.sh witness (checksum-pinned Witness install, FIRST)")
+    if spec.get("setup_go"):
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != INSTALL_GO:
+            bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of admission's verify-freeze, right after Witness)" % (i, INSTALL_GO))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)

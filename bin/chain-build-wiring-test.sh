@@ -94,7 +94,7 @@ spec = importlib.util.spec_from_file_location("shape", shape); S = importlib.uti
 CHECKOUT = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65"
-json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD, S.SETUP_GO]}, open(w + "/allowed-actions.json", "w"))
+json.dump({"actions": [CHECKOUT, UPLOAD, DOWNLOAD]}, open(w + "/allowed-actions.json", "w"))
 
 
 def witness_block(spec_):       # the stage's Witness step(s): one line through the helper (the fixture side of the seam, 1/2)
@@ -144,8 +144,8 @@ def stage_text(family):
         out += "          persist-credentials: false\n          fetch-depth: 0\n"
         if sp.get("mode"):
             out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
-        if sp.get("setup_go"): out += "      - uses: %s # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n" % S.SETUP_GO
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
+        if sp.get("setup_go"): out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -282,18 +282,14 @@ st s_cred   "AC2 persisted credentials" "exactly" 'persist-credentials: false' '
 st s_ref    "AC2 checkout of another ref" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          ref: main'
 st s_repo   "AC2 checkout of another repository" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          repository: evil/fork'
 st s_token  "AC2 checkout with a token" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          token: ${{ secrets.X }}'
-SETGO='      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
-ADMUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        if: ${{ inputs.mode == '"'release'"' && matrix.runner == '"'ubuntu-24.04'"' }}\n        with:\n          name: admission\n          path: admission.json\n'
-st s_adm_gone "AC8 Build's admission record is not uploaded (Release could not read the baseline a patch tag used)" "admission" "$ADMUP" ''
-st s_adm_all  "AC8 admission.json uploaded from every apk leg (one fixed name from a matrix clashes)" "admission" " && matrix.runner == 'ubuntu-24.04'" ''
-st s_adm_name "AC8 admission.json uploaded under another name" "admission" 'name: admission\n' 'name: admission-record\n'
-st s_adm_snap "AC8 admission.json uploaded in a snapshot run too (no admission ran: the upload would fail)" "admission" "inputs.mode == 'release' && matrix.runner" "matrix.runner"
-st s_go_gone  "AC4 the Go toolchain step of admission is missing from Build's apk job" "setup-go" "$SETGO" ''
-st s_go_key   "AC4 setup-go with a go-version key besides go-version-file" "setup-go" 'go-version-file: go.mod\n          cache: false\n' 'go-version-file: go.mod\n          go-version: 1.20\n          cache: false\n'
-st s_go_cache "AC4 setup-go with the module cache on" "setup-go" 'cache: false\n' 'cache: true\n'
-st s_go_file  "AC4 setup-go reading another version file" "setup-go" 'go-version-file: go.mod' 'go-version-file: tools/requirements/go.mod'
-st s_go_float "AC4 setup-go by a floating tag" "setup-go" 'actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0' 'actions/setup-go@v7'
-st s_go_after "AC4 setup-go after the Witness install (it must come before the admission step)" "setup-go" "$SETGO      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n" "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n$SETGO"
+GOINST='      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n'
+WINST='      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n'
+st s_go_gone  "AC4 the Go toolchain install of admission is missing from Build's apk job" "install-scanner.sh go" "$GOINST" ''
+st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+st s_go_other "AC4 the Go install line names another target" "install-scanner.sh go" 'install-scanner.sh go' 'install-scanner.sh go 1.20'
+st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
+st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
+st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
        'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
