@@ -100,7 +100,7 @@ jobs:
           # every variant of the release must scan: one that cannot is "unknown" (no at-once cut), never an empty
           # release (Codex #159 r1, B2)
           ver="${SINCE#v}"; rel=(); ok=1
-          for t in "$ver" "$ver-debug" "$ver-fips"; do
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
             if grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json"; then rel+=("$RUNNER_TEMP/rel-${t}.json")
             else echo "::warning::the release image ${t} could not be scanned"; ok=0; fi
           done
@@ -223,8 +223,10 @@ jobs:
             echo "::error::the latest release could not be scanned: its fixes cannot be listed, so no patch"; exit 1
           fi
           ver="${SINCE#v}"
-          var=(--variant-grype "=$RUNNER_TEMP/rel-${ver}.json" --variant-grype "debug=$RUNNER_TEMP/rel-${ver}-debug.json"
-               --variant-grype "fips=$RUNNER_TEMP/rel-${ver}-fips.json")
+          var=()
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
+            v="${t#"$ver"}"; var+=(--variant-grype "${v#-}=$RUNNER_TEMP/rel-${t}.json")   # "", "debug" or "fips": the variant name the notes use
+          done
           base=(); if [ -f "$RUNNER_TEMP/base-ok" ]; then for f in "$RUNNER_TEMP"/base-*.json; do base+=(--base-grype "$f"); done; fi
           old=(); if git show "${SINCE}:.vex/fosterstack-cache.openvex.json" > "$RUNNER_TEMP/vex-old.json" 2>/dev/null; then
             old=(--vex-old "$RUNNER_TEMP/vex-old.json"); fi

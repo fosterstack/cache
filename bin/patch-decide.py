@@ -644,12 +644,22 @@ def main(argv=None):
     n.add_argument("--next-notes", required=True)
     n.add_argument("--published", required=True, help="every v* tag message and CHANGELOG.md, concatenated")
     n.add_argument("--out", required=True)
+    vv = sub.add_parser("variants", help="the image tags of release X.Y.Z that exist: X.Y.Z, X.Y.Z-fips, and X.Y.Z-debug only before v0.3.0 (the owner dropped debug for v0.3.0)")
+    vv.add_argument("--version", required=True)
     sub.add_parser("tag-notes", help="stdin: git cat-file tag; stdout: a generated patch tag's notes, else exit 1")
     c = sub.add_parser("changelog")
     c.add_argument("--notes", required=True)
     c.add_argument("--changelog", required=True)
     c.add_argument("--next-notes", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "variants":
+        m = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", a.version)
+        if not m:
+            print("patch-decide: version %r is not X.Y.Z" % a.version, file=sys.stderr)
+            return 2
+        tags = [a.version] + ([a.version + "-debug"] if (int(m.group(1)), int(m.group(2))) < (0, 3) else []) + [a.version + "-fips"]
+        print("\n".join(tags))
+        return 0
     if a.cmd == "notes":
         try:
             rel = {}

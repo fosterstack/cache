@@ -4,7 +4,7 @@
 # standard apk fscache-<version>-r0.apk and the fips apk fscache-fips-<version>-r0.apk, Rebuild's rapk artifacts being laid out the same. Each of the
 # four apks must have exactly the digest Build attested (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) before anything is signed.
 # The comparison with Rebuild and the signing are cache's bin/release-sign-apks.sh, which signs only when every apk agrees and names the key file
-# release.rsa itself. The key is written to a private file that is removed on every exit; it is never put on an argument list, in the output or in a log.
+# release.rsa itself. The key is written to a private file named release.rsa (cache's signer refuses any other name) that is removed on every exit; it is never put on an argument list, in the output or in a log.
 set -euo pipefail
 shopt -s nullglob
 if [ -z "${APK_RELEASE_SIGNING_KEY:-}" ]; then echo "release-apks: APK_RELEASE_SIGNING_KEY is not set" >&2; exit 2; fi
@@ -34,8 +34,9 @@ for row in $runners; do
   done
 done
 umask 077
-keyfile=$(mktemp)
-trap 'rm -f "$keyfile"' EXIT
+keydir=$(mktemp -d)
+keyfile="$keydir/release.rsa"
+trap 'rm -rf "$keydir"' EXIT
 printf %s "$APK_RELEASE_SIGNING_KEY" > "$keyfile"
 bash bin/release-sign-apks.sh --build-dir release-apks-build --rebuild-dir release-apks-rebuild --key "$keyfile"
 for row in $runners; do
