@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC10, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12, REQ-CHAIN-006-AC13, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC14
+# proves: REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC10, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12, REQ-CHAIN-006-AC13, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC14
 # RED until PR 3 is implemented (stage-verify.yml rewritten, bin/check-*.sh, bin/witnessed.sh, release.yml graph, the old acceptance stages removed): step 4.
 #
 # Check, static half (v0.3.0 rules 50, 53, 55, 58, 61, 63, 65, 66, 68, 70, 72, 79; advisor read-back approved Oct 9; PR 3 merges into chain-v030 only).
