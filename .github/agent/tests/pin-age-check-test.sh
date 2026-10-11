@@ -1231,10 +1231,10 @@ def test_expr(args):
     while args and args[0][2] == "bare" and args[0][1] in W["negation"]: args = args[1:]
     operand = lambda a: a[2] in ("dq", "pos", "gsub", "csub") or (a[2] == "bare" and re.fullmatch(r"[0-9]+", a[1]))
     count = lambda a: a[2] == "gsub" or (a[2] == "bare" and re.fullmatch(r"[0-9]+", a[1]))
-    if len(args) == 2 and args[0][2] == "bare" and args[0][1] in W["test_unary"] and operand(args[1]): return
+    if len(args) == 2 and args[0][2] == "bare" and args[0][1] in W["test_unary"] and args[1][2] == "pos": return   # a file test names a positional "$N" only
     if len(args) == 3 and args[1][2] == "bare" and args[1][1] in W["test_string"] and operand(args[0]) and operand(args[2]): return
     if len(args) == 3 and args[1][2] == "bare" and args[1][1] in W["test_count"] and count(args[0]) and count(args[2]): return
-    raise Refused("a test / [ expression outside test_unary, test_string and test_count (with their operands)")
+    raise Refused("a test / [ expression outside test_unary (on a positional \"$N\"), test_string and test_count (with their operands)")
 def judge(line):
     bad = [c for c in line if c not in W["line_chars"]]
     if bad: raise Refused(f"a character outside the line character set ({bad[0]!r}): bash may read the line differently")
@@ -1447,6 +1447,16 @@ a second pattern word	t "r" "x" bash -c 'grep -- "a" "b" "$1"' _ "$CALLS"
 cat without --	t "r" "x" bash -c 'test "$(cat "$1")" = "a"' _ "$CALLS"
 cat -- with a literal operand	t "r" "x" bash -c 'test "$(cat -- "f")" = "a"' _ "$CALLS"
 an option after --	t "r" "x" bash -c 'grep -- -v "a" "$1"' _ "$CALLS"
+Codex R6: a literal path as a file-test operand	t "r" "x" bash -c 'test -f "/etc/passwd"' _
+Codex R6: a cat substitution as a file-test operand	t "r" "x" bash -c 'test -s "$(cat -- "$1")"' _ "$CALLS"
+a grep count substitution as a file-test operand	t "r" "x" bash -c '[ -e "$(grep -c -- "a" "$1")" ]' _ "$CALLS"
+a double-quoted word as a file-test operand	t "r" "x" bash -c 'test -d "x"' _
+a bare number as a file-test operand	t "r" "x" bash -c 'test -r 1' _
+a file test with an extra argument	t "r" "x" bash -c 'test -e "$1" x' _ "$CALLS"
+a file test on a positional beyond the arguments	t "r" "x" bash -c 'test -f "$2"' _ "$CALLS"
+Sonnet R6: cat with two operands	t "r" "x" bash -c 'test "$(cat -- "$1" "$2")" = "a"' _ "$CALLS" "$CALLS"
+Sonnet R6: cat with an extra word as a command	t "r" "x" bash -c 'cat -- "$1" EXTRA' _ "$CALLS"
+cat with two positionals as a command	t "r" "x" bash -c 'cat -- "$1" "$2"' _ "$CALLS" "$CALLS"
 EOF
 while IFS=$'\t' read -r what line; do
   hf "$line"
@@ -1494,6 +1504,7 @@ synthetic, the HTTPS-check shape: no unknown field, one flag with its value, no 
 synthetic, the cap-check shape: selected calls, a positive whole-number value, a count	t "rule 9" "synthetic: every selected call has a positive cap" bash -c 'grep -E -- "^argv \[tool\] .* url:\[https://example\.invalid/(a.b|cd)/" "$1" | grep -v -Eq -- " opt:\[--cap\] val:\[(1|2|3|4|5|6|7|8|9)(0|1|2|3|4|5|6|7|8|9)*\]" && exit 1; test "$(grep -c -E -- "^argv \[tool\] .* url:\[https://example\.invalid/(a.b|cd)/" "$1")" -ge 1' _ "$work/argv"
 synthetic, the status-file shape: an exit status, an existing log, no selected call	t "rule 9" "synthetic: status 2, the log exists and holds no selected call" bash -c 'test "$(cat -- "$1")" = 2 && test -f "$2" && ! grep -q -E -- " url:\[https://example\.invalid/(a.b|cd)/" "$2"' _ "$work/rc" "$work/argv"
 synthetic, the first-field shape: a required first field and no redirect flag in any letter group	t "rule 9" "synthetic: every call starts with opt -q and none has -L" bash -c 'grep -- "^argv \[tool\]" "$1" | grep -v -q -- "^argv \[tool\] opt:\[-q\]" && exit 1; grep -- "^argv \[tool\]" "$1" | grep -Eq -- " opt:\[-(f|s|S|g|q)*L(f|s|S|g|q|o|m)*\]| opt:\[--location\]" && exit 1; test "$(grep -c -- "^argv \[tool\] opt:\[-q\]" "$1")" -ge 3' _ "$work/argv"
+a file test on a positional ($1 or $2)	t "r" "x" bash -c 'test -f "$1" && [ -s "$2" ] && ! test -d "$2"' _ "$work/rc" "$CALLS"
 EOF
 while IFS=$'\t' read -r what line; do
   hf "$line"
@@ -1724,6 +1735,14 @@ for o in QOPTS:
         case("an option-like word BARE in the count substitution's option position", BODY('test "$(grep -c ' + o + ' -- "a" "$1")" -ge 1'))
     case("an option-like word BARE after end_of_options (a second option, or a bare pattern)", BODY('grep -q -- ' + o + ' "a" "$1"'))
     case("an option-like word as cat's operand", BODY('test "$(cat -- "' + o + '")" = "a"'))
+for op in W["test_unary"]:
+    for v in ('"/etc/passwd"', '"x"', '"$(cat -- "$1")"', '"$(grep -c -- "a" "$1")"', '1', '.', '"$2"'):
+        case("a file-test operand that is not a positional within the arguments", BODY('test ' + op + ' ' + v))
+        case("a file-test operand that is not a positional within the arguments, [ form", BODY('[ ' + op + ' ' + v + ' ]'))
+    case("a file test with an extra argument", BODY('test ' + op + ' "$1" "$1"'))
+for extra in ('"$1"', 'x', '"a"', '--'):
+    case("cat with more than one operand", BODY('test "$(cat -- "$1" ' + extra + ')" = "a"'))
+    case("cat with more than one operand, as a command", BODY('cat -- "$1" ' + extra))
 case("grep without end_of_options before the pattern", BODY('grep -q "a" "$1"'))
 case("grep without end_of_options, in the count substitution", BODY('test "$(grep -c "a" "$1")" -ge 1'))
 case("cat without end_of_options", BODY('test "$(cat "$1")" = "a"'))
@@ -1752,6 +1771,23 @@ while IFS= read -r cls; do
 done < <(python3 -c "import json,sys; [print(k) for k in json.load(open(sys.argv[1]))['classes'] if not k.startswith('the refused corpus: ')]" "$work/hf-enum.json")
 CASE="AC16 harness enumeration: at least 3000 lines in at least 30 classes, none accepted and none refused for another reason"
 check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['total'] >= 3000 and len([k for k in r['classes'] if not k.startswith('the refused')]) >= 30 and r['accepted'] == 0 and r['wrong_reason'] == 0, (r['total'], r['accepted'], r['wrong_reason'])" "$work/hf-enum.json"
+# --- CODE mutants: the role rules that live in the parser's code are loosened one at a time in a temp copy; the enumeration and the refused corpus must
+# then find an unexpected acceptance (or a refusal for another reason). A surviving mutant means no case pins that rule.
+hcm=$(mktemp -d "$work/hfcode.XXXXXX")
+while IFS=$'\t' read -r what old new; do
+  python3 - "$work/harness_form.py" "$hcm/m.py" "$old" "$new" <<'PY'
+import sys
+s = open(sys.argv[1]).read(); assert s.count(sys.argv[3]) == 1, sys.argv[3]
+open(sys.argv[2], "w").write(s.replace(sys.argv[3], sys.argv[4]))
+PY
+  python3 "$work/hf_enum.py" "$hcm/m.py" "$work/harness_form.py" "$work/hf-refused.tsv" "$hcm/e.json" </dev/null
+  CASE="AC16 harness code mutant: $what is caught (an unexpected acceptance, or a refusal for another reason)"
+  check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['accepted'] > 0 or r['wrong_reason'] > 0, r" "$hcm/e.json"
+done <<'EOF'
+a file-test operand may be any operand (Codex R6)	args[0][1] in W["test_unary"] and args[1][2] == "pos": return	args[0][1] in W["test_unary"] and operand(args[1]): return
+cat takes at least, not exactly, its operands (Sonnet R6)	if len(rest) != len(want) or any(	if len(rest) < len(want) or any(
+a positional may name an argument that is not there	if t[2] == "pos" and int(t[1]) > len(args): raise	if t[2] == "pos" and int(t[1]) > 9: raise
+EOF
 # --- the GOLDEN whitelist (Sonnet, PR 289 round 5: the mutation run catches only the widenings it lists; a security control fails closed). The sha256 of
 # HARNESS_WHITELIST as canonical JSON (sorted keys, no spaces, ASCII) must equal HARNESS_WHITELIST_GOLDEN below: ANY change to the grammar, a widening
 # the mutation list does not name included, turns this suite red. Changing the grammar is therefore two deliberate edits in one reviewed diff: the
