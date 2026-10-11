@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
+	"html"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	"gopkg.in/yaml.v3"
 )
@@ -372,7 +375,9 @@ func yamlStrings(n *yaml.Node, where string, problems *[]string) []string {
 // count other than two; an archive id not in archiveDefs, or repeated; ids that are not exactly the archive's
 // one build (missing, empty, grouped, or naming no build); formats that are not exactly [tar.gz]; a name
 // template that is not exactly the pinned one, or that does not render; two archive files with one name; a
-// build in no archive or in two; and builds the line reader (parseBuilds) reads differently.
+// build in no archive or in two; builds the line reader (parseBuilds) reads differently; a checksum section
+// that is missing or not exactly name_template "checksums.txt"; and two release files (archives, the checksum,
+// the archive SBOMs, GoReleaser's own record files) with one name.
 func releaseArchives(text string, lineBuilds []relBuild) (archives []releaseArchive, problems []string) {
 	docs, err := yamlDocs(text)
 	if err != nil {
@@ -484,8 +489,32 @@ func releaseArchives(text string, lineBuilds []relBuild) (archives []releaseArch
 			problems = append(problems, fmt.Sprintf("build %q is in no archive", b))
 		}
 	}
-	if n := top["checksum"]; n != nil {
-		yamlFields(n, "checksum", releaseChecksum, &problems)
+	// Every other file the release writes into dist/ is resolved too, and no two may share a name: GoReleaser
+	// writes the checksum file after the archives and opens it with O_TRUNC, so a checksum named like an archive
+	// replaces it. The checksum name is pinned (a missing section takes a templated default), each SBOM is named
+	// GoReleaser's default for an archive SBOM, and GoReleaser's own record files are reserved.
+	outputs := map[string]string{}
+	for _, f := range goreleaserRecordFiles {
+		outputs[f] = "GoReleaser's own record"
+	}
+	addOutput := func(name, what string) {
+		if prev, dup := outputs[name]; dup {
+			problems = append(problems, fmt.Sprintf("release file %s is written by both %s and %s", name, prev, what))
+		}
+		outputs[name] = what
+	}
+	for _, a := range archives {
+		addOutput(a.name, "archive "+a.String())
+	}
+	if n := top["checksum"]; n == nil {
+		problems = append(problems, fmt.Sprintf("checksum is missing (GoReleaser then names the file from a template), want name_template exactly %q", checksumName))
+	} else {
+		f := yamlFields(n, "checksum", releaseChecksum, &problems)
+		name := yamlString(f["name_template"], "checksum name_template", &problems)
+		if name != checksumName {
+			problems = append(problems, fmt.Sprintf("checksum name_template is %q, want exactly %q", name, checksumName))
+		}
+		addOutput(name, "the checksum")
 	}
 	if n := top["release"]; n != nil {
 		yamlFields(n, "release", releaseReleaseKeys, &problems)
@@ -499,12 +528,28 @@ func releaseArchives(text string, lineBuilds []relBuild) (archives []releaseArch
 				f := yamlFields(sb, where, releaseSBOMKeys, &problems)
 				if v := yamlString(f["artifacts"], where+" artifacts", &problems); v != "archive" {
 					problems = append(problems, fmt.Sprintf("%s covers %q, want archive", where, v))
+					continue
+				}
+				for _, a := range archives {
+					addOutput(a.name+sbomSuffix, where+" of "+a.name)
 				}
 			}
 		}
 	}
 	return archives, problems
 }
+
+// checksumName is the checksum file name of the committed .goreleaser.yaml, pinned: it is a literal (no
+// template), and it is the name RELEASING.md, docs/install.md and docs/verify-images.md tell users to verify.
+const checksumName = "checksums.txt"
+
+// sbomSuffix is GoReleaser's default SBOM document name for an archive, {{ .ArtifactName }}.sbom.json; an
+// sbom with any other key (documents, cmd, args, ...) is refused by releaseSBOMKeys.
+const sbomSuffix = ".sbom.json"
+
+// goreleaserRecordFiles are the files GoReleaser itself writes into dist/; a release file may not take
+// their names.
+var goreleaserRecordFiles = []string{"artifacts.json", "metadata.json", "config.yaml"}
 
 // proves: REQ-PLAT-001-AC1
 // TestReleaseConfigBuildsOnlyLinux: .goreleaser.yaml builds exactly two builds (fscache, fscache-fips), each
@@ -544,8 +589,10 @@ var wantArchiveNames = []string{
 // proves: REQ-PLAT-001-AC1
 // TestReleaseConfigCheckRefusesMutants: each edit of the real .goreleaser.yaml that would ship a non-Linux
 // target, an extra build, architecture, archive or archive format, an archive definition with empty or
-// grouped ids, an archive file name other than the pinned four (template, project name, collision), or a
-// form the check cannot read is refused (fail closed).
+// grouped ids, an archive file name other than the pinned four (template, project name, collision), a
+// checksum file name other than the pinned literal (one that would overwrite an archive, a template, a missing
+// section), two release files with one name (a second SBOM definition), or a form the check cannot read is
+// refused (fail closed).
 func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 	real := read(t, ".goreleaser.yaml")
 	const fipsGoos = "      - GOFIPS140=v1.0.0\n    goos:\n      - linux\n"
@@ -663,72 +710,110 @@ var platformWord = regexp.MustCompile(`(?i)darwin|mac\s?os|\bmacs?\b|apple\s*sil
 // `Win**dows**` reads "Windows".
 var markdownMarks = strings.NewReplacer("*", "", "_", "", "`", "", "~", "", "[", "", "]", "", "\\", "")
 
-// htmlTag is anything in angle brackets; htmlElement is the part of it that is an HTML element tag: its name
-// and the rest (attributes, a closing slash).
+// The forms of raw HTML a CommonMark renderer recognizes inline (CommonMark 0.31.2, 6.5 autolinks and 6.6 raw
+// HTML), each anchored at a "<": an open tag (attribute values may be quoted and may then hold ">"), a closing
+// tag, a comment, a processing instruction, a declaration, a CDATA section, and an autolink (a URI or an
+// e-mail address). A "<" that starts none of them is literal text.
 var (
-	htmlTag     = regexp.MustCompile(`<[^<>]*>`)
-	htmlElement = regexp.MustCompile(`^</?([A-Za-z][A-Za-z0-9]*)((?:\s[^<>]*?)?)/?>$`)
+	htmlAttrValue = "(?:[^\\s\"'=<>`]+|'[^']*'|\"[^\"]*\")"
+	htmlOpenTag   = regexp.MustCompile(`^<([A-Za-z][A-Za-z0-9-]*)(?:\s+[A-Za-z_:][A-Za-z0-9_.:-]*(?:\s*=\s*` + htmlAttrValue + `)?)*\s*/?>`)
+	htmlCloseTag  = regexp.MustCompile(`^</([A-Za-z][A-Za-z0-9-]*)\s*>`)
+	htmlNonTag    = regexp.MustCompile(`^(?:<!--(?:>|->|[\s\S]*?-->)|<\?[\s\S]*?\?>|<![A-Za-z][^>]*>|<!\[CDATA\[[\s\S]*?\]\]>)`)
+	htmlAutolink  = regexp.MustCompile("^<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^\\s<>]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)>")
 )
 
-// inlineElements render inside a run of text: removing one joins the text on either side, so `si<b>x</b>`
-// reads "six" and `Win<span class="x">dows</span>` reads "Windows". blockElements break the text: removing
-// one leaves a space, so `six<br>archives` reads "six archives".
-var (
-	inlineElements = keySet("a", "abbr", "b", "bdi", "bdo", "big", "cite", "code", "data", "del", "dfn", "em", "font",
-		"i", "ins", "kbd", "mark", "q", "s", "samp", "small", "span", "strike", "strong", "sub", "sup", "time", "tt",
-		"u", "var", "wbr")
-	blockElements = keySet("address", "article", "aside", "blockquote", "br", "caption", "dd", "details", "div", "dl",
-		"dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "img", "li", "main",
-		"nav", "ol", "p", "pre", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
-)
+// blockElements are the one closed list of elements that break a run of text: in the rendered reading one
+// of their tags becomes a space, so `six<br>archives` reads "six archives". Every other element, listed
+// nowhere, renders inside the run: its tags are removed with nothing in their place, so `si<b>x</b>`,
+// `Win<label>dows</label>` and `Win<span title=">">dows</span>` read "six" and "Windows".
+var blockElements = keySet("address", "article", "aside", "blockquote", "br", "caption", "dd", "details", "div", "dl",
+	"dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "img", "li", "main",
+	"nav", "ol", "p", "pre", "section", "summary", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul")
 
-// htmlElementName returns the lower-case name of a known inline or block element tag, and the tag's
-// attribute text; "" for anything else in angle brackets.
-func htmlElementName(tag string) (name, attrs string) {
-	m := htmlElement.FindStringSubmatch(tag)
-	if m == nil {
-		return "", ""
-	}
-	name = strings.ToLower(m[1])
-	if !inlineElements[name] && !blockElements[name] {
-		return "", ""
-	}
-	return name, m[2]
-}
-
-// stripTags is s with its HTML read as a reader of the rendered page sees it: a known inline element tag is
-// removed with nothing in its place, a known block element tag becomes a space, and anything else in angle
-// brackets (a Markdown autolink such as <https://example.com/x>, a comment, a placeholder such as <pod>, an
-// element this check does not know) keeps its text, with the brackets read as spaces. Attributes of known
-// tags are not visible text; tagAttributes returns them so the checks still read them.
-func stripTags(s string) string {
-	return htmlTag.ReplaceAllStringFunc(s, func(tag string) string {
-		name, _ := htmlElementName(tag)
+// renderHTML reads the raw HTML in s. In the rendered reading (separate false) a tag of a block element is a
+// space, every other tag, comment, processing instruction, declaration and CDATA section is removed with
+// nothing in its place (none of them is visible text), and an autolink is its visible text. In the separated
+// reading every one of them is kept, brackets read as spaces, so its name, attributes and content are read as
+// words on their own. The checks scan both readings and refuse a match in either: whatever this reading cannot
+// classify is read both joined and separated.
+func renderHTML(s string, separate bool) string {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		if s[i] != '<' {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		rest, m, name, visible := s[i:], "", "", ""
+		if m = htmlAutolink.FindString(rest); m != "" {
+			visible = m[1 : len(m)-1]
+		} else if sm := htmlOpenTag.FindStringSubmatch(rest); sm != nil {
+			m, name = sm[0], sm[1]
+		} else if sm := htmlCloseTag.FindStringSubmatch(rest); sm != nil {
+			m, name = sm[0], sm[1]
+		} else {
+			m = htmlNonTag.FindString(rest)
+		}
 		switch {
-		case inlineElements[name]:
-			return ""
-		case blockElements[name]:
-			return " "
+		case m == "":
+			b.WriteByte('<')
+			i++
+			continue
+		case separate:
+			b.WriteString(" " + m[1:len(m)-1] + " ")
+		case visible != "":
+			b.WriteString(visible)
+		case blockElements[strings.ToLower(name)]:
+			b.WriteString(" ")
 		}
-		return " " + tag[1:len(tag)-1] + " "
-	})
-}
-
-// tagAttributes returns the attribute text of every known inline or block element tag in s.
-func tagAttributes(s string) (out []string) {
-	for _, tag := range htmlTag.FindAllString(s, -1) {
-		if name, attrs := htmlElementName(tag); name != "" && strings.TrimSpace(attrs) != "" {
-			out = append(out, strings.TrimSpace(attrs))
-		}
+		i += len(m)
 	}
-	return out
+	return b.String()
 }
 
-// plainText is text as a reader of the rendered Markdown sees it: HTML read by stripTags, inline marks
-// removed, whitespace collapsed to single spaces.
-func plainText(s string) string {
-	return strings.Join(strings.Fields(markdownMarks.Replace(stripTags(s))), " ")
+// linkDestination is the part of a Markdown link that is not visible: an inline destination and title,
+// "](url "title")", or a reference label, "][label]".
+var linkDestination = regexp.MustCompile(`\]\([^)]*\)|\]\[[^\]]*\]`)
+
+// decodeText is s with its HTML character references decoded (named, decimal and hexadecimal, as a renderer
+// decodes them: Win&#100;ows, Apple&nbsp;Silicon) and every invisible format character (Unicode Cf: a soft
+// hyphen, a zero-width space or joiner) removed, so neither can split a word a reader sees whole.
+func decodeText(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, html.UnescapeString(s))
 }
+
+// collapse is s with its whitespace collapsed to single spaces.
+func collapse(s string) string {
+	return strings.Join(strings.Fields(s), " ")
+}
+
+// plainText is the rendered reading of Markdown text, as a reader of the rendered page sees it: raw HTML read
+// by renderHTML, link destinations removed, inline marks removed, character references decoded, whitespace
+// collapsed to single spaces.
+func plainText(s string) string {
+	return collapse(decodeText(markdownMarks.Replace(linkDestination.ReplaceAllString(renderHTML(s, false), "]"))))
+}
+
+// separatedText is the separated reading of Markdown text: every piece of raw HTML kept with its brackets read
+// as spaces (tag names, attributes, comments, autolink targets), link destinations kept, inline marks
+// removed, character references decoded, whitespace collapsed.
+func separatedText(s string) string {
+	return collapse(decodeText(markdownMarks.Replace(renderHTML(s, true))))
+}
+
+// readings are the readings every docs and notes check scans; a match in any one is refused.
+func readings(s string) []string {
+	return []string{plainText(s), separatedText(s)}
+}
+
+// bareURL is a URL as text (a link destination in the separated reading, an autolink's visible text, a URL
+// written out): its digits are not a count, so the count check reads the text without it.
+var bareURL = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://\S*|\bwww\.\S*`)
 
 // countWords are the words read as a count, with their value. "a" and "an" are not counts on their own:
 // before "archive" they are the indefinite article ("download an archive"); before a quantity word they are
@@ -755,29 +840,40 @@ var countToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[./+][A-Za-z0-9]+)*|[.!?;:](
 
 var digits = regexp.MustCompile(`^[0-9]+$`)
 
-// allowedCountClaims are exact claims (as archiveCountProblems words them: the count through "archive" or
-// "archives", lower case, one space between words) that read as a count claim but are not one, each with its
-// reason. A new entry is reviewed.
+// allowedCountClaims are exact claims (as archiveCountProblems words them: lower case, one space between words,
+// from the count through "archive(s)", or from "archive(s)" through a count after it) that read as a count
+// claim but are not one, each with its reason. A new entry is reviewed.
 var allowedCountClaims = map[string]string{
-	"256 so verifying the checksums file and then checking an archive": "RELEASING.md: the 256 of SHA-256 (the hyphen splits the hash name), not a count",
+	"256 so verifying the checksums file and then checking an archive":                                                                              "RELEASING.md: the 256 of SHA-256 (the hyphen splits the hash name), not a count",
+	"archives are fscache and fscache fips for linux/amd64 and linux/arm64 owner decision oct 9":                                                    "docs/next-release-notes.md: the 9 of the citation's date (Oct 9), not a count",
+	"archive against that signed predicate before opening it assembles each variant with a copy only dockerfile digest pinned distroless base zero": "RELEASING.md: zero RUN instructions in the Dockerfile, not a count of archives",
+	"archive against it is a complete chain not two":                                                                                                "RELEASING.md: not two half-measures, not a count of archives",
 }
 
-// archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Each count
-// word or number is examined on its own, so a count is read even inside a longer phrase ("one of six
-// archives" is read as "six archives"). A count claims archives when "archive" or "archives" follows anywhere
-// in its clause: up to a boundary (. ! ? ; : before a space, a table bar) or the next count (the nearer count
-// binds), however many words stand between. "a" or "an" after "only", "just" or "solely" is a count of one.
-// A partitive count ("N of ...") is a subset: N may not exceed the count that follows it ("two of the four
-// archives"), or the archives produced when none follows ("one of the archives"); after "all" it is a total
-// and must equal the archives produced ("all four of the archives"). A compound count ("twenty-four", "one
-// hundred") and a vague one ("several", "a couple of", "some of the archives") cannot be resolved and are
-// refused. A claim this reading gets wrong is excepted only by an exact entry in allowedCountClaims.
+// archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Every
+// count word or number is validated on its own against its whole clause (up to a boundary: . ! ? ; : before
+// a space, a table bar), before the next count is read; no later count ends its reading. A count claims
+// archives when "archive" or "archives" follows anywhere in its clause, or when one stands before it in the
+// clause and none follows (a total after the noun: "the archives number six"). Its qualifier decides what it
+// must equal:
+//   - after "all" ("all N", "all the N", "all of the N") it is a total, and after "only", "just" or "solely"
+//     a limit ("only one of the four archives" says a release ships one): either must equal the archives
+//     produced, and a partitive total ("all N of M") must also equal its whole M;
+//   - a partitive ("N of ...") is a subset: N may not exceed the count that follows it, nor the archives;
+//   - a plain count must equal the archives; a plain count with another count between it and "archive(s)"
+//     ("six or four archives") cannot be resolved and is refused;
+//   - "a" or "an" after "only", "just" or "solely" is a count of one;
+//   - a compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of", "some of the
+//     archives") cannot be resolved and are refused.
+//
+// A claim this reading gets wrong is excepted only by an exact entry in allowedCountClaims.
 func archiveCountProblems(text string, archives int) (problems []string) {
 	var toks []string
 	for _, m := range countToken.FindAllString(text, -1) {
 		toks = append(toks, strings.ToLower(strings.TrimSpace(m)))
 	}
 	boundary := func(w string) bool { return len(w) == 1 && strings.ContainsAny(w, ".!?;:|") }
+	noun := func(w string) bool { return w == "archive" || w == "archives" }
 	isCount := func(w string) bool {
 		_, n := countWords[w]
 		return n || vagueCounts[w] || digits.MatchString(w)
@@ -792,53 +888,83 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		}
 		return n
 	}
+	// after reports whether the words before i, skipping "the" and "of", end with a word of set.
+	after := func(i int, set map[string]bool) bool {
+		for k := i - 1; k >= 0 && !boundary(toks[k]); k-- {
+			if toks[k] != "the" && toks[k] != "of" {
+				return set[toks[k]]
+			}
+		}
+		return false
+	}
+	all := keySet("all")
 	for i, w := range toks {
-		limiting := (w == "a" || w == "an") && i > 0 && limitingWords[toks[i-1]]
-		if !isCount(w) && !limiting {
+		article := (w == "a" || w == "an") && i > 0 && limitingWords[toks[i-1]]
+		if !isCount(w) && !article {
 			continue
 		}
 		n := 1
-		if !limiting {
+		if !article {
 			n = value(w)
 		}
-		partitive := !vagueCounts[w] && i+1 < len(toks) && toks[i+1] == "of"
-		total := i > 0 && toks[i-1] == "all"
-		compound := false
-		for j := i + 1; j < len(toks); j++ {
-			x := toks[j]
-			if boundary(x) {
+		vague := vagueCounts[w]
+		total := after(i, all)
+		limiting := article || after(i, limitingWords)
+		partitive := !vague && i+1 < len(toks) && toks[i+1] == "of"
+		compound := i+1 < len(toks) && isCount(toks[i+1])
+		nounAt, wholeAt, nounBefore := -1, -1, -1
+		for j := i + 1; j < len(toks) && !boundary(toks[j]); j++ {
+			if noun(toks[j]) && nounAt < 0 {
+				nounAt = j
+			}
+			if isCount(toks[j]) && j > i+1 && wholeAt < 0 {
+				wholeAt = j
+			}
+		}
+		for k := i - 1; k >= 0 && !boundary(toks[k]); k-- {
+			if noun(toks[k]) {
+				nounBefore = k
 				break
 			}
-			if isCount(x) {
-				if j == i+1 {
-					compound = true
-					continue
-				}
-				if partitive && !total && !vagueCounts[x] && (n < 0 || value(x) < 0 || n > value(x)) {
-					problems = append(problems, fmt.Sprintf("claims %q, a part larger than its whole", strings.Join(toks[i:j+1], " ")))
-				}
-				break
-			}
-			if x != "archive" && x != "archives" {
-				continue
-			}
-			claim := strings.Join(toks[i:j+1], " ")
-			if _, ok := allowedCountClaims[claim]; ok {
-				break
-			}
+		}
+		if partitive && wholeAt >= 0 && !vagueCounts[toks[wholeAt]] {
+			m := value(toks[wholeAt])
 			switch {
-			case compound:
-				problems = append(problems, fmt.Sprintf("claims %q, a compound count this check does not resolve", claim))
-			case vagueCounts[w]:
-				problems = append(problems, fmt.Sprintf("claims %q, a count this check cannot resolve", claim))
-			case partitive && !total:
-				if n < 0 || n > archives {
-					problems = append(problems, fmt.Sprintf("claims %q, more than the %d archives .goreleaser.yaml produces", claim, archives))
-				}
-			case n != archives:
-				problems = append(problems, fmt.Sprintf("claims %q, but .goreleaser.yaml produces %d archives", claim, archives))
+			case n < 0 || m < 0 || n > m:
+				problems = append(problems, fmt.Sprintf("claims %q, a part larger than its whole", strings.Join(toks[i:wholeAt+1], " ")))
+			case total && n != m:
+				problems = append(problems, fmt.Sprintf("claims %q, a total that is not its whole", strings.Join(toks[i:wholeAt+1], " ")))
 			}
-			break
+		}
+		var claim string
+		switch {
+		case nounAt >= 0:
+			claim = strings.Join(toks[i:nounAt+1], " ")
+		case nounBefore >= 0:
+			claim = strings.Join(toks[nounBefore:i+1], " ")
+		default:
+			continue // no archive in its clause
+		}
+		if _, ok := allowedCountClaims[claim]; ok {
+			continue
+		}
+		switch {
+		case compound:
+			problems = append(problems, fmt.Sprintf("claims %q, a compound count this check does not resolve", claim))
+		case vague:
+			problems = append(problems, fmt.Sprintf("claims %q, a count this check cannot resolve", claim))
+		case total || limiting || nounAt < 0:
+			if n != archives {
+				problems = append(problems, fmt.Sprintf("claims %q, a total or limit, but .goreleaser.yaml produces %d archives", claim, archives))
+			}
+		case partitive:
+			if n < 0 || n > archives {
+				problems = append(problems, fmt.Sprintf("claims %q, more than the %d archives .goreleaser.yaml produces", claim, archives))
+			}
+		case wholeAt >= 0 && wholeAt < nounAt:
+			problems = append(problems, fmt.Sprintf("claims %q, a count with another count between it and the archives: this check does not resolve it", claim))
+		case n != archives:
+			problems = append(problems, fmt.Sprintf("claims %q, but .goreleaser.yaml produces %d archives", claim, archives))
 		}
 	}
 	return problems
@@ -943,48 +1069,52 @@ func units(text string) []unit {
 
 // checkDoc returns every problem in one scanned doc and the allowed texts it found: a darwin archive name;
 // an archive-count claim that is not the count .goreleaser.yaml produces; a platform name that does not lie
-// wholly inside one of the file's allowed texts. Counts and platform names are read in plainText, and the
-// allowed texts are matched in plainText too.
+// wholly inside one of the file's allowed texts. Each unit is read in both readings (the rendered and the
+// separated one; see renderHTML) and every check runs on each: counts on the reading without URLs, platform
+// names on the whole reading, with the allowed texts matched in the same reading.
 func checkDoc(file, text string, allowed []allowedLine, archives int) (problems []string, seen map[string]bool) {
 	seen = map[string]bool{}
+	reported := map[string]bool{}
+	report := func(p string) {
+		if !reported[p] {
+			reported[p] = true
+			problems = append(problems, p)
+		}
+	}
 	for _, u := range units(text) {
-		plain := plainText(u.text)
 		if strings.Contains(strings.ToLower(u.text), "_darwin_") {
-			problems = append(problems, fmt.Sprintf("%s:%d names a darwin archive: %s", file, u.line, u.text))
+			report(fmt.Sprintf("%s:%d names a darwin archive: %s", file, u.line, u.text))
 		}
-		for _, p := range archiveCountProblems(plain, archives) {
-			problems = append(problems, fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
-		}
-		var spans [][2]int
-		for _, a := range allowed {
-			want := plainText(a.text)
-			if a.file != file || want == "" {
-				continue
+		for k, plain := range readings(u.text) {
+			for _, p := range archiveCountProblems(bareURL.ReplaceAllString(plain, " "), archives) {
+				report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
 			}
-			for off := 0; ; {
-				k := strings.Index(plain[off:], want)
-				if k < 0 {
-					break
+			var spans [][2]int
+			for _, a := range allowed {
+				want := readings(a.text)[k]
+				if a.file != file || want == "" {
+					continue
 				}
-				seen[a.text] = true
-				spans = append(spans, [2]int{off + k, off + k + len(want)})
-				off += k + 1
-			}
-		}
-		for _, attrs := range tagAttributes(u.text) {
-			if m := platformWord.FindString(attrs); m != "" {
-				problems = append(problems, fmt.Sprintf("%s:%d names a non-Linux platform (%q) in an HTML attribute: %s", file, u.line, m, u.text))
-			}
-		}
-		for _, loc := range platformWord.FindAllStringIndex(plain, -1) {
-			covered := false
-			for _, sp := range spans {
-				if sp[0] <= loc[0] && loc[1] <= sp[1] {
-					covered = true
+				for off := 0; ; {
+					i := strings.Index(plain[off:], want)
+					if i < 0 {
+						break
+					}
+					seen[a.text] = true
+					spans = append(spans, [2]int{off + i, off + i + len(want)})
+					off += i + 1
 				}
 			}
-			if !covered {
-				problems = append(problems, fmt.Sprintf("%s:%d names a non-Linux platform (%q) outside an allowed text: %s", file, u.line, plain[loc[0]:loc[1]], u.text))
+			for _, loc := range platformWord.FindAllStringIndex(plain, -1) {
+				covered := false
+				for _, sp := range spans {
+					if sp[0] <= loc[0] && loc[1] <= sp[1] {
+						covered = true
+					}
+				}
+				if !covered {
+					report(fmt.Sprintf("%s:%d names a non-Linux platform (%q) outside an allowed text: %s", file, u.line, plain[loc[0]:loc[1]], u.text))
+				}
 			}
 		}
 	}
@@ -1021,10 +1151,14 @@ func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
 
 // proves: REQ-PLAT-001-AC1
 // TestDocsCheckRefusesMutants: a platform claim wrapped across a Markdown soft line break or split by inline
-// Markdown or inline HTML (also inside a word), a platform name in an autolink or an HTML attribute, an OS X
+// Markdown or raw HTML of any form (any element that is not a listed block element, a comment, a processing
+// instruction, a declaration, CDATA, a quoted attribute holding ">"), or by a character reference or an
+// invisible format character, a platform name in an autolink or an HTML attribute, an OS X
 // claim, an archive count that disagrees with .goreleaser.yaml (behind Markdown or HTML, any number of words
-// before "archives" in its clause, after "one of", a part larger than its whole, "all N of", "only an", in any
-// number word, digits, compound or vague), and a darwin archive name are each refused; phrases that name
+// before "archives" in its clause, after "one of", a part larger than its whole, "all N of M" unequal to M or
+// to the archives, "only" a part, "only an", a total after the noun, two counts before the noun, a count
+// interrupted by a link destination or a URL, in any number word, digits, compound or vague), and a darwin
+// archive name are each refused; phrases that name
 // archives without a wrong count pass; the wrapped Apple Silicon mention in docs/install.md passes only
 // through its named exception.
 func TestDocsCheckRefusesMutants(t *testing.T) {
@@ -1094,7 +1228,7 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"hex character reference in Windows":     install + "\nNative binaries for Win&#x64;ows are attached.\n",
 		"named space reference in Apple Silicon": install + "\nNative binaries for Apple&nbsp;Silicon are attached.\n",
 		"soft hyphen inside Windows":             install + "\nNative binaries for Win&shy;dows are attached.\n",
-		"zero-width space inside Windows":        install + "\nNative binaries for Win​dows are attached.\n",
+		"zero-width space inside Windows":        install + "\nNative binaries for Win\u200bdows are attached.\n",
 		"comment inside Windows":                 install + "\nNative binaries for Win<!--note-->dows are attached.\n",
 		"processing instruction inside Windows":  install + "\nNative binaries for Win<?x?>dows are attached.\n",
 		"declaration inside Windows":             install + "\nNative binaries for Win<!X y>dows are attached.\n",
@@ -1163,23 +1297,32 @@ const (
 	changelogFile = "docs/quality/releases/CHANGELOG.md"
 )
 
-// checkNotes returns every reason the next release notes fail REQ-PLAT-001. The whole file is checked as a
-// scanned doc whose only allowed text is notesSentence, matched exactly; the sentence must appear exactly once.
-func checkNotes(text, _ string, archives int) []string {
+// checkNotes returns every reason the next release notes fail REQ-PLAT-001, given the notes text and the
+// changelog text ("" for a file that does not exist). The whole notes file is checked as a scanned doc whose
+// only allowed text is notesSentence, matched exactly. The sentence is in the notes at most once. When it is
+// not in them, the release flow has published the entry and removed it (bin/patch-decide.py changelog): the
+// changelog, the durable record of what was published, must then carry it; nowhere at all is refused.
+func checkNotes(text, changelog string, archives int) []string {
 	problems, _ := checkDoc(notesFile, text, []allowedLine{{notesFile, notesSentence, "the REQ-PLAT-001 release-notes line", false}}, archives)
-	count := 0
-	for _, u := range units(text) {
-		count += strings.Count(plainText(u.text), notesSentence)
+	count := func(text string) (n int) {
+		for _, u := range units(text) {
+			n += strings.Count(plainText(u.text), notesSentence)
+		}
+		return n
 	}
-	if count != 1 {
-		problems = append(problems, fmt.Sprintf("%s says %q %d times, want exactly once", notesFile, notesSentence, count))
+	switch n := count(text); {
+	case n > 1:
+		problems = append(problems, fmt.Sprintf("%s says %q %d times, want at most once", notesFile, notesSentence, n))
+	case n == 0 && count(changelog) == 0:
+		problems = append(problems, fmt.Sprintf("neither %s nor %s says %q (the notes until it is published, then the changelog)", notesFile, changelogFile, notesSentence))
 	}
 	return problems
 }
 
 // proves: REQ-PLAT-001-AC1
 // TestNextReleaseNotesSayLinuxOnly: the next release's notes say, exactly once, that no macOS or Windows
-// binaries are shipped and point to the container image; nothing else in them names a non-Linux platform
+// binaries are shipped and point to the container image, or, once the release flow has published that entry
+// and removed it from the notes, the changelog says so; nothing else in the notes names a non-Linux platform
 // or claims an archive count other than the one .goreleaser.yaml produces.
 func TestNextReleaseNotesSayLinuxOnly(t *testing.T) {
 	for _, p := range checkNotes(readOptional(t, notesFile), readOptional(t, changelogFile), releaseArchiveCount(t)) {
@@ -1196,8 +1339,9 @@ const notesFixture = "# Notes for the next release\n\nBehavior changes since the
 	"  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).\n"
 
 // proves: REQ-PLAT-001-AC1
-// TestNextReleaseNotesCheckRefusesMutants: a second line claiming a macOS binary, a changed or missing
-// required sentence, a repeated sentence and a wrong archive count are each refused.
+// TestNextReleaseNotesCheckRefusesMutants: a second line claiming a macOS binary (also split by raw HTML or a
+// character reference), a changed or missing required sentence, a repeated sentence and a wrong archive count
+// are each refused; notes cleared after publication pass only while the changelog carries the sentence.
 func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 	notes := notesFixture
 	if ps := checkNotes(notes, "", releaseArchiveCount(t)); len(ps) > 0 {
@@ -1273,24 +1417,42 @@ func packageTests(t *testing.T) map[string]bool {
 	return testsInDir(t, ".")
 }
 
-// testsInDir returns the names of the test functions declared in the test files of the package in dir.
+// verifyPlatforms are the platforms the tests run on to verify a release: a test counts as evidence only if
+// the go tool selects its file on every one of them.
+var verifyPlatforms = [][2]string{{"linux", "amd64"}, {"linux", "arm64"}}
+
+// testsInDir returns the names of the test functions declared in the test files of the package in dir that
+// the go tool selects (TestGoFiles and XTestGoFiles, after build constraints and file-name GOOS/GOARCH
+// suffixes) on every one of verifyPlatforms. A file it ignores (//go:build ignore, a _windows_test.go file, a
+// constraint for one architecture) declares nothing; a directory the go tool cannot read fails the test.
 func testsInDir(t *testing.T, dir string) map[string]bool {
 	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatalf("read the package directory: %v", err)
-	}
-	tests := map[string]bool{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+	var tests map[string]bool
+	for _, pl := range verifyPlatforms {
+		ctx := build.Default
+		ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled = pl[0], pl[1], false
+		pkg, err := ctx.ImportDir(dir, 0)
+		if err != nil {
+			t.Fatalf("the go tool cannot read %s for %s/%s: %v", dir, pl[0], pl[1], err)
+		}
+		found := map[string]bool{}
+		for _, name := range append(append([]string{}, pkg.TestGoFiles...), pkg.XTestGoFiles...) {
+			b, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			for test := range declaredTests(t, name, string(b)) {
+				found[test] = true
+			}
+		}
+		if tests == nil {
+			tests = found
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
-		if err != nil {
-			t.Fatalf("read %s: %v", e.Name(), err)
-		}
-		for name := range declaredTests(t, e.Name(), string(b)) {
-			tests[name] = true
+		for test := range tests {
+			if !found[test] {
+				delete(tests, test)
+			}
 		}
 	}
 	return tests
@@ -1336,11 +1498,15 @@ var platformsTestRef = regexp.MustCompile(`^internal/platforms:(Test[A-Za-z0-9_]
 // mappingsReadings are the texts the mappings check reads one piece of YAML text as; every one must be
 // clean. The literal text (whitespace collapsed, nothing removed, so a name inside angle brackets or an
 // attribute is read); the text with every # removed (so a name wrapped across comment lines, "# Apple" then
-// "# Silicon", is read joined); and that text in plainText (so inline HTML or Markdown inside a word,
-// Win<b>dows</b>, is read joined).
+// "# Silicon", is read joined); each of those with its character references decoded (Win&#100;ows; decoded
+// before the # are removed, so a numeric reference survives); and the rendered and separated readings of the
+// text, of the text without #, and of the decoded text without # (so any element, comment or quoted attribute
+// inside a word, Win<label>dows</label>, is read joined).
 func mappingsReadings(s string) []string {
 	noHash := strings.ReplaceAll(s, "#", "")
-	return []string{strings.Join(strings.Fields(s), " "), strings.Join(strings.Fields(noHash), " "), plainText(noHash)}
+	decNoHash := strings.ReplaceAll(decodeText(s), "#", "")
+	return []string{collapse(s), collapse(noHash), collapse(decodeText(s)), collapse(decNoHash),
+		plainText(s), separatedText(s), plainText(noHash), separatedText(noHash), plainText(decNoHash), separatedText(decNoHash)}
 }
 
 // checkEvidenceMappings returns every platform name in the evidence mappings outside an exact reference to
@@ -1425,8 +1591,9 @@ func TestEvidenceMappingsClaimNoDarwin(t *testing.T) {
 // TestEvidenceMappingsCheckRefusesMutants: a platform name in the evidence mappings is refused wherever it
 // is, once the YAML is decoded: in a fabricated or misplaced test reference (a commented-out test function
 // authorizes none), in prose, in a quoted, escaped or folded scalar that wraps the name across lines, split
-// by inline HTML or inside angle brackets, in a comment or wrapped across comment lines, and in a second
-// document.
+// by raw HTML of any form or a character reference or inside angle brackets, in a comment or wrapped across
+// comment lines, and in a second document; a test declared only in a file the go tool does not select for
+// linux/amd64 and linux/arm64 authorizes no reference.
 func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 	real := read(t, mappingsFile)
 	tests := packageTests(t)

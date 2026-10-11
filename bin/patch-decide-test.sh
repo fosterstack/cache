@@ -504,16 +504,19 @@ check("0130 entries parsed, continuation lines joined", ents == [
     "Second change, one line (advisor 0130)."], ents)
 # Codex #293 r3 B1: the repository's own notes file passes the validator the release workflow runs (an entry
 # without "(... advisor NNNN)" or "(... handoff NNNN)" would stop the release before its tag)
-real_nrn = open(os.path.join(os.path.dirname(sys.argv[1]), "..", "docs/next-release-notes.md")).read()
+real_nrn_path = os.path.join(os.path.dirname(sys.argv[1]), "..", "docs/next-release-notes.md")
+real_nrn = open(real_nrn_path).read() if os.path.exists(real_nrn_path) else ""  # the release flow may remove the file
 try:
     real_ents = P.behavior_entries(real_nrn); real_err = None
 except ValueError as e:
     real_ents, real_err = [], e
 check("0130 the repository's docs/next-release-notes.md passes the notes validator", real_err is None, real_err)
 def linux_only_ok(ents):
-    return any(e.startswith("No macOS or Windows binaries are shipped") and e.endswith("(owner decision, Oct 9; advisor 0390).")
-               for e in ents)
-check("0390 the Linux-only entry cites advisor 0390", linux_only_ok(real_ents), real_ents)
+    """While the Linux-only entry is in the notes it is there once and ends with the 0390 citation; once the release flow
+    has published it and removed it, there is nothing to assert here (the Go check then requires it in the changelog)."""
+    lo = [e for e in ents if e.startswith("No macOS or Windows binaries are shipped")]
+    return len(lo) <= 1 and all(e.endswith("(owner decision, Oct 9; advisor 0390).") for e in lo)
+check("0390 the Linux-only entry, while present, cites advisor 0390", linux_only_ok(real_ents), real_ents)
 # Codex #293 r4 B2: after the entry is published, the release flow's changelog step removes it from the notes; the
 # cleared notes still pass the validator and the Linux-only assertion (it applies to the entry only while present)
 LO_ENTRY = ("No macOS or Windows binaries are shipped; use the container image. The release archives are fscache and fscache-fips "
@@ -533,6 +536,7 @@ check("0390 the cleared notes pass the validator", lo_err is None, lo_err)
 check("0390 the cleared notes pass the Linux-only assertion (the entry is gone, not uncited)", linux_only_ok(lo_ents), lo_ents)
 check("0390 an uncited Linux-only entry fails the Linux-only assertion",
       not linux_only_ok(["No macOS or Windows binaries are shipped; use the container image (advisor 0130)."]))
+check("0390 a repeated Linux-only entry fails the Linux-only assertion", not linux_only_ok([LO_ENTRY, LO_ENTRY]))
 check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
 for bad in ["- A change nobody judged.\n", "- A change (owner said so).\n", "- A change (advisor 15).\n"]:
     try:
