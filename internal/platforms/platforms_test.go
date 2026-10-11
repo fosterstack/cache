@@ -24,6 +24,19 @@ import (
 // root is the module root, two directories up from internal/platforms.
 const root = "../.."
 
+// readOptional is the file's text, or "" when it does not exist.
+func readOptional(t *testing.T, rel string) string {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(root, rel))
+	if errors.Is(err, os.ErrNotExist) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	return string(b)
+}
+
 func read(t *testing.T, rel string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join(root, rel))
@@ -616,6 +629,14 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"template drops the arch":      edit("      {{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}_{{ .Arch }}", "      {{ .ProjectName }}-fips_{{ .Version }}_{{ .Os }}"),
 		"project name changed":         edit("project_name: fscache\n", "project_name: fscache2\n"),
 		"project name removed":         edit("project_name: fscache\n", ""),
+		// Round-4 regressions (B1): the checksum file is written after the archives (O_TRUNC), so a checksum name
+		// that is an archive's name overwrites it; every output file name is pinned or resolved, none may collide.
+		"checksum overwrites an archive": edit("  name_template: \"checksums.txt\"\n", "  name_template: \"fscache_{{ .Version }}_linux_amd64.tar.gz\"\n"),
+		"checksum renamed":               edit("  name_template: \"checksums.txt\"\n", "  name_template: \"sums.txt\"\n"),
+		"checksum name templated":        edit("  name_template: \"checksums.txt\"\n", "  name_template: \"{{ .ProjectName }}_checksums.txt\"\n"),
+		"checksum section removed":       edit("checksum:\n  name_template: \"checksums.txt\"\n", ""),
+		"checksum without a name":        edit("checksum:\n  name_template: \"checksums.txt\"\n", "checksum: {}\n"),
+		"second sbom definition":         edit("  - artifacts: archive\n", "  - artifacts: archive\n  - artifacts: archive\n"),
 	}
 	for name, text := range archiveMutants {
 		if _, dup := mutants[name]; dup {
@@ -1063,6 +1084,30 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"five of the archives":            install + "\nFive of the archives are FIPS builds.\n",
 		"only an archive":                 install + "\nOnly an archive is shipped.\n",
 		"just one archive":                install + "\nJust one archive is shipped.\n",
+		// Round-4 regressions (A1, A2, B3, B4): any element that is not a listed block element joins the text on
+		// either side; comments, processing instructions, declarations and CDATA render nothing; a quoted
+		// attribute may hold ">"; character references and invisible format characters are decoded; a count is
+		// validated on its own before the next one is read; link destinations and URLs are not visible counts.
+		"unlisted inline element in Windows":     install + "\nNative binaries for Win<label>dows</label> are attached.\n",
+		"unknown element in Windows":             install + "\nNative binaries for Win<foo-bar x=1>dows</foo-bar> are attached.\n",
+		"decimal character reference in Windows": install + "\nNative binaries for Win&#100;ows are attached.\n",
+		"hex character reference in Windows":     install + "\nNative binaries for Win&#x64;ows are attached.\n",
+		"named space reference in Apple Silicon": install + "\nNative binaries for Apple&nbsp;Silicon are attached.\n",
+		"soft hyphen inside Windows":             install + "\nNative binaries for Win&shy;dows are attached.\n",
+		"zero-width space inside Windows":        install + "\nNative binaries for Win​dows are attached.\n",
+		"comment inside Windows":                 install + "\nNative binaries for Win<!--note-->dows are attached.\n",
+		"processing instruction inside Windows":  install + "\nNative binaries for Win<?x?>dows are attached.\n",
+		"declaration inside Windows":             install + "\nNative binaries for Win<!X y>dows are attached.\n",
+		"CDATA inside Windows":                   install + "\nNative binaries for Win<![CDATA[x]]>dows are attached.\n",
+		"quoted > in an attribute":               install + "\nNative binaries for Win<span title=\">\">dows</span> are attached.\n",
+		"comment inside six":                     install + "\nEvery release ships si<!--note-->x archives.\n",
+		"character reference inside six":         install + "\nEvery release ships si&#120; archives.\n",
+		"all six of the four archives":           install + "\nAll six of the four archives are signed.\n",
+		"only one of the four archives":          install + "\nEach release ships only one of the four archives.\n",
+		"total after the noun":                   install + "\nThe release archives number six.\n",
+		"two counts before the noun":             install + "\nEvery release ships six or four archives.\n",
+		"link title interrupts a count":          install + "\nEvery release ships [six](https://example.com/a \"4\") archives.\n",
+		"bare URL interrupts a count":            install + "\nEvery release ships six https://example.com/4 archives.\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -1086,6 +1131,10 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"Pick one of the archives; two of them are arm64 builds.",
 		"Every release ships four signed, static, stripped, reproducible, verified Linux release archives.",
 		"See <https://example.com/linux> for the archives.",
+		"Every release ships four [archives](https://example.com/v2/4).",
+		"See https://example.com/v6 for the four archives.",
+		"All of the four archives are signed.",
+		"The four archives are signed; <!-- a comment --> each is a tar.gz.",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
@@ -1106,15 +1155,17 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 	}
 }
 
-// notesFile is the next release's notes; notesSentence is the one platform mention they may carry.
+// notesFile is the next release's notes; notesSentence is the one platform mention they may carry;
+// changelogFile is the durable release record the release flow moves published entries into.
 const (
 	notesFile     = "docs/next-release-notes.md"
 	notesSentence = "No macOS or Windows binaries are shipped; use the container image."
+	changelogFile = "docs/quality/releases/CHANGELOG.md"
 )
 
 // checkNotes returns every reason the next release notes fail REQ-PLAT-001. The whole file is checked as a
 // scanned doc whose only allowed text is notesSentence, matched exactly; the sentence must appear exactly once.
-func checkNotes(text string, archives int) []string {
+func checkNotes(text, _ string, archives int) []string {
 	problems, _ := checkDoc(notesFile, text, []allowedLine{{notesFile, notesSentence, "the REQ-PLAT-001 release-notes line", false}}, archives)
 	count := 0
 	for _, u := range units(text) {
@@ -1131,16 +1182,27 @@ func checkNotes(text string, archives int) []string {
 // binaries are shipped and point to the container image; nothing else in them names a non-Linux platform
 // or claims an archive count other than the one .goreleaser.yaml produces.
 func TestNextReleaseNotesSayLinuxOnly(t *testing.T) {
-	for _, p := range checkNotes(read(t, notesFile), releaseArchiveCount(t)) {
+	for _, p := range checkNotes(readOptional(t, notesFile), readOptional(t, changelogFile), releaseArchiveCount(t)) {
 		t.Error(p)
 	}
 }
+
+// notesFixture is a notes file of the repository's shape carrying the Linux-only entry. The mutants are made
+// from it, not from the repository's file, so they stay meaningful after the release flow publishes the entry
+// and clears it from the notes.
+const notesFixture = "# Notes for the next release\n\nBehavior changes since the last release, carried into its notes. Each entry ends by\n" +
+	"citing that handoff (advisor 0130).\n\n- Go 1.27: a request with more than 500 header values is rejected with 431\n" +
+	"  before it reaches the cache (owner accepted; advisor 0115).\n- " + notesSentence + " The release archives are fscache and\n" +
+	"  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).\n"
 
 // proves: REQ-PLAT-001-AC1
 // TestNextReleaseNotesCheckRefusesMutants: a second line claiming a macOS binary, a changed or missing
 // required sentence, a repeated sentence and a wrong archive count are each refused.
 func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
-	notes := read(t, notesFile)
+	notes := notesFixture
+	if ps := checkNotes(notes, "", releaseArchiveCount(t)); len(ps) > 0 {
+		t.Fatalf("the notes fixture is refused: %v", ps)
+	}
 	archives := releaseArchiveCount(t)
 	mutants := map[string]string{
 		"second line claims macOS binaries": notes + "- macOS binaries for Apple Silicon are attached to the release.\n",
@@ -1154,16 +1216,51 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"sentence repeated with emphasis":   notes + "- No **macOS** or Windows binaries are shipped; use the container image.\n",
 		"html inside the count":             notes + "- The release ships si<b>x</b> archives.\n",
 		"html inside Windows":               notes + "- A signed installer for Win<i>dows</i> ships with this release.\n",
+		// Round-4 regressions (A1, A2): unlisted elements, comments and character references inside a name; a
+		// total that disagrees with its whole.
+		"unlisted element inside Windows":    notes + "- A signed installer for Win<label>dows</label> ships with this release.\n",
+		"character reference inside Windows": notes + "- A signed installer for Win&#100;ows ships with this release.\n",
+		"comment inside Windows":             notes + "- A signed installer for Win<!--x-->dows ships with this release.\n",
+		"all six of the four archives":       notes + "- All six of the four archives are signed.\n",
 	}
 	for name, text := range mutants {
 		if text == notes {
 			t.Fatalf("mutant %q does not change the notes", name)
 		}
-		ps := checkNotes(text, archives)
+		ps := checkNotes(text, "", archives)
 		if len(ps) == 0 {
 			t.Errorf("mutant %q passes the release-notes check", name)
 		}
 		t.Logf("%s: refused: %v", name, ps)
+	}
+	// Round-4 regression (B2): the release flow publishes the entry into the changelog and removes it from the
+	// notes (bin/patch-decide.py changelog). The cleared notes pass when the changelog carries the sentence, and
+	// are refused when nothing carries it.
+	start := strings.Index(notes, "- "+notesSentence)
+	if start < 0 {
+		t.Fatalf("%s holds no entry starting %q", notesFile, notesSentence)
+	}
+	end := strings.Index(notes[start+2:], "\n- ")
+	entry := notes[start:]
+	if end >= 0 {
+		entry = notes[start : start+2+end+1]
+	}
+	cleared := strings.Replace(notes, entry, "", 1)
+	published := "# Changelog\n\n## v0.3.1 — patch release\n\n### Behavior changes\n" + strings.TrimRight(entry, "\n") + "\n"
+	if ps := checkNotes(cleared, published, archives); len(ps) > 0 {
+		t.Errorf("the notes after publication and cleanup are refused although the changelog carries the sentence: %v", ps)
+	}
+	if ps := checkNotes("", published, archives); len(ps) > 0 {
+		t.Errorf("a removed notes file is refused although the changelog carries the sentence: %v", ps)
+	}
+	if ps := checkNotes(cleared, "", archives); len(ps) == 0 {
+		t.Errorf("the notes without the sentence pass with no changelog carrying it")
+	}
+	if ps := checkNotes(cleared, "# Changelog\n\n- Linux only (advisor 0390).\n", archives); len(ps) == 0 {
+		t.Errorf("the notes without the sentence pass with a changelog that does not carry it")
+	}
+	if ps := checkNotes(notes, published, archives); len(ps) > 0 {
+		t.Errorf("the notes and the changelog both carrying the sentence are refused: %v", ps)
 	}
 }
 
@@ -1173,7 +1270,13 @@ const mappingsFile = "test-evidence/mappings.yaml"
 // packageTests returns the names of the test functions declared in this package's test files.
 func packageTests(t *testing.T) map[string]bool {
 	t.Helper()
-	entries, err := os.ReadDir(".")
+	return testsInDir(t, ".")
+}
+
+// testsInDir returns the names of the test functions declared in the test files of the package in dir.
+func testsInDir(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		t.Fatalf("read the package directory: %v", err)
 	}
@@ -1182,7 +1285,7 @@ func packageTests(t *testing.T) map[string]bool {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
-		b, err := os.ReadFile(e.Name())
+		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
 		if err != nil {
 			t.Fatalf("read %s: %v", e.Name(), err)
 		}
@@ -1356,6 +1459,14 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		{"comment wraps Apple Silicon", edit(lastRef, lastRef+"      # Apple\n      # Silicon binaries are available.\n"), "Apple"},
 		{"comment wraps OS X", edit(lastRef, lastRef+"      # runs on OS\n      # X hosts\n"), "OS"},
 		{"line comment wraps Apple Silicon", edit(lastRef, lastRef+"      - { type: inspection, ref: x } # Apple\n      # Silicon binaries\n"), "Apple"},
+		// Round-4 regressions (A1, B3): character references, unlisted elements, comments and a quoted ">" inside
+		// an attribute, each inside a name.
+		{"character reference inside Windows", edit(plat2, "so a missing variant/arch fails; Win&#100;ows is the documented equivalent\" }\n"), "Windows"},
+		{"named reference inside Apple Silicon", edit(plat2, "so a missing variant/arch fails; Apple&nbsp;Silicon is the documented equivalent\" }\n"), "Apple"},
+		{"unlisted element inside Windows", edit(plat2, "so a missing variant/arch fails; Win<label>dows</label> is the documented equivalent\" }\n"), "Windows"},
+		{"comment inside Windows", edit(plat2, "so a missing variant/arch fails; Win<!--x-->dows is the documented equivalent\" }\n"), "Windows"},
+		{"quoted > in an attribute", edit(plat2, "so a missing variant/arch fails; Win<span title='>'>dows</span> is the documented equivalent\" }\n"), "Windows"},
+		{"character reference in a comment", edit(lastRef, lastRef+"      # Win&#x64;ows is a documented equivalent\n"), "Windows"},
 	}
 	// A test function that is commented out, or that is not a top-level test, does not authorize a reference.
 	const fake = "package platforms\n\nimport \"testing\"\n\n/*\nfunc TestDarwin(t *testing.T) {\n}\n*/\n\n// func TestMacOS(t *testing.T) {\n\nvar s = `\nfunc TestWindows(t *testing.T) {\n`\n\nfunc TestReal(t *testing.T) {}\n"
@@ -1371,6 +1482,37 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		withFake[k] = true
 	}
 	mutants = append(mutants, struct{ name, text, want string }{"commented-out test authorizes a ref", edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/platforms:TestDarwin\" }\n"), "Darwin"})
+	// Round-4 regression (B5): a test file the go tool does not select for the verification platforms
+	// (linux/amd64 and linux/arm64) declares no test: an ignore constraint, a file name for another GOOS, a
+	// constraint for one architecture only. Only TestReal is declared.
+	dir := t.TempDir()
+	for name, src := range map[string]string{
+		"real_test.go":           "package fake\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\n",
+		"ignored_test.go":        "//go:build ignore\n\npackage fake\n\nimport \"testing\"\n\nfunc TestDarwin(t *testing.T) {}\n",
+		"host_windows_test.go":   "package fake\n\nimport \"testing\"\n\nfunc TestWindows(t *testing.T) {}\n",
+		"host_darwin_test.go":    "package fake\n\nimport \"testing\"\n\nfunc TestMacOS(t *testing.T) {}\n",
+		"amd64_only_test.go":     "//go:build linux && amd64\n\npackage fake\n\nimport \"testing\"\n\nfunc TestAmd64Only(t *testing.T) {}\n",
+		"legacy_ignore_test.go":  "// +build ignore\n\npackage fake\n\nimport \"testing\"\n\nfunc TestOSX(t *testing.T) {}\n",
+		"other_external_test.go": "package fake_test\n\nimport \"testing\"\n\nfunc TestExternal(t *testing.T) {}\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	selected := testsInDir(t, dir)
+	if len(selected) != 2 || !selected["TestReal"] || !selected["TestExternal"] {
+		t.Errorf("the tests declared in build-selected files are %v, want only TestReal and TestExternal", selected)
+	}
+	withSelected := map[string]bool{}
+	for k := range tests {
+		withSelected[k] = true
+	}
+	for k := range selected {
+		withSelected[k] = true
+	}
+	if ps := checkEvidenceMappings(edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/platforms:TestDarwin\" }\n"), withSelected); !strings.Contains(strings.Join(ps, "\n"), "Darwin") {
+		t.Errorf("a test declared only in an ignored file authorizes a ref: %v", ps)
+	}
 	for _, m := range mutants {
 		ps := checkEvidenceMappings(m.text, withFake)
 		if !strings.Contains(strings.ToLower(strings.Join(ps, "\n")), strings.ToLower(m.want)) {

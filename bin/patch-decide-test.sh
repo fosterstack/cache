@@ -510,9 +510,29 @@ try:
 except ValueError as e:
     real_ents, real_err = [], e
 check("0130 the repository's docs/next-release-notes.md passes the notes validator", real_err is None, real_err)
-check("0390 the Linux-only entry cites advisor 0390",
-      any(e.startswith("No macOS or Windows binaries are shipped") and e.endswith("(owner decision, Oct 9; advisor 0390).")
-          for e in real_ents), real_ents)
+def linux_only_ok(ents):
+    return any(e.startswith("No macOS or Windows binaries are shipped") and e.endswith("(owner decision, Oct 9; advisor 0390).")
+               for e in ents)
+check("0390 the Linux-only entry cites advisor 0390", linux_only_ok(real_ents), real_ents)
+# Codex #293 r4 B2: after the entry is published, the release flow's changelog step removes it from the notes; the
+# cleared notes still pass the validator and the Linux-only assertion (it applies to the entry only while present)
+LO_ENTRY = ("No macOS or Windows binaries are shipped; use the container image. The release archives are fscache and fscache-fips "
+            "for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).")
+LO_NRN = NRN + "- " + LO_ENTRY[:60] + "\n  " + LO_ENTRY[60:] + "\n"
+lo_pub = "## v0.3.1 — patch release\n\n### Behavior changes\n- " + LO_ENTRY + "\n"
+lo_cl, lo_cleared = P.changelog(lo_pub, None, LO_NRN)
+try:
+    lo_ents = P.behavior_entries(lo_cleared); lo_err = None
+except ValueError as e:
+    lo_ents, lo_err = [], e
+check("0390 the notes carrying the Linux-only entry pass the validator and the Linux-only assertion",
+      linux_only_ok(P.behavior_entries(LO_NRN)), P.behavior_entries(LO_NRN))
+check("0390 publication moves the Linux-only entry into the changelog and out of the notes",
+      ("- " + LO_ENTRY) in lo_cl and "No macOS" not in lo_cleared, (lo_cl, lo_cleared))
+check("0390 the cleared notes pass the validator", lo_err is None, lo_err)
+check("0390 the cleared notes pass the Linux-only assertion (the entry is gone, not uncited)", linux_only_ok(lo_ents), lo_ents)
+check("0390 an uncited Linux-only entry fails the Linux-only assertion",
+      not linux_only_ok(["No macOS or Windows binaries are shipped; use the container image (advisor 0130)."]))
 check("0130 an empty file has no entries", P.behavior_entries("# Notes for the next release\n\nBehavior changes since the last release, carried into its notes.\n") == [])
 for bad in ["- A change nobody judged.\n", "- A change (owner said so).\n", "- A change (advisor 15).\n"]:
     try:
