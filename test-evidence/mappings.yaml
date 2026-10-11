@@ -712,6 +712,81 @@ mappings:
       - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
       - { type: inspection, ref: ".github/agent/bin/tests/test_review_gate.py covers every failing reason of the review gate; it still carries only the AC4 proves header because a change to it needs a real codex entry (header follow-up) (re-verified 2026-10-09)" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml: the auditor-review-gate check on pull_request_target" }
+  - ac: REQ-CHAIN-004-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
+  - ac: REQ-CHAIN-004-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+  - ac: REQ-CHAIN-004-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+  - ac: REQ-CHAIN-004-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-admit-test.sh" }
+  - ac: REQ-CHAIN-004-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
+  - ac: REQ-CHAIN-005-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
+  - ac: REQ-CHAIN-005-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-005-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
+  - ac: REQ-CHAIN-004-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+  - ac: REQ-CHAIN-004-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/chain-snapshot-test.sh" }
+  - ac: REQ-CHAIN-005-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-build-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-rebuild-test.sh" }
+      - { type: shell-test, ref: "bin/chain-bind-test.sh" }
   - ac: REQ-AUD-018-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_review_gate.py" }

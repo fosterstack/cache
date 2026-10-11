@@ -348,54 +348,47 @@ jobs:
             gh pr update-branch "$number" || true
           fi
 
-  admission:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    uses: ./.github/workflows/stage-admission.yml
-
-  # A real release builds only after admission succeeded. A dry run has no admission (a manual run skips it), so it builds in
-  # snapshot mode, which neither needs the admission artifact nor publishes GitHub attestations for a branch build.
+  # ---------------------------------------------------------------------------------------------------------------
+  # The v0.3.0 chain (PR 2: Build and Rebuild; REQ-CHAIN-004, REQ-CHAIN-005). Build, Sign and Rebuild carry the rules of
+  # bin/chain-build-wiring-test.sh (an exact grammar for this graph). The gate G is the same text on build and sign: the chain
+  # starts on a v* tag PUSH, or in a dry-run dispatch on any branch (a manual dispatch on an existing v* tag is not a release
+  # run). Rebuild has no `if`: it runs after Build through `needs`, and a skipped Build skips it.
+  # The jobs below `rebuild` that are not decide/patch-*/hostile-* are the OLD chain (scans, acceptance*, authorization,
+  # promotion); PRs 3 and 4 replace them with Check and Release, and until then the graph test of this file stays red.
   build:
-    if: ${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}
-    needs: admission
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
+    permissions:
+      contents: read
+      checks: read
+      statuses: read
+      pull-requests: read
+      id-token: write
     uses: ./.github/workflows/stage-build.yml
     with:
-      mode: ${{ inputs.dry-run && 'snapshot' || 'release' }}
-      admission-artifact: ${{ needs.admission.outputs.admission-artifact }}
       hostile: ${{ inputs.dry-run == true && github.ref_type == 'branch' }}   # the hostile Build step runs only in a dry run on a branch
 
-  # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here. In PR 1 it runs only in the dry run; PR 4 makes
-  # it part of the chain. The digests are a placeholder until PR 2's Build writes digests.json.
+  # The Sign job of v0.3.0 (rule 52): its own workflow file, called only from here, with the digests.json text Build wrote.
   sign:
-    if: ${{ inputs.dry-run }}
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     needs: build
     permissions:
       contents: read
       id-token: write
     uses: ./.github/workflows/stage-sign.yml
     with:
-      digests: ${{ needs.build.outputs.checksums }}
+      digests: ${{ needs.build.outputs.digests }}
 
-  image:
-    if: ${{ !inputs.dry-run }}
+  # Rebuild (rule 54): fresh runners rebuild everything Build built and compare every item; its only output is the verdict.
+  rebuild:
     needs: build
-    uses: ./.github/workflows/stage-image.yml
-    with:
-      mode: release
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-
-  reproducibility:
-    if: ${{ !inputs.dry-run }}
-    needs: [build, image]
+    permissions:
+      contents: read
+      id-token: write
     uses: ./.github/workflows/stage-reproducibility.yml
-    with:
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-      digests: ${{ needs.image.outputs.digests }}
 
   scans:
     if: ${{ !inputs.dry-run }}
-    needs: [build, image, reproducibility]
+    needs: [build, rebuild]
     uses: ./.github/workflows/stage-verify.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
@@ -405,7 +398,7 @@ jobs:
 
   acceptance-artifacts:
     if: ${{ !inputs.dry-run }}
-    needs: [build, image, reproducibility]
+    needs: [build, rebuild]
     uses: ./.github/workflows/stage-acceptance-artifacts.yml
     with:
       dist-artifact: dist-release
@@ -415,28 +408,28 @@ jobs:
 
   acceptance:
     if: ${{ !inputs.dry-run }}
-    needs: [image, reproducibility]
+    needs: [rebuild]
     uses: ./.github/workflows/acceptance.yml
     with:
       image-ref: ghcr.io/${{ github.repository_owner }}/cache-candidates@${{ fromJSON(needs.image.outputs.digests).production }}
 
   acceptance-egress:
     if: ${{ !inputs.dry-run }}
-    needs: [image, reproducibility]
+    needs: [rebuild]
     uses: ./.github/workflows/stage-acceptance-egress.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance-k8s:
     if: ${{ !inputs.dry-run }}
-    needs: [image, reproducibility]
+    needs: [rebuild]
     uses: ./.github/workflows/stage-acceptance-k8s.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
 
   acceptance-predicate:
     if: ${{ !inputs.dry-run }}
-    needs: [admission, image, acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
+    needs: [acceptance-artifacts, acceptance, acceptance-egress, acceptance-k8s]
     uses: ./.github/workflows/stage-acceptance-predicate.yml
     with:
       digests: ${{ needs.image.outputs.digests }}
@@ -449,7 +442,7 @@ jobs:
 
   authorization:
     if: ${{ !inputs.dry-run }}
-    needs: [admission, build, image, scans, acceptance-predicate]
+    needs: [build, scans, acceptance-predicate]
     # The caller grants what stage-authorize's `authorize` job needs (a reusable workflow cannot
     # raise its caller's grant, R01): contents:read, id-token:write to sign the release-
     # authorization predicate, and issues:read so it can read the owner-decision issue acceptance
@@ -469,7 +462,7 @@ jobs:
 
   promotion:
     if: ${{ !inputs.dry-run }}
-    needs: [admission, build, image, authorization]
+    needs: [build, authorization]
     uses: ./.github/workflows/stage-promote.yml
     with:
       baseline-version: ${{ needs.admission.outputs.baseline }}
@@ -569,7 +562,7 @@ jobs:
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    needs: [admission, build, image, reproducibility, scans, acceptance-artifacts, acceptance,
+    needs: [build, sign, rebuild, scans, acceptance-artifacts, acceptance,
             acceptance-egress, acceptance-k8s, acceptance-predicate, authorization, promotion]
     runs-on: ubuntu-latest
     permissions:
