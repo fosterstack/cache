@@ -754,7 +754,7 @@ _STR_PREFIX = re.compile(r"^[bBrRuUfFtT]{1,2}(?=[\"'])")
 # after a ; is looser than the command). A shape this reader does not list is refused, fail closed (advisor 0080): a new shape the list does not refuse
 # is a defect in the list. The forms: (a) a plain shell line whose download is the command word curl with arguments from the curl option list;
 # (b) "curl" first in the list that is the whole first argument of a subprocess call that IS the line; (c) for repo:self, the gh release download prefix
-# followed by plain words, never -R or --repo (OPEN-1). wget is not listed (OPEN-3).
+# followed by plain words, never -R or --repo and no later gh in ANY command segment of the line (OPEN-1, OPEN-2; Codex round 6). wget is not listed (OPEN-3).
 _SH_KEYWORDS = {"if", "then", "do", "else", "elif", "while", "until", "!", "time", "fi", "done"}
 _SH_SEP = {";", "&&", "||", "|"}
 _SH_WORD = re.compile(r"""(?:"[^"]*"|'[^']*'|[^\s"'])+""")
@@ -770,13 +770,15 @@ _PY_WORDS = {"and", "or", "not", "is", "in", "if", "else", "for", "as", "lambda"
 _CURL_SHORT = re.compile(r"-[fsSL]*[oO]?")
 _CURL_FLAGS = {"--fail", "--silent", "--show-error", "--location"}
 _CURL_VALUED = {"--output": "file", "--retry": "count", "--max-time": "count"}
-_COUNT = re.compile(r"[0-9]{1,5}")
+_COUNT = re.compile(r"[0-9]+")                                        # N digits, as many as written (Codex B round 6 P3)
 _GLOB = set("[]{}")                                                   # curl's own URL globbing: never in a curl argument, quoted or not
 _REDIRECT_LONG = ("--location", "--location-trusted", "--follow", "--config")
 # the Python form: the WHOLE line is one subprocess call (optionally assigned to a plain name), its first argument a list whose first element is "curl"
 _PY_HEAD = re.compile(r"(?:[A-Za-z_]\w* ?= ?)?subprocess\.(?:run|call|check_call|check_output|Popen) ?")
-_PY_STR = re.compile(r"""\s*([rRbBuU]{0,2})("[^"\\]*"|'[^'\\]*')\s*(?:,|$)""")
-_PY_NAME = re.compile(r"\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*(?:,|$)")
+# a list element: a plain string literal with an optional ONE-letter r, b or u prefix (rr, bu, rb, f, t are not listed: Codex round 6 P3), or a NAME
+# (never an attribute, a subscript or a call: Codex A round 6 P2) only as the FILE after "-o" or "--output"
+_PY_STR = re.compile(r"""\s*([rRbBuU]?)("[^"\\]*"|'[^'\\]*')\s*(?:,|$)""")
+_PY_NAME = re.compile(r"\s*([A-Za-z_]\w*)\s*(?:,|$)")
 _PY_KWARGS = re.compile(r"(?:\s*,\s*(?:stdout|stderr|check|timeout|capture_output|text)\s*=\s*[A-Za-z0-9_.]+)*\s*,?\s*")
 
 
@@ -827,16 +829,32 @@ def _sh_items(args):
     return out
 
 
+_GH_WORD = re.compile(r"\bgh\b")
+
+
+def _repo_selector(t):
+    """Why the word T (its quotes removed) names a repository or runs gh after the repo:self prefix, else None. OPEN-1: -R (any single-dash word holding
+    R, glued -Rfoo too) and --repo (--r, --re, --rep, --repo, --repo=..., --repository) are refused by name; OPEN-2 (Codex round 6, A P1 and B P2): in EVERY
+    command segment of the line, not only the first, and no word after the prefix holds gh (the prefix is the only listed gh: a later gh release download,
+    gh api, env GH_REPO=x gh, bash -c 'gh ...' is not pinned to the repository itself)."""
+    a = t.replace('"', "").replace("'", "")
+    name = a.split("=", 1)[0]
+    if a.startswith("-") and not a.startswith("--") and "R" in a:
+        return f"{t} names a repository after the repo:self prefix (-R is refused by name, in every command of the line)"
+    if a.startswith("--") and len(name) > 2 and ("--repo".startswith(name) or name.startswith("--repo")):
+        return f"{t} names a repository after the repo:self prefix (--repo is refused by name, any abbreviation too, in every command of the line)"
+    if _GH_WORD.search(a):
+        return f"{t} runs gh after the repo:self prefix (the prefix is the only listed gh on a repo:self line)"
+    return None
+
+
 def _gh_options(args):
     """None when the words after the repo:self prefix are plain (options spelled plainly, never -R or --repo or any spelling of them: OPEN-1), else why."""
     after_option = False
     for a in args:
         if a.startswith("-"):
-            name = a.split("=", 1)[0]
-            if not a.startswith("--") and "R" in a:
-                return f"{a} names a repository after the repo:self prefix (-R is refused by name)"
-            if a.startswith("--") and len(name) > 2 and ("--repo".startswith(name) or name.startswith("--repo")):
-                return f"{a} names a repository after the repo:self prefix (--repo is refused by name, any abbreviation too)"
+            if _repo_selector(a):
+                return _repo_selector(a)
             if not _SH_OPTION.fullmatch(a):
                 return f"the option {a} is not spelled plainly"
             after_option = True
@@ -869,6 +887,8 @@ def _shell_listed(flat, gh=False):
     (state, cmd, args), curls = (("args", "gh", []) if gh else ("start", None, [])), 0
     finish = lambda: (_option_list(_sh_items(args)) if args else "curl with no argument") if cmd == "curl" else _gh_options(args) if cmd == "gh" else None
     for t in toks:
+        if gh and t not in _SH_SEP and _repo_selector(t):    # OPEN-1 and OPEN-2: every segment of a repo:self line, not only the first (Codex round 6)
+            return _repo_selector(t)
         if t in _SH_SEP:
             if state == "start":
                 return f"an empty command before {t}"
