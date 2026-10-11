@@ -226,6 +226,7 @@ mappings:
       - { type: go-test, ref: "internal/platforms:TestDocsCheckRefusesMutants" }
       - { type: go-test, ref: "internal/platforms:TestNextReleaseNotesCheckRefusesMutants" }
       - { type: go-test, ref: "internal/platforms:TestEvidenceMappingsClaimNoDarwin" }
+      - { type: go-test, ref: "internal/platforms:TestEvidenceMappingsCheckRefusesMutants" }
       - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: archive set asserted, linux/amd64 binaries executed (a frozen legacy stage file: its six-archive count is rewritten to the four Linux archives by the release-chain pull request that replaces it)" }
   - ac: REQ-PLAT-003-AC1
     evidence:

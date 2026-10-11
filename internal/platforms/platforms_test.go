@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -192,10 +193,43 @@ func checkReleaseConfig(text string) []string {
 			problems = append(problems, fmt.Sprintf("build %q goarch is %v, want exactly [amd64 arm64]", b.id, b.goarch))
 		}
 	}
+	archives, aproblems := releaseArchives(text, builds)
+	problems = append(problems, aproblems...)
+	var got []string
+	for _, a := range archives {
+		got = append(got, a.String())
+	}
+	sort.Strings(got)
+	if strings.Join(got, ", ") != strings.Join(wantArchives, ", ") {
+		problems = append(problems, fmt.Sprintf("the archives are [%s], want exactly the four Linux archives [%s]", strings.Join(got, ", "), strings.Join(wantArchives, ", ")))
+	}
 	if regexp.MustCompile(`(?i)darwin|windows|macos`).MatchString(text) {
 		problems = append(problems, "names darwin, windows or macos")
 	}
 	return problems
+}
+
+// wantArchives are the four Linux archives REQ-PLAT-001-AC1 names, one tar.gz per build, goos and goarch.
+var wantArchives = []string{"fscache linux/amd64 tar.gz", "fscache linux/arm64 tar.gz", "fscache-fips linux/amd64 tar.gz", "fscache-fips linux/arm64 tar.gz"}
+
+// releaseArchive is one archive file a release produces.
+type releaseArchive struct{ build, goos, goarch, format string }
+
+func (a releaseArchive) String() string {
+	return a.build + " " + a.goos + "/" + a.goarch + " " + a.format
+}
+
+// releaseArchives lists every archive file the release configuration produces.
+func releaseArchives(text string, builds []relBuild) (archives []releaseArchive, problems []string) {
+	_ = text
+	for _, b := range builds {
+		for _, o := range b.goos {
+			for _, a := range b.goarch {
+				archives = append(archives, releaseArchive{b.id, o, a, "tar.gz"})
+			}
+		}
+	}
+	return archives, nil
 }
 
 // proves: REQ-PLAT-001-AC1
@@ -252,6 +286,43 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"tab-indented top-level line":       real + "\n\tbuilds: []\n",
 		"repeated other top-level key":      real + "\nrelease:\n  draft: true\n",
 		"no builds section":                 edit("\nbuilds:\n", "\nbuildz:\n"),
+	}
+	const stdFormats = "    formats:\n      - tar.gz\n    name_template: >-\n      {{ .ProjectName }}_{{"
+	const fipsFormats = "    formats:\n      - tar.gz\n    name_template: >-\n      {{ .ProjectName }}-fips_{{"
+	const fipsIDs = "    ids:\n      - fscache-fips\n"
+	// Archive mutants: each could add, drop or reshape an archive file while the builds stay Linux-only.
+	archiveMutants := map[string]string{
+		"zip format beside tar.gz":           edit(stdFormats, "    formats:\n      - tar.gz\n      - zip\n    name_template: >-\n      {{ .ProjectName }}_{{"),
+		"zip format replaces tar.gz":         edit(fipsFormats, "    formats:\n      - zip\n    name_template: >-\n      {{ .ProjectName }}-fips_{{"),
+		"flow formats with zip":              edit(stdFormats, "    formats: [tar.gz, zip]\n    name_template: >-\n      {{ .ProjectName }}_{{"),
+		"tar.gz listed twice":                edit(stdFormats, "    formats:\n      - tar.gz\n      - tar.gz\n    name_template: >-\n      {{ .ProjectName }}_{{"),
+		"templated format":                   edit(stdFormats, "    formats:\n      - \"{{ .Env.FORMAT }}\"\n    name_template: >-\n      {{ .ProjectName }}_{{"),
+		"singular format key":                edit(stdFormats, "    format: zip\n"+stdFormats),
+		"no formats key":                     edit(stdFormats, "    name_template: >-\n      {{ .ProjectName }}_{{"),
+		"format_overrides":                   edit(stdFormats, "    format_overrides:\n      - formats:\n          - zip\n"+stdFormats),
+		"wrap_in_directory":                  edit(stdFormats, "    wrap_in_directory: true\n"+stdFormats),
+		"files key":                          edit(stdFormats, "    files:\n      - LICENSE\n"+stdFormats),
+		"third archive definition":           edit("\nchecksum:", "\n  - id: fscache-extra\n    ids:\n      - fscache\n    formats:\n      - tar.gz\n    name_template: extra_{{ .Os }}_{{ .Arch }}\n\nchecksum:"),
+		"archive without ids":                edit(fipsIDs, ""),
+		"archive id names no build":          edit(fipsIDs, "    ids:\n      - fscache-fips\n      - fscache-bsd\n"),
+		"build in two archives, one in none": edit(fipsIDs, "    ids:\n      - fscache\n"),
+		"repeated archive id":                edit("  - id: fscache-fips-archive\n", "  - id: fscache-archive\n"),
+		"flow archive entry":                 edit("\nchecksum:", "\n  - {id: x, ids: [fscache], formats: [zip], name_template: x}\n\nchecksum:"),
+		"nfpms section":                      real + "\nnfpms:\n  - id: pkg\n    formats:\n      - deb\n",
+		"source archive":                     real + "\nsource:\n  enabled: true\n",
+		"universal binaries":                 real + "\nuniversal_binaries:\n  - id: u\n",
+		"release extra_files":                edit("  draft: true\n", "  draft: true\n  extra_files:\n    - glob: ./dist/*.zip\n"),
+		"checksum extra_files":               edit("  name_template: \"checksums.txt\"\n", "  name_template: \"checksums.txt\"\n  extra_files:\n    - glob: ./dist/*.zip\n"),
+		"sbom over binaries":                 edit("  - artifacts: archive\n", "  - artifacts: binary\n"),
+		"goamd64 levels":                     edit(fipsGoos, fipsGoos[:len(fipsGoos)-len("    goos:\n      - linux\n")]+"    goamd64:\n      - v1\n      - v3\n    goos:\n      - linux\n"),
+		"skipped build":                      edit(fipsGoos, fipsGoos+"    skip: true\n"),
+		"prebuilt builder":                   edit(fipsGoos, fipsGoos+"    builder: prebuilt\n"),
+	}
+	for name, text := range archiveMutants {
+		if _, dup := mutants[name]; dup {
+			t.Fatalf("mutant %q listed twice", name)
+		}
+		mutants[name] = text
 	}
 	for name, text := range mutants {
 		ps := checkReleaseConfig(text)
@@ -469,6 +540,31 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"digit archive count":         install + "\nEvery release ships 6 archives.\n",
 		"darwin archive name":         install + "\nDownload `fscache_1.0.0_darwin_arm64.tar.gz`.\n",
 		"claim inside a code fence":   install + "\n```sh\n# macOS: fscache_1.0.0_mac.tar.gz\n```\n",
+		// Round-2 regressions (both seats): inline Markdown, wider gaps, a count after "of", more number words.
+		"bold six archives":            install + "\nEvery release ships **six** archives.\n",
+		"italic six archives":          install + "\nEvery release ships _six_ archives.\n",
+		"code-span six archives":       install + "\nEvery release ships `six` archives.\n",
+		"linked six archives":          install + "\nEvery release ships [six](https://example.com/x) archives.\n",
+		"html bold six archives":       install + "\nEvery release ships <b>six</b> archives.\n",
+		"three words between":          install + "\nEvery release ships six signed Linux release archives.\n",
+		"five words between":           install + "\nEvery release ships six signed, static, stripped Linux release archives.\n",
+		"one of six archives":          install + "\nChoose one of six archives.\n",
+		"one of 6 archives":            install + "\nChoose one of 6 archives.\n",
+		"wrapped one of six archives":  install + "\nChoose one of\nsix archives.\n",
+		"thirteen archives":            install + "\nEvery release ships thirteen archives.\n",
+		"twenty archives":              install + "\nEvery release ships twenty archives.\n",
+		"a single archive":             install + "\nEvery release is a single archive.\n",
+		"one archive per platform":     install + "\nThere is one archive per platform.\n",
+		"both archives":                install + "\nDownload both archives.\n",
+		"a dozen archives":             install + "\nEvery release ships a dozen archives.\n",
+		"zero archives":                install + "\nThe release has zero archives.\n",
+		"twenty-four archives":         install + "\nEvery release ships twenty-four archives.\n",
+		"one hundred archives":         install + "\nEvery release ships one hundred archives.\n",
+		"a couple of archives":         install + "\nEvery release ships a couple of archives.\n",
+		"several archives":             install + "\nEvery release ships several archives.\n",
+		"hyphenated six-archive":       install + "\nThis is a six-archive release.\n",
+		"bold wrapped Windows":         install + "\nNative binaries for Win**dows** are attached.\n",
+		"bold Apple Silicon, no space": install + "\nNative binaries for Apple**Silicon** are attached.\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -476,6 +572,19 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 			t.Errorf("mutant %q passes the docs check", name)
 		}
 		t.Logf("%s: refused: %v", name, ps)
+	}
+	// Precision: these name archives without claiming a count other than the one .goreleaser.yaml produces.
+	for _, ok := range []string{
+		"One of the archives is the FIPS build.",
+		"One of the four archives is the FIPS build; two of the four archives are arm64.",
+		"Download an archive for your machine, then verify the archive.",
+		"There is no archive for this machine.",
+		"All **four** Linux archives are signed.",
+		"Every release ships a `checksums.txt` covering all four Linux archives.",
+	} {
+		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
+			t.Errorf("%q is refused: %v", ok, ps)
+		}
 	}
 	var without []allowedLine
 	for _, a := range allowedLines {
@@ -535,6 +644,9 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"sentence extended":                 strings.Replace(notes, notesSentence, strings.TrimSuffix(notesSentence, ".")+", or the macOS archive.", 1),
 		"sentence repeated":                 notes + "- " + notesSentence + "\n",
 		"archive count":                     notes + "- The release ships six archives.\n",
+		"bold archive count":                notes + "- The release ships **six** archives.\n",
+		"count after one of":                notes + "- Pick one of six archives.\n",
+		"sentence repeated with emphasis":   notes + "- No **macOS** or Windows binaries are shipped; use the container image.\n",
 	}
 	for name, text := range mutants {
 		if text == notes {
@@ -548,15 +660,100 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 	}
 }
 
+// mappingsFile is the AC-to-evidence mappings file.
+const mappingsFile = "test-evidence/mappings.yaml"
+
+// testFunc finds a top-level test function declaration in a Go test file.
+var testFunc = regexp.MustCompile(`(?m)^func (Test[A-Za-z0-9_]+)\(t \*testing\.T\) \{`)
+
+// packageTests returns the names of the test functions declared in this package's test files.
+func packageTests(t *testing.T) map[string]bool {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("read the package directory: %v", err)
+	}
+	tests := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(e.Name())
+		if err != nil {
+			t.Fatalf("read %s: %v", e.Name(), err)
+		}
+		for _, m := range testFunc.FindAllStringSubmatch(string(b), -1) {
+			tests[m[1]] = true
+		}
+	}
+	return tests
+}
+
+// checkEvidenceMappings returns every platform name in the evidence mappings outside an exact reference to
+// one of this package's tests.
+func checkEvidenceMappings(text string, tests map[string]bool) (problems []string) {
+	_ = tests
+	names := regexp.MustCompile(`internal/platforms:Test[A-Za-z]+`)
+	for n, line := range strings.Split(text, "\n") {
+		if m := platformWord.FindString(names.ReplaceAllString(line, "")); m != "" {
+			problems = append(problems, fmt.Sprintf("%s:%d names %q: %s", mappingsFile, n+1, m, strings.TrimSpace(line)))
+		}
+	}
+	return problems
+}
+
 // proves: REQ-PLAT-001-AC1
 // TestEvidenceMappingsClaimNoDarwin: test-evidence/mappings.yaml names no darwin, macOS, Mac, Apple Silicon,
-// OS X or Windows platform as evidence; the only mentions allowed are the names of this package's tests.
+// OS X or Windows platform as evidence; the only mentions allowed are exact go-test references to this
+// package's existing tests.
 func TestEvidenceMappingsClaimNoDarwin(t *testing.T) {
-	names := regexp.MustCompile(`internal/platforms:Test[A-Za-z]+`)
-	for n, line := range strings.Split(read(t, "test-evidence/mappings.yaml"), "\n") {
-		if m := platformWord.FindString(names.ReplaceAllString(line, "")); m != "" {
-			t.Errorf("test-evidence/mappings.yaml:%d names %q: %s", n+1, m, strings.TrimSpace(line))
+	tests := packageTests(t)
+	for _, name := range []string{"TestDocsClaimNoDarwinOrWindowsBinary", "TestEvidenceMappingsClaimNoDarwin"} {
+		if !tests[name] {
+			t.Fatalf("the test-function scan does not find %s in this package", name)
 		}
+	}
+	for _, p := range checkEvidenceMappings(read(t, mappingsFile), tests) {
+		t.Error(p)
+	}
+}
+
+// proves: REQ-PLAT-001-AC1
+// TestEvidenceMappingsCheckRefusesMutants: a platform name in the evidence mappings is refused wherever it
+// is, once the YAML is decoded: in a fabricated or misplaced test reference, in prose, in a quoted, escaped
+// or folded scalar that wraps the name across lines, in a comment, and in a second document.
+func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
+	real := read(t, mappingsFile)
+	tests := packageTests(t)
+	const lastRef = "      - { type: go-test, ref: \"internal/platforms:TestEvidenceMappingsClaimNoDarwin\" }\n"
+	const plat2 = "so a missing variant/arch fails\" }\n"
+	edit := func(old, new string) string {
+		if strings.Count(real, old) != 1 {
+			t.Fatalf("mutant anchor not found exactly once: %q", old)
+		}
+		return strings.Replace(real, old, new, 1)
+	}
+	mutants := []struct{ name, text, want string }{
+		{"fabricated go-test name", edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/platforms:TestDarwin\" }\n"), "Darwin"},
+		{"fabricated name in prose", edit(plat2, "so a missing variant/arch fails (internal/platforms:TestDarwinBinariesRun)\" }\n"), "Darwin"},
+		{"real name in prose", edit(plat2, "so a missing variant/arch fails; see internal/platforms:TestDocsClaimNoDarwinOrWindowsBinary\" }\n"), "Darwin"},
+		{"real name under another type", edit(lastRef, lastRef+"      - { type: shell-test, ref: \"internal/platforms:TestDocsClaimNoDarwinOrWindowsBinary\" }\n"), "Darwin"},
+		{"real name in another package", edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/server:TestDocsClaimNoDarwinOrWindowsBinary\" }\n"), "Darwin"},
+		{"real name with a suffix", edit(lastRef, lastRef+"      - { type: go-test, ref: \"internal/platforms:TestDocsClaimNoDarwinOrWindowsBinary on macOS\" }\n"), "macOS"},
+		{"double-quoted scalar wraps Apple Silicon", edit(plat2, "so a missing variant/arch fails; Apple\n        Silicon is the documented equivalent\" }\n"), "Apple"},
+		{"escaped line break joins Apple Silicon", edit(plat2, "so a missing variant/arch fails; Apple\\\n        Silicon is the documented equivalent\" }\n"), "Apple"},
+		{"escape sequence spells macOS", edit(plat2, "so a missing variant/arch fails; \\x6dacOS is the documented equivalent\" }\n"), "macOS"},
+		{"single-quoted scalar wraps OS X", edit(lastRef, lastRef+"      - { type: inspection, ref: 'runs on OS\n          X hosts' }\n"), "OS X"},
+		{"folded block scalar wraps Mac OS", edit(lastRef, lastRef+"      - type: inspection\n        ref: >-\n          runs on Mac\n          OS hosts\n"), "Mac OS"},
+		{"comment names Windows", edit(lastRef, lastRef+"      # Windows is a documented equivalent\n"), "Windows"},
+		{"second document", real + "---\nnote: darwin is a documented equivalent\n", "darwin"},
+	}
+	for _, m := range mutants {
+		ps := checkEvidenceMappings(m.text, tests)
+		if !strings.Contains(strings.ToLower(strings.Join(ps, "\n")), strings.ToLower(m.want)) {
+			t.Errorf("mutant %q: the check does not name %q: %v", m.name, m.want, ps)
+		}
+		t.Logf("%s: refused: %v", m.name, ps)
 	}
 }
 

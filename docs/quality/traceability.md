@@ -402,7 +402,7 @@ Every release shall ship static (CGO_ENABLED=0) standard and FIPS-variant binari
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
-| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 9 item(s) |
+| REQ-PLAT-001-AC1 | Given a release's artifact set; when it is enumerated; then exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists, and each binary executes on its platform (or a documented equivalent) | acceptance-release-artifact | yes | approved | 10 item(s) |
 
 ### REQ-PLAT-002 — Image variants and multi-arch
 
