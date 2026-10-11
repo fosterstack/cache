@@ -706,8 +706,13 @@ for label, n_ in (("vulnerability.description", dict(FULL, vulnerability={"name"
     vc_ = P.vex_changes(vd(FULL), vd(n_))
     check("AC8 VEX nested %s change: 'changed: %s'" % (label, want_), [v["change"] for v in vc_] == ["changed: " + want_], vc_)
     vc_ = P.vex_changes(vd(FULL, vs(products=D1)), vd(vs(products=D1), n_))
-    check("AC8 VEX nested %s change beside another statement: one changed entry" % label,
-          [v["change"] for v in vc_] == (["changed: " + want_] if want_ == "vulnerability" else ["added", "removed"]), vc_)
+    check("AC8 VEX nested %s change beside another statement: one changed entry (paired by its own @id)" % label,
+          [v["change"] for v in vc_] == ["changed: " + want_], vc_)
+    o_, n_ = {k: v for k, v in FULL.items() if k != "@id"}, {k: v for k, v in n_.items() if k != "@id"}
+    vc_ = P.vex_changes(vd(o_, vs(products=D1)), vd(vs(products=D1), n_))
+    check("AC8 VEX nested %s change beside another statement, no @id: %s" % (label, "one changed entry (its scope is unique)"
+          if want_ == "vulnerability" else "removed + added (its scope changed: nothing pairs it)"),
+          sorted(v["change"] for v in vc_) == (["changed: " + want_] if want_ == "vulnerability" else ["added", "removed"]), vc_)
 # every document field, one by one, changed / dropped / added (type-sensitive: 1 -> true is a change)
 DOC = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://example.invalid/vex", "author": "a", "role": "r",
        "timestamp": "t1", "last_updated": "t1", "version": 1, "tooling": "t", "statements": [VS]}

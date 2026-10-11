@@ -309,8 +309,10 @@ def notes(version, fixes, vex_changes, behavior=()):
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
     stmts = [v for v in vex_changes if "document" not in v]
-    lines += ["- %s%s: %s (%s)" % (v["cve"], " [%s]" % ", ".join(v["products"]) if v.get("products") else "",
-                                   v["status"], v["change"]) for v in stmts]
+    lines += ["- %s%s: %s (%s)%s" % (
+        v["cve"], " [products unreadable]" if v.get("products_unreadable")
+        else " [%s]" % ", ".join(v["products"]) if v.get("products") else "",
+        v["status"], v["change"], " — %s" % v["statement"] if v.get("statement") else "") for v in stmts]
     lines += ["- document fields changed (%s)%s" % (", ".join(v["document"]), "" if stmts else "; no statement changed")
               for v in vex_changes if "document" in v]
     if not vex_changes:
@@ -425,55 +427,111 @@ def fixed_findings(release_by_variant, head):
 def vex_changes(old_doc, new_doc):
     """AC8 (rule 0254: the notes name the statements that changed): each VEX statement added, changed or removed since
     the latest tag. A change to any field of a statement (products, status, justification, impact or action text,
-    status_notes, anything else) is a change, named by field. A CVE may carry several statements (one per product
-    set): they are matched by @id, then by product set, then a lone leftover pair is one statement changed; each
-    statement of a CVE that has several is also named by its products. A change to the document's own fields (version,
-    timestamp, author, ...) adds one {"document": [fields]} entry, last (advisor ruling on 0389 (d))."""
-    absent = object()
+    status_notes, anything else, nested values too) is a change, named by field; values compare as JSON, type-sensitive
+    (1 and true differ). A CVE may carry several statements. Pairing is total, order-independent and never guesses
+    (Codex #300 r1, A2/B F1): within a CVE, (1) identical statements pair first; (2) then statements whose own @id
+    appears exactly once on each side; (3) then statements whose product scope (products with their subcomponents)
+    is unique on both sides among the rest; a CVE with exactly one statement on each side pairs those two; anything
+    left is removed + added. A statement whose products is not an array of objects with a string @id (subcomponents
+    likewise) is unpairable beyond step (1) and is named "products unreadable", never iterated (A3). Each statement of
+    a CVE that has several is named by its products and by its own @id (unique in its document), else its position in
+    the new document (the old one when removed) (A1). Entries sort by content, not input order (B F3). A change to the
+    document's own fields (version, timestamp, author, ...) adds one {"document": [fields]} entry, last (advisor ruling
+    on 0389 (d)). A malformed document (not an object, no statements array, a statement without a vulnerability name)
+    is refused with ValueError: no notes, no patch (B F4)."""
+    def canon(v):
+        return json.dumps(v, sort_keys=True)
 
-    def by_cve(doc):
-        out = {}
-        for s_ in (doc or {}).get("statements", []):
-            out.setdefault(s_["vulnerability"]["name"], []).append(s_)
-        return out
+    def by_cve(doc, side):
+        if not isinstance(doc, dict) or not isinstance(doc.get("statements"), list):
+            raise ValueError("VEX %s document: not an object with a statements array" % side)
+        out, ids = {}, {}
+        for pos, s_ in enumerate(doc["statements"], 1):
+            v_ = s_.get("vulnerability") if isinstance(s_, dict) else None
+            if not isinstance(v_, dict) or not isinstance(v_.get("name"), str) or not v_["name"]:
+                raise ValueError("VEX %s document: statement %d has no vulnerability name" % (side, pos))
+            out.setdefault(v_["name"], []).append((pos, s_))
+            if isinstance(s_.get("@id"), str):
+                ids[s_["@id"]] = ids.get(s_["@id"], 0) + 1
+        return out, ids
 
-    def pkey(s_):
-        return sorted(json.dumps(p, sort_keys=True) for p in s_.get("products") or [])
+    def products(s_):
+        """(display labels, scope key), or None when products is present but unreadable"""
+        ps = s_.get("products", [])
+        if not isinstance(ps, list):
+            return None
+        labels = []
+        for p in ps:
+            subs = p.get("subcomponents", []) if isinstance(p, dict) else None
+            if (not isinstance(p, dict) or not isinstance(p.get("@id"), str) or not isinstance(subs, list)
+                    or not all(isinstance(c, dict) and isinstance(c.get("@id"), str) for c in subs)):
+                return None
+            sub_ids = sorted(c["@id"] for c in subs)
+            labels.append(p["@id"] + (" (subcomponents: %s)" % ", ".join(sub_ids) if sub_ids else ""))
+        return sorted(labels), tuple(sorted(canon(p) for p in ps))
 
-    def entry(cve, s_, change, several):
-        e = {"cve": cve, "status": s_.get("status", ""), "change": change}
-        if several:
-            e["products"] = [p["@id"] if isinstance(p, dict) and "@id" in p else json.dumps(p, sort_keys=True)
-                             for p in s_.get("products") or []]
-        return e
+    def match(ro, rn, key, unique):
+        """pair the statements of ro and rn whose key (not None) is equal; with unique, only a key held once per side"""
+        ko, kn = {}, {}
+        for side, rest in ((ko, ro), (kn, rn)):
+            for x in rest:
+                k = key(x[1])
+                if k is not None:
+                    side.setdefault(k, []).append(x)
+        got = []
+        for k in sorted(set(ko) & set(kn), key=repr):
+            if unique and (len(ko[k]) != 1 or len(kn[k]) != 1):
+                continue
+            got += list(zip(ko[k], kn[k]))      # equal keys under (1) are identical statements: interchangeable
+        for x, y in got:
+            ro.remove(x); rn.remove(y)
+        return got
 
-    old, new = by_cve(old_doc), by_cve(new_doc)
+    if old_doc is not None:
+        old, old_ids = by_cve(old_doc, "old")
+    else:
+        old, old_ids = {}, {}
+    new, new_ids = by_cve(new_doc, "new")
     out = []
     for cve in sorted(set(old) | set(new)):
         olds, news = list(old.get(cve, [])), list(new.get(cve, []))
         several = len(olds) > 1 or len(news) > 1
-        pairs = []
-        for same in (lambda o, n: "@id" in o and o["@id"] == n.get("@id"), lambda o, n: pkey(o) == pkey(n)):
-            for o in list(olds):
-                n = next((n for n in news if same(o, n)), None)
-                if n is not None:
-                    pairs.append((o, n)); olds.remove(o); news.remove(n)
-        if len(olds) == 1 and len(news) == 1:
+        lone = len(olds) == 1 and len(news) == 1
+        pairs = match(olds, news, canon, False)
+        pairs += match(olds, news, lambda s_: s_["@id"] if isinstance(s_.get("@id"), str) and products(s_) else None, True)
+        pairs += match(olds, news, lambda s_: products(s_)[1] if products(s_) else None, True)
+        if lone and olds and news and products(olds[0][1]) and products(news[0][1]):
             pairs.append((olds.pop(), news.pop()))
+
+        def entry(x, side, change):
+            pos, s_ = x
+            e = {"cve": cve, "status": s_.get("status", ""), "change": change}
+            prod = products(s_)
+            if prod is None:
+                e["products_unreadable"] = True
+            elif several:
+                e["products"] = prod[0]
+            if several:
+                ids = old_ids if side == "old" else new_ids
+                sid = s_.get("@id")
+                e["statement"] = ("statement %s" % sid if isinstance(sid, str) and ids.get(sid) == 1
+                                  else "statement %d of the %s document" % (pos, side))
+            return (e.get("products", []), "products_unreadable" in e, change, str(e["status"]), canon(s_)), e
+
         found = []
-        for o, n in pairs:
-            fields = sorted(k for k in set(o) | set(n) if o.get(k, absent) != n.get(k, absent))
+        for (_, o), n in ((p[0], p[1]) for p in pairs):
+            fields = sorted(k for k in set(o) | set(n[1]) if k not in o or k not in n[1] or canon(o[k]) != canon(n[1][k]))
             others = [k for k in fields if k != "status"]
             if "status" in fields:
-                found.append(entry(cve, n, "changed from %s" % o.get("status", "")
-                                   + ("; also " + ", ".join(others) if others else ""), several))
+                found.append(entry(n, "new", "changed from %s" % o.get("status", "")
+                                   + ("; also " + ", ".join(others) if others else "")))
             elif fields:
-                found.append(entry(cve, n, "changed: " + ", ".join(fields), several))
-        found += [entry(cve, n, "added", several) for n in news] + [entry(cve, o, "removed", several) for o in olds]
-        out += sorted(found, key=lambda e: (e.get("products", []), e["change"]))
+                found.append(entry(n, "new", "changed: " + ", ".join(fields)))
+        found += [entry(x, "new", "added") for x in news] + [entry(x, "old", "removed") for x in olds]
+        out += [e for _, e in sorted(found, key=lambda f: f[0])]
     if old_doc is not None:     # advisor ruling (0389 (d)): a document-level change is a VEX change too, named by field
-        doc_fields = sorted(k for k in (set(old_doc) | set(new_doc or {})) - {"statements"}
-                            if old_doc.get(k, absent) != (new_doc or {}).get(k, absent))
+        doc_fields = sorted(k for k in (set(old_doc) | set(new_doc)) - {"statements"}
+                            if k not in old_doc or k not in new_doc or canon(old_doc[k]) != canon(new_doc[k]))
         if doc_fields:
             out.append({"document": doc_fields})
     return out
