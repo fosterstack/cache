@@ -50,7 +50,7 @@
 # stage-verify.yml (what a scanner leg does today).
 #
 # STEP-5 REVISIT (advisor rulings Q2, Q3, Q6, Q8, Oct 10), what changed and why:
-#   Q6 the scanner fakes print the REAL output shapes recorded in .github/agent/fixtures/scanners (grype 0.118.0 `-o json`: descriptor,
+#   Q6 the scanner fakes print the REAL output shapes recorded in the scanner fixtures of the auditor directory (fixtures/scanners) (grype 0.118.0 `-o json`: descriptor,
 #      matches, source; osv-scanner 2.6.0 `--format json`: results[].packages[]); grype's package count is the CycloneDX SBOM it writes
 #      with `-o cyclonedx-json=FILE` (components, as bin/grype-scan.sh counts today, REQ-REL-004-AC1), osv's is the packages it lists with
 #      --all-packages. The `packages: N` line is gone (no real tool prints it). osv-scanner keeps its Go-module target (go.mod and
@@ -60,7 +60,7 @@
 #   AC15 (advisor, Oct 10): each scanner's vulnerability database is fetched fresh from the scanner's own host at scan time and the
 #      results record its source URL, build date and digest; stale (> 48 h, `now` injectable as CHECK_SCAN_NOW, epoch seconds), unfetchable,
 #      foreign-host, dateless or digestless databases fail closed. grype's database status is read from the shape recorded in
-#      .github/agent/fixtures/scanners/grype.json (descriptor.db.status: from = the download URL with ?checksum=sha256:..., built, valid);
+#      the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json (descriptor.db.status: from = the download URL with ?checksum=sha256:..., built, valid);
 #      its host there is grype.anchore.io. osv-scanner (advisor, Oct 10, from osv-scanner v2.6.0 docs/offline-mode.md): it runs with
 #      --offline-vulnerabilities --download-offline-databases, OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY pointing at an EMPTY directory, so every
 #      database is downloaded fresh as <ecosystem>/all.zip from osv-vulnerabilities.storage.googleapis.com; the evidence is read from the

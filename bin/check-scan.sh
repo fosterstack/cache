@@ -7,10 +7,10 @@
 # A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). The package
 # count is read from the tool's own machine output: the components of the CycloneDX SBOM grype writes (-o cyclonedx-json=FILE, as
 # the PR scan script counts them for REQ-REL-004-AC1) and the packages osv-scanner lists with --format json --all-packages (shapes as
-# recorded in .github/agent/fixtures/scanners).
+# recorded in the scanner fixtures of the auditor directory (fixtures/scanners)).
 # Vulnerability databases (REQ-CHAIN-006-AC15): grype fetches its database fresh (grype db update) before the first scan, and every scan
 # is then held to that database (no auto-update, a 48-hour built-age limit); the database each scan used is read from its own output
-# (descriptor.db.status, the shape recorded in .github/agent/fixtures/scanners/grype.json) and must come from grype.anchore.io, carry
+# (descriptor.db.status, the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json) and must come from grype.anchore.io, carry
 # its sha256 in the download URL's checksum and be built less than 48 hours before now (CHECK_SCAN_NOW, epoch seconds, default the
 # clock). osv-scanner runs in its documented offline mode (v2.6.0 docs/offline-mode.md): --offline-vulnerabilities
 # --download-offline-databases with OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY an empty directory (made fresh for this run, or, when the
@@ -68,7 +68,7 @@ mkdir -p "$out"
 VEX=.vex/fosterstack-cache.openvex.json
 now=${CHECK_SCAN_NOW:-$(date +%s)}
 [[ "$now" =~ ^[0-9]+$ ]] || fail "CHECK_SCAN_NOW must be epoch seconds: $now"
-GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (.github/agent/fixtures/scanners/grype.json)
+GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 

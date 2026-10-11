@@ -2933,13 +2933,13 @@ requirements:
       by the script grammar alone and runs the verifier as python3 -I -B (PR 1 r5); Q4 the Check job downloads the images artifact exactly
       once; Q5 the scanners come from the prebaked runner (not built yet), no step installs them; Q6 package counts come from each tool's own
       machine output (grype -o json and its CycloneDX SBOM, osv-scanner --format json --all-packages; shapes recorded in
-      .github/agent/fixtures/scanners) and osv-scanner keeps the Go-module target; Q7 the gradle, maven, egress and Kubernetes suites are
+      the scanner fixtures of the auditor directory (fixtures/scanners)) and osv-scanner keeps the Go-module target; Q7 the gradle, maven, egress and Kubernetes suites are
       plain scripts (bin/acceptance-*.sh) shared with acceptance.yml; Q8 AC14 (the advisor's AC, numbered 14 because AC8 exists): kind
       v0.33.0, kubectl v1.37.0 and the node image kindest/node:v1.37.0@sha256:a1ed56cf...580ae5 come from the kind v0.33.0 release notes,
       https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0 (published 2026-08-26); only linux amd64 is pinned (the Check runner is
       ubuntu-24.04).
       AC15 (advisor, Oct 10, option 1: fresh databases at scan time from the scanners' own hosts only): grype's database status is read
-      from the shape recorded in .github/agent/fixtures/scanners/grype.json (descriptor.db.status: from, built, valid; host
+      from the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json (descriptor.db.status: from, built, valid; host
       grype.anchore.io, digest the sha256 in the download URL's checksum). osv-scanner (advisor, Oct 10, from osv-scanner v2.6.0
       docs/offline-mode.md) runs in offline mode with --download-offline-databases into an empty OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY;
       the evidence is read from the downloaded <ecosystem>/all.zip files: source https://osv-vulnerabilities.storage.googleapis.com/
