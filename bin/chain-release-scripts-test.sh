@@ -11,10 +11,12 @@
 #
 # FIXED paths the scripts read and write (PROPOSED, they are what the stage's downloads and uploads would carry; the scripts take no arguments
 # because the stage runs them as `bash bin/witnessed.sh STEP bin/STEP.sh`):
-#   in : witness-build/digests.json {"image-production","image-fips","apk-amd64","apk-arm64": "sha256:..."} (PR 1's schema), witness-build/build-collection.json,
-#        witness-rebuild/..., witness-check/..., provenance/provenance.json, images/<variant>.tar + images/<variant>.digest (cache's OCI index digest),
-#        apks/<arch>/fscache-0.3.0-r0.apk (Build's), sboms/*.json, locks/*.json, dist/*, policy.json (made by release-verify.sh)
-#   out: release-apks/<arch>/*.apk, release-evidence/ (bundles, vendor-evidence.json, release-policy.bundle)
+#   in : Build's REAL interface (REQ-CHAIN-007-AC17, the fixed table; Build is the reviewed source of truth): witness-build/digests.json with the keys
+#        image-production, image-fips, apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64 (bin/chain_items.py digests_of),
+#        witness-build/build-collection.json, witness-rebuild/..., witness-check/..., provenance/provenance.json, images/<variant>.tar + .digest,
+#        images/<variant>.full.lock.json and images/<variant>-sbom/sbom.json, apks/<runner>/<apk arch>/fscache[-fips]-0.3.0-r0.apk (the artifacts
+#        apk-ubuntu-24.04 -> x86_64 and apk-ubuntu-24.04-arm -> aarch64), rapks/<runner>/... (Rebuild's, same layout), dist/*, policy.json
+#   out: release-apks/<apk arch>/*.apk, release-evidence/ (bundles, vendor-evidence.json, release-policy.bundle)
 # Registries: ghcr.io/fosterstack/cache and docker.io/fosterstack/cache; tags 0.3.0 and 0.3.0-fips (a final release also floating tags: PROPOSED).
 # The fake tools' command lines are PROPOSED/UNVERIFIED: crane push of an OCI tarball, melange sign --key FILE, cosign sign-blob --bundle.
 set -euo pipefail
@@ -61,15 +63,28 @@ echo "gh $*" >> "$LOG"
 echo "melange $*" >> "$LOG"
 [ -z "${MELANGE_FAIL:-}" ] || exit 1
 [ "$1" = sign ] || exit 2
-shift; [ "$1" = --key ] && key=$2 && shift 2
+shift; [ "$1" = --signing-key ] && key=$2 && shift 2
 echo "mode=$(stat -c %a "$key" 2>/dev/null || stat -f %Lp "$key") content=$(cat "$key")" >> "$LOG.key"; echo "$key" > "$LOG.keypath"
-for a in "$@"; do [ -n "${MELANGE_BREAK:-}" ] || sed -i.bak 's/^signer: .*/signer: release.rsa.pub/' "$a"; rm -f "$a.bak"; done''',
+signer="$(basename "$key").pub"   # MEASURED with melange v0.61.2: the signer is named after the key FILE (k.rsa -> k.rsa.pub)
+for a in "$@"; do [ -n "${MELANGE_BREAK:-}" ] || sed -i.bak "s/^signer: .*/signer: $signer/" "$a"; rm -f "$a.bak"; done''',
  "bin/apk-tool.py": r'''import hashlib, sys
 cmd, f = sys.argv[1], sys.argv[2]
 lines = open(f).read().split("\n")
 if cmd == "digest": print("sha256:" + hashlib.sha256(lines[2].split(": ", 1)[1].encode()).hexdigest())
 elif cmd == "signer": print(lines[1].split(": ", 1)[1])
+elif cmd == "same": sys.exit(0 if open(f).read().split("\n")[2:] == open(sys.argv[3]).read().split("\n")[2:] else 1)
 else: sys.exit(2)''',
+ "bin/release-sign-apks.sh": r'''#!/usr/bin/env bash
+# a model of cache's bin/release-sign-apks.sh (P4, measured): --build-dir A --rebuild-dir B --key K; every apk of A needs the same apk in B (same control
+# and data, apk-tool.py same) else exit 1 and nothing is signed; the key is copied to a private file NAMED release.rsa (melange names the signer after the key
+# file); each apk of A is re-signed in place with `melange sign --signing-key`
+echo "release-sign-apks $*" >> "$LOG"
+set -euo pipefail
+while [ $# -gt 0 ]; do case $1 in --build-dir) a=$2;; --rebuild-dir) b=$2;; --key) k=$2;; *) exit 2;; esac; shift 2; done
+for f in "$a"/*/*.apk; do rel=${f#"$a"/}; [ -f "$b/$rel" ] || { echo "release-sign-apks.sh: $rel only in Build" >&2; exit 2; }
+  python3 bin/apk-tool.py same "$f" "$b/$rel" || { echo "release-sign-apks.sh: $rel differs between Build and Rebuild" >&2; exit 1; }; done
+t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; umask 077; cp "$k" "$t/release.rsa"
+for f in "$a"/*/*.apk; do melange sign --signing-key "$t/release.rsa" "$f"; done''',
  "bin/vendor-provenance.py": r'''import json, os, sys
 open(os.environ["LOG"], "a").write("vendor-provenance %s\n" % " ".join(sys.argv[1:]))
 if os.environ.get("EVIDENCE_FAIL"): sys.exit(1)
@@ -86,7 +101,10 @@ if not os.path.exists(rec): print("refused at %s: missing record %s" % (prev, re
 if os.environ.get("FAIL_STAGE") == prev: print("refused at %s: the record is invalid" % prev, file=sys.stderr); sys.exit(1)''',
 }
 DIG = {"image-production": "sha256:" + "a" * 64, "image-fips": "sha256:" + "b" * 64}
-def apk_data(arch): return "data-" + arch
+def apk_data(variant, arch): return "data-%s-%s" % (variant, arch)
+# REQ-CHAIN-007-AC17, the fixed Build interface table: artifact (runner) -> apk architecture directory -> short name; variant -> file name
+RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
+APKS = (("standard", "fscache-0.3.0-r0.apk"), ("fips", "fscache-fips-0.3.0-r0.apk"))
 def tree(extra_env=None):
     t = tempfile.mkdtemp(); fb = os.path.join(t, ".fakebin"); os.makedirs(fb); os.makedirs(os.path.join(t, "bin")); os.makedirs(os.path.join(t, "reg"))
     for n, body in FAKES.items():
@@ -99,19 +117,21 @@ def tree(extra_env=None):
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
     if os.path.exists(os.path.join(BIN, "release-postverify.py")): shutil.copy(os.path.join(BIN, "release-postverify.py"), os.path.join(t, "bin", "release-postverify.py"))
     digs = dict(DIG)
-    for arch in ("amd64", "arm64"):
-        d = os.path.join(t, "apks", arch); os.makedirs(d)
-        open(os.path.join(d, "fscache-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: %s\n" % apk_data(arch))
-        digs["apk-" + arch] = "sha256:" + hashlib.sha256(apk_data(arch).encode()).hexdigest()
+    for top in ("apks", "rapks"):                      # Build's apk-<runner> and Rebuild's rapk-<runner> artifacts, downloaded to apks/<runner> and rapks/<runner>
+        for runner, archdir, short in RUNNERS:
+            d = os.path.join(t, top, runner, archdir); os.makedirs(d)
+            for variant, name in APKS:
+                open(os.path.join(d, name), "w").write("apk\nsigner: assembly.rsa.pub\ndata: %s\n" % apk_data(variant, short))
+                digs["apk-%s-%s" % (variant, short)] = "sha256:" + hashlib.sha256(apk_data(variant, short).encode()).hexdigest()
     for v in ("production", "fips"):
-        os.makedirs(os.path.join(t, "images"), exist_ok=True)
+        os.makedirs(os.path.join(t, "images", v + "-sbom"), exist_ok=True)
         open(os.path.join(t, "images", v + ".tar"), "w").write("tar-" + v)
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
-    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "sboms", "locks", "dist"):
+        open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("{}"); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("{}")
+    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist"):
         os.makedirs(os.path.join(t, d), exist_ok=True)
     json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
-    for f in ("witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "witness-check/check-collection.json", "provenance/provenance.json",
-              "sboms/production.spdx.json", "sboms/fips.spdx.json", "locks/production.full.lock.json", "locks/fips.full.lock.json", "dist/checksums.txt"):
+    for f in ("witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "witness-check/check-collection.json", "provenance/provenance.json", "dist/checksums.txt"):
         open(os.path.join(t, f), "w").write("{}")
     os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w").write("[]")
     open(os.path.join(t, "dependency-provenance.json"), "w").write("{}"); open(os.path.join(t, "policy.json"), "w").write("{}")
@@ -143,8 +163,10 @@ calls = [l for l in log(t) if l.startswith("chain-verify")]
 check(rc == 0, "AC5 a good v0.3.0 passes", se)
 check([c.split("--previous ")[1].split()[0] for c in calls if "--previous" in c] == STAGES and calls and calls[0].startswith("chain-verify policy make"), "AC4 the policy is made first, then build, sign, rebuild, check are verified in that order", str(calls))
 check(all("--digests witness-build/digests.json" in c for c in calls if "--previous" in c) and any("--tag v0.3.0" in c for c in calls if "policy" in c), "AC4 every record is checked against the same digest list and the policy is made for the tag")
-t = tree(); rc, so, se = run(t, "release-verify", tag="v0.3.0-rc.1"); check(rc == 0, "AC5 a release candidate v0.3.0-rc.1 passes exactly like a final", se)
-for tag in ("v0.3", "v0.3.0-rc", "v0.3.0-rc.x", "v0.3.0-rc.1.2", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc.1\n", ""):
+# REQ-CHAIN-007-AC14 (advisor 0383/0386): a release candidate is exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; leading zeros as for vX.Y.Z); the old -rc.N form is gone
+for tag in ("v0.3.0-rc1", "v10.20.30-rc12", "v01.02.03-rc01"):
+    t = tree(); rc, so, se = run(t, "release-verify", tag=tag); check(rc == 0, "AC14 the release candidate %s passes release-verify exactly like a final" % tag, se)
+for tag in ("v0.3", "v0.3.0-rc", "v0.3.0-rc.1", "v0.3.0-rc.x", "v0.3.0-rc1x", "v0.3.0-rc1.2", "v0.3.0-RC1", "v0.3.0-Rc1", "v0.3.0rc1", "v0.rc1.3.0", "rc1", "v0.3.0-1rc1", "v0.3.0-rc-1", "v0.3.0-beta.1", "v0.3.0.1", "0.3.0", "main", "refs/heads/x", "v0.3.0-rc1\n", "v0.3.0\n", ""):
     t = tree(); rc, so, se = run(t, "release-verify", tag=tag)
     check(rc != 0 and first(se).startswith("refused at tag") and not [l for l in log(t) if l.startswith("chain-verify")], "AC5 the tag %r is refused first, naming the tag, before any verification" % tag, "rc=%s %s" % (rc, first(se)))
 for s in STAGES:
@@ -158,30 +180,47 @@ for s in STAGES:
 t = tree(); rc, so, se = run(t, "release-verify", env={"POLICY_FAIL": "1"}); check(rc != 0 and not [l for l in log(t) if "--previous" in l], "AC5 a policy that cannot be made stops release before any record is checked")
 t = tree(); rc, so, se = run(t, "release-verify", creds=list(SENT))
 check(rc == 0 and not [l for l in log(t) if l.split(" ")[0] in ("crane", "cosign", "gh", "melange")], "AC5 the verify script calls no registry, signing or release tool")
-# ---- AC6: release-apks.sh --------------------------------------------------------------------------------------------------------------
+# ---- AC6: release-apks.sh (maps Build's names through the fixed table, checks the four attested digests, then calls cache's release-sign-apks.sh) ---------------
 KEY = ["APK_RELEASE_SIGNING_KEY"]
+ALLAPKS = [(archdir, name) for _r, archdir, _s in RUNNERS for _v, name in APKS]
+def signers(t):
+    return [subprocess.run(["python3", os.path.join(t, "bin/apk-tool.py"), "signer", os.path.join(t, "release-apks", a, n)], capture_output=True, text=True).stdout.strip()
+            for a, n in ALLAPKS if os.path.exists(os.path.join(t, "release-apks", a, n))]
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY)
-signed = [subprocess.run(["python3", os.path.join(t, "bin/apk-tool.py"), "signer", p], capture_output=True, text=True).stdout.strip()
-          for p in (os.path.join(t, "release-apks", a, "fscache-0.3.0-r0.apk") for a in ("amd64", "arm64")) if os.path.exists(p)]
-check(rc == 0 and signed == ["release.rsa.pub", "release.rsa.pub"], "AC6 both apks come out signed by the release key", "rc=%s %s %s" % (rc, signed, first(se)))
+check(rc == 0 and signers(t) == ["release.rsa.pub"] * 4, "AC6 all four apks (standard and fips, x86_64 and aarch64) come out signed by the release key, laid out as release-apks/<apk arch>/<file>", "rc=%s %s %s" % (rc, signers(t), first(se)))
+cs = [l for l in log(t) if l.startswith("release-sign-apks")]
+check(len(cs) == 1 and "--build-dir" in cs[0] and "--rebuild-dir" in cs[0] and "--key" in cs[0] and not [l for l in log(t) if l.startswith("melange") and "release-sign" not in l and "--signing-key" not in l], "AC6 cache's bin/release-sign-apks.sh is called once with --build-dir --rebuild-dir --key (Release does not call melange itself)", str(cs))
+check(len([l for l in log(t) if l.startswith("melange")]) == 4 and all("--signing-key" in l for l in log(t) if l.startswith("melange")), "AC6 melange is reached only through that script, with --signing-key (measured: --key is not a melange flag)")
 kp = open(os.path.join(t, "calls.log.keypath")).read().strip() if os.path.exists(os.path.join(t, "calls.log.keypath")) else ""
 kl = open(os.path.join(t, "calls.log.key")).read() if os.path.exists(os.path.join(t, "calls.log.key")) else ""
-check("mode=600" in kl and ("content=" + SENT["APK_RELEASE_SIGNING_KEY"]) in kl, "AC6 the key was handed to the signer as a private (0600) file holding the key", kl)
-check(kp != "" and not os.path.exists(kp), "AC6 the key file is removed after the run")
+check("mode=600" in kl and ("content=" + SENT["APK_RELEASE_SIGNING_KEY"]) in kl, "AC6 the key reached the signer as a private (0600) file holding the key", kl)
+check(kp != "" and os.path.basename(kp) == "release.rsa" and not os.path.exists(kp), "AC6 the signer's key file is named release.rsa (melange names the signer after the key file) and is removed after the run", kp)
 check(SENT["APK_RELEASE_SIGNING_KEY"] not in "\n".join(log(t)) + so + se, "AC6 the key is never on a command line, in the output or in a log")
 check(not any(SENT["APK_RELEASE_SIGNING_KEY"] in open(os.path.join(dp, f), errors="replace").read() for dp, dn, fn in os.walk(os.path.join(t, "release-apks")) for f in fn) and not os.path.exists(os.path.join(t, "release-evidence")), "AC6 the key is in no output file")
 for label, env in (("missing", {}), ("empty", {"APK_RELEASE_SIGNING_KEY": ""})):
     t = tree(); rc, so, se = run(t, "release-apks", env=env)
-    check(rc == 2 and "APK_RELEASE_SIGNING_KEY" in se and not [l for l in log(t) if l.startswith("melange")], "AC6 a %s key is refused at once with exit 2, naming the variable, before any signing" % label, "rc=%s %s" % (rc, first(se)))
-t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d["apk-arm64"] = "sha256:" + "0" * 64; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
+    check(rc == 2 and "APK_RELEASE_SIGNING_KEY" in se and not [l for l in log(t) if l.startswith(("melange", "release-sign-apks"))], "AC6 a %s key is refused at once with exit 2, naming the variable, before any signing" % label, "rc=%s %s" % (rc, first(se)))
+for key in ("apk-standard-amd64", "apk-standard-arm64", "apk-fips-amd64", "apk-fips-arm64"):   # each row of the digest table is tested
+    t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); d[key] = "sha256:" + "0" * 64; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
+    rc, so, se = run(t, "release-apks", creds=KEY)
+    check(rc != 0 and "differs" in se and not [l for l in log(t) if l.startswith(("melange", "release-sign-apks"))] and not os.path.exists(os.path.join(t, "release-apks")), "AC6 the attested digest %s not matching its apk stops before anything is signed" % key, "rc=%s %s" % (rc, first(se)))
+t = tree(); d = json.load(open(os.path.join(t, "witness-build/digests.json"))); del d["apk-fips-arm64"]; json.dump(d, open(os.path.join(t, "witness-build/digests.json"), "w"))
+rc, so, se = run(t, "release-apks", creds=KEY); check(rc != 0 and "apk-fips-arm64" in se and not log(t), "AC6 a missing attested digest key is refused, naming it")
+t = tree(); open(os.path.join(t, "rapks/ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"), "w").write("apk\nsigner: assembly.rsa.pub\ndata: other\n")
 rc, so, se = run(t, "release-apks", creds=KEY)
-check(rc != 0 and "differ" in se and not [l for l in log(t) if l.startswith("melange")] and not os.path.exists(os.path.join(t, "release-apks")), "AC6 an apk whose contents are not the attested ones is refused before anything is signed, naming it", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and "differs" in se and "fscache-fips" in se and signers(t) == [], "AC6 an apk Rebuild built differently stops the release (cache's script refuses, signs nothing), naming it", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"MELANGE_BREAK": "1"})
-check(rc != 0 and "release" in se.lower() and "signed" in se.lower(), "AC6 an apk the signer left signed by the assembly key is refused ('not signed by the release key')", "rc=%s %s" % (rc, first(se)))
+check(rc != 0 and "release" in se.lower() and "signed" in se.lower(), "AC6 an apk the signer left signed by another key is refused ('not signed by the release key')", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, env={"MELANGE_FAIL": "1"}); kp = open(os.path.join(t, "calls.log.keypath")).read().strip() if os.path.exists(os.path.join(t, "calls.log.keypath")) else ""
 check(rc != 0, "AC6 a failing signer fails the script"); check(not os.path.exists(os.path.join(t, "calls.log.keypath")) or not os.path.exists(kp), "AC6 the key file is removed on a failing run too")
 t = tree(); shutil.rmtree(os.path.join(t, "apks")); os.makedirs(os.path.join(t, "apks")); rc, so, se = run(t, "release-apks", creds=KEY)
 check(rc != 0 and "no apk" in se.lower(), "AC6 no apks to sign is an error, not a success")
+t = tree(); os.remove(os.path.join(t, "apks/ubuntu-24.04-arm/aarch64/fscache-0.3.0-r0.apk")); rc, so, se = run(t, "release-apks", creds=KEY)
+check(rc != 0 and "no apk" in se.lower() and "aarch64" in se, "AC6 one missing apk (the artifact table row for aarch64) is an error naming the architecture")
+t = tree(); shutil.copy(os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-0.3.0-r0.apk"), os.path.join(t, "apks/ubuntu-24.04/x86_64/fscache-9.9.9-r0.apk")); rc, so, se = run(t, "release-apks", creds=KEY)
+check(rc != 0 and "exactly one" in se, "AC6 two standard apks in one architecture directory are refused (Build attests exactly one)")
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
+    t = tree(); rc, so, se = run(t, "release-apks", creds=KEY, tag=tag); check(rc != 0 and "tag" in se and not log(t), "AC14 release-apks refuses the tag %r (only a final vX.Y.Z reaches it; a release candidate never signs)" % tag, "rc=%s %s" % (rc, first(se)))
 # ---- AC7: release-publish.sh -------------------------------------------------------------------------------------------------------------
 REG = ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"]
 def pushes(t): return [l.split(" ") for l in log(t) if l.startswith("crane push")]
@@ -195,8 +234,9 @@ check(bool(P) and P[0][3].startswith("ghcr.io/"), "AC7 ghcr.io comes first")
 check(bool(P) and all(os.path.exists(os.path.join(t, "reg", p[3].replace(":", "/", 1))) and open(os.path.join(t, "reg", p[3].replace(":", "/", 1))).read().strip() == DIG["image-production" if "fips" not in p[3] else "image-fips"] for p in P), "AC7 the registry shows the attested index digest for every tag pushed")
 check(any(l.startswith("crane digest") for l in log(t)), "AC7 each registry is read back")
 check(SENT["DOCKERHUB_TOKEN"] not in "\n".join(log(t)) + so + se and SENT["GH_TOKEN"] not in "\n".join(log(t)) + so + se, "AC7 the credentials go in by standard input, never on a command line or in output")
-t = tree(); rc, so, se = run(t, "release-publish", creds=REG, tag="v0.3.0-rc.1"); P = pushes(t)
-check(rc == 0 and {(p[3].split("/")[0], p[3].split(":")[1]) for p in P} == {(h, v) for h in ("ghcr.io", "docker.io") for v in ("0.3.0-rc.1", "0.3.0-rc.1-fips")}, "AC7 a release candidate gets its exact tags only, no floating tag", str(sorted({p[3] for p in P})))
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "v0.3.0-RC1", "v0.3.0-beta.1", "main"):
+    t = tree(); rc, so, se = run(t, "release-publish", creds=REG, tag=tag)
+    check(rc != 0 and "tag" in se and not pushes(t) and not log(t), "AC14 release-publish refuses the tag %r: a release candidate never publishes, no login, no push, no floating tag" % tag, "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"})
 check(rc != 0 and "differ" in se and DIG["image-production"] in se and "docker.io" in se, "AC7 a registry that shows another digest blocks release, naming the image and both digests", "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "ghcr.io"}); h = [p[3].split("/")[0] for p in pushes(t)]
@@ -239,9 +279,10 @@ t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"LS_FAIL": "1"})
 check(rc != 0 and not pushes(t) and "ghcr.io" in se and "list" in se.lower(), "AC11 a tag list that cannot be read stops the release before any push (it never guesses that this is the highest)", "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = float_run("v0.3.0", ["0.2.2"], env={"REG_CORRUPT": "docker.io"})
 check(rc != 0 and "differ" in se and "docker.io" in se, "AC11 a floating tag is read back like an exact one (a mirror that shows another digest blocks the release)", "rc=%s %s" % (rc, first(se)))
-for tag in ("v0.3.0-rc.1", "v10.20.30-rc.7"):
-    t, rc, so, se = float_run(tag, ["0.2.2"]); x = {y for _, y in tagset(t)}
-    check(rc == 0 and x == {tag[1:], tag[1:] + "-fips"}, "AC11 the release candidate %s gets its exact tags only, never a floating one" % tag, str(sorted(x)))
+for tag in ("v0.3.0-rc1", "v10.20.30-rc7"):
+    t, rc, so, se = float_run(tag, ["0.2.2"])
+    check(rc != 0 and not pushes(t), "AC14 the release candidate %s moves no floating tag and pushes nothing" % tag, "rc=%s" % rc)
+t, rc, so, se = float_run(tag, ["0.2.2"]); x = {y for _, y in tagset(t)}
 t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.startswith("crane push")]
 check(L and all(re.search(r" images/(production|fips)\.tar ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
 # ---- AC8: release-sign.sh -------------------------------------------------------------------------------------------------------------------
@@ -252,12 +293,12 @@ check(L and L[0].startswith("vendor-provenance evidence --out"), "AC8 the depend
 imgs = [l for l in L if l.startswith("cosign sign ")]
 check({(re.search(r"(ghcr\.io|docker\.io)/fosterstack/cache@(sha256:\w+)", l).groups()) for l in imgs} == {(h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()}, "AC8 each published image digest is signed in BOTH registries", str(imgs))
 blobs = " ".join(l for l in L if l.startswith("cosign sign-blob"))
-for f in ("production.spdx.json", "fips.spdx.json", "production.full.lock.json", "fips.full.lock.json", "vendor-evidence.json", "dependency-provenance.json", "policy.json"):
+for f in ("production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json", "vendor-evidence.json", "dependency-provenance.json", "checksums.txt", "policy.json"):
     check(f in blobs, "AC8 %s is signed with a bundle" % f)
 check(all("--bundle" in l for l in L if l.startswith("cosign sign-blob")), "AC8 every signed file gets a bundle")
 check(not re.search(r"tlog-upload=false|insecure-ignore-tlog|--no-tlog", "\n".join(L)), "AC8 the transparency log is never turned off")
 check("witness-build" not in blobs and "witness-rebuild" not in blobs and "witness-check" not in blobs, "AC8 the Witness records are not signed again (they are extra evidence)")
-for f in ("policy.json", "vendor-evidence.json", "production.spdx.json"):
+for f in ("policy.json", "vendor-evidence.json", "production.sbom.json", "checksums.txt"):
     name = {"policy.json": "release-policy.bundle"}.get(f, f + ".bundle")
     t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": name})
     check(rc != 0 and "rekor" in se.lower() and name.split(".bundle")[0].split(".")[0] in se, "AC8 a bundle with no Rekor entry (%s) fails the script, naming the file" % name, "rc=%s %s" % (rc, first(se)))
@@ -265,11 +306,16 @@ t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"EVIDENCE_FAIL":
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(signs(t)) == 1, "AC8 a failing signature stops at the first one")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); check(rc == 0 and os.path.exists(os.path.join(t, "release-evidence")), "AC8 the bundles and the evidence land in release-evidence/")
 # ---- AC9: release-assets.sh ----------------------------------------------------------------------------------------------------------------------
-t = tree(); os.makedirs(os.path.join(t, "release-apks/amd64")); os.makedirs(os.path.join(t, "release-evidence")); open(os.path.join(t, "release-apks/amd64/a.apk"), "w").write("x"); open(os.path.join(t, "release-evidence/e.json"), "w").write("{}")
+t = tree(); os.makedirs(os.path.join(t, "release-apks/x86_64")); os.makedirs(os.path.join(t, "release-apks/aarch64")); os.makedirs(os.path.join(t, "release-evidence")); open(os.path.join(t, "release-apks/x86_64/a.apk"), "w").write("x"); open(os.path.join(t, "release-apks/aarch64/a.apk"), "w").write("y"); open(os.path.join(t, "release-evidence/e.json"), "w").write("{}")
 rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
-for what in ("release upload v0.3.0", "release-apks", "dist", "sboms", "locks", "release-evidence", "witness-build", "witness-rebuild", "witness-check"):
-    check(what in L, "AC9 %s is attached to the release" % what)
+for what in ("release upload v0.3.0", "release-upload/amd64-a.apk", "release-upload/arm64-a.apk", "release-upload/production.sbom.json", "release-upload/fips.sbom.json", "release-upload/production.full.lock.json", "release-upload/fips.full.lock.json", "dist/checksums.txt", "release-evidence/e.json", "witness-build", "witness-rebuild", "witness-check"):
+    check(what in L, "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what)
+t2 = tree(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_FAIL_ON": "release view"})
+check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(l.endswith("--verify-tag") for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
+check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-file" in l or "--notes-from-tag" in l], "AC9 no undraft and no tag notes here (REQ-REL-009-AC8 is the patch-notes job's)")
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
+    t3 = tree(); rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], tag=tag); check(rc3 != 0 and "tag" in se3 and not log(t3), "AC14 release-assets refuses the tag %r" % tag, "rc=%s %s" % (rc3, first(se3)))
 check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git |tag ", l)], "AC9 no release is created without --verify-tag and no tag is made")
 check(SENT["GH_TOKEN"] not in L + so + se, "AC9 the token is never on a command line or in output")
 t = tree(); rc, so, se = run(t, "release-assets"); check(rc == 2 and "GH_TOKEN" in se and not log(t), "AC9 a missing GH_TOKEN is refused with exit 2, naming it")
@@ -308,7 +354,8 @@ check(C[:1] == [mk(P[0])] and mk(P[1]) in C, "AC7 post-publish: <IMAGE_REF> is t
 check(any(c.startswith("cosign verify " + F[0] + " ") for c in C) and any(c.startswith("cosign verify " + F[1] + " ") for c in C), "AC7 post-publish: <IMAGE_REF_FIPS> is substituted in both registries with the one -fips digest", str(C))
 check(all(("gh attestation verify oci://%s --owner fosterstack" % r) in C for r in P), "AC7 post-publish: <IMAGE_REF> inside oci:// is substituted per registry", str(C))
 check(len([c for c in C if c.startswith("cosign verify-blob")]) == 1 and "refs/tags/v0.3.0 " in [c for c in C if c.startswith("cosign verify-blob")][0] and not re.search(r"<[A-Z_]+>", "\n".join(C)), "AC7 post-publish: a command with no image placeholder runs once; <TAG> is the release tag; no placeholder is left in any command run", str(C))
-t, rc, so, se = pv([PV1], tag="v0.3.0-rc.1"); check(rc == 0 and "refs/tags/v0.3.0-rc.1" in " ".join(calls(t)), "AC7 post-publish: a release candidate tag is substituted into <IDENTITY>", se)
+for tag in ("v0.3.0-rc1", "v0.3.0-rc.1"):
+    t, rc, so, se = pv([PV1], tag=tag); check(rc != 0 and not calls(t), "AC14 post-publish: the tag %r is refused, nothing runs (a release candidate publishes nothing to verify)" % tag, "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pv([]); check(rc == 0 and not calls(t), "AC7 post-publish: an empty list runs nothing and passes")
 t, rc, so, se = pv([PV1, PV3], env={"GH_FAIL": "1"}); C = calls(t)
 t2, rc2, so2, se2 = pv([PV1, PV3], env={"GH_FAIL_ON": "docker.io"})
@@ -347,7 +394,7 @@ t, rc, so, se = pv(None, raw=json.dumps([{"command": PV1, "reason": "r", "reposi
 for lit in ("evil.example/x/cache@" + DIG["image-production"], "docker.io/library/alpine@sha256:" + "d" * 64, "ghcr.io/fosterstack/cache@" + DIG["image-production"], "oci://evil.example/x/cache@" + DIG["image-production"], "quay.io/x/y:latest"):
     t, rc, so, se = pv([PV1, "cosign verify " + lit + " " + IDQ.replace("<IDENTITY>", "<IDENTITY>")]); check(rc != 0 and "repository" in se and not calls(t), "AC7 post-publish: a literal image reference (%s) in a listed command is refused and nothing runs: only the two constant repositories, through the placeholders" % lit[:28], "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pv([PV4.replace("x.txt", "dir/x.txt")]); check(rc == 0 and len(calls(t)) == 1, "AC7 post-publish: a file path with a slash is not an image reference and runs once")
-for tag in ("main", "v0.3", "0.3.0", ""):
+for tag in ("main", "v0.3", "0.3.0", "v0.3.0-RC1", ""):
     t, rc, so, se = pv([PV1], tag=tag); check(rc != 0 and not calls(t), "AC7 post-publish: the tag %r is refused, nothing runs" % tag, "rc=%s %s" % (rc, first(se)))
 t, rc, so, se = pv([PV1], env={"GITHUB_REPOSITORY": ""}); check(rc != 0 and not calls(t), "AC7 post-publish: no GITHUB_REPOSITORY means <IDENTITY> cannot be filled: refused when a command uses it")
 t, rc, so, se = pv([PV1, PV3]); L = "\n".join(log(t))
@@ -359,7 +406,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "159"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "199"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

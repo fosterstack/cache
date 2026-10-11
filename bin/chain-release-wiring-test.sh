@@ -53,13 +53,14 @@ def up(name): return f"      - uses: {UPL}\n        with:\n          name: {name
 def inst(t): return f"      - name: install {t}\n        run: bash bin/install-scanner.sh {t}\n"
 def wit(step, env):
     e = "".join(f"          {k}: {v}\n" for k, v in env.items())
-    return f"      - name: {step}\n" + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
+    cond = "" if step == "release-verify" else "        if: ${{ !contains(github.ref_name, '-') }}\n"   # a release candidate (a tag with a hyphen) ends after release-verify (AC14)
+    return f"      - name: {step}\n" + cond + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
 REG = {"DOCKERHUB_USERNAME": "${{ secrets.DOCKERHUB_USERNAME }}", "DOCKERHUB_TOKEN": "${{ secrets.DOCKERHUB_TOKEN }}", "GH_TOKEN": "${{ github.token }}"}
 stage = ("name: 'Stage: release'\non:\n  workflow_call:\npermissions:\n  contents: read\njobs:\n  release:\n    runs-on: ubuntu-24.04\n    environment: release\n"
          "    permissions:\n      contents: write\n      packages: write\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          + inst("witness") + inst("cosign") + inst("crane")
-         + "".join(dn(n) for n in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist", "locks", "images", "apks", "sboms"))
+         + "".join(dn(n) for n in ("witness-build", "digests", "witness-rebuild", "witness-check", "provenance", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"))
          + wit("release-verify", {}) + wit("release-apks", {"APK_RELEASE_SIGNING_KEY": "${{ secrets.APK_RELEASE_SIGNING_KEY }}"})
          + wit("release-publish", REG) + wit("release-sign", REG) + wit("release-assets", {"GH_TOKEN": "${{ github.token }}"}) + wit("release-postverify", {"GH_TOKEN": "${{ github.token }}"})
          + up("release-evidence") + up("witness-release"))
@@ -104,7 +105,7 @@ for n in ("stage-build", "stage-sign", "stage-reproducibility", "stage-verify"):
 open(w + "/o/.github/workflows/stage-promote.yml", "w").write(stage)
 open(w + "/o/.github/workflows/release.yml", "w").write(open(w + "/release.yml").read())
 # bin/release-verify.sh: tag, policy, four stage-starts
-V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$ ]] || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rc.N" >&2; exit 1; }',
+V = ['[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }',
      'python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json',
      "python3 bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
      "python3 bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
@@ -115,13 +116,13 @@ open(w + "/verify.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n" + "
 os.makedirs(w + "/s/bin", exist_ok=True); os.makedirs(w + "/s/.github/policy", exist_ok=True)
 BODY = {
  "release-verify": "set -euo pipefail\npython3 bin/chain-verify.py verify --stage build\n",
- "release-apks": 'set -euo pipefail\nkeyfile=$(mktemp)\ntrap \'rm -f "$keyfile"\' EXIT\nprintf %s "$APK_RELEASE_SIGNING_KEY" > "$keyfile"\npython3 bin/apk-tool.py same apks/a.apk build/a.apk\nmelange sign --key "$keyfile" apks/a.apk\n',
+ "release-apks": 'set -euo pipefail\nkeyfile=$(mktemp)\ntrap \'rm -f "$keyfile"\' EXIT\nprintf %s "$APK_RELEASE_SIGNING_KEY" > "$keyfile"\npython3 bin/apk-tool.py digest apks/a.apk\nbash bin/release-sign-apks.sh --build-dir b --rebuild-dir r --key "$keyfile"\n',
  "release-publish": 'set -euo pipefail\ncrane copy "src@$digest" "dst:$tag"\ncrane digest "dst:$tag" | jq -R .\n',
  "release-sign": 'set -euo pipefail\npython3 bin/vendor-provenance.py evidence --out evidence\ncosign sign --yes "ghcr.io/x@$digest"\ncosign sign-blob --yes --bundle policy.bundle policy.json\njq . policy.bundle\n',
  "release-postverify": 'set -euo pipefail\npython3 bin/release-postverify.py\n',
  "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
 }
-ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-apks": (["jq", "melange", "python3", "trap"], "other", ["bin/apk-tool.py"]),
+ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-apks": (["bash", "jq", "python3", "trap"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
         "release-publish": (["crane", "jq"], False, []), "release-sign": (["cosign", "jq", "python3"], "other", ["bin/vendor-provenance.py"]),
         "release-assets": (["gh"], False, []), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
 rows = []
@@ -180,18 +181,21 @@ m s_trig    'workflow_call:'                                'workflow_call:\n  p
 m s_unp     'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                          'digest-pinned'      "AC1 an unpinned checkout"
 m s_persist 'persist-credentials: false'                    'persist-credentials: true'                              'persist-credentials' "AC1 persisted credentials"
 m s_dlname  'name: provenance\n          path: provenance' 'name: not-listed\n          path: provenance'             'download-artifact'  "AC1 a download outside the allowlist"
-m s_dlbin   'name: locks\n          path: locks'          'name: locks\n          path: bin'                           'download-artifact'  "AC1 a download into bin/"
-m s_dlgh    'name: sboms\n          path: sboms'          'name: sboms\n          path: .github'                       'download-artifact'  "AC1 a download into .github/"
+m s_dlbin   'name: images\n          path: images'        'name: images\n          path: bin'                           'download-artifact'  "AC1 a download into bin/"
+m s_dlgh    'name: dist\n          path: dist'            'name: dist\n          path: .github'                       'download-artifact'  "AC1 a download into .github/"
 m s_upname  'name: release-evidence\n          path: release-evidence' 'name: anything\n          path: release-evidence' 'upload-artifact'  "AC1 an upload outside the allowlist"
 m s_noup    '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence\n          path: release-evidence\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-release\n          path: witness-release\n' '' 'only uploads' "AC1 no upload of the evidence"
 m s_swap    'install cosign\n        run: bash bin/install-scanner.sh cosign\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign' 'start with checkout' "AC1 the installs in another order"
 m s_nocos   '      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n' ''                                                                    'start with checkout' "AC1 cosign is not installed"
 m s_snyk    'install-scanner.sh crane'                      'install-scanner.sh snyk'                                'none of checkout'   "AC1 an install of a tool outside the three"
 m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/release-sign.sh'                       'exactly'            "AC1 two witnessed steps swapped (release-sign twice)"
-m s_miss    '=      - name: release-assets\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets bin/release-assets.sh\n' '' 'exactly' "AC1 a witnessed step missing"
-m s_nopv    '=      - name: release-postverify\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n' '' 'exactly' "AC1 (rule 79) the post-publish verification step missing from the Release stage"
+m s_miss    '=      - name: release-assets\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets bin/release-assets.sh\n' '' 'exactly' "AC1 a witnessed step missing"
+m s_nopv    '=      - name: release-postverify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n' '' 'exactly' "AC1 (rule 79) the post-publish verification step missing from the Release stage"
 m s_pvfirst 'release-postverify bin/release-postverify.sh'  'release-apks bin/release-apks.sh'                       'exactly'            "AC1 (rule 79) the post-publish step is not a witnessed step of its own (release-apks twice)"
-m s_seven   '=      - name: release-postverify\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n' '      - name: release-postverify\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n      - name: release-extra\n        run: bash bin/witnessed.sh release-extra bin/release-extra.sh\n' 'exactly' "AC1 (rule 79) SEVEN witnessed steps (a step after the post-publish one) are refused: the job has exactly six"
+m s_noif    '=      - name: release-publish\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n' '      - name: release-publish\n' 'exactly the if' "AC14 a witnessed step after release-verify without the release-candidate condition (it would run on a release candidate)"
+m s_ifver   '=      - name: release-verify\n' '      - name: release-verify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n' 'no if' "AC14 release-verify itself conditional (a release candidate would skip the tag rule and every verification)"
+m s_ifwide  '=      - name: release-sign\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n' '      - name: release-sign\n        if: ${{ !contains(github.ref_name, '\''rc'\'') }}\n' 'exactly the if' "AC14 the condition widened to any tag containing rc (a near-miss must be refused by release-verify, never run half)"
+m s_seven   '=      - name: release-postverify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n' '      - name: release-postverify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh\n      - name: release-extra\n        run: bash bin/witnessed.sh release-extra bin/release-extra.sh\n' 'exactly' "AC1 (rule 79) SEVEN witnessed steps (a step after the post-publish one) are refused: the job has exactly six"
 m s_pvmid   'run: bash bin/witnessed.sh release-assets bin/release-assets.sh' 'run: bash bin/witnessed.sh release-postverify bin/release-postverify.sh' 'exactly' "AC1 (rule 79) the post-publish step before the assets step is refused: it is the last"
 m s_extra   'run: bash bin/witnessed.sh release-verify bin/release-verify.sh' 'run: bash bin/witnessed.sh release-verify bin/release-verify.sh && echo done' 'none of checkout' "AC1 an extra command in a witnessed step"
 m s_mism    'release-publish bin/release-publish.sh'        'release-publish bin/release-sign.sh'                    'none of checkout'   "AC1 a witnessed step running another script"
@@ -207,13 +211,13 @@ c c_dlsec   'name: images\n          path: images'        'name: images\n       
 c c_vfy     '      - name: release-verify\n'               '      - name: release-verify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' 'up to release-verify' "AC2 any env on the verify step"
 c c_apkpub  '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-publish' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n          APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n        run: bash bin/witnessed.sh release-publish' 'release-publish' "AC2 the apk signing key in the publish step"
 c c_hubapk  '=APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}' 'APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}' 'release-apks' "AC2 a registry token in the apk step"
-c c_assets  '=      - name: release-assets\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-assets\n' 'release-assets' "AC2 the assets step without its token"
+c c_assets  '=      - name: release-assets\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-assets\n' 'release-assets' "AC2 the assets step without its token"
 c c_assreg  '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets' '          GH_TOKEN: ${{ github.token }}\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/witnessed.sh release-assets' 'release-assets' "AC2 a registry token in the assets step"
 c c_ghsec   '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets' '          GH_TOKEN: ${{ secrets.OTHER }}\n        run: bash bin/witnessed.sh release-assets' 'whole read' "AC2 GH_TOKEN from another secret"
 c c_part    '=DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}x\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-sign' 'whole read' "AC2 a credential read in part"
 c c_foo     '=APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}' 'APK_RELEASE_SIGNING_KEY: ${{ secrets.APK_RELEASE_SIGNING_KEY }}\n          FOO: bar' 'release-apks' "AC2 an extra variable in the apk step"
 c c_upenv   '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence' '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        env:\n          GH_TOKEN: ${{ github.token }}\n        with:\n          name: release-evidence' 'only the witnessed' "AC2 an env on an upload step"
-c c_pvnone  '=      - name: release-postverify\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-postverify\n' 'release-postverify' "AC2 (rule 79) the post-publish step without its read token"
+c c_pvnone  '=      - name: release-postverify\n        if: ${{ !contains(github.ref_name, '\''-'\'') }}\n        env:\n          GH_TOKEN: ${{ github.token }}\n' '      - name: release-postverify\n' 'release-postverify' "AC2 (rule 79) the post-publish step without its read token"
 c c_pvreg   '=          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-postverify' '          GH_TOKEN: ${{ github.token }}\n          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}\n        run: bash bin/witnessed.sh release-postverify' 'release-postverify' "AC2 (rule 79, rule 66) a registry credential in the post-publish step, which needs read access only"
 # ---- AC3: nothing outside the release job holds them -------------------------------------------------------------------------
 o() { rm -rf "$work/$1"; cp -r "$work/o" "$work/$1"; python3 - "$work/$1/.github/workflows/$2" "$3" <<'PY'
@@ -364,7 +368,7 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-EXPECT=166
+EXPECT=169
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

@@ -25,7 +25,7 @@ import base64, hashlib, json, os, re, sys, yaml
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 STEPS = ["release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"]   # the last: rule 79 amended, Oct 10
 INSTALLS = ["witness", "cosign", "crane"]
-DOWN = {"witness-build", "witness-rebuild", "witness-check", "provenance", "digests", "dist", "locks", "images", "apks", "sboms"}
+DOWN = {"witness-build", "witness-rebuild", "witness-check", "provenance", "digests", "dist", "images", "apk-ubuntu-24.04", "apk-ubuntu-24.04-arm", "rapk-ubuntu-24.04", "rapk-ubuntu-24.04-arm"}   # Build's and Rebuild's real artifact names (AC17)
 UP = {"release-evidence", "witness-release"}
 REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
@@ -36,8 +36,10 @@ CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH
 GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 IFS_OF = {"build": GATE_G, "sign": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
 CHAIN_JOBS = ["build", "sign", "rebuild", "check", "release"]   # the last stage is Release (the ratified rules' name; Q9)
-TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\\\.\[0-9\]\+\)\?\$ \]\] \|\| '
-           r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rc\.N" >&2; exit 1; \}')
+# the tag rule (REQ-CHAIN-007-AC14, advisor 0383/0386): vX.Y.Z or a release candidate vX.Y.Z-rcN, exactly ^v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+$ (the -rc.N form is gone)
+TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\[0-9\]\+\)\?\$ \]\] \|\| '
+           r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rcN" >&2; exit 1; \}')
+RC_IF = "${{ !contains(github.ref_name, '-') }}"   # every step after release-verify: a release candidate (a tag with a hyphen) ends after release-verify
 VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order, nothing else (PROPOSED: stage-start takes --rekor-stub for provenance)
     TAGLINE,
     r'python3 bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" --out policy\.json',
@@ -49,7 +51,7 @@ VERIFY = [   # bin/release-verify.sh after `set -euo pipefail`: rule 69's order,
 # what each release script may use; `signs` says whether it signs anything; `runs` the other scripts it may start (the chain-scripts.json row)
 ROWS = {
     "bin/release-verify.sh":  {"tools": ["python3"], "signs": False, "runs": ["bin/chain-verify.py"]},
-    "bin/release-apks.sh":    {"tools": ["jq", "melange", "python3", "trap"], "signs": "other", "runs": ["bin/apk-tool.py"]},
+    "bin/release-apks.sh":    {"tools": ["bash", "jq", "python3", "trap"], "signs": "other", "runs": ["bin/apk-tool.py", "bin/release-sign-apks.sh"]},   # cache's script signs; Release calls it
     "bin/release-publish.sh": {"tools": ["crane", "jq"], "signs": False, "runs": []},
     "bin/release-sign.sh":    {"tools": ["cosign", "jq", "python3"], "signs": "other", "runs": ["bin/vendor-provenance.py"]},
     "bin/release-assets.sh":  {"tools": ["gh"], "signs": False, "runs": []},
@@ -92,8 +94,9 @@ def stage(path):
         bad.append("permissions must be exactly contents, packages and id-token write: %s" % j.get("permissions"))
     kinds = []
     for s in j.get("steps") or []:
-        if set(s) - {"name", "uses", "with", "run", "env"}:
-            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run", "env"}))
+        nk = len(kinds)
+        if set(s) - {"name", "uses", "with", "run", "env", "if"}:
+            bad.append("step keys not allowed: %s" % sorted(set(s) - {"name", "uses", "with", "run", "env", "if"}))
         u, r = s.get("uses", ""), run_of(s)
         if u.startswith("actions/checkout@"):
             kinds.append("checkout")
@@ -115,6 +118,10 @@ def stage(path):
             kinds.append("W:" + r.split()[2])
         else:
             bad.append("a step that is none of checkout, install, download, witnessed or upload: %r" % (r or s.get("name")))
+        want_if = RC_IF if kinds and kinds[-1].startswith("W:") and kinds[-1] != "W:release-verify" else None
+        if len(kinds) > nk and s.get("if") != want_if:   # nk: kinds before this step; only a step that was classified is judged for its if
+            bad.append("step %r must carry %s, found %r (a release candidate ends after release-verify; release-verify and every non-Witness step carry no if)"
+                       % (r or u, ("exactly the if " + want_if) if want_if else "no if", s.get("if")))
     want = ["checkout"] + ["install:" + t for t in INSTALLS]
     ds = [i for i, k in enumerate(kinds) if k == "down"]
     ws = [k for k in kinds if k.startswith("W:")]
