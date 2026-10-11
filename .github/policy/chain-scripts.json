@@ -880,7 +880,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "9d7732d53bacc5ae9d6111b66ee503892013a507cb20509b19786beee2fc1b56",
+      "sha256": "ca99650272b7ea8b12a54d99e9791ec0e3d1382a38edc543e7608b6f0fe0ed54",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",

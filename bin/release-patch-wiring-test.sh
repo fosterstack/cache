@@ -295,18 +295,16 @@ for st in psteps:
 pco = [s for s in psteps if str(s.get("uses", "")).startswith("actions/checkout@")]
 if not pco or (pco[0].get("with") or {}).get("persist-credentials") != "false" or (pco[0].get("with") or {}).get("ref") != "main":
     bad.append("the notes PR job's checkout is not main without a credential")
+# REQ-REL-009-AC8 (PR 4): the notes are posted by the patch-notes job (above: tag-notes, then the changelog PR); Release creates the release without notes
 sp = yaml.load(open(sys.argv[2]), Loader=yaml.BaseLoader)
-create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "gh release create" in (st.get("run") or "")]
-if len(create) != 1 or "patch-decide.py tag-notes" not in create[0]["run"] or "--notes-file" not in create[0]["run"]:
-    bad.append("stage-promote does not post a patch tag's notes")
+create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "--notes-file" in (st.get("run") or "") or "tag-notes" in (st.get("run") or "")]
+if create:
+    bad.append("stage-promote.yml posts patch notes: the patch-notes job does (REQ-REL-009-AC8)")
 # REQ-REL-009-AC13 downstream (found while wiring rule 10): admission's chosen baseline reaches every stage that reads a
 # baseline — the release manifest — instead of assuming requirements/releases/<tag>.yaml. PR 3 removed the acceptance predicate and the authorization
 # stage (REQ-CHAIN-006-AC10; the baseline checks of those two went with them); PR 2 moved admission into Build, so the OLD promotion job no longer NEEDs an
 # admission job; it keeps the baseline expression until PR 4 (Release) replaces it and reads the baseline from Build's admission evidence.
-for job in ("promotion",):
-    j = jobs.get(job) or {}
-    if (j.get("with") or {}).get("baseline-version") != "${{ needs.admission.outputs.baseline }}":
-        bad.append("%s does not receive admission's baseline" % job)
+# REQ-REL-009-AC13 (PR 4): the baseline is recorded by admission in Build; it travels with the manifest generation of Release (REQ-CHAIN-007-AC19); no stage input carries it
 # Codex #163 pin pass B03: decide's pre-check refuses what admission refuses — the checkout's copy of
 # the chosen baseline must equal the owner tag's, as admission's cmp requires
 if pre and ("cmp -s" not in prun or 'git show "${base}:requirements/releases/${base}.yaml"' not in prun):
@@ -358,7 +356,6 @@ case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
-case_ promotion-own-baseline  bad "$J.setdefault('promotion', {}).setdefault('with', {})['baseline-version'] = '\${{ github.ref_name }}'"
 case_ no-schedule             bad "d['on'].pop('schedule')"
 case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('base_ok', 'ok')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ policy-read-once        bad "[s.__setitem__('run', 'git show origin/main:.github/policy/required-checks.json > x\n' + s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
@@ -495,25 +492,5 @@ case_ ctx-checkout-persist    bad "[s['with'].__setitem__('persist-credentials',
 case_ ctx-wf-env              bad "d['env'] = {'BASH_ENV': 'bin/prep.sh'}"
 case_ ctx-wf-defaults         bad "d['defaults'] = {'run': {'shell': 'bash -c \"x; bash {0}\"'}}"
 case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
-sp="$work/sp.yml"; sed 's/patch-decide.py tag-notes/true/' "$root/.github/workflows/stage-promote.yml" > "$sp"
-if out=$(judge "$root/.github/workflows/release.yml" "$sp"); then failn=$((failn+1)); echo "FAIL stage-promote-fixed-notes → ok, want bad"
-else pass=$((pass+1)); echo "PASS stage-promote-fixed-notes → bad ($out)"; fi
-# the stages themselves read the baseline they are given (empty = the tag's own baseline, as for owner-signed tags)
-stages_out=$(python3 - "$root" <<'PY'
-import os, sys, yaml
-root = sys.argv[1]
-bad = []
-if "baseline_version" not in open(os.path.join(root, "bin/build-admit.py")).read():
-    bad.append("bin/build-admit.py does not write the baseline it used into the admission evidence")
-for f, needle in (("stage-promote.yml", '--arg baseline "requirements/releases/${base}.yaml"'),):
-    d = yaml.load(open(os.path.join(root, ".github/workflows", f)), Loader=yaml.BaseLoader)
-    inp = (((d.get("on") or {}).get("workflow_call") or {}).get("inputs") or {}).get("baseline-version") or {}
-    text = open(os.path.join(root, ".github/workflows", f)).read()
-    if inp.get("default") != "" or needle not in text or "inputs.baseline-version" not in text:
-        bad.append("%s does not read the baseline it is given" % f)
-print("; ".join(bad) or "ok")
-PY
-)
-if [ "$stages_out" = ok ]; then pass=$((pass+1)); echo "PASS stages-read-baseline → ok"; else failn=$((failn+1)); echo "FAIL stages-read-baseline ($stages_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

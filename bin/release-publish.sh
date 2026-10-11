@@ -16,9 +16,15 @@ prod=$(jq -r '."image-production" // empty' witness-build/digests.json)
 fips=$(jq -r '."image-fips" // empty' witness-build/digests.json)
 [[ "$prod" =~ $rx ]] || { echo "release-publish: the attested image-production digest is missing or malformed" >&2; exit 1; }
 [[ "$fips" =~ $rx ]] || { echo "release-publish: the attested image-fips digest is missing or malformed" >&2; exit 1; }
+# PROPOSED/UNVERIFIED (#299): Build's images artifact holds one OCI image layout DIRECTORY per variant, images/<variant>/ with oci-layout and index.json,
+# beside images/<variant>.digest. Measured: pushing a docker-format tarball re-creates the manifest and changes the digest; a layout directory keeps it.
 for pair in "production:$prod" "fips:$fips"; do
+  v="${pair%%:*}"
+  if [ -L "images/$v" ] || [ ! -d "images/$v" ] || [ ! -f "images/$v/oci-layout" ] || [ ! -f "images/$v/index.json" ]; then
+    echo "release-publish: images/$v is not an OCI image layout directory (oci-layout and index.json): refusing to publish it" >&2; exit 1
+  fi
   own=$(cat "images/${pair%%:*}.digest")
-  if [ "$own" != "${pair#*:}" ]; then echo "release-publish: images/${pair%%:*}.tar is $own, Build attested ${pair#*:}: refusing to publish it" >&2; exit 1; fi
+  if [ "$own" != "${pair#*:}" ]; then echo "release-publish: images/${pair%%:*} is $own, Build attested ${pair#*:}: refusing to publish it" >&2; exit 1; fi
 done
 
 digest_of() {
@@ -54,7 +60,7 @@ for host in ghcr.io docker.io; do
   for entry in "${plan[@]}"; do
     ref="$host/$repo:${entry#*:}"
     want="$prod"; [ "${entry%%:*}" = fips ] && want="$fips"
-    crane push "images/${entry%%:*}.tar" "$ref"
+    crane push "images/${entry%%:*}" "$ref"
     got=$(digest_of "$ref")
     if [ "$got" != "$want" ]; then echo "release-publish: $ref differs: the registry shows $got, Build attested $want" >&2; exit 1; fi
   done
