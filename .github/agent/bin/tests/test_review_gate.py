@@ -1677,10 +1677,10 @@ class GlobalProblemBound(unittest.TestCase):
 # ---- round 4 (Oct 11): a non-regular object at a record path, every added record judged, the line bound ------------
 def special(path, kind):
     """Commit a non-regular object at `path` (str) through the index, then make the work tree match: a symbolic link
-    (kind "link", to a relative target inside the repository), a submodule entry ("gitlink", naming HEAD) or a
+    (kind "link", to a relative target that names no system path), a submodule entry ("gitlink", naming HEAD) or a
     directory ("tree", holding one file)."""
     if kind == "link":
-        blob = plumb("hash-object", "-w", "--stdin", data=b"../../../src/y").strip().decode()
+        blob = plumb("hash-object", "-w", "--stdin", data=b"x.py").strip().decode()
         plumb("update-index", "--add", "--cacheinfo", "120000,%s,%s" % (blob, path))
     elif kind == "gitlink":
         commit = plumb("rev-parse", "HEAD").strip().decode()
@@ -1887,6 +1887,14 @@ class LineBoundAfterEscaping(unittest.TestCase):
             self.assertLessEqual(len(got), G.SAY_CHARS + 40, (s[:5], len(got)))
             self.assertIn("characters)", got, s[:5])
         self.assertEqual(self.said("x y"), "x\\u2028y\n")      # a short line is written whole
+
+    def test_show_bounds_the_escaped_value(self):
+        for s in (" " * 80, "\ud800" * 5000, "é" * 40, "\x1b" * 79, "\U0001f600" * 100):
+            got = G._show(s)
+            self.assertTrue(got.isascii(), s[:5])
+            self.assertLessEqual(len(got), G.SHOW_CHARS + 30, (s[:5], got))
+            self.assertIn("(%d characters)" % len(s), got)
+        self.assertEqual(G._show(" " * 3), "'\\u2028\\u2028\\u2028'")      # a short value is shown whole
 
     def test_a_revision_in_a_refusal_is_shown_bounded(self):
         rev = " " * 3000

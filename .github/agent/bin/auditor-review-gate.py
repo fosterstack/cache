@@ -24,11 +24,12 @@ out of proportion to its length on the oldest supported Python). Reading takes t
 depth is counted by one pass that skips strings).
 
 Every diagnostic is plain ASCII and bounded: a value from the record and a path from the change are shown by _show (a
-string escaped and cut to SHOW_CHARS, a list or object by its kind and size, never rendered, an integer of more than 64
-bits by its size), at most MAX_PROBLEMS problems are written in all (every added record and the record under judgement
-together; past that, the rest are counted and no further added record is read), every line is cut to SAY_CHARS and
-written with every control character and every non-ASCII character escaped (one line, never a forged second one), and
-a failure to judge is a named refusal (exit 1), never a pass.
+string escaped, then cut to SHOW_CHARS written characters, a list or object by its kind and size, never rendered, an
+integer of more than 64 bits by its size), at most MAX_PROBLEMS problems are written in all (every added record and the
+record under judgement together; past that, the rest are counted and no further added record is read), every line is
+written with every control character and every non-ASCII character escaped (one line, never a forged second one) and
+then cut to SAY_CHARS (the bound applies after escaping, which writes one character as up to ten), and a failure to
+judge is a named refusal (exit 1), never a pass.
 
 A record clears the gate (REQ-AUD-018 AC5, AC6) when its schema is auditor-review-record/v2, it binds <tree>, and
 it holds only the permitted fields at every level: the record RECORD_REQUIRED (+ RECORD_OPTIONAL), every round
@@ -60,7 +61,10 @@ character or a byte that is not UTF-8 (otherwise there is no legacy name and no 
 newline in any entry, splitting the legacy bytes at each newline gives back exactly the entry list, so the legacy hash is
 unambiguous over the trees it names. The record at the <tree> path comes first: when the head holds a file there, it is
 the record judged (a schema v2 record by AC5; an old-schema file at a <tree> path fails, an old-schema record being
-named by the legacy hash). Only when the head holds no file at the <tree> path is the legacy path looked at. At either
+named by the legacy hash). Only when the head holds nothing at the <tree> path is the legacy path looked at. At either
+path the head's entry is told three ways apart (round 4): a regular file, nothing, or a non-regular object (a symbolic
+link, a submodule entry, a directory); a non-regular object at either path fails closed, naming the path, and one at
+the <tree> path fails before any legacy record is looked at, so it is never taken for an absent record. At either
 path the identity check comes first: when the PR's diff does not add, change or remove the record path and the same
 regular-file blob is at that path on the trusted revision, the merge base (--base) and the PR head, the TRUSTED
 revision's copy is read (never the head's bytes before that check). At the <tree> path a strictly read schema v2 copy
@@ -68,10 +72,11 @@ is judged by AC5; at the legacy path an old-schema copy is read as the old gate 
 repeated key or NaN in a merged file is history) and is not re-judged by any rule; a copy whose schema cannot be told,
 or that claims schema v2 without being strict JSON, or a schema v2 copy at the legacy path, fails closed. A legacy-path
 file that fails the identity check fails; with no file at either path, the change has no record and fails. A head record
-at the <tree> path that is not a merged file is read strictly, and fails unless it is schema v2. Every record file the PR adds or changes, whether or not
-the PR changes anything else, must be a strictly read schema v2 record, so a PR (a record-only one included) can
-never introduce an old-schema record. What this proves: the old record was on the default branch before this PR and
-this PR did not touch it. What it does not prove: how it got there; a record merged before this gate, or merged by
+at the <tree> path that is not a merged file is read strictly, and fails unless it is schema v2. Every record file
+the PR adds or changes, whether or not the PR changes anything else, is judged as the selected record is (round 4): a
+regular file, read strictly, of schema v2, that clears by AC5 for the tree its own file name names; so a PR (a
+record-only one included) can never introduce an old-schema record, a record with a missing or extra field, or a
+substitute. What this proves: the old record was on the default branch before this PR and this PR did not touch it. What it does not prove: how it got there; a record merged before this gate, or merged by
 anyone past the gate, is history and is not re-judged. A trusted revision that is not a readable commit is refused
 before anything is judged (exit 2), whatever the record.
 
@@ -125,10 +130,14 @@ _KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
 
 def _show(v):
-    """A record value as plain ASCII of bounded length, without recursion: a string escaped and cut to SHOW_CHARS, a
-    list or an object by its kind and size, an integer of more than 64 bits by its size."""
+    """A record value as plain ASCII of bounded length, without recursion: a string escaped, then cut to SHOW_CHARS
+    written characters (round 4: an escape writes one character as up to ten, so the bound applies after escaping; only
+    the first SHOW_CHARS characters are ever escaped), a list or an object by its kind and size, an integer of more
+    than 64 bits by its size."""
     if isinstance(v, str):
-        return ascii(v[:SHOW_CHARS]) + ("... (%d characters)" % len(v) if len(v) > SHOW_CHARS else "")
+        shown = ascii(v[:SHOW_CHARS])
+        cut = len(v) > SHOW_CHARS or len(shown) > SHOW_CHARS + 2      # + 2: the quotes ascii() adds
+        return shown[:SHOW_CHARS] + "... (%d characters)" % len(v) if cut else shown
     if isinstance(v, list):
         return "<a list of length %d>" % len(v)
     if isinstance(v, dict):
@@ -438,12 +447,22 @@ def _judge(rec, tree):
     return probs
 
 
+NOT_REGULAR = type("NotRegular", (), {"__repr__": lambda self: "NOT_REGULAR"})()      # see _blob
+
+
 def _blob(rev, path):
-    """The blob id of `path` at `rev`, or None when the revision has no such file. Every `rev` is one _main has checked
-    to be a readable commit (never one git could read as an option); a git failure raises RuntimeError (refused)."""
+    """What `rev` holds at `path`, three ways apart (round 4): the blob id of a regular file; None when it holds nothing
+    there; NOT_REGULAR when it holds something else (a symbolic link, a submodule entry, a directory), which every
+    caller refuses and never takes for an absent file. Every `rev` is one _main has checked to be a readable commit
+    (never one git could read as an option); a git failure raises RuntimeError (refused)."""
     out = _git("ls-tree", "-z", rev, "--", path).split("\0")[0]
-    meta = out.split("\t", 1)[0].split()      # mode type id: a regular file only (never a link or a submodule)
-    return meta[2] if len(meta) == 3 and meta[1] == "blob" and meta[0] in ("100644", "100755") else None
+    if not out:
+        return None
+    meta = out.split("\t", 1)[0].split()      # mode type id
+    return meta[2] if len(meta) == 3 and meta[1] == "blob" and meta[0] in ("100644", "100755") else NOT_REGULAR
+
+
+NON_REGULAR = "a symbolic link, a submodule entry or a directory, not a regular file: it fails closed"
 
 
 class _Pairs(list):
@@ -458,7 +477,7 @@ def _merged_blob(base, head, trusted, path, touched):
     PR and the PR did not touch it; it does not prove how the file got there (history, not re-judged; every record a PR
     adds or changes must be schema v2, see added_record_problems)."""
     want = _blob(trusted, path)
-    if path in touched or want is None:
+    if path in touched or want is None or want is NOT_REGULAR:
         return None
     return want if want == _blob(base, path) == _blob(head, path) else None
 
@@ -494,32 +513,42 @@ def touched_records(base, head):
 
 
 def _read_record(head, path):
-    """The record at `path` on `head`, strictly read; RuntimeError when it is not a regular file there, ValueError
+    """The record at `path` on `head`, strictly read; RuntimeError when there is no regular file there, ValueError
     when it cannot be read as strict JSON."""
     b = _blob(head, path)
-    if b is None:
-        raise RuntimeError("not a regular file at %s" % head)
+    if b is None or b is NOT_REGULAR:
+        raise RuntimeError("%s at %s" % ("no file" if b is None else NON_REGULAR, _show(head)))
     return load_record(_git("cat-file", "blob", b, raw=True))
 
 
+def _tree_named(path):
+    """The tree hash a record path names (reviews/<tree>.json)."""
+    return path[len(REVIEWS):-len(".json")]
+
+
 def added_record_problems(head, touched, skip, probs):
-    """AC7: every record the PR adds or changes (except `skip`, the head's own record, judged on its own) must be a
-    strictly read schema v2 record, even when the PR changes nothing else: no PR can introduce an old-schema record.
-    Adds to `probs` one written line per failing record; once `probs` holds MAX_PROBLEMS, the rest are counted, not read."""
+    """AC4, AC5, AC7: every record the PR adds or changes (except `skip`, the head's own record, judged on its own) is
+    judged as the selected record is, even when the PR changes nothing else (round 4): it must be a regular file, read
+    strictly, of schema v2, and clear by _judge for the tree its own file name names; so no PR can introduce an
+    old-schema record, a record with a missing or extra field, or a substitute. Adds to `probs` its failing lines;
+    once `probs` holds MAX_PROBLEMS, the rest are counted, and no further record is read."""
     for path in sorted(p for p, present in touched.items() if present and p != skip):
         if len(probs) >= MAX_PROBLEMS:
             probs.unread += 1
             continue
+        at = "::error file=%s::review gate: record %s is added or changed by this pull request and " % (path, path)
         try:
             rec = _read_record(head, path)
         except (RuntimeError, ValueError) as e:
             why = "cannot be read (%s)" % (str(e).splitlines() or [type(e).__name__])[0]
         else:
             if isinstance(rec, dict) and rec.get("schema") == SCHEMA:
+                judged = _judge(rec, _tree_named(path))
+                probs.extend(at + "does not clear: %s (REQ-AUD-18 AC4, AC5)" % p for p in judged)
+                probs.more += judged.more
                 continue
             why = "its schema is %s, not %s" % (_show(rec.get("schema") if isinstance(rec, dict) else None), SCHEMA)
-        probs.append("::error file=%s::review gate: record %s is added or changed by this pull request and %s: %s "
-                      "(REQ-AUD-18 AC7)" % (path, path, why, V2_REQUIRED))
+        probs.append(at + "%s: %s (REQ-AUD-18 AC7)" % (why, V2_REQUIRED))
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -527,12 +556,14 @@ _NAMED = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 
 
 def _say(line, err=False):
-    """Write one line of plain ASCII: cut to SAY_CHARS, every control character escaped (so no value or path can start a
-    second line or an escape sequence) and every non-ASCII character escaped (so nothing can make the output raise)."""
+    """Write one line of plain ASCII: every control character escaped (so no value or path can start a second line or an
+    escape sequence) and every non-ASCII character escaped (so nothing can make the output raise), THEN cut to
+    SAY_CHARS (round 4: an escape writes one character as up to ten, so the bound applies to the escaped line)."""
+    line = _CONTROL.sub(lambda m: _NAMED.get(m.group(), "\\x%02x" % ord(m.group())), line)
+    line = line.encode("ascii", "backslashreplace").decode("ascii")
     if len(line) > SAY_CHARS:
         line = line[:SAY_CHARS] + "... (%d characters)" % len(line)
-    line = _CONTROL.sub(lambda m: _NAMED.get(m.group(), "\\x%02x" % ord(m.group())), line)
-    print(line.encode("ascii", "backslashreplace").decode("ascii"), file=sys.stderr if err else sys.stdout)
+    print(line, file=sys.stderr if err else sys.stdout)
 
 
 def _emit(report):
@@ -616,6 +647,9 @@ def _main(argv):
         _say("review gate: no change under %s: nothing to clear" % AGENT)
         return 0
     rec, where, probs = None, path, []
+    here = _blob(head, path)
+    if here is NOT_REGULAR:      # refused before any legacy record is looked at (AC7: never taken for an absent file)
+        return _no_record(report, changed, path, NON_REGULAR)
     merged = _merged_blob(base, head, trusted, path, touched)
     if merged:      # the identity check passed: read the TRUSTED revision's copy (by its blob id), never the head's
         kind, got = classify_merged(_git("cat-file", "blob", merged, raw=True))
@@ -626,7 +660,7 @@ def _main(argv):
                      % (path, _show(trusted), got if kind == "refused" else
                         "it is an old-schema record at the path the tree hash names (an old-schema record is named by "
                         "the legacy tree hash): " + V2_REQUIRED)]
-    elif _blob(head, path) is None:      # no record at the tree's path: an old record merged for this content?
+    elif here is None:      # nothing at the tree's path: an old record merged for this content?
         legacy = legacy_tree_hash(head)
         where = REVIEWS + legacy + ".json" if legacy else path
         old = _merged_blob(base, head, trusted, where, touched) if legacy else None
@@ -642,6 +676,8 @@ def _main(argv):
                     where, _show(trusted), got if kind == "refused" else
                     "it is a schema v2 record at the path the legacy tree hash names (a schema v2 record is named by "
                     "the tree hash): %s at %s" % (V2_REQUIRED, path))]
+        elif legacy and _blob(head, where) is NOT_REGULAR:
+            return _no_record(report, changed, where, NON_REGULAR)
         elif legacy and _blob(head, where) is not None:
             probs = ["record %s, named by the legacy tree hash, is not the same file, unchanged by this pull request, at "
                      "the merge base %s and on the trusted revision %s: %s" % (where, _show(base), _show(trusted),
