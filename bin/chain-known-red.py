@@ -4,7 +4,7 @@
 On chain-v030 a few cases of the chain suites are red on purpose until a later PR or a cache item lands (the old chain jobs of PRs 3 and 4, the cache lane's
 build scripts P4/P5). They are listed here by case and reason, so a red CI run means exactly "the list and the red cases differ", never "red is normal".
 
-  judge --suite SUITE [--list FILE]        stdin is the suite's output: exit 0 only when the set of FAIL cases is EXACTLY the list's entries for SUITE
+  judge --suite SUITE --inner-rc N [--list FILE]   stdin is the suite's output: exit 0 only when the set of FAIL cases is EXACTLY the list's entries for SUITE
                                            (a red case that is not listed fails; a listed case that passes fails, naming it: remove the entry in the PR that fixes it)
   base-check [--list FILE] [--base REF] [--event FILE]
                                            an entry added or changed since the merge base (compared in full: suite, case, reason, green_by) fails unless the PR body names it with a line `known-red-add: <id>`
@@ -20,6 +20,7 @@ import json, os, re, subprocess, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_LIST = os.path.join(HERE, "..", "test-evidence", "known-red.json")
 KEYS = {"id", "suite", "case", "reason", "green_by"}
+OPTIONAL = {"findings"}      # the structured identity of the case's findings: a list of strings, with multiplicity (one element per finding)
 
 
 def fail(msg):
@@ -45,8 +46,10 @@ def load(path):
         fail("%s has no `entries` list" % path)
     seen = set()
     for e in ents:
-        if not isinstance(e, dict) or set(e) != KEYS or not all(isinstance(e[k], str) and e[k].strip() for k in KEYS):
-            fail("an entry must be an object of exactly %s, each a non-empty string: %r" % (sorted(KEYS), e))
+        if not isinstance(e, dict) or not KEYS <= set(e) <= KEYS | OPTIONAL or not all(isinstance(e[k], str) and e[k].strip() for k in KEYS):
+            fail("an entry must be an object of exactly %s (and optionally %s), each a non-empty string: %r" % (sorted(KEYS), sorted(OPTIONAL), e))
+        if "findings" in e and (not isinstance(e["findings"], list) or not e["findings"] or not all(isinstance(x, str) and x for x in e["findings"])):
+            fail("entry %s: findings must be a non-empty list of non-empty strings" % e.get("id"))
         if e["id"] in seen:
             fail("entry id %s is listed twice" % e["id"])
         seen.add(e["id"])
@@ -61,29 +64,80 @@ def matches(line, case):
     return line == case or line.startswith(case + " -> ") or line.startswith(case + ": ") or line.startswith(case + " (")
 
 
+def parse_output(text):
+    """[(line, structured ids or None)] for every FAIL line: the ids are those of the FINDINGS-JSON line printed IMMEDIATELY before it."""
+    out, prev = [], None
+    for raw in text.split("\n"):
+        if raw.startswith("FAIL "):
+            ids = None
+            if prev is not None and prev.startswith("FINDINGS-JSON "):
+                try:
+                    ids = json.loads(prev[len("FINDINGS-JSON "):])
+                except ValueError:
+                    ids = False
+                if not (isinstance(ids, list) and all(isinstance(x, str) for x in ids)):
+                    ids = False
+            out.append((raw[5:], ids))
+        prev = raw
+    return out
+
+
 def cmd_judge(args):
     suite = args[args.index("--suite") + 1]
     path = args[args.index("--list") + 1] if "--list" in args else DEFAULT_LIST
+    if "--inner-rc" not in args:
+        usage_fail("--inner-rc is required: the suite's own exit status (the wrapper must not discard it)")
+    try:
+        inner = int(args[args.index("--inner-rc") + 1])
+    except (ValueError, IndexError):
+        usage_fail("--inner-rc must be an integer exit status")
     ents = [e for e in load(path) if e["suite"] == suite]
     text = sys.stdin.read()
-    if not re.search(r"^pass=\d+ fail=\d+$", text, re.M):
+    m = re.findall(r"^pass=(\d+) fail=(\d+)$", text, re.M)
+    if not m:
         fail("the suite %s printed no `pass=N fail=M` summary: it did not finish" % suite)
-    lines = fail_lines(text)
+    cases = parse_output(text)
     problems = []
-    used = {e["id"]: 0 for e in ents}
-    for l in lines:
-        hit = [e for e in ents if matches(l, e["case"])]
+    claimed = int(m[-1][1])
+    if claimed != len(cases):
+        problems.append("the summary says fail=%d but the output has %d FAIL line(s): the summary is not trusted" % (claimed, len(cases)))
+    if inner not in (0, 1) or (inner == 0) != (len(cases) == 0):
+        problems.append("the suite's exit status %d does not agree with its %d FAIL line(s) (0 exactly when there is none; never another status)" % (inner, len(cases)))
+    used = {e["id"]: [] for e in ents}
+    for line, ids in cases:
+        hit = [e for e in ents if matches(line, e["case"])]
         if len(hit) != 1:
-            problems.append("a red case that is not on the known-red list: %s" % l[:200])
+            problems.append("a red case that is not on the known-red list: %s" % line[:200])
         else:
-            used[hit[0]["id"]] += 1
+            used[hit[0]["id"]].append(ids)
     for e in ents:
-        if used[e["id"]] == 0:
+        got = used[e["id"]]
+        if not got:
             problems.append("a listed case now passes (remove entry %s from test-evidence/known-red.json): %s" % (e["id"], e["case"][:200]))
+            continue
+        if len(got) != 1:
+            problems.append("entry %s: its case was printed %d times (twice or more is not the listed case): %s" % (e["id"], len(got), e["case"][:120]))
+            continue
+        if "findings" in e:
+            ids = got[0]
+            if ids is None or ids is False:
+                problems.append("entry %s lists its findings but the output has no valid FINDINGS-JSON line right before its FAIL line" % e["id"])
+            else:
+                want, have = sorted(e["findings"]), sorted(ids)
+                if want != have:
+                    extra = [x for x in have if x not in want or have.count(x) > want.count(x)]
+                    missing = [x for x in want if x not in have or want.count(x) > have.count(x)]
+                    problems.append("entry %s: the findings differ from the listed ones (%d printed, %d listed); additional: %s; missing: %s"
+                                    % (e["id"], len(have), len(want), "; ".join(dict.fromkeys(extra))[:300] or "none", "; ".join(dict.fromkeys(missing))[:300] or "none"))
     if problems:
         print("\n".join("known-red: " + p for p in problems))
         sys.exit(1)
-    print("known-red: %s: %d red case(s), exactly the %d listed (each turns green with its named item)" % (suite, len(lines), len(ents)))
+    print("known-red: %s: %d red case(s), exactly the %d listed (each turns green with its named item)" % (suite, len(cases), len(ents)))
+
+
+def usage_fail(msg):
+    print("known-red: " + msg)
+    sys.exit(2)
 
 
 def git(*a):

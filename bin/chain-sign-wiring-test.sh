@@ -49,9 +49,9 @@
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
-  _out=$(CHAIN_KNOWN_RED_INNER=1 bash "$0" "$@" 2>&1) || true
+  _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
   printf '%s\n' "$_out"
-  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-sign-wiring-test.sh
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-sign-wiring-test.sh --inner-rc "$_rc"
   exit $?
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -501,7 +501,10 @@ def judge_calls(root):
 if __name__ == "__main__":
     which, arg = sys.argv[1], sys.argv[2]
     bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree, "calls": judge_calls}[which](arg)
-    print("; ".join(dict.fromkeys(bad)) or "ok"); sys.exit(1 if bad else 0)
+    ids = list(dict.fromkeys(bad))
+    if ids and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py); nothing else changes
+        print("FINDINGS-JSON " + json.dumps(ids), file=sys.stderr)
+    print("; ".join(ids) or "ok"); sys.exit(1 if bad else 0)
 PY
 export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
 judge() { python3 "$work/judge.py" "$@"; }
@@ -3384,7 +3387,7 @@ assert "; ".join(ids) == out, "printed list and ids differ"
 PY
 if [ "$rcp" = 0 ]; then pass=$((pass + 1)); echo "ok   findings ids: the FINDINGS-JSON line is the judge's own findings, one for one with the printed list (rc 1, none dropped, none added, same order)"
 else failn=$((failn + 1)); echo "FAIL findings ids: the printed structured ids differ from the judge's list"; fi
-rc=0; python3 "$work/judge.py" tree "$d" > /dev/null 2> "$fj/err2.txt" || rc=$?
+rc=0; env -u CHAIN_FINDINGS python3 "$work/judge.py" tree "$d" > /dev/null 2> "$fj/err2.txt" || rc=$?
 if ! grep -q 'FINDINGS-JSON' "$fj/err2.txt"; then pass=$((pass + 1)); echo "ok   findings ids: nothing is printed unless CHAIN_FINDINGS=1 (no change to the judge's existing output)"; else failn=$((failn + 1)); echo "FAIL findings ids: printed without CHAIN_FINDINGS=1"; fi
 
 EXPECT=1331

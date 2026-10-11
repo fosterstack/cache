@@ -748,5 +748,7 @@ if __name__ == "__main__":
            "listed": lambda: listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
             "callers": lambda: callers(sys.argv[2]),
             "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
+    if bad and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py)
+        print("FINDINGS-JSON " + json.dumps(bad), file=sys.stderr)
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)

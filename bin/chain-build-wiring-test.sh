@@ -54,9 +54,9 @@
 set -euo pipefail
 # the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
 if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
-  _out=$(CHAIN_KNOWN_RED_INNER=1 bash "$0" "$@" 2>&1) || true
+  _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
   printf '%s\n' "$_out"
-  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-build-wiring-test.sh
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-build-wiring-test.sh --inner-rc "$_rc"
   exit $?
 fi
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -71,6 +71,9 @@ judge() { python3 "$shape" "$@"; }
 expect() { # expect ok|caught LABEL WORD judge-args...   (WORD: a word the fault message must contain, for caught)
   local want=$1 label=$2 word=$3; shift 3; local out rc=0
   out=$(judge "$@" 2>&1) || rc=$?
+  if grep -q '^FINDINGS-JSON ' <<< "$out"; then          # the structured ids go out BEFORE the verdict line (bin/chain-known-red.py reads the line before a FAIL)
+    grep '^FINDINGS-JSON ' <<< "$out"; out=$(grep -v '^FINDINGS-JSON ' <<< "$out")
+  fi
   if [ "$want" = ok ]; then
     if [ "$rc" = 0 ]; then ok "$label"; else bad "$label -> $out"; fi
   elif [ "$rc" = 1 ] && grep -Fq -- "$word" <<< "$out" && ! grep -q Traceback <<< "$out"; then ok "$label (caught: ${out:0:90})"
