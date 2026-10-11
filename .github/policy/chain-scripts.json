@@ -351,7 +351,7 @@
     },
     {
       "path": "bin/check-stage.sh",
-      "sha256": "00b7ca4314190dfaa02cb0425637f1f77ac932d1f4419f24e55fbcde617c0c6e",
+      "sha256": "7b2c4d398fca956428ca1e6eb40b605c0fd328d8a5650d59897b75a98874c37b",
       "tools": [
         "bash",
         "make",
@@ -363,7 +363,8 @@
         "bin/check-scan.sh",
         "bin/check-acceptance.sh",
         "bin/check-fips.sh",
-        "bin/check-guide.sh"
+        "bin/check-guide.sh",
+        "bin/check-artifacts.sh"
       ],
       "signs": false,
       "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)",
@@ -850,6 +851,36 @@
       ],
       "signs": false,
       "reason": "the thin target of Check's runtime step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-artifacts.sh",
+      "sha256": "bcfe9152cb5cc42817212118b406dee7bf5ebc590179eb7bc3eef607acdf6399",
+      "tools": [
+        "at",
+        "curl",
+        "docker",
+        "go",
+        "python3",
+        "sed",
+        "sh",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-image-platforms.py"
+      ],
+      "signs": false,
+      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)"
+    },
+    {
+      "path": "bin/check-image-platforms.py",
+      "sha256": "d0403bf764fc978c051ab8f469fd8df869d1c777139f3e312986980da960f100",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "lists the platforms an OCI image archive carries (REQ-PLAT-002-AC1)"
     }
   ],
   "ambient_env": [

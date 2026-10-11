@@ -216,11 +216,24 @@ mappings:
   - ac: REQ-DEPLOY-002-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }
+  - ac: REQ-PLAT-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-PLAT-003-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-PLAT-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-FIPS-002-AC1
     evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
       - { type: go-test, ref: "internal/buildinfo:TestFIPSNoteIsTruthfulPerModeAndModule" }
   - ac: REQ-PRIV-001-AC1
     evidence:

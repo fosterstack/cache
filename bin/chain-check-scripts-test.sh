@@ -384,16 +384,16 @@ mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fi
 tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips
 afail "PLAT-001-AC1 a binary that exits at once does not execute: fails naming healthz" healthz -- "${ART[@]}"
 mkarch "$fa/dist"
-afail "FIPS-001-AC1 the fips binary embeds no module selection fails" GOFIPS140 -- FAKE_GOFIPS_FIPS= "${ART[@]}"
-afail "FIPS-001-AC1 another module version than v1.0.0 fails" v1.0.0 -- FAKE_GOFIPS_FIPS=v1.26.0 "${ART[@]}"
-afail "FIPS-001-AC1 the standard binary embedding a selection (crossed variants) fails" crossed -- FAKE_GOFIPS_STD=v1.0.0 "${ART[@]}"
-afail "FIPS-002-AC1 the fips binary reporting off fails" "fips build" -- FAKE_FIPS_NOTE=off "${ART[@]}"
-afail "FIPS-002-AC1 the standard default reporting active fails" "standard" -- FAKE_STD_NOTE='active (x)' "${ART[@]}"
-afail "FIPS-001-AC2 the forced-standard build claiming the validated module fails" "forced" -- FAKE_FORCED_NOTE='active (Go validated module v1.0.0, CMVP cert #5247)' "${ART[@]}"
-afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" -- FAKE_FORCED_NOTE=off "${ART[@]}"
-afail "PLAT-003-AC1 a shell at /bin/sh in the production image fails naming production" production -- FAKE_SHELL="production:/bin/sh" "${ART[@]}"
-afail "PLAT-003-AC1 a shell at /busybox/sh in the -fips image fails naming fips" fips -- FAKE_SHELL="fips:/busybox/sh" "${ART[@]}"
-afail "PLAT-003-AC1 a shell at another path (/usr/bin/bash) fails" shell -- FAKE_SHELL="production:/usr/bin/bash" "${ART[@]}"
+afail "FIPS-001-AC1 the fips binary embeds no module selection fails" GOFIPS140 FAKE_GOFIPS_FIPS= -- "${ART[@]}"
+afail "FIPS-001-AC1 another module version than v1.0.0 fails" v1.0.0 FAKE_GOFIPS_FIPS=v1.26.0 -- "${ART[@]}"
+afail "FIPS-001-AC1 the standard binary embedding a selection (crossed variants) fails" crossed FAKE_GOFIPS_STD=v1.0.0 -- "${ART[@]}"
+afail "FIPS-002-AC1 the fips binary reporting off fails" "fips build" FAKE_FIPS_NOTE=off -- "${ART[@]}"
+afail "FIPS-002-AC1 the standard default reporting active fails" "standard" FAKE_STD_NOTE='active (x)' -- "${ART[@]}"
+afail "FIPS-001-AC2 the forced-standard build claiming the validated module fails" "forced" FAKE_FORCED_NOTE='active (Go validated module v1.0.0, CMVP cert #5247)' -- "${ART[@]}"
+afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" FAKE_FORCED_NOTE=off -- "${ART[@]}"
+afail "PLAT-003-AC1 a shell at /bin/sh in the production image fails naming production" production FAKE_SHELL="production:/bin/sh" -- "${ART[@]}"
+afail "PLAT-003-AC1 a shell at /busybox/sh in the -fips image fails naming fips" fips FAKE_SHELL="fips:/busybox/sh" -- "${ART[@]}"
+afail "PLAT-003-AC1 a shell at another path (/usr/bin/bash) fails" shell FAKE_SHELL="production:/usr/bin/bash" -- "${ART[@]}"
 cp "$fa/images/fips.tar" "$work/fips.tar.keep"; cp "$fa/images/fips-amd64only.tar" "$fa/images/fips.tar"
 afail "PLAT-002-AC1 an image archive without the linux/arm64 platform entry fails naming it" linux/arm64 -- "${ART[@]}"
 cp "$work/fips.tar.keep" "$fa/images/fips.tar"
@@ -566,7 +566,7 @@ if [ "$got" = "witness-acceptance/acceptance-collection.json witness-runtime/run
 # ---- REQ-CHAIN-006-AC3 / AC11: bin/check-stage.sh, the fixed dispatcher (verify first, then only the phase's checks) -------------------
 dp="$work/dp"; mkdir -p "$dp/bin"; cp "$root/bin/check-stage.sh" "$dp/bin/" 2> /dev/null || true
 printf '#!/usr/bin/env bash\necho "verify $*" >> "$DP_LOG"\nexit "${VERIFY_RC:-0}"\n' > "$dp/bin/chain-verify.py"
-for s in check-scan check-fips check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n' "$s" > "$dp/bin/$s.sh"; done
+for s in check-scan check-fips check-artifacts check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n' "$s" > "$dp/bin/$s.sh"; done
 cat > "$dp/bin/python3" <<'EOF'
 #!/usr/bin/env bash
 [ "$1 $2" = "-I -B" ] || { echo "python3 not isolated: $*" >> "$DP_LOG"; exit 3; }
@@ -584,7 +584,7 @@ if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' 
 drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
-if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 EXPECT=124
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi

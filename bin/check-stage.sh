@@ -20,6 +20,7 @@ case "$1" in
     bash bin/check-acceptance.sh egress --digests witness-build/digests.json --images images --out check-results
     bash bin/check-acceptance.sh k8s --digests witness-build/digests.json --images images --out check-results
     bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results
+    bash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results
     bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results
     ;;
   *) echo "unknown phase: $1" >&2; exit 2 ;;

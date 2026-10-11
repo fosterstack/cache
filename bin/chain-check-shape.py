@@ -120,9 +120,10 @@ PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed comman
     "runtime": [r"bash bin/check-acceptance\.sh egress --digests witness-build/digests\.json --images images --out check-results",
                 r"bash bin/check-acceptance\.sh k8s --digests witness-build/digests\.json --images images --out check-results",
                 r"bash bin/check-fips\.sh --digests witness-build/digests\.json --images images --out check-results",
+                r"bash bin/check-artifacts\.sh --digests witness-build/digests\.json --images images --archives dist --out check-results",
                 r"bash bin/check-guide\.sh --guide docs/verify-release\.md --digests witness-build/digests\.json --images images --out check-results"],
 }
-SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-scan.sh", "bin/check-fips.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
+SCRIPTS = ["bin/check-stage.sh", "bin/check-phase-scanners.sh", "bin/check-phase-acceptance.sh", "bin/check-phase-runtime.sh", "bin/check-scan.sh", "bin/check-fips.sh", "bin/check-artifacts.sh", "bin/check-acceptance.sh", "bin/check-guide.sh",
            "bin/acceptance-gradle.sh", "bin/acceptance-gradle-capped.sh", "bin/acceptance-maven.sh", "bin/acceptance-maven-capped.sh",
            "bin/acceptance-egress.sh", "bin/acceptance-k8s.sh", "bin/acceptance-serve.sh", "bin/install-kind.sh"]
 # REQ-CHAIN-006-AC14 (advisor ruling Q8; kind v0.33.0 release notes, https://github.com/kubernetes-sigs/kind/releases/tag/v0.33.0, 2026-08-26)

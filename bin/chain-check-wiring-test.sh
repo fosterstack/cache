@@ -126,6 +126,7 @@ PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.j
       ("runtime", ["bash bin/check-acceptance.sh egress --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-acceptance.sh k8s --digests witness-build/digests.json --images images --out check-results",
                    "bash bin/check-fips.sh --digests witness-build/digests.json --images images --out check-results",
+                   "bash bin/check-artifacts.sh --digests witness-build/digests.json --images images --archives dist --out check-results",
                    "bash bin/check-guide.sh --guide docs/verify-release.md --digests witness-build/digests.json --images images --out check-results"])]
 POL = 'python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json'
 body = "set -euo pipefail\n" + POL + "\n" + "\n".join(V) + '\ncase "$1" in\n'
@@ -190,7 +191,7 @@ jobs:
         run: bash bin/acceptance-maven-capped.sh
 """)
 os.makedirs(w + "/plain", exist_ok=True)
-for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-acceptance", "check-guide"):
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
     open(f"{w}/plain/{n}.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
@@ -348,14 +349,14 @@ import hashlib, json, os, sys
 w = sys.argv[1]
 os.makedirs(w + "/bin", exist_ok=True)
 rows = []
-for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
           "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve", "install-kind"):
     p = f"bin/{n}.sh"; open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
     rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 os.makedirs(w + "/.github/policy", exist_ok=True)
 json.dump({"env_names": [], "scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"))
 PY
-expect ok "fixture: all sixteen Check scripts listed with their sha256 and signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
+expect ok "fixture: all seventeen Check scripts listed with their sha256 and signs: false" "" listed "$work/l/.github/policy/chain-scripts.json" "$work/l"
 cp -r "$work/l" "$work/l2"; python3 - "$work/l2" <<'PY'
 import json, sys
 p = sys.argv[1] + "/.github/policy/chain-scripts.json"; d = json.load(open(p)); d["scripts"] = d["scripts"][1:]; json.dump(d, open(p, "w"))
@@ -420,7 +421,7 @@ for s in scanners acceptance runtime; do expect ok "the real bin/check-phase-$s.
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build and sign, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
-expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-fips.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
+expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
 expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.0 against their committed sha256 (AC14)" "" kind "$root/bin/install-kind.sh"
