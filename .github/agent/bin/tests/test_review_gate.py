@@ -611,7 +611,7 @@ class LegacyProvenance(unittest.TestCase):
 
     def test_a_record_only_pull_request_with_a_strict_v2_record_or_a_deletion_passes(self):
         path = self.future()
-        self.r.change(path, json.dumps(good()))
+        self.r.change(path, json.dumps(good(path[-69:-5])))      # a clearing record of the tree its name names
         rc, out, _ = self.r.judge()
         self.assertEqual(rc, 0, out)
         self.r.base = self.r.rev()
@@ -1672,6 +1672,229 @@ class GlobalProblemBound(unittest.TestCase):
         self.assertLessEqual(len(lines), G.MAX_PROBLEMS + 1, len(lines))
         self.assertIn("more problem(s) not shown", lines[-1])
         self.assertLessEqual(len([a for a in calls if a[0] == "cat-file"]), G.MAX_PROBLEMS)
+
+
+# ---- round 4 (Oct 11): a non-regular object at a record path, every added record judged, the line bound ------------
+def special(path, kind):
+    """Commit a non-regular object at `path` (str) through the index, then make the work tree match: a symbolic link
+    (kind "link", to a relative target inside the repository), a submodule entry ("gitlink", naming HEAD) or a
+    directory ("tree", holding one file)."""
+    if kind == "link":
+        blob = plumb("hash-object", "-w", "--stdin", data=b"../../../src/y").strip().decode()
+        plumb("update-index", "--add", "--cacheinfo", "120000,%s,%s" % (blob, path))
+    elif kind == "gitlink":
+        commit = plumb("rev-parse", "HEAD").strip().decode()
+        plumb("update-index", "--add", "--cacheinfo", "160000,%s,%s" % (commit, path))
+    else:
+        blob = plumb("hash-object", "-w", "--stdin", data=b"x\n").strip().decode()
+        plumb("update-index", "--add", "--cacheinfo", "100644,%s,%s/inner" % (blob, path))
+    plumb("commit", "-qm", "a %s at %s" % (kind, path))
+    plumb("reset", "-q", "--hard")
+
+
+def rec_path(h):
+    return ".github/agent/reviews/%s.json" % h
+
+
+class NonRegularRecord(unittest.TestCase):
+    """REQ-AUD-018-AC7 (an old record clears only as "a file at the same record path with the same bytes" on the trusted
+    revision; "any other v1 record ... fails") and AC3: the gate tells an absent record path from one that holds a
+    non-regular object (a symbolic link, a submodule entry or a directory). A non-regular object at the tree-hash path
+    or at the legacy path fails closed, naming that path, whether the pull request added it or it was already there; at
+    the tree-hash path it is refused before any legacy record is looked at, so it never falls back to a merged record."""
+
+    KINDS = ("link", "gitlink")
+
+    def scenario(self, kind, at, when):
+        """main reviewed x.py=b (a v1 record merged at the legacy path), then moved on to x.py=c; the pull request
+        restores x.py=b. A `kind` object is put at the tree-hash path (at="tree") or the legacy path (at="legacy"),
+        on main before it moved on (when="preexisting") or by the pull request (when="added"). Returns that path."""
+        r = self.r = CliRepo().start(self)
+        r.change(".github/agent/bin/x.py", "b\n")
+        target = rec_path(r.tree()) if at == "tree" else rec_path(r.legacy_tree())
+        if at == "tree":
+            r.record(legacy, legacy=True)
+        if when == "preexisting":
+            special(target, kind)
+        r.change(".github/agent/bin/x.py", "c\n")
+        r.base = r.rev()
+        r.change(".github/agent/bin/x.py", "b\n")
+        if when == "added":
+            special(target, kind)
+        return target
+
+    def refused(self, target, *extra):
+        rc, out, err = run_main_utf8("--base", self.r.base, "--head", "HEAD", *extra)
+        self.assertEqual(rc, 1, (target, out, err))
+        self.assertIn(target, out)
+        self.assertIn("not a regular file", out)
+        self.assertNotIn("honoured", out)
+        self.assertNotIn("clears", out)
+        return out
+
+    def test_blob_tells_an_absent_path_from_a_regular_file_from_a_non_regular_object(self):
+        r = CliRepo().start(self)
+        for kind, h in (("link", "1" * 64), ("gitlink", "2" * 64), ("tree", "3" * 64)):
+            special(rec_path(h), kind)
+        r.change(rec_path("4" * 64), "{}")
+        for h in ("1" * 64, "2" * 64, "3" * 64):
+            self.assertIs(G._blob("HEAD", rec_path(h)), G.NOT_REGULAR, h)
+        self.assertIsNone(G._blob("HEAD", rec_path("5" * 64)))
+        self.assertRegex(G._blob("HEAD", rec_path("4" * 64)), "^[0-9a-f]{40}$")
+
+    def test_a_merged_legacy_record_still_clears_without_a_non_regular_object(self):
+        self.scenario(None, "tree", "neither")
+        self.assertEqual(self.r.judge()[0], 0)
+
+    def test_a_non_regular_object_at_the_tree_path_beside_a_merged_legacy_record_fails(self):
+        for kind in self.KINDS:
+            for when in ("added", "preexisting"):
+                with self.subTest(kind=kind, when=when):
+                    self.refused(self.scenario(kind, "tree", when))
+
+    def test_a_non_regular_object_at_the_legacy_path_fails_naming_it(self):
+        for kind in self.KINDS:
+            for when in ("added", "preexisting"):
+                with self.subTest(kind=kind, when=when):
+                    self.refused(self.scenario(kind, "legacy", when))
+
+    def test_a_directory_at_either_record_path_fails_naming_it(self):
+        # a directory at a record path puts its files into the hashed content, so its path can name the content only by
+        # a hash collision; the hash functions are replaced to reach that combination directly
+        fake = "f" * 64
+        for at in ("tree", "legacy"):
+            with self.subTest(at=at):
+                r = self.r = CliRepo().start(self)
+                special(rec_path(fake), "tree")
+                r.change(".github/agent/bin/x.py", "b\n")
+                if at == "tree":
+                    r.record(legacy, legacy=True)
+                r.change(".github/agent/bin/x.py", "c\n")
+                r.base = r.rev()
+                r.change(".github/agent/bin/x.py", "b\n")
+                with unittest.mock.patch.object(G, "tree_hash" if at == "tree" else "legacy_tree_hash",
+                                                return_value=fake):
+                    self.refused(rec_path(fake))
+
+
+class EveryAddedRecordJudged(unittest.TestCase):
+    """REQ-AUD-018-AC5 ("any missing, extra, mistyped or malformed field fails the gate with a message naming it"), AC4
+    (a substitute in any form fails, "naming the entry and saying that no substitute is accepted") and AC7 (no pull
+    request introduces a record that is not a valid schema v2 record): EVERY record file a pull request adds or changes
+    is judged by the one validator that judges the selected record, bound to the tree its own file name names, in a
+    record-only pull request and beside a selected record alike."""
+
+    OTHER = "1" * 64
+
+    def bad_bodies(self, t):
+        """(raw record for the tree `t`, the text its refusal must hold)."""
+        def j(rec):
+            return json.dumps(rec)
+        no_model = good(t); del final(no_model)["codex_b"]["model"]
+        extra_seat = good(t); final(extra_seat)["codex_a"]["note"] = "x"
+        former = good(t); final(former)["codex_a"]["model"] = "pr210"
+        open_blocker = good(t); final(open_blocker)["codex_b"]["blockers_open"] = 1
+        return [
+            (j({"schema": V2, "residuals": ["pr210"]}), "record has an extra field 'residuals': " + PERMITTED_ONLY),
+            (j({"schema": V2}), "no review rounds recorded"),
+            (j({"schema": V2, "substitute_id": "0317", "rounds": "invalid"}), "marks a substitute: " + NO_SUB),
+            (j(no_model), "codex_b has no model field"),
+            (j(extra_seat), "codex_a has an extra field 'note'"),
+            (j(dict(good(t), residuals=["pr210"])), "record has an extra field 'residuals'"),
+            (j(dict(good(t), label="pr:210")), "record has an extra field 'label'"),
+            (j(former), "codex_a model 'pr210' is not on the gate's list"),
+            (j(open_blocker), "codex_b blockers_open is 1, want the integer 0"),
+            (j(good(TREE)), "record binds tree %s" % TREE),
+            (j(good(t)).replace('"schema"', '"schema": "x", "schema"', 1), "the record repeats the key 'schema'"),
+        ]
+
+    def test_a_record_only_pull_request_adding_an_invalid_v2_record_fails_naming_it(self):
+        r = CliRepo().start(self)
+        path = rec_path(self.OTHER)
+        for raw, want in self.bad_bodies(self.OTHER):
+            with self.subTest(want=want):
+                r.git("reset", "-q", "--hard", r.base)
+                r.change(path, raw)
+                rc, out, err = run_main_utf8("--base", r.base, "--head", "HEAD")
+                self.assertEqual(rc, 1, (raw, out, err))
+                self.assertIn(path, out)
+                self.assertIn(want, out)
+                self.assertNotIn("nothing to clear", out)
+
+    def test_an_invalid_v2_record_added_beside_a_clearing_selected_record_fails_naming_it(self):
+        r = CliRepo().start(self)
+        r.change(".github/agent/bin/x.py", "b\n"); r.record(good)
+        top = r.rev()
+        self.assertEqual(r.judge()[0], 0)
+        path = rec_path(self.OTHER)
+        for raw, want in self.bad_bodies(self.OTHER):
+            with self.subTest(want=want):
+                r.git("reset", "-q", "--hard", top)
+                r.change(path, raw)
+                rc, out, err = run_main_utf8("--base", r.base, "--head", "HEAD")
+                self.assertEqual(rc, 1, (raw, out, err))
+                self.assertIn(path, out)
+                self.assertIn(want, out)
+                self.assertNotIn("clears the stop rule", out)
+
+    def test_a_valid_record_for_another_tree_may_be_added(self):
+        r = CliRepo().start(self)
+        r.change(rec_path(self.OTHER), json.dumps(good(self.OTHER)))
+        self.assertEqual(r.judge()[0], 0)
+        r.change(".github/agent/bin/x.py", "b\n"); r.record(good)
+        self.assertEqual(r.judge()[0], 0)
+
+    def test_a_changed_merged_record_is_judged_too(self):
+        r = CliRepo().start(self)
+        r.change(rec_path(self.OTHER), json.dumps(good(self.OTHER)))
+        r.base = r.rev()
+        r.change(rec_path(self.OTHER), json.dumps(dict(good(self.OTHER), residuals=["pr210"])))
+        rc, out, _ = r.judge()
+        self.assertEqual(rc, 1, out)
+        self.assertIn("record has an extra field 'residuals'", out)
+
+    def test_problems_of_many_added_v2_records_are_bounded_in_all(self):
+        r = CliRepo().start(self)
+        bad = dict(good(self.OTHER), **{"x%d" % i: 1 for i in range(300)})
+        for i in range(5):
+            h = "%064x" % (i + 7)
+            r.write(rec_path(h), json.dumps(dict(bad, tree=h)))
+        r.git("add", "-A"); r.git("commit", "-qm", "many")
+        rc, out, _ = r.judge()
+        self.assertEqual(rc, 1)
+        lines = out.splitlines()
+        self.assertLessEqual(len(lines), G.MAX_PROBLEMS + 1, len(lines))
+        self.assertIn("more problem(s) not shown", lines[-1])
+
+
+class LineBoundAfterEscaping(unittest.TestCase):
+    """REQ-AUD-018-AC5 and AC6 ("a message naming it"): every written line is bounded AFTER escaping (an escape makes one
+    character up to ten), whatever the characters: line separators, lone surrogates, combining marks, controls; and a
+    revision in a diagnostic is shown like any value."""
+
+    def said(self, line):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            G._say(line)
+        return out.getvalue()
+
+    def test_say_bounds_the_escaped_line(self):
+        for s in (" " * 2000, "\ud800" * 5000, "é" * 3000, "\x1b" * 3000, "\U0001f600" * 2000,
+                  "é" * 2500 + "\n" * 10, "a" * 1990 + " " * 20):
+            got = self.said(s)
+            self.assertEqual(got.count("\n"), 1, s[:5])
+            self.assertTrue(got.isascii(), s[:5])
+            self.assertLessEqual(len(got), G.SAY_CHARS + 40, (s[:5], len(got)))
+            self.assertIn("characters)", got, s[:5])
+        self.assertEqual(self.said("x y"), "x\\u2028y\n")      # a short line is written whole
+
+    def test_a_revision_in_a_refusal_is_shown_bounded(self):
+        rev = " " * 3000
+        with unittest.mock.patch.object(G, "_blob", return_value=G.NOT_REGULAR):
+            with self.assertRaises(RuntimeError) as cm:
+                G._read_record(rev, rec_path("1" * 64))
+        self.assertLess(len(str(cm.exception)), 400)
+        self.assertTrue(str(cm.exception).isascii())
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
