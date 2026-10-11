@@ -156,7 +156,7 @@
       "version": "3.37.8"
     }
   ],
-  "_format_unmeasured_text": "REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 16-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 16-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. Read from the base branch only: rows a pull request brings do nothing until merged. A row is only ever written for a line that is HARMLESS IN ANY SHELL CONTEXT (read as a command it runs no download: a comment, an echo or printf, a cat into a file, Python source or a package list bash cannot parse), because moving a line out of a heredoc keeps its identity; the reviewer refuses any other row. A line with whitespace other than space or tab, or joined from a backslash-newline continuation, is never ruled. Editing only a row's ruling prose does not void it. Allowed row forms (advisor, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t \"RULE\" \"TITLE\" bash -c 'BODY' _ followed by at most nine path arguments \"$NAME\" or \"$NAME/path\" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (Codex, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole \"$1\"..\"$9\"; the commands grep, test, [, cat and exit with one digit; grep with the options -E, -q, -v, -Eq and -- (one option per word, -Eq the one combined form), double-quoted patterns or the bare pattern '.'; test and [ only the file tests -f -s -e -d -r, = and !=, and count comparisons between digits and \"$(grep -c ...)\" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions \"$(grep -c ... \"$N\")\" and \"$(cat \"$N\")\" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (Sonnet, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). It also runs every committed harness line against call logs that meet and that break its rule, so each ruling's description of what the line checks is proven by execution.",
+  "_format_unmeasured_text": "REQ-SUP-001-AC16 (advisor ruling, Oct 10): one row per line that the pin-age check's strict scan reads as an unmeasured download but that only MENTIONS the tool as text (a comment, an echo string, a stub written as data, a package name). file and form as the scan names them; key: the scan's 16-hex sha256 prefix of what it hashes (for a download, the one command segment that names curl or wget); line: the 16-hex sha256 prefix of the WHOLE whitespace-flattened line that segment sits in, so the same segment in any other line is not ruled and editing any part of the line voids the row; ruling: what the line is, never empty; count (optional, default 1): how many occurrences of that line in the file the row covers. Read from the base branch only: rows a pull request brings do nothing until merged. A row is only ever written for a line that is HARMLESS IN ANY SHELL CONTEXT (read as a command it runs no download: a comment, an echo or printf, a cat into a file, Python source or a package list bash cannot parse), because moving a line out of a heredoc keeps its identity; the reviewer refuses any other row. A line with whitespace other than space or tab, or joined from a backslash-newline continuation, is never ruled. Editing only a row's ruling prose does not void it. Allowed row forms (advisor, Oct 10; the reviewer refuses any other row): (1) TEXT lines: a comment, a quoted or echoed string, a data heredoc (a stub body or its opener), Python or package-name text that bash cannot parse; (2) HARNESS ASSERTION lines, whose whole grammar is the single data structure HARNESS_WHITELIST in harness_form.py (written by the pin-age check's own test suite); anything it does not name is refused. In short: t \"RULE\" \"TITLE\" bash -c 'BODY' _ followed by at most nine path arguments \"$NAME\" or \"$NAME/path\" with NAME in work, CALLS; no expansion of any kind in RULE or TITLE (no $, backtick, backslash or quote); the body SINGLE-QUOTED (Codex, pull request 289: a double-quoted body let the outer shell splice a variable's value into the code) and naming the paths only as whole \"$1\"..\"$9\"; the commands grep, test, [, cat and exit with one digit; grep in the shape grep OPTION... -- PATTERN [\"$N\"...]: the options -E, -q, -v and -Eq as bare words, -- REQUIRED before the pattern, the pattern a double-quoted word that does not start with - (or the bare '.'), file operands only \"$N\" (Codex and Sonnet, pull request 289 round 3: a double-quoted word in an option position is an option to grep); cat only as cat -- \"$N\"; test and [ only the file tests -f -s -e -d -r, = and !=, and count comparisons between digits and \"$(grep -c ...)\" (never -v, -R or an arithmetic operand that is a name or expression: bash 5 evaluates $(...) there); the substitutions \"$(grep -c OPTION... -- PATTERN \"$N\")\" and \"$(cat -- \"$N\")\" only; no unquoted glob, brace, subscript or expansion word; and no character outside printable ASCII and tab (Sonnet, pull request 289). The test proves the whitelist closed: a complement enumeration of every token class outside it in every position (none accepted, none refused for another reason), and a mutation run that widens it by one token at a time and requires an unexpected acceptance or a refusal for another reason (reported apart). It also runs every committed harness line against call logs that meet and that break its rule, so each ruling's description of what the line checks is proven by execution.",
   "unmeasured_text": [
     {
       "file": "bin/build-helpers-test.sh",
@@ -252,51 +252,59 @@
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
-      "key": "d06b3645a61e8513",
-      "line": "922f285aec0abdd0",
-      "ruling": "harness assertion: greps the stub's call log: fails if any curl call lacks --proto =https --tlsv1.2, and requires at least 3 curl calls; single-quoted body; the only argument after it is \"$CALLS\" (the call log, as $1), so no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
+      "key": "3c6eebce4768a5e5",
+      "line": "d9bc35feb8387764",
+      "ruling": "harness assertion: reads the argv log: fails if any curl call lacks the whole arguments [--proto] [=https], fails if any lacks [--tlsv1.2], and requires at least 3 curl calls; the only argument after the single-quoted body is \"$work/argv\" ($1, the stub's argv log: one [argument] per field, so URL text cannot imitate a flag); every grep passes -- before its pattern, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
     },
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
-      "key": "d49076bd54b51a9d",
-      "line": "922f285aec0abdd0",
-      "ruling": "harness assertion: greps the stub's call log: fails if any curl call lacks --proto =https --tlsv1.2, and requires at least 3 curl calls; single-quoted body; the only argument after it is \"$CALLS\" (the call log, as $1), so no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
+      "key": "c11dd5da2dbb0266",
+      "line": "d9bc35feb8387764",
+      "ruling": "harness assertion: reads the argv log: fails if any curl call lacks the whole arguments [--proto] [=https], fails if any lacks [--tlsv1.2], and requires at least 3 curl calls; the only argument after the single-quoted body is \"$work/argv\" ($1, the stub's argv log: one [argument] per field, so URL text cannot imitate a flag); every grep passes -- before its pattern, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
     },
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
-      "key": "0d1a60b407af424e",
-      "line": "271dc8ee5097592c",
-      "ruling": "harness assertion: greps the stub's call log: fails if any tzdata or APKINDEX curl call lacks -g (or --globoff) together with --max-filesize, fails if any such call lacks --max-time, and requires at least one such call (every matching call is checked, Codex PR 289 round 2); single-quoted body; the only argument after it is \"$CALLS\" (the call log, as $1), so no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
+      "key": "fc236193a8c79323",
+      "line": "d9bc35feb8387764",
+      "ruling": "harness assertion: reads the argv log: fails if any curl call lacks the whole arguments [--proto] [=https], fails if any lacks [--tlsv1.2], and requires at least 3 curl calls; the only argument after the single-quoted body is \"$work/argv\" ($1, the stub's argv log: one [argument] per field, so URL text cannot imitate a flag); every grep passes -- before its pattern, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
     },
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
-      "key": "eff84a7dd0088415",
-      "line": "271dc8ee5097592c",
-      "ruling": "harness assertion: greps the stub's call log: fails if any tzdata or APKINDEX curl call lacks -g (or --globoff) together with --max-filesize, fails if any such call lacks --max-time, and requires at least one such call (every matching call is checked, Codex PR 289 round 2); single-quoted body; the only argument after it is \"$CALLS\" (the call log, as $1), so no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
+      "key": "54cebb3d8c62f743",
+      "line": "e673ba0be9134b88",
+      "ruling": "harness assertion: reads the argv log: for every tzdata or APKINDEX curl call, fails if it lacks the whole argument [-g] or [--globoff], fails if it lacks [--max-filesize], fails if it lacks [--max-time], and requires at least one such call; the only argument after the single-quoted body is \"$work/argv\" ($1, the stub's argv log: one [argument] per field, so URL text cannot imitate a flag); every grep passes -- before its pattern, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
     },
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
-      "key": "477739e1982533ea",
-      "line": "271dc8ee5097592c",
-      "ruling": "harness assertion: greps the stub's call log: fails if any tzdata or APKINDEX curl call lacks -g (or --globoff) together with --max-filesize, fails if any such call lacks --max-time, and requires at least one such call (every matching call is checked, Codex PR 289 round 2); single-quoted body; the only argument after it is \"$CALLS\" (the call log, as $1), so no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
+      "key": "77114a8242405e71",
+      "line": "e673ba0be9134b88",
+      "ruling": "harness assertion: reads the argv log: for every tzdata or APKINDEX curl call, fails if it lacks the whole argument [-g] or [--globoff], fails if it lacks [--max-filesize], fails if it lacks [--max-time], and requires at least one such call; the only argument after the single-quoted body is \"$work/argv\" ($1, the stub's argv log: one [argument] per field, so URL text cannot imitate a flag); every grep passes -- before its pattern, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and exit 1"
     },
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
-      "key": "f9eaea7a39f58987",
-      "line": "1dc207c623e8ae4d",
-      "ruling": "harness assertion: reads the refresh's exit status and greps the stub's call log: passes only when the status is 2 and no curl call for tzdata is logged (a url with a character outside the plain set is refused, never fetched); single-quoted body; the arguments after it are \"$work/rc\" ($1, the exit status file) and \"$CALLS\" ($2, the call log), so no argument value is ever parsed as code; runs nothing but grep, test and cat"
+      "key": "d4a6093027928da3",
+      "line": "e673ba0be9134b88",
+      "ruling": "harness assertion: reads the argv log: for every tzdata or APKINDEX curl call, fails if it lacks the whole argument [-g] or [--globoff], fails if it lacks [--max-filesize], fails if it lacks [--max-time], and requires at least one such call; the only argument after the single-quoted body is \"$work/argv\" ($1, the stub's argv log: one [argument] per field, so URL text cannot imitate a flag); every grep passes -- before its pattern, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and exit 1",
+      "count": 2
     },
     {
       "file": "bin/refresh-inputs-test.sh",
       "form": "a download",
-      "key": "2c19bb4de480a2f0",
-      "line": "5543680907a4ab13",
-      "ruling": "harness assertion: reads the refresh's exit status and greps the stub's call log: passes only when the status is 0 and a curl call for https://packages.wolfi.dev/os/.../wolfi-signing.rsa.pub is logged; rewritten from an if/then/else into the t form with the grep pattern verbatim, not an evasion; single-quoted body; the arguments after it are \"$work/rc\" ($1, the exit status file) and \"$CALLS\" ($2, the call log), so no argument value is ever parsed as code; runs nothing but grep, test and cat"
+      "key": "840adfdfba3a501a",
+      "line": "6de37da90f4f6a90",
+      "ruling": "harness assertion: reads the exit status and the argv log: passes only when the status is 2, the argv log exists (test -f) and it holds no curl call for tzdata (a url with a character outside the plain set is refused, never fetched); the arguments after the single-quoted body are \"$work/rc\" ($1, the exit status file) and \"$work/argv\" ($2, the stub's argv log: one [argument] per field); cat and grep pass -- before their operands, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and cat"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "664fec26dacafe0f",
+      "line": "2343d9a8b7ccbcdf",
+      "ruling": "harness assertion: reads the exit status and the argv log: passes only when the status is 0 and a curl call has the whole argument [https://packages.wolfi.dev/os/...wolfi-signing.rsa.pub]; rewritten from an if/then/else into the t form, not an evasion; the arguments after the single-quoted body are \"$work/rc\" ($1, the exit status file) and \"$work/argv\" ($2, the stub's argv log: one [argument] per field); cat and grep pass -- before their operands, so no value starting with - is read as an option; no argument value is ever parsed as code; runs nothing but grep, test and cat"
     }
   ]
 }

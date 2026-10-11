@@ -1174,16 +1174,18 @@ HARNESS_WHITELIST = {
     "negation": ["!"],                                                 # may precede a command, or a test expression
     "commands": ["grep", "test", "[", "cat", "exit"],                  # the command words of BODY, unquoted
     "pipe_into": ["grep"],                                             # the only command after a |
-    "grep_options": ["-E", "-q", "-v", "-Eq", "--"],            # unquoted grep arguments
+    "grep_options": ["-E", "-q", "-v", "-Eq"],                         # grep's options: bare words, before end_of_options
+    "end_of_options": "--",                                            # REQUIRED: grep OPTION... -- PATTERN ["$N"...] and cat -- "$N" (an operand never reads as an option)
+    "pattern_first_char_not": "-",                                     # a double-quoted grep pattern may not start with this
     "grep_bare_patterns": ["."],                                       # the only unquoted grep pattern
     "test_unary": ["-f", "-s", "-e", "-d", "-r"],                      # test / [ : OP X
     "test_string": ["=", "!="],                                        # test / [ : X OP Y
     "test_count": ["-eq", "-ne", "-lt", "-le", "-gt", "-ge"],          # test / [ : N OP N, N = plain digits or the grep count substitution
     "exit_status": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],  # exit takes exactly one of these
-    "positional": "\"$1\" .. \"$9\", whole, at most the number of ARGs", # how BODY names a path; cat takes exactly one
-    "substitutions": {"grep": "-c", "cat": ""},                        # "$(grep -c GREPARG... "$N")" (a count) and "$(cat "$N")", whole and double-quoted
+    "positional": "\"$1\" .. \"$9\", whole, at most the number of ARGs", # how BODY names a path: grep's file operands, cat's one operand
+    "substitutions": {"grep": "-c", "cat": ""},                        # "$(grep -c OPTION... -- PATTERN "$N")" (a count) and "$(cat -- "$N")", whole and double-quoted
     "dquote_chars": ALNUM + " ^.*:/|()=-",                             # inside a double-quoted BODY word (a pattern)
-    "dquote_escapes": ["\\."],                                         # the only backslash sequence inside a double-quoted BODY word
+    "dquote_escapes": ["\\.", "\\[", "\\]"],                         # the only backslash sequences inside a double-quoted BODY word
 }
 # END HARNESS_WHITELIST
 W = HARNESS_WHITELIST
@@ -1191,11 +1193,13 @@ GSUB, CSUB = "\x01G", "\x01C"                              # placeholders: a cha
 class Refused(Exception): pass
 def cls(chars): return "[" + "".join(re.escape(c) for c in chars) + "]"
 DQ = '"(?:' + "|".join([cls(W["dquote_chars"])] + [re.escape(e) for e in W["dquote_escapes"]]) + ')*"'
+PAT = ('"(?!' + re.escape(W["pattern_first_char_not"]) + ')' + DQ[1:]) if W["pattern_first_char_not"] else DQ   # a pattern word: no leading option character
+EOO = (" +" + re.escape(W["end_of_options"])) if W["end_of_options"] else ""
 POS = r'"\$([1-9])"'
 def alt(xs): return "(?:" + "|".join(re.escape(x) for x in sorted(xs, key=len, reverse=True)) + ")"
 SUBS = []
 for cmd, lead in W["substitutions"].items():
-    extra = ("(?: +(?:" + alt(W["grep_options"]) + "|" + alt(W["grep_bare_patterns"]) + "|" + DQ + "))*") if cmd == "grep" else ""
+    extra = ("(?: +" + alt(W["grep_options"]) + ")*" + EOO + " +(?:" + alt(W["grep_bare_patterns"]) + "|" + PAT + ")") if cmd == "grep" else EOO
     SUBS.append((re.compile(r'"\$\(' + re.escape(cmd) + ((" " + re.escape(lead)) if lead else "") + extra + r' "\$([1-9])"\)"'), GSUB if cmd == "grep" else CSUB))
 SHAPE = re.compile(r' *t "(' + cls(W["rule_title_chars"]) + r'*)" "(' + cls(W["rule_title_chars"]) + r'*)" bash -c \'([^\']*)\' _((?: +"[^"]*")*)')
 ARG = re.compile(r'"\$' + alt(W["arg_names"]) + r'(?:/' + cls(W["arg_path_chars"]) + r'+)*"')
@@ -1258,16 +1262,27 @@ def judge(line):
         word, kind, rest = c[0][1], c[0][2], c[1:]
         if kind != "bare" or word not in W["commands"]: raise Refused(f"the command word {word!r} is not in commands (unquoted)")
         if k and seps[k - 1] == "|" and word not in W["pipe_into"]: raise Refused(f"a pipe into {word!r} (pipe_into)")
-        if word == "grep":
-            for a in rest:
-                if not (a[2] in ("dq", "pos") or (a[2] == "bare" and (a[1] in W["grep_options"] or a[1] in W["grep_bare_patterns"]))):
-                    raise Refused(f"the grep argument {a[1]!r} is not in grep_options / grep_bare_patterns, a double-quoted pattern or a positional")
+        if word == "grep":                                 # grep OPTION... -- PATTERN ["$N"...], each word in its role
+            i = 0
+            while i < len(rest) and rest[i][2] == "bare" and rest[i][1] in W["grep_options"]: i += 1
+            if W["end_of_options"]:
+                if i >= len(rest) or rest[i][2] != "bare" or rest[i][1] != W["end_of_options"]:
+                    raise Refused(f"grep needs its options from grep_options, then {W['end_of_options']} before the pattern (a quoted word is never an option)")
+                i += 1
+            if i >= len(rest): raise Refused("grep has no pattern")
+            p = rest[i]
+            if not ((p[2] == "bare" and p[1] in W["grep_bare_patterns"]) or (p[2] == "dq" and not (W["pattern_first_char_not"] and p[1][1:].startswith(W["pattern_first_char_not"])))):
+                raise Refused(f"the grep pattern {p[1]!r} is not a double-quoted word that does not start with {W['pattern_first_char_not']!r}, or a bare pattern from grep_bare_patterns")
+            for a in rest[i + 1:]:
+                if a[2] != "pos": raise Refused(f"the grep file operand {a[1]!r} is not a positional \"$N\"")
         elif word == "test": test_expr(rest)
         elif word == "[":
             if not rest or rest[-1][2] != "bare" or rest[-1][1] != "]": raise Refused("[ without its closing ]")
             test_expr(rest[:-1])
-        elif word == "cat":
-            if len(rest) != 1 or rest[0][2] != "pos": raise Refused("cat takes exactly one positional")
+        elif word == "cat":                                # cat -- "$N"
+            want = ([("bare", W["end_of_options"])] if W["end_of_options"] else []) + [("pos",)]
+            if len(rest) != len(want) or any(a[2] != w[0] or (w[0] == "bare" and a[1] != w[1]) for a, w in zip(rest, want)):
+                raise Refused(f"cat takes exactly {W['end_of_options'] + ' ' if W['end_of_options'] else ''}and one positional")
         elif word == "exit":
             if len(rest) != 1 or rest[0][2] != "bare" or rest[0][1] not in W["exit_status"]: raise Refused("exit takes exactly one exit_status")
         else:
@@ -1413,6 +1428,25 @@ an array subscript in an argument path	t "r" "x" bash -c 'grep -q . "$1"' _ "$wo
 $(( )) in an argument	t "r" "x" bash -c 'grep -q . "$1"' _ "$((1))"
 more ARGs than max_args (ten)	t "r" "x" bash -c 'grep -q . "$1"' _ "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS" "$CALLS"
 grep -vq as one word (the whitelist lists -v and -q, one option per word)	t "r" "x" bash -c 'grep -vq "a" "$1"' _ "$CALLS"
+Codex R3 reproduction: a double-quoted --file=... read as a grep OPTION	t "r" "x" bash -c 'grep "--file=/etc/hosts" "$1"' _ "$CALLS"
+Codex R3 reproduction: the same inside the count substitution	t "r" "x" bash -c 'test "$(grep -c "--file=/etc/hosts" "$1")" -ge 1' _ "$CALLS"
+Sonnet B1: a double-quoted --version	t "r" "x" bash -c 'grep "--version" "$1"' _ "$CALLS"
+Sonnet B1: a double-quoted --pager=... in the count substitution	t "r" "x" bash -c 'test "$(grep -c "--pager=touch M" "$1")" -ge 1' _ "$CALLS"
+a double-quoted -f	t "r" "x" bash -c 'grep "-f" -- "a" "$1"' _ "$CALLS"
+a double-quoted --file=x before --	t "r" "x" bash -c 'grep "--file=x" -- "a" "$1"' _ "$CALLS"
+a double-quoted -e with a pattern	t "r" "x" bash -c 'grep "-e" "pat" "$1"' _ "$CALLS"
+--regexp=x as the pattern after --	t "r" "x" bash -c 'grep -- "--regexp=x" "$1"' _ "$CALLS"
+a double-quoted -r	t "r" "x" bash -c 'grep "-r" -- "a" "$1"' _ "$CALLS"
+a double-quoted -E	t "r" "x" bash -c 'grep "-E" -- "a" "$1"' _ "$CALLS"
+a pattern that starts with - (even after --)	t "r" "x" bash -c 'grep -- "-a" "$1"' _ "$CALLS"
+grep without -- before the pattern	t "r" "x" bash -c 'grep -q "a" "$1"' _ "$CALLS"
+grep without -- in the count substitution	t "r" "x" bash -c 'test "$(grep -c "a" "$1")" -ge 1' _ "$CALLS"
+-- placed after the pattern	t "r" "x" bash -c 'grep "a" -- "$1"' _ "$CALLS"
+a literal file operand	t "r" "x" bash -c 'grep -- "a" "f"' _ "$CALLS"
+a second pattern word	t "r" "x" bash -c 'grep -- "a" "b" "$1"' _ "$CALLS"
+cat without --	t "r" "x" bash -c 'test "$(cat "$1")" = "a"' _ "$CALLS"
+cat -- with a literal operand	t "r" "x" bash -c 'test "$(cat -- "f")" = "a"' _ "$CALLS"
+an option after --	t "r" "x" bash -c 'grep -- -v "a" "$1"' _ "$CALLS"
 EOF
 while IFS=$'\t' read -r what line; do
   hf "$line"
@@ -1448,12 +1482,13 @@ for f in "$work"/ctl-*.txt; do
   check test "$rc" -eq 1; check grep -q '^refused: ' "$work/hf.out"
 done
 cat >"$work/hf-accepted.tsv" <<'EOF'
-the whole vocabulary	t "r" "x" bash -c 'grep -q "a" "$1" && ! grep -E "b|c" "$1" || test "$(grep -c "a" "$1")" -ge 3; [ "$(cat "$1")" = 2 ] | grep -q .' _ "$CALLS"
-exit with one literal digit	t "r" "x" bash -c 'grep "a" "$1" | grep -v -q "b" && exit 1; exit 0' _ "$CALLS"
+the whole vocabulary	t "r" "x" bash -c 'grep -q -- "a" "$1" && ! grep -E -- "b|c" "$1" || test "$(grep -c -- "a" "$1")" -ge 3; [ "$(cat -- "$1")" = 2 ] | grep -q -- .' _ "$CALLS"
+exit with one literal digit	t "r" "x" bash -c 'grep -- "a" "$1" | grep -v -q -- "b" && exit 1; exit 0' _ "$CALLS"
 the file tests -f -s -e -d -r and !	t "r" "x" bash -c 'test -f "$1" && [ -s "$1" ] && test -e "$1" && ! test -d "$1" && test ! -d "$1" && [ -r "$1" ]' _ "$CALLS"
-string = and != on $(cat ...)	t "r" "x" bash -c 'test "$(cat "$1")" != "b" && [ "$(cat "$2")" = "a" ]' _ "$work/rc" "$CALLS"
-arithmetic on digits and on $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c "a" "$1")" -eq 1 && [ 3 -ne 4 ] && test 1 -lt 2 && test 2 -le 2 && test 3 -gt 2' _ "$CALLS"
-an escaped dot in a pattern	t "r" "x" bash -c 'grep -Eq "a\.b" "$1"' _ "$CALLS"
+string = and != on $(cat -- ...)	t "r" "x" bash -c 'test "$(cat -- "$1")" != "b" && [ "$(cat -- "$2")" = "a" ]' _ "$work/rc" "$CALLS"
+arithmetic on digits and on $(grep -c ...)	t "r" "x" bash -c 'test "$(grep -c -E -- "a" "$1")" -eq 1 && [ 3 -ne 4 ] && test 1 -lt 2 && test 2 -le 2 && test 3 -gt 2' _ "$CALLS"
+escaped dot and brackets in a pattern	t "r" "x" bash -c 'grep -Eq -- "\[a\.b\]" "$1"' _ "$CALLS"
+a pattern whose first character is a space, then a dash	t "r" "x" bash -c 'grep -q -- " -x" "$1"' _ "$CALLS"
 no argument after _	t "r" "x" bash -c 'test 1 -eq 1' _
 EOF
 while IFS=$'\t' read -r what line; do
@@ -1466,10 +1501,10 @@ cat >"$work/hf-real.txt" <<'EOF'
 # ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------
 # the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir
 # url characters, curl flags and caps
-t "rule 32" "refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)" bash -c 'test "$(cat "$1")" = 0 && grep -Eq "^curl .*https://packages\.wolfi\.dev/os/.*wolfi-signing\.rsa\.pub" "$2"' _ "$work/rc" "$CALLS"
-t "rule 32" "refresh: a url with a character outside the plain set is refused (exit 2), never fetched" bash -c 'test "$(cat "$1")" = 2 && ! grep -E "^curl .*tzdata" "$2"' _ "$work/rc" "$CALLS"
-t "rule 32" "refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)" bash -c 'grep "^curl " "$1" | grep -v -q -- "--proto =https --tlsv1.2" && exit 1; test "$(grep -c "^curl " "$1")" -ge 3' _ "$CALLS"
-t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c 'grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -v -E -- "(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)" | grep -q . && exit 1; grep "^curl " "$1" | grep -E "tzdata|APKINDEX" | grep -v -- "--max-time" | grep -q . && exit 1; test "$(grep -c -E "^curl .*(tzdata|APKINDEX)" "$1")" -ge 1' _ "$CALLS"
+t "rule 32" "refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)" bash -c 'test "$(cat -- "$1")" = 0 && grep -Eq -- "^argv \[curl\] .*\[https://packages\.wolfi\.dev/os/.*wolfi-signing\.rsa\.pub\]" "$2"' _ "$work/rc" "$work/argv"
+t "rule 32" "refresh: a url with a character outside the plain set is refused (exit 2), never fetched" bash -c 'test "$(cat -- "$1")" = 2 && test -f "$2" && ! grep -q -- "^argv \[curl\] .*tzdata" "$2"' _ "$work/rc" "$work/argv"
+t "rule 32" "refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)" bash -c 'grep -- "^argv \[curl\]" "$1" | grep -v -q -- "\[--proto\] \[=https\]" && exit 1; grep -- "^argv \[curl\]" "$1" | grep -v -q -- "\[--tlsv1\.2\]" && exit 1; test "$(grep -c -- "^argv \[curl\]" "$1")" -ge 3' _ "$work/argv"
+t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c 'grep -E -- "^argv \[curl\] .*(tzdata|APKINDEX)" "$1" | grep -v -Eq -- "\[(-g|--globoff)\]" && exit 1; grep -E -- "^argv \[curl\] .*(tzdata|APKINDEX)" "$1" | grep -v -q -- "\[--max-filesize\]" && exit 1; grep -E -- "^argv \[curl\] .*(tzdata|APKINDEX)" "$1" | grep -v -q -- "\[--max-time\]" && exit 1; test "$(grep -c -E -- "^argv \[curl\] .*(tzdata|APKINDEX)" "$1")" -ge 1' _ "$work/argv"
 EOF
 while IFS= read -r line; do
   case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
@@ -1496,57 +1531,79 @@ def bash5():
             if r.returncode == 0 and r.stdout.strip().isdigit() and int(r.stdout) >= 5:
                 return p
 b5 = bash5()
-OK3 = ["curl -q -fsS -g --proto =https --tlsv1.2 -o a https://packages.wolfi.dev/os/wolfi-signing.rsa.pub",
-       "curl -q -fsS -g --max-filesize 1 --max-time 1 --proto =https --tlsv1.2 -o b https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz",
-       "curl -q -fsS -g --max-filesize 1 --max-time 1 --proto =https --tlsv1.2 -o c https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"]
-CASES = {   # a title fragment -> [(what, rc file text, call-log lines, expected exit)]
+def argv(*a): return "argv [curl] " + " ".join("[%s]" % x.replace("[", "_").replace("]", "_") for x in a)   # the stub's format: one [argument] per field
+F = ["-fsS", "-g", "--max-filesize", "1", "--max-time", "1", "--proto", "=https", "--tlsv1.2"]
+def call(url, flags=None, q=True): return argv(*((["-q"] if q else []) + (F if flags is None else flags) + ["-o", "out", url]))
+KEY, IDX, PKG = "https://packages.wolfi.dev/os/wolfi-signing.rsa.pub", "https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz", "https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"
+OK3 = [call(KEY), call(IDX), call(PKG)]
+drop = lambda *xs: [f for f in F if f not in xs]
+MISSING = None   # the call log does not exist
+CASES = {   # a title fragment -> [(what, rc file text, call-log lines or MISSING, expected exit)]
  "every curl call is HTTPS-only": [
-    ("three calls, each with --proto =https --tlsv1.2", "0", OK3, 0),
-    ("one call without --proto =https --tlsv1.2", "0", OK3 + ["curl -q -fsS -g -o d https://packages.wolfi.dev/os/x86_64/x.apk"], 1),
-    ("only two calls", "0", OK3[:2], 1)],
+    ("three calls, each with --proto =https and --tlsv1.2", "0", OK3, 0),
+    ("one call without --proto =https", "0", OK3 + [call(PKG, drop("--proto", "=https"))], 1),
+    ("one call without --tlsv1.2", "0", OK3 + [call(PKG, drop("--tlsv1.2"))], 1),
+    ("Sonnet R2: --tlsv1x2 (the dot of the pattern is a literal)", "0", OK3 + [call(PKG, drop("--tlsv1.2") + ["--tlsv1x2"])], 1),
+    ("Codex R3: the flags only inside the URL", "0", OK3 + [argv("-q", "https://e.invalid/--proto/=https/--tlsv1.2")], 1),
+    ("only two calls", "0", OK3[:2], 1),
+    ("no call log at all", "0", MISSING, 1)],
  "every package and index download is globoff": [
     ("every tzdata and APKINDEX call has -g, --max-filesize and --max-time", "0", OK3, 0),
-    ("Codex R2: one matching call without --max-time", "0", ["curl -g --max-filesize 100 --max-time 10 https://example.invalid/tzdata", "curl -g --max-filesize 100 https://example.invalid/APKINDEX"], 1),
-    ("one matching call without -g", "0", OK3[1:2] + ["curl -q --max-filesize 1 --max-time 1 https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"], 1),
-    ("one matching call without --max-filesize", "0", OK3[1:2] + ["curl -q -g --max-time 1 https://packages.wolfi.dev/os/x86_64/tzdata-2026b-r0.apk"], 1),
-    ("no tzdata or APKINDEX call at all", "0", OK3[:1], 1)],
+    ("--globoff instead of -g", "0", [call(IDX, ["--globoff" if f == "-g" else f for f in F]), call(PKG)], 0),
+    ("Codex R2: one matching call without --max-time", "0", [call(PKG), call(IDX, drop("--max-time", "1"))], 1),
+    ("Codex R3: the flags only inside the URL", "0", [argv("https://example.invalid/tzdata/-g/--max-filesize/--max-time")], 1),
+    ("Sonnet R1: -g only inside tzdata-glibc.apk", "0", [argv("-q", "--max-filesize", "1", "--max-time", "1", "https://packages.wolfi.dev/os/x86_64/tzdata-glibc.apk")], 1),
+    ("one matching call without -g", "0", [call(IDX), call(PKG, drop("-g"))], 1),
+    ("one matching call without --max-filesize", "0", [call(IDX), call(PKG, drop("--max-filesize", "1"))], 1),
+    ("no tzdata or APKINDEX call at all", "0", [call(KEY)], 1),
+    ("no call log at all", "0", MISSING, 1)],
+ "every curl call reads no curlrc": [
+    ("every call starts with -q and none follows a redirect", "0", OK3, 0),
+    ("one call without -q", "0", OK3 + [call(PKG, q=False)], 1),
+    ("-q present but not first", "0", OK3 + [argv("-fsS", "-q", "-g", PKG)], 1),
+    ("one call with -L", "0", OK3 + [call(PKG, ["-fsSL"] + F[1:])], 1),
+    ("one call with --location", "0", OK3 + [call(PKG, F + ["--location"])], 1),
+    ("Codex R3: -q and -L only inside the URL", "0", OK3 + [argv("https://e.invalid/-q/-L/--location")], 1),
+    ("only two calls", "0", OK3[:2], 1),
+    ("no call log at all", "0", MISSING, 1)],
  "a url with a character outside the plain set is refused": [
     ("exit 2 and no curl call for tzdata", "2", OK3[:2], 0),
     ("exit 2 but a curl call for tzdata", "2", OK3, 1),
-    ("exit 0 (not refused)", "0", OK3[:2], 1)],
+    ("exit 0 (not refused)", "0", OK3[:2], 1),
+    ("Sonnet R2b: exit 2 and NO call log at all (a missing log is not 'no fetch')", "2", MISSING, 1)],
  "refresh compares the live Wolfi key": [
     ("exit 0 and a curl call for the live signing key", "0", OK3, 0),
     ("exit 0 but no call for the signing key", "0", OK3[1:], 1),
-    ("the key fetched but exit 3", "3", OK3, 1)],
+    ("the key fetched but exit 3", "3", OK3, 1),
+    ("the key address only inside another argument (-o)", "0", [argv("-q", "-o", "https://packages.wolfi.dev/os/wolfi-signing.rsa.pub.x", IDX)], 1),
+    ("no call log at all", "0", MISSING, 1)],
 }
+# each case runs twice: with plain paths, and with $work a directory named --file=w (an operand that starts with - must stay an operand: grep and cat pass --)
 out = {"bash5": b5, "lines": [], "unmatched": []}
 for line in [l for l in open(real).read().split("\n") if l.startswith("t ")]:
     keys = [k for k in CASES if k in line]
     if len(keys) != 1:
         out["unmatched"].append(line[:80]); continue
     for what, rc, log, want in CASES[keys[0]]:
-        d = tempfile.mkdtemp(dir=w, prefix="hfsem.")
-        open(os.path.join(d, "rc"), "w").write(rc + "\n"); open(os.path.join(d, "calls"), "w").write("\n".join(log) + "\n")
-        r = subprocess.run([b5, "-c", 't() { shift 2; "$@"; }\n' + line], cwd=d, env={"PATH": os.environ["PATH"], "work": d, "CALLS": os.path.join(d, "calls"), "LC_ALL": "C"},
-                           stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
-        out["lines"].append({"line": keys[0], "what": what, "want": want, "got": r.returncode})
+        for variant in ("plain paths", "$work named --file=w"):
+            d = tempfile.mkdtemp(dir=w, prefix="hfsem.")
+            wd = d if variant == "plain paths" else "--file=w"
+            os.makedirs(os.path.join(d, wd), exist_ok=True)
+            open(os.path.join(d, wd, "rc"), "w").write(rc + "\n")
+            if log is not MISSING:
+                open(os.path.join(d, wd, "argv"), "w").write("\n".join(log) + "\n")
+            r = subprocess.run([b5, "-c", 't() { shift 2; "$@"; }\n' + line], cwd=d, env={"PATH": os.environ["PATH"], "work": wd, "CALLS": os.path.join(wd, "calls"), "LC_ALL": "C"},
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=20)
+            out["lines"].append({"line": keys[0], "what": what + " (" + variant + ")", "want": want, "got": r.returncode})
 json.dump(out, open(os.path.join(w, "hf-sem.json"), "w"), indent=1)
 PY
 python3 "$work/hf_sem.py" "$work/hf-real.txt" "$work" </dev/null
 CASE="AC16 harness semantics: every harness line of the committed rows has a case set (no line asserts something untested)"
-check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['bash5'] and not r['unmatched'] and len({x['line'] for x in r['lines']}) == 4, r['unmatched']" "$work/hf-sem.json"
-while IFS=$'\t' read -r ln what; do
-  CASE="AC16 harness semantics: the committed line '$ln' on a log where $what"
-  check python3 -c "import json,sys; x=[x for x in json.load(open(sys.argv[1]))['lines'] if x['line'] == sys.argv[2] and x['what'] == sys.argv[3]]; assert len(x) == 1 and x[0]['got'] == x[0]['want'], x" "$work/hf-sem.json" "$ln" "$what"
-done < <(python3 - "$work/hf_sem.py" <<'PY'
-import sys
-src = open(sys.argv[1]).read(); ns = {}
-exec(src[src.index("OK3 = "):src.index("out = {")], ns)
-for k, cs in ns["CASES"].items():
-    for c in cs:
-        print(k + "\t" + c[0])
-PY
-)
+check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); n=sum(1 for l in open(sys.argv[2]) if l.startswith('t ')); assert r['bash5'] and not r['unmatched'] and len({x['line'] for x in r['lines']}) == n, (r['unmatched'], n)" "$work/hf-sem.json" "$work/hf-real.txt"
+while IFS=$'\t' read -r ln what want; do
+  CASE="AC16 harness semantics: the committed line '$ln' $([ "$want" = 0 ] && echo PASSES || echo FAILS) on a log where $what"
+  check python3 -c "import json,sys; x=[x for x in json.load(open(sys.argv[1]))['lines'] if x['line'] == sys.argv[2] and x['what'] == sys.argv[3]]; assert len(x) == 1 and (x[0]['got'] == 0) == (x[0]['want'] == 0), x" "$work/hf-sem.json" "$ln" "$what"
+done < <(python3 -c "import json,sys; [print(x['line'] + chr(9) + x['what'] + chr(9) + str(x['want'])) for x in json.load(open(sys.argv[1]))['lines']]" "$work/hf-sem.json")
 # --- RUNTIME proof (Sonnet R1): every corpus line is EXECUTED under every bash on PATH (one per version: bash 5, whose test -v / -R / arithmetic operands
 # evaluate $(...) even in single quotes, and, where present, an older bash such as 3.2), with a stub directory first on PATH whose curl, wget, touch, cmd and
 # ls only write a marker file; the inner bash is the same shell. Then: every line that wrote the marker was refused by the parser, the planted reproductions
@@ -1681,42 +1738,45 @@ L = []
 def case(cls, line, reason=None): L.append((cls, line, reason))
 for c in CHARS:
     if c not in W["rule_title_chars"]:
-        case("a character outside rule_title_chars, in the RULE", 't "r' + c + '" "x" bash -c \'grep -q . "$1"\' _ "$CALLS"')
-        case("a character outside rule_title_chars, in the TITLE", 't "r" "x' + c + '" bash -c \'grep -q . "$1"\' _ "$CALLS"')
+        case("a character outside rule_title_chars, in the RULE", 't "r' + c + '" "x" bash -c \'grep -q -- . "$1"\' _ "$CALLS"')
+        case("a character outside rule_title_chars, in the TITLE", 't "r" "x' + c + '" bash -c \'grep -q -- . "$1"\' _ "$CALLS"')
     if c not in W["line_chars"]:
         case("a character outside line_chars (refused for that reason)", 't "r" "x' + c + '" bash -c \'grep -q . "$1"\' _ "$CALLS"', "line character set")
     if c not in W["dquote_chars"]:
-        case("a character outside dquote_chars, in a double-quoted pattern", BODY('grep -q "a' + c + 'b" "$1"'))
+        case("a character outside dquote_chars, in a double-quoted pattern", BODY('grep -q -- "a' + c + 'b" "$1"'))
     if "\\" + c not in W["dquote_escapes"]:
-        case("a backslash sequence outside dquote_escapes", BODY('grep -q "a\\' + c + 'b" "$1"'))
+        case("a backslash sequence outside dquote_escapes", BODY('grep -q -- "a\\' + c + 'b" "$1"'))
     if c not in " \t" and c not in W["grep_options"] and c not in W["grep_bare_patterns"]:
-        case("a character as an unquoted BODY argument", BODY('grep -q ' + c + ' "$1"'))
+        case("a character as an unquoted grep pattern", BODY('grep -q -- ' + c + ' "$1"'))
+        if c not in W["grep_options"]:
+            case("a character as an unquoted grep option", BODY('grep -q ' + c + ' -- "a" "$1"'))
     if c not in " \t":
         case("a character in BODY command position", BODY(c + ' "$1"'))
-        case("a character glued to a command word", BODY('grep' + c + ' -q . "$1"'))
+        case("a character glued to a command word", BODY('grep' + c + ' -q -- . "$1"'))
     if c not in W["arg_path_chars"]:
-        case("a character outside arg_path_chars, in an ARG path", 't "r" "x" bash -c \'grep -q . "$1"\' _ "$CALLS/x' + c + '"')
+        case("a character outside arg_path_chars, in an ARG path", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ "$CALLS/x' + c + '"')
 for s in SEPS:
     if s not in W["separators"] and s not in " \t":
-        case("a separator outside separators", BODY('grep -q "a" "$1" ' + s + ' grep -q "b" "$1"'))
+        case("a separator outside separators", BODY('grep -q -- "a" "$1" ' + s + ' grep -q -- "b" "$1"'))
 for w in WORDS:
     if w not in W["commands"]:
         case("a word outside commands, in BODY command position", BODY(w + ' "$1"'))
         case("a word outside commands, after a negation", BODY('! ' + w + ' "$1"'))
     if w not in W["grep_options"] and w not in W["grep_bare_patterns"]:
-        case("a word as an unquoted grep argument", BODY('grep -q ' + w + ' "$1"'))
+        case("a word as an unquoted grep option", BODY('grep -q ' + w + ' -- "a" "$1"'))
+        case("a word as an unquoted grep pattern", BODY('grep -q -- ' + w + ' "$1"'))
     if w not in W["pipe_into"]:
-        case("a word outside pipe_into, after a pipe", BODY('grep "a" "$1" | ' + w + ' "$1"'))
+        case("a word outside pipe_into, after a pipe", BODY('grep -- "a" "$1" | ' + w + ' "$1"'))
     if w not in W["substitutions"]:
-        case("a word outside substitutions, as a substitution command", BODY('test "$(' + w + ' "$1")" = "a"'))
-    case("a word as an unquoted ARG", 't "r" "x" bash -c \'grep -q . "$1"\' _ ' + w)
+        case("a word outside substitutions, as a substitution command", BODY('test "$(' + w + ' -- "$1")" = "a"'))
+    case("a word as an unquoted ARG", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ ' + w)
 for w in sorted(set(WORDS) | set(CHARS)):
     if w not in W["negation"] and w not in W["commands"] and w not in " \t":
-        case("a word before a command (outside negation)", BODY(w + ' grep -q . "$1"'))
+        case("a word before a command (outside negation)", BODY(w + ' grep -q -- . "$1"'))
         case("a word before a test expression (outside negation)", BODY('test ' + w + ' -f "$1"'))
 for c in W["commands"]:
     if c not in W["pipe_into"]:
-        case("a command outside pipe_into, after a pipe", BODY('grep "a" "$1" | ' + c + ' "$1"'))
+        case("a command outside pipe_into, after a pipe", BODY('grep -- "a" "$1" | ' + {"cat": 'cat -- "$1"', "test": 'test -f "$1"', "[": '[ -f "$1" ]', "exit": "exit 1"}.get(c, c + ' "$1"')))
 for o in TEST_OPS:
     if o not in W["test_unary"]:
         case("a test operator outside test_unary (OP X)", BODY('test ' + o + ' "$1"'))
@@ -1726,20 +1786,36 @@ for o in TEST_OPS:
         case("a test operator outside test_string / test_count (N OP N)", BODY('test 1 ' + o + ' 2'))
 for o in GREP_OPTS:
     if o not in W["grep_options"]:
-        case("a grep option outside grep_options", BODY('grep ' + o + ' "a" "$1"'))
-        case("a grep option outside grep_options, in the count substitution", BODY('test "$(grep -c ' + o + ' "a" "$1")" -ge 1'))
+        case("a grep option outside grep_options", BODY('grep ' + o + ' -- "a" "$1"'))
+        case("a grep option outside grep_options, in the count substitution", BODY('test "$(grep -c ' + o + ' -- "a" "$1")" -ge 1'))
 for e in EXITS:
     if e not in W["exit_status"] and e not in " \t":
-        case("an exit status outside exit_status", BODY('grep -q "a" "$1" && exit ' + e))
+        case("an exit status outside exit_status", BODY('grep -q -- "a" "$1" && exit ' + e))
 for v in VARS:
     if v not in W["arg_names"]:
-        case("a variable outside arg_names, as an ARG", 't "r" "x" bash -c \'grep -q . "$1"\' _ "$' + v + '"')
-        case("a variable outside arg_names, as an ARG path", 't "r" "x" bash -c \'grep -q . "$1"\' _ "$' + v + '/x"')
+        case("a variable outside arg_names, as an ARG", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ "$' + v + '"')
+        case("a variable outside arg_names, as an ARG path", 't "r" "x" bash -c \'grep -q -- . "$1"\' _ "$' + v + '/x"')
         if not (len(v) == 1 and v in "123456789"):                    # "$1".."$9" whole is the positional the whitelist names
-            case("a variable in a double-quoted pattern", BODY('grep -q "$' + v + '" "$1"'))
-        case("a variable as an unquoted BODY argument", BODY('grep -q $' + v + ' "$1"'))
-        case("a variable in the TITLE", 't "r" "x $' + v + '" bash -c \'grep -q . "$1"\' _ "$CALLS"')
-case("more ARGs than max_args", 't "r" "x" bash -c \'grep -q . "$1"\' _' + ' "$CALLS"' * (W["max_args"] + 1))
+            case("a variable in a double-quoted pattern", BODY('grep -q -- "$' + v + '" "$1"'))
+        case("a variable as an unquoted BODY argument", BODY('grep -q -- $' + v + ' "$1"'))
+        case("a variable in the TITLE", 't "r" "x $' + v + '" bash -c \'grep -q -- . "$1"\' _ "$CALLS"')
+QOPTS = sorted(set(GREP_OPTS) | {"--file=/etc/hosts", "--file=pats", "--version", "--pager=touch M", "--filter=cmd", "--view", "--regexp=x", "-e", "-f", "-r", "-E", "-q", "-v", "-Eq", "--", "-", "-c"})
+for o in QOPTS:
+    case("an option-like word DOUBLE-QUOTED in a grep option position", BODY('grep "' + o + '" -- "a" "$1"'))
+    case("an option-like word DOUBLE-QUOTED as the grep pattern", BODY('grep -q -- "' + o + '" "$1"'))
+    case("an option-like word DOUBLE-QUOTED as a grep file operand", BODY('grep -q -- "a" "' + o + '"'))
+    case("an option-like word DOUBLE-QUOTED in the count substitution's option position", BODY('test "$(grep -c "' + o + '" -- "a" "$1")" -ge 1'))
+    case("an option-like word DOUBLE-QUOTED as the count substitution's pattern", BODY('test "$(grep -c -- "' + o + '" "$1")" -ge 1'))
+    if o not in W["grep_options"] and o != W["end_of_options"]:
+        case("an option-like word BARE in a grep option position", BODY('grep -q ' + o + ' -- "a" "$1"'))
+        case("an option-like word BARE in the count substitution's option position", BODY('test "$(grep -c ' + o + ' -- "a" "$1")" -ge 1'))
+    case("an option-like word BARE after end_of_options (a second option, or a bare pattern)", BODY('grep -q -- ' + o + ' "a" "$1"'))
+    case("an option-like word as cat's operand", BODY('test "$(cat -- "' + o + '")" = "a"'))
+case("grep without end_of_options before the pattern", BODY('grep -q "a" "$1"'))
+case("grep without end_of_options, in the count substitution", BODY('test "$(grep -c "a" "$1")" -ge 1'))
+case("cat without end_of_options", BODY('test "$(cat "$1")" = "a"'))
+case("cat without end_of_options, as a command", BODY('cat "$1"'))
+case("more ARGs than max_args", 't "r" "x" bash -c \'grep -q -- . "$1"\' _' + ' "$CALLS"' * (W["max_args"] + 1))
 for l in open(sys.argv[3]).read().split("\n"):
     if l:
         what, line = l.split("\t", 1); case("the refused corpus: " + what, line)
@@ -1801,6 +1877,10 @@ arg_path_chars + $	HARNESS_WHITELIST["arg_path_chars"] += "$"
 substitutions + ls	HARNESS_WHITELIST["substitutions"]["ls"] = ""
 max_args 9 -> 10	HARNESS_WHITELIST["max_args"] = 10
 negation + -	HARNESS_WHITELIST["negation"].append("-")
+end_of_options not required	HARNESS_WHITELIST["end_of_options"] = ""
+pattern may start with -	HARNESS_WHITELIST["pattern_first_char_not"] = ""
+grep_options + --file=pats	HARNESS_WHITELIST["grep_options"].append("--file=pats")
+dquote_escapes + \-	HARNESS_WHITELIST["dquote_escapes"].append("\\-")
 EOF
 hfm=$(mktemp -d "$work/hfmut.XXXXXX")
 while IFS=$'\t' read -r what patch; do
@@ -1848,13 +1928,14 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
     # harness assertion lines (the second allowed form): t, a quoted rule and title, one single-quoted bash -c body in the fixed vocabulary, _ and path arguments
-    "d06b3645a61e8513": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -v -q -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
-    "d49076bd54b51a9d": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep \"^curl \" \"$1\" | grep -v -q -- \"--proto =https --tlsv1.2\" && exit 1; test \"$(grep -c \"^curl \" \"$1\")\" -ge 3' _ \"$CALLS\"",
-    "0d1a60b407af424e": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -- \"--max-time\" | grep -q . && exit 1; test \"$(grep -c -E \"^curl .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$CALLS\"",
-    "eff84a7dd0088415": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -- \"--max-time\" | grep -q . && exit 1; test \"$(grep -c -E \"^curl .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$CALLS\"",
-    "477739e1982533ea": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -E -- \"(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)\" | grep -q . && exit 1; grep \"^curl \" \"$1\" | grep -E \"tzdata|APKINDEX\" | grep -v -- \"--max-time\" | grep -q . && exit 1; test \"$(grep -c -E \"^curl .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$CALLS\"",
-    "f9eaea7a39f58987": "t \"rule 32\" \"refresh: a url with a character outside the plain set is refused (exit 2), never fetched\" bash -c 'test \"$(cat \"$1\")\" = 2 && ! grep -E \"^curl .*tzdata\" \"$2\"' _ \"$work/rc\" \"$CALLS\"",
-    "2c19bb4de480a2f0": "t \"rule 32\" \"refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)\" bash -c 'test \"$(cat \"$1\")\" = 0 && grep -Eq \"^curl .*https://packages\\.wolfi\\.dev/os/.*wolfi-signing\\.rsa\\.pub\" \"$2\"' _ \"$work/rc\" \"$CALLS\"",
+    "3c6eebce4768a5e5": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \"\\[--proto\\] \\[=https\\]\" && exit 1; grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \"\\[--tlsv1\\.2\\]\" && exit 1; test \"$(grep -c -- \"^argv \\[curl\\]\" \"$1\")\" -ge 3' _ \"$work/argv\"",
+    "c11dd5da2dbb0266": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \"\\[--proto\\] \\[=https\\]\" && exit 1; grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \"\\[--tlsv1\\.2\\]\" && exit 1; test \"$(grep -c -- \"^argv \\[curl\\]\" \"$1\")\" -ge 3' _ \"$work/argv\"",
+    "fc236193a8c79323": "t \"rule 32\" \"refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)\" bash -c 'grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \"\\[--proto\\] \\[=https\\]\" && exit 1; grep -- \"^argv \\[curl\\]\" \"$1\" | grep -v -q -- \"\\[--tlsv1\\.2\\]\" && exit 1; test \"$(grep -c -- \"^argv \\[curl\\]\" \"$1\")\" -ge 3' _ \"$work/argv\"",
+    "54cebb3d8c62f743": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -Eq -- \"\\[(-g|--globoff)\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -q -- \"\\[--max-filesize\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -q -- \"\\[--max-time\\]\" && exit 1; test \"$(grep -c -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$work/argv\"",
+    "77114a8242405e71": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -Eq -- \"\\[(-g|--globoff)\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -q -- \"\\[--max-filesize\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -q -- \"\\[--max-time\\]\" && exit 1; test \"$(grep -c -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$work/argv\"",
+    "d4a6093027928da3": "t \"rule 32\" \"refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)\" bash -c 'grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -Eq -- \"\\[(-g|--globoff)\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -q -- \"\\[--max-filesize\\]\" && exit 1; grep -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\" | grep -v -q -- \"\\[--max-time\\]\" && exit 1; test \"$(grep -c -E -- \"^argv \\[curl\\] .*(tzdata|APKINDEX)\" \"$1\")\" -ge 1' _ \"$work/argv\"",
+    "840adfdfba3a501a": "t \"rule 32\" \"refresh: a url with a character outside the plain set is refused (exit 2), never fetched\" bash -c 'test \"$(cat -- \"$1\")\" = 2 && test -f \"$2\" && ! grep -q -- \"^argv \\[curl\\] .*tzdata\" \"$2\"' _ \"$work/rc\" \"$work/argv\"",
+    "664fec26dacafe0f": "t \"rule 32\" \"refresh compares the live Wolfi key to the archived one on every run (even when nothing changed)\" bash -c 'test \"$(cat -- \"$1\")\" = 0 && grep -Eq -- \"^argv \\[curl\\] .*\\[https://packages\\.wolfi\\.dev/os/.*wolfi-signing\\.rsa\\.pub\\]\" \"$2\"' _ \"$work/rc\" \"$work/argv\"",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = json.load(open(sys.argv[1]))["unmeasured_text"]
@@ -1908,7 +1989,7 @@ import importlib.util, os, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 assert os.path.realpath(ac.DEFAULT_EXCEPTIONS) == os.path.realpath(os.path.join(sys.argv[2], ".github", "supply-chain-exceptions.json")), ac.DEFAULT_EXCEPTIONS
 PY
-CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key and line (16 lowercase hex each), a 'text, not a command:' or 'harness assertion:' ruling and no duplicate"
+CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, form, key and line (16 lowercase hex each) and at most a count, a 'text, not a command:' or 'harness assertion:' ruling and no duplicate"
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
@@ -1917,7 +1998,7 @@ loaded = ac.load_ruled_text(sys.argv[2], required=True)
 assert rows and len(loaded) == len(rows), (len(rows), len(loaded))
 forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
 for r in rows:
-    assert set(r) == {"file", "form", "key", "line", "ruling"}, r
+    assert set(r) - {"count"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
     assert re.fullmatch(r"[0-9a-f]{16}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
     pre = next((x for x in ("text, not a command: ", "harness assertion: ") if r["ruling"].startswith(x)), None)
