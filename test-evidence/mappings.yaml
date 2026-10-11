@@ -249,6 +249,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: "bin/panel-test.sh" }
       - { type: shell-test, ref: "bin/panel-wiring-test.sh" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_images_tar.py" }
   - ac: REQ-REL-004-AC4
     evidence:
       - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
@@ -422,6 +423,7 @@ mappings:
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_io.py" }
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel_sdk_probe.py" }
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_images_tar.py" }
   - ac: REQ-SCAN-008-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
