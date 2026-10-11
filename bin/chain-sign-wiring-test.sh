@@ -665,6 +665,8 @@ for r in json.load(open(d + "/.spec.json")):
     r = dict(r); r["sha256"] = hashlib.sha256(open(os.path.join(d, r["path"]), "rb").read()).hexdigest(); out.append(r)
 doc = {"env_names": ["DIGESTS", "V", "X1"], "scripts": out}
 if os.path.exists(d + "/.ambient.json"): doc["ambient_env"] = json.load(open(d + "/.ambient.json"))      # PR 1b: the closed ambient_env list
+if os.path.exists(d + "/.envnames.json"): doc["env_names"] = json.load(open(d + "/.envnames.json"))
+if os.path.exists(d + "/.pinned.json"): doc["pinned_steps"] = json.load(open(d + "/.pinned.json"))      # PR 1b round 1: reviewed pinned steps
 json.dump(doc, open(d + "/.github/policy/chain-scripts.json", "w"))
 PY
 }
@@ -2657,10 +2659,10 @@ d=$(wfix x_strentry); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"]=["t
 d=$(wfix x_notlist); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"]={"rule":"witness-target"}'; expm caught "$d" 'exceptions' "exception: exceptions that is not a list is an error"
 d=$(wfix x_dup); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append(dict(rows["bin/witnessed.sh"]["exceptions"][0]))'; expm caught "$d" 'exceptions' "exception: a duplicate entry is an error"
 d=$(wfix x_unused); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"timeout","why":"nothing denied here: timeout is in tools"})'; expm caught "$d" 'waives nothing' "exception: an entry whose text is in the file but waives no finding of its rule is an error"
-d=$(wfix x_launch 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash","why":"REQ-CHAIN-004-AC2"})'; expm ok "$d" - "exception: a launcher exception waives exec bash at its command position"
-d=$(wfix x_launch2 'exec bash "$@"\nexec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash","why":"REQ-CHAIN-004-AC2"})'; expm caught "$d" 'launches another program' "exception: a second exec bash stays a finding"
-d=$(wfix x_eval 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"evaluator","text":"sed -n","why":"reads one line"})'; expm caught "$d" 'sed' "exception: an evaluator exception does not waive the deny finding of the same word (separate rule)"
-d=$(wfix x_eval2 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"] += [{"rule":"evaluator","text":"sed -n","why":"reads one line"},{"rule":"deny","text":"sed","why":"reads one line"}]'; expm ok "$d" - "exception: evaluator and deny exceptions together waive sed -n"
+d=$(wfix x_launch 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm ok "$d" - "exception: a launcher exception waives exec bash at its command position"
+d=$(wfix x_launch2 'exec bash "$@"\nexec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm caught "$d" 'launches another program' "exception: a second exec bash stays a finding"
+d=$(wfix x_eval 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"})'; expm caught "$d" 'sed' "exception: an evaluator exception does not waive the deny finding of the same word (separate rule)"
+d=$(wfix x_eval2 'sed -n 1p f\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"] += [{"rule":"evaluator","text":"sed -n 1p f","why":"reads one line"},{"rule":"deny","text":"sed","why":"reads one line"}]'; expm ok "$d" - "exception: evaluator and deny exceptions together waive sed -n"
 d=$(wfix x_deny 'curl -sf x\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"curl","why":"fetches the token"})'; expm ok "$d" - "exception: a deny exception waives one bare curl"
 d=$(wfix x_deny2 'curl -sf x\ncurl -sf y\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"deny","text":"curl","why":"fetches the token"})'; expm caught "$d" 'curl' "exception: a second bare curl stays a finding"
 d=$(wfix x_sname 'echo bin/helper.py\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"script-name","text":"bin/helper.py","why":"a message"})'; expm ok "$d" - "exception: a script-name exception waives a named script"
@@ -2726,7 +2728,132 @@ d=$(cfix c_exists 'echo archive/go'); mkdir -p "$d/archive"; printf '#!/bin/sh\n
 d=$(mk c_py); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport subprocess\nX = "/usr/bin/git"\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expm caught "$d" 'by a path' "python listed script: a command named by a path (/usr/bin/git) is still refused as before"
 
 
-EXPECT=718
+# ---- PR 1b round 1: ambient leak (1), forbidden-name class (2), whole-command exception text (3), fail-closed executed paths (4), reviewed pinned step (5),
+# duplicate JSON keys (6), reads_env outside comments (7), three invocations through runs (8)
+# (3) the recorded text of a launcher / evaluator / script-name finding at a command position is the WHOLE simple command
+d=$(wfix w_p1 'timeout 540 bash -c "$PAYLOAD"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"timeout 540","why":"x"})'; expm caught "$d" 'launches another program' "round-1 (3): timeout 540 bash -c \"\$PAYLOAD\" is a finding although an entry says timeout 540 (the entry text must be the whole command)"
+d=$(wfix w_p2 'bash -c "$PAYLOAD"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["exceptions"].append({"rule":"script-name","text":"bash -c","why":"x"})'; expm caught "$d" 'handed' "round-1 (3): bash -c \"\$PAYLOAD\" is a finding although an entry says bash -c"
+d=$(wfix w_p3 'eval echo "$PAYLOAD"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("eval"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"evaluator","text":"eval echo","why":"x"})'; expm caught "$d" 'launches another program' "round-1 (3): eval echo \"\$PAYLOAD\" is a finding although an entry says eval echo"
+d=$(wfix w_ok 'exec bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm ok "$d" - "round-1 (3): exec bash \"\$@\" is admitted by an entry whose text is the whole command"
+d=$(wfix w_tail 'exec bash "$@" extra\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"REQ-CHAIN-004-AC2"})'; expm caught "$d" 'launches another program' "round-1 (3): exec bash \"\$@\" extra is not admitted by the entry for exec bash \"\$@\""
+d=$(wfix w_semi 'exec bash "$@"; echo hi\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"x"})'; expm ok "$d" - "round-1 (3): the command text ends at ; (the entry text is the command alone)"
+d=$(wfix w_paren '(exec bash "$@")\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash \"$@\"","why":"x"})'; expm ok "$d" - "round-1 (3): the command text ends at a closing parenthesis"
+d=$(wfix w_cont 'exec bash \\\n  "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"].append({"rule":"launcher","text":"exec bash   \"$@\"","why":"x"})'; expm ok "$d" - "round-1 (3): a command split by a backslash-newline is named by its joined text (bash joins it with nothing inserted)"
+d=$(wfix w_procsub 'exec witness run --step s --signer-fulcio-token-path <(printf %s "$t") -o out -- bash "$@"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]["tools"].append("exec"); rows["bin/witnessed.sh"]["exceptions"] += [{"rule":"launcher","text":"exec witness run --step s --signer-fulcio-token-path <(printf %s \"$t\") -o out -- bash \"$@\"","why":"x"},{"rule":"witness-target","text":"bash \"$@\"","why":"x"}]'; expm ok "$d" - "round-1 (3): a command with a process substitution <( ) is one command (the parenthesis inside it does not end it)"
+# (1) the ambient leak
+d=$(afix z_leak1); printf 'jobs:\n  j:\n    steps:\n      - name: other\n        env:\n          GH_TOKEN: ${{ secrets.PAT }}\n        run: bash bin/build-stage.sh apk "$GH_TOKEN"\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'ambient only for' "round-1 (1): GH_TOKEN with a secret in a step running an UNRELATED listed script, with a whole read, is refused"
+d=$(afix z_leak2); printf 'jobs:\n  j:\n    steps:\n      - name: other\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/build-stage.sh apk "$GH_TOKEN"\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'ambient only for' "round-1 (1): a whole read of an ambient name in a step that does not reach its script is an error"
+d=$(afix z_leak3); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ secrets.PAT }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh "$GH_TOKEN"\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'plain expression' "round-1 (1): the reaching step with a secret value is refused even when the run line reads the name whole"
+d=$(afix z_val1); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ inputs.tok }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-1 (1): control: an inputs.X value in the reaching step is accepted"
+d=$(afix z_val2); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ matrix.k }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-1 (1): control: a matrix.X value in the reaching step is accepted"
+d=$(afix z_val3); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ needs.a.outputs.b }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'plain expression' "round-1 (1): a needs.X.outputs.Y value is not a plain expression"
+d=$(afix z_ord); printf 'jobs:\n  j:\n    steps:\n      - name: other\n        env:\n          V: x\n        run: bash bin/build-stage.sh apk "$V"\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-1 (1): control: an ordinary env_names name read whole in an unrelated step is accepted"
+# (2) the forbidden class, by shape
+for nm in GITHUB_1 RUNNER_2 NODE_3 GITHUB_ RUNNER_x path Path ld_preload LD_PRELOAD1 PYTHON3 PYTHONPATH_ BASH_FUNC_x github_token bash_env Env ps4 NODE_OPTIONS2 GIT_DIR1 lc_all; do
+  d=$(afix "f_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          %s: x\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"
+  expm caught "$d" 'never allowed' "round-1 (2): the env name $nm is forbidden in an ordinary step env"
+  d=$(afix "g_$nm"); printf '[{"name":"%s","script":"bin/build-admit.py","why":"x"}]' "$nm" > "$d/.ambient.json"; edit_spec "$d" 'rows["bin/build-admit.py"]["reads_env"]=["'"$nm"'"]'
+  printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          %s: x\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' "$nm" > "$d/.github/workflows/stage-verify.yml"
+  expm caught "$d" 'ambient_env' "round-1 (2): the env name $nm is refused as an ambient_env entry (and in the step)"
+done
+for nm in GITHUB_1 RUNNER_2 NODE_3; do
+  d=$(mk "h_$nm"); printf '["DIGESTS","V","X1","%s"]' "$nm" > "$d/.envnames.json"; gen "$d"; expm caught "$d" 'env_names' "round-1 (2): $nm in the closed env_names list is refused"
+done
+# (4) fail closed: a path-like word with a deny-class last component is refused wherever it is (or may be) executed
+pc() { # pc NAME 'script lines' [tools-json] [runs-json] : refused with "by a path"
+  local d; d=$(cfix "$1" "$2" "${3:-[]}" "${4:-[]}"); expm caught "$d" 'by a path' "round-1 (4): $2 is refused (a deny-class path that may be executed)"; }
+po() { local d; d=$(cfix "$1" "$2" "${3:-[]}" "${4:-[]}"); expm ok "$d" - "round-1 (4): control: $2 is admitted (a data operand)"; }
+pc q_redir1 '> out dist/sed -c x'
+pc q_redir2 '2>&1 dist/sed x'
+pc q_redir3 '< in dist/sed'
+pc q_assign 'FOO=1 dist/sed'
+pc q_find1 'find . -exec dist/sed {} \;' '["find"]'
+pc q_find2 'find . -exec dist/sed {} +' '["find"]'
+pc q_find3 'find . -execdir dist/sed {} +' '["find"]'
+pc q_find4 'find . -ok dist/sed {} \;' '["find"]'
+pc q_find5 'find . -exec archive/awk {} +' '["find"]'
+pc q_xargs 'xargs dist/sed'
+pc q_trap "trap 'dist/sed' EXIT" '["trap"]'
+pc q_env 'env dist/sed x'
+pc q_command 'command dist/sed x'
+pc q_nohup 'nohup dist/sed x'
+pc q_time 'time dist/sed x'
+pc q_bashc "bash -c 'dist/sed x'" '["bash"]'
+pc q_eval 'eval dist/sed' 
+pc q_heredoc 'bash <<EOF\ndist/sed x\nEOF' '["bash"]'
+pc q_echoredir 'echo a > dist/sed x; > o dist/awk'
+pc q_taropt 'tar --use-compress-program dist/sed -cf x y' '["tar"]'
+pc q_for 'for f in archive/go; do :; done'
+po q_ok_cp 'cp x archive/go'
+po q_ok_echo 'echo --go-archive archive/go'
+po q_ok_ls 'ls dist/sed'
+po q_ok_mv 'mv a archive/awk'
+po q_ok_sha 'sha256sum archive/go'
+po q_ok_test '[ -f archive/go ]'
+po q_ok_test2 'test -x dist/sed'
+po q_ok_tar 'tar -cf x archive/go' '["tar"]'
+po q_ok_interp 'bash bin/build-apk.sh --go-archive archive/go' '["bash"]' '["bin/build-apk.sh"]'
+po q_ok_listed './bin/build-apk.sh --go-archive archive/go' '[]' '["bin/build-apk.sh"]'
+# (8) repeated invocations of a listed script belong in `runs`, not in exceptions
+d=$(cfix r_three './bin/build-apk.sh a\n./bin/build-apk.sh b\n./bin/build-apk.sh c' '[]' '["bin/build-apk.sh"]'); expm ok "$d" - "round-1 (8): the same listed script invoked three times is admitted through one runs row, no exception"
+d=$(cfix r_three2 'bash bin/build-apk.sh a\nbash bin/build-apk.sh b\nbash bin/build-apk.sh c' '["bash"]' '["bin/build-apk.sh"]'); expm ok "$d" - "round-1 (8): bash LISTED three times is admitted through one runs row, no exception"
+d=$(cfix r_three3 './bin/build-apk.sh a\n./bin/build-apk.sh b\n./bin/build-apk.sh c'); expm caught "$d" 'build-apk.sh' "round-1 (8): the same three invocations without the runs row are refused"
+# (5) the reviewed pinned step
+DG='echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
+export DG
+yrep() { # yrep DIR OLD NEW : replace one text in the pinned-step stage file
+  python3 -c 'import sys;p=sys.argv[1]+"/.github/workflows/stage-verify.yml";t=open(p).read();assert sys.argv[2] in t;open(p,"w").write(t.replace(sys.argv[2],sys.argv[3],1))' "$@"; }
+pfix() { # pfix NAME : a stage file with the AC2 digests step and its pinned_steps entry
+  local d; d=$(mk "$1")
+  printf 'jobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n' "$DG" > "$d/.github/workflows/stage-verify.yml"
+  python3 -c 'import json,os,sys;json.dump([{"file":".github/workflows/stage-verify.yml","job":"j","id":"digests","run":os.environ["DG"],"why":"REQ-CHAIN-004-AC2"}],open(sys.argv[1]+"/.pinned.json","w"))' "$d"
+  gen "$d"; echo "$d"
+}
+d=$(pfix s_ok); expm ok "$d" - "round-1 (5) REQ-CHAIN-004-AC2: the digests step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) is admitted with its pinned_steps entry"
+d=$(pfix s_none); rm "$d/.pinned.json"; gen "$d"; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the same step without an entry is refused"
+d=$(pfix s_char); yrep "$d" 'digests.json)' 'digest.json)'; expm caught "$d" 'pinned' "round-1 (5): the step text changed by one character is refused"
+d=$(pfix s_redir); yrep "$d" '"$GITHUB_OUTPUT"' '"$GITHUB_OUTPUT" > x'; expm caught "$d" 'pinned' "round-1 (5): the step with a second redirection appended is refused"
+d=$(pfix s_id); yrep "$d" 'id: digests' 'id: digest'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step with another id is refused"
+d=$(pfix s_job); yrep "$d" '  j:' '  k:'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another job is refused"
+d=$(pfix s_file); mv "$d/.github/workflows/stage-verify.yml" "$d/.github/workflows/stage-reproducibility.yml"; printf 'jobs: {}\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another file is refused (and the entry for the first file is stale)"
+d=$(pfix s_key); yrep "$d" 'as the stage output' 'as the stage output
+        shell: bash'; expm caught "$d" 'pinned' "round-1 (5): a pinned step with another key (shell) is refused"
+d=$(pfix s_env); yrep "$d" 'as the stage output' 'as the stage output
+        env:
+          V: x'; expm caught "$d" 'pinned' "round-1 (5): a pinned step with an env is refused"
+d=$(pfix s_runner); yrep "$d" 'runs-on: ubuntu-24.04' 'runs-on: self-hosted'; expm caught "$d" 'runs-on' "round-1 (5): the pinned step still runs under the closed runner rule"
+d=$(pfix s_nowhy); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["why"]=" ";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): a blank why is an error"
+d=$(pfix s_dup); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j.append(dict(j[0]));json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): a duplicate entry is an error"
+d=$(pfix s_dup2); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));k=dict(j[0]);k["run"]="echo x";j.append(k);json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): two entries for one (file, job, id) are an error"
+d=$(pfix s_stale); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["run"]+="x";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): an entry whose run text is not the step's is stale"
+d=$(pfix s_nofile); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["file"]=".github/workflows/stage-nowhere.yml";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): an entry for a file that is not in the tree is an error"
+d=$(pfix s_nonstage); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["file"]=".github/workflows/ci.yml";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): an entry for a file that is not a stage file is an error"
+d=$(pfix s_nl); python3 -c 'import json,sys;p=sys.argv[1]+"/.pinned.json";j=json.load(open(p));j[0]["run"]+="\necho x";json.dump(j,open(p,"w"))' "$d"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): a run text of more than one line is an error"
+d=$(pfix s_shape); printf '[{"file":"x","job":"j","id":"digests","run":"echo","why":"w","extra":1}]' > "$d/.pinned.json"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): an entry with another key is an error"
+d=$(pfix s_notlist); printf '{"file":"x"}' > "$d/.pinned.json"; gen "$d"; expm caught "$d" 'pinned_steps' "round-1 (5): pinned_steps that is not a list is an error"
+# (6) duplicate JSON keys
+dupj() { # dupj DIR FILE 'old' 'new' : rewrite one policy file's text
+  python3 -c 'import sys;p=sys.argv[1]+"/"+sys.argv[2];t=open(p).read();assert sys.argv[3] in t;open(p,"w").write(t.replace(sys.argv[3],sys.argv[4],1))' "$@"; }
+d=$(wfix j_row); dupj "$d" .github/policy/chain-scripts.json '"exceptions": [' '"exceptions": [], "exceptions": ['; expm caught "$d" 'duplicate key' "round-1 (6): chain-scripts.json with exceptions twice in a row (the last would win) is refused, naming the key"
+d=$(wfix j_top); dupj "$d" .github/policy/chain-scripts.json '{"env_names"' '{"ambient_env": [], "ambient_env": [], "env_names"'; expm caught "$d" 'duplicate key' "round-1 (6): chain-scripts.json with a top-level key twice is refused"
+d=$(mk j_signers); dupj "$d" .github/policy/chain-signers.json '{"signers":[' '{"signers":[],"signers":['; expm caught "$d" 'duplicate key' "round-1 (6): chain-signers.json with a key twice is refused"
+d=$(mk j_idtok); dupj "$d" .github/policy/id-token-jobs.json '{"jobs":[' '{"jobs":[],"jobs":['; expm caught "$d" 'duplicate key' "round-1 (6): id-token-jobs.json with a key twice is refused"
+# (7) reads_env needs a mention outside comments
+rfix() { # rfix NAME 'file text' : bin/c.sh or bin/c.py with reads_env GH_TOKEN
+  local d f; d=$(mk "$1"); f=bin/c.sh; case "$2" in "#!/usr/bin/env python3"*) f=bin/c.py;; esac
+  setfile "$d" $f "$2"; edit_spec "$d" 'rows["'$f'"]={"path":"'$f'","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'; echo "$d"; }
+d=$(rfix t_sh_cmt '#!/usr/bin/env bash\n# reads GH_TOKEN\necho a\n'); expm caught "$d" 'reads_env' "round-1 (7): a shell comment line naming the variable is not a read"
+d=$(rfix t_sh_tail '#!/usr/bin/env bash\necho a # GH_TOKEN\n'); expm caught "$d" 'reads_env' "round-1 (7): a trailing shell comment naming the variable is not a read"
+d=$(rfix t_sh_sq '#!/usr/bin/env bash\necho '"'"'GH_TOKEN'"'"'\n'); expm caught "$d" 'reads_env' "round-1 (7): a single-quoted mention is not a read"
+d=$(rfix t_sh_ok '#!/usr/bin/env bash\necho "$GH_TOKEN"\n'); expm ok "$d" - "round-1 (7): control: a shell read"
+d=$(rfix t_py_cmt '#!/usr/bin/env python3\n# GH_TOKEN\nx = 1\n'); expm caught "$d" 'reads_env' "round-1 (7): a Python comment naming the variable is not a read"
+d=$(rfix t_py_doc '#!/usr/bin/env python3\n"""Reads GH_TOKEN."""\nx = 1\n'); expm caught "$d" 'reads_env' "round-1 (7): a Python module docstring naming the variable is not a read"
+d=$(rfix t_py_doc2 '#!/usr/bin/env python3\ndef f():\n    """Reads GH_TOKEN."""\n    return 1\n'); expm caught "$d" 'reads_env' "round-1 (7): a Python function docstring naming the variable is not a read"
+d=$(rfix t_py_ok '#!/usr/bin/env python3\nimport os\nx = os.environ.get("GH_TOKEN")\n'); expm ok "$d" - "round-1 (7): control: a Python os.environ.get read"
+d=$(rfix t_py_ok2 '#!/usr/bin/env python3\nimport os\nx = os.environ["GH_TOKEN"]\n'); expm ok "$d" - "round-1 (7): control: a Python os.environ[] read"
+
+
+EXPECT=841
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
