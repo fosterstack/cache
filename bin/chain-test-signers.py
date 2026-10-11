@@ -441,9 +441,9 @@ def load_scripts(base):
     else:
         seen = set()
         for e in amb:
-            if (not isinstance(e, dict) or not {"name", "script", "why"} <= set(e) or set(e) - {"name", "script", "why", "file", "job", "handoff_line"}
+            if (not isinstance(e, dict) or not {"name", "script", "why", "file", "job"} <= set(e) or set(e) - {"name", "script", "why", "file", "job", "handoff_line"}
                     or not all(isinstance(e[k], str) for k in e)):
-                errs.append("chain-scripts.json: ambient_env entry %r must be an object with name, script and why (strings) and optionally file and job (strings)" % (e,)); continue
+                errs.append("chain-scripts.json: ambient_env entry %r must be an object with name, script, why, file and job (strings; file is the full stage path, job the job name) and optionally handoff_line" % (e,)); continue
             nm, sc, why = e["name"], e["script"], e["why"]
             if not re.fullmatch(r"[A-Z][A-Z0-9_]*", nm) or FORBID_ENV.fullmatch(nm):
                 errs.append("chain-scripts.json: ambient_env name %r is not an allowed variable name (never BASH_ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*, ...)" % nm); continue
