@@ -401,8 +401,7 @@ if [ -f "$W/c/repo/admission.json" ]; then
   run_admit;
   cmp -s "$W/c/first.json" "$A" && ok "AC4 admission.json is byte-identical on a second run (deterministic)" || bad \
       "AC4 admission.json differs between runs"
-  ! grep -qE 'NON-GET' "$W/c/calls.log" && [ "$(grep -c '^gh api .*repos/fosterstack/cache/commits/' "$W/c/calls.log")" -ge 4 ] && ! grep '^gh ' \
-      "$W/c/calls.log" | grep -vq '^gh api ' && ok \
+  ! grep -qE 'NON-GET' "$W/c/calls.log" && [ "$(grep -c '^gh api .*repos/fosterstack/cache/commits/' "$W/c/calls.log")" -ge 4 ] && ! grep -vq '^gh api ' < <(grep '^gh ' "$W/c/calls.log") && ok \
       "AC4 every GitHub call is a GET of the commits API (at least the four reads: checks and statuses and pulls of the tagged commit, checks of the PR head)" \
       || bad \
       "AC4 gh calls are not exactly GETs of the commits API (count $(grep -c '^gh api' "$W/c/calls.log")): $(grep NON-GET "$W/c/calls.log" | head -1)"
@@ -629,7 +628,7 @@ j = json.load(open(f)); open(f + ".page2", "w").write(json.dumps(j))
 json.dump({"check_runs": [{"name": "lint", "conclusion": "success", "app": {"id": 15368}, "id": 14, "head_sha": sha}]}, open(f, "w"))
 PY
 run_admit; expect_ok "AC4 required-checks: a required check on page 2 of the check-runs list is found (gh api --paginate, its concatenated JSON pages parsed)"
-if [ -f "$BA" ] && grep -E '^gh api .*check-runs' "$W/c/calls.log" | grep -vq -- '--paginate';
+if [ -f "$BA" ] && grep -vq -- '--paginate' < <(grep -E '^gh api .*check-runs' "$W/c/calls.log");
 then bad "AC4 a check-runs call without --paginate";
 elif [ -f "$BA" ] && grep -Eq '^gh api .*check-runs' "$W/c/calls.log";
 then ok "AC4 every check-runs call carries --paginate (in either argument order: the fake gh accepts both)";

@@ -834,7 +834,7 @@ def _stmt(pt, subj, st="v1"): return json.dumps({"_type": STMT[st], "predicateTy
 add("sign_badname", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": [], "digest": {"sha256": "a" * 64}}]))
 add("sign_baddigest", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
 dj("rekor-badsubj.json", {"entries": [entry("sign_badname", 50), entry("sign_baddigest", 51)]})
-add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_stmt(COLL, [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}], "v0.1"))
+add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}]}).encode())
 # ---- Codex security round 3 ----
 # (X2) every envelope field has its JSON type; a wrong one is a refusal ("envelope"), never a traceback
 for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("ptype_null", lambda r: r.__setitem__("payloadType", None)),

@@ -827,7 +827,7 @@ record_env() {
   python3 "$CV" record-env --record "$f" > /dev/null 2> "$work/cv.err" || rc=$?
   if grep -q Traceback "$work/cv.err" 2> /dev/null; then bad "$label -> a Python traceback is a crash, not a refusal"
   elif [ "$want" = ok ]; then if [ "$rc" = 0 ]; then ok "$label"; else bad "$label -> exit $rc: $(head -c 140 "$work/cv.err" | tr '\n' ' ')"; fi
-  elif [ "$rc" = 1 ] && head -1 "$work/cv.err" | grep -Eq '^refused at (build|rebuild): ' && grep -Fq -- "$word" "$work/cv.err"; then ok "$label"
+  elif [ "$rc" = 1 ] && grep -Eq '^refused at (build|rebuild): ' < <(head -1 "$work/cv.err") && grep -Fq -- "$word" "$work/cv.err"; then ok "$label"
   else bad "$label -> exit $rc, wanted 1 'refused at <stage>:' naming '$word': $(head -c 140 "$work/cv.err" | tr '\n' ' ')"; fi
 }
 [ -f "$CV" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
@@ -954,7 +954,7 @@ for tag in fixture real; do
     bad "AC2 $tag helper: unknown step -> rc=$rc calls=$calls"
   fi
   helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
-  if [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 1 ] && grep 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" | grep -q '^::add-mask::' \
+  if [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 1 ] && grep -q '^::add-mask::' < <(grep 'FAKE-JWT-TOKEN-VALUE' <<< "$printed") \
      && ! grep -q SENTINEL-BEARER <<< "$printed"; then
     ok "AC2 $tag helper: the identity token appears only in the add-mask line and the bearer value is never printed"
   else

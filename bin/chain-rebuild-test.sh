@@ -164,10 +164,10 @@ refuse "005-AC3 a record with two file:items.json subjects is refused" digest ""
 refuse "005-AC3 a subject named file:items.json.bak does not count as the product" digest "" rec-wrongname.json exp.json act.json
 refuse "005-AC3 a material subject named file:items.json does not count as the product" digest "" rec-material.json exp.json act.json
 rc=$(rc_of rebuild-compare --build-record "$W/does-not-exist.json" --expected "$W/exp.json" --actual "$W/act.json" --out "$W/v2.json");
-[ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 an unreadable record is a usage error (exit 2), never a pass" || bad \
+[ -f "$CV" ] && [ "$rc" = 2 ] && grep -qi usage < <(head -1 "$W/err") && ok "005-AC3 an unreadable record is a usage error (exit 2), never a pass" || bad \
     "005-AC3 unreadable record -> exit $rc, wanted 2"
 rc=$(rc_of rebuild-compare --build-record "$W/rec.json" --expected "$W/exp.json" --out "$W/v3.json");
-[ -f "$CV" ] && [ "$rc" = 2 ] && head -1 "$W/err" | grep -qi usage && ok "005-AC3 a missing --actual is a usage error (exit 2)" || bad \
+[ -f "$CV" ] && [ "$rc" = 2 ] && grep -qi usage < <(head -1 "$W/err") && ok "005-AC3 a missing --actual is a usage error (exit 2)" || bad \
     "005-AC3 missing --actual -> exit $rc, wanted 2"
 # REQ-CHAIN-005-AC7: a snapshot Rebuild compares against Build's SNAPSHOT record, and only with --snapshot
 snap_run() { # snap_run FLAG REC EXPECTED ACTUAL -> RC; FLAG is --snapshot or empty
@@ -237,7 +237,7 @@ else
   bad "005-AC7 an item missing on the Build side -> exit $RC: $(head -c 300 "$W/verdict.json" 2> /dev/null | tr '\n' ' ')"
 fi
 snap_run --snapshot rec.json exp.json act.json
-if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: step: build$'; then
+if [ "$RC" = 1 ] && grep -q '^refused at rebuild: step: build$' < <(head -1 "$W/err"); then
   ok "005-AC7 --snapshot refuses a release record named build (a snapshot compare never trusts a release record)"
 else
   bad "005-AC7 --snapshot with a release record -> exit $RC: $(head -1 "$W/err")"
@@ -249,7 +249,7 @@ else
   bad "005-AC7 a snapshot record without --snapshot -> exit $RC: $(head -1 "$W/err")"
 fi
 snap_run --snapshot rec-snap.json exp-tampered.json act.json
-if [ "$RC" = 1 ] && head -1 "$W/err" | grep -q '^refused at rebuild: digest: '; then
+if [ "$RC" = 1 ] && grep -q '^refused at rebuild: digest: ' < <(head -1 "$W/err"); then
   ok "005-AC7 --snapshot still binds items.json to the hash the snapshot record holds"
 else
   bad "005-AC7 --snapshot with a tampered items.json -> exit $RC: $(head -1 "$W/err")"
