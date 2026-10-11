@@ -6,7 +6,7 @@
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness> [dest-dir]
+# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|crane> [dest-dir]
 # inspector-sbomgen is Amazon Inspector's SBOM generator (the PR gate's
 # second scanner sends its SBOM to inspector-scan:ScanSbom). It is pinned
 # here rather than downloaded by the vendor action at run time, so its
@@ -35,15 +35,18 @@ COSIGN_VER=3.1.3
 # v0.12.0, equal to the release's witness_0.12.0_checksums.txt; both tarballs were also checked on Oct 9 2026 with `cosign verify-blob --bundle` against
 # their .sigstore.json (identity https://github.com/in-toto/witness/.github/workflows/release.yml@refs/tags/v0.12.0, issuer token.actions.githubusercontent.com).
 WITNESS_VER=0.12.0
+# crane copies the exact image bytes by digest in the Release stage (rules 16 and 64 of the release rules: the copy tool is pinned by checksum, no build step).
+# The two crane sums are the sha256 of the Linux release tarballs of google/go-containerregistry v0.22.1, equal to the release's checksums.txt and to the downloaded files (Oct 11 2026).
+CRANE_VER=0.22.1
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|cosign|witness) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|cosign|witness|crane) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
-  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_COSIGN=linux-amd64; A_WITNESS=linux_amd64 ;;
-  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_COSIGN=linux-arm64; A_WITNESS=linux_arm64 ;;
+  x86_64|amd64) A_TRIVY=Linux-64bit; A_GRYPE=linux_amd64; A_SNYK=snyk-linux; A_OSV=osv-scanner_linux_amd64; A_SBOMGEN=amd64; A_SCOUT=linux_amd64; A_GITSIGN=linux_amd64; A_COSIGN=linux-amd64; A_WITNESS=linux_amd64; A_CRANE=Linux_x86_64 ;;
+  aarch64|arm64) A_TRIVY=Linux-ARM64; A_GRYPE=linux_arm64; A_SNYK=snyk-linux-arm64; A_OSV=osv-scanner_linux_arm64; A_SBOMGEN=arm64; A_SCOUT=linux_arm64; A_GITSIGN=linux_arm64; A_COSIGN=linux-arm64; A_WITNESS=linux_arm64; A_CRANE=Linux_arm64 ;;
   *) pipeline_fail "unsupported architecture: $arch" ;;
 esac
 
@@ -71,6 +74,8 @@ case "${TOOL}:${arch}" in
   cosign:aarch64|cosign:arm64) SUM=c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a ;;
   witness:x86_64|witness:amd64) SUM=543d05898731fe5b9c176443ec596a0242bd27f0b327d73aff60f6f7398b7dd0 ;;
   witness:aarch64|witness:arm64) SUM=3043bba438276c4c2b1afff7deb97cf1c0301c77515a4b1cff15549b378d2aaf ;;
+  crane:x86_64|crane:amd64) SUM=0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 ;;
+  crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -84,6 +89,7 @@ SCOUT_BASE="${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/downl
 GITSIGN_BASE="${GITSIGN_BASE_URL:-https://github.com/sigstore/gitsign/releases/download}"
 COSIGN_BASE="${COSIGN_BASE_URL:-https://github.com/sigstore/cosign/releases/download}"
 WITNESS_BASE="${WITNESS_BASE_URL:-https://github.com/in-toto/witness/releases/download}"
+CRANE_BASE="${CRANE_BASE_URL:-https://github.com/google/go-containerregistry/releases/download}"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -178,8 +184,16 @@ case "$TOOL" in
     install -m 0755 "$tmp/witness" "${DEST}/witness" || pipeline_fail "install failed for witness"
     "${DEST}/witness" version >/dev/null || pipeline_fail "the installed witness binary does not start"
     ;;
+  crane)
+    # the copy tool of the Release stage: a release tarball holding the crane binary, verified against the pinned sum
+    url="${CRANE_BASE}/v${CRANE_VER}/go-containerregistry_${A_CRANE}.tar.gz"
+    curl -fsSL -o "$tmp/c.tgz" "$url" || pipeline_fail "download failed: $url"
+    verify "$tmp/c.tgz"
+    tar -xzf "$tmp/c.tgz" -C "$DEST" crane || pipeline_fail "extract failed for crane"
+    "${DEST}/crane" version >/dev/null || pipeline_fail "the installed crane binary does not start"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|crane)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

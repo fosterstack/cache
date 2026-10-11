@@ -199,7 +199,7 @@ jobs:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
   release:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [rebuild, check, sign]
     uses: ./.github/workflows/stage-promote.yml
   decide:
@@ -215,7 +215,7 @@ jobs:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-notes:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' }}
+    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -664,8 +664,8 @@ GATE_BODY="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 GATE="\${{ $GATE_BODY }}"
 OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
-PNIF="\${{ needs.decide.outputs.tagged == 'true' }}"
-RELIF="\${{ !inputs.dry-run }}"
+PNIF="\${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
 BUILD_HEAD="    if: $GATE\n$BUILD_USES"

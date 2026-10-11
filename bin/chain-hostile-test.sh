@@ -524,11 +524,12 @@ else:
         if re.sub(r"\s+", "", str(bj.get("if", ""))) != re.sub(r"\s+", "", BUILD_IF): bad.append("the build job must carry `if: %s` (else a dry run skips it, and with it sign and the hostile jobs, and is green with no checks): %r" % (BUILD_IF, bj.get("if")))
         if need(bj): bad.append("the build job needs nothing (admission is Build's first step, not a job): %r" % need(bj))
         if "decide" not in jobs: bad.append("release.yml has no `decide` tag job to gate (the patch-tag job must not run in a dry run)")
-sp = os.path.join(root, ".github/workflows/stage-promote.yml")
-if not os.path.exists(sp): bad.append("stage-promote.yml missing (Release makes its policy there)")
+# Release makes its policy in its stage file or, since PR 4 (every Release step is a committed script under Witness), in its first step, bin/release-verify.sh
+cands = [os.path.join(root, ".github/workflows/stage-promote.yml"), os.path.join(root, "bin/release-verify.sh")]
+if not os.path.exists(cands[0]): bad.append("stage-promote.yml missing (Release makes its policy there or in bin/release-verify.sh)")
 else:
-    pm = [l for l in open(sp).read().splitlines() if "policy make" in l and not l.lstrip().startswith("#")]
-    if not pm: bad.append("Release (stage-promote.yml) never runs `policy make` (it must make its own tag-pinned policy)")
+    pm = [l for sp in cands if os.path.exists(sp) for l in open(sp).read().splitlines() if "policy make" in l and not l.lstrip().startswith("#")]
+    if not pm: bad.append("Release (stage-promote.yml or bin/release-verify.sh) never runs `policy make` (it must make its own tag-pinned policy)")
     for l in pm:
         if "--ref" in l or "--tag" not in l: bad.append("Release's `policy make` must use --tag and never --ref (a --ref policy accepts a branch dry-run record): %s" % l.strip())
 for wf in glob.glob(os.path.join(root, ".github/workflows/*.y*ml")):

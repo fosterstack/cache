@@ -1,9 +1,0 @@
-{
- "_note": "The eleven legacy stage files PRs 2-4 rewrite or delete on the integration branch chain-v030, pinned by the sha256 of their bytes at PR 1. bin/chain-sign-wiring-test.sh treats exactly these frozen files as the known red of the real-tree AC1 judge: the tree without them must be green, and a listed file whose bytes differ fails that case. The pull request that rewrites a file removes its row (and its path from LEGACY_EXPECTED in that suite); the one that rewrites the last deletes this list and turns the case into an ordinary `expect ok`.",
- "files": [
-  {
-   "path": ".github/workflows/stage-promote.yml",
-   "sha256": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393"
-  }
- ]
-}

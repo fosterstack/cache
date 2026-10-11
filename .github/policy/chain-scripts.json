@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "a83e6b25c7c5be01a53e8f2bedebd173927eb65311835e77e6a08fcb4ae231c1",
+      "sha256": "943a45ea5471b3ac4088b0c1d7095cfd2548b545332a1e3d4172a9fde27e3ceb",
       "tools": [
         "curl",
         "trap",
@@ -93,9 +93,12 @@
       "runs": [],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout 540; a Witness collection is not a provenance statement",
-      "sha256": "c9cce45f20b4b12511dc72629833dbafd6caf0b97496a1bbd29fdddefb936eb3",
+      "sha256": "ac06a940daddb2774becc5db742b56b09e58c49c66f2633458ee02d200b063f0",
       "reads_env": [
-        "GH_TOKEN"
+        "GH_TOKEN",
+        "APK_RELEASE_SIGNING_KEY",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
         "apk": "bin/build-stage-apk.sh",
@@ -108,12 +111,18 @@
         "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
         "scanners": "bin/check-stage.sh",
         "acceptance": "bin/check-stage.sh",
-        "runtime": "bin/check-stage.sh"
+        "runtime": "bin/check-stage.sh",
+        "release-verify": "bin/release-verify.sh",
+        "release-apks": "bin/release-apks.sh",
+        "release-publish": "bin/release-publish.sh",
+        "release-sign": "bin/release-sign.sh",
+        "release-assets": "bin/release-assets.sh",
+        "release-postverify": "bin/release-postverify.sh"
       },
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout 540 bash \"$@\"",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout 540 bash \"$@\"",
           "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
         },
         {
@@ -814,6 +823,131 @@
           "why": "a fixture line of a syscall trace inside a heredoc: the comment marks are trace text, not a command (REQ-PRIV-001-AC1)"
         }
       ]
+    },
+    {
+      "path": "bin/release-verify.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
+      "sha256": "91fcc45181e95501c3f922de7c64e85e7c6a3c0cf81cb3eceb83593f3bee4af7",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc\\.[0-9]+)?$ ]] || { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rc.N\" >&2; exit 1; }",
+          "line_sha256": "29cef6435f5574436c24263a8134411e261ea28f4716a42c4af90dab7db43c0b",
+          "count": 1,
+          "why": "the refusal message must read `refused at tag` (rule 71: the failure names its stage); `at` is a word of that message, not a command"
+        },
+        {
+          "rule": "deny",
+          "line": "python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "line_sha256": "8fe91de9714fae476faa76135b732fc863b248e97d3d63984719de9bb1a4eb3e",
+          "count": 1,
+          "why": "`make` is the chain-verify.py subcommand `policy make` (rule 57: the policy is made for the tag), not the make program"
+        }
+      ]
+    },
+    {
+      "path": "bin/release-apks.sh",
+      "tools": [
+        "jq",
+        "melange",
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
+      "signs": "other",
+      "reason": "Release, step release-apks: re-signs the apks Build made with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
+      "sha256": "0b0d6b1eb330f40549dd230f6796d3671976cdd06729dcc0dce3f4569c9cde71",
+      "reads_env": [
+        "APK_RELEASE_SIGNING_KEY"
+      ]
+    },
+    {
+      "path": "bin/release-publish.sh",
+      "tools": [
+        "crane",
+        "jq"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
+      "sha256": "a448aba620cd0fcd8713bf43d8262bb1ab22bedd26856873627b94830638895e",
+      "reads_env": [
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-sign.sh",
+      "tools": [
+        "cosign",
+        "jq",
+        "python3"
+      ],
+      "runs": [
+        "bin/vendor-provenance.py"
+      ],
+      "signs": "other",
+      "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
+      "sha256": "70d7224da0ac0025c48ffa1eea9906427bcc14dbe832ce36fbcfe460a4be348a",
+      "reads_env": [
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-assets.sh",
+      "tools": [
+        "gh"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
+      "sha256": "381e82018a06686f541791c63434a59d8b8b1b42d061660de2fe89737ea53958",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-postverify.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/release-postverify.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
+      "sha256": "ab5a70151cbc2f3170d36a1b869e676683af50f57fd423720694b0c0885a0808",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-postverify.py",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "cosign",
+        "gh",
+        "jq",
+        "just"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
+      "sha256": "10cb671ff08048d314c74862f7a034957b1b231e1e612478c839969b29c8269e"
     }
   ],
   "ambient_env": [

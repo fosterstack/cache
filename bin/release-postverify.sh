@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Release, post-publish verification (v0.3.0 rule 79, amended by the owner Oct 10: "run those commands right after publishing"). The
-# customer-guide commands that need a registry run here, against what was just published; a failure fails the release run.
+# customer-guide commands that need a registry run here, against what was newly published; a failure fails the release run.
 set -euo pipefail
-python3 -I -B bin/release-postverify.py
+[ -n "${GH_TOKEN:-}" ] || { echo "release-postverify: GH_TOKEN is not set" >&2; exit 2; }
+python3 bin/release-postverify.py

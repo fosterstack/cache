@@ -175,9 +175,7 @@ def judge_build(path):
 # FROZEN LEGACY FILES: the eleven legacy stage files PRs 2-4 rewrite on chain-v030, pinned by sha256 in .github/policy/legacy-stage-files.json
 # a PR that rewrites a legacy file removes its row AND its pinned entry; adding or changing an entry here is a reviewed edit and is
 # refused by every other case (advisor ruling, Oct 10: the list is a pre-existing residual that can only shrink). Copied from the list at ae15a44.
-LEGACY_PINNED = {
-    ".github/workflows/stage-promote.yml": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393",
-}
+LEGACY_PINNED = {}     # PR 4 rewrote the last legacy stage file (stage-promote.yml) and deleted legacy-stage-files.json; the list can only shrink, so it stays empty
 LEGACY_EXPECTED = set(LEGACY_PINNED)
 def sha256_of(path):
     import hashlib
@@ -2291,7 +2289,7 @@ expect ok "the real tree: only release.yml calls stage-sign.yml and no stage cal
 # bytes in .github/policy/legacy-stage-files.json; the tree judge leaves out the findings OF a listed file whose bytes match (it still reads
 # them to see which scripts they run), and judges everything else in full. So the real tree is an ordinary `expect ok`. A file whose bytes
 # differ is judged in full; when the last legacy file is rewritten, deleting the list leaves this same case judging the whole tree.
-expect ok "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)" tree "$REAL"
+expect ok "the real tree: only stage-sign.yml is new and only it signs provenance (no legacy stage file is left: PR 4 rewrote the last and deleted the list)" tree "$REAL"
 # every probe is a copy of the real tree with ONE change; the tree judge must fail it and name the changed file
 SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
 probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the copy)
@@ -2312,7 +2310,6 @@ probe sneak    stage-admission.yml  "stage-admission.yml running an unlisted bin
 probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
-probe comment  "legacy file changed" "a harmless comment added to a legacy file (it is then judged in full)" "printf '# a comment\n' >> .github/workflows/stage-promote.yml"
 # a LISTED script that a frozen file runs, turned into a provenance signer with its row and sha256 updated
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
@@ -2326,10 +2323,6 @@ probe stdcache  "bin/__pycache__/argparse" "a cached bin/__pycache__/argparse.cp
 probe pycache   "bin/__pycache__" "a bin/__pycache__/chain_common.cpython-312.pyc" "mkdir -p bin/__pycache__; printf '\\0' > bin/__pycache__/chain_common.cpython-312.pyc"
 probe soext     "bin/json.abi3.so" "a native extension bin/json.abi3.so" "printf '\\0' > bin/json.abi3.so"
 probe pkgcache  ".github/actions/pkg/__pycache__" "a package __pycache__ under .github/actions" "mkdir -p .github/actions/pkg/__pycache__; printf '\\0' > .github/actions/pkg/__pycache__/m.cpython-312.pyc"
-probe extra    "not list exactly the eleven" "a twelfth path in the legacy list" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
-probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"path\"]=\"bin/chain-verify.py\";json.dump(d,open(p,\"w\"))'"
 # a listed script names another program or script only exactly (Codex #249 r7 B3, the class closed): a script token must be the exact
 # listed path (a leading ./ aside), a command named by any path or through a launcher prefix is refused even when its row allows the name
 scriptcase s8_ok_exact ok "${S0}bash bin/install-scanner.sh x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'control: the exact listed path of a script in runs'
@@ -2400,30 +2393,6 @@ probe mytool "./mytool" "the real bin/chain-hostile-step.sh running ./mytool (an
   "printf '#!/usr/bin/env bash\\necho x\\n' > mytool; chmod +x mytool; printf './mytool\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 probe bashlib "mylib" "the real bin/chain-hostile-step.sh running bash mylib, its sha256 updated (Sonnet 3)" \
   "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
-probe missing  "legacy file missing: .github/workflows/stage-promote.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-promote.yml"
-# the legacy list can only SHRINK (advisor ruling, Oct 10): the suite pins each path AND its sha256, so a legacy file edited together with
-# its list hash, or a list entry given a new hash, is refused; a row is removed only together with its pinned entry here
-probe relisted "legacy hash is not the one this suite pins" "a legacy file edited TOGETHER with its sha256 in the list" \
-  "printf '# a comment\n' >> .github/workflows/stage-promote.yml; python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p))
-for r in d[\"files\"]:
-    r[\"sha256\"]=hashlib.sha256(open(r[\"path\"],\"rb\").read()).hexdigest()
-json.dump(d,open(p,\"w\"))'"
-probe rehashed "legacy hash is not the one this suite pins" "a list entry given a different 64-hex hash for an unchanged file" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"sha256\"]=\"1\"*64;json.dump(d,open(p,\"w\"))'"
-probe rowonly  "not list exactly the eleven" "one row removed from the list while the suite still pins it" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"]=[r for r in d[\"files\"] if r[\"path\"]!=\".github/workflows/stage-promote.yml\"];json.dump(d,open(p,\"w\"))'"
-probe addci    "not list exactly the eleven" "a row for an existing non-legacy file (ci.yml) with its true hash" \
-  "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/ci.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
-probe addsign  "not list exactly the eleven" "a row for stage-sign.yml with its true hash (it would freeze Sign's own findings)" \
-  "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/stage-sign.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/stage-sign.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
-# the shrink a rewriting PR makes: the row AND its pinned entry go (simulated on a copy of this suite's judge), the file is rewritten or deleted
-d=$(tracked_copy shrink); rm "$d/.github/workflows/stage-promote.yml"
-python3 -c 'import json,sys;p=sys.argv[1]+"/.github/policy/legacy-stage-files.json";d=json.load(open(p));d["files"]=[r for r in d["files"] if r["path"]!=".github/workflows/stage-promote.yml"];json.dump(d,open(p,"w"));q=sys.argv[1]+"/.github/policy/id-token-jobs.json";e=json.load(open(q));e["jobs"]=[r for r in e["jobs"] if r["workflow"]!="stage-promote.yml"];json.dump(e,open(q,"w"))' "$d"
-grep -v '^    "\.github/workflows/stage-promote\.yml": "' "$work/judge.py" > "$work/judge-shrink.py"
-if cmp -s "$work/judge.py" "$work/judge-shrink.py"; then failn=$((failn + 1)); echo "FAIL shrink: the suite has no pinned entry for stage-promote.yml to remove"
-else rc=0; out=$(python3 "$work/judge-shrink.py" tree "$d") || rc=$?
-  if [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   shrink: a row removed TOGETHER with its pinned entry (the file deleted) is accepted"; else failn=$((failn + 1)); echo "FAIL shrink: row + pinned entry removed was refused: ${out:0:300}"; fi; fi
-rm -f "$work/judge-shrink.py"
 # ---- Opus #249 r-final: the signer rule is a CLOSED ALLOW-LIST, not a scan ----
 # (B1) build configuration outside bin/ and .github/ is pinned by sha256, and .goreleaser.yaml may not sign or grow hooks
 probe gorel     .goreleaser.yaml "a before.hooks entry in .goreleaser.yaml that signs provenance (stage-build.yml's build job has id-token: write)" \
@@ -2586,16 +2555,12 @@ if [ -z "$qp" ]; then pass=$((pass + 1)); echo "ok   no chain suite pipes into g
 G=grep; printf 'x | %s --quiet y\n' "$G" > "$work/qp1.sh"; printf 'printf x \\\n  | %s -qF y\n' "$G" > "$work/qp2.sh"
 [ -n "$(quiet_pipes "$work/qp1.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches grep --quiet"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed grep --quiet"; }
 [ -n "$(quiet_pipes "$work/qp2.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches a pipe continued with a backslash (and -qF)"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed a continued pipe"; }
-# the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
-d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
-[ "$rc" != 0 ] && grep -F -q "stage-promote.yml" <<< "$out" && ok_n=1 || ok_n=0
-if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.json deleted the same case judges the whole tree (red today on the legacy signers)"; else failn=$((failn + 1)); echo "FAIL deleting legacy-stage-files.json did not bring the legacy files back into the judge: rc=$rc ${out:0:200}"; fi
 # only TRACKED files are judged: an untracked file with a signer in a working copy is not part of what CI checks out
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
 # (Codex #249 r6 R8; PR 2: admission is the first step of Build's apk job, so the tag guard is Build's own gate G) every release.yml job after build
-# up to promotion that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build, which carries the gate G (a v* tag PUSH, or a dry run),
+# up to release that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build, which carries the gate G (a v* tag PUSH, or a dry run),
 # directly or through its needs
 cat > "$work/tagguard.py" <<'PY'
 import sys, yaml
@@ -2606,7 +2571,7 @@ def needs(j):
     return [n] if isinstance(n, str) else list(n)
 def reaches(j, seen=()):
     return any(x == "build" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
-order = list(jobs); chain = order[order.index("build") + 1:order.index("promotion") + 1]
+order = list(jobs); chain = order[order.index("build") + 1:order.index("release") + 1]
 bad = [j for j in chain if str(jobs[j].get("if", "")).strip() != "${{ inputs.dry-run }}" and not reaches(j)]
 if "admission" in jobs: bad.append("an admission job is back (admission is Build's first step)")
 if str(jobs["build"].get("if", "")).strip() != GATE: bad.append("build is not tag-guarded by the gate G")
@@ -2614,12 +2579,12 @@ print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 tg() { local rc=0 out; out=$(python3 "$work/tagguard.py" "$2") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then pass=$((pass + 1)); echo "ok   $3${out:+ ($out)}"; else failn=$((failn + 1)); echo "FAIL $3 -> $out"; fi; }
-tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build carries the tag gate and every job from sign to promotion that is not dry-run-only depends on build through needs"
+tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build carries the tag gate and every job from sign to release that is not dry-run-only depends on build through needs"
 cp "$root/.github/workflows/release.yml" "$work/rel-noadm.yml"
 python3 - "$work/rel-noadm.yml" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()
-for j in ("sign", "promotion", "authorization", "acceptance-predicate", "scans", "acceptance-artifacts"):
+for j in ("sign", "check", "release", "authorization", "acceptance-predicate", "scans", "acceptance-artifacts"):
     t = re.sub(r"(\n  %s:\n(?:    .*\n|\s*\n)*?    needs: )(.*)" % re.escape(j), lambda m: m.group(1) + "[" + ", ".join(x for x in re.findall(r"[\w-]+", m.group(2)) if x not in ("build", "rebuild")) + "]", t, count=1)
 t = re.sub(r"(\n  rebuild:\n(?:    .*\n|\s*\n)*?    needs: )build", r"\1[]", t, count=1)
 open(sys.argv[1], "w").write(t)
@@ -3302,7 +3267,7 @@ PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
 
-EXPECT=1315
+EXPECT=1304
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

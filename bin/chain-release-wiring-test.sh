@@ -6,7 +6,7 @@
 # rulings: rc tags verify like finals, the release policy is signed with cosign so it is in Rekor, signatures in both registries; PR 4 merges into
 # chain-v030 only). Runs on ubuntu-24.04 or macOS with: bash, python3 + PyYAML (apt: python3-yaml). No network, no secrets, no keys.
 # Every judge lives in bin/chain-release-shape.py and is FIRST proven on a known-good fixture and on mutated copies (a judge that cannot fail
-# proves nothing), then applied to the real repository, which must pass. Finite grammars and allowlists, no shell analysis. The behaviour of
+# shows nothing), then applied to the real repository, which must pass. Finite grammars and allowlists, no shell analysis. The behaviour of
 # the scripts (what they do with stub records, a stub registry and a fake signer) is in bin/chain-release-scripts-test.sh.
 #
 # WHAT IS FIXED BY AN EXISTING FILE and what is PROPOSED/UNVERIFIED:
@@ -50,7 +50,7 @@ UPL = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
 DWN = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1"
 def dn(name): return f"      - uses: {DWN}\n        with:\n          name: {name}\n          path: {name}\n"
 def up(name): return f"      - uses: {UPL}\n        with:\n          name: {name}\n          path: {name}\n"
-def inst(t): return f"      - name: install {t}\n        run: ./bin/install-scanner.sh {t}\n"
+def inst(t): return f"      - name: install {t}\n        run: bash bin/install-scanner.sh {t}\n"
 def wit(step, env):
     e = "".join(f"          {k}: {v}\n" for k, v in env.items())
     return f"      - name: {step}\n" + (f"        env:\n{e}" if env else "") + f"        run: bash bin/witnessed.sh {step} bin/{step}.sh\n"
@@ -76,9 +76,11 @@ jobs:
     steps:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   build:
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
   sign:
     needs: build
+    if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-sign.yml
   rebuild:
     needs: build
@@ -87,6 +89,7 @@ jobs:
     needs: [build, sign]
     uses: ./.github/workflows/stage-verify.yml
   release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [check, rebuild, sign]
     uses: ./.github/workflows/stage-promote.yml
     permissions:
@@ -127,7 +130,7 @@ for n, b in BODY.items():
     t, s, r = ROWS[n]
     rows.append({"path": f"bin/{n}.sh", "sha256": hashlib.sha256(open(f"{w}/s/bin/{n}.sh", "rb").read()).hexdigest(), "tools": t, "signs": s, "runs": r, "reason": "fixture"})
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
-rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["bash", "cosign", "gh", "jq"], "signs": False, "runs": [], "reason": "fixture"})
+rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": [], "reason": "fixture"})
 open(w + "/s/bin/witnessed.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
 rows.append({"path": "bin/witnessed.sh", "sha256": hashlib.sha256(open(w + "/s/bin/witnessed.sh", "rb").read()).hexdigest(), "tools": ["timeout", "witness"], "signs": False, "runs": [], "reason": "fixture"})
 json.dump({"scripts": rows}, open(w + "/s/.github/policy/chain-scripts.json", "w"))
@@ -181,8 +184,8 @@ m s_dlbin   'name: locks\n          path: locks'          'name: locks\n        
 m s_dlgh    'name: sboms\n          path: sboms'          'name: sboms\n          path: .github'                       'download-artifact'  "AC1 a download into .github/"
 m s_upname  'name: release-evidence\n          path: release-evidence' 'name: anything\n          path: release-evidence' 'upload-artifact'  "AC1 an upload outside the allowlist"
 m s_noup    '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: release-evidence\n          path: release-evidence\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-release\n          path: witness-release\n' '' 'only uploads' "AC1 no upload of the evidence"
-m s_swap    'install cosign\n        run: ./bin/install-scanner.sh cosign\n      - name: install crane\n        run: ./bin/install-scanner.sh crane' 'install crane\n        run: ./bin/install-scanner.sh crane\n      - name: install cosign\n        run: ./bin/install-scanner.sh cosign' 'start with checkout' "AC1 the installs in another order"
-m s_nocos   '      - name: install cosign\n        run: ./bin/install-scanner.sh cosign\n' ''                                                                    'start with checkout' "AC1 cosign is not installed"
+m s_swap    'install cosign\n        run: bash bin/install-scanner.sh cosign\n      - name: install crane\n        run: bash bin/install-scanner.sh crane' 'install crane\n        run: bash bin/install-scanner.sh crane\n      - name: install cosign\n        run: bash bin/install-scanner.sh cosign' 'start with checkout' "AC1 the installs in another order"
+m s_nocos   '      - name: install cosign\n        run: bash bin/install-scanner.sh cosign\n' ''                                                                    'start with checkout' "AC1 cosign is not installed"
 m s_snyk    'install-scanner.sh crane'                      'install-scanner.sh snyk'                                'none of checkout'   "AC1 an install of a tool outside the three"
 m s_order   'release-apks bin/release-apks.sh'              'release-sign bin/release-sign.sh'                       'exactly'            "AC1 two witnessed steps swapped (release-sign twice)"
 m s_miss    '=      - name: release-assets\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh release-assets bin/release-assets.sh\n' '' 'exactly' "AC1 a witnessed step missing"
@@ -232,7 +235,7 @@ PY
 expect caught "AC3 release.yml grants packages write at the workflow level" "workflow level" others "$work/o_wf"
 rm -rf "$work/o_inh"; cp -r "$work/o" "$work/o_inh"; python3 - "$work/o_inh/.github/workflows/release.yml" <<'PY'
 import sys
-t = open(sys.argv[1]).read().replace("  build:\n    uses: ./.github/workflows/stage-build.yml", "  build:\n    uses: ./.github/workflows/stage-build.yml\n    secrets: inherit", 1)
+t = open(sys.argv[1]).read().replace("    uses: ./.github/workflows/stage-build.yml", "    uses: ./.github/workflows/stage-build.yml\n    secrets: inherit", 1)
 open(sys.argv[1], "w").write(t)
 PY
 expect caught "AC3 a stage call that inherits the secrets" "passes secrets" others "$work/o_inh"
@@ -251,17 +254,19 @@ gm g_nochk   'needs: \[check, rebuild, sign\]'                'needs: [rebuild, 
 gm g_norb    'needs: \[check, rebuild, sign\]'                'needs: [check, sign]'                                    'exactly check, rebuild and sign' "AC11 release does not need rebuild"
 gm g_extra   'needs: \[check, rebuild, sign\]'                'needs: [check, rebuild, sign, decide]'                   'exactly check, rebuild and sign' "AC11 release waits for something else"
 gm g_relbld  'needs: \[check, rebuild, sign\]'                'needs: [build, check, rebuild, sign]'                    'exactly check, rebuild and sign' "AC11 release also lists build (not exactly the set: build is reached through check)"
-gm g_always  '  rebuild:\n    needs: build'                  "  rebuild:\n    if: \${{ always() }}\n    needs: build"  'dry-run and tag gate' "AC11 rebuild runs even when build failed"
-gm g_prom    '    uses: ./.github/workflows/stage-promote.yml' "    if: \${{ !cancelled() }}\n    uses: ./.github/workflows/stage-promote.yml" 'dry-run and tag gate' "AC11 release runs when a predecessor was skipped"
+gm g_always  '  rebuild:\n    needs: build'                  "  rebuild:\n    if: \${{ always() }}\n    needs: build"  'no if' "AC11 rebuild runs even when build failed"
+gm g_prom    '=    if: ${{ startsWith(github.ref, '\''refs/tags/v'\'') && !inputs.dry-run }}' '    if: ${{ !cancelled() }}' 'exactly the if' "AC11 release runs when a predecessor was skipped"
 gm g_coe     '  sign:\n    needs: build'                    '  sign:\n    continue-on-error: true\n    needs: build'   'continue-on-error' "AC11 sign may fail without stopping release"
 gm g_sec     '  check:\n    needs: \[build, sign\]'          '  check:\n    secrets: inherit\n    needs: [build, sign]'  'secrets'  "AC11 the Check call inherits secrets"
 gm g_perm    '      packages: write\n      id-token: write\n'  '      id-token: write\n'                                'permissions'        "AC11 the release job cannot publish"
 gm g_uses    '    uses: ./.github/workflows/stage-promote.yml' '    uses: ./.github/workflows/stage-verify.yml'          'stage-promote.yml'  "AC11 the release job calls another workflow"
 # Q9 (advisor, Oct 10): the ratified rules call the last stage Release, so release.yml's last job is named release (PR 2's and PR 3's judges)
-gm g_promo   '  release:\n    needs'                         '  promotion:\n    needs'                                  'the last job is named release' "AC11 the last job named promotion (the ratified name is release, Q9)"
-gm g_tag     '=  decide:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.AUDITOR_APP_ID }}' '  decide:\n    runs-on: ubuntu-latest\n    steps:\n      - run: git tag v9.9.9 && git push origin v9.9.9' 'creates a tag' "AC11 release.yml creates a tag"
-if mutate "$work/release.yml" "$work/g_gateok.yml" '  rebuild:\n    needs: build' "  rebuild:\n    if: \${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') }}\n    needs: build"; then
-  expect ok "AC11 the one dry-run and tag gate (PR 1's exact conjunct) is allowed on a chain job" "" graph "$work/g_gateok.yml"; fi
+gm g_promo   '  release:\n    if'                            '  promotion:\n    if'                                     'the last job is named release' "AC11 the last job named promotion (the ratified name is release, Q9)"
+gm g_tag     '  rebuild:\n    needs: build' '  other:\n    runs-on: ubuntu-latest\n    steps:\n      - run: git tag v9.9.9 && git push origin v9.9.9\n  rebuild:\n    needs: build' 'creates a tag' "AC11 a job of release.yml other than decide (the CI patch tag, REQ-REL-009) creates a tag"
+if mutate "$work/release.yml" "$work/g_decideok.yml" '=  decide:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo ${{ secrets.AUDITOR_APP_ID }}' '  decide:\n    runs-on: ubuntu-latest\n    steps:\n      - run: git push origin refs/tags/v9.9.9'; then
+  expect ok "AC11 the decide job (the CI patch tag, REQ-REL-009) may push its signed tag: it is not Release" "" graph "$work/g_decideok.yml"; fi
+gm g_noif    '=    if: ${{ startsWith(github.ref, '\''refs/tags/v'\'') && !inputs.dry-run }}\n' ''                                                       'exactly the if'    "AC11 release carries no positive tag conjunct (a branch run would not be refused by its own if)"
+gm g_gate    '  rebuild:\n    needs: build'                  "  rebuild:\n    if: \${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}\n    needs: build" 'no if' "AC11 the gate G on rebuild (only build and sign carry it)"
 # ---- AC4: the order of bin/release-verify.sh ------------------------------------------------------------------------------------
 vm() { if mutate "$work/verify.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" verify "$work/$1.sh"; fi; }
 vm v_notag   '\[\[ "\$\{GITHUB_REF_NAME[^\n]*\n'            ''                                                       'commands'           "AC4 the tag check dropped"
@@ -359,7 +364,7 @@ for n in release-verify release-apks release-publish release-sign release-assets
 done
 expect ok "the real release scripts are listed in chain-scripts.json" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old authorization machinery is gone from the real repository" "" removed "$root"
-EXPECT=164
+EXPECT=166
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

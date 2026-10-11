@@ -31,7 +31,10 @@ REGISTRY = ("DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN")
 WHO = {"release-apks": {"APK_RELEASE_SIGNING_KEY"}, "release-publish": set(REGISTRY), "release-sign": set(REGISTRY), "release-assets": {"GH_TOKEN"},
        "release-postverify": {"GH_TOKEN"}}   # read access to the published image only: no registry login, no registry credential (rule 66)
 CREDS = {"APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "GH_TOKEN"}
-GATE = "${{ !inputs.dry-run && startsWith(github.ref, 'refs/tags/v') }}"   # the exact conjunct PR 1 puts on every non-hostile job after Sign
+# the only `if` a chain job may carry, exactly PR 2's graph judge (bin/chain-test-shape.py): the gate G on build and sign, `!inputs.dry-run` on release (a dry run
+# publishes nothing; a skipped predecessor skips release through `needs`, there being no status function in the condition); rebuild and check carry none
+GATE_G = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
+IFS_OF = {"build": GATE_G, "sign": GATE_G, "release": "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"}
 CHAIN_JOBS = ["build", "sign", "rebuild", "check", "release"]   # the last stage is Release (the ratified rules' name; Q9)
 TAGLINE = (r'\[\[ "\$\{GITHUB_REF_NAME:-\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\(-rc\\\.\[0-9\]\+\)\?\$ \]\] \|\| '
            r'\{ echo "refused at tag: \$\{GITHUB_REF_NAME:-\} is not vX\.Y\.Z or vX\.Y\.Z-rc\.N" >&2; exit 1; \}')
@@ -51,7 +54,7 @@ ROWS = {
     "bin/release-sign.sh":    {"tools": ["cosign", "jq", "python3"], "signs": "other", "runs": ["bin/vendor-provenance.py"]},
     "bin/release-assets.sh":  {"tools": ["gh"], "signs": False, "runs": []},
     "bin/release-postverify.sh": {"tools": ["python3"], "signs": False, "runs": ["bin/release-postverify.py"]},   # rule 79 amended
-    "bin/release-postverify.py": {"tools": ["bash", "cosign", "gh", "jq"], "signs": False, "runs": []},   # runs only verify forms, judged first
+    "bin/release-postverify.py": {"tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": []},   # runs only verify forms, judged first
 }
 # commands a plain release script must not use unless its row lists them
 DENY = ("curl wget nc ncat ssh scp rsync git docker podman buildah buildx kaniko make xargs find eval source trap sudo bash sh dash zsh "
@@ -106,7 +109,7 @@ def stage(path):
                 bad.append("upload-artifact must be digest-pinned with a name in %s: %s" % (sorted(UP), w))
         elif u:
             bad.append("uses not allowed in the Release stage: %s" % u)
-        elif r in ["./bin/install-scanner.sh " + t for t in INSTALLS]:
+        elif r in ["bash bin/install-scanner.sh " + t for t in INSTALLS]:   # the form the closed stage grammar accepts (bash PATH ARGS), as Build, Sign and Check run it
             kinds.append("install:" + r.split()[-1])
         elif re.fullmatch(r"bash bin/witnessed\.sh (release-[a-z]+) bin/\1\.sh", r):
             kinds.append("W:" + r.split()[2])
@@ -211,12 +214,15 @@ def graph(path):
         bad.append("the release job's permissions must be exactly contents, packages and id-token write: %s" % p.get("permissions"))
     for n in CHAIN_JOBS:
         j = jobs[n]
-        if "if" in j and str(j["if"]).strip() != GATE:
-            bad.append("job %s has an if that is not the one dry-run and tag gate: %r (a skip on a failed predecessor lets release run)" % (n, j["if"]))
+        if str(j.get("if", "")).strip() != IFS_OF.get(n, ""):
+            bad.append("job %s must carry %s, found %r (the one allowed gate: a status function such as always() or !cancelled() lets release run after a failed predecessor)"
+                       % (n, "exactly the if %s" % IFS_OF[n] if n in IFS_OF else "no if", j.get("if")))
         if "continue-on-error" in j or "secrets" in j:
             bad.append("job %s has continue-on-error or secrets" % n)
-    if re.search(r"git tag|git push|create-release|gh release create", open(path).read()):
-        bad.append("release.yml creates a tag or a release: Release creates no tag")
+    # the `decide` job is the CI patch tag (REQ-REL-009: a gitsign-signed tag, listed with its reason in id-token-jobs.json and chain-signers.json) and is not Release
+    rest = json.dumps({n: j for n, j in jobs.items() if n != "decide"})
+    if re.search(r"git tag|git push|create-release|gh release create", rest):
+        bad.append("release.yml creates a tag or a release outside the decide job (the CI patch tag): Release creates no tag")
     return bad
 
 

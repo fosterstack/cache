@@ -46,8 +46,8 @@ RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifact name -> the path(s) it may carry
 KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]                          # the closed list of Check's witnessed steps, in order
-STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime"   # PR 2's + PR 3's three
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # PR 2's; never github or slsa
+STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # PR 2's + PR 3's three
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"]   # PR 2's; never github or slsa
 
 
 def witnessed_lines():

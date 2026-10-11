@@ -334,20 +334,15 @@ expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 # ---- the real repository (no known-red allowance) -------------------------------------------------------------------------------------
-# Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them). The eleven legacy stage files PRs 2-4 rewrite are frozen by
-# sha256 in .github/policy/legacy-stage-files.json: what they produce still counts (so their rows stay consumed), but their OWN fail-closed
-# findings are left out; a changed one is judged in full, and with the list deleted the whole tree is judged.
+# Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them). PR 4 rewrote the last legacy stage file and deleted
+# .github/policy/legacy-stage-files.json, so the whole tree is judged.
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$root" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
-expect ok "the real repository: every produced record type has a row with a claim and a stage consumer (frozen legacy files' own findings left out)" "$(tracked_copy real)"
-d=$(tracked_copy changed); printf '# x\n' >> "$d/.github/workflows/stage-promote.yml"
-expect_named "a changed byte in frozen stage-promote.yml: it is judged in full and named" "$d" "legacy file changed (judged in full): .github/workflows/stage-promote.yml"
+expect ok "the real repository: every produced record type has a row with a claim and a stage consumer " "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
-expect ok "with legacy-stage-files.json deleted the whole tree is judged and is green (PR 3 rewrote stage-verify.yml, the last legacy file with a finding of its own)" "$d"
-EXPECT=97
+EXPECT=95
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
