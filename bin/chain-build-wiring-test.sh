@@ -136,7 +136,7 @@ def stage_text(family):
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
         out += "          persist-credentials: false\n          fetch-depth: 0\n"
         if sp.get("mode"):
-            out += "      - name: the mode is release or snapshot\n        if: %s\n        run: %s\n" % (S.MODE_GUARD_IF, S.MODE_GUARD_RUN)
+            out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
@@ -307,7 +307,7 @@ st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "host
 st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ inputs.hostile }}\n        uses:' '        uses:'
 # REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
-GUARD_STEP='      - name: the mode is release or snapshot\n        if: ${{ inputs.mode != '"'release'"' && inputs.mode != '"'snapshot'"' }}\n        run: bash bin/build-stage-refuse-mode.sh\n'
+GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
 SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
 RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-rapk.sh\n"
@@ -319,11 +319,12 @@ st s_mode_bool "AC12 the mode is a boolean" "on: must be" 'type: string' 'type: 
 st s_mode_req  "AC12 the mode is required" "on: must be" '        default: release\n' '        default: release\n        required: true\n'
 st s_guard_none "AC12 the mode guard is missing (any other mode would skip both Witness steps and upload nothing, green)" "mode guard" \
               "$GUARD_STEP" ''
-st s_guard_open "AC12 the mode guard lets any mode through (its if never fires)" "mode guard" "inputs.mode != 'snapshot' }}\n        run: bash bin/build-stage-refuse-mode.sh" "inputs.mode != 'snapshot' && false }}\n        run: bash bin/build-stage-refuse-mode.sh"
-st s_guard_env "AC12 the mode guard's if reads another value than the input" "mode guard" "inputs.mode != 'release' &&" "'x' != 'release' &&"
-st s_guard_if "AC12 the mode guard fires also on a legal mode (it would refuse a release)" "mode guard" "inputs.mode != 'release' && inputs.mode != 'snapshot'" "inputs.mode != 'release'"
-st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" "        run: bash bin/build-stage-refuse-mode.sh\n" \
-              "        run: bash bin/build-stage-refuse-mode.sh\n        continue-on-error: true\n"
+st s_guard_open "AC12 the mode guard judges a constant, not the input" "mode guard" 'refuse-mode.sh "$MODE"' 'refuse-mode.sh release'
+st s_guard_env "AC12 the mode guard reads another value than the input" "mode guard" '          MODE: ${{ inputs.mode }}\n' '          MODE: release\n'
+st s_guard_if "AC12 the mode guard carries an if (GitHub compares case-insensitively there, so it could be skipped for a mixed-case mode)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
+              '          MODE: ${{ inputs.mode }}\n        if: ${{ inputs.mode != '"'release'"' }}\n'
+st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
+              '          MODE: ${{ inputs.mode }}\n        continue-on-error: true\n'
 st s_rel_noif  "AC12 the release Witness step has no if (it would run in a snapshot, with admission)" "release Witness step" \
               '      - name: apk under Witness\n        if: ${{ inputs.mode == '"'release'"' }}\n' '      - name: apk under Witness\n'
 st s_rel_snap  "AC12 the release Witness step runs in snapshot mode" "release Witness step" \
@@ -1438,6 +1439,19 @@ for tag in fixture real; do
     [ $((pass + failn - before)) = "$n" ] || bad "the $kind behaviour cases ran $((pass + failn - before)) cases, cases_of says $n"
   done
 done
+# Codex A r1 F6: the guard script judges the raw string, case-sensitively (an `if` in a workflow cannot: GitHub compares strings without regard to case)
+GS="$root/bin/build-stage-refuse-mode.sh"
+guard() { # guard WANT-EXIT LABEL [MODE]
+  local rc=0; bash "$GS" "${@:3}" > /dev/null 2>&1 || rc=$?
+  if [ "$rc" = "$1" ]; then ok "AC12 guard: $2"; else bad "AC12 guard: $2 (exit $rc, wanted $1)"; fi; }
+guard 0 "release passes" release
+guard 0 "snapshot passes" snapshot
+guard 1 "Release (mixed case) is refused" Release
+guard 1 "SNAPSHOT is refused" SNAPSHOT
+guard 1 "releasE is refused" releasE
+guard 1 "release with a trailing space is refused" "release "
+guard 1 "an empty mode is refused" ""
+guard 1 "no argument is refused"
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
@@ -1650,7 +1664,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=560
+EXPECT=568
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
