@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Rebuild stage, job `rebuild` (REQ-CHAIN-005-AC2). Run under Witness by bin/witnessed.sh.
-# Verify Build's and Rebuild's apk records, bind the rebuilt apks, assemble the images and archives exactly as Build did, and compare
+# Verify Build's record first (stage-start), then Rebuild's apk records, bind the rebuilt apks, assemble the images and archives exactly as Build did, and compare
 # every item with Build's items.json: the verdict is witness-rebuild/verdict.json. Nothing is published (rule 64).
 set -euo pipefail
 python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json
-python3 bin/chain-verify.py verify --stage rebuild --record rec-rapk/ubuntu-24.04/rapk-collection.json --policy policy.json
-python3 bin/chain-verify.py verify --stage rebuild --record rec-rapk/ubuntu-24.04-arm/rapk-collection.json --policy policy.json
 python3 bin/chain-verify.py stage-start --stage rebuild --previous build --record witness-build/build-collection.json \
   --digests build-in/digests.json --policy policy.json
+python3 bin/chain-verify.py verify --stage rebuild --record rec-rapk/ubuntu-24.04/rapk-collection.json --policy policy.json
+python3 bin/chain-verify.py verify --stage rebuild --record rec-rapk/ubuntu-24.04-arm/rapk-collection.json --policy policy.json
 python3 bin/chain-verify.py bind --step rapk --record rec-rapk/ubuntu-24.04/rapk-collection.json --dir rapk/ubuntu-24.04 --as out
 python3 bin/chain-verify.py bind --step rapk --record rec-rapk/ubuntu-24.04-arm/rapk-collection.json --dir rapk/ubuntu-24.04-arm --as out
 mkdir -p melange-repo

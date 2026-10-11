@@ -181,7 +181,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
-      "sha256": "40b3b9f45e6de916583f85c537ada153e6cc6b4d54d97a69609281e34b99f82e"
+      "sha256": "52eca0cca35acc611ff5ad34142f6c580badee55784097dbb86fc06f13e8782c"
     },
     {
       "path": "bin/build-admit.py",
