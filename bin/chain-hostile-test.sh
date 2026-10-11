@@ -928,6 +928,46 @@ d=$(mk w9_costkey_if); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha 
         with: {persist-credentials: false}
       - uses: actions/download-artifact@$sha # v8
         with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the checkout step carries if: (closed step key set)" "$d"
+d=$(mk w_rd_x); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}" "  hostile-x:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ inputs.dry-run }}"; wexpect caught "wiring: an extra hostile-x job (only hostile-verify and hostile-verdict are allowed; R-d)" "$d"
+d=$(mk w_rd_upper); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}" "  Hostile-Extra:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ inputs.dry-run }}"; wexpect caught "wiring: an extra Hostile-Extra job (case-insensitive)" "$d"
+d=$(mk w_rd_sign2); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}" "  sign-extra:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ inputs.dry-run }}"; wexpect caught "wiring: an extra sign-extra job" "$d"
+d=$(mk w_rd_signup); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}" "  SIGN2:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    permissions: {contents: read}
+    steps:
+      - run: echo hi
+  hostile-verdict:
+    if: \${{ inputs.dry-run }}"; wexpect caught "wiring: an extra SIGN2 job (case-insensitive)" "$d"
 d=$(mk w_nogate); sed -i.bak 's/if: .*inputs.hostile.*/if: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step is not gated by inputs.hostile" "$d"
 d=$(mk w_noup); sed -i.bak 's/hostile-attempts/other/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
 d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
@@ -1142,7 +1182,7 @@ for words in ("PR 2 (Build) lands on the integration branch chain-v030", "before
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
 PY
-EXPECT=236
+EXPECT=240
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

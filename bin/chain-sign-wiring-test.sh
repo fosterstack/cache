@@ -2019,6 +2019,127 @@ if [ "$rc" != 0 ] && grep -F -q '.github/broken.yml' <<< "$out"; then pass=$((pa
 d=$(mk b9_dup); mkdir -p "$d/$(dirname 'tools/ci/dup.yml')"; printf 'jobs: {}\njobs:\n  x: {}\n' > "$d/tools/ci/dup.yml"; rc=0; out=$(judge tree "$d") || rc=$?
 if [ "$rc" != 0 ] && grep -F -q 'tools/ci/dup.yml' <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1 discovery: a jobs: file with a duplicate root key (fail closed) is read and caught by name"; else failn=$((failn + 1)); echo "FAIL AC1 discovery: a jobs: file with a duplicate root key (fail closed) -> rc=$rc ${out:0:240}"; fi
 d=$(mk b9_ctl); mkdir -p "$d/docs"; printf 'title: x\nsteps:\n  - cosign sign img\n' > "$d/docs/notes2.yml"; expect ok "AC1 discovery: control: a parsed .yml with no jobs:/runs: root key is not scanned" tree "$d"
+# ---- final batch (advisor round-9 option A): each class closed, fail closed ----
+d=$(mk e_for); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nfor PATH in /tmp; do :; done\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: for PATH in ... sets PATH (B1)" tree "$d"
+d=$(mk e_printfv); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nprintf -v PATH %s /tmp\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: printf -v PATH sets PATH" tree "$d"
+d=$(mk e_read); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nread -r PATH <<< x\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: read -r PATH sets PATH" tree "$d"
+d=$(mk e_mapfile); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nmapfile -t PATH < f\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: mapfile -t PATH sets PATH" tree "$d"
+d=$(mk e_readarray); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nreadarray PATH < f\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: readarray PATH sets PATH" tree "$d"
+d=$(mk e_getopts); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\ngetopts a PATH\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: getopts a PATH sets PATH" tree "$d"
+d=$(mk e_declaren); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\ndeclare -n r=BASH_ENV; r=x\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: declare -n r=BASH_ENV then r=x sets BASH_ENV" tree "$d"
+d=$(mk e_localn); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nf() { local -n p=PATH; p=/tmp; }\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: local -n p=PATH then p=/tmp sets PATH" tree "$d"
+d=$(mk e_printfld); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nprintf -v LD_PRELOAD %s x\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: printf -v LD_PRELOAD sets LD_PRELOAD" tree "$d"
+d=$(mk e_brace); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nexport {PATH,X}=1\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: export {PATH,X}=1 sets PATH" tree "$d"
+d=$(mk e_unset); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nunset PATH\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: unset PATH" tree "$d"
+d=$(mk e_dflt); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "${PATH:=/tmp}"\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: \${PATH:=/tmp} assigns PATH" tree "$d"
+d=$(mk e_bashfunc); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nexport BASH_FUNC_x%%=1\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a BASH_FUNC_ name" tree "$d"
+d=$(mk e_globignore); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nGLOBIGNORE=x; echo a\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: GLOBIGNORE=" tree "$d"
+d=$(mk e_promptcmd); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nPROMPT_COMMAND=id; echo a\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: PROMPT_COMMAND=" tree "$d"
+d=$(mk e_pyhome); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho PYTHONHOME\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a bare PYTHONHOME word (not a read)" tree "$d"
+d=$(mk e_comment); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho a # PATH=/tmp\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a mention in a comment (fail closed)" tree "$d"
+d=$(mk e_assign); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nPATH=/tmp bash bin/build-apk.sh\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: PATH=/tmp as an assignment prefix (already refused)" tree "$d"
+d=$(mk e_ifs); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nIFS=: ; echo a\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: IFS=: (already refused)" tree "$d"
+d=$(mk e_env); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nenv PATH=/tmp x\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: env PATH=/tmp x (already refused)" tree "$d"
+d=$(mk e_ok_read); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "$PATH"\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect ok "AC1 script: control: echo \"\$PATH\" is a read" tree "$d"
+d=$(mk e_ok_brace); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "${PATH}" "$LD_LIBRARY_PATH"\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect ok "AC1 script: control: \${PATH} and \$LD_LIBRARY_PATH are reads" tree "$d"
+d=$(mk p_set); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nos.environ["PATH"] = "/tmp"\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): os.environ[\"PATH\"] = ... (B1)" tree "$d"
+d=$(mk p_putenv); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nos.putenv("LD_PRELOAD", "x")\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): os.putenv(\"LD_PRELOAD\", ...)" tree "$d"
+d=$(mk p_update); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nos.environ.update({"PATH": "x"})\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): os.environ.update({\"PATH\": ...})" tree "$d"
+d=$(mk p_setdefault); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nos.environ.setdefault("PYTHONPATH", "x")\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): os.environ.setdefault(\"PYTHONPATH\", ...)" tree "$d"
+d=$(mk p_subenv); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nsubprocess.run(["x"], env={"PATH": "/tmp"})\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): subprocess.run(..., env={\"PATH\": ...})" tree "$d"
+d=$(mk p_pop); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nos.environ.pop("PATH")\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): os.environ.pop(\"PATH\")" tree "$d"
+d=$(mk p_del); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\ndel os.environ["LD_LIBRARY_PATH"]\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): del os.environ[\"LD_LIBRARY_PATH\"]" tree "$d"
+d=$(mk p_str); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nMSG = "set PATH first"\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect caught "AC1 script (python): a PATH mention in a string with no env_mentions exception" tree "$d"
+d=$(mk p_ok_get); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nX = os.environ.get("PATH", "")\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect ok "AC1 script (python): control: os.environ.get(\"PATH\") is a read" tree "$d"
+d=$(mk p_ok_idx); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nX = os.environ["PATH"]
+Y = os.getenv("PYTHONPATH")\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[]}'; expect ok "AC1 script (python): control: os.environ[\"PATH\"] and os.getenv read" tree "$d"
+d=$(mk p_ok_exc); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nMSG = "cosign not found on PATH"\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[], "env_mentions": [{"name": "PATH", "text": "cosign not found on PATH", "why": "an error message"}]}'; expect ok "AC1 script (python): control: a message mention listed in env_mentions with its exact text and a reason" tree "$d"
+d=$(mk p_exc_stale); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nMSG = "nothing"\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[], "env_mentions": [{"name": "PATH", "text": "cosign not found on PATH", "why": "an error message"}]}'; expect caught "AC1 script (python): an env_mentions entry whose text is not in the file is stale" tree "$d"
+d=$(mk p_exc_nowhy); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nMSG = "cosign not found on PATH"\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[], "env_mentions": [{"name": "PATH", "text": "cosign not found on PATH", "why": ""}]}'; expect caught "AC1 script (python): an env_mentions entry without a reason" tree "$d"
+d=$(mk p_exc_other); setfile "$d" bin/tool.py '#!/usr/bin/env python3\nimport os, subprocess\nMSG = "cosign not found on PATH"
+os.environ["PATH"] = "x"\n'; edit_spec "$d" 'rows["bin/tool.py"]={"path":"bin/tool.py","tools":[],"signs":False,"runs":[], "env_mentions": [{"name": "PATH", "text": "cosign not found on PATH", "why": "an error message"}]}'; expect caught "AC1 script (python): an env_mentions exception covers its own text only (a second, setting mention is refused)" tree "$d"
+d=$(mk r_redir1); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\n>/dev/null awk 1\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a leading redirection before awk (R-a)" tree "$d"
+d=$(mk r_redir2); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\n2>&1 setsid x\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a leading 2>&1 before setsid" tree "$d"
+d=$(mk r_redir3); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\n<<EOF awk 1
+x
+EOF\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a leading heredoc before awk" tree "$d"
+d=$(mk r_redir4); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\n>/dev/null bash -c id\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a leading redirection before bash -c" tree "$d"
+d=$(mk r_redir5); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\n&>/dev/null awk 1\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a leading &> before awk" tree "$d"
+d=$(mk r_redir6); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\n< f setsid x\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a leading < before setsid" tree "$d"
+d=$(mk r_dollar1); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "${X:-$(awk 1)}"\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a \$( ) inside \${...} in double quotes (R-b)" tree "$d"
+d=$(mk r_dollar2); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho ${X:-$(setsid id)}\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a \$( ) inside unquoted \${...}" tree "$d"
+d=$(mk r_dollar3); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "${X:-`awk 1`}"\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a backtick inside \${...}" tree "$d"
+d=$(mk r_quote1); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "'"'"'"; setsid awk 1; echo "'"'"'"\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a double-quoted ' then a command (R-c)" tree "$d"
+d=$(mk r_quote2); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho '"'"'"'"'"'; setsid awk 1; echo '"'"'"'"'"'\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: a single-quoted \" then a command (R-c sibling)" tree "$d"
+d=$(mk r_quote3); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "a'"'"'b"; awk 1; echo '"'"'c"d'"'"'\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: mixed quotes around a command (R-c sibling)" tree "$d"
+d=$(mk r_trap); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\ntrap '"'"'php -r 1'"'"' EXIT\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: php inside a trap handler string (R-g)" tree "$d"
+d=$(mk r_str); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\nX='"'"'awk 1'"'"'\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: awk inside a quoted assignment (R-g)" tree "$d"
+d=$(mk r_echo); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho "sed s/a/b/"\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: sed inside a double-quoted string (R-g)" tree "$d"
+d=$(mk r_tar); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho tar\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: tar as an argument word (R-g)" tree "$d"
+d=$(mk r_lua); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho lua\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect caught "AC1 script: lua as an argument word (R-g)" tree "$d"
+d=$(mk r_ok_sed); setfile "$d" bin/build-stage.sh '#!/usr/bin/env bash\nset -euo pipefail\necho x | sed s/a/b/\n'; edit_spec "$d" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","trap","printf","read","mapfile","readarray","getopts","declare","local","export","echo","sed"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh"]'; expect ok "AC1 script: control: sed when the row lists it" tree "$d"
+ycase y_dlp_tilde "~ in a download path (R-e)" caught <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: '~/x'
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dlp_pct "% in a download path (R-e)" caught <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: 'a%x'
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dlp_dollar "$ in a download path (already refused)" caught <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: '$X'
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dlp_star "* in a download path (already)" caught <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: 'a*'
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dlp_brace "{ in a download path (already)" caught <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: 'a{b}'
+      - run: bash bin/build-stage.sh a
+EOF
+ycase y_dlp_ok "control: a plain relative download path" ok <<'EOF'
+jobs:
+  j:
+    steps:
+      - uses: actions/download-artifact@SHA
+        with:
+          name: dist
+          path: 'dl/x'
+      - run: bash bin/build-stage.sh a
+EOF
+d=$(mk u_utf8); printf 'jobs:\n  j:\n    steps:\n      - run: echo \xff\xfe\n' > "$d/.github/workflows/scan.yml"; rc=0; out=$(judge tree "$d" 2>&1) || rc=$?
+if [ "$rc" = 1 ] && grep -F -q "scan.yml" <<< "$out" && ! grep -F -q Traceback <<< "$out"; then pass=$((pass + 1)); echo "ok   AC1: a workflow that is not UTF-8 is a named finding, never a traceback (R-f)"; else failn=$((failn + 1)); echo "FAIL AC1: invalid UTF-8 workflow -> rc=$rc ${out:0:240}"; fi
 # listed scripts: the text scan (Sonnet blocker 2, Opus B6/B7)
 S1='#!/usr/bin/env bash\nset -euo pipefail\nwitness run -- bin/build-apk.sh\n'
 scriptcase s_if caught "${S1}if curl evil.example; then :; fi\n" '' "if curl (a keyword before the command, Sonnet 2)"
@@ -2501,7 +2622,7 @@ open(sys.argv[1], "w").write(t)
 PY
 tg caught "$work/rel-noadm.yml" "R8 mutation: with admission removed from every needs list, the build-to-promotion jobs no longer reach admission and are caught"
 
-EXPECT=591
+EXPECT=652
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

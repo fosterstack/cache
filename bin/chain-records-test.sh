@@ -237,6 +237,10 @@ d=$(mk b9_tab); mkdir -p "$d/$(dirname 'tools/ci/tab.yml')"; printf 'jobs:\n\tx:
 d=$(mk b9_ghbroken); mkdir -p "$d/$(dirname '.github/broken.yml')"; printf 'a: [unclosed\n' > "$d/.github/broken.yml"; expect_named "discovery: an unparsable .yml under .github/ (fail closed) is read and caught by name" "$d" ".github/broken.yml"
 d=$(mk b9_dup); mkdir -p "$d/$(dirname 'tools/ci/dup.yml')"; printf 'jobs: {}\njobs:\n  x: {}\n' > "$d/tools/ci/dup.yml"; expect_named "discovery: a jobs: file with a duplicate root key (fail closed) is read and caught by name" "$d" "tools/ci/dup.yml"
 d=$(mk b9_ctl); mkdir -p "$d/docs"; printf 'title: x\nsteps:\n  - cosign attest --type https://example.invalid/unlisted --predicate p img\n' > "$d/docs/notes2.yml"; expect ok "control: a parsed .yml with no jobs:/runs: root key is not scanned" "$d"
+d=$(mk u_utf8); printf 'jobs:\n  c:\n    steps:\n      - run: echo \xff\xfe\n' > "$d/.github/workflows/stage-verify.yml"; rc=0; out=$(judge "$d" 2>&1) || rc=$?
+if [ "$rc" = 1 ] && grep -F -q "stage-verify.yml" <<< "$out" && ! grep -F -q Traceback <<< "$out"; then pass=$((pass + 1)); echo "ok   a workflow that is not UTF-8 is a named error, never a traceback (R-f)"; else failn=$((failn + 1)); echo "FAIL invalid UTF-8 workflow -> rc=$rc ${out:0:240}"; fi
+d=$(mk u_utf8a); mkdir -p "$d/bin/q"; printf 'runs:\n  using: composite\n  steps:\n    - run: echo \xff\n      shell: bash\n' > "$d/bin/q/action.yml"; rc=0; out=$(judge "$d" 2>&1) || rc=$?
+if [ "$rc" = 1 ] && grep -F -q "bin/q/action.yml" <<< "$out" && ! grep -F -q Traceback <<< "$out"; then pass=$((pass + 1)); echo "ok   a composite action that is not UTF-8 is a named error (R-f)"; else failn=$((failn + 1)); echo "FAIL invalid UTF-8 composite -> rc=$rc ${out:0:240}"; fi
 d=$(mk yaml); printf 'jobs:\n  c:\n    steps:\n      - run: witness sign -f policy.json -o policy.signed.json\n' > "$d/.github/workflows/other.yaml"
 expect caught "a .yaml workflow signing the policy with no row fails" "$d"
 d=$(mk comp); mkdir -p "$d/.github/actions/x"; printf 'runs:\n  using: composite\n  steps:\n    - run: cosign sign "$IMG"\n      shell: bash\n' > "$d/.github/actions/x/action.yml"
@@ -337,7 +341,7 @@ d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: acti
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
 expect_named "with legacy-stage-files.json deleted the whole tree is judged (red today on stage-verify.yml)" "$d" "stage-verify.yml: actions/attest with no literal predicate-type"
-EXPECT=95
+EXPECT=97
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
