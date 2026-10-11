@@ -1,1170 +1,772 @@
-# proves: REQ-AUD-018-AC4
-"""auditor-review-gate.py (REQ-AUD-18 AC3, option C): every reason a review record fails to clear
-the gate, and the CLI's argument and no-change paths, against a real temporary git repository."""
-import contextlib, datetime, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
-from unittest import mock
+# proves: REQ-AUD-018-AC3, REQ-AUD-018-AC4, REQ-AUD-018-AC5, REQ-AUD-018-AC6, REQ-AUD-018-AC7, REQ-AUD-018-AC8
+"""auditor-review-gate.py (REQ-AUD-18 AC3, option C): every reason a review record fails to clear the gate, and the
+CLI's argument and no-change paths, against a real temporary git repository. A record clears only with two Codex
+seats on two different models (AC5, AC6); no substitute is accepted (AC4); a record merged before the dual-Codex gate
+counts only as the same file already on the trusted revision (AC7); the workflow runs the gate in isolated mode from
+the default branch's copy (AC8). Each test class names the AC it proves."""
+import ast, contextlib, importlib.util, io, json, os, re, shutil, subprocess, sys, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.dirname(HERE)
-_spec = importlib.util.spec_from_file_location("auditor_review_gate", os.path.join(BIN, "auditor-review-gate.py"))
+SCRIPT = os.path.join(BIN, "auditor-review-gate.py")
+_spec = importlib.util.spec_from_file_location("auditor_review_gate", SCRIPT)
 G = importlib.util.module_from_spec(_spec); _spec.loader.exec_module(G)
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(BIN)))
+WF = os.path.join(ROOT, ".github", "workflows", "agent-review-gate.yml")
 
+V2 = "auditor-review-record/v2"
+V1 = "auditor-review-record/v1"
 TREE = "ab" * 32
-EV = "cd" * 32
-EV2 = "ef" * 32      # the opus entry's own evidence: never the sonnet entry's
+EVA = "cd" * 32
+EVB = "ef" * 32
+FIELDS = ("reviewer", "vendor", "seat", "model", "effort", "blockers_open", "evidence_sha256")
 
 
-def good():
-    return {"schema": G.SCHEMA, "tree": TREE,
-            "rounds": [{"round": 1, "reviewers": {
-                "codex": {"vendor": "openai", "blockers_open": 0, "evidence_sha256": EV},
-                "sonnet": {"vendor": "anthropic", "blockers_open": 0, "evidence_sha256": EV}}}],
-            "stop": {"codex": "clear", "sonnet": "clear"}}
-
-
-class RecordProblems(unittest.TestCase):
-    def test_a_complete_clear_record_has_no_problems(self):
-        self.assertEqual(G.record_problems(good(), TREE), [])
-
-    def test_not_an_object(self):
-        self.assertEqual(G.record_problems([good()], TREE), ["record is not a JSON object"])
-
-    def test_wrong_schema_and_stale_tree_are_both_reported(self):
-        r = good(); r["schema"] = "v0"
-        probs = G.record_problems(r, "ef" * 32)
-        self.assertIn("schema is not %s" % G.SCHEMA, probs)
-        self.assertIn("record binds tree %s, the change is %s" % (TREE, "ef" * 32), probs)
-
-    def test_no_rounds(self):
-        for rounds in (None, [], "r1"):
-            r = good(); r["rounds"] = rounds
-            self.assertEqual(G.record_problems(r, TREE), ["no review rounds recorded"])
-
-    def test_final_round_without_reviewers(self):
-        for final in ("round", {"round": 2}, {"reviewers": ["codex"]}):
-            r = good(); r["rounds"].append(final)
-            self.assertEqual(G.record_problems(r, TREE), ["final round names no reviewers"])
-
-    def test_only_the_FINAL_round_counts(self):
-        r = good()
-        r["rounds"].append({"round": 2, "reviewers": {"codex": good()["rounds"][0]["reviewers"]["codex"]}})
-        self.assertEqual(G.record_problems(r, TREE), ["final round has no sonnet review"])
-
-    def test_each_vendor_field_is_checked(self):
-        r = good(); c = r["rounds"][0]["reviewers"]["codex"]
-        c["vendor"] = "anthropic"; c["blockers_open"] = 1; c["evidence_sha256"] = "x"
-        r["stop"]["codex"] = "blocked"
-        self.assertEqual(G.record_problems(r, TREE), [
-            "codex vendor is 'anthropic', want 'openai'",
-            "codex has 1 open merge blocker(s)",
-            "codex evidence_sha256 is not a sha256",
-            "codex stop verdict is 'blocked', want 'clear'"])
-
-    def test_missing_stop_block_is_not_clear(self):
-        r = good(); r["stop"] = "clear"
-        self.assertEqual(G.record_problems(r, TREE), ["codex stop verdict is None, want 'clear'",
-                                                      "sonnet stop verdict is None, want 'clear'"])
-
-    def test_blockers_open_must_be_exactly_zero(self):
-        for bad in (None, "0", False, 0.5, 0.0):     # False == 0 and 0.0 == 0 in Python
-            r = good(); r["rounds"][0]["reviewers"]["sonnet"]["blockers_open"] = bad
-            self.assertEqual(G.record_problems(r, TREE), ["sonnet has %r open merge blocker(s)" % bad])
-
-
-class Cli(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d)
-        self.cwd = os.getcwd(); os.chdir(self.d); self.addCleanup(os.chdir, self.cwd)
-        self.git("init", "-q")
-        os.makedirs(".github/agent/bin"); os.makedirs("src")
-        self.write(".github/agent/bin/x.py", "a\n"); self.write("src/y", "s\n")
-        self.git("add", "-A"); self.git("commit", "-qm", "base")
-        self.base = self.git("rev-parse", "HEAD").strip()
-
-    def git(self, *a):
-        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
-                              check=True, capture_output=True, text=True).stdout
-
-    def write(self, p, t):
-        with open(p, "w") as fh:
-            fh.write(t)
-
-    def run_main(self, *argv):
-        out, err = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = G.main(list(argv))
-        return rc, out.getvalue(), err.getvalue()
-
-    def test_base_is_required(self):
-        rc, out, err = self.run_main("--head", "HEAD")
-        self.assertEqual(rc, 2)
-        self.assertIn("--base is required", err)
-
-    def test_a_flag_without_a_value_is_missing_not_a_crash(self):
-        rc, out, err = self.run_main("--head", "HEAD", "--base")
-        self.assertEqual(rc, 2)
-        self.assertIn("--base is required", err)
-
-    def test_print_tree_is_stable_and_ignores_records_only(self):
-        rc, t1, _ = self.run_main("--print-tree")
-        self.assertEqual(rc, 0); t1 = t1.strip()
-        os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/reviews/%s.json" % ("0" * 64), "{}")
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        self.assertEqual(self.run_main("--print-tree")[1].strip(), t1)          # a record: same tree
-        self.write(".github/agent/reviews/notes.txt", "x")
-        self.git("add", "-A"); self.git("commit", "-qm", "not a record")
-        self.assertNotEqual(self.run_main("--print-tree")[1].strip(), t1)       # anything else: new tree
-
-    def test_no_auditor_change_needs_no_record(self):
-        self.write("src/y", "t\n"); self.git("commit", "-qam", "outside")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 0)
-        self.assertIn("no change under .github/agent/", out)
-
-    def test_invalid_record_json_fails_with_its_path(self):
-        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "change")
-        tree = self.run_main("--print-tree")[1].strip()
-        os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/reviews/%s.json" % tree, "{not json")
-        self.git("add", "-A"); self.git("commit", "-qm", "broken record")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 1)
-        self.assertIn(".github/agent/reviews/%s.json" % tree, out)
-        self.assertIn("no valid review record", out)
-
-    def test_a_clear_record_passes_and_names_the_rounds(self):
-        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "change")
-        tree = self.run_main("--print-tree")[1].strip()
-        rec = good(); rec["tree"] = tree
-        os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 0)
-        self.assertIn("clears the stop rule (1 round(s))", out)
-        rec["stop"]["sonnet"] = "blocked"
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
-        self.git("commit", "-qam", "not clear")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 1)
-        self.assertIn("sonnet stop verdict is 'blocked'", out)
-
-
-class GuardFiles(Cli):
-    """The allowlist guard's own files sit outside .github/agent/ but are review-gated too: a PR that
-    changes only one of them needs a record bound to the content, and the tree hash covers them."""
-    GUARDS = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh", ".github/workflows/agent-review-gate.yml")
-
-    def setUp(self):
-        super().setUp()
-        os.makedirs("bin"); os.makedirs(".github/workflows")
-        for g in self.GUARDS:
-            self.write(g, "v1\n")
-        self.write(".github/workflows/ci.yml", "ci1\n")
-        self.git("add", "-A"); self.git("commit", "-qm", "guards")
-        self.base = self.git("rev-parse", "HEAD").strip()
-
-    def record(self):
-        tree = self.run_main("--print-tree")[1].strip()
-        rec = good(); rec["tree"] = tree
-        os.makedirs(".github/agent/reviews", exist_ok=True)
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        return tree
-
-    def test_each_guard_file_alone_needs_a_record(self):
-        for g in self.GUARDS:
-            self.git("reset", "-q", "--hard", self.base)
-            self.write(g, "v2\n"); self.git("commit", "-qam", "change " + g)
-            rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-            self.assertEqual(rc, 1, g)
-            self.assertIn("no valid review record", out)
-            self.assertIn(g, out)
-
-    def test_a_matching_record_clears_a_guard_only_change(self):
-        self.write("bin/check-file-allowlist.sh", "v2\n"); self.git("commit", "-qam", "change")
-        self.record()
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 0, out)
-        self.assertIn("clears the stop rule", out)
-
-    def test_a_stale_record_does_not_clear_a_later_guard_change(self):
-        self.write("bin/check-file-allowlist.sh", "v2\n"); self.git("commit", "-qam", "change")
-        self.record()
-        self.write("bin/check-file-allowlist.sh", "v3\n"); self.git("commit", "-qam", "change again")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 1)
-
-    def test_an_old_record_cannot_be_replayed_over_a_guard_change(self):
-        # a record exists for the unchanged agent content; changing only a guard file must not reuse it
-        self.write(".github/agent/bin/x.py", "b\n"); self.git("commit", "-qam", "agent change")
-        self.record()
-        mid = self.git("rev-parse", "HEAD").strip()
-        self.write("bin/check-file-allowlist-test.sh", "v2\n"); self.git("commit", "-qam", "guard only")
-        rc, out, _ = self.run_main("--base", mid, "--head", "HEAD")
-        self.assertEqual(rc, 1)
-
-    def test_deleting_a_guard_file_is_a_change(self):
-        self.git("rm", "-q", "bin/check-file-allowlist.sh"); self.git("commit", "-qm", "delete")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 1)
-
-    def test_other_files_including_ci_yml_are_unaffected(self):
-        self.write(".github/workflows/ci.yml", "ci2\n"); self.write("src/y", "t\n")
-        self.git("commit", "-qam", "outside")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 0)
-        self.assertIn("nothing to clear", out)
-        t = self.run_main("--print-tree")[1].strip()
-        self.write(".github/workflows/ci.yml", "ci3\n"); self.git("commit", "-qam", "ci again")
-        self.assertEqual(self.run_main("--print-tree")[1].strip(), t)      # ci.yml is not part of the bound content
-
-
-# ---- REQ-AUD-018-AC4: a recorded second-seat substitute (the opus entry) -------------------------
-Q0317 = "stop all codex no more codex reviews until after 1AM Saturday. replace all codex with opus medium."
-Q210 = "Proceed with opus just for this one that codex is hung up on"
-EXPIRY = "2026-10-10T05:00:00Z"
-BEFORE = "2026-10-09T20:00:00Z"
-AFTER = "2026-10-10T05:00:01Z"
-SUBS = {"schema": "review-substitutes/v1", "substitutes": [
-    {"id": "0317", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": EXPIRY,
-     "owner_quote": Q0317, "scope": "all"},
-    {"id": "pr210", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": EXPIRY,
-     "owner_quote": Q210, "scope": "pr:210"}]}
-# entry 0350 (owner, Oct 9 ~23:10 EDT, to the advisor): TWO spaces after "reviewer." and a lower-case start, verbatim
-Q0350 = ("the plan is we use up the full 24% then switch back to opus as reviewer.  but when you switch to opus "
-         "you need to scream at me - at that point I will hit the reset button.")
-X0350 = "2026-10-17T05:00:00Z"      # Sat Oct 17 01:00 EDT
-E0350 = {"id": "0350", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": X0350,
-         "owner_quote": Q0350, "scope": "all"}
-
-
-def dt(s):
-    return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-
-
-def opus(**over):
-    e = {"vendor": "anthropic", "substitute_for": "codex", "substitute_id": "0317", "model": "opus",
-         "effort": "medium", "blockers_open": 0, "evidence_sha256": EV2}
+def seat(letter, model, effort="xhigh", **over):
+    e = {"reviewer": "codex", "vendor": "openai", "seat": letter, "model": model, "effort": effort,
+         "blockers_open": 0, "evidence_sha256": EVA if letter == "A" else EVB}
     e.update(over)
     return {k: v for k, v in e.items() if v is not ...}
 
 
-def sub_rec(entry=None, completed=BEFORE, tree=TREE):
-    r = good(); r["tree"] = tree
-    rev = r["rounds"][0]["reviewers"]
-    del rev["codex"]
-    rev["opus"] = opus() if entry is None else entry
-    if completed is not ...:
-        r["rounds"][0]["completed_at"] = completed
-    r["stop"] = {"sonnet": "clear", "opus": "clear"}
-    return r
+def good(tree=TREE):
+    """A complete schema v2 record: seat A gpt-6.1-sol, seat B gpt-6-astra, both xhigh, both clear."""
+    return {"schema": V2, "tree": tree, "change": "test",
+            "rounds": [{"round": 1, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol"),
+                                                  "codex_b": seat("B", "gpt-6-astra")}}],
+            "stop": {"codex_a": "clear", "codex_b": "clear"}}
 
 
-def problems(rec, subs=None, pr=None, now=BEFORE, tree=TREE):
-    return G.record_problems(rec, tree, subs=json.dumps(SUBS) if subs is None else subs, pr=pr, now=dt(now))
+def legacy(tree=TREE):
+    """A schema v1 record of the shape merged before the dual-Codex gate."""
+    ev = "12" * 32
+    return {"schema": V1, "tree": tree,
+            "rounds": [{"round": 1, "reviewers": {
+                "codex": {"vendor": "openai", "blockers_open": 0, "evidence_sha256": ev},
+                "sonnet": {"vendor": "anthropic", "blockers_open": 0, "evidence_sha256": "34" * 32}}}],
+            "stop": {"codex": "clear", "sonnet": "clear"}}
+
+
+def final(rec):
+    return rec["rounds"][-1]["reviewers"]
+
+
+def problems(rec, tree=TREE):
+    return G.record_problems(rec, tree)
 
 
 def named(probs, text):
     return any(text in p for p in probs)
 
 
-class Substitute(unittest.TestCase):
-    def test_a_valid_0317_substitute_before_expiry_passes(self):
-        self.assertEqual(problems(sub_rec()), [])
+# ---- REQ-AUD-018-AC5: the record that clears -------------------------------------------------------------------
+class ClearingRecord(unittest.TestCase):
+    """REQ-AUD-018-AC5."""
 
-    def test_the_same_record_after_the_expiry_fails(self):
-        self.assertTrue(named(problems(sub_rec(), now=AFTER), "expired"))
+    def test_a_complete_v2_record_has_no_problems(self):
+        self.assertEqual(problems(good()), [])
 
-    def test_the_expiry_instant_itself_is_expired(self):
-        self.assertTrue(named(problems(sub_rec(), now=EXPIRY), "expired"))
+    def test_every_listed_model_pair_that_differs_clears(self):
+        for a, b in (("gpt-6-sol", "gpt-6-astra"), ("gpt-6-luna", "gpt-6.1-sol"), ("gpt-6-astra", "gpt-6-luna"),
+                     ("gpt-6.1-sol", "gpt-6-luna"), ("gpt-6-luna", "gpt-6-sol")):
+            for effort in ("medium", "high", "xhigh"):
+                r = good(); final(r)["codex_a"]["model"] = a; final(r)["codex_b"]["model"] = b
+                final(r)["codex_a"]["effort"] = effort; final(r)["codex_b"]["effort"] = effort
+                self.assertEqual(problems(r), [], (a, b, effort))
 
-    def test_completed_at_after_the_expiry_fails_even_if_the_clock_is_early(self):
-        self.assertTrue(named(problems(sub_rec(completed=AFTER), now=BEFORE), "completed_at"))
-        self.assertTrue(named(problems(sub_rec(completed=EXPIRY), now=BEFORE), "completed_at"))
+    def test_the_gate_s_own_lists_are_exactly_the_ratified_ones(self):
+        self.assertEqual(sorted(G.CODEX_MODELS), ["gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"])
+        self.assertEqual(sorted(G.EFFORTS), ["high", "medium", "xhigh"])
+        self.assertEqual(G.SCHEMA, V2)
+        self.assertEqual(G.SEATS, {"codex_a": "A", "codex_b": "B"})
 
-    def test_completed_at_missing_or_malformed_fails_naming_it(self):
-        for bad in (..., None, "", 5, "2026-10-09", "2026-10-09T20:00:00+00:00", "2026-10-09 20:00:00Z", "2026-13-09T20:00:00Z"):
-            self.assertTrue(named(problems(sub_rec(completed=bad)), "completed_at"), bad)
+    def test_not_an_object(self):
+        self.assertEqual(problems([good()]), ["record is not a JSON object"])
 
-    def test_completed_at_in_the_future_fails(self):
-        self.assertTrue(named(problems(sub_rec(completed="2026-10-09T21:00:00Z"), now=BEFORE), "completed_at"))
+    def test_a_wrong_tree_fails_naming_both_trees(self):
+        self.assertIn("record binds tree %s, the change is %s" % (TREE, "99" * 32), problems(good(), tree="99" * 32))
+        r = good(); del r["tree"]
+        self.assertTrue(named(problems(r), "record binds tree None"))
 
-    def test_an_id_not_in_substitutes_json_fails(self):
-        self.assertTrue(named(problems(sub_rec(opus(substitute_id="9999"))), "substitute_id"))
-        self.assertTrue(named(problems(sub_rec(opus(substitute_id=...))), "substitute_id"))
-        self.assertTrue(named(problems(sub_rec(opus(substitute_id=317))), "substitute_id"))
+    def test_no_rounds(self):
+        for rounds in (None, [], "r1", ...):
+            r = good()
+            if rounds is ...:
+                del r["rounds"]
+            else:
+                r["rounds"] = rounds
+            self.assertEqual(problems(r), ["no review rounds recorded"], rounds)
 
-    def test_no_substitutes_json_on_the_base_fails(self):
-        probs = G.record_problems(sub_rec(), TREE, subs=None, pr=None, now=dt(BEFORE))
-        self.assertTrue(named(probs, "substitutes.json"))
+    def test_final_round_without_reviewers(self):
+        for fin in ("round", {"round": 2}, {"reviewers": ["codex_a", "codex_b"]}, None):
+            r = good(); r["rounds"].append(fin)
+            self.assertEqual(problems(r), ["final round names no reviewers"], fin)
 
-    def test_substitutes_json_unreadable_or_malformed_fails_naming_it(self):
-        def with_(mut):
-            o = json.loads(json.dumps(SUBS)); mut(o); return json.dumps(o)
-        cases = ["{not json", "[]", json.dumps({"schema": "v0", "substitutes": []}),
-                 with_(lambda o: o.update(substitutes="x")),
-                 with_(lambda o: o["substitutes"].__setitem__(0, "x")),
-                 with_(lambda o: o["substitutes"][0].update(effective_until="2026-10-10")),
-                 with_(lambda o: o["substitutes"][0].update(effective_until=5)),
-                 with_(lambda o: o["substitutes"][0].update(scope="pr:")),
-                 with_(lambda o: o["substitutes"][0].update(scope="everything")),
-                 with_(lambda o: o["substitutes"][0].update({"for": "sonnet"})),
-                 with_(lambda o: o["substitutes"][0].update(by="gpt")),
-                 with_(lambda o: o["substitutes"][0].update(vendor="openai")),
-                 with_(lambda o: o["substitutes"][0].pop("effective_until")),
-                 with_(lambda o: o["substitutes"].append(dict(o["substitutes"][0])))]     # duplicate id
-        for c in cases:
-            self.assertNotEqual(problems(sub_rec(), subs=c), [], c)
-
-    def test_an_empty_owner_quote_fails(self):
-        for q in ("", "   ", None, 7):
-            o = json.loads(json.dumps(SUBS)); o["substitutes"][0]["owner_quote"] = q
-            self.assertTrue(named(problems(sub_rec(), subs=json.dumps(o)), "owner_quote"), q)
-        o = json.loads(json.dumps(SUBS)); del o["substitutes"][0]["owner_quote"]
-        self.assertTrue(named(problems(sub_rec(), subs=json.dumps(o)), "owner_quote"))
-
-    def test_scope_pr_210_passes_only_for_pr_210(self):
-        rec = sub_rec(opus(substitute_id="pr210"))
-        self.assertEqual(problems(rec, pr=210), [])
-        self.assertTrue(named(problems(rec, pr=211), "scope"))
-        self.assertTrue(named(problems(rec, pr=2100), "scope"))
-        self.assertTrue(named(problems(rec, pr=None), "scope"))
-
-    def test_scope_all_does_not_need_a_pr_number(self):
-        self.assertEqual(problems(sub_rec(), pr=None), [])
-        self.assertEqual(problems(sub_rec(), pr=211), [])
-
-    def test_sonnet_missing_fails(self):
-        r = sub_rec(); del r["rounds"][0]["reviewers"]["sonnet"]
-        self.assertTrue(named(problems(r), "no sonnet review"))
-
-    def test_sonnet_cannot_be_substituted(self):
-        r = sub_rec(); rev = r["rounds"][0]["reviewers"]
-        rev["sonnet"] = opus(substitute_for="sonnet")
-        self.assertNotEqual(problems(r), [])
-        r = sub_rec(); r["rounds"][0]["reviewers"]["sonnet"] = opus()          # a substitute entry under sonnet
-        self.assertNotEqual(problems(r), [])
-        r = sub_rec(); del r["rounds"][0]["reviewers"]["sonnet"]
-        r["rounds"][0]["reviewers"]["opus"] = opus(substitute_for="sonnet")
-        self.assertNotEqual(problems(r), [])
-
-    def test_open_blockers_fail_for_the_substitute_and_for_sonnet(self):
-        for bad in (1, False, None, "0", 0.0):
-            self.assertTrue(named(problems(sub_rec(opus(blockers_open=bad))), "opus has"), bad)
-        r = sub_rec(); r["rounds"][0]["reviewers"]["sonnet"]["blockers_open"] = 1
-        self.assertTrue(named(problems(r), "sonnet has"))
-
-    def test_the_substitute_is_never_openai(self):
-        for v in ("openai", "", None, "anthropic "):
-            self.assertTrue(named(problems(sub_rec(opus(vendor=v))), "opus vendor"), v)
-
-    def test_model_effort_substitute_for_and_evidence_are_exact(self):
-        for k, v, word in (("model", "opus-4", "model"), ("model", "sonnet", "model"), ("effort", "high", "effort"),
-                           ("effort", None, "effort"), ("substitute_for", "sonnet", "substitute_for"),
-                           ("substitute_for", ..., "substitute_for"), ("evidence_sha256", "x", "evidence_sha256"),
-                           ("evidence_sha256", ..., "evidence_sha256")):
-            self.assertTrue(named(problems(sub_rec(opus(**{k: v}))), word), (k, v))
-
-    def test_the_stop_verdict_for_the_substitute_must_be_clear(self):
-        r = sub_rec(); r["stop"]["opus"] = "blocked"
-        self.assertTrue(named(problems(r), "opus stop verdict"))
-        r = sub_rec(); del r["stop"]["opus"]
-        self.assertTrue(named(problems(r), "opus stop verdict"))
-
-    def test_a_wrong_tree_fails(self):
-        self.assertTrue(named(problems(sub_rec(), tree="ef" * 32), "binds tree"))
-
-    def test_a_record_with_codex_and_opus_is_judged_on_codex_alone(self):
-        r = good(); r["rounds"][0]["reviewers"]["opus"] = opus()                 # no completed_at, no substitutes
-        self.assertEqual(G.record_problems(r, TREE, subs=None, pr=None, now=dt(AFTER)), [])
-        r["rounds"][0]["reviewers"]["opus"] = {"garbage": True}
-        self.assertEqual(G.record_problems(r, TREE), [])
-        r["rounds"][0]["reviewers"]["codex"]["blockers_open"] = 1                # a bad codex is not rescued by opus
-        r["rounds"][0]["reviewers"]["opus"] = opus()
-        self.assertTrue(named(G.record_problems(r, TREE, subs=json.dumps(SUBS), now=dt(BEFORE)), "codex has"))
-
-    def test_without_codex_or_opus_the_old_message_stays(self):
-        r = good(); del r["rounds"][0]["reviewers"]["codex"]
-        self.assertEqual(G.record_problems(r, TREE), ["final round has no codex review"])
-
-    def test_a_substitute_without_a_clock_uses_the_system_clock_function(self):
-        with mock.patch.object(G, "_utcnow", return_value=dt(AFTER)):
-            self.assertTrue(named(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), "expired"))
-        with mock.patch.object(G, "_utcnow", return_value=dt(BEFORE)):
-            self.assertEqual(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), [])
-        with mock.patch.dict(os.environ, {"GATE_NOW": BEFORE}), mock.patch.object(G, "_utcnow", return_value=dt(AFTER)):
-            self.assertTrue(named(G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS)), "expired"))   # env is ignored
-        # the real clock is long past the 2026-10-10 expiry by the time this runs, or not yet: either way it decides
-        probs = G.record_problems(sub_rec(), TREE, subs=json.dumps(SUBS))
-        self.assertEqual("expired" in " ".join(probs), datetime.datetime.now(datetime.timezone.utc) >= dt(EXPIRY))
-
-    def test_a_substitutes_file_with_the_wrong_schema_fails_naming_the_schema(self):
-        bad = dict(SUBS, schema="v0")
-        self.assertTrue(named(problems(sub_rec(), subs=json.dumps(bad)), "schema"))
-
-    def test_completed_at_is_read_from_the_FINAL_round(self):
-        r = sub_rec(completed=...)
-        r["rounds"][0]["completed_at"] = BEFORE
-        r["rounds"].append({"round": 2, "reviewers": r["rounds"][0]["reviewers"]})       # final round has none
-        self.assertTrue(named(problems(r), "completed_at"))
-        r["rounds"][1]["completed_at"] = BEFORE
+    def test_only_the_FINAL_round_counts(self):
+        r = good()
+        r["rounds"].append({"round": 2, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol", blockers_open=1),
+                                                       "codex_b": seat("B", "gpt-6-astra")}})
+        self.assertTrue(named(problems(r), "codex_a blockers_open is 1"))
+        r = good()        # a dirty first round and a clean final round clears
+        r["rounds"].insert(0, {"round": 0, "reviewers": {"codex_a": seat("A", "gpt-6.1-sol", blockers_open=3)}})
         self.assertEqual(problems(r), [])
 
-    def test_a_scope_with_a_trailing_newline_fails_named_without_a_traceback(self):
-        for scope, pr in (("all\n", None), ("pr:210\n", 210)):
-            subs = json.loads(json.dumps(SUBS)); subs["substitutes"][0]["scope"] = scope
-            self.assertTrue(named(problems(sub_rec(), subs=json.dumps(subs), pr=pr), "scope"), scope)
+    def test_every_missing_seat_field_fails_naming_it(self):
+        for name, letter, model in (("codex_a", "A", "gpt-6.1-sol"), ("codex_b", "B", "gpt-6-astra")):
+            for f in FIELDS:
+                r = good(); del final(r)[name][f]
+                ps = problems(r)
+                self.assertIn("%s has no %s field" % (name, f), ps, (name, f))
 
-    def test_a_record_path_with_a_trailing_newline_is_not_a_record(self):
-        self.assertTrue(G._is_record(G.REVIEWS + "a" * 64 + ".json"))
-        self.assertFalse(G._is_record(G.REVIEWS + "a" * 64 + ".json\n"))
+    def test_an_extra_seat_field_fails_naming_it(self):
+        for extra in ("tier", "note", "evidence", "Model"):
+            r = good(); final(r)["codex_b"][extra] = "x"
+            self.assertIn("codex_b has an extra field %r" % extra, problems(r), extra)
 
-    def test_a_time_with_a_trailing_newline_is_not_a_time(self):
-        self.assertIsNone(G._time(BEFORE + "\n"))
-        self.assertTrue(named(problems(sub_rec(completed=BEFORE + "\n")), "completed_at"))
-
-    def test_a_present_but_invalid_codex_entry_never_takes_the_substitute_path(self):
-        for bad in (None, [], "x", 0, {}):
-            r = sub_rec(); r["rounds"][0]["reviewers"]["codex"] = bad
+    def test_a_missing_or_malformed_stop_fails_naming_it(self):
+        for stop in ("clear", None, [], ...):
+            r = good()
+            if stop is ...:
+                del r["stop"]
+            else:
+                r["stop"] = stop
             ps = problems(r)
-            self.assertNotEqual(ps, [], bad)
-            self.assertTrue(named(ps, "codex"), (bad, ps))
+            self.assertIn("stop is missing or not an object", ps, stop)
+        r = good(); del r["stop"]["codex_b"]
+        self.assertIn("stop verdict for codex_b is None, want 'clear'", problems(r))
 
-    def test_an_opus_entry_copied_from_sonnet_fails(self):
-        r = sub_rec()
-        r["rounds"][0]["reviewers"]["opus"]["evidence_sha256"] = r["rounds"][0]["reviewers"]["sonnet"]["evidence_sha256"]
-        self.assertTrue(named(problems(r), "evidence_sha256"))
-        r["rounds"][0]["reviewers"]["opus"]["evidence_sha256"] = "12" * 32
-        self.assertEqual(problems(r), [])
+    def test_schema_is_named_when_record_problems_is_given_an_old_schema(self):
+        for s in (V1, None, "auditor-review-record/v3", 2):
+            r = good(); r["schema"] = s
+            self.assertTrue(named(problems(r), "a schema v2 record is required"), s)
 
-    def test_evidence_with_a_trailing_newline_or_65_hex_is_rejected(self):
-        for bad in (EV2 + "\n", EV2 + "a"):
-            self.assertTrue(named(problems(sub_rec(opus(evidence_sha256=bad))), "evidence_sha256"), repr(bad))
-        r = good(); r["rounds"][0]["reviewers"]["sonnet"]["evidence_sha256"] = EV + "\n"
-        self.assertTrue(named(G.record_problems(r, TREE), "evidence_sha256"))
+    def test_blockers_open_must_be_exactly_the_integer_zero(self):
+        for bad in (None, "0", False, 0.0, 0.5, 1, -1, [0]):
+            r = good(); final(r)["codex_a"]["blockers_open"] = bad
+            self.assertEqual(problems(r), ["codex_a blockers_open is %r, want the integer 0" % (bad,)], bad)
 
-    def test_a_sonnet_or_codex_entry_marked_as_a_substitute_is_rejected_by_that_rule(self):
-        for name, key in (("sonnet", "substitute_for"), ("sonnet", "substitute_id"), ("codex", "substitute_for"), ("codex", "substitute_id")):
-            r = good(); r["rounds"][0]["reviewers"][name][key] = "codex"
-            self.assertTrue(named(G.record_problems(r, TREE), "is marked as a substitute"), (name, key))
-            r = sub_rec(); r["rounds"][0]["reviewers"]["sonnet"][key] = "codex"
-            self.assertTrue(named(problems(r), "sonnet is marked as a substitute"), key)
+    def test_evidence_must_be_64_lowercase_hex(self):
+        for bad in (EVA.upper(), EVA[:63], EVA + "a", EVA + "\n", "", None, 7, "g" * 64):
+            r = good(); final(r)["codex_b"]["evidence_sha256"] = bad
+            self.assertIn("codex_b evidence_sha256 is not 64 lowercase hex characters", problems(r), repr(bad))
 
-    def test_the_shipped_substitutes_json_is_the_ratified_one(self):
-        path = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
-        with open(path) as fh:
-            text = fh.read()
-        self.assertEqual(json.loads(text), dict(SUBS, substitutes=SUBS["substitutes"] + [E0350]))
-        self.assertEqual(problems(sub_rec(), subs=text), [])
-        self.assertEqual(problems(sub_rec(opus(substitute_id="pr210")), subs=text, pr=210), [])
-
-
-class SubstituteCli(unittest.TestCase):
-    git, write, run_main = Cli.git, Cli.write, Cli.run_main
-    SUBPATH = ".github/agent/reviews/substitutes.json"
-
-    def setUp(self):
-        self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d)
-        self.cwd = os.getcwd(); os.chdir(self.d); self.addCleanup(os.chdir, self.cwd)
-        self.clock = mock.patch.object(G, "_utcnow", return_value=dt(BEFORE)); self.clock.start(); self.addCleanup(self.clock.stop)
-        self.git("init", "-q", "-b", "main")
-        os.makedirs(".github/agent/prompts"); os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/prompts/x.py", "a\n"); self.write(self.SUBPATH, json.dumps(SUBS))
-        self.git("add", "-A"); self.git("commit", "-qm", "base")
-        self.base = self.git("rev-parse", "HEAD").strip()
-
-    def propose(self, entry=None, completed=BEFORE):
-        self.write(".github/agent/prompts/x.py", "b\n"); self.git("commit", "-qam", "change")
-        tree = self.run_main("--print-tree")[1].strip()
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(sub_rec(entry, completed, tree)))
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        return tree
-
-    def judge(self, *extra):
-        return self.run_main("--base", self.base, "--head", "HEAD", *extra)
-
-    def test_a_substitute_record_clears_the_cli(self):
-        self.propose()
-        rc, out, _ = self.judge()
+    def test_the_cli_prints_that_a_v2_record_clears(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n"); c.record(good)
+        rc, out, _ = c.judge()
         self.assertEqual(rc, 0, out)
-        self.assertIn("clears the stop rule", out)
-
-    def test_after_the_expiry_the_cli_fails(self):
-        self.propose()
-        with mock.patch.object(G, "_utcnow", return_value=dt(AFTER)):
-            rc, out, _ = self.judge()
-        self.assertEqual(rc, 1)
-        self.assertIn("expired", out)
-
-    def test_a_pr_that_adds_its_own_substitute_does_not_count_for_itself(self):
-        self.write(self.SUBPATH, json.dumps({"schema": "review-substitutes/v1", "substitutes": []}))
-        self.git("commit", "-qam", "base has no substitute"); self.base = self.git("rev-parse", "HEAD").strip()
-        self.write(self.SUBPATH, json.dumps(SUBS)); self.git("commit", "-qam", "the PR adds its own entry")
-        self.propose()
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 1)
-        self.assertIn("substitutes.json", out)
-
-    def test_a_pr_that_extends_the_expiry_or_the_scope_does_not_count_for_itself(self):
-        o = json.loads(json.dumps(SUBS)); o["substitutes"][0]["effective_until"] = "2026-10-01T00:00:00Z"
-        self.write(self.SUBPATH, json.dumps(o)); self.git("commit", "-qam", "base entry already expired")
-        self.base = self.git("rev-parse", "HEAD").strip()
-        self.write(self.SUBPATH, json.dumps(SUBS)); self.git("commit", "-qam", "the PR extends it")
-        self.propose()
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 1)
-        self.assertIn("substitutes.json", out)      # editing the allow-list now needs a real codex entry
-
-    def test_no_substitutes_json_on_the_base_fails(self):
-        self.git("rm", "-q", self.SUBPATH); self.git("commit", "-qm", "base without it")
-        self.base = self.git("rev-parse", "HEAD").strip()
-        os.makedirs(".github/agent/reviews", exist_ok=True)
-        self.write(self.SUBPATH, json.dumps(SUBS)); self.git("add", "-A"); self.git("commit", "-qm", "the PR adds the file")
-        self.propose()
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 1)
-        self.assertIn("substitutes.json", out)
-
-    def test_the_trusted_revision_can_be_main_s_tip_rather_than_the_merge_base(self):
-        # the workflow passes the checked-out default branch tip: a substitute merged AFTER the PR branched still counts
-        self.git("checkout", "-q", "-b", "pr")
-        self.git("checkout", "-q", "main")
-        o = json.loads(json.dumps(SUBS)); o["substitutes"] = [dict(SUBS["substitutes"][0], id="0400")]
-        self.write(self.SUBPATH, json.dumps(o)); self.git("commit", "-qam", "main moves on")
-        tip = self.git("rev-parse", "HEAD").strip()
-        self.git("checkout", "-q", "pr")
-        self.propose(opus(substitute_id="0400"))
-        self.assertEqual(self.judge()[0], 1)                                     # the merge base lacks id 0400
-        rc, out, _ = self.judge("--subs-rev", tip)
-        self.assertEqual(rc, 0, out)
-
-    def test_scope_pr_needs_a_matching_pr_argument(self):
-        self.propose(opus(substitute_id="pr210"))
-        self.assertEqual(self.judge("--pr", "210")[0], 0)
-        for argv in (("--pr", "211"), ()):
-            rc, out, _ = self.judge(*argv)
-            self.assertEqual(rc, 1, argv)
-            self.assertIn("scope", out)
-
-    def test_a_bad_pr_argument_is_refused(self):
-        self.propose(opus(substitute_id="pr210"))
-        for argv in (("--pr",), ("--pr", "x"), ("--pr", "-1"), ("--pr", ""), ("--pr", "0210")):
-            rc, _, err = self.judge(*argv)
-            self.assertEqual(rc, 2, argv)
-            self.assertIn("--pr", err)
-
-    def test_a_tampered_tree_fails_the_cli(self):
-        self.propose()
-        self.write(".github/agent/prompts/x.py", "tampered\n"); self.git("commit", "-qam", "after the review")
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 1)
-        self.assertIn("no valid review record", out)
-
-    def edit_allowlist(self):
-        o = json.loads(json.dumps(SUBS))
-        for e in o["substitutes"]:
-            e["effective_until"] = "2027-12-31T00:00:00Z"
-        self.write(self.SUBPATH, json.dumps(o))
-
-    def test_a_change_that_edits_the_allow_list_is_never_cleared_by_a_substitute(self):
-        self.edit_allowlist()
-        self.propose()
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 1, out)
-        self.assertIn("substitutes.json", out)
-        self.assertIn("codex", out)
-
-    def test_a_change_that_edits_the_allow_list_passes_with_a_real_codex_entry(self):
-        self.edit_allowlist()
-        self.write(".github/agent/prompts/x.py", "b\n"); self.git("commit", "-qam", "change")
-        tree = self.run_main("--print-tree")[1].strip()
-        rec = good(); rec["tree"] = tree
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 0, out)
-
-    ENFORCEMENT = (".github/agent/reviews/substitutes.json", ".github/agent/bin/auditor-review-gate.py",
-                   ".github/workflows/agent-review-gate.yml", ".github/agent/bin/check-action-pins.py",
-                   ".github/agent/bin/tests/test_review_gate.py")
-
-    def touch(self, path):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "a") as fh:
-            fh.write("# touched\n")
-        self.git("add", "-A"); self.git("commit", "-qm", "touch " + path)
-
-    def test_a_change_to_any_enforcement_file_needs_a_real_codex_entry(self):
-        for path in self.ENFORCEMENT:
-            with self.subTest(path=path):
-                self.git("reset", "-q", "--hard", self.base)
-                self.touch(path)
-                self.propose()
-                rc, out, _ = self.judge()
-                self.assertEqual(rc, 1, (path, out))
-                self.assertIn(path, out)
-                self.assertIn("codex", out)
-
-    def test_the_enforcement_set_in_the_script_is_exactly_the_ratified_one(self):
-        self.assertEqual(sorted(G.ENFORCEMENT_PREFIXES), [".github/agent/bin/", ".github/agent/fixtures/testlib/"])
-        self.assertEqual(sorted(G.ENFORCEMENT), sorted([
-            ".github/agent/reviews/substitutes.json", ".github/workflows/agent-review-gate.yml",
-            "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh"]))
-
-    def test_new_files_and_the_gate_s_other_inputs_need_a_real_codex_entry(self):
-        for path in (".github/agent/bin/datetime.py", ".github/agent/bin/json.py", ".github/agent/bin/tests/new_test.py",
-                     ".github/agent/fixtures/testlib/pyyaml/yaml/__init__.py", ".github/agent/fixtures/testlib/new.py",
-                     "bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh"):
-            with self.subTest(path=path):
-                self.git("reset", "-q", "--hard", self.base)
-                self.touch(path)
-                self.propose()
-                rc, out, _ = self.judge()
-                self.assertEqual(rc, 1, (path, out))
-                self.assertIn(path, out)
-                self.assertIn("codex", out)
-
-    def test_an_ordinary_auditor_change_still_clears_with_a_substitute(self):
-        self.touch(".github/agent/prompts/p.md")
-        self.propose()
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 0, out)
-
-    def test_a_missing_completed_at_fails_the_cli(self):
-        self.propose(completed=...)
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 1)
-        self.assertIn("completed_at", out)
+        self.assertIn("clears the stop rule (1 round(s))", out)
 
 
-REAL_SUBS = os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")
-D0350 = "2026-10-16T12:00:00Z"      # a completed_at inside 0350's window
-ONE_BEFORE_X0350 = "2026-10-17T04:59:59Z"
+# ---- REQ-AUD-018-AC6: the refusals, one per shape ----------------------------------------------------------------
+class Refusals(unittest.TestCase):
+    """REQ-AUD-018-AC6."""
+
+    def models(self, a, b):
+        r = good(); final(r)["codex_a"]["model"] = a; final(r)["codex_b"]["model"] = b
+        return problems(r)
+
+    def test_the_same_model_twice_fails(self):
+        for m in ("gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"):
+            self.assertTrue(named(self.models(m, m), "codex_a and codex_b name the same model"), m)
+
+    def test_gpt_6_sol_beside_gpt_6_1_sol_is_the_same_model(self):
+        for a, b in (("gpt-6-sol", "gpt-6.1-sol"), ("gpt-6.1-sol", "gpt-6-sol")):
+            self.assertTrue(named(self.models(a, b), "codex_a and codex_b name the same model"), (a, b))
+
+    def test_a_missing_seat_fails_naming_it(self):
+        for name in ("codex_a", "codex_b"):
+            r = good(); del final(r)[name]; del r["stop"][name]
+            self.assertIn("final round has no %s entry" % name, problems(r), name)
+        r = good(); final(r).clear()
+        ps = problems(r)
+        self.assertIn("final round has no codex_a entry", ps)
+        self.assertIn("final round has no codex_b entry", ps)
+
+    def test_a_third_entry_fails_whatever_its_key_or_content(self):
+        for key, entry in (("codex_c", seat("A", "gpt-6-luna", evidence_sha256="56" * 32)),
+                           ("codex", seat("B", "gpt-6-luna", evidence_sha256="56" * 32)),
+                           ("codex_a2", dict(seat("A", "gpt-6.1-sol"))),      # a valid copy of seat A
+                           ("Codex_A", seat("A", "gpt-6-luna")),
+                           ("x", {}), ("y", None), ("z", "clear")):
+            r = good(); final(r)[key] = entry
+            ps = problems(r)
+            self.assertTrue(named(ps, "final round entry %r is not a seat" % key), (key, ps))
+
+    def test_a_seat_from_another_reviewer_family_fails(self):
+        for f, v, word in (("reviewer", "claude", "codex_b reviewer is 'claude', want 'codex'"),
+                           ("reviewer", "Codex", "codex_b reviewer is 'Codex', want 'codex'"),
+                           ("reviewer", None, "codex_b reviewer is None, want 'codex'"),
+                           ("vendor", "anthropic", "codex_b vendor is 'anthropic', want 'openai'"),
+                           ("vendor", "openai ", "codex_b vendor is 'openai ', want 'openai'"),
+                           ("model", "some-other-model", "codex_b model 'some-other-model' is not on the gate's list of Codex models")):
+            r = good(); final(r)["codex_b"][f] = v
+            self.assertIn(word, problems(r), (f, v))
+
+    def test_a_model_or_effort_off_the_lists_fails(self):
+        for m in ("gpt-5", "gpt-6-sol-mini", "", "GPT-6-ASTRA", "gpt-6-astra ", None, 6):
+            r = good(); final(r)["codex_a"]["model"] = m
+            self.assertIn("codex_a model %r is not on the gate's list of Codex models" % (m,), problems(r), m)
+        for e in ("low", "XHIGH", "", "minimal", None, 3):
+            r = good(); final(r)["codex_b"]["effort"] = e
+            self.assertIn("codex_b effort %r is not on the gate's list of efforts" % (e,), problems(r), e)
+
+    def test_a_seat_letter_that_does_not_match_its_key_fails(self):
+        r = good(); final(r)["codex_a"]["seat"] = "B"
+        self.assertIn("codex_a seat is 'B', want 'A'", problems(r))
+        r = good(); final(r)["codex_b"]["seat"] = "a"
+        self.assertIn("codex_b seat is 'a', want 'B'", problems(r))
+        r = good(); final(r)["codex_a"], final(r)["codex_b"] = final(r)["codex_b"], final(r)["codex_a"]
+        ps = problems(r)
+        self.assertIn("codex_a seat is 'B', want 'A'", ps)
+        self.assertIn("codex_b seat is 'A', want 'B'", ps)
+
+    def test_an_open_blocker_in_either_seat_fails_naming_it(self):
+        for name in ("codex_a", "codex_b"):
+            r = good(); final(r)[name]["blockers_open"] = 2
+            self.assertEqual(problems(r), ["%s blockers_open is 2, want the integer 0" % name])
+
+    def test_the_same_evidence_hash_in_both_seats_fails(self):
+        r = good(); final(r)["codex_b"]["evidence_sha256"] = EVA
+        self.assertEqual(problems(r), ["codex_a and codex_b have the same evidence_sha256: a copied entry is not an independent review"])
+
+    def test_a_stop_verdict_that_is_not_clear_or_an_extra_stop_key_fails(self):
+        for name in ("codex_a", "codex_b"):
+            for v in ("blocked", "Clear", None, True):
+                r = good(); r["stop"][name] = v
+                self.assertIn("stop verdict for %s is %r, want 'clear'" % (name, v), problems(r), (name, v))
+        for k in ("sonnet", "codex", "opus", "codex_c"):
+            r = good(); r["stop"][k] = "clear"
+            self.assertEqual(problems(r), ["stop holds an extra key %r" % k], k)
+
+    def test_a_seat_entry_that_is_not_an_object_fails_naming_it(self):
+        for bad in (None, [], "codex", 0, True):
+            r = good(); final(r)["codex_a"] = bad
+            self.assertIn("codex_a entry is not an object (%r)" % (bad,), problems(r), bad)
+
+    def test_two_shapes_are_both_reported(self):
+        r = good(); final(r)["codex_a"]["blockers_open"] = 1; final(r)["codex_b"]["model"] = "gpt-6.1-sol"
+        final(r)["codex_a"]["model"] = "gpt-6-sol"
+        ps = problems(r)
+        self.assertIn("codex_a blockers_open is 1, want the integer 0", ps)
+        self.assertTrue(named(ps, "codex_a and codex_b name the same model"))
 
 
-def real_subs_text():
-    with open(REAL_SUBS, "rb") as fh:
-        return fh.read().decode("utf-8")
+# ---- REQ-AUD-018-AC4: no substitute is accepted ------------------------------------------------------------------
+class NoSubstitute(unittest.TestCase):
+    """REQ-AUD-018-AC4."""
 
+    OPUS = {"vendor": "anthropic", "substitute_for": "codex", "substitute_id": "0350", "model": "opus",
+            "effort": "medium", "blockers_open": 0, "evidence_sha256": "77" * 32}
 
-def wall_now():
-    """The real UTC wall clock: the ONLY place a 0350 test reads it."""
-    return datetime.datetime.now(datetime.timezone.utc)
+    def test_an_entry_under_another_key_in_place_of_a_seat_fails_saying_no_substitute(self):
+        for key in ("opus", "sonnet", "claude", "codex"):
+            r = good(); del final(r)["codex_b"]; final(r)[key] = dict(self.OPUS)
+            ps = problems(r)
+            self.assertTrue(named(ps, "final round entry %r is not a seat" % key), (key, ps))
+            self.assertTrue(named(ps, "no substitute is accepted"), (key, ps))
+            self.assertIn("final round has no codex_b entry", ps)
 
+    def test_a_seat_entry_carrying_a_substitute_field_fails(self):
+        for f in ("substitute_for", "substitute_id"):
+            for name in ("codex_a", "codex_b"):
+                r = good(); final(r)[name][f] = "codex"
+                ps = problems(r)
+                self.assertTrue(named(ps, "no substitute is accepted"), (f, name, ps))
+                self.assertTrue(named(ps, f), (f, name, ps))
 
-def expected_0350_verdict(before, after):
-    """(returncode, expired) a correct gate on the system clock gives for a 0350 record when its clock read fell
-    between `before` and `after`; None when that window straddles 0350's expiry (the verdict is then undecidable)."""
-    x = dt(X0350)
-    if (before >= x) != (after >= x):
-        return None
-    return (1, True) if before >= x else (0, False)
-
-
-def rec0350(completed=D0350, tree=TREE, **over):
-    return sub_rec(opus(substitute_id="0350", **over), completed, tree)
-
-
-class Substitute0350(unittest.TestCase):
-    """REQ-AUD-018-AC4: entry 0350 of the REAL reviews/substitutes.json, judged by the gate as shipped."""
-
-    def test_the_real_file_pins_0350_field_by_field_and_holds_exactly_three_unique_ids(self):
-        text = real_subs_text()
-        doc = json.loads(text)
-        self.assertEqual(doc["schema"], "review-substitutes/v1")
-        ids = [e["id"] for e in doc["substitutes"]]
-        self.assertEqual(ids, ["0317", "pr210", "0350"])                 # exactly these three, in this order
-        self.assertEqual(len(ids), len(set(ids)))                         # ids are unique
-        e = [x for x in doc["substitutes"] if x["id"] == "0350"]
-        self.assertEqual(len(e), 1); e = e[0]
-        self.assertEqual(list(e), ["id", "for", "by", "vendor", "effective_until", "owner_quote", "scope"])
-        self.assertEqual(e["id"], "0350")
-        self.assertEqual(e["for"], "codex")
-        self.assertEqual(e["by"], "opus")
-        self.assertEqual(e["vendor"], "anthropic")
-        self.assertEqual(e["scope"], "all")
-        self.assertEqual(e["effective_until"], "2026-10-17T05:00:00Z")
-        self.assertEqual(e["owner_quote"], Q0350)
-        self.assertEqual(e["owner_quote"].encode("utf-8"), Q0350.encode("utf-8"))
-        self.assertIn("reviewer.  but", e["owner_quote"])                 # the double space survives
-        self.assertTrue(e["owner_quote"].startswith("the plan"))           # the lower-case start survives
-        self.assertIn('"owner_quote": %s' % json.dumps(Q0350), text)      # byte for byte in the raw file too
-        self.assertEqual(text, json.dumps(doc, indent=2) + "\n")         # the file keeps its formatting
-
-    def test_0350_accepted_before_expiry_when_no_enforcement_file_is_edited(self):
-        text = real_subs_text()
-        self.assertEqual(problems(rec0350(), subs=text, now="2026-10-16T13:00:00Z"), [])
-        self.assertEqual(problems(rec0350(), subs=text, now="2026-10-16T13:00:00Z", pr=999), [])   # scope all: any PR
-
-    def test_0350_accepted_one_second_before_expiry_and_rejected_at_and_after_it_naming_it(self):
-        text = real_subs_text()
-        self.assertEqual(problems(rec0350(completed="2026-10-17T04:59:58Z"), subs=text, now=ONE_BEFORE_X0350), [])
-        for clock in (X0350, "2026-10-17T05:00:01Z", "2026-10-18T00:00:00Z"):
-            ps = problems(rec0350(), subs=text, now=clock)
-            self.assertTrue(named(ps, "opus substitute 0350 expired at 2026-10-17T05:00:00Z"), (clock, ps))
-
-    def test_0350_each_time_rule_is_judged_on_its_own(self):
-        text = real_subs_text()
-        after = "2026-10-17T05:00:01Z"
-        # completed_at AT the expiry, the clock AFTER both: the "future" rule cannot fire
-        self.assertEqual(problems(rec0350(completed=X0350), subs=text, now=after), [
-            "opus substitute 0350 expired at 2026-10-17T05:00:00Z (the gate's clock is 2026-10-17T05:00:01Z)",
-            "final round completed_at 2026-10-17T05:00:00Z is not before substitute 0350 expiry 2026-10-17T05:00:00Z"])
-        # completed_at one second BEFORE the expiry, the clock AT the expiry: only the clock rule fires
-        self.assertEqual(problems(rec0350(completed=ONE_BEFORE_X0350), subs=text, now=X0350), [
-            "opus substitute 0350 expired at 2026-10-17T05:00:00Z (the gate's clock is 2026-10-17T05:00:00Z)"])
-        # both before the expiry, completed_at one second after the clock: only the "future" rule fires
-        self.assertEqual(problems(rec0350(completed=ONE_BEFORE_X0350), subs=text, now="2026-10-17T04:59:58Z"), [
-            "final round completed_at 2026-10-17T04:59:59Z is in the future of the gate's clock"])
-
-    def test_0350_with_no_now_argument_is_judged_by_the_system_clock_function(self):
-        text = real_subs_text()
-        with mock.patch.object(G, "_utcnow", return_value=dt(ONE_BEFORE_X0350)):
-            self.assertEqual(G.record_problems(rec0350(), TREE, subs=text), [])
-        with mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
-            self.assertTrue(named(G.record_problems(rec0350(), TREE, subs=text), "expired at 2026-10-17T05:00:00Z"))
-
-    def test_a_pr_n_scope_without_pr_and_an_invalid_scope_both_fail_naming_it(self):
-        for scope in ("pr:1", "pr:350"):
-            o = json.loads(real_subs_text()); o["substitutes"][2]["scope"] = scope
-            self.assertTrue(named(problems(rec0350(), subs=json.dumps(o), now=D0350), "needs --pr"), scope)
-        for scope in ("everything", "", "pr:", "ALL", None):
-            o = json.loads(real_subs_text()); o["substitutes"][2]["scope"] = scope
-            self.assertTrue(named(problems(rec0350(), subs=json.dumps(o), now=D0350), "scope"), scope)
-
-    def test_a_copy_with_an_empty_blank_null_or_missing_owner_quote_is_rejected_naming_it(self):
-        for q in ("", "   ", None, ...):
-            o = json.loads(real_subs_text()); e = o["substitutes"][2]
-            if q is ...:
-                del e["owner_quote"]
+    def test_a_record_that_names_a_substitutes_entry_anywhere_fails(self):
+        for where in ("top", "round", "stop", "earlier", "nested"):
+            r = good()
+            if where == "top":
+                r["substitute_id"] = "0350"
+            elif where == "round":
+                r["rounds"][-1]["substitutes"] = ["0350"]
+            elif where == "stop":
+                r["stop"]["substitute"] = "0350"
+            elif where == "earlier":
+                r["rounds"].insert(0, {"round": 0, "reviewers": {"opus": dict(self.OPUS)}})
             else:
-                e["owner_quote"] = q
-            ps = problems(rec0350(), subs=json.dumps(o), now=D0350)
-            self.assertTrue(named(ps, "entry 0350 owner_quote"), (q, ps))
+                r["residuals"] = [{"Substitute_For": "codex"}]
+            self.assertTrue(named(problems(r), "no substitute is accepted"), where)
 
-    def test_a_sonnet_substitution_is_still_refused(self):
-        text = real_subs_text()
-        sonnet_marked = "sonnet is marked as a substitute; only the codex seat can be substituted, and only by opus"
-        r = rec0350(); r["rounds"][0]["reviewers"]["sonnet"] = opus(substitute_id="0350", substitute_for="sonnet",
-                                                                       evidence_sha256="12" * 32)
-        self.assertIn(sonnet_marked, problems(r, subs=text, now=D0350))
-        r = rec0350(); del r["rounds"][0]["reviewers"]["sonnet"]
-        self.assertIn("final round has no sonnet review", problems(r, subs=text, now=D0350))
-        r = rec0350(substitute_for="sonnet"); del r["rounds"][0]["reviewers"]["sonnet"]   # opus claims the sonnet seat
-        ps = problems(r, subs=text, now=D0350)
-        self.assertIn("final round has no sonnet review", ps)
-        self.assertIn("opus substitute_for is 'sonnet', want 'codex'", ps)
-
-    def test_gate_now_tz_and_faketime_do_not_move_the_in_process_gate_clock(self):
-        text = real_subs_text()
-        with mock.patch.dict(os.environ, {"GATE_NOW": D0350, "TZ": "Pacific/Kiritimati", "FAKETIME": "@2026-10-16 00:00:00"}), \
-                mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
-            self.assertTrue(named(G.record_problems(rec0350(), TREE, subs=text), "expired"))
-
-
-class Substitute0350Cli(unittest.TestCase):
-    """The gate's CLI on a temporary repository whose first commit carries the REAL substitutes.json bytes; some tests
-    then move the base or main's tip (passed as --subs-rev) to show which revision supplies the allow-list."""
-    git, write, run_main = Cli.git, Cli.write, Cli.run_main
-    SUBPATH = SubstituteCli.SUBPATH
-    touch = SubstituteCli.touch
-    SCRIPT = os.path.join(BIN, "auditor-review-gate.py")
-
-    def setUp(self):
-        self.real = real_subs_text()
-        self.d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, self.d)
-        self.cwd = os.getcwd(); os.chdir(self.d); self.addCleanup(os.chdir, self.cwd)
-        self.clock = mock.patch.object(G, "_utcnow", return_value=dt("2026-10-16T13:00:00Z"))
-        self.clock.start(); self.addCleanup(self.clock.stop)
-        self.git("init", "-q", "-b", "main")
-        os.makedirs(".github/agent/prompts"); os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/prompts/x.py", "a\n"); self.write(self.SUBPATH, self.real)
-        self.git("add", "-A"); self.git("commit", "-qm", "base")
-        self.base = self.git("rev-parse", "HEAD").strip()
-
-    def propose(self, completed=D0350, record=None):
-        self.write(".github/agent/prompts/x.py", "b\n"); self.git("commit", "-qam", "change")
-        tree = self.run_main("--print-tree")[1].strip()
-        rec = rec0350(completed, tree) if record is None else record(tree)
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        return tree
-
-    def judge(self, *extra):
-        return self.run_main("--base", self.base, "--head", "HEAD", *extra)
-
-    def test_an_ordinary_change_clears_with_0350_before_expiry(self):
-        self.propose()
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 0, out)
-        self.assertIn("clears the stop rule", out)
-
-    def test_one_second_before_clears_and_the_expiry_instant_and_after_fail_naming_it(self):
-        self.propose(completed="2026-10-17T04:59:58Z")
-        with mock.patch.object(G, "_utcnow", return_value=dt(ONE_BEFORE_X0350)):
-            self.assertEqual(self.judge()[0], 0)
-        for clock in (X0350, "2026-10-17T05:00:01Z"):
-            with mock.patch.object(G, "_utcnow", return_value=dt(clock)):
-                rc, out, _ = self.judge()
-            self.assertEqual(rc, 1, clock)
-            self.assertIn("0350 expired at 2026-10-17T05:00:00Z", out)
-
-    def test_the_now_clock_time_and_as_of_options_do_not_move_the_clock(self):
-        self.propose()
-        with mock.patch.object(G, "_utcnow", return_value=dt(X0350)):
-            for opt in (("--now", D0350), ("--clock", D0350), ("--time", D0350), ("--as-of", D0350)):
-                rc, out, _ = self.judge(*opt)
-                self.assertEqual(rc, 1, opt)
-                self.assertIn("expired", out)
-
-    def test_this_very_pr_with_a_substitute_only_record_fails(self):
-        # base: main WITHOUT 0350; head: the real file WITH 0350 (this PR's diff), a substitute-only record
-        o = json.loads(self.real); o["substitutes"] = [e for e in o["substitutes"] if e["id"] != "0350"]
-        self.write(self.SUBPATH, json.dumps(o, indent=2) + "\n"); self.git("commit", "-qam", "main before this PR")
-        self.base = self.git("rev-parse", "HEAD").strip()
-        self.write(self.SUBPATH, self.real); self.git("commit", "-qam", "this PR: add 0350")
-        self.propose()
-        for extra in ((), ("--subs-rev", "HEAD")):          # even if the trusted copy already had 0350
-            rc, out, _ = self.judge(*extra)
-            self.assertEqual(rc, 1, (extra, out))
-            self.assertIn("this change edits .github/agent/reviews/substitutes.json, so a substitute never applies", out)
-            self.assertIn("real codex entry is required", out)
-
-    def test_this_very_pr_clears_with_a_real_codex_entry(self):
-        o = json.loads(self.real); o["substitutes"] = [e for e in o["substitutes"] if e["id"] != "0350"]
-        self.write(self.SUBPATH, json.dumps(o, indent=2) + "\n"); self.git("commit", "-qam", "main before this PR")
-        self.base = self.git("rev-parse", "HEAD").strip()
-        self.write(self.SUBPATH, self.real); self.git("commit", "-qam", "this PR: add 0350")
-        self.propose(record=lambda tree: dict(good(), tree=tree))
-        rc, out, _ = self.judge()
-        self.assertEqual(rc, 0, out)
-
-    def test_each_listed_enforcement_file_edit_is_not_cleared_by_0350(self):
-        for path in SubstituteCli.ENFORCEMENT + ("bin/check-file-allowlist.sh", ".github/agent/tests/pin-wiring-test.sh",
-                                                 ".github/agent/fixtures/testlib/new.py"):
-            with self.subTest(path=path):
-                self.git("reset", "-q", "--hard", self.base)
-                self.touch(path)
-                self.propose()
-                rc, out, _ = self.judge()
-                self.assertEqual(rc, 1, (path, out))
-                self.assertIn(path, out)
-                self.assertIn("real codex entry is required", out)
-
-    def without_0350(self):
-        o = json.loads(self.real); o["substitutes"] = [e for e in o["substitutes"] if e["id"] != "0350"]
-        return json.dumps(o, indent=2) + "\n"
-
-    def split_trusted_from_head(self, branch_point_text, main_tip_text):
-        """The PR branches from a commit holding `branch_point_text` and never edits substitutes.json (so the
-        enforcement rule cannot fire); main then moves to `main_tip_text`. Returns main's tip (the trusted revision)."""
-        self.write(self.SUBPATH, branch_point_text); self.git("commit", "-q", "--allow-empty", "-am", "branch point")
-        self.base = self.git("rev-parse", "HEAD").strip()
-        self.git("checkout", "-q", "-b", "pr")
-        self.git("checkout", "-q", "main")
-        self.write(self.SUBPATH, main_tip_text); self.git("commit", "-qam", "main moves on")
-        tip = self.git("rev-parse", "HEAD").strip()
-        self.git("checkout", "-q", "pr")
-        self.propose()                                                    # a NON-enforcement change: prompts/x.py
-        self.assertEqual(self.git("diff", "--name-only", self.base, "HEAD", "--", self.SUBPATH), "")
-        return tip
-
-    def test_with_subs_rev_the_head_s_copy_adding_0350_is_not_trusted(self):
-        # the head's copy HAS 0350, the trusted copy (main's tip) does not: rejected, naming the missing entry
-        tip = self.split_trusted_from_head(self.real, self.without_0350())
-        rc, out, _ = self.judge("--subs-rev", tip)
-        self.assertEqual(rc, 1, out)
-        self.assertIn("substitute_id '0350' names 0 entries of .github/agent/reviews/substitutes.json", out)
-        self.assertNotIn("a substitute never applies", out)
-
-    def test_with_subs_rev_the_trusted_copy_with_0350_is_used_although_the_head_s_copy_lacks_it(self):
-        # the converse: the head's copy LACKS 0350, the trusted copy has it: accepted
-        tip = self.split_trusted_from_head(self.without_0350(), self.real)
-        rc, out, _ = self.judge("--subs-rev", tip)
-        self.assertEqual(rc, 0, out)
-
-    def test_gate_now_tz_and_faketime_do_not_move_the_subprocess_gate_s_clock(self):
-        # a real subprocess on the system clock: the verdict follows the real UTC time, whatever the environment says.
-        # The expected verdict is taken from the wall clock read just before AND just after EACH run, so the test holds
-        # on either side of 0350's expiry; a run whose window straddles the expiry is retried once, then skipped.
-        self.clock.stop(); self.addCleanup(self.clock.start)
-        start = wall_now().replace(microsecond=0)
-        done = min(start - datetime.timedelta(minutes=1), dt(X0350) - datetime.timedelta(seconds=1))
-        self.propose(completed=done.strftime("%Y-%m-%dT%H:%M:%SZ"))
-        for env in ({}, {"GATE_NOW": "2026-10-16T00:00:00Z"}, {"GATE_NOW": "2027-01-01T00:00:00Z"},
-                    {"TZ": "Etc/GMT+12"}, {"TZ": "Etc/GMT-14"}, {"FAKETIME": "@2027-01-01 00:00:00"}):
-            for _ in range(2):
-                before = wall_now()
-                r = subprocess.run([sys.executable, "-I", self.SCRIPT, "--base", self.base, "--head", "HEAD"],
-                                   capture_output=True, text=True, env=dict(os.environ, **env), stdin=subprocess.DEVNULL)
-                want = expected_0350_verdict(before, wall_now())
-                if want is not None:
-                    break
-            else:
-                self.skipTest("two runs straddled the 0350 expiry instant %s; the verdict is undecidable" % X0350)
-            rc, expired = want
-            self.assertEqual(r.returncode, rc, (env, r.stdout, r.stderr))
-            self.assertEqual("0350 expired" in r.stdout, expired, env)
-
-
-class Substitute0350NoTimeBomb(unittest.TestCase):
-    """REQ-AUD-018-AC4: no 0350 test turns red when the wall clock passes 0350's expiry (2026-10-17T05:00:00Z)."""
-
-    def test_the_expected_verdict_is_right_on_both_sides_of_the_expiry(self):
-        x = dt(X0350); s = datetime.timedelta(seconds=1)
-        self.assertEqual(expected_0350_verdict(dt(D0350), dt(D0350) + s), (0, False))      # before: accepted
-        self.assertEqual(expected_0350_verdict(x - 2 * s, x - s), (0, False))
-        self.assertEqual(expected_0350_verdict(x, x + s), (1, True))                       # at and after: rejected
-        self.assertEqual(expected_0350_verdict(dt("2027-01-01T00:00:00Z"), dt("2027-01-01T00:00:09Z")), (1, True))
-        self.assertIsNone(expected_0350_verdict(x - s, x))                                 # straddles: undecidable
-        self.assertIsNone(expected_0350_verdict(x - s, x + s))
-
-    def test_the_wall_clock_is_read_only_through_wall_now(self):
-        # every 0350 test either passes `now=`, patches G._utcnow, or (the one subprocess test) reads wall_now()
-        # around each run; nothing else in this file reads the real clock except the pre-existing 0317 test,
-        # whose expiry (2026-10-10T05:00:00Z) is already past.
-        import ast
-        with open(os.path.abspath(__file__)) as fh:
-            tree = ast.parse(fh.read())
-        readers = set()
-        for fn in ast.walk(tree):
-            if isinstance(fn, ast.FunctionDef):
-                for n in ast.walk(fn):
-                    if isinstance(n, ast.Attribute) and n.attr in ("now", "utcnow", "time", "today") and \
-                            isinstance(n.value, (ast.Attribute, ast.Name)) and \
-                            getattr(n.value, "attr", getattr(n.value, "id", "")) in ("datetime", "time", "date"):
-                        readers.add(fn.name)
-        self.assertEqual(readers, {"wall_now", "test_a_substitute_without_a_clock_uses_the_system_clock_function"})
-
-    def test_every_in_process_cli_test_runs_on_the_patched_clock(self):
-        # Substitute0350Cli's setUp patches G._utcnow (2026-10-16T13:00:00Z) for every in-process run_main call
-        t = Substitute0350Cli("test_an_ordinary_change_clears_with_0350_before_expiry")
-        t.setUp(); self.addCleanup(t.doCleanups)
-        self.assertIsInstance(G._utcnow, mock.Mock)
-        self.assertEqual(G._utcnow(), dt("2026-10-16T13:00:00Z"))
-
-
-class ClockIsSystemOnly(unittest.TestCase):
-    """REQ-AUD-018-AC4: the gate's clock is the system clock; no environment variable or option sets it."""
-    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(BIN)))
-    SCRIPT = os.path.join(BIN, "auditor-review-gate.py")
-
-    def test_the_script_reads_no_environment_and_has_no_clock_option(self):
-        import ast
-        with open(self.SCRIPT) as fh:
+    def test_the_gate_reads_no_substitutes_allow_list_and_no_clock(self):
+        with open(SCRIPT) as fh:
             src = fh.read()
+        self.assertNotIn("substitutes.json", src)
+        self.assertFalse(hasattr(G, "SUBS_PATH"))
+        self.assertFalse(hasattr(G, "_utcnow"))
         bad = []
         for n in ast.walk(ast.parse(src)):
-            if isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv", "environb", "putenv"):
+            if isinstance(n, ast.Import):
+                bad += [a.name for a in n.names if a.name.split(".")[0] in ("datetime", "time", "calendar", "os")]
+            if isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] in ("datetime", "time", "calendar", "os"):
+                bad.append(n.module)
+            if isinstance(n, ast.Attribute) and n.attr in ("environ", "getenv", "environb", "putenv", "now", "utcnow", "today"):
                 bad.append("line %d: %s" % (n.lineno, n.attr))
-            if isinstance(n, ast.ImportFrom) and n.module == "os" and any(a.name in ("environ", "getenv") for a in n.names):
-                bad.append("line %d: from os import environ/getenv" % n.lineno)
             if isinstance(n, ast.Constant) and isinstance(n.value, str) and (
-                    "GATE_NOW" in n.value or n.value in ("--now", "--clock", "--time", "--as-of")):
+                    "GATE_NOW" in n.value or n.value in ("--now", "--clock", "--time", "--as-of", "--substitute")):
                 bad.append("line %d: %r" % (n.lineno, n.value[:40]))
         self.assertEqual(bad, [])
 
-    def test_no_workflow_or_action_file_can_set_the_clock(self):
+    def test_the_substitutes_allow_list_file_is_gone(self):
+        self.assertFalse(os.path.exists(os.path.join(os.path.dirname(BIN), "reviews", "substitutes.json")))
+
+    def test_no_workflow_or_action_file_can_set_a_clock_or_a_substitute(self):
         files = []
-        for base, dirs, names in os.walk(self.ROOT):
+        for base, dirs, names in os.walk(ROOT):
             dirs[:] = [d for d in dirs if d not in (".git", "node_modules")]
             for n in names:
-                full = os.path.join(base, n)
-                rel = os.path.relpath(full, self.ROOT)
+                rel = os.path.relpath(os.path.join(base, n), ROOT)
                 if (rel.startswith(os.path.join(".github", "workflows") + os.sep) and n.endswith((".yml", ".yaml"))) \
                         or n in ("action.yml", "action.yaml"):
-                    files.append(full)
+                    files.append(os.path.join(base, n))
         self.assertTrue(any(f.endswith("agent-review-gate.yml") for f in files))
         bad = []
         for f in files:
             with open(f) as fh:
                 text = fh.read()
-            if "GATE_NOW" in text or re.search(r"--now\b", text):
-                bad.append(os.path.relpath(f, self.ROOT))
+            if "GATE_NOW" in text or re.search(r"--now\b|--substitute", text):
+                bad.append(os.path.relpath(f, ROOT))
         self.assertEqual(bad, [])
 
-    def test_the_gate_workflow_passes_the_trusted_allow_list_and_the_pr_and_sets_no_gate_variable(self):
+
+# ---- the CLI over a real temporary git repository (AC3 to AC7) ---------------------------------------------------
+class CliRepo:
+    """A temporary repository: main holds .github/agent/bin/x.py and src/y; helpers commit changes and records."""
+
+    def start(self, case, branch="main"):
+        self.d = tempfile.mkdtemp(); case.addCleanup(shutil.rmtree, self.d)
+        cwd = os.getcwd(); os.chdir(self.d); case.addCleanup(os.chdir, cwd)
+        self.git("init", "-q", "-b", branch)
+        os.makedirs(".github/agent/bin"); os.makedirs("src")
+        self.write(".github/agent/bin/x.py", "a\n"); self.write("src/y", "s\n")
+        self.git("add", "-A"); self.git("commit", "-qm", "base")
+        self.base = self.rev()
+        return self
+
+    def git(self, *a):
+        return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
+                              check=True, capture_output=True, text=True, stdin=subprocess.DEVNULL).stdout
+
+    def rev(self, r="HEAD"):
+        return self.git("rev-parse", r).strip()
+
+    def write(self, p, t, mode="w"):
+        if os.path.dirname(p):
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, mode) as fh:
+            fh.write(t)
+
+    def change(self, p, t):
+        self.write(p, t); self.git("add", "-A"); self.git("commit", "-qm", "change " + p)
+
+    def tree(self):
+        return run_main("--print-tree")[1].strip()
+
+    def record(self, make, raw=None):
+        """Write make(tree) (or raw bytes) as the record of the current content and commit it; returns its path."""
+        t = self.tree()
+        path = ".github/agent/reviews/%s.json" % t
+        self.write(path, raw if raw is not None else json.dumps(make(t), indent=2) + "\n")
+        self.git("add", "-A"); self.git("commit", "-qm", "record")
+        return path
+
+    def judge(self, *extra, base=None):
+        return run_main("--base", base or self.base, "--head", "HEAD", *extra)
+
+
+def run_main(*argv):
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = G.main(list(argv))
+    return rc, out.getvalue(), err.getvalue()
+
+
+class Cli(unittest.TestCase):
+    """REQ-AUD-018-AC3: a change under the auditor directory needs a record bound to its exact content."""
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+        self.base = self.r.base
+
+    def test_base_is_required(self):
+        rc, out, err = run_main("--head", "HEAD")
+        self.assertEqual(rc, 2)
+        self.assertIn("--base is required", err)
+
+    def test_a_flag_without_a_value_is_missing_not_a_crash(self):
+        rc, out, err = run_main("--head", "HEAD", "--base")
+        self.assertEqual(rc, 2)
+        self.assertIn("--base is required", err)
+
+    def test_a_bad_pr_argument_is_refused(self):
+        self.r.change(".github/agent/bin/x.py", "b\n"); self.r.record(good)
+        for argv in (("--pr",), ("--pr", "x"), ("--pr", "-1"), ("--pr", ""), ("--pr", "0210")):
+            rc, _, err = self.r.judge(*argv)
+            self.assertEqual(rc, 2, argv)
+            self.assertIn("--pr", err)
+        self.assertEqual(self.r.judge("--pr", "210")[0], 0)
+
+    def test_a_trusted_revision_flag_without_a_value_is_refused(self):
+        self.r.change(".github/agent/bin/x.py", "b\n"); self.r.record(good)
+        rc, _, err = self.r.judge("--subs-rev")
+        self.assertEqual(rc, 2)
+        self.assertIn("--subs-rev", err)
+
+    def test_print_tree_is_stable_and_ignores_records_only(self):
+        t1 = self.r.tree()
+        self.r.change(".github/agent/reviews/%s.json" % ("0" * 64), "{}")
+        self.assertEqual(self.r.tree(), t1)                      # a record: same tree
+        self.r.change(".github/agent/reviews/notes.txt", "x")
+        self.assertNotEqual(self.r.tree(), t1)                   # anything else: new tree
+
+    def test_no_auditor_change_needs_no_record(self):
+        self.r.change("src/y", "t\n")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 0)
+        self.assertIn("no change under .github/agent/", out)
+
+    def test_no_record_fails_naming_the_path(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("no valid review record", out)
+        self.assertIn("Codex", out)
+
+    def test_invalid_record_json_fails_with_its_path(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        path = self.r.record(None, raw="{not json")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn(path, out)
+        self.assertIn("no valid review record", out)
+
+    def test_a_stale_record_fails(self):
+        self.r.change(".github/agent/bin/x.py", "b\n"); self.r.record(good)
+        self.r.change(".github/agent/bin/x.py", "c\n")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("no valid review record", out)
+
+    def test_a_record_that_does_not_clear_fails_naming_each_cause(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        def bad(t):
+            r = good(t); r["stop"]["codex_b"] = "blocked"; final(r)["codex_b"]["model"] = "gpt-6.1-sol"; return r
+        path = self.r.record(bad)
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("::error file=%s::review gate: stop verdict for codex_b is 'blocked'" % path, out)
+        self.assertIn("codex_a and codex_b name the same model", out)
+
+    def test_a_record_with_a_wrong_tree_at_the_right_path_fails(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        self.r.record(lambda t: good("99" * 32))
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("record binds tree %s" % ("99" * 32), out)
+
+
+class GuardFiles(unittest.TestCase):
+    """REQ-AUD-018-AC3: the allowlist guard's own files sit outside the auditor directory but are review-gated too."""
+    GUARDS = ("bin/check-file-allowlist.sh", "bin/check-file-allowlist-test.sh", ".github/workflows/agent-review-gate.yml")
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+        for g in self.GUARDS:
+            self.r.write(g, "v1\n")
+        self.r.write(".github/workflows/ci.yml", "ci1\n")
+        self.r.git("add", "-A"); self.r.git("commit", "-qm", "guards")
+        self.r.base = self.base = self.r.rev()
+
+    def test_each_guard_file_alone_needs_a_record(self):
+        for g in self.GUARDS:
+            self.r.git("reset", "-q", "--hard", self.base)
+            self.r.change(g, "v2\n")
+            rc, out, _ = self.r.judge()
+            self.assertEqual(rc, 1, g)
+            self.assertIn("no valid review record", out)
+            self.assertIn(g, out)
+
+    def test_a_matching_record_clears_a_guard_only_change(self):
+        self.r.change("bin/check-file-allowlist.sh", "v2\n"); self.r.record(good)
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("clears the stop rule", out)
+
+    def test_a_stale_record_does_not_clear_a_later_guard_change(self):
+        self.r.change("bin/check-file-allowlist.sh", "v2\n"); self.r.record(good)
+        self.r.change("bin/check-file-allowlist.sh", "v3\n")
+        self.assertEqual(self.r.judge()[0], 1)
+
+    def test_an_old_record_cannot_be_replayed_over_a_guard_change(self):
+        self.r.change(".github/agent/bin/x.py", "b\n"); self.r.record(good)
+        mid = self.r.rev()
+        self.r.change("bin/check-file-allowlist-test.sh", "v2\n")
+        self.assertEqual(self.r.judge(base=mid)[0], 1)
+
+    def test_deleting_a_guard_file_is_a_change(self):
+        self.r.git("rm", "-q", "bin/check-file-allowlist.sh"); self.r.git("commit", "-qm", "delete")
+        self.assertEqual(self.r.judge()[0], 1)
+
+    def test_other_files_including_ci_yml_are_unaffected(self):
+        self.r.write(".github/workflows/ci.yml", "ci2\n"); self.r.change("src/y", "t\n")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 0)
+        self.assertIn("nothing to clear", out)
+        t = self.r.tree()
+        self.r.change(".github/workflows/ci.yml", "ci3\n")
+        self.assertEqual(self.r.tree(), t)      # ci.yml is not part of the bound content
+
+    def test_a_rename_out_of_the_auditor_directory_is_a_change(self):
+        self.r.change(".github/agent/bin/x.py", "b\n"); self.r.record(good)
+        mid = self.r.rev()
+        self.r.git("mv", ".github/agent/bin/x.py", "src/x.py"); self.r.git("commit", "-qm", "move out")
+        self.assertEqual(self.r.judge(base=mid)[0], 1)
+
+
+class SubstituteCli(unittest.TestCase):
+    """REQ-AUD-018-AC4: on the CLI, no substitute counts: not with an allow-list on the trusted revision, not with any
+    option, and a missing Codex seat (an outage) leaves the change failing."""
+
+    SUBS = {"schema": "review-substitutes/v1", "substitutes": [
+        {"id": "0350", "for": "codex", "by": "opus", "vendor": "anthropic", "effective_until": "2099-01-01T00:00:00Z",
+         "owner_quote": "x", "scope": "all"}]}
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+        self.r.change(".github/agent/reviews/substitutes.json", json.dumps(self.SUBS))   # on the trusted revision
+        self.r.base = self.trusted = self.r.rev()
+        self.r.change(".github/agent/bin/x.py", "b\n")
+
+    def subrec(self, t):
+        r = good(t); del final(r)["codex_b"]; del r["stop"]["codex_b"]
+        final(r)["opus"] = dict(NoSubstitute.OPUS); r["rounds"][-1]["completed_at"] = "2026-10-11T00:00:00Z"
+        r["stop"]["opus"] = "clear"
+        return r
+
+    def test_an_unexpired_allow_list_entry_on_the_trusted_revision_does_not_make_a_substitute_count(self):
+        self.r.record(self.subrec)
+        for extra in ((), ("--subs-rev", self.trusted), ("--subs-rev", self.trusted, "--pr", "1")):
+            rc, out, _ = self.r.judge(*extra)
+            self.assertEqual(rc, 1, (extra, out))
+            self.assertIn("no substitute is accepted", out)
+            self.assertIn("final round has no codex_b entry", out)
+
+    def test_unknown_options_do_not_make_a_substitute_count(self):
+        self.r.record(self.subrec)
+        for opt in (("--substitute", "0350"), ("--now", "2026-10-11T00:00:00Z"), ("--allow-substitute",)):
+            rc, out, _ = self.r.judge(*opt)
+            self.assertNotEqual(rc, 0, opt)
+
+    def test_a_codex_outage_leaves_the_change_waiting(self):
+        def only_a(t):
+            r = good(t); del final(r)["codex_b"]; del r["stop"]["codex_b"]; return r
+        self.r.record(only_a)
+        rc, out, _ = self.r.judge("--subs-rev", self.trusted)
+        self.assertEqual(rc, 1)
+        self.assertIn("final round has no codex_b entry", out)
+
+    def test_an_environment_value_does_not_make_a_substitute_count(self):
+        self.r.record(self.subrec)
+        env = dict(os.environ, GATE_NOW="2026-10-01T00:00:00Z", GATE_SUBSTITUTE="0350", TZ="Etc/GMT-14")
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--base", self.r.base, "--head", "HEAD", "--subs-rev", self.trusted],
+                           capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
+        self.assertIn("no substitute is accepted", p.stdout)
+
+
+# ---- REQ-AUD-018-AC7: records merged before the dual-Codex gate --------------------------------------------------
+class LegacyRecord(unittest.TestCase):
+    """REQ-AUD-018-AC7: an old-schema record counts only as the same blob already on the trusted revision."""
+
+    def setUp(self):
+        self.r = CliRepo().start(self)
+
+    def merged_legacy(self, make=legacy, raw=None):
+        """main: the content x.py=b was reviewed and its v1 record merged; then main moved on to x.py=c.
+        A pull request restoring x.py=b carries that same record, unchanged. Returns the record path."""
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        path = self.r.record(make, raw=raw)
+        self.r.change(".github/agent/bin/x.py", "c\n")
+        self.r.base = self.trusted = self.r.rev()
+        self.r.change(".github/agent/bin/x.py", "b\n")          # the PR: a pure revert to the reviewed tree
+        return path
+
+    def test_a_v1_record_byte_identical_on_the_trusted_revision_clears_without_re_judging(self):
+        path = self.merged_legacy()
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("already on the trusted revision", out)
+        self.assertIn(path, out)
+
+    def test_the_merged_record_whose_substitute_expired_still_clears_it_is_never_re_judged(self):
+        real = os.path.join(os.path.dirname(BIN), "reviews",
+                            "d8a4733f6eecb148c03e42ee6e376cdfa8c9e4fa1e983398db0af4c50ba7c941.json")
+        with open(real) as fh:
+            raw = fh.read()
+        self.assertIn('"substitute_id": "0317"', raw)      # the opus record merged under the retired substitute
+        self.merged_legacy(raw=raw)                          # its tree field does not match: not re-judged
+        rc, out, _ = self.r.judge("--subs-rev", self.trusted)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_v1_record_added_by_the_pull_request_fails(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        path = self.r.record(legacy)
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("a schema v2 record is required", out)
+        self.assertIn(path, out)
+
+    def test_a_v1_record_on_the_trusted_revision_edited_by_the_pull_request_fails(self):
+        path = self.merged_legacy()
+        self.r.write(path, " ", mode="a"); self.r.git("commit", "-qam", "one byte")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("a schema v2 record is required", out)
+
+    def test_an_unreadable_trusted_revision_fails_closed(self):
+        self.merged_legacy()
+        for bad in ("no-such-ref", "0" * 40, "HEAD:src"):
+            rc, out, _ = self.r.judge("--subs-rev", bad)
+            self.assertEqual(rc, 1, (bad, out))
+            self.assertIn("the trusted revision %r cannot be read" % bad, out)
+
+    def test_a_pr_faking_the_old_shape_fails(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        self.r.record(legacy)                               # codex + sonnet, schema v1, never on main
+        rc, out, _ = self.r.judge("--subs-rev", self.r.base)
+        self.assertEqual(rc, 1)
+        self.assertIn("a schema v2 record is required", out)
+        for schema in (None, "auditor-review-record/v0", "auditor-review-record/v3"):
+            self.r.git("reset", "-q", "--hard", self.r.base)
+            self.r.change(".github/agent/bin/x.py", "b\n")
+            self.r.record(lambda t: dict(legacy(t), schema=schema))
+            rc, out, _ = self.r.judge()
+            self.assertEqual(rc, 1, schema)
+            self.assertIn("a schema v2 record is required", out)
+
+    def test_a_non_object_record_fails_unless_it_is_the_merged_file(self):
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        self.r.record(None, raw="[1, 2]\n")
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("a schema v2 record is required", out)
+
+    def test_the_trusted_revision_can_be_main_s_tip_rather_than_the_merge_base(self):
+        # the record merged on main AFTER the PR branched: the merge base lacks it, main's tip (--subs-rev) has it
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        path = self.r.record(legacy)
+        tip = self.r.rev()
+        self.r.git("checkout", "-q", "-b", "pr", self.r.base)
+        self.r.change(".github/agent/bin/x.py", "b\n")
+        self.r.write(path, self.r.git("show", "%s:%s" % (tip, path)))
+        self.r.git("add", "-A"); self.r.git("commit", "-qm", "the same record")
+        self.assertEqual(self.r.judge()[0], 1)                   # the merge base lacks it
+        rc, out, _ = self.r.judge("--subs-rev", tip)
+        self.assertEqual(rc, 0, out)
+
+    def test_a_v2_record_is_judged_by_the_v2_rules_even_when_it_is_on_the_trusted_revision(self):
+        def blocked(t):
+            r = good(t); final(r)["codex_a"]["blockers_open"] = 1; return r
+        self.merged_legacy(make=blocked)
+        rc, out, _ = self.r.judge()
+        self.assertEqual(rc, 1)
+        self.assertIn("codex_a blockers_open is 1", out)
+
+
+# ---- REQ-AUD-018-AC8: the workflow runs the gate in isolated mode from the default branch's copy -----------------
+class Wiring(unittest.TestCase):
+    """REQ-AUD-018-AC8 (and the trusted revision of AC7): the gate's workflow, read as it is on this branch."""
+
+    @staticmethod
+    def wf():
         import yaml
-        with open(os.path.join(self.ROOT, ".github", "workflows", "agent-review-gate.yml")) as fh:
-            wf = yaml.safe_load(fh)
-        def runs(job):
-            return [st["run"] for st in wf["jobs"][job]["steps"] if "run" in st]
-        def gate_lines(job):
-            text = "\n".join(runs(job)).replace("\\\n", " ")
-            return [l for l in text.splitlines() if "auditor-review-gate.py" in l and "python3" in l]
-        j, w = gate_lines("judge"), gate_lines("sweep")
-        self.assertEqual(len(j), 1, j); self.assertEqual(len(w), 1, w)
-        for line, pr in ((j[0], '--pr "$PR"'), (w[0], '--pr "$n"')):
-            self.assertIn("--subs-rev HEAD", line)
-            self.assertEqual(line.count("--subs-rev"), 1)
-            self.assertIn(pr, line)
-        for name, job in wf["jobs"].items():
+        with open(WF) as fh:
+            return yaml.safe_load(fh)
+
+    def runs(self, job):
+        return [st for st in self.wf()["jobs"][job]["steps"]]
+
+    def code_lines(self, job):
+        return [l for st in self.runs(job) for l in st.get("run", "").replace("\\\n", " ").splitlines()
+                if not l.lstrip().startswith("#")]
+
+    def test_the_gate_and_the_pin_checker_run_in_python_isolated_mode(self):
+        lines = [l for j in ("judge", "sweep") for l in self.code_lines(j)]
+        calls = [m for l in lines for m in re.finditer(r"\bpython3?((?:\s+-\S+)*)\s+(\.github/agent/bin/\S+)", l)]
+        self.assertEqual(sorted(m.group(2) for m in calls),      # judge: gate, pins; sweep: gate, pins
+                         [".github/agent/bin/auditor-review-gate.py"] * 2 + [".github/agent/bin/check-action-pins.py"] * 2)
+        for m in calls:
+            self.assertEqual(m.group(1).split(), ["-I"], m.group(0))
+        self.assertEqual(len([l for l in lines if re.search(r"\bpython3?\b", l)]), 3, lines)   # no other python run
+
+    def test_the_gate_reads_the_head_and_the_trusted_revision_as_git_data_only(self):
+        for job, pr in (("judge", '--pr "$PR"'), ("sweep", '--pr "$n"')):
+            gate = [l for l in self.code_lines(job) if "auditor-review-gate.py" in l and "python3" in l]
+            self.assertEqual(len(gate), 1, (job, gate))
+            self.assertIn("--subs-rev HEAD", gate[0])          # the trusted revision: the checked-out default branch
+            self.assertEqual(gate[0].count("--subs-rev"), 1)
+            self.assertIn(pr, gate[0])
+            text = "\n".join(self.code_lines(job))
+            for verb in ("git checkout", "git switch", "git worktree", "git restore", "git reset", "pip install"):
+                self.assertNotIn(verb, text, (job, verb))
+            for st in self.runs(job):
+                if "actions/checkout@" in str(st.get("uses", "")):
+                    self.assertFalse({"ref", "repository"} & set(st.get("with") or {}), (job, st))
+
+    def test_no_job_sets_a_gate_variable(self):
+        for name, job in self.wf()["jobs"].items():
             self.assertFalse([k for k in (job.get("env") or {}) if str(k).startswith("GATE_")], name)
             for st in job["steps"]:
                 self.assertFalse([k for k in (st.get("env") or {}) if str(k).startswith("GATE_")], (name, st.get("name")))
                 self.assertNotIn("GITHUB_ENV", st.get("run", "") + str(st.get("with", "")), (name, st.get("name")))
 
-    # ---- the gate's own wiring is DERIVED, so a future change cannot fall outside the enforcement set ----
-    WF = os.path.join(ROOT, ".github", "workflows", "agent-review-gate.yml")
-
-    @staticmethod
-    def executed_paths(text):
-        """Every repo path the judge and sweep run: lines of their run: scripts (comments dropped)."""
-        import yaml
-        wf = yaml.safe_load(text)
-        paths, lines = set(), []
-        for job in ("judge", "sweep"):
-            for st in wf["jobs"][job]["steps"]:
-                lines += [l for l in st.get("run", "").splitlines() if not l.lstrip().startswith("#")]
-        for l in lines:
-            for m in re.finditer(r"(?:(?<![\w/.-])|(?<=\$PWD/))((?:\.github|bin)/[\w./-]*\w)", l):
-                paths.add(m.group(1))
-        return paths, lines
-
-    def test_every_path_the_gate_runs_or_reads_is_in_the_enforcement_set(self):
-        with open(self.WF) as fh:
-            paths, _ = self.executed_paths(fh.read())
-        self.assertIn(".github/agent/bin/auditor-review-gate.py", paths)
-        self.assertIn(".github/agent/tests/pin-wiring-test.sh", paths)
-        self.assertIn("bin/check-file-allowlist.sh", paths)
-        self.assertIn(".github/agent/fixtures/testlib/pyyaml", paths)
-        self.assertEqual([p for p in sorted(paths) if not G.enforces(p)], [])
-
-    def test_a_new_executed_script_outside_the_set_is_caught(self):
-        with open(self.WF) as fh:
-            text = fh.read()
-        mutated = text.replace("          echo \"verdict=${verdict}\"", "          bash .github/agent/prompts/extra.sh || verdict=failure\n          echo \"verdict=${verdict}\"", 1)
-        self.assertNotEqual(mutated, text)
-        paths, _ = self.executed_paths(mutated)
-        self.assertEqual([p for p in sorted(paths) if not G.enforces(p)], [".github/agent/prompts/extra.sh"])
-
-    def test_the_gate_and_the_pin_checker_run_in_python_isolated_mode(self):
-        with open(self.WF) as fh:
-            _, lines = self.executed_paths(fh.read())
-        runs = [l for l in lines if re.search(r"\bpython3?\b", l) and ".github/agent/bin/" in l]
-        self.assertEqual(len(runs), 4, runs)      # judge: gate, pins; sweep: gate, pins
-        for l in runs:
-            for m in re.finditer(r"\bpython3?\s+(\S+)", l):
-                self.assertEqual(m.group(1), "-I", l)
-
     def test_the_requirement_text_never_names_the_auditor_directory_literally(self):
         # REQ-AUD-18 AC1: a file outside the auditor directory may not refer to it by its literal path prefix.
         for rel in ("requirements/requirements.yaml", "docs/quality/traceability.md"):
-            with open(os.path.join(self.ROOT, rel)) as fh:
+            with open(os.path.join(ROOT, rel)) as fh:
                 self.assertNotIn(".github/agent/", fh.read(), rel)
 
-    def test_an_environment_value_cannot_unexpire_a_substitute(self):
-        d = tempfile.mkdtemp(); self.addCleanup(shutil.rmtree, d)
-        def git(*a):
-            return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *a],
-                                  cwd=d, check=True, capture_output=True, text=True).stdout
-        def put(p, t):
-            os.makedirs(os.path.dirname(os.path.join(d, p)), exist_ok=True)
-            with open(os.path.join(d, p), "w") as fh:
-                fh.write(t)
-        old = json.loads(json.dumps(SUBS))
-        for e in old["substitutes"]:
-            e["effective_until"] = "2020-01-01T00:00:00Z"
-        git("init", "-q", "-b", "main")
-        put(".github/agent/prompts/x.py", "a\n"); put(".github/agent/reviews/substitutes.json", json.dumps(old))
-        git("add", "-A"); git("commit", "-qm", "base"); base = git("rev-parse", "HEAD").strip()
-        put(".github/agent/prompts/x.py", "b\n"); git("commit", "-qam", "change")
-        run = lambda *a, **env: subprocess.run([sys.executable, self.SCRIPT, *a], cwd=d, capture_output=True, text=True,
-                                               env=dict(os.environ, **env))
-        tree = run("--print-tree").stdout.strip()
-        put(".github/agent/reviews/%s.json" % tree, json.dumps(sub_rec(None, "2019-06-01T00:00:00Z", tree)))
-        git("add", "-A"); git("commit", "-qm", "record")
-        for env in ({}, {"GATE_NOW": "2019-01-01T00:00:00Z"}):
-            r = run("--base", base, "--head", "HEAD", **env)
-            self.assertEqual(r.returncode, 1, (env, r.stdout, r.stderr))
-            self.assertIn("expired", r.stdout)
+    def test_the_isolated_subprocess_gate_clears_a_v2_record(self):
+        r = CliRepo().start(self)
+        r.change(".github/agent/bin/x.py", "b\n"); r.record(good)
+        p = subprocess.run([sys.executable, "-I", SCRIPT, "--base", r.base, "--head", "HEAD", "--subs-rev", r.base],
+                           capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("clears the stop rule", p.stdout)
 
 
 class HarnessManifest(unittest.TestCase):
-    """The reviewed harness manifest (.github/agent/supply-chain/harness-manifest.json, REQ-SUP-001 AC11) lies under .github/agent/, so a change to it needs a current review record, and any
-    edit of it invalidates a record made before. It exempts files from the supply-chain checks, so an unreviewed change would silently hide a pin."""
+    """REQ-AUD-018-AC3: the reviewed harness manifest (REQ-SUP-001 AC11) lies under the auditor directory, so a change
+    to it needs a current review record, and any edit of it invalidates a record made before."""
     M = ".github/agent/supply-chain/harness-manifest.json"
-    setUp, git, write, run_main = Cli.setUp, Cli.git, Cli.write, Cli.run_main
 
-    def commit_manifest(self, text, msg="manifest"):
-        os.makedirs(os.path.dirname(self.M), exist_ok=True)
-        self.write(self.M, text)
-        self.git("add", "-A"); self.git("commit", "-qm", msg)
+    def setUp(self):
+        self.r = CliRepo().start(self)
 
     def test_the_manifest_is_under_the_reviewed_prefix(self):
         self.assertTrue(self.M.startswith(G.AGENT))
-        self.assertNotIn(self.M, getattr(G, "GUARDED", ()), "the manifest is covered by the reviewed .github/agent/ prefix, not by the list of guard files outside it")
+        self.assertNotIn(self.M, G.GUARDED)
 
     def test_a_manifest_only_change_needs_a_record(self):
-        self.commit_manifest('{"files": []}\n')
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
+        self.r.change(self.M, '{"files": []}\n')
+        rc, out, _ = self.r.judge()
         self.assertEqual(rc, 1)
         self.assertIn("no valid review record", out)
         self.assertIn(self.M, out)
 
-    def test_a_manifest_only_change_with_a_current_record_passes(self):
-        self.commit_manifest('{"files": []}\n')
-        tree = self.run_main("--print-tree")[1].strip()
-        rec = good(); rec["tree"] = tree
-        os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 0)
-        self.assertIn("clears the stop rule", out)
-
-    def test_editing_the_manifest_invalidates_an_existing_record(self):
-        self.commit_manifest('{"files": []}\n')
-        tree = self.run_main("--print-tree")[1].strip()
-        rec = good(); rec["tree"] = tree
-        os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/reviews/%s.json" % tree, json.dumps(rec))
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        self.assertEqual(self.run_main("--base", self.base, "--head", "HEAD")[0], 0)
-        self.commit_manifest('{"files": [{"path": "bin/x-test.sh", "sha256": "%s", "reason": "r"}]}\n' % ("0" * 64), "edited after the review")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 1)
-        self.assertIn("no valid review record", out)
-        self.assertIn(self.M, out)
-        self.assertNotEqual(self.run_main("--print-tree")[1].strip(), tree)
-
-    def test_the_tree_hash_covers_the_manifest_and_still_ignores_records_only(self):
-        t0 = self.run_main("--print-tree")[1].strip()
-        self.commit_manifest('{"files": []}\n')
-        t1 = self.run_main("--print-tree")[1].strip()
-        self.assertNotEqual(t0, t1)
-        self.commit_manifest('{"files":   []}\n', "whitespace")
-        t2 = self.run_main("--print-tree")[1].strip()
-        self.assertNotEqual(t2, t1)
-        os.makedirs(".github/agent/reviews")
-        self.write(".github/agent/reviews/%s.json" % ("0" * 64), "{}")
-        self.git("add", "-A"); self.git("commit", "-qm", "record")
-        self.assertEqual(self.run_main("--print-tree")[1].strip(), t2)
-
-    def test_deleting_the_manifest_is_a_guarded_change(self):
-        self.commit_manifest('{"files": []}\n')
-        mid = self.git("rev-parse", "HEAD").strip()
-        self.git("rm", "-q", self.M); self.git("commit", "-qm", "delete")
-        rc, out, _ = self.run_main("--base", mid, "--head", "HEAD")
+    def test_a_manifest_only_change_with_a_current_record_passes_and_an_edit_invalidates_it(self):
+        self.r.change(self.M, '{"files": []}\n'); self.r.record(good)
+        self.assertEqual(self.r.judge()[0], 0)
+        self.r.change(self.M, '{"files":   []}\n')
+        rc, out, _ = self.r.judge()
         self.assertEqual(rc, 1)
         self.assertIn(self.M, out)
-
-    def test_an_unchanged_manifest_and_other_outside_changes_need_no_record(self):
-        self.commit_manifest('{"files": []}\n')
-        mid = self.git("rev-parse", "HEAD").strip()
-        self.write("src/y", "t\n"); self.git("commit", "-qam", "outside")
-        rc, out, _ = self.run_main("--base", mid, "--head", "HEAD")
-        self.assertEqual(rc, 0)
-        self.assertIn("nothing to clear", out)
 
     def test_files_outside_the_prefix_are_not_reviewed(self):
-        self.write(".github/supply-chain-harness.json", "x\n"); self.write(".github/supply-chain-exceptions.json", "{}\n")
-        self.git("add", "-A"); self.git("commit", "-qm", "siblings")
-        rc, out, _ = self.run_main("--base", self.base, "--head", "HEAD")
-        self.assertEqual(rc, 0)
-
+        self.r.write(".github/supply-chain-harness.json", "x\n"); self.r.change(".github/supply-chain-exceptions.json", "{}\n")
+        self.assertEqual(self.r.judge()[0], 0)
 
 
 if __name__ == "__main__":

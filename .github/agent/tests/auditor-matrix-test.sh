@@ -3265,17 +3265,21 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
-begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both vendors are clear; no record, a stale record (content changed after review) or an open blocker fails; a change outside .github/agent/ needs none"
+begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both Codex seats (two different models) are clear; no record, a stale record (content changed after review), an open blocker or an old-schema record the PR adds fails; a change outside .github/agent/ needs none"
 RG="$repo/$BIN/auditor-review-gate.py"; rg="$WORK/req18-ac3"; rm -rf "$rg"; mkdir -p "$rg/.github/agent/bin" "$rg/src"
 gt(){ git -C "$rg" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
 gate(){ ( cd "$rg" && "$PY" "$RG" --base "$1" >/dev/null 2>&1 ); echo $?; }
 mkrec(){ ( cd "$rg" && t="$("$PY" "$RG" --print-tree)" && mkdir -p .github/agent/reviews && "$PY" - "$t" "$1" <<'RR'
 import json,sys
-t,blk=sys.argv[1],int(sys.argv[2]); ev="ab"*32
-rv={"codex":{"vendor":"openai","blockers_open":0,"evidence_sha256":ev},
-    "sonnet":{"vendor":"anthropic","blockers_open":blk,"evidence_sha256":ev}}
-json.dump({"schema":"auditor-review-record/v1","tree":t,"change":"test","rounds":[{"round":1,"reviewers":rv}],
-           "stop":{"codex":"clear","sonnet":"clear" if blk==0 else "blocked"}},open(".github/agent/reviews/%s.json"%t,"w"))
+t,blk=sys.argv[1],int(sys.argv[2])
+def seat(s,m,b,ev): return {"reviewer":"codex","vendor":"openai","seat":s,"model":m,"effort":"xhigh","blockers_open":b,"evidence_sha256":ev}
+if blk<0:      # an old-schema (v1) record that the PR itself adds
+    rv={"codex":{"vendor":"openai","blockers_open":0,"evidence_sha256":"ab"*32}}
+    json.dump({"schema":"auditor-review-record/v1","tree":t,"rounds":[{"round":1,"reviewers":rv}],"stop":{"codex":"clear"}},
+              open(".github/agent/reviews/%s.json"%t,"w")); sys.exit()
+rv={"codex_a":seat("A","gpt-6.1-sol",0,"ab"*32),"codex_b":seat("B","gpt-6-astra",blk,"cd"*32)}
+json.dump({"schema":"auditor-review-record/v2","tree":t,"change":"test","rounds":[{"round":1,"reviewers":rv}],
+           "stop":{"codex_a":"clear","codex_b":"clear" if blk==0 else "blocked"}},open(".github/agent/reviews/%s.json"%t,"w"))
 RR
 ) && gt add -A && gt commit -qm rec; }
 echo a > "$rg/.github/agent/bin/x.py"; echo s > "$rg/src/y"; gt init -q; gt add -A; gt commit -qm base; base="$(git -C "$rg" rev-parse HEAD)"
@@ -3288,8 +3292,9 @@ echo c > "$rg/.github/agent/bin/x.py"; gt commit -qam fixup; stale="$(gate "$bas
 # would otherwise report only the new, outside path)
 mkrec 0; base2="$(git -C "$rg" rev-parse HEAD)"; gt mv .github/agent/bin/x.py src/x.py; gt commit -qm moveout; moved="$(gate "$base2")"
 mkrec 0; base3="$(git -C "$rg" rev-parse HEAD)"; mkdir -p "$rg/.github/agent/reviews"; echo "print(1)" > "$rg/.github/agent/reviews/not-a-record.py"; gt add -A; gt commit -qm smuggle; smuggled="$(gate "$base3")"
-{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1"; } \
-  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled"
+base4="$(git -C "$rg" rev-parse HEAD)"; echo d > "$rg/.github/agent/bin/x.py"; gt commit -qam v1change; mkrec -1; oldschema="$(gate "$base4")"
+{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1" && eq "$oldschema" "1"; } \
+  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1 v1-added-by-pr=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled v1=$oldschema"
 
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
