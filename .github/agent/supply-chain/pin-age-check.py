@@ -709,25 +709,105 @@ def _context(data, path, flat):
 
 
 _DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")    # the inventory's own recogniser of "a download" (pin-inventory.unmeasured_occurrences)
-_LIST_OPEN = re.compile(r'(?:^|[(\[,=]) ?\[ ?"$')     # before "curl": a list LITERAL's [ (after the line start, (, [, , or =), never a subscript x["curl"]
 _LIST_NEXT = re.compile(r'" ?[,\]]')                  # after curl: the closing quote, then , or ]: the element is exactly the str "curl"
 _STR_PREFIX = re.compile(r"^[bBrRuUfFtT]{1,2}(?=[\"'])")
+# Fail closed (Codex round 3, advisor 0080): a downloader is NOT redirect-following only in one of two plain forms, each positively recognised; any shape
+# this reader cannot resolve (a subscript, a slice, a comprehension, an attribute, an operator, a splat, a backslash, a triple quote) is redirect-following.
+_SHELL_PREFIX = re.compile(r"[A-Za-z0-9_ ./;&|!=-]*")    # before a shell command word: plain words only (no quote, $, bracket, brace, backtick, #, <, >)
+_SHELL_PREV = {"", "if", "then", "do", "else", "elif", "while", "until", "!", "&&", "||", ";", "|", "time"}
+_LIST_AFTER = ("", ",", ")", "]")                      # what may follow a list (or a grouping parenthesis) around the plain "curl": nothing that reads it
+_PY_WORDS = {"and", "or", "not", "is", "in", "if", "else", "for", "as", "lambda"}   # after curl, a Python operator word: curl is a name, not a command
+# a curl option that follows redirects or reads options it does not show (a config file): any word that is or abbreviates one of these long options
+_REDIRECT_LONG = ("--location", "--location-trusted", "--follow", "--config")
+
+
+def _shell_command_curl(flat, s, e):
+    """True when curl at [s, e) is the command word of a plain shell line: a whole word, only plain words before it, the word before it none, a command
+    keyword or a separator (or ending in ;), and a word after it that is an argument: not an operator, an assignment or a Python operator word (curl = x,
+    curl .x, curl -= 1, if curl and x: and a curl with no argument are not plain commands)."""
+    pre, nxt = flat[:s], flat[e:].split()[:1]
+    if not ((s == 0 or flat[s - 1] == " ") and e < len(flat) and flat[e] == " " and nxt and _SHELL_PREFIX.fullmatch(pre)):
+        return False
+    prev = (pre.split() or [""])[-1]
+    return ((prev in _SHELL_PREV or prev.endswith(";")) and nxt[0][0] not in "=.([)],+*:<>%/&|^@!~"
+            and nxt[0] not in _PY_WORDS and not re.fullmatch(r"[-+*/%&|^@<>!:]*=+", nxt[0]))
+
+
+def _brackets(flat):
+    """The brackets of a line read as Python: {open index: [char, kind, close index or None, parent open index or None]}, strings skipped, a # outside a
+    string ends the line. A [ is a "list" literal only after the line start, (, a plain = (never ==, +=, := or another operator's =), a comma, return or
+    a list's [; any other [ is a "sub" (a subscript or worse); a ( after a name, ) or ] is a "call", any other ( a "group"; a { is a "brace". None when
+    the line cannot be read that simply (a backslash, a triple quote, an f- or t-string, which can hold quotes and brackets, an unterminated string, a
+    mismatched bracket)."""
+    out, stack, i = {}, [], 0
+    while i < len(flat):
+        c = flat[i]
+        if c == "\\":
+            return None
+        if c in "\"'":
+            j = flat.find(c, i + 1)
+            if flat.startswith(c * 3, i) or j < 0 or re.search(r"(?<![\w.])[rRbB]?[fFtT][rRbB]?$", flat[:i]):
+                return None
+            i = j + 1
+            continue
+        if c == "#":
+            break
+        if c in "([{":
+            prev = flat[:i].rstrip()
+            if c == "[":
+                listy = (prev == "" or prev[-1] in "(," or re.search(r"(?:^|[^\w.])return$", prev)
+                         or (prev[-1] == "=" and (len(prev) == 1 or prev[-2] not in "=!<>+-*/%&|^:@~"))
+                         or (prev[-1] == "[" and bool(stack) and out[stack[-1]][:2] == ["[", "list"]))
+                kind = "list" if listy else "sub"
+            elif c == "(":
+                kind = "call" if prev and (prev[-1].isalnum() or prev[-1] in "_)]") else "group"
+            else:
+                kind = "brace"
+            out[i] = [c, kind, None, stack[-1] if stack else None]
+            stack.append(i)
+        elif c in ")]}":
+            if not stack or out[stack[-1]][0] != "([{"[")]}".index(c)]:
+                return None
+            out[stack.pop()][2] = i
+        i += 1
+    return out
+
+
+def _listed_curl(flat, s, e, br):
+    """True when "curl" at [s, e) is the WHOLE first element of a Python list literal that nothing reads: its [ is a list literal (one optional space
+    before the quote), the list closes on the line, holds no * element and is followed only by , ) ] or the end; every bracket around it is a list, a
+    call or a group (never a subscript or a brace), each enclosing list or group closed on the line and followed the same way."""
+    if br is None or not (s >= 2 and flat[s - 1] == '"' and _LIST_NEXT.match(flat, e)):
+        return False
+    b = s - 2 if flat[s - 2] == "[" else s - 3 if s >= 3 and flat[s - 2] == " " and flat[s - 3] == "[" else None
+    if b is None or b not in br or br[b][1] != "list" or br[b][2] is None or re.search(r"[\[,] ?\*", flat[b:br[b][2]]):
+        return False
+    while b is not None:
+        _, kind, close, parent = br[b]
+        if kind in ("sub", "brace"):
+            return False
+        if kind in ("list", "group") and (close is None or flat[close + 1:].lstrip()[:1] not in _LIST_AFTER):
+            return False
+        b = parent
+    return True
 
 
 def _follows_redirects(flat):
-    """False ONLY when every downloader word the inventory recognises is the bare word curl (a whole space-delimited word, or the WHOLE first element
-    "curl" of a Python list literal: ["curl", or ["curl"], never a subscript TOOLS["curl"] or an expression "curl"+X) and no word holds an L after a
-    single - or begins --location (a Python string prefix such as b"-L" or rb'-L' is read through). Everything else (wget in any spelling, which follows
-    redirects by default, /usr/bin/curl, curl.exe, b"curl", 'curl', -L, -fsSL, -4fsSL, -#L, -fsSLo"$out", --location*) counts as following redirects,
-    fail closed: a false positive only asks for the cosign verifier line."""
+    """False ONLY when every downloader word the inventory recognises is curl in a plain form (the command word of a plain shell line, or the WHOLE first
+    element "curl" of a Python list literal that nothing subscripts, slices, reads or extends) and no word holds an L or a K (-K: a config file) after a
+    single - or is, begins with or abbreviates --location, --follow or --config (a Python string prefix such as b"-L" or rb'-L' is read through).
+    Everything else (wget in any spelling, which follows redirects by default, /usr/bin/curl, curl.exe, b"curl", 'curl', TOOLS["curl"],
+    TOOLS[["curl"][0]], ["curl"][0:1], a comprehension, an f-string, -L, -fsSL, -4fsSL, -#L, -fsSLo"$out", --location*, --loc, --follow, -K, --config)
+    counts as following redirects, fail closed: a false positive only asks for the cosign verifier line."""
+    br = _brackets(flat)
     for m in _DOWNLOADER.finditer(flat):
         s, e = m.span()
-        word = (s == 0 or flat[s - 1] == " ") and (e == len(flat) or flat[e] == " ")
-        listed = bool(_LIST_OPEN.search(flat[:s]) and _LIST_NEXT.match(flat, e))
-        if not (m.group() == "curl" and (word or listed)):
+        if not (m.group() == "curl" and (_shell_command_curl(flat, s, e) or _listed_curl(flat, s, e, br))):
             return True
     words = [_STR_PREFIX.sub("", x).strip("\"'") for x in re.split(r"[\s,\[\]()]+", flat)]
-    return any(w.startswith("--location") or (w.startswith("-") and not w.startswith("--") and "L" in w) for w in words)
+    long = lambda w: w.split("=", 1)[0]
+    return any((w.startswith("-") and not w.startswith("--") and ("L" in w or "K" in w))
+               or (w.startswith("--") and len(long(w)) > 2 and any(o.startswith(long(w)) or long(w).startswith(o) for o in _REDIRECT_LONG)) for w in words)
 
 
 def _cosign(line):
@@ -736,8 +816,25 @@ def _cosign(line):
     return any(words[i:i + 2] == ["cosign", "verify-blob"] for i in range(len(words))) and has(_IDENT) and has(_ISSUER)
 
 
+def _repeated_segment(path, flat):
+    """None, or why the line cannot be counted by lines: the scanner reads one copy of it as more than one occurrence of a key (a download segment
+    repeated on the line), so a row's count would not be a count of lines and a repeat could stand in for a copy the scanner does not count; such a line
+    is refused, fail closed (Codex round 3)."""
+    try:
+        per = {}
+        for k, f, _ in inv.unmeasured_occurrences({path: flat + "\n"}):
+            if f == flat:
+                per[k] = per.get(k, 0) + 1
+    except RuntimeError as e:
+        return str(e)
+    return "the line repeats its download segment: its copies cannot be counted as lines" if any(n != 1 for n in per.values()) else None
+
+
 def _fetch_unverified(root, head, row, flat, held_n):
     """None when the head holds what an input-fetch row requires (REQ-SUP-001-AC19), else why not."""
+    repeats = _repeated_segment(row["file"], flat)
+    if repeats:
+        return repeats
     if held_n != row["count"]:
         return f"the head holds the line {held_n} times, the row counts {row['count']} (exactly)"
     ctx = _context(_head_bytes(root, head, row["file"]), row["file"], flat)
@@ -795,9 +892,11 @@ def print_context(path, line, count="1"):
         except RuntimeError as e:
             per = {None: -1}
             print(f"pin-age: {e}", file=sys.stderr)
-        total = max(per.values(), default=0)
-        if not (re.fullmatch(r"[1-9][0-9]?|100", count) and ctx[1] == total == int(count)):
-            ctx = f"the scanner counts the line {total} times, its block {ctx[1]} times, not {count}"
+        counts = sorted(per.values())                 # EVERY per-key count must agree with the block count and COUNT (Codex round 3): never the largest
+        repeats = _repeated_segment(path, flat)
+        if repeats or not (re.fullmatch(r"[1-9][0-9]?|100", count) and counts and set(counts) == {ctx[1]} == {int(count)}):
+            ctx = (f"the scanner's per-key counts of the line are {counts or [0]}, its block holds it {ctx[1]} times: they do not all equal {count}"
+                   + (f" ({repeats})" if repeats else ""))
     if isinstance(ctx, str):
         print(f"pin-age: cannot isolate the context: {ctx}", file=sys.stderr)
         return 2

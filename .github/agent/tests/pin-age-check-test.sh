@@ -2397,6 +2397,34 @@ for line in PLAIN + OTHER:
         bad.append((line, ac._follows_redirects(flat)))
 assert not bad, bad
 PYC3
+# helper review of the round-3 fix (fail closed, advisor 0080): a [ after ==, +=, := or another operator's = is not a list literal; a line holding an f- or
+# t-string (quotes and brackets inside it) is not read; curl followed by nothing, an assignment operator or a Python operator word is not a command; a
+# curl option that follows redirects or reads options it does not show (-K, --config, --follow, an abbreviated --location) counts as following redirects
+CASE="AC19' (6) helper review of round 3: operator =, f-strings, a curl that is a name, --follow, -K, --config and abbreviated long options count as following redirects"
+check python3 - "$chk" <<'PYC4'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+U = '"https://h.example.dev/a"'
+PLAIN = ['curl --fail --silent --show-error --output x https://h.example.dev/a', 'curl --retry 3 --connect-timeout 5 -o x https://h.example.dev/a',
+         'curl --compressed --create-dirs --cacert ca.pem -o x https://h.example.dev/a', 'curl --limit-rate 1M -o x https://h.example.dev/a',
+         'r = run(args=["curl", "--fail", %s])' % U, 'x = (["curl", "-fsS", %s])' % U, 'r = run(["curl", "-fsS", %s], check=True)' % U]
+OTHER = ['ok = cmd == ["curl", %s]' % U, 'cmd += ["curl", %s]' % U, 'if (cmd := ["curl", %s]): run(cmd)' % U, 'ok = cmd != ["curl", %s]' % U,
+         'r = subprocess.run(["curl", f"{T["x"]}", %s])' % U, 'r = subprocess.run([f"{x}", "curl", %s])' % U, 'r = subprocess.run(["curl", rf"{a}", %s])' % U,
+         'r = subprocess.run(["curl", t"{a}", %s])' % U, 'r = subprocess.run(["curl", F"x", %s])' % U,
+         'if curl and run(T[0], %s): pass' % U, 'x = a if b else curl', 'if curl is not None: run(%s)' % U, 'curl -= 1; run(%s)' % U, 'curl += 1; run(%s)' % U,
+         'if curl in X: run(%s)' % U, 'echo ok; curl', 'curl --follow https://h.example.dev/a', 'curl --loc https://h.example.dev/a', 'curl --locat https://h.example.dev/a',
+         'curl --location-trusted https://h.example.dev/a', 'curl -K cfg https://h.example.dev/a', 'curl -fsSK cfg https://h.example.dev/a',
+         'curl --config cfg https://h.example.dev/a', 'curl --config=cfg https://h.example.dev/a', 'curl --conf cfg https://h.example.dev/a',
+         'curl --f https://h.example.dev/a', 'r = subprocess.run(["curl", "--follow", %s])' % U, 'r = subprocess.run(["curl", "-K", "c", %s])' % U]
+bad = []
+for line in PLAIN + OTHER:
+    flat = " ".join(line.split())
+    if not [k for k, f, b in ac.inv.unmeasured_occurrences({"bin/x.sh": line + "\n"}) if k[1] == "a download"]:
+        bad.append(("the inventory does not see a download in", line))
+    elif ac._follows_redirects(flat) != (line in OTHER):
+        bad.append((line, ac._follows_redirects(flat)))
+assert not bad, bad
+PYC4
 # rows from the pull request itself, the trusted copy, malformed lists, both lists
 ifrepo ifhead "${SUPPORT[@]}" head bin/fetch.sh "$FETCH$LIT"$'\n'"$KEY"$'\n' head .github/supply-chain-exceptions.json "$(cat "$work/if-ok.json")"
 rc=0; python3 "$chk" --root "$work/ifhead" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/if.out" 2>&1 || rc=$?
@@ -2532,12 +2560,18 @@ L2="$R3A; $R3B"
 mkdir -p "$work/pcmix-ok/bin"; printf '%s\n' '#!/bin/bash' "$L2" "$L2" >"$work/pcmix-ok/bin/x.sh"
 CASE="AC19' --print-context (Codex round 3 P3) control: two keys each counted 2, the block 2, COUNT 2: prints the whole file's hash"
 check test "$(cd "$work/pcmix-ok" && python3 "$chk" --print-context bin/x.sh "$L2" 2)" = "$(shasum -a 256 "$work/pcmix-ok/bin/x.sh" | cut -d' ' -f1)"
-# the checker refuses the same shape: a line that repeats its download segment counts each copy twice, so a copy the scanner excludes (a continued
-# echo) could balance the block count; such a line's copies cannot be counted as lines and its row fails (fail closed)
+# the checker refuses the same shape: a line that repeats its download segment counts each copy twice, so its row's count is not a count of lines and a
+# repeat could stand in for a copy the scanner does not count; such a line's row fails on the repeat itself (fail closed); a continued echo copy is never ruled
 LR='curl -fsS -o "$tmp/i" https://packages.example.dev/a.tgz; curl -fsS -o "$tmp/i" https://packages.example.dev/a.tgz'
-one ifr6 "$FETCH$LR"$'\n'$'echo \\\n'"$LR"$'\n' "$LR" "$HOSTN" '{"count": 2}'
-CASE="AC19' (1) Codex round 3 P3: a ruled line that repeats its download segment (one real copy, one continued echo copy, count 2) fails: exit 1"
+one ifr6 "$FETCH$LR"$'\n' "$LR" "$HOSTN" '{"count": 2}'
+CASE="AC19' (1) Codex round 3 P3: a ruled line that repeats its download segment (one copy, the scanner counts it twice, row count 2) fails on the repeat: exit 1"
 refused 0; check grep -q 'repeats its download segment' "$work/if.out"
+one ifr6b "$FETCH$LR"$'\n' "$LR" "$HOSTN" '{"count": 1}'
+CASE="AC19' (1) Codex round 3 P3: the same line with row count 1 (the scanner's count is 2): never ruled: exit 1"
+refused 0
+one ifr7 "$FETCH$LR"$'\n'$'echo \\\n'"$LR"$'\n' "$LR" "$HOSTN" '{"count": 2}'
+CASE="AC19' (1) Codex round 3 P3: the same line with a continued echo copy (count 2): the excluded copy is never ruled: exit 1"
+refused 0
 pcerr() { # DIR FILE WHY
   rc=0; out=$(cd "$1" && python3 "$chk" --print-context "$2" "$LIT" 2>"$work/pc.err") || rc=$?
   CASE="AC19' --print-context (Codex P3): $3: exit 2, nothing on stdout, no traceback"
