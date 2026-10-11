@@ -18,7 +18,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/fosterstack/cache/internal/blobstore"
 	"github.com/fosterstack/cache/internal/cache"
+	"github.com/fosterstack/cache/internal/metadata"
 )
 
 var (
@@ -271,8 +273,10 @@ func TestServeMetaOpenError(t *testing.T) {
 	}
 }
 
-// An unclean marker plus a reconcile that fails aborts startup before
-// serving.
+// REQ-STORE-005-AC4: an unclean marker plus a reconcile that fails aborts
+// startup before serving, naming the reconciliation failure; the stores
+// are closed and the marker is still present, so the next start
+// reconciles again.
 func TestServeReconcileError(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
@@ -287,9 +291,168 @@ func TestServeReconcileError(t *testing.T) {
 		return cache.ReconcileStats{}, errTestReconcile
 	}
 	defer func() { cacheReconcile = orig }()
-	if err := serve(context.Background(), quietLogger(), nil); err == nil ||
+	origClose := cacheClose
+	closes := 0
+	cacheClose = func(c *cache.Cache) error { closes++; return origClose(c) }
+	defer func() { cacheClose = origClose }()
+
+	served := false
+	if err := serve(context.Background(), quietLogger(), func() { served = true }); err == nil ||
 		!strings.Contains(err.Error(), "reconciliation") {
 		t.Fatalf("serve error = %v, want a reconciliation error", err)
+	}
+	if served {
+		t.Error("serve reached the serving stage after a failed reconcile")
+	}
+	if closes != 1 {
+		t.Errorf("stores closed %d times, want 1", closes)
+	}
+	// The index can be opened again: the failed start released it.
+	meta, err := metadata.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatalf("reopen the index after the failed start: %v", err)
+	}
+	if err := meta.Close(); err != nil {
+		t.Fatalf("close the reopened index: %v", err)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a failed reconcile, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC4, the same mechanism for a panic inside the startup
+// reconcile: the panic is not swallowed, the stores are closed and the
+// marker is still present, so the next start reconciles again.
+func TestServeReconcilePanicKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	const boom = "test: reconcile panicked"
+	orig := cacheReconcile
+	cacheReconcile = func(*cache.Cache, context.Context) (cache.ReconcileStats, error) { panic(boom) }
+	defer func() { cacheReconcile = orig }()
+	origClose := cacheClose
+	closes := 0
+	cacheClose = func(c *cache.Cache) error { closes++; return origClose(c) }
+	defer func() { cacheClose = origClose }()
+
+	recovered := func() (r any) {
+		defer func() { r = recover() }()
+		_ = serve(context.Background(), quietLogger(), nil)
+		return nil
+	}()
+	if recovered != boom {
+		t.Fatalf("recovered %v from serve, want the reconcile panic %q to propagate", recovered, boom)
+	}
+	if closes != 1 {
+		t.Errorf("stores closed %d times, want 1", closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a panic in reconcile, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC4, the resume: a first start whose reconcile changes the
+// index (one blob indexed) and then fails leaves the marker, so the second
+// start runs the real reconcile, logs the reconciled line, adopts the rest
+// and removes the stale temporary file left in +tmp.
+func TestServeReconcileResumesAfterAFailedStart(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+
+	// Three blobs with no index records, as after a crash between the writes.
+	blobs, err := blobstore.New(filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatalf("open blob store: %v", err)
+	}
+	keys := []string{"orphan-one", "orphan-two", "orphan-three"}
+	for _, k := range keys {
+		if _, err := blobs.Put(k, strings.NewReader("bytes of "+k)); err != nil {
+			t.Fatalf("seed blob %s: %v", k, err)
+		}
+	}
+	if err := blobs.Close(); err != nil {
+		t.Fatalf("close blob store: %v", err)
+	}
+	// A temporary file from an interrupted write, in the store's +tmp directory.
+	stray := filepath.Join(dir, "blobs", "+tmp", ".tmp-cafecafecafecafecafecafecafecafe")
+	if err := os.MkdirAll(filepath.Dir(stray), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stray, []byte("interrupted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+
+	// First start: the reconcile indexes one blob, then fails.
+	orig := cacheReconcile
+	cacheReconcile = func(c *cache.Cache, ctx context.Context) (cache.ReconcileStats, error) {
+		if _, err := c.Put(ctx, keys[0], strings.NewReader("bytes of "+keys[0])); err != nil {
+			return cache.ReconcileStats{}, err
+		}
+		return cache.ReconcileStats{AdoptedBlobs: 1}, errTestReconcile
+	}
+	err = serve(context.Background(), quietLogger(), nil)
+	cacheReconcile = orig
+	if err == nil || !strings.Contains(err.Error(), "reconciliation") {
+		t.Fatalf("first start error = %v, want a reconciliation error", err)
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); !present {
+		t.Fatal("marker gone after the failed first start")
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatalf("stale temp file gone before the resumed reconcile (stat err %v): the test would prove nothing", err)
+	}
+
+	// Second start: the real reconcile runs and adopts the other two.
+	freshRegistry(t)
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- serve(ctx, log, func() { cancel() }) }()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("second start returned %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("second start did not shut down")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "fscache: reconciled") || !strings.Contains(out, "adopted_blobs=2") {
+		t.Errorf("second start log lacks the reconciled line with adopted_blobs=2:\n%s", out)
+	}
+	if !strings.Contains(out, "removed_temp_files=1") {
+		t.Errorf("second start log lacks removed_temp_files=1:\n%s", out)
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Errorf("stale temp file still in +tmp after the resumed reconcile (stat err %v)", err)
+	}
+	meta, err := metadata.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatalf("reopen the index: %v", err)
+	}
+	defer func() {
+		if err := meta.Close(); err != nil {
+			t.Errorf("close the index: %v", err)
+		}
+	}()
+	if n, err := meta.Count(); err != nil || n != len(keys) {
+		t.Errorf("index holds %d entries (err %v), want %d", n, err, len(keys))
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); present {
+		t.Error("marker still present after the clean second run")
 	}
 }
 

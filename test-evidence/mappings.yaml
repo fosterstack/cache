@@ -183,6 +183,11 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestUncleanShutdownMarkerLifecycle" }
       - { type: inspection, ref: "cmd/fscache/main.go run(): reconcile-before-serve on marker present; marker cleared only after successful clean Close (2026-09-11)" }
+  - ac: REQ-STORE-005-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestServeReconcileError" }
+      - { type: go-test, ref: "cmd/fscache:TestServeReconcileResumesAfterAFailedStart" }
+      - { type: go-test, ref: "cmd/fscache:TestServeReconcilePanicKeepsMarker" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }
