@@ -560,16 +560,84 @@ own, and a Secret volume's default file mode (0644) is readable:
 kubectl -n fscache-ns create secret tls fscache-server-tls --cert=tls.crt --key=tls.key
 ```
 
-Then add these lines to the Deployment above. Both probes switch to
-`scheme: HTTPS` (the kubelet does not verify the certificate of a probe), and a
-`startupProbe`, if you added one, needs the same:
+This is the Deployment above with the TLS entries merged into its existing
+lists: the two variables join `env`, both probes gain `scheme: HTTPS` (the
+kubelet does not verify the certificate of a probe; a `startupProbe`, if you
+added one, needs the same), and the Secret joins `volumeMounts` and `volumes`
+beside the data volume. Apply it in place of the Deployment above:
 
 ```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fscache
+  labels:
+    app.kubernetes.io/name: fscache
+spec:
+  replicas: 1                     # single-writer bbolt — see above
+  strategy:
+    type: Recreate                # never two pods on one volume
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fscache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fscache
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532            # makes the PVC writable by the image user
+        seccompProfile:
+          # Applies the container runtime's default syscall filter. It is
+          # required by the restricted Pod Security Standard, and free
+          # hardening for a static Go binary that makes no exotic syscalls.
+          type: RuntimeDefault
+      containers:
+        - name: fscache
+          image: ghcr.io/fosterstack/cache:X.Y.Z
+          ports:
+            - name: http
+              containerPort: 8080
           env:
+            - name: FSCACHE_DATA_DIR
+              value: /data        # required — see "The data directory"
             - name: FSCACHE_TLS_CERT
               value: /etc/fscache/tls/tls.crt
             - name: FSCACHE_TLS_KEY
               value: /etc/fscache/tls/tls.key
+            - name: FSCACHE_MAX_BYTES
+              value: "42949672960"   # 40 GiB, under the 50Gi PVC above
+            # Credentials come from the fscache-auth Secret below. Both keys
+            # must be set or neither; the server refuses to start with one.
+            - name: FSCACHE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: fscache-auth
+                  key: username
+            - name: FSCACHE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fscache-auth
+                  key: password
+            # Optional (see docs/docker-deploy.md#configuration).
+            # These are commented out so this manifest applies verbatim as tested;
+            # uncomment to enable.
+            # - name: FSCACHE_MAX_CONCURRENT_UPLOADS   # bound PUTs in flight; default 32, 0 disables; the request past the limit gets 429 + Retry-After
+            #   value: "32"
+            # - name: FSCACHE_RO_USERNAME              # optional read-only pair: reads cache entries but not writes them (a write gets 403)
+            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-username } }
+            # - name: FSCACHE_RO_PASSWORD
+            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-password } }
+            # An entry larger than FSCACHE_MAX_BYTES is refused with 413 and
+            # X-FSCache-Reject: entry-exceeds-cache-cap; nothing is evicted to make room.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
           livenessProbe:
             httpGet:
               path: /healthz
@@ -583,11 +651,22 @@ Then add these lines to the Deployment above. Both probes switch to
               port: http
               scheme: HTTPS
             periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
           volumeMounts:
+            - name: data
+              mountPath: /data
             - name: tls
               mountPath: /etc/fscache/tls
               readOnly: true
       volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: fscache-data
         - name: tls
           secret:
             secretName: fscache-server-tls
