@@ -604,7 +604,10 @@ def stage_grammar(rel, d, rows, env_names=frozenset()):
             e, r = check_run(str(run), set(env.keys()), rows, got, argp)
             reach = _reach(set(r) | argp, rows)
             for k, v in env.items():            # Codex #249 r8 B2: read only by a whole word of the PARSED command (a comment never counts)
-                if k in got: continue
+                # Round 1 (1): an AMBIENT name is valid in a step only if the step reaches a listed script the name is listed for AND its value is
+                # one plain expression; both checks run whether or not the run line also reads the name whole (a whole read of an ambient name in a
+                # step that does not reach its script is an error). An ambient name is never an ordinary env_names name.
+                if k in got and k not in amb: continue
                 if k in amb and not FORBID_ENV.fullmatch(k):    # PR 1b (B): an ambient name is read by a listed script from its own environment
                     if not (amb[k] & reach):
                         errs.append("%s: env %s is listed ambient only for %s, which this step does not run (as its script, an argument or through `runs`)" % (sp, k, ", ".join(sorted(amb[k]))))
