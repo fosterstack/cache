@@ -223,6 +223,18 @@ d=$(mk b8_wfout); mkdir -p "$d/tools/ci"; printf 'on: push\njobs:\n  x:\n    ste
 expect_named "a .yml with top-level jobs: outside .github/workflows signing an unlisted type is caught by name (B8)" "$d" "tools/ci/extra.yml"
 d=$(mk b8_plainyml); mkdir -p "$d/docs"; printf 'title: not a workflow\nsteps:\n  - cosign attest --type https://example.invalid/unlisted\n' > "$d/docs/notes.yml"
 expect ok "control: a .yml with neither jobs: nor runs: at the top is not a workflow (not scanned)" "$d"
+# (Codex #249 r8 B4, the class closed) a candidate .yml/.yaml anywhere is classified by its PARSED root mapping (jobs or runs -> scanned);
+# a workflow-looking or .github/ candidate that does not parse is an error
+d=$(mk b9_ind); mkdir -p "$d/$(dirname 'tools/ci/ind.yml')"; printf '  on: push\n  jobs:\n    x:\n      steps:\n        - run: cosign attest --type https://example.invalid/unlisted --predicate p img\n' > "$d/tools/ci/ind.yml"; expect_named "discovery: an indented root mapping (  jobs:) (Codex #249 r8 B4) is read and caught by name" "$d" "tools/ci/ind.yml"
+d=$(mk b9_docstart); mkdir -p "$d/$(dirname 'tools/ci/doc.yml')"; printf -- '---\n# a comment\njobs:\n  x:\n    steps:\n      - run: cosign attest --type https://example.invalid/unlisted --predicate p img\n' > "$d/tools/ci/doc.yml"; expect_named "discovery: a root jobs: after --- and a comment is read and caught by name" "$d" "tools/ci/doc.yml"
+d=$(mk b9_crlf); mkdir -p "$d/$(dirname 'tools/ci/crlf.yml')"; printf 'jobs:\r\n  x:\r\n    steps:\r\n      - run: cosign attest --type https://example.invalid/unlisted --predicate p img\r\n' > "$d/tools/ci/crlf.yml"; expect_named "discovery: a jobs: file with CRLF line endings is read and caught by name" "$d" "tools/ci/crlf.yml"
+d=$(mk b9_flow); mkdir -p "$d/$(dirname 'tools/ci/flow.yml')"; printf '{"jobs": {"x": {"steps": [{"run": "cosign attest --type https://example.invalid/unlisted --predicate p img"}]}}}\n' > "$d/tools/ci/flow.yml"; expect_named "discovery: a JSON-style flow mapping {\"jobs\": ...} in a .yml file is read and caught by name" "$d" "tools/ci/flow.yml"
+d=$(mk b9_runsflow); mkdir -p "$d/$(dirname 'tools/act/flow.yaml')"; printf '{"runs": {"using": "composite", "steps": [{"run": "cosign attest --type https://example.invalid/unlisted --predicate p img", "shell": "bash"}]}}\n' > "$d/tools/act/flow.yaml"; expect_named "discovery: a flow mapping with runs: (a composite) in a .yaml file is read and caught by name" "$d" "tools/act/flow.yaml"
+d=$(mk b9_upper); mkdir -p "$d/$(dirname 'tools/ci/WF.YML')"; printf 'jobs:\n  x:\n    steps:\n      - run: cosign attest --type https://example.invalid/unlisted --predicate p img\n' > "$d/tools/ci/WF.YML"; expect_named "discovery: an upper-case .YML extension is read and caught by name" "$d" "tools/ci/WF.YML"
+d=$(mk b9_tab); mkdir -p "$d/$(dirname 'tools/ci/tab.yml')"; printf 'jobs:\n\tx:\n\t\tsteps: []\n' > "$d/tools/ci/tab.yml"; expect_named "discovery: a jobs: file indented with tabs (YAML refuses it; fail closed) is read and caught by name" "$d" "tools/ci/tab.yml"
+d=$(mk b9_ghbroken); mkdir -p "$d/$(dirname '.github/broken.yml')"; printf 'a: [unclosed\n' > "$d/.github/broken.yml"; expect_named "discovery: an unparsable .yml under .github/ (fail closed) is read and caught by name" "$d" ".github/broken.yml"
+d=$(mk b9_dup); mkdir -p "$d/$(dirname 'tools/ci/dup.yml')"; printf 'jobs: {}\njobs:\n  x: {}\n' > "$d/tools/ci/dup.yml"; expect_named "discovery: a jobs: file with a duplicate root key (fail closed) is read and caught by name" "$d" "tools/ci/dup.yml"
+d=$(mk b9_ctl); mkdir -p "$d/docs"; printf 'title: x\nsteps:\n  - cosign attest --type https://example.invalid/unlisted --predicate p img\n' > "$d/docs/notes2.yml"; expect ok "control: a parsed .yml with no jobs:/runs: root key is not scanned" "$d"
 d=$(mk yaml); printf 'jobs:\n  c:\n    steps:\n      - run: witness sign -f policy.json -o policy.signed.json\n' > "$d/.github/workflows/other.yaml"
 expect caught "a .yaml workflow signing the policy with no row fails" "$d"
 d=$(mk comp); mkdir -p "$d/.github/actions/x"; printf 'runs:\n  using: composite\n  steps:\n    - run: cosign sign "$IMG"\n      shell: bash\n' > "$d/.github/actions/x/action.yml"
@@ -323,7 +335,7 @@ d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: acti
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
 expect_named "with legacy-stage-files.json deleted the whole tree is judged (red today on stage-verify.yml)" "$d" "stage-verify.yml: actions/attest with no literal predicate-type"
-EXPECT=85
+EXPECT=95
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

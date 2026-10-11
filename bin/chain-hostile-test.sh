@@ -694,6 +694,234 @@ d=$(mk w_verify_fakeco); pymut "$(rel "$d")" "      - run: python3 bin/chain-ver
 d=$(mk w_verify_upload2); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "      - uses: actions/upload-artifact@$sha # v7
         with: {name: other, path: attempts}
       - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"; wexpect caught "wiring: a second upload (another artifact) in the hostile-verify job" "$d"
+# (Codex #249 r8 B1 + Sonnet 4/5, the class closed) both hostile jobs are CLOSED: job keys, step keys, every with: payload and runs-on are exactly the real file's
+d=$(mk w9_co_repository); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false, repository: other/repo}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the hostile-verify checkout carries repository: (its with: is exactly persist-credentials: false; Codex #249 r8 B1)" "$d"
+d=$(mk w9_co_ref); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false, ref: main}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the hostile-verify checkout carries ref: (its with: is exactly persist-credentials: false; Codex #249 r8 B1)" "$d"
+d=$(mk w9_co_token); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false, token: x}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the hostile-verify checkout carries token: (its with: is exactly persist-credentials: false; Codex #249 r8 B1)" "$d"
+d=$(mk w9_co_path); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false, path: sub}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the hostile-verify checkout carries path: (its with: is exactly persist-credentials: false; Codex #249 r8 B1)" "$d"
+d=$(mk w9_co_fetchdepth); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false, fetch-depth: 0}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the hostile-verify checkout carries fetch-depth: (its with: is exactly persist-credentials: false; Codex #249 r8 B1)" "$d"
+d=$(mk w9_co_submodules); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false, submodules: true}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the hostile-verify checkout carries submodules: (its with: is exactly persist-credentials: false; Codex #249 r8 B1)" "$d"
+d=$(mk w9_up_path); pymut "$(rel "$d")" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: hostile-results.json}" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: attempts/mint_sign_cert.json}"; wexpect caught "wiring: the hostile-results upload carries path: attempts/mint_sign_cert.json (its with: is exactly name and path hostile-results.json)" "$d"
+d=$(mk w9_up_pathdot); pymut "$(rel "$d")" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: hostile-results.json}" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: .}"; wexpect caught "wiring: the hostile-results upload carries path: . (its with: is exactly name and path hostile-results.json)" "$d"
+d=$(mk w9_up_retentiondays); pymut "$(rel "$d")" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: hostile-results.json}" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: hostile-results.json, retention-days: 1}"; wexpect caught "wiring: the hostile-results upload carries retention-days: 1 (its with: is exactly name and path hostile-results.json)" "$d"
+d=$(mk w9_up_ifnofilesfound); pymut "$(rel "$d")" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: hostile-results.json}" "      - uses: actions/upload-artifact@$sha # v7
+        with: {name: hostile-results, path: hostile-results.json, if-no-files-found: ignore}"; wexpect caught "wiring: the hostile-results upload carries if-no-files-found: ignore (its with: is exactly name and path hostile-results.json)" "$d"
+d=$(mk w9_vd_pattern); pymut "$(rel "$d")" "        with: {name: hostile-results, path: hostile-results}
+      - run: python3 bin/chain-verify.py hostile-verdict" "        with: {name: hostile-results, path: hostile-results, pattern: x}
+      - run: python3 bin/chain-verify.py hostile-verdict"; wexpect caught "wiring: the verdict download carries pattern: (its with: is exact)" "$d"
+d=$(mk w9_vd_path); pymut "$(rel "$d")" "        with: {name: hostile-results, path: hostile-results}
+      - run: python3 bin/chain-verify.py hostile-verdict" "        with: {name: hostile-results, path: .}
+      - run: python3 bin/chain-verify.py hostile-verdict"; wexpect caught "wiring: the verdict download goes to . (its with: is exact)" "$d"
+d=$(mk w9_hv_runner); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: self-hosted"; wexpect caught "wiring: hostile-verify runs on self-hosted" "$d"
+d=$(mk w9_hv_runner2); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-20.04"; wexpect caught "wiring: hostile-verify runs on a runner outside the closed hosted set (ubuntu-20.04)" "$d"
+d=$(mk w9_hd_runner); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: self-hosted"; wexpect caught "wiring: hostile-verdict runs on self-hosted" "$d"
+d=$(mk w9_hvkey_timeoutminutes); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5"; wexpect caught "wiring: hostile-verify job key timeout-minutes: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_name); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    name: x"; wexpect caught "wiring: hostile-verify job key name: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_continueonerror); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    continue-on-error: true"; wexpect caught "wiring: hostile-verify job key continue-on-error: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_env); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    env: {A: b}"; wexpect caught "wiring: hostile-verify job key env: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_defaults); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    defaults: {run: {shell: sh}}"; wexpect caught "wiring: hostile-verify job key defaults: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_container); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    container: alpine"; wexpect caught "wiring: hostile-verify job key container: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_services); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    services: {}"; wexpect caught "wiring: hostile-verify job key services: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_strategy); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    strategy: {fail-fast: false}"; wexpect caught "wiring: hostile-verify job key strategy: is outside its closed key set" "$d"
+d=$(mk w9_hvkey_outputs); pymut "$(rel "$d")" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04" "  hostile-verify:
+    if: \${{ inputs.dry-run }}
+    needs: sign
+    runs-on: ubuntu-24.04
+    outputs: {a: b}"; wexpect caught "wiring: hostile-verify job key outputs: is outside its closed key set" "$d"
+d=$(mk w9_hdkey_timeoutminutes); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5"; wexpect caught "wiring: hostile-verdict job key timeout-minutes: is outside its closed key set" "$d"
+d=$(mk w9_hdkey_continueonerror); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    continue-on-error: true"; wexpect caught "wiring: hostile-verdict job key continue-on-error: is outside its closed key set" "$d"
+d=$(mk w9_hdkey_env); pymut "$(rel "$d")" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04" "  hostile-verdict:
+    if: \${{ inputs.dry-run }}
+    needs: hostile-verify
+    runs-on: ubuntu-24.04
+    env: {A: b}"; wexpect caught "wiring: hostile-verdict job key env: is outside its closed key set" "$d"
+d=$(mk w9_stkey_if); pymut "$(rel "$d")" "      - run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json" "      - if: always()
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json"; wexpect caught "wiring: an attempt step key if: is outside the step's closed key set" "$d"
+d=$(mk w9_stkey_timeoutminutes); pymut "$(rel "$d")" "      - run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json" "      - timeout-minutes: 1
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json"; wexpect caught "wiring: an attempt step key timeout-minutes: is outside the step's closed key set" "$d"
+d=$(mk w9_stkey_continueonerror); pymut "$(rel "$d")" "      - run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json" "      - continue-on-error: true
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json"; wexpect caught "wiring: an attempt step key continue-on-error: is outside the step's closed key set" "$d"
+d=$(mk w9_stkey_env); pymut "$(rel "$d")" "      - run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json" "      - env: {A: b}
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json"; wexpect caught "wiring: an attempt step key env: is outside the step's closed key set" "$d"
+d=$(mk w9_stkey_shell); pymut "$(rel "$d")" "      - run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json" "      - shell: sh
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json"; wexpect caught "wiring: an attempt step key shell: is outside the step's closed key set" "$d"
+d=$(mk w9_stkey_workingdirectory); pymut "$(rel "$d")" "      - run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json" "      - working-directory: x
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json"; wexpect caught "wiring: an attempt step key working-directory: is outside the step's closed key set" "$d"
+d=$(mk w9_stkey_id); pymut "$(rel "$d")" "      - run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json" "      - id: x
+        run: |
+          rc=0
+          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json"; wexpect caught "wiring: an attempt step key id: is outside the step's closed key set" "$d"
+d=$(mk w9_costkey_if); pymut "$(rel "$d")" "      - uses: actions/checkout@$sha # v7
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}" "      - uses: actions/checkout@$sha # v7
+        if: always()
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@$sha # v8
+        with: {name: hostile-attempts, path: attempts}"; wexpect caught "wiring: the checkout step carries if: (closed step key set)" "$d"
 d=$(mk w_nogate); sed -i.bak 's/if: .*inputs.hostile.*/if: true/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: the hostile step is not gated by inputs.hostile" "$d"
 d=$(mk w_noup); sed -i.bak 's/hostile-attempts/other/' "$d/.github/workflows/stage-build.yml"; wexpect caught "wiring: attempts are not uploaded for the verifier" "$d"
 d=$(mk w_verifyneeds); sed -i.bak 's/    needs: sign$/    needs: build/' "$(rel "$d")"; wexpect caught "wiring: hostile-verify does not need Sign" "$d"
@@ -908,7 +1136,7 @@ for words in ("PR 2 (Build) lands on the integration branch chain-v030", "before
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
 PY
-EXPECT=201
+EXPECT=236
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
