@@ -192,11 +192,14 @@ import hashlib
 SCRIPT_EXTS = (".sh", ".bash", ".py", ".js", ".mjs", ".cjs", ".rb", ".pl")
 LITERAL_PATH = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./-]*")
 LIT_WORD = re.compile(r"[A-Za-z0-9_./-]+")                       # closed to what a stage line needs (Codex #249 r6 sweep); quote the rest
-# Round 1 (2): the whole forbidden CLASS by shape, case-insensitively, with digits and underscores in the tail (GITHUB_1, RUNNER_x, NODE_3,
-# ld_preload, Path, BASH_FUNC_x%%): a prefix family is `PREFIX` or `PREFIX_<anything>`, never just `PREFIX_[A-Z_]*`.
-FORBID_ENV = re.compile(r"(?:BASH_ENV|ENV|PATH|LD_.*|PYTHON.*|NODE(?:_.*)?|IFS|SHELL|SHELLOPTS|BASHOPTS|BASH_.*|CDPATH|"
-                        r"PS[0-9]|PROMPT_COMMAND|HOME|TMPDIR|GIT(?:_.*)?|GITHUB(?:_.*)?|RUNNER(?:_.*)?|LC_.*|LANG|USER|"
-                        r"RUBY.*|PERL.*|CLASSPATH|JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|GLOBIGNORE|NPM_.*|BUNDLE_.*|GEM_.*|XDG_.*|TERM.*)",
+# Round 1 (2) + round 2 (3): the forbidden CLASS by shape, case-insensitively. A FAMILY is a PREFIX with any suffix, empty included, of letters,
+# digits and underscores (GIT, GITHUB, RUNNER, NODE, PYTHON: GITASKPASS, GITHUBTOKEN, RUNNERX, NODERUNTIME, PYTHON3 are all members); LD_, BASH_, LC_,
+# PS<digit> and the tool families need their separator. Exact names are listed whole.
+FORBID_ENV = re.compile(r"(?:GIT.*|GITHUB.*|RUNNER.*|NODE.*|PYTHON.*|LD_.*|BASH_.*|LC_.*|PS[0-9].*|TERM.*|NPM_.*|BUNDLE_.*|GEM_.*|XDG_.*|"
+                        r"SSL_CERT_.*|CURL.*|WITNESS.*|COSIGN.*|SIGSTORE.*|TUF_.*|RUBY.*|PERL.*|"
+                        r"BASH_ENV|ENV|PATH|IFS|SHELL|SHELLOPTS|BASHOPTS|CDPATH|GLOBIGNORE|PROMPT_COMMAND|HOME|TMPDIR|LANG|USER|CLASSPATH|"
+                        r"JAVA_TOOL_OPTIONS|_JAVA_OPTIONS|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|ALL_PROXY|FTP_PROXY|GOFLAGS|GOPROXY|GOSUMDB|GONOSUMDB|"
+                        r"GOTOOLCHAIN|GOPRIVATE|GONOPROXY|GOINSECURE|GOENV)",
                         re.IGNORECASE | re.DOTALL)
 SIGNS = (False, "provenance", "other")
 # PR 1b: the CLOSED list of rules a per-row `exceptions` entry may waive (extend only by a reviewed edit when a real text needs it)
