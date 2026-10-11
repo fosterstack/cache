@@ -541,39 +541,49 @@ def _is_python(path, text):
     return path.endswith(".py") or bool(re.match(r"#!\S*(?:/|\s)python", text))
 
 def _mask(line):
-    """The line with every single-quoted string, every ${...} and every double-quoted string reduced to a placeholder, so their
-    contents are never read as command positions; the $( ) and backtick substitutions INSIDE a double-quoted string are returned as
-    extra segments (they are command positions)."""
+    """The line with every single-quoted string, every ${...} and every double-quoted string reduced to a placeholder OF THE SAME LENGTH
+    (PR 1b: a position in the masked line is the same position in the original, so the original text of a word can be read back), so
+    their contents are never read as command positions; the $( ) and backtick substitutions INSIDE a double-quoted string are returned
+    (as original text) as extra segments (they are command positions)."""
     extra = []
-    prev = None
-    while prev != line:
-        prev = line; line = re.sub(r"\$\{[^{}]*\}", "X", line)
-    line = re.sub(r"'[^']*'", "Q", line)
+    cur, prev = line, None
+    while prev != cur:
+        prev = cur; cur = re.sub(r"\$\{[^{}]*\}", lambda m: "X" * len(m.group(0)), cur)
+    cur = re.sub(r"'[^']*'", lambda m: "Q" * len(m.group(0)), cur)
     def dq(m):
-        extra.extend(re.findall(r"\$\(([^()]*)\)|`([^`]*)`", m.group(0)))
-        return "Q"
-    line = re.sub(r'"(?:[^"\\]|\\.)*"', dq, line)
-    return line, [a or b for a, b in extra]
+        for mm in re.finditer(r"\$\(([^()]*)\)|`([^`]*)`", m.group(0)):
+            g = 1 if mm.group(1) is not None else 2
+            extra.append(line[m.start() + mm.start(g):m.start() + mm.end(g)])
+        return "Q" * len(m.group(0))
+    cur = re.sub(r'"(?:[^"\\]|\\.)*"', dq, cur)
+    return cur, extra
 
-def command_words(text):
-    """(word, rest-of-command) at every command position of comment-stripped, continuation-joined shell text (quotes and ${...}
-    masked; substitutions inside double quotes scanned as their own segments)."""
+def command_items(text):
+    """(word, rest-of-command, original word, original next word) at every command position of comment-stripped, continuation-joined
+    shell text (quotes and ${...} masked; substitutions inside double quotes scanned as their own segments). The last two are the
+    text as written (quotes included), for a finding to name its exact span."""
     out = []
     todo = list(logical(strip(text)).splitlines())
     while todo:
-        line, extra = _mask(todo.pop(0))
+        orig = todo.pop(0)
+        line, extra = _mask(orig)
         todo += extra
         for m in CMDPOS.finditer(line):
-            w, end = m.group("w"), m.end()
+            w, end, ws = m.group("w"), m.end(), m.start("w")
             while w in RESERVED:                  # a reserved word is not the command: the next word is (`elif setsid`, `time setsid`)
-                if w == "time": out.append((w, ""))
+                if w == "time": out.append((w, "", w, ""))
                 n2 = CMD_AT.match(line, end)
                 if not n2: w = None; break
-                w, end = n2.group("w"), n2.end()
+                w, end, ws = n2.group("w"), n2.end(), n2.start("w")
             if w is None: continue
             rest = re.split(r"[;&|)`]", line[end:], 1)[0]
-            out.append((w, rest))
+            nm = re.match(r"[ \t]+(\S+)", rest)
+            out.append((w, rest, orig[ws:ws + len(w)], orig[end + nm.start(1):end + nm.end(1)] if nm else ""))
     return out
+
+def command_words(text):
+    """(word, rest-of-command) at every command position (see command_items)."""
+    return [(w, rest) for w, rest, _ow, _on in command_items(text)]
 
 # REQ-CHAIN-001-AC1 "sets no PATH, BASH_ENV, ENV, LD_*, PYTHON* or NODE_OPTIONS" (final batch B1, the class closed): a listed script may
 # mention one of these names ONLY as a pure read: $NAME / ${NAME} in shell; os.environ.get("NAME"), os.getenv("NAME") or an
@@ -617,6 +627,7 @@ def scan_script(path, text, row, rows, base):
     errs = []
     tools, runs = set(row.get("tools", [])), set(row.get("runs", []))
     selfbase = os.path.basename(path)
+    py = _is_python(path, text)
     listed_base = {os.path.basename(r) for r in rows}
     body = text.split("\n", 1)[1] if text.startswith("#!") and "\n" in text else ("" if text.startswith("#!") else text)   # the shebang names the file's OWN interpreter
     # Codex #249 r7 B3 (the class closed): a script token is compared to the manifest EXACTLY (only a leading ./ is normalised; no
@@ -627,7 +638,9 @@ def scan_script(path, text, row, rows, base):
         name = n.rsplit("/", 1)[-1]
         pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
         if pathlike and name in DENY:
-            errs.append("%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
+            # PR 1b: in a SHELL script a path-like word is judged as a command only at command position (below); an argument such as
+            # archive/go is judged by the script rule alone. A Python script has no command position, so it keeps the word-level test.
+            if py: errs.append("%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, t))
         elif n in DENY and n not in tools:
             errs.append("%s: names the command %r, which is not in this script's `tools` list" % (path, t))
         is_script = n.endswith(SCRIPT_EXTS) or n in rows or name in listed_base
@@ -637,10 +650,14 @@ def scan_script(path, text, row, rows, base):
                 with open(full, "rb") as fh: is_script = fh.read(2) == b"#!" or os.access(full, os.X_OK)
         if is_script and n != path and n not in runs and not (n == selfbase):
             errs.append("%s: names the script %r, which is not exactly a path in this script's `runs` list" % (path, t))
-    if not _is_python(path, text):
-        for w, rest in command_words(body):
+    if not py:
+        for w, rest, ow, _on in command_items(body):
             n = w[2:] if w.startswith("./") else w
             name = n.rsplit("/", 1)[-1]
+            dq = ow.strip("\"'")                  # a COMMAND named by a path is refused whatever `tools` says (the row governs the bare name only)
+            dn = dq[2:] if dq.startswith("./") else dq
+            if "/" in dn and not dn.startswith(("-", "$")) and "://" not in dn and dn.rsplit("/", 1)[-1] in DENY:
+                errs.append("%s: names the command %r by a path (name it bare, so its `tools` row governs it)" % (path, dq))
             if name in LAUNCH_OUTRIGHT:
                 errs.append("%s: %r at command position launches another program (refused whatever `tools` says)" % (path, w)); continue
             if name in EVALUATORS and not (name == "openssl" and not re.match(r"\s*s_client\b", rest)):
