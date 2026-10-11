@@ -187,6 +187,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestServeReconcileError" }
       - { type: go-test, ref: "cmd/fscache:TestServeReconcileResumesAfterAFailedStart" }
+      - { type: go-test, ref: "cmd/fscache:TestServeReconcilePanicKeepsMarker" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }

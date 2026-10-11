@@ -671,7 +671,11 @@ requirements:
       AC4 added Oct 11 2026 (advisor step 5): from the Codex round-5 finding
       on PR #257. A startup whose reconciliation returned an error cleared
       the marker on the way out, although a failed start is not a clean
-      shutdown; the behavior predates #257.
+      shutdown; the behavior predates #257. The same mechanism covers a
+      panic inside the reconcile: the marker is marked to be kept before
+      the reconcile is called and released only after it succeeds, so a
+      panic propagates as before and the marker stays (review residual,
+      Oct 11; the AC text is unchanged).
     acceptance_criteria:
       - id: REQ-STORE-005-AC1
         given: a store holding a blob with no metadata record (as after a crash between the two writes)
