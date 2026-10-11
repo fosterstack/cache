@@ -294,6 +294,28 @@ def unresolved_signing(e, ctx):
         return "%s with an unresolved argument (its blob, and so its type, cannot be known) (fail closed)" % n
     return None
 
+def mentions_outside_comments(path, text, name):
+    """Round 1 (7): does the script mention `name` as a word somewhere that can run? Shell: outside a `#` comment and not only inside a
+    single-quoted string. Python (tokenize): outside comments, and not in a statement that is only a string (a docstring or bare string); a
+    string that is part of code (os.environ.get("NAME")) counts. A script that does not tokenize counts as not mentioning (fail closed)."""
+    pat = re.compile(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(name))
+    if not _is_python(path, text):
+        return pat.search(re.sub(r"'[^']*'", "''", strip(text))) is not None
+    import io, tokenize
+    skip = {tokenize.COMMENT, tokenize.NL, tokenize.INDENT, tokenize.DEDENT, tokenize.ENCODING}
+    line = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type in skip: continue
+            if tok.type in (tokenize.NEWLINE, tokenize.ENDMARKER):
+                if line and not all(t.type == tokenize.STRING for t in line):
+                    if any(pat.search(t.string) for t in line): return True
+                line = []; continue
+            line.append(tok)
+    except (tokenize.TokenError, SyntaxError):
+        return False
+    return False
+
 def exception_entries(path, ex):
     """([valid entries], [errors]) for a row's `exceptions` (PR 1b): a list of objects with exactly rule, text and why; rule in EXC_RULES;
     text a non-empty string; why a non-blank string; no two entries with the same rule and text. Fail closed: an entry that is not valid is
@@ -365,8 +387,8 @@ def load_scripts(base):
                 errs.append("chain-scripts.json: %s `reads_env` must be a list of allowed variable names (never BASH_ENV, PATH, LD_*, PYTHON*, NODE_*, GITHUB_*, ...)" % p)
             else:
                 for n in re_:
-                    if not re.search(r"(?<![A-Za-z0-9_])%s(?![A-Za-z0-9_])" % re.escape(n), txt):
-                        errs.append("chain-scripts.json: %s reads_env names %s, which the script never mentions (stale)" % (p, n))
+                    if not mentions_outside_comments(p, txt, n):
+                        errs.append("chain-scripts.json: %s reads_env names %s, which the script never mentions outside a comment, a docstring or a single-quoted string (stale)" % (p, n))
         if "exceptions" in r:
             good, ee = exception_entries(p, r["exceptions"])
             errs += ee
