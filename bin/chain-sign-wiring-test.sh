@@ -2675,10 +2675,10 @@ d=$(wfix x_env 'echo "${PATH:=/x}"\n'); edit_spec "$d" 'rows["bin/witnessed.sh"]
 # (B) ambient env names
 afix() { # afix NAME : witnessed.sh + a stage script that runs bin/build-admit.py (reads GH_TOKEN from its own environment) + a step that passes GH_TOKEN
   local d; d=$(wfix "$1" 'unset GH_TOKEN\n')
-  printf '#!/usr/bin/env bash\nset -euo pipefail\nunset GH_TOKEN\npython3 bin/build-admit.py run\n' > "$d/bin/stage-apk.sh"
+  printf '#!/usr/bin/env bash\nset -euo pipefail\npython3 bin/build-admit.py run\nunset GH_TOKEN\n' > "$d/bin/stage-apk.sh"
   printf '#!/usr/bin/env python3\nimport os\ntok = os.environ.get("GH_TOKEN", "")\n' > "$d/bin/build-admit.py"
   edit_spec "$d" 'rows["bin/stage-apk.sh"]={"path":"bin/stage-apk.sh","tools":["python3"],"signs":False,"runs":["bin/build-admit.py"],"reads_env":["GH_TOKEN"]}; rows["bin/witnessed.sh"]["reads_env"]=["GH_TOKEN"]; rows["bin/build-admit.py"]={"path":"bin/build-admit.py","tools":[],"signs":False,"runs":[],"reads_env":["GH_TOKEN"]}'
-  printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/stage-apk.sh","why":"REQ-CHAIN-004-AC8"}]' > "$d/.ambient.json"
+  printf '[{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"REQ-CHAIN-004-AC8"},{"name":"GH_TOKEN","script":"bin/stage-apk.sh","why":"REQ-CHAIN-004-AC8","unset_before":["bin/build-admit.py"]}]' > "$d/.ambient.json"
   printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"
   gen "$d"; echo "$d"
 }
@@ -2783,7 +2783,7 @@ pc q_command 'command dist/sed x'
 pc q_nohup 'nohup dist/sed x'
 pc q_time 'time dist/sed x'
 pc q_bashc "bash -c 'dist/sed x'" '["bash"]'
-pc q_eval 'eval dist/sed' 
+pc q_eval 'eval dist/sed'
 pc q_heredoc 'bash <<EOF\ndist/sed x\nEOF' '["bash"]'
 pc q_echoredir 'echo a > dist/sed x; > o dist/awk'
 pc q_taropt 'tar --use-compress-program dist/sed -cf x y' '["tar"]'
@@ -2806,11 +2806,11 @@ d=$(cfix r_three3 './bin/build-apk.sh a\n./bin/build-apk.sh b\n./bin/build-apk.s
 DG='echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 export DG
 yrep() { # yrep DIR OLD NEW : replace one text in the pinned-step stage file
-  python3 -c 'import sys;p=sys.argv[1]+"/.github/workflows/stage-verify.yml";t=open(p).read();assert sys.argv[2] in t;open(p,"w").write(t.replace(sys.argv[2],sys.argv[3],1))' "$@"; }
-pfix() { # pfix NAME : a stage file with the AC2 digests step and its pinned_steps entry
+  python3 -c 'import sys;p=sys.argv[1]+"/.github/workflows/stage-build.yml";t=open(p).read();assert sys.argv[2] in t;open(p,"w").write(t.replace(sys.argv[2],sys.argv[3],1))' "$@"; }
+pfix() { # pfix NAME : a stage file with the AC2 digests step and its pinned_steps entry (the one ratified tuple)
   local d; d=$(mk "$1")
-  printf 'jobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n' "$DG" > "$d/.github/workflows/stage-verify.yml"
-  python3 -c 'import json,os,sys;json.dump([{"file":".github/workflows/stage-verify.yml","job":"j","id":"digests","run":os.environ["DG"],"why":"REQ-CHAIN-004-AC2"}],open(sys.argv[1]+"/.pinned.json","w"))' "$d"
+  printf 'jobs:\n  assemble:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n' "$DG" > "$d/.github/workflows/stage-build.yml"
+  python3 -c 'import json,os,sys;json.dump([{"file":".github/workflows/stage-build.yml","job":"assemble","id":"digests","run":os.environ["DG"],"why":"REQ-CHAIN-004-AC2"}],open(sys.argv[1]+"/.pinned.json","w"))' "$d"
   gen "$d"; echo "$d"
 }
 d=$(pfix s_ok); expm ok "$d" - "round-1 (5) REQ-CHAIN-004-AC2: the digests step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) is admitted with its pinned_steps entry"
@@ -2818,8 +2818,8 @@ d=$(pfix s_none); rm "$d/.pinned.json"; gen "$d"; expm caught "$d" 'GITHUB_OUTPU
 d=$(pfix s_char); yrep "$d" 'digests.json)' 'digest.json)'; expm caught "$d" 'pinned' "round-1 (5): the step text changed by one character is refused"
 d=$(pfix s_redir); yrep "$d" '"$GITHUB_OUTPUT"' '"$GITHUB_OUTPUT" > x'; expm caught "$d" 'pinned' "round-1 (5): the step with a second redirection appended is refused"
 d=$(pfix s_id); yrep "$d" 'id: digests' 'id: digest'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step with another id is refused"
-d=$(pfix s_job); yrep "$d" '  j:' '  k:'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another job is refused"
-d=$(pfix s_file); mv "$d/.github/workflows/stage-verify.yml" "$d/.github/workflows/stage-reproducibility.yml"; printf 'jobs: {}\n' > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another file is refused (and the entry for the first file is stale)"
+d=$(pfix s_job); yrep "$d" '  assemble:' '  k:'; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another job is refused"
+d=$(pfix s_file); mv "$d/.github/workflows/stage-build.yml" "$d/.github/workflows/stage-reproducibility.yml"; printf 'jobs: {}\n' > "$d/.github/workflows/stage-build.yml"; expm caught "$d" 'GITHUB_OUTPUT' "round-1 (5): the step in another file is refused (and the entry for the first file is stale)"
 d=$(pfix s_key); yrep "$d" 'as the stage output' 'as the stage output
         shell: bash'; expm caught "$d" 'pinned' "round-1 (5): a pinned step with another key (shell) is refused"
 d=$(pfix s_env); yrep "$d" 'as the stage output' 'as the stage output
@@ -2875,12 +2875,12 @@ pfx() { # pfx NAME RUN-TEXT : a stage file whose digests step and whose pinned_s
   local d; d=$(mk "$1"); DG2="$2" python3 - "$d" <<'PY'
 import json, os, sys
 d = sys.argv[1]; run = os.environ["DG2"]
-open(d + "/.github/workflows/stage-verify.yml", "w").write("jobs:\n  j:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: x\n        run: '" + run.replace("'", "''") + "'\n")
-json.dump([{"file": ".github/workflows/stage-verify.yml", "job": "j", "id": "digests", "run": run, "why": "REQ-CHAIN-004-AC2"}], open(d + "/.pinned.json", "w"))
+open(d + "/.github/workflows/stage-build.yml", "w").write("jobs:\n  assemble:\n    runs-on: ubuntu-24.04\n    steps:\n      - id: digests\n        name: x\n        run: '" + run.replace("'", "''") + "'\n")
+json.dump([{"file": ".github/workflows/stage-build.yml", "job": "assemble", "id": "digests", "run": run, "why": "REQ-CHAIN-004-AC2"}], open(d + "/.pinned.json", "w"))
 PY
   gen "$d"; echo "$d"; }
 d=$(pfx m_ok 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'); expm ok "$d" - "round-2 (2): the AC2 text is admitted"
-d=$(pfx m_ok2 'echo "d_1=$(jq -c . out/a-b.json)" >> "$GITHUB_OUTPUT"'); expm ok "$d" - "round-2 (2): another name and a relative file of the same shape are admitted"
+d=$(pfx m_ok2 'echo "d_1=$(jq -c . out/a-b.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-2 (2) -> round-3 (5): another name and file of the generic shape are now an entry error (only the ratified tuple)"
 d=$(pfx m_curl 'curl https://example.invalid/payload'); expm caught "$d" 'pinned_steps' "round-2 (2): a curl command in both the entry and the step is an entry error"
 d=$(pfx m_semi 'echo "x=$(jq -c . a.json)" >> "$GITHUB_OUTPUT"; id'); expm caught "$d" 'pinned_steps' "round-2 (2): the shape followed by ; id is refused"
 d=$(pfx m_env 'echo "x=$(jq -c . a.json)" >> "$GITHUB_ENV"'); expm caught "$d" 'pinned_steps' "round-2 (2): >> GITHUB_ENV is refused"
@@ -2895,12 +2895,12 @@ import importlib.util, json, os, sys, yaml
 spec = importlib.util.spec_from_file_location("cts", os.environ["CHAIN_ROOT"] + "/bin/chain-test-signers.py"); cts = importlib.util.module_from_spec(spec); spec.loader.exec_module(cts)
 base, path = sys.argv[1], sys.argv[2]
 rows, errs, envn = cts.load_scripts(base)
-d = cts.yload(open(base + "/.github/workflows/stage-verify.yml").read())
-e, _ = cts.stage_grammar("stage-verify.yml", d, rows, envn, path)
+d = cts.yload(open(base + "/.github/workflows/stage-build.yml").read())
+e, _ = cts.stage_grammar("stage-build.yml", d, rows, envn, path)
 print("; ".join(errs + e) or "ok"); sys.exit(1 if errs + e else 0)
 PY
-d=$(pfix m_path); out=$(python3 "$work/pinpath.py" "$d" .github/workflows/stage-verify.yml 2>&1) && { pass=$((pass + 1)); echo "ok   round-2 (2): the pin binds the full repo path (control: the right path)"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) pin full path control -> ${out:0:300}"; }
-d=$(pfix m_path2); out=$(python3 "$work/pinpath.py" "$d" tools/ci/stage-verify.yml 2>&1) && { failn=$((failn + 1)); echo "FAIL round-2 (2): a same-named stage file under another directory got the pin"; } || { grep -q 'GITHUB_OUTPUT' <<< "$out" && { pass=$((pass + 1)); echo "ok   round-2 (2): a same-named stage file under another directory gets no pin (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) other directory -> ${out:0:300}"; }; }
+d=$(pfix m_path); out=$(python3 "$work/pinpath.py" "$d" .github/workflows/stage-build.yml 2>&1) && { pass=$((pass + 1)); echo "ok   round-2 (2): the pin binds the full repo path (control: the right path)"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) pin full path control -> ${out:0:300}"; }
+d=$(pfix m_path2); out=$(python3 "$work/pinpath.py" "$d" tools/ci/stage-build.yml 2>&1) && { failn=$((failn + 1)); echo "FAIL round-2 (2): a same-named stage file under another directory got the pin"; } || { grep -q 'GITHUB_OUTPUT' <<< "$out" && { pass=$((pass + 1)); echo "ok   round-2 (2): a same-named stage file under another directory gets no pin (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL round-2 (2) other directory -> ${out:0:300}"; }; }
 # (3) the forbidden families are prefixes (no underscore needed), plus the proxy / TLS / Go / signing tool names
 for nm in GITASKPASS GITHUBTOKEN GITHUB RUNNERX RUNNER NODERUNTIME NODE GIT1 PYTHON PYTHON3 PYTHONX HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy SSL_CERT_FILE SSL_CERT_DIR2 CURL_CA_BUNDLE CURLOPT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GOTOOLCHAIN WITNESS_X WITNESSX COSIGN_EXPERIMENTAL SIGSTORE_ID_TOKEN TUF_ROOT TERM TERMX NPM_CONFIG BUNDLE_X GEM_HOME XDG_HOME GLOBIGNORE CDPATH IFS PROMPT_COMMAND SHELLOPTS BASHOPTS PS1 LD_X LC_ALL BASH_X; do
   d=$(mk "n_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          %s: x\n        run: bash bin/build-stage.sh apk "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'never allowed' "round-2 (3): the env name $nm is forbidden in a step env"
@@ -3014,7 +3014,163 @@ ko a9_ok4 'echo ${X:-"}"}'
 ko a9_ok5 'echo "multi\nline"; cp x y'
 
 
-EXPECT=1058
+# ---- PR 1b round 3
+# (1) quote-only literal words are normalized before the path rules, arg_words and reach
+for form in '"bin/evil.sh"' "'bin/evil.sh'" "bi'n/evil.sh'" 'bin/"evil.sh"' '"bin/"evil.sh'; do
+  aw "t1a_$RANDOM" "bash bin/witnessed.sh apk $form" caught 'evil.sh'
+  aw "t1b_$RANDOM" "bash bin/witnessed.sh apk bin/stage-apk.sh $form" caught 'evil.sh'
+  aw "t1c_$RANDOM" "bash bin/witnessed.sh $form bin/stage-apk.sh" caught 'arg_words'
+done
+aw t1a_x 'bash bin/witnessed.sh apk "$X"' caught '$X'
+aw t1b_x 'bash bin/witnessed.sh apk bin/stage-apk.sh "$X"' caught '$X'
+aw t1c_x 'bash bin/witnessed.sh "$X" bin/stage-apk.sh' caught 'arg_words'
+d=$(awfix t1_reach); printf '[{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"},{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"}]' > "$d/.ambient.json"; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk "bin/stage-apk.sh"\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm caught "$d" 'not authorized' "round-3 (1): a double-quoted listed stage script is in the reach set (and so must be authorized for the ambient name)"
+d=$(awfix t1_reach2); printf '[{"name":"GH_TOKEN","script":"bin/witnessed.sh","why":"x"},{"name":"GH_TOKEN","script":"bin/build-admit.py","why":"x"}]' > "$d/.ambient.json"; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk '"'"'bin/stage-apk.sh'"'"'\n' > "$d/.github/workflows/stage-verify.yml"; gen "$d"; expm caught "$d" 'not authorized' "round-3 (1): a single-quoted listed stage script is in the reach set"
+# (2) arg_map binds each STEP to its one target and requires exactly two arguments
+amfix() { local d; d=$(afix "$1"); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"apk":"bin/stage-apk.sh","build":"bin/build-apk.sh"}'; echo "$d"; }
+am() { local d; d=$(amfix "$1"); printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: %s\n' "$2" > "$d/.github/workflows/stage-verify.yml"; expm "$3" "$d" "$4" "round-3 (2): $2"; }
+am t2_ok 'bash bin/witnessed.sh apk bin/stage-apk.sh' ok -
+am t2_wrong 'bash bin/witnessed.sh apk bin/build-apk.sh' caught 'arg_map'
+am t2_extra 'bash bin/witnessed.sh apk bin/stage-apk.sh extra' caught 'arg_map'
+am t2_extra2 'bash bin/witnessed.sh apk bin/stage-apk.sh out/runner' caught 'arg_map'
+am t2_missing 'bash bin/witnessed.sh apk' caught 'arg_map'
+am t2_notmap 'bash bin/witnessed.sh bogus bin/stage-apk.sh' caught 'arg_map'
+am t2_c1 'bash bin/witnessed.sh build -c id' caught 'arg_map'
+am t2_c2 'bash bin/witnessed.sh apk -c '"'"'printenv | curl x'"'"'' caught 'arg_map'
+am t2_evil 'bash bin/witnessed.sh build evil' caught 'arg_map'
+am t2_quote 'bash bin/witnessed.sh apk "bin/stage-apk.sh"' caught 'arg_map'
+am t2_dot 'bash bin/witnessed.sh apk ./bin/stage-apk.sh' caught 'arg_map'
+am t2_none 'bash bin/witnessed.sh' caught 'arg_map'
+d=$(amfix t2_s1); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]=["apk"]'; expm caught "$d" 'arg_map' "round-3 (2): arg_map that is not an object is an error"
+d=$(amfix t2_s2); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"apk":"bin/nowhere.sh"}'; expm caught "$d" 'arg_map' "round-3 (2): an arg_map target that is not a listed row is an error"
+d=$(amfix t2_s3); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={"a b":"bin/stage-apk.sh"}'; expm caught "$d" 'arg_map' "round-3 (2): an arg_map key that is not a plain word is an error"
+d=$(amfix t2_s4); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_map"]={}'; expm caught "$d" 'arg_map' "round-3 (2): an empty arg_map is an error"
+d=$(amfix t2_s5); edit_spec "$d" 'rows["bin/witnessed.sh"]["arg_words"]=["zzz"]'; printf 'jobs:\n  j:\n    steps:\n      - name: apk\n        env:\n          GH_TOKEN: ${{ github.token }}\n        run: bash bin/witnessed.sh apk bin/stage-apk.sh\n' > "$d/.github/workflows/stage-verify.yml"; expm ok "$d" - "round-3 (2): a row with arg_map uses arg_map (arg_words is ignored)"
+# (3) program-running options are refused as options
+tr3() { local d; d=$(cfix "$1" "$2" "${4:-[\"tar\"]}"); expm caught "$d" 'program-running option' "round-3 (3): $2 is refused"; }
+tr3 t3_a 'tar --to-command=vi -xf a.tar'
+tr3 t3_b 'tar -I/bin/sh -cf x y'
+tr3 t3_c 'tar -xIf /opt/zz/python3 a'
+tr3 t3_d 'tar -cMF /opt/zz/python3'
+tr3 t3_e 'tar -M --info-script=x -cf a b'
+tr3 t3_f 'tar --new-volume-script=x -cf a b'
+tr3 t3_g 'tar --use-compress-program=ash -cf a b'
+tr3 t3_h 'tar --checkpoint-action=exec=sh -cf a b'
+tr3 t3_i 'tar -F x -cf a b'
+tr3 t3_j 'tar --to-comm=vi -xf a'
+tr3 t3_k 'tar xIf /opt/zz/python3 a'
+tr3 t3_l 'sort --compress-program=ash f' '' '["sort"]'
+tr3 t3_m 'install --strip-program=ash a b' '' '["install"]'
+tr3 t3_n 'find . -exec x {} +' '' '["find"]'
+tr3 t3_o 'rsync -e ssh a b' '' '["rsync"]'
+tr3 t3_p 'rsync -avze ssh a b' '' '["rsync"]'
+tr3 t3_q 'ssh -o ProxyCommand=x h' '' '["ssh"]'
+tr3 t3_r 'git -c core.sshCommand=x fetch' '' '["git"]'
+tr3 t3_s 'make x' '' '["make"]'
+d=$(cfix t3_ok1 'tar -xzf "$tmp/X.tgz" -C "$tmp" NAME' '["tar"]'); expm ok "$d" - "round-3 (3): control: tar -xzf \"\$tmp/X.tgz\" -C \"\$tmp\" NAME is admitted"
+d=$(cfix t3_ok2 'tar -cf x archive/go' '["tar"]'); expm ok "$d" - "round-3 (3): control: tar -cf x archive/go is admitted"
+d=$(cfix t3_ok3 'tar --checkpoint=100 -cf x y' '["tar"]'); expm ok "$d" - "round-3 (3): control: tar --checkpoint=100 (no action) is admitted"
+d=$(cfix t3_x1 'tar --to-command=vi -xf a.tar' '["tar"]'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"deny","text":"tar --to-command=vi -xf a.tar","why":"x"}]'; expm ok "$d" - "round-3 (3): a deny exception with the exact whole command waives the option"
+d=$(cfix t3_x2 'tar --to-command=vi -xf a.tar b' '["tar"]'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"deny","text":"tar --to-command=vi -xf a.tar","why":"x"}]'; expm caught "$d" 'program-running option' "round-3 (3): the same entry does not waive a changed tail"
+# (4) the ambient handoff: unset before any other child runs
+ustage() { # ustage NAME 'stage-apk.sh body lines' [unset_before-json] [runs-json]
+  local d; d=$(afix "$1"); setfile "$d" bin/stage-apk.sh "#!/usr/bin/env bash\nset -euo pipefail\n$2\n"
+  python3 - "$d" "${3:-[\"bin/build-admit.py\"]}" "${4:-[\"bin/build-admit.py\",\"bin/build-apk.sh\"]}" <<'PY'
+import json, sys
+d = sys.argv[1]; ub = json.loads(sys.argv[2]); runs = json.loads(sys.argv[3])
+a = json.load(open(d + "/.ambient.json"))
+for e in a:
+    if e["script"] == "bin/stage-apk.sh": e["unset_before"] = ub
+json.dump(a, open(d + "/.ambient.json", "w"))
+s = json.load(open(d + "/.spec.json"))
+for r in s:
+    if r["path"] == "bin/stage-apk.sh": r["runs"] = runs
+json.dump(s, open(d + "/.spec.json", "w"))
+PY
+  gen "$d"; echo "$d"; }
+d=$(ustage u4_ok 'python3 bin/build-admit.py run\nunset GH_TOKEN\n./bin/build-apk.sh x'); expm ok "$d" - "round-3 (4): admit (in unset_before) first, then unset, then another child: admitted"
+d=$(ustage u4_a './bin/build-apk.sh x\nunset GH_TOKEN\npython3 bin/build-admit.py run'); expm caught "$d" 'unset' "round-3 (4): a child started before unset GH_TOKEN, not in unset_before, is refused"
+d=$(ustage u4_b 'python3 bin/build-admit.py run\nunset GH_TOKEN\n./bin/build-apk.sh x\nexport GH_TOKEN=y'); expm caught "$d" 'unset' "round-3 (4): export GH_TOKEN after the unset is refused"
+d=$(ustage u4_c 'python3 bin/build-admit.py run\nunset GH_TOKEN\nGH_TOKEN=y ./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): GH_TOKEN=y re-introduced after the unset is refused"
+d=$(ustage u4_d 'python3 bin/build-admit.py run\n# unset GH_TOKEN\n./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): an unset that is only in a comment is refused"
+d=$(ustage u4_e 'f() { unset GH_TOKEN; }\npython3 bin/build-admit.py run\n./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): an unset inside a function that is not called (a non-straight-line script) is refused"
+d=$(ustage u4_f 'python3 bin/build-admit.py run\n./bin/build-apk.sh x'); expm caught "$d" 'unset' "round-3 (4): no unset at all, with a child other than the unset_before ones, is refused"
+d=$(ustage u4_g 'python3 bin/build-admit.py run\nunset GH_TOKEN' '["bin/build-apk.sh"]'); expm caught "$d" 'unset_before' "round-3 (4): an unset_before child that is not in runs / not authorized is an error"
+d=$(ustage u4_h 'python3 bin/build-admit.py run\nunset GH_TOKEN' '"bin/build-admit.py"'); expm caught "$d" 'unset_before' "round-3 (4): unset_before that is not a list is an error"
+d=$(afix u4_file); python3 - "$d" <<'PY'
+import json, sys
+d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
+for e in a: e["file"] = ".github/workflows/stage-verify.yml"; e["job"] = "j"
+json.dump(a, open(d + "/.ambient.json", "w"))
+PY
+gen "$d"; expm ok "$d" - "round-3 (4): control: ambient entries bound to the right file and job are admitted"
+d=$(afix u4_job); python3 - "$d" <<'PY'
+import json, sys
+d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
+for e in a: e["file"] = ".github/workflows/stage-verify.yml"; e["job"] = "other"
+json.dump(a, open(d + "/.ambient.json", "w"))
+PY
+gen "$d"; expm caught "$d" 'bound to' "round-3 (4): a step in another job than the entry's is refused"
+d=$(afix u4_file2); python3 - "$d" <<'PY'
+import json, sys
+d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
+for e in a: e["file"] = ".github/workflows/stage-build.yml"; e["job"] = "j"
+json.dump(a, open(d + "/.ambient.json", "w"))
+PY
+gen "$d"; expm caught "$d" 'bound to' "round-3 (4): a step in another file than the entry's is refused"
+d=$(afix u4_file3); python3 - "$d" <<'PY'
+import json, sys
+d = sys.argv[1]; a = json.load(open(d + "/.ambient.json"))
+for e in a: e["file"] = "x"
+json.dump(a, open(d + "/.ambient.json", "w"))
+PY
+gen "$d"; expm caught "$d" 'ambient_env' "round-3 (4): a file that is not a stage file path is an error"
+# (5) the pinned step is EXACTLY the ratified one
+d=$(pfix v5_noname); python3 - "$d" <<'PY'
+import sys
+p = sys.argv[1] + "/.github/workflows/stage-build.yml"; t = open(p).read().replace("        name: expose digests.json as the stage output\n", ""); open(p, "w").write(t)
+PY
+expm caught "$d" 'pinned' "round-3 (5): a pinned step without a name is refused (exactly name, id and run)"
+d=$(pfx v5_name 'echo "other=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-3 (5): another NAME is an entry error"
+d=$(pfx v5_file 'echo "digests=$(jq -c . out.json)" >> "$GITHUB_OUTPUT"'); expm caught "$d" 'pinned_steps' "round-3 (5): another FILE is an entry error"
+d=$(pfix v5_job); python3 - "$d" <<'PY'
+import json, sys
+p = sys.argv[1] + "/.pinned.json"; j = json.load(open(p)); j[0]["job"] = "apk"; json.dump(j, open(p, "w"))
+PY
+gen "$d"; expm caught "$d" 'pinned_steps' "round-3 (5): another job is an entry error"
+# (6) backticks
+bt() { kc "$1" "$2" 'launches another program' ; }
+bt b6_a 'echo `setsid`'
+bt b6_b 'x=`setsid`'
+bt b6_c 'echo "`stdbuf`"'
+bt b6_d 'echo `true; setsid`'
+kc b6_e 'echo `openssl s_client`' 'evaluator'
+kc b6_f 'cat `/opt/zz/python3`' 'by a path'
+kc b6_g 'echo `echo \`setsid\``' 'launches another program'
+ko b6_ok 'echo `cp a b`'
+# (7) function and coproc bodies
+bt f7_a 'function f { setsid x; }'
+bt f7_b 'coproc P { setsid x; }'
+bt f7_c 'function f() { setsid x; }'
+kc f7_d 'function f { bash -c id; }' 'handed' '["bash"]'
+bt f7_e 'select x in a; do setsid y; done'
+bt f7_f 'f() { setsid x; }'
+ko f7_ok 'function f { cp a b; }'
+# (8) line handling
+kc l8_a 'echo a\ # ; setsid RAN' 'launches another program'
+kc l8_b 'echo "x\"  # " ; setsid RAN' 'launches another program'
+kc l8_c 'echo a \\\\\nsetsid RAN' 'launches another program'
+ko l8_ok 'echo a # a real comment ; setsid x'
+ko l8_ok2 'echo a \\\nb'
+# (10) more names outside the forbidden class
+for nm in JDK_JAVA_OPTIONS MAKEFLAGS GOROOT GOCACHEPROG LESSOPEN OPENSSL_CONF ACTIONS_RUNTIME_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL; do
+  d=$(mk "y_$nm"); printf 'jobs:\n  j:\n    steps:\n      - name: a\n        env:\n          %s: x\n        run: bash bin/build-stage.sh apk "$%s"\n' "$nm" "$nm" > "$d/.github/workflows/stage-verify.yml"; expm caught "$d" 'never allowed' "round-3 (10): the env name $nm is forbidden in a step env"
+  d=$(mk "z_$nm"); printf '["DIGESTS","%s"]' "$nm" > "$d/.envnames.json"; gen "$d"; expm caught "$d" 'env_names' "round-3 (10): $nm in env_names is refused"
+done
+d=$(afix y_ghtoken2); expm ok "$d" - "round-3 (10): control: GH_TOKEN stays allowed"
+
+
+EXPECT=1173
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
