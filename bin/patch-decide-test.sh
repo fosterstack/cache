@@ -621,7 +621,7 @@ def vlines(nt):
 def no_pos(vc):
     """only the numeric position in a positional label varies with input order; an identifier label is kept (Codex #300
     r2, B: the permutation checks keep stable statement identities)"""
-    return [dict(e, statement=re.sub(r"\d+ of the (old|new) document", r"N of the \1 document", e["statement"]))
+    return [dict(e, statement=re.sub(r"^statement \d+ of the (old|new) document$", r"statement N of the \1 document", e["statement"]))
             if "statement" in e else e for e in vc]
 PC = "pkg:oci/cache"
 def sub(*ids):
@@ -791,7 +791,8 @@ check("AC8 VEX notes redaction: two CVE names that redact alike: two distinct li
       len(vlines(nt_)) == 2 and distinct(nt_) and "statement 1 of the new document" in nt_ and "claude" not in nt_.lower(), vex_part(nt_))
 nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(SAi, SBi), vd(dict(SAi, status_notes="a2"), dict(SBi, status_notes="b2"))))
 check("AC8 VEX notes redaction control: @ids that survive redaction still name their statements",
-      distinct(nt_) and "statement urn:statement:a" in nt_ and "statement urn:statement:b" in nt_ and "of the new document" not in nt_, vex_part(nt_))
+      # r3 (B3): ":statement:" has an emoji shortcode's shape, so the @id prints as a quoted literal
+      distinct(nt_) and 'statement `"urn:statement:a"`' in nt_ and 'statement `"urn:statement:b"`' in nt_ and "of the new document" not in nt_, vex_part(nt_))
 X_ = {"@id": "urn:x"}
 vc_ = P.vex_changes(vd(vs(products=[{"@id": "pkg:a"}], status_notes="u", **X_), vs(products=[{"@id": "pkg:b"}], status_notes="old", **X_)),
                     vd(vs(products=[{"@id": "pkg:a"}], status_notes="u", **X_), vs(products=[{"@id": "pkg:c"}], status_notes="new", **X_)))
@@ -844,7 +845,271 @@ for i_, (o_, n_) in enumerate((((TA, TB), (dict(TB, status_notes="t2"), TA)),
     nts_ = [P.notes("v0.2.3", [], P.vex_changes(vd(*po), vd(*pn))) for po in itertools.permutations(o_) for pn in itertools.permutations(n_)]
     check("AC8 VEX order (B): round-2 case %d gives one result for every order, identifier labels kept, final lines distinct" % i_,
           len(outs_) == 1 and all(distinct(x) for x in nts_), outs_)
-pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
+# AC8 (rule 0254 "names the statements that changed"; Codex #300 r3: A1-A3, B1-B3 and the test gaps): every published
+# statement is exactly one line; a value the document supplies prints bare only when nothing renders it differently, else
+# as a quoted JSON literal in a code span; an @id label never shares a namespace with a position label; an empty
+# vulnerability name (the schema allows it) is read and named by position; redaction is line-local
+import random, unicodedata
+CTRL_CATS = ("Cc", "Cf", "Zl", "Zp", "Cs", "Co", "Cn")
+def no_ctrl(t):
+    return all(ch == "\n" or unicodedata.category(ch) not in CTRL_CATS for ch in t)
+CSPAN = re.compile(r"`[^`]*`")
+def inert(line):
+    """outside code spans (and the redaction marker) nothing CommonMark, GFM or GitHub renders differently: no entity,
+    HTML, escape, emphasis, strike, image, math, pipe, heading, emoji shortcode, autolink or commit-SHA-like run"""
+    rest = CSPAN.sub("C", line).replace("<redacted>", "R")
+    return not (re.search(r"[&<>\\*~!$|`#]", rest) or re.search(r":[A-Za-z0-9_+-]+:", rest) or "://" in rest
+                or re.search(r"(?i)www\.", rest) or re.search(r"(?<![A-Za-z0-9])_|_(?![A-Za-z0-9])", rest)
+                or re.search(r"(?<![A-Za-z0-9])[0-9a-fA-F]{7,40}(?![A-Za-z0-9])", rest))
+def lit_val(s):
+    """a printed value: a code span holds one JSON string; anything else that starts with a backtick reads as nothing"""
+    if not s.startswith("`"):
+        return s
+    try:
+        v = json.loads(s[1:-1])
+    except ValueError:
+        return object()
+    return v if isinstance(v, str) else object()
+def resolve(line, o_doc, n_doc):
+    """(side, position) of the one source statement a FINAL notes line names, or a string saying why it names none"""
+    head, _, label = line.partition(" — statement ")
+    shape = CSPAN.sub("C", head)
+    m = re.search(r": (not_affected|affected|fixed|under_investigation) \((.*)\)$", shape)
+    if not line.startswith("- ") or not m:
+        return "unparsed: %r" % line
+    side = "old" if m.group(2) == "removed" else "new"
+    doc = o_doc if side == "old" else n_doc
+    sts = (doc or {}).get("statements", [])
+    if head.startswith("- `"):
+        name = lit_val(head[2:head.find("`", 3) + 1]) if head.find("`", 3) > 0 else None
+    else:
+        name = head[2:].split(" ")[0]
+        name = name[:-1] if name.endswith(":") and not head[2:].startswith(name + " [") else name
+    if not isinstance(name, str):
+        return "name unreadable: %r" % line
+    named = "<redacted>" not in name
+    if label:
+        pm = re.fullmatch(r"(\d+) of the (old|new) document", label)
+        if pm:
+            if pm.group(2) != side:
+                return "position names the other document: %r" % line
+            hits = [int(pm.group(1)) - 1]
+        else:
+            hits = [i for i, s in enumerate(sts) if s.get("@id") == lit_val(label)]
+    elif named:
+        hits = [i for i, s in enumerate(sts) if s["vulnerability"]["name"] == name]
+    else:
+        return "no label and a redacted name: %r" % line
+    if len(hits) != 1 or not 0 <= hits[0] < len(sts):
+        return "names %d statements: %r" % (len(hits), line)
+    st = sts[hits[0]]
+    if named and st["vulnerability"]["name"] != name or st["status"] != m.group(1):
+        return "names a statement of another CVE or status: %r" % line
+    return (side, hits[0] + 1)
+def resolves(nt, o_doc, n_doc):
+    """every statement line of the final VEX section names exactly one statement, and no two lines name the same one"""
+    got = [resolve(l, o_doc, n_doc) for l in vlines(nt) if not l.startswith("- document fields changed (") and l != "- no change"]
+    return all(isinstance(x, tuple) for x in got) and len(set(got)) == len(got), got
+# A1: a line break (any control character) in a name, @id, product, field name or document field never makes two lines
+F1, F2 = "CVE-A\n- forged: fixed (added)", "CVE-B\n- forged: fixed (added)"
+nt_ = P.notes("v0.2.3", [], P.vex_changes(None, vd(vs(vulnerability={"name": F1}), vs(vulnerability={"name": F2}))))
+check("AC8 VEX one line (r3, A1): two names carrying '\\n- forged: fixed (added)' print one quoted line each, no forged line",
+      vlines(nt_) == ['- `"CVE-A\\n- forged: fixed (added)"`: not_affected (added)',
+                      '- `"CVE-B\\n- forged: fixed (added)"`: not_affected (added)'], vex_part(nt_))
+CTRLS = ["\n", "\r", "\r\n", "\x00", "\x0b", "\x0c", "\x1b", "\x1c", "\x1f", "\x7f", "\x80", "\x85", "\x9b", "\x9f",
+         " ", " ", "​", "‮", "﻿", "\ud800", "\U000e0001"]
+for ch in CTRLS:
+    o_ = dict(vd(vs(**{"@id": "urn:a" + ch})), version=1)
+    n_ = dict(vd(vs(status_notes="c", **{"@id": "urn:a" + ch, "x" + ch: 1}),
+                 vs(vulnerability={"name": "CVE-1" + ch}, products=[{"@id": PC + ch, "subcomponents": [{"@id": "s" + ch}]}]),
+                 vs(vulnerability={"name": "CVE-1" + ch}, products=[{"identifiers": {"purl": "pkg:x" + ch}}])),
+              **{"version": 1, "d" + ch: 1})
+    fx_ = [{"cve": "CVE-9" + ch, "package": "p" + ch, "old": "v1" + ch, "new": "v2" + ch, "severity": "high" + ch, "variants": ["v" + ch]}]
+    try:
+        nt_ = P.notes("v0.2.3", fx_, P.vex_changes(o_, n_), behavior=["A change" + ch + " here (advisor 0130)."])
+        enc_ = nt_.encode("utf-8") is not None
+    except Exception as e:      # noqa: BLE001 -- the finding is that it raised
+        nt_, enc_ = repr(e), False
+    secs_ = nt_.split("\n\n")
+    check("AC8 VEX one line (r3, A1): %r in every printed value: one line per fix, statement, document line and behavior entry, "
+          "no control character, UTF-8 writable" % ch,
+          enc_ and no_ctrl(nt_) and len(vlines(nt_)) == 4 and all(l.startswith("- ") for l in vlines(nt_))
+          and len(secs_) == 4 and secs_[1].count("\n") == 1 and secs_[3].count("\n") == 2
+          and resolves(nt_, o_, n_)[0], nt_)
+# A2 / B2: an @id shaped like a position label never reads as one
+U7 = vs(products=[{"@id": PC}], status="fixed", status_notes="u")
+C7 = vs(products=[{"@id": PC}], status="fixed", status_notes="c", **{"@id": "1 of the new document"})
+o_, n_ = vd(U7, C7), vd(U7, dict(C7, status_notes="c2"))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX label namespaces (r3, A2): an @id '1 of the new document' on statement 2 prints as a quoted @id, never as position 1",
+      vlines(nt_) == ['- CVE-7 [pkg:oci/cache]: fixed (changed: status_notes) — statement `"1 of the new document"`']
+      and resolves(nt_, o_, n_) == (True, [("new", 2)]), (vex_part(nt_), resolves(nt_, o_, n_)))
+P1 = vs(products=[{"@id": PC}], status="fixed", status_notes="a", impact_statement="a", **{"@id": "2 of the new document"})
+P2 = vs(products=[{"@id": PC}], status="fixed", status_notes="b", impact_statement="a")
+o_, n_ = vd(P1, P2), vd(dict(P1, status_notes="a2"), dict(P2, impact_statement="b2"))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX label namespaces (r3, B2): @id '2 of the new document' on statement 1 and a changed statement 2: each line maps "
+      "back to the statement that changed in that way",
+      vlines(nt_) == ['- CVE-7 [pkg:oci/cache]: fixed (changed: impact_statement) — statement 2 of the new document',
+                      '- CVE-7 [pkg:oci/cache]: fixed (changed: status_notes) — statement `"2 of the new document"`']
+      and resolves(nt_, o_, n_) == (True, [("new", 2), ("new", 1)]), (vex_part(nt_), resolves(nt_, o_, n_)))
+o_, n_ = vd(P1, P2), vd(dict(P1, status_notes="a2"), dict(P2, status_notes="b2"))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX label namespaces (r3, B low): the same field changed in both: two distinct lines naming two statements",
+      distinct(nt_) and resolves(nt_, o_, n_) == (True, [("new", 2), ("new", 1)]), (vex_part(nt_), resolves(nt_, o_, n_)))
+# A3 / B qualification: an empty vulnerability name is schema-valid (no minLength): read, quoted, named by position
+for label, o_, n_, want in (
+        ("first patch", None, vd(vs(vulnerability={"name": ""})), ['- `""`: not_affected (added) — statement 1 of the new document']),
+        ("changed", vd(vs(vulnerability={"name": ""})), vd(vs(vulnerability={"name": ""}, status_notes="n2")),
+         ['- `""`: not_affected (changed: status_notes) — statement 1 of the new document']),
+        ("removed beside another", vd(VS, vs(vulnerability={"name": ""})), vd(VS), ['- `""`: not_affected (removed) — statement 2 of the old document'])):
+    try:
+        nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_)); got_ = vlines(nt_)
+    except Exception as e:      # noqa: BLE001
+        got_ = repr(e)
+    check("AC8 VEX empty name (r3, A3): %s: read, printed as \"\", named by position" % label, got_ == want, got_)
+SCHEMA_DOC = {"@context": "https://openvex.dev/ns/v0.2.0", "@id": "https://example.invalid/vex", "author": "a",
+              "timestamp": "2026-10-11T00:00:00Z", "version": 1,
+              "statements": [{"vulnerability": {"name": ""}, "status": "fixed", "products": [{"@id": PC}]}]}
+try:
+    got_ = P.vex_changes(None, SCHEMA_DOC)
+except Exception as e:      # noqa: BLE001
+    got_ = repr(e)
+check("AC8 VEX empty name (r3, B qualification): a complete schema-valid document with name \"\" is accepted",
+      isinstance(got_, list) and [v["change"] for v in got_] == ["added"], got_)
+# B1: redaction never consumes a line break: B's reproducer over the FINAL notes() output
+Q1, Q2 = (vs(products=[{"@id": PC}], status="fixed", **{"@id": i}) for i in ("urn:chat", "urn:other"))
+o_ = vd(Q1, Q2)
+n_ = vd(dict(Q1, status_notes="updated"), Q2, vs(vulnerability={"name": "gpt"}, products=[{"@id": PC}], status="fixed", **{"@id": "urn:new"}))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX line-local redaction (r3, B1): 'urn:chat' then a CVE named 'gpt': two lines, the first keeps its @id",
+      vlines(nt_) == ["- CVE-7 [pkg:oci/cache]: fixed (changed: status_notes) — statement urn:chat",
+                      "- <redacted>: fixed (added) — statement 3 of the new document"]
+      and resolves(nt_, o_, n_) == (True, [("new", 1), ("new", 3)]), (vex_part(nt_), resolves(nt_, o_, n_)))
+raw_ = "## v0.2.2 — patch release\n\n### VEX\n- CVE-1: fixed (changed: x) — statement urn:chat\n- gpt: fixed (added)\n"
+cl_, _ = P.changelog(raw_, None, "")
+check("AC8 VEX line-local redaction (r3, B1): the changelog cleans line by line, never across a line break",
+      "— statement urn:chat\n- <redacted>: fixed (added)\n" in cl_, cl_)
+tr_ = ("object 0123\ntype commit\ntag v0.2.2\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n" + raw_
+       + "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+check("AC8 VEX line-local redaction (r3, B1): a patch tag's notes are cleaned line by line too",
+      "— statement urn:chat\n- <redacted>: fixed (added)\n" in (P.tag_notes(tr_) or ""), P.tag_notes(tr_))
+# B3: Markdown and GitHub rendering never make two values read alike, hide a value or add a line
+E1, E2 = (vs(products=[{"@id": PC}], status="fixed", status_notes="old", **{"@id": i}) for i in ("urn:s:a", "urn:s:&#97;"))
+o_, n_ = vd(E1, E2), vd(dict(E1, status_notes="new"), dict(E2, status_notes="new"))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+check("AC8 VEX rendering (r3, B3): @ids urn:s:a and urn:s:&#97; print as quoted literals that render apart",
+      vlines(nt_) == ['- CVE-7 [pkg:oci/cache]: fixed (changed: status_notes) — statement `"urn:s:&#97;"`',
+                      '- CVE-7 [pkg:oci/cache]: fixed (changed: status_notes) — statement `"urn:s:a"`']
+      and all(inert(l) for l in vlines(nt_)) and resolves(nt_, o_, n_)[0], vex_part(nt_))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(VS), vd(vs(**{"\n- no change\n": 1}), vs(vulnerability={"name": "<!-- CVE-7 -->"}))))
+check("AC8 VEX rendering (r3, B3): an HTML-comment name and a field name carrying '\\n- no change\\n' print quoted, one line each",
+      vlines(nt_) == ['- CVE-7: not_affected (changed: `"\\n- no change\\n"`)', '- `"<!-- CVE-7 -->"`: not_affected (added)'], vex_part(nt_))
+MD = ["a*b*", "a_b_", "_a_", "a__b", "~~a~~", "[a](b)", "![a](b)", "a\\*", "`a`", "``", "a|b", "$a$", "#1", "&amp;", "&#97;",
+      "<b>x</b>", "<!--", "a:+1:", "a:thumbsup:", "x:a", "https://x.example", "www.x.example", "a@b.c",
+      "0123456789abcdef0123456789abcdef01234567", "deadbeef", "a b", " a", "a ", "\\u0041", "é", "1. a", "- a", "> a", "= a"]
+bad_ = []
+for v_ in MD:
+    o_ = vd(vs(products=[{"@id": PC}], status_notes="o", **{"@id": "urn:a"}), vs(products=[{"@id": PC}], **{"@id": "urn:b"}))
+    for n_ in (vd(vs(products=[{"@id": PC}], status_notes="n", **{"@id": v_, v_: 1}), vs(products=[{"@id": PC}], **{"@id": "urn:b"})),
+               vd(vs(vulnerability={"name": v_}, products=[{"@id": v_, "subcomponents": [{"@id": v_}]}]), vs(vulnerability={"name": v_})),
+               vd(vs(products=[{"identifiers": {"purl": v_, "cpe23": v_}}]), vs(products=[{"@id": PC}]))):
+        nt_ = P.notes("v0.2.3", [], P.vex_changes(o_, n_))
+        if not all(inert(l) for l in vlines(nt_)) or not resolves(nt_, o_, n_)[0] or not distinct(nt_):
+            bad_.append((v_, vex_part(nt_)))
+check("AC8 VEX rendering (r3, B3): %d Markdown/GitHub-active values as @id, name, product, subcomponent, identifier and field "
+      "name: every line inert outside its code spans and naming one statement" % len(MD), bad_ == [], bad_)
+nt_ = P.notes("v0.2.3", [], P.vex_changes(None, vd(vs(vulnerability={"name": "CVE:x"}), vs(vulnerability={"name": "CVE:thumbsup"}))))
+check("AC8 VEX rendering (r3, B3): a name ending ':word' is quoted (the ': ' after it would close an emoji shortcode)",
+      all(inert(l) for l in vlines(nt_)) and '- `"CVE:x"`: not_affected (added)' in vlines(nt_), vex_part(nt_))
+# B test gaps: the new side's whole-document @id count; the relabel loop and its fail-closed end, over the FINAL lines
+o_ = vd(vs(products=[{"@id": "pkg:a"}], **X_), vs(products=D1))
+n_ = vd(vs(products=[{"@id": "pkg:b"}], **X_), vs(products=D1), vs(vulnerability={"name": "CVE-8"}, **X_))
+vc_ = P.vex_changes(o_, n_)
+check("AC8 VEX dup-@id (r3, B gap): an @id held twice across CVEs in the NEW document does not pair: removed + added",
+      sorted((v["cve"], v["change"]) for v in vc_) == [("CVE-7", "added"), ("CVE-7", "removed"), ("CVE-8", "added")], vc_)
+real_clean_ = P._clean
+try:
+    # a redactor stronger than today's (any future name list): it makes three whole lines read alike, never a part alone
+    P._clean = lambda s: re.sub(r"^- CVE-\d+", "- CVE-N", real_clean_(s))
+    try:
+        got_ = vlines(P.notes("v0.2.3", [], P.vex_changes(None, vd(*(vs(vulnerability={"name": "CVE-%d" % i}) for i in (1, 2, 3))))))
+    except Exception as e:      # noqa: BLE001
+        got_ = repr(e)
+    check("AC8 VEX relabel (r3, B gap): three FINAL lines that read alike are each relabelled by position",
+          got_ == ["- CVE-N: not_affected (added) — statement %d of the new document" % i for i in (1, 2, 3)], got_)
+    P._clean = lambda s: re.sub(r"\d+ of the (old|new) document", "N of the document", re.sub(r"^- CVE-\d+", "- CVE-N", real_clean_(s)))
+    try:
+        got_ = vlines(P.notes("v0.2.3", [], P.vex_changes(None, vd(*(vs(vulnerability={"name": "CVE-%d" % i}) for i in (1, 2))))))
+    except ValueError:
+        got_ = "ValueError"
+    except Exception as e:      # noqa: BLE001
+        got_ = repr(e)
+    check("AC8 VEX relabel (r3, fail closed): when even positions read alike after redaction: refused (ValueError), nothing published",
+          got_ == "ValueError", got_)
+finally:
+    P._clean = real_clean_
+for fake_ in ([{"cve": "CVE-1", "status": "fixed", "change": "added"}] * 2,
+              [{"cve": "CVE-1\n- x", "status": "fixed", "change": "added"}]):
+    try:
+        got_ = vlines(P.notes("v0.2.3", [], fake_))
+        got_ = "accepted" if len(got_) == len(set(got_)) == len(fake_) else got_
+    except ValueError:
+        got_ = "ValueError"
+    check("AC8 VEX notes guard (r3): entries handed to notes() print one distinct line each or are refused: %r" % (fake_,),
+          got_ in ("ValueError", "accepted"), got_)
+# the property: random names, @ids, products and field names with control characters, Markdown, vendor names and
+# position-shaped text; every published statement is exactly one line naming exactly one statement
+PIECES = ["CVE-7", "CVE-8", "urn:s:a", "a", "1 of the new document", "2 of the old document", "\n", "\r\n", "\x00", "\x1b[31m",
+          "\x7f", "\x85", "\x9b", " ", " ", "​", "‮", "\ud800", "`", "&#97;", "<!--", "*", "_", "~~", "[x]",
+          "\\", "#", "|", ":+1:", " ", "- forged: fixed (added)", "chat", "gpt", "claude", "google", "é", "—", "statement "]
+rng_ = random.Random(300)
+def rname(lo=0):
+    return "".join(rng_.choice(PIECES) for _ in range(rng_.randint(lo, 3)))
+def rstmt(names):
+    s = {"vulnerability": {"name": rng_.choice(names)}, "status": rng_.choice(P.VEX_STATUS), "status_notes": rng_.choice("ab")}
+    k = rng_.randrange(4)
+    if k == 0:
+        s["products"] = [{"@id": rname(1)}]
+    elif k == 1:
+        s["products"] = [{"@id": rname(1), "subcomponents": [{"@id": rname(1)}]}, {"identifiers": {"purl": rname(1)}}]
+    elif k == 2:
+        s["products"] = []
+    if rng_.random() < 0.6:
+        s["@id"] = rname(1)
+    if rng_.random() < 0.3:
+        s[rname()] = 1
+    return s
+prop_bad, prop_n = [], 0
+for it_ in range(400):
+    names_ = [rname() for _ in range(rng_.randint(1, 3))]
+    o_ = {"statements": [rstmt(names_) for _ in range(rng_.randint(0, 4))]}
+    n_ = {"statements": []}
+    for s in o_["statements"]:
+        r_ = rng_.random()
+        if r_ < 0.5:
+            n_["statements"].append(json.loads(json.dumps(s)))
+        elif r_ < 0.8:
+            t_ = json.loads(json.dumps(s)); t_[rng_.choice(["status_notes", "impact_statement", rname()])] = rname(); n_["statements"].append(t_)
+    n_["statements"] += [rstmt(names_) for _ in range(rng_.randint(0, 2))]
+    rng_.shuffle(n_["statements"])
+    if rng_.random() < 0.2:
+        n_[rname(1)] = 1
+    try:
+        vc_ = P.vex_changes(o_, n_)
+        nt_ = P.notes("v0.2.3", [], vc_)
+        nt_.encode("utf-8")
+    except Exception as e:      # noqa: BLE001
+        prop_bad.append((it_, "raised %r" % e)); continue
+    prop_n += len(vc_)
+    ls_ = vlines(nt_)
+    ok_, why_ = resolves(nt_, o_, n_)
+    if not (no_ctrl(nt_) and (len(ls_) == len(vc_) or (not vc_ and ls_ == ["- no change"])) and len(set(ls_)) == len(ls_)
+            and all(l.startswith("- ") and inert(l) for l in ls_) and ok_):
+        prop_bad.append((it_, ls_, why_))
+check("AC8 VEX property (r3): 400 random document pairs (%d entries): every published statement is exactly one line, inert, "
+      "distinct and naming exactly one statement" % prop_n, prop_bad == [] and prop_n > 400, prop_bad[:3])
+pub ="## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
 check("0135 nothing published yet: every entry stays", P.unpublished(ents, "") == ents)
