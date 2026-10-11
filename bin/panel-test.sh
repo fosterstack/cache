@@ -17,7 +17,7 @@ def check(name, ok, got=""):
     if ok: passed += 1; print("ok:", name)
     else: failed += 1; print("FAIL:", name, "->", got)
 
-IMAGES = ["%s-%s" % (v, a) for v in ("production", "debug", "fips") for a in ("amd64", "arm64")]
+IMAGES = ["%s-%s" % (v, a) for v in ("production", "fips") for a in ("amd64", "arm64")]
 def W(d, name, obj):
     os.makedirs(d, exist_ok=True)
     with open(os.path.join(d, name), "w") as f:
@@ -59,27 +59,27 @@ def judge(root):
     return P.tally(root, P.load_vex(VEX))
 
 # --- rule 1 shape the judge expects (the workflow wiring test checks the jobs)
-check("the expected set: Grype, Scout, Inspector on all six images; Google on the three amd64 images only",
+check("the expected set: Grype, Scout, Inspector on all four images (production and fips, each on both architectures); Google on the two amd64 images only",
       all(sorted(P.EXPECTED[s]) == sorted(IMAGES) for s in ("grype", "scout", "inspector"))
       and sorted(P.EXPECTED["google"]) == sorted(i for i in IMAGES if i.endswith("amd64")), P.EXPECTED)
 
 # --- rule 3: package counts; zero / empty / unparsable = did not run
 r = tree(); v = judge(r)
-check("package counts are reported per scanner per image, packages only (Grype's file components are not packages)", v["images"]["debug-amd64"]["counts"] == {"google": 3, "grype": 3, "inspector": 3, "scout": 3}, v["images"]["debug-amd64"])
-r = tree(); W(os.path.join(r, "grype", "debug-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX",
+check("package counts are reported per scanner per image, packages only (Grype's file components are not packages)", v["images"]["production-amd64"]["counts"] == {"google": 3, "grype": 3, "inspector": 3, "scout": 3}, v["images"]["production-amd64"])
+r = tree(); W(os.path.join(r, "grype", "production-amd64"), "result.cdx.json", {"bomFormat": "CycloneDX",
     "components": [{"bom-ref": "f1", "type": "file", "name": "/etc/passwd"}]})   # files but no package: did not run
-W(os.path.join(r, "scout", "debug-amd64"), "sbom.json", "")
-W(os.path.join(r, "inspector", "debug-amd64"), "scan.json", "{not json")
-os.remove(os.path.join(r, "google", "debug-amd64", "vulns.json"))
+W(os.path.join(r, "scout", "production-amd64"), "sbom.json", "")
+W(os.path.join(r, "inspector", "production-amd64"), "scan.json", "{not json")
+os.remove(os.path.join(r, "google", "production-amd64", "vulns.json"))
 v = judge(r)
 check("zero packages, an empty file, an unparsable file and a missing answer are 'did not run', never clean",
-      sorted(v["images"]["debug-amd64"]["did_not_run"]) == ["google", "grype", "inspector", "scout"], v["images"]["debug-amd64"])
+      sorted(v["images"]["production-amd64"]["did_not_run"]) == ["google", "grype", "inspector", "scout"], v["images"]["production-amd64"])
 # --- rule 3: quorum
-check("an amd64 image with no scanner left does not count", v["images"]["debug-amd64"]["counts_for_day"] is False)
-r = tree(skip={("google", "debug-amd64")}); v = judge(r)
-check("an amd64 image with 3 of 4 counts", v["images"]["debug-amd64"]["counts_for_day"] is True)
+check("an amd64 image with no scanner left does not count", v["images"]["production-amd64"]["counts_for_day"] is False)
+r = tree(skip={("google", "production-amd64")}); v = judge(r)
+check("an amd64 image with 3 of 4 counts", v["images"]["production-amd64"]["counts_for_day"] is True)
 check("a scanner that did not run fails the run (exit 2) even when the image keeps its quorum",
-      v["exit"] == 2 and v["scanner_failures"] == ["google on debug-amd64"] and not v["not_counted"], (v["exit"], v["scanner_failures"]))
+      v["exit"] == 2 and v["scanner_failures"] == ["google on production-amd64"] and not v["not_counted"], (v["exit"], v["scanner_failures"]))
 r = tree(); W(os.path.join(r, "scout", "fips-amd64"), "cves.json", {})
 W(os.path.join(r, "grype", "fips-amd64"), "result.cdx.json", {"components": [{"purl": "pkg:generic/a@1", "name": "a"}]})
 W(os.path.join(r, "inspector", "fips-amd64"), "sbom.cdx.json", {"components": [{"purl": "pkg:generic/a@1", "name": "a"}]})
@@ -88,16 +88,16 @@ v = judge(r)
 check("structurally incomplete answers (no bomFormat, empty package records) are did not run",
       v["images"]["fips-amd64"]["did_not_run"] == ["google", "grype", "inspector", "scout"], v["images"]["fips-amd64"])
 check("an incomplete Scout answer (no vulnerabilities list) is did not run", "scout" in v["images"]["fips-amd64"]["did_not_run"], v["images"]["fips-amd64"])
-r = tree(skip={("scout", "debug-arm64")}); v = judge(r)
-check("an arm64 image with 2 of its 3 does not count (all three must run)", v["images"]["debug-arm64"]["counts_for_day"] is False, v["images"]["debug-arm64"])
-check("an image that does not count fails the run (exit 2), never clean", v["exit"] == 2 and "debug-arm64" in v["not_counted"], (v["exit"], v.get("not_counted")))
+r = tree(skip={("scout", "production-arm64")}); v = judge(r)
+check("an arm64 image with 2 of its 3 does not count (all three must run)", v["images"]["production-arm64"]["counts_for_day"] is False, v["images"]["production-arm64"])
+check("an image that does not count fails the run (exit 2), never clean", v["exit"] == 2 and "production-arm64" in v["not_counted"], (v["exit"], v.get("not_counted")))
 r = tree(); v = judge(r)
-check("all six images counted and no finding -> clean (exit 0)", v["exit"] == 0 and not v["not_counted"], v["exit"])
+check("all four images counted and no finding -> clean (exit 0)", v["exit"] == 0 and not v["not_counted"], v["exit"])
 
 # --- rule 4: Inspector and Google results are filtered against the VEX; Grype and Scout arrive filtered
 covered = ("CVE-2025-60876", "busybox", "1.37.0")      # covered by our published VEX
-r = tree({("inspector", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
-          ("google", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
+r = tree({("inspector", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
+          ("google", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
 ids = sorted((f["id"], f["seen_by"] and tuple(f["seen_by"])) for f in v["findings"])
 check("Inspector's and Google's VEX-covered finding is dropped; the uncovered one remains, seen by both",
       ids == [("CVE-2099-0001", ("google", "inspector"))], ids)
@@ -107,32 +107,32 @@ check("the dropped finding is recorded as covered by the VEX", any(c["id"] == "C
 # its encoded purl version (%2B) matches the decoded version the scanner reports
 vexf = os.path.join(tempfile.mkdtemp(), "v.json")
 json.dump({"@context": "x", "statements": [{"vulnerability": {"name": "CVE-2099-0009"}, "status": "not_affected",
-    "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=debug&arch=amd64",
+    "products": [{"@id": "pkg:oci/cache?repository_url=ghcr.io/fosterstack/cache&variant=production&arch=amd64",
                   "subcomponents": [{"@id": "pkg:deb/debian/tzdata@2026%63?arch=all"}]}]}]}, open(vexf, "w"))   # %63 = c
 row = ("CVE-2099-0009", "tzdata", "2026c")
-r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("debug-amd64", "fips-amd64")})
+r = tree({(s_, img): [row] for s_ in ("inspector", "google") for img in ("production-amd64", "fips-amd64")})
 v = P.tally(r, P.load_vex(vexf))
 check("a per-image statement filters only its own image (Codex r2 B2) and matches the decoded version (r2 R9)",
-      [f["image"] for f in v["findings"]] == ["fips-amd64"] and [c["image"] for c in v["vex_covered"]] == ["debug-amd64", "debug-amd64"],
+      [f["image"] for f in v["findings"]] == ["fips-amd64"] and [c["image"] for c in v["vex_covered"]] == ["production-amd64", "production-amd64"],
       ([f["image"] for f in v["findings"]], v["vex_covered"]))
 
 # --- rules 5 and 6: merge, seen by N of M, report at two or more
-r = tree({("inspector", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
-          ("google", "debug-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
+r = tree({("inspector", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")],
+          ("google", "production-amd64"): [covered, ("CVE-2099-0001", "tzdata", "2026c")]}); v = judge(r)
 f = v["findings"][0]
 check("a finding carries the exact package identity a scanner gave (for a VEX statement scoped to it)",
       f["purls"] == ["pkg:generic/tzdata@2026c"], f.get("purls"))
-check("one finding per CVE + package + version per image, 'seen by 2 of 4'", f["seen_by"] == ["google", "inspector"] and f["of"] == 4 and f["image"] == "debug-amd64", f)
+check("one finding per CVE + package + version per image, 'seen by 2 of 4'", f["seen_by"] == ["google", "inspector"] and f["of"] == 4 and f["image"] == "production-amd64", f)
 check("seen by two or more -> reported (the tracking issue), exit 1", f["status"] == "report" and v["exit"] == 1 and "CVE-2099-0001" in v["issue"], (f["status"], v["exit"]))
 # the same package named the way each scanner names it is one finding: Grype's purl carries the distro
 # namespace and an escaped version (pkg:deb/debian/libc-bin@2.36-9%2Bdeb12u1), Google names libc-bin 2.36-9+deb12u1
 r = tree()
-d = os.path.join(r, "grype", "debug-amd64")
+d = os.path.join(r, "grype", "production-amd64")
 W(d, "result.cdx.json", {"bomFormat": "CycloneDX", "components": [
     {"bom-ref": "a", "name": "libc-bin", "version": "2.36-9+deb12u1", "purl": "pkg:deb/debian/libc-bin@2.36-9%2Bdeb12u1?arch=amd64&distro=debian-12"},
     {"bom-ref": "b", "name": "golang.org/x/net", "version": "v0.1.0", "purl": "pkg:golang/golang.org/x/net@v0.1.0"}],
     "vulnerabilities": [{"id": "CVE-2023-4911", "affects": [{"ref": "a"}]}, {"id": "GO-2099-0001", "affects": [{"ref": "b"}]}]})
-google(os.path.join(r, "google", "debug-amd64"), BASE, [("CVE-2023-4911", "libc-bin", "2.36-9+deb12u1"), ("go-2099-0001", "golang.org/x/net", "0.1.0")])
+google(os.path.join(r, "google", "production-amd64"), BASE, [("CVE-2023-4911", "libc-bin", "2.36-9+deb12u1"), ("go-2099-0001", "golang.org/x/net", "0.1.0")])
 v = judge(r)
 check("one finding across scanners' namings (distro namespace, escaped version, v-prefix, id case) -> seen by 2",
       sorted((f["id"], len(f["seen_by"])) for f in v["findings"]) == [("CVE-2023-4911", 2), ("GO-2099-0001", 2)], [(f["id"], f["package"], f["seen_by"]) for f in v["findings"]])

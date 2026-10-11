@@ -1,7 +1,8 @@
 {
   "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
   "env_names": [
-    "DIGESTS"
+    "DIGESTS",
+    "MODE"
   ],
   "scripts": [
     {
@@ -184,7 +185,7 @@
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
-      "sha256": "40b3b9f45e6de916583f85c537ada153e6cc6b4d54d97a69609281e34b99f82e"
+      "sha256": "52eca0cca35acc611ff5ad34142f6c580badee55784097dbb86fc06f13e8782c"
     },
     {
       "path": "bin/build-admit.py",
@@ -267,7 +268,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "67e23384e0d582a2d28297af5efb34aa2c689fe84b7e28ca823b15638ee9eb6c"
+      "sha256": "9e9b0d27ffd8f2949a9d3df8ceb6bc62b6fea198ad558d2e0759389ffaa9e10f"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -346,7 +347,7 @@
       "runs": [],
       "signs": false,
       "reason": "Build and Rebuild guard (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7): runs only when mode is neither release nor snapshot and refuses",
-      "sha256": "2b28c355ae65a500dddac3fbadc8865d758f5a5a0e8dfd2d06daf3b737ab3705"
+      "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe"
     },
     {
       "path": "bin/check-stage.sh",

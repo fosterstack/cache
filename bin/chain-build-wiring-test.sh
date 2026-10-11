@@ -136,7 +136,7 @@ def stage_text(family):
         out += "      - uses: %s # v7.0.1\n        with:\n" % CHECKOUT
         out += "          persist-credentials: false\n          fetch-depth: 0\n"
         if sp.get("mode"):
-            out += "      - name: the mode is release or snapshot\n        if: %s\n        run: %s\n" % (S.MODE_GUARD_IF, S.MODE_GUARD_RUN)
+            out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
@@ -307,7 +307,7 @@ st s_hup_name   "AC2 the hostile attempts are uploaded under another name" "host
 st s_hup_noif   "AC2 the hostile upload has no if" "hostile" '        if: ${{ inputs.hostile }}\n        uses:' '        uses:'
 # REQ-CHAIN-004-AC12: snapshot mode. One input, mode (string, default release); a guard step refuses any other value; two Witness steps, one per mode, with
 # closed step names; no admission and no GH_TOKEN in the snapshot step.
-GUARD_STEP='      - name: the mode is release or snapshot\n        if: ${{ inputs.mode != '"'release'"' && inputs.mode != '"'snapshot'"' }}\n        run: bash bin/build-stage-refuse-mode.sh\n'
+GUARD_STEP='      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: bash bin/build-stage-refuse-mode.sh "$MODE"\n'
 SNAP_IF="if: \${{ inputs.mode == 'snapshot' }}"
 SNAP_STEP="      - name: snapshot-apk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh\n"
 RSNAP_STEP="      - name: snapshot-rapk under Witness\n        $SNAP_IF\n        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-rapk.sh\n"
@@ -319,11 +319,12 @@ st s_mode_bool "AC12 the mode is a boolean" "on: must be" 'type: string' 'type: 
 st s_mode_req  "AC12 the mode is required" "on: must be" '        default: release\n' '        default: release\n        required: true\n'
 st s_guard_none "AC12 the mode guard is missing (any other mode would skip both Witness steps and upload nothing, green)" "mode guard" \
               "$GUARD_STEP" ''
-st s_guard_open "AC12 the mode guard lets any mode through (its if never fires)" "mode guard" "inputs.mode != 'snapshot' }}\n        run: bash bin/build-stage-refuse-mode.sh" "inputs.mode != 'snapshot' && false }}\n        run: bash bin/build-stage-refuse-mode.sh"
-st s_guard_env "AC12 the mode guard's if reads another value than the input" "mode guard" "inputs.mode != 'release' &&" "'x' != 'release' &&"
-st s_guard_if "AC12 the mode guard fires also on a legal mode (it would refuse a release)" "mode guard" "inputs.mode != 'release' && inputs.mode != 'snapshot'" "inputs.mode != 'release'"
-st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" "        run: bash bin/build-stage-refuse-mode.sh\n" \
-              "        run: bash bin/build-stage-refuse-mode.sh\n        continue-on-error: true\n"
+st s_guard_open "AC12 the mode guard judges a constant, not the input" "mode guard" 'refuse-mode.sh "$MODE"' 'refuse-mode.sh release'
+st s_guard_env "AC12 the mode guard reads another value than the input" "mode guard" '          MODE: ${{ inputs.mode }}\n' '          MODE: release\n'
+st s_guard_if "AC12 the mode guard carries an if (GitHub compares case-insensitively there, so it could be skipped for a mixed-case mode)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
+              '          MODE: ${{ inputs.mode }}\n        if: ${{ inputs.mode != '"'release'"' }}\n'
+st s_guard_coe "AC12 the mode guard is allowed to fail (continue-on-error)" "mode guard" '          MODE: ${{ inputs.mode }}\n' \
+              '          MODE: ${{ inputs.mode }}\n        continue-on-error: true\n'
 st s_rel_noif  "AC12 the release Witness step has no if (it would run in a snapshot, with admission)" "release Witness step" \
               '      - name: apk under Witness\n        if: ${{ inputs.mode == '"'release'"' }}\n' '      - name: apk under Witness\n'
 st s_rel_snap  "AC12 the release Witness step runs in snapshot mode" "release Witness step" \
@@ -556,6 +557,7 @@ probe assemble         "AC9 digests.json written by hand instead of by the merge
 probe assemble         "AC9 the archives built after the merge (their digests would not be in digests.json)" 'L[:-2] + L[-1:] + L[-2:-1]'
 probe rebuild-apk      "005-AC1 Build's record not verified FIRST (stage-start after the build)" 'L[:2] + L[3:5] + L[2:3] + L[5:]'
 probe rebuild-apk      "005-AC1 a command between the policy and stage-start"       'L[:2] + ["python3 bin/build-admit.py run"] + L[2:]'
+probe rebuild-assemble "005-AC1 stage-start AFTER the Rebuild apk records are verified (Build's record must come first)" 'L[:2] + L[3:5] + L[2:3] + L[5:]'
 probe rebuild-assemble "005-AC2 no comparison"                                      'L[:-1]'
 probe rebuild-assemble "005-AC2 the comparison against Rebuild's own items" \
        'L[:-1] + [L[-1].replace("--expected build-in/items.json", "--expected items.json")]'
@@ -1153,9 +1155,9 @@ beh_rebuild_assemble() { # beh_rebuild_assemble TAGNAME SCRIPT MODE VERSIONTAG
   n4=$(line_of '^image ' "$d")
   n5=$(line_of 'verify items-merge' "$d")
   n6=$(line_of 'verify rebuild-compare' "$d")
-  if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] && [ "$n1" -lt "$n2" ] \
-     && [ "$n2" -lt "$n3" ] && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
-    ok "005-AC2 $t rebuild-assemble $v: records verified, stage-start, binds, images, merge, compare in that order"
+  if [ "$rc" = 0 ] && [ -n "$n1" ] && [ -n "$n2" ] && [ -n "$n3" ] && [ -n "$n4" ] && [ -n "$n5" ] && [ -n "$n6" ] && [ "$n2" -lt "$n1" ] \
+     && [ "$n1" -lt "$n3" ] && [ "$n3" -lt "$n4" ] && [ "$n4" -lt "$n5" ] && [ "$n5" -lt "$n6" ]; then
+    ok "005-AC2 $t rebuild-assemble $v: stage-start, records verified, binds, images, merge, compare in that order"
   else
     bad "005-AC2 $t rebuild-assemble $v: rc=$rc order=$n1 $n2 $n3 $n4 $n5 $n6"
   fi
@@ -1437,6 +1439,48 @@ for tag in fixture real; do
     [ $((pass + failn - before)) = "$n" ] || bad "the $kind behaviour cases ran $((pass + failn - before)) cases, cases_of says $n"
   done
 done
+# Codex A r1 F6: the guard script judges the raw string, case-sensitively (an `if` in a workflow cannot: GitHub compares strings without regard to case)
+GS="$root/bin/build-stage-refuse-mode.sh"
+guard() { # guard WANT-EXIT LABEL [MODE]
+  local rc=0; bash "$GS" "${@:3}" > /dev/null 2>&1 || rc=$?
+  if [ "$rc" = "$1" ]; then ok "AC12 guard: $2"; else bad "AC12 guard: $2 (exit $rc, wanted $1)"; fi; }
+guard 0 "release passes" release
+guard 0 "snapshot passes" snapshot
+guard 1 "Release (mixed case) is refused" Release
+guard 1 "SNAPSHOT is refused" SNAPSHOT
+guard 1 "releasE is refused" releasE
+guard 1 "release with a trailing space is refused" "release "
+guard 1 "an empty mode is refused" ""
+guard 1 "no argument is refused"
+# Codex A r1 F1: the snapshot callers consume only what Build uploads (images, dist, digests, items), the images are Build's <variant>.tar archives of production and fips
+# (no debug variant: owner, Oct 9), and the checksum text is rebuilt from the digests.json output (Build has no checksums output)
+cat > "$work/f1.py" <<'PY'
+import re, sys, yaml
+text = open(sys.argv[1]).read()
+d = yaml.load(text, Loader=yaml.BaseLoader)
+bad = []
+for jn, j in (d.get("jobs") or {}).items():
+    for s in (j.get("steps") or []):
+        if str(s.get("uses", "")).startswith("actions/download-artifact@") and "pattern" not in (s.get("with") or {}) and (s.get("with") or {}).get("name") not in ("images", "dist", "digests", "items"):
+            bad.append("%s downloads %r, which Build never uploads" % (jn, (s.get("with") or {}).get("name")))
+for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
+    if gone in text: bad.append("still names %s" % gone)
+if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
+if re.search(r"\.oci\b", text): bad.append("still reads a <variant>.oci archive (Build's images artifact holds <variant>.tar)")
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+PY
+f1() { # f1 ok|caught LABEL FILE [sed-expr]
+  local f="$work/f1-$$.yml" out rc=0
+  if [ -n "${4:-}" ]; then sed -e "$4" "$3" > "$f"; else cp "$3" "$f"; fi
+  out=$(python3 "$work/f1.py" "$f") || rc=$?
+  if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC14/F1 $2${out:+ ($out)}"; else bad "AC14/F1 $2 -> $out"; fi; }
+for w in scan main-candidate-rescan; do f1 ok "the real $w.yml consumes only Build's artifacts, no debug, no .oci, no checksums output" "$root/.github/workflows/$w.yml"; done
+f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflows/scan.yml" 's/name: images/name: oci-candidate/'
+f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
+f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
+f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
+f1 caught "a <variant>.oci archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#/tmp/oci/${v}.tar#/tmp/oci/${v}.oci#'
+f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
@@ -1649,7 +1693,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=559
+EXPECT=576
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -3,8 +3,8 @@ name: Daily main-candidate rescan
 # The daily rescan: main's candidate (below) and, merged from daily-rescan.yml (consolidation 3 of 4), the CURRENT
 # published release's digests only (the manifests and rescan jobs at the end; REQ-REL-004-AC5). main's candidate is never pushed to a package; this builds it from source through the
 # same build + image-assembly stages the release chain uses, then runs the scanner panel (scanner-panel rules
-# 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the six
-# images, Google Artifact Analysis on the three variants on linux/amd64, tallied together by bin/panel.py —
+# 1-9, ratified by the owner Oct 2; REQ-SCAN-001..009): Grype, Docker Scout and Amazon Inspector on the four
+# images (production and fips, each on both architectures), Google Artifact Analysis on the two variants on linux/amd64, tallied together by bin/panel.py —
 # package counts and quorum, the published VEX as the only exception, "seen by N of M", a tracking issue for
 # findings seen by two or more scanners; unique findings are listed for the daily auditor, whose run audits them
 # right after this one (REQ-REL-004-AC3, amended Oct 2; rule 9, owner Oct 3). Trivy and Snyk are no longer run by the panel; scanner-reports below still hands the daily auditor
@@ -37,11 +37,11 @@ jobs:
   # ---------------------------------------------------------------------------------------------------------
   # The scanner panel (scanner-panel rules 1-9, ratified Oct 2; REQ-SCAN-001..009). Four scanner jobs, each
   # leaving its raw output per image for the tally; the set of images is written here, never computed:
-  # Grype, Docker Scout and Amazon Inspector scan all six images; Google scans the three variants on
+  # Grype, Docker Scout and Amazon Inspector scan all four images (production and fips on both architectures); Google scans the two variants on
   # linux/amd64 only. Trivy and Snyk are not in the panel (rule 1). A scanner job that fails leaves fewer
   # outputs, which the tally counts as "did not run" (rule 3) — never as clean.
   panel-grype:
-    name: panel — Grype (six images)
+    name: panel — Grype (four images)
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
@@ -52,7 +52,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install grype (pinned by checksum)
         run: ./bin/install-scanner.sh grype
@@ -61,10 +61,10 @@ jobs:
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
           grype db update >/dev/null 2>&1 || true
-          for v in production debug fips; do
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/grype/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
               grype "docker:${ref}" --vex .vex/fosterstack-cache.openvex.json -o "cyclonedx-json=${d}/result.cdx.json" \
                 || echo "::warning::grype could not scan ${v}-${arch} (the tally counts it as did not run)"
             done
@@ -77,7 +77,7 @@ jobs:
           if-no-files-found: warn
 
   panel-scout:
-    name: panel — Docker Scout (six images)
+    name: panel — Docker Scout (four images)
     needs: [build]
     runs-on: ubuntu-latest
     environment: agent   # the read-only Docker Hub token for Scout lives here (owner, Oct 2)
@@ -89,7 +89,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install docker-scout (pinned by checksum)
         run: |
@@ -191,10 +191,10 @@ jobs:
       - name: Docker Scout every image, given our VEX (rule 4)
         run: |
           set -uo pipefail
-          for v in production debug fips; do
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/scout/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
               docker scout sbom --format json "local://${ref}" > "${d}/sbom.json" \
                 && ./bin/scout-vex-scan.sh "${ref}" .vex/fosterstack-cache.openvex.json "${d}/cves.json" \
                 || echo "::warning::docker scout could not scan ${v}-${arch} (the tally counts it as did not run)"
@@ -269,7 +269,7 @@ jobs:
           retention-days: 30
 
   panel-inspector:
-    name: panel — Amazon Inspector (six images)
+    name: panel — Amazon Inspector (four images)
     needs: [build]
     runs-on: ubuntu-latest
     permissions:
@@ -284,7 +284,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install inspector-sbomgen (pinned by checksum)
         run: ./bin/install-scanner.sh inspector-sbomgen
@@ -298,10 +298,10 @@ jobs:
         run: |
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          for v in production debug fips; do
+          for v in production fips; do
             for arch in amd64 arm64; do
               ref="ghcr.io/fosterstack/cache:cand-${v}-${arch}"; d="/tmp/panel/inspector/${v}-${arch}"; mkdir -p "$d"
-              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+              skopeo copy --override-arch "${arch}" --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
               inspector-sbomgen container --image "${ref}" --outfile "${d}/sbom.cdx.json" --disable-progress-bar \
                 && aws inspector-scan scan-sbom --sbom "file://${d}/sbom.cdx.json" --output-format CYCLONE_DX_1_5 > "${d}/scan.json" \
                 || echo "::warning::inspector could not scan ${v}-${arch} (the tally counts it as did not run)"
@@ -315,7 +315,7 @@ jobs:
           if-no-files-found: warn
 
   panel-google:
-    name: panel — Google Artifact Analysis (three variants, linux/amd64)
+    name: panel — Google Artifact Analysis (two variants, linux/amd64)
     needs: [build]
     runs-on: ubuntu-latest
     # The scanner identity admits main only as `push` or through the main-only `agent` environment; this
@@ -330,7 +330,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: federated identity (rule 2; the identifiers are repository variables)
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
@@ -343,13 +343,13 @@ jobs:
         with:
           version: '587.0.0'
           install_components: local-extract
-      - name: Google on-demand scan of the three variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
+      - name: Google on-demand scan of the two variants, linux/amd64 only (rule 1; our pipeline applies the VEX)
         run: |
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
-          for v in production debug fips; do
+          for v in production fips; do
             ref="ghcr.io/fosterstack/cache:cand-${v}-amd64"; d="/tmp/panel/google/${v}-amd64"; mkdir -p "$d"
-            skopeo copy --override-arch amd64 --override-os linux "oci-archive:/tmp/oci/${v}.oci" "docker-daemon:${ref}" || continue
+            skopeo copy --override-arch amd64 --override-os linux "oci-archive:/tmp/oci/${v}.tar" "docker-daemon:${ref}" || continue
             if gcloud artifacts docker images scan "${ref}" --additional-package-types=GO --format=json --log-http \
                  > "${d}/scan.json" 2> "${d}/http.log"; then
               python3 bin/panel.py google-packages "${d}/http.log" > "${d}/packages.json"
@@ -442,7 +442,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: oci-candidate
+          name: images
           path: /tmp/oci/
       - name: install scanners (pinned by checksum)
         run: for s in grype trivy osv-scanner; do ./bin/install-scanner.sh "$s" || true; done
@@ -456,8 +456,8 @@ jobs:
           python3 - <<'PY'
           import json, subprocess, os
           digs = {}
-          for v in ("production", "debug", "fips"):
-              oci = "/tmp/oci/%s.oci" % v
+          for v in ("production", "fips"):
+              oci = "/tmp/oci/%s.tar" % v
               if not os.path.exists(oci):
                   continue
               ref = "ghcr.io/fosterstack/cache:cand-%s" % v

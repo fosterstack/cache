@@ -362,6 +362,24 @@ refused("items-merge: an item that is not on the committed list is refused", d, 
 d = merge_tree("m4")
 os.remove(d + "/out/fips.manifests")
 refused("items-merge: a missing image file is refused", d, do_merge(d), "missing", "fips.manifests")
+def edit_manifests(d, image, edit):
+    path = "%s/out/%s.manifests" % (d, image)
+    lines = [l for l in open(path).read().split("\n") if l.strip()]
+    h.write(path, "\n".join(edit(lines)) + "\n")
+
+
+d = merge_tree("m4a")
+edit_manifests(d, "production", lambda L: [L[0].split()[0] + " sha256:" + "9" * 64] + L)
+refused("items-merge: an architecture repeated in <image>.manifests is refused (a later line must not overwrite the first digest)", d, do_merge(d), "manifests", "production.manifests")
+d = merge_tree("m4b")
+edit_manifests(d, "fips", lambda L: L[:1])
+refused("items-merge: an architecture missing from <image>.manifests is refused", d, do_merge(d), "manifests", "fips.manifests")
+d = merge_tree("m4c")
+edit_manifests(d, "fips", lambda L: L + ["s390x sha256:" + "8" * 64])
+refused("items-merge: an architecture outside amd64 and arm64 in <image>.manifests is refused", d, do_merge(d), "manifests", "fips.manifests")
+d = merge_tree("m4d")
+edit_manifests(d, "production", lambda L: [L[0] + " extra"] + L[1:])
+refused("items-merge: a malformed line in <image>.manifests is refused, never a traceback", d, do_merge(d), "manifests", "production.manifests")
 d = merge_tree("m5")
 os.remove(d + "/dist/" + h.archive_files("v0.3.0")["archive-fips-linux-arm64"][0])
 refused("items-merge: a missing archive is refused", d, do_merge(d), "missing", "archive-fips-linux-arm64")
@@ -382,7 +400,7 @@ check("items-merge: a release candidate's files merge to the oracle's items (PRO
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 51
+EXPECT = 55
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
