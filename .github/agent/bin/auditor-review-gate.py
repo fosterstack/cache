@@ -261,9 +261,8 @@ def _substitute_marks(v, where):
 
 
 def _plain_problem(where, s):
-    """Why the residual string `s` is not plain descriptive text (AC4), or None when it is."""
-    if not isinstance(s, str):
-        return None
+    """Why the residual string `s` is not plain descriptive text (AC4), or None when it is (the caller has checked
+    that residuals is a list of strings)."""
     if len(s) > RESIDUAL_CHARS or not _PLAIN.fullmatch(s) or _DIGITS4.search(s) or any(
             any(c.isdigit() for c in m.group()) for m in _HEXRUN.finditer(s)):
         return ("%s %s is not plain descriptive text (letters, digits, spaces and . , ; : ! ? ' \" ( ) / _ + = %% & * "

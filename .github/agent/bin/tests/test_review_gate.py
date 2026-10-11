@@ -1137,7 +1137,7 @@ class FreeText(unittest.TestCase):
 
     def test_a_residual_that_could_name_an_entry_a_commit_or_a_hash_fails_naming_it(self):
         for bad in ("0317", "entry 0350 applies", "12345", "see ac34eaf", "1f1f1f1", "x" * 1001, "tab\there",
-                    "new\nline", "café", "{0}", "back\\slash", "a`b", "$HOME", "#12", "\ud800", "\x00"):
+                    "new\nline", "caf\u00e9", "{0}", "back\\slash", "a`b", "$X", "#12", "\ud800", "\x00"):
             r = good(); r["residuals"] = ["fine", bad]
             ps = problems(r)
             hit = [p for p in ps if p.startswith("record residuals[1] ")]
@@ -1175,7 +1175,7 @@ class Diagnostics(unittest.TestCase):
 
     def test_values_are_shown_escaped_and_bounded(self):
         self.assertEqual(G._show("\ud800"), "'\\ud800'")
-        self.assertEqual(G._show("café"), "'caf\\xe9'")
+        self.assertEqual(G._show("caf\u00e9"), "'caf\\xe9'")
         self.assertEqual(G._show("claude"), "'claude'")
         self.assertLess(len(G._show("y" * 100000)), 140)
         self.assertIn("100000 characters", G._show("y" * 100000))
@@ -1228,7 +1228,7 @@ class Diagnostics(unittest.TestCase):
 
     def test_a_non_ascii_path_is_shown_escaped(self):
         c = CliRepo(); c.start(self)
-        c.change(".github/agent/bin/café.py", "b\n")
+        c.change(".github/agent/bin/caf\u00e9.py", "b\n")
         rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
         self.assertEqual(rc, 1, out)
         self.assertIn("caf\\xe9.py", out)
@@ -1359,7 +1359,7 @@ class MergedFile(unittest.TestCase):
             self.assertIn(path, out)
 
     def test_a_merged_file_whose_schema_cannot_be_told_fails_closed(self):
-        for raw in ("{not json", '{"schema": "%s"' % V1, "﻿" + '{"schema": "%s"}' % V1,
+        for raw in ("{not json", '{"schema": "%s"' % V1, "\ufeff" + '{"schema": "%s"}' % V1,
                     '{"schema": "%s", "x": %s}' % (V1, "[" * 17 + "]" * 17)):
             path = self.merged(lambda t, raw=raw: raw)
             rc, out, _ = run_main_utf8("--base", self.r.base, "--head", "HEAD")
