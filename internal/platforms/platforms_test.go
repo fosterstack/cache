@@ -4,7 +4,9 @@
 package platforms
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // root is the module root, two directories up from internal/platforms.
@@ -219,23 +223,204 @@ func (a releaseArchive) String() string {
 	return a.build + " " + a.goos + "/" + a.goarch + " " + a.format
 }
 
-// releaseArchives lists every archive file the release configuration produces.
-func releaseArchives(text string, builds []relBuild) (archives []releaseArchive, problems []string) {
-	_ = text
-	for _, b := range builds {
-		for _, o := range b.goos {
-			for _, a := range b.goarch {
-				archives = append(archives, releaseArchive{b.id, o, a, "tar.gz"})
+// yamlDocs decodes every document in text with a YAML loader.
+func yamlDocs(text string) ([]*yaml.Node, error) {
+	dec := yaml.NewDecoder(strings.NewReader(text))
+	var docs []*yaml.Node
+	for {
+		var n yaml.Node
+		err := dec.Decode(&n)
+		if errors.Is(err, io.EOF) {
+			return docs, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		docs = append(docs, &n)
+	}
+}
+
+func keySet(keys ...string) map[string]bool {
+	m := map[string]bool{}
+	for _, k := range keys {
+		m[k] = true
+	}
+	return m
+}
+
+// The keys of .goreleaser.yaml the archive reader resolves. Any other key, at any of these levels, could add,
+// drop or reshape an archive (nfpms, source, universal_binaries, format_overrides, wrap_in_directory, files,
+// goamd64, skip, builder, extra_files, ...) and is refused by name: a new one needs this check to learn it.
+var (
+	releaseTopKeys     = keySet("version", "project_name", "before", "builds", "archives", "checksum", "sboms", "release", "changelog")
+	releaseBuildKeys   = keySet("id", "main", "binary", "env", "goos", "goarch", "flags", "ldflags", "mod_timestamp")
+	releaseArchiveKeys = keySet("id", "ids", "formats", "name_template")
+	releaseChecksum    = keySet("name_template")
+	releaseSBOMKeys    = keySet("artifacts")
+	releaseReleaseKeys = keySet("github", "draft")
+)
+
+// yamlFields returns the entries of a mapping node by key. It refuses a node that is not a mapping, a key
+// that is not a plain string (a merge key, an alias, a complex key), a repeated key and a key not allowed.
+func yamlFields(n *yaml.Node, where string, allowed map[string]bool, problems *[]string) map[string]*yaml.Node {
+	if n == nil || n.Kind != yaml.MappingNode {
+		*problems = append(*problems, where+" is not a mapping")
+		return map[string]*yaml.Node{}
+	}
+	out := map[string]*yaml.Node{}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k := n.Content[i]
+		switch {
+		case k.Kind != yaml.ScalarNode || k.Tag != "!!str":
+			*problems = append(*problems, fmt.Sprintf("%s: a key that is not a plain string (line %d)", where, k.Line))
+		case out[k.Value] != nil:
+			*problems = append(*problems, fmt.Sprintf("%s: key %q repeated", where, k.Value))
+		case !allowed[k.Value]:
+			*problems = append(*problems, fmt.Sprintf("%s: key %q is not one this check resolves (it may add or change release archives)", where, k.Value))
+		default:
+			out[k.Value] = n.Content[i+1]
+		}
+	}
+	return out
+}
+
+// yamlString returns a plain string scalar, refusing anything else.
+func yamlString(n *yaml.Node, where string, problems *[]string) string {
+	if n == nil || n.Kind != yaml.ScalarNode || n.Tag != "!!str" {
+		*problems = append(*problems, where+" is missing or not a plain string")
+		return ""
+	}
+	return n.Value
+}
+
+// yamlStrings returns a list of plain string scalars, refusing anything else.
+func yamlStrings(n *yaml.Node, where string, problems *[]string) []string {
+	if n == nil || n.Kind != yaml.SequenceNode {
+		*problems = append(*problems, where+" is missing or not a list")
+		return nil
+	}
+	var out []string
+	for _, c := range n.Content {
+		out = append(out, yamlString(c, where+" item", problems))
+	}
+	return out
+}
+
+// releaseArchives decodes .goreleaser.yaml with a YAML loader and lists every archive file it produces: for
+// each archives entry, each build its ids name, each goos and goarch of that build, and each of its formats.
+// It fails closed: it refuses, naming it, anything it does not resolve - a second YAML document; a key
+// outside the ones it reads; an archive without ids (which takes every build) or without formats; a format
+// other than tar.gz, or one listed twice; an archive id repeated; an id naming no build; a build in no
+// archive or in two; and builds the line reader (parseBuilds) reads differently.
+func releaseArchives(text string, lineBuilds []relBuild) (archives []releaseArchive, problems []string) {
+	docs, err := yamlDocs(text)
+	if err != nil {
+		return nil, []string{"the YAML loader cannot read it: " + err.Error()}
+	}
+	if len(docs) != 1 || len(docs[0].Content) != 1 {
+		return nil, []string{fmt.Sprintf("%d YAML documents, want exactly one", len(docs))}
+	}
+	top := yamlFields(docs[0].Content[0], "the top level", releaseTopKeys, &problems)
+
+	type target struct{ goos, goarch []string }
+	builds := map[string]target{}
+	var order []string
+	if top["builds"] == nil || top["builds"].Kind != yaml.SequenceNode {
+		problems = append(problems, "builds is missing or not a list")
+	} else {
+		for i, b := range top["builds"].Content {
+			where := fmt.Sprintf("build %d", i+1)
+			f := yamlFields(b, where, releaseBuildKeys, &problems)
+			id := yamlString(f["id"], where+" id", &problems)
+			if _, dup := builds[id]; dup {
+				problems = append(problems, fmt.Sprintf("%s: build id %q repeated", where, id))
+			}
+			builds[id] = target{yamlStrings(f["goos"], where+" goos", &problems), yamlStrings(f["goarch"], where+" goarch", &problems)}
+			order = append(order, id)
+		}
+	}
+	var lineIDs []string
+	for _, b := range lineBuilds {
+		lineIDs = append(lineIDs, b.id)
+		y, ok := builds[b.id]
+		if !ok || strings.Join(y.goos, ",") != strings.Join(b.goos, ",") || strings.Join(y.goarch, ",") != strings.Join(b.goarch, ",") {
+			problems = append(problems, fmt.Sprintf("the YAML loader and the line reader disagree on build %q", b.id))
+		}
+	}
+	if strings.Join(lineIDs, ",") != strings.Join(order, ",") {
+		problems = append(problems, fmt.Sprintf("the YAML loader reads builds %v, the line reader %v", order, lineIDs))
+	}
+
+	archived := map[string]string{} // build id -> the archive that takes it
+	ids := map[string]bool{}        // archive ids
+	if top["archives"] == nil || top["archives"].Kind != yaml.SequenceNode {
+		problems = append(problems, "archives is missing or not a list")
+	} else {
+		for i, a := range top["archives"].Content {
+			where := fmt.Sprintf("archive %d", i+1)
+			f := yamlFields(a, where, releaseArchiveKeys, &problems)
+			id := yamlString(f["id"], where+" id", &problems)
+			if ids[id] {
+				problems = append(problems, fmt.Sprintf("%s: archive id %q repeated", where, id))
+			}
+			ids[id] = true
+			yamlString(f["name_template"], where+" name_template", &problems)
+			formats := yamlStrings(f["formats"], where+" formats (an archive without them takes a default)", &problems)
+			if strings.Join(formats, ",") != "tar.gz" {
+				problems = append(problems, fmt.Sprintf("%s (%s) formats are %q, want exactly [tar.gz]", where, id, formats))
+			}
+			for _, b := range yamlStrings(f["ids"], where+" ids (an archive without them takes every build)", &problems) {
+				tg, ok := builds[b]
+				if !ok {
+					problems = append(problems, fmt.Sprintf("%s (%s) names build %q, which does not exist", where, id, b))
+					continue
+				}
+				if prev, dup := archived[b]; dup {
+					problems = append(problems, fmt.Sprintf("build %q is in two archives: %q and %q", b, prev, id))
+				}
+				archived[b] = id
+				for _, o := range tg.goos {
+					for _, arch := range tg.goarch {
+						for _, format := range formats {
+							archives = append(archives, releaseArchive{b, o, arch, format})
+						}
+					}
+				}
 			}
 		}
 	}
-	return archives, nil
+	for _, b := range order {
+		if _, ok := archived[b]; !ok {
+			problems = append(problems, fmt.Sprintf("build %q is in no archive", b))
+		}
+	}
+	if n := top["checksum"]; n != nil {
+		yamlFields(n, "checksum", releaseChecksum, &problems)
+	}
+	if n := top["release"]; n != nil {
+		yamlFields(n, "release", releaseReleaseKeys, &problems)
+	}
+	if n := top["sboms"]; n != nil {
+		if n.Kind != yaml.SequenceNode {
+			problems = append(problems, "sboms is not a list")
+		} else {
+			for i, sb := range n.Content {
+				where := fmt.Sprintf("sbom %d", i+1)
+				f := yamlFields(sb, where, releaseSBOMKeys, &problems)
+				if v := yamlString(f["artifacts"], where+" artifacts", &problems); v != "archive" {
+					problems = append(problems, fmt.Sprintf("%s covers %q, want archive", where, v))
+				}
+			}
+		}
+	}
+	return archives, problems
 }
 
 // proves: REQ-PLAT-001-AC1
 // TestReleaseConfigBuildsOnlyLinux: .goreleaser.yaml builds exactly two builds (fscache, fscache-fips), each
-// for goos [linux] and goarch [amd64, arm64], and names no darwin or windows target anywhere (no `targets:`
-// or `ignore:` route around goos either).
+// for goos [linux] and goarch [amd64, arm64], names no darwin or windows target anywhere (no `targets:`
+// or `ignore:` route around goos either), and its archives definitions produce exactly the four tar.gz Linux
+// archives, read by a YAML loader that refuses any key or form it does not resolve.
 func TestReleaseConfigBuildsOnlyLinux(t *testing.T) {
 	for _, p := range checkReleaseConfig(read(t, ".goreleaser.yaml")) {
 		t.Error(".goreleaser.yaml: " + p)
@@ -244,7 +429,8 @@ func TestReleaseConfigBuildsOnlyLinux(t *testing.T) {
 
 // proves: REQ-PLAT-001-AC1
 // TestReleaseConfigCheckRefusesMutants: each edit of the real .goreleaser.yaml that would ship a non-Linux
-// target, an extra build or architecture, or a form the check cannot read is refused (fail closed).
+// target, an extra build, architecture, archive or archive format, or a form the check cannot read is
+// refused (fail closed).
 func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 	real := read(t, ".goreleaser.yaml")
 	const fipsGoos = "      - GOFIPS140=v1.0.0\n    goos:\n      - linux\n"
@@ -333,15 +519,107 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 	}
 }
 
-// platformWord finds a mention of a non-Linux desktop platform. The docs checks match it against whole
-// Markdown paragraphs with whitespace collapsed, so a name wrapped across a soft line break is one match.
-var platformWord = regexp.MustCompile(`(?i)darwin|mac\s?os|\bmacs?\b|apple\s+silicon|\bos\s?x\b|windows`)
+// platformWord finds a mention of a non-Linux desktop platform. The checks match it against decoded,
+// whitespace-collapsed text (a whole Markdown paragraph, a decoded YAML value), so a name wrapped across a
+// line break is one match; "Apple Silicon" and "OS X" also match with the space removed.
+var platformWord = regexp.MustCompile(`(?i)darwin|mac\s?os|\bmacs?\b|apple\s*silicon|\bos\s?x\b|windows`)
 
-// archiveClaim finds an archive-count claim: a count (a number word or digits) followed, within two words,
-// by "archives". The words between may not include "of" ("one of the archives" is not a count).
-var archiveClaim = regexp.MustCompile(`(?i)\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+)((?:\s+[a-z0-9/_.-]+){0,2})\s+archives\b`)
+// markdownMarks are the inline Markdown and HTML marks the docs checks remove before reading text, so
+// emphasis, code spans, links, escapes and tags cannot split a claim from its words: `**six** archives` reads
+// "six archives" and `Win**dows**` reads "Windows".
+var (
+	htmlTag       = regexp.MustCompile(`<[^<>]*>`)
+	markdownMarks = strings.NewReplacer("*", "", "_", "", "`", "", "~", "", "[", "", "]", "", "\\", "")
+)
 
-var numberWords = map[string]int{"one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12}
+// plainText is text as a reader of the rendered Markdown sees it: tags and inline marks removed, whitespace
+// collapsed to single spaces.
+func plainText(s string) string {
+	return strings.Join(strings.Fields(markdownMarks.Replace(htmlTag.ReplaceAllString(s, " "))), " ")
+}
+
+// countWords are the words read as a count, with their value. "a" and "an" are not counts on their own:
+// before "archive" they are the indefinite article ("download an archive"); before a quantity word they are
+// read through that word ("a single archive", "a dozen archives", "a couple of archives").
+var countWords = map[string]int{
+	"zero": 0, "single": 1, "one": 1, "both": 2, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+	"eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12, "dozen": 12, "thirteen": 13, "fourteen": 14,
+	"fifteen": 15, "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20, "thirty": 30,
+	"forty": 40, "fifty": 50, "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90, "hundred": 100,
+	"thousand": 1000,
+}
+
+// vagueCounts are quantity words with no single value: an archive claim made with one cannot be checked, so
+// it is refused.
+var vagueCounts = keySet("couple", "few", "several", "multiple", "many", "handful", "dozens", "hundreds", "pair", "various", "numerous", "some")
+
+// countWindow is the most words that may stand between a count and "archive" or "archives".
+const countWindow = 5
+
+// countToken splits plain text into words (a hyphen separates words, so "six-archive" is two) and boundaries:
+// a sentence or clause end (. ! ? ; : before a space or the end) and a table cell bar.
+var countToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[./+][A-Za-z0-9]+)*|[.!?;:](?:\s|$)|\|`)
+
+var digits = regexp.MustCompile(`^[0-9]+$`)
+
+// archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Each count
+// word or number is examined on its own, so a count is read even inside a longer phrase ("one of six
+// archives" is read as "six archives"). A count claims archives when "archive" or "archives" follows within
+// countWindow words, with no boundary and no other count between (the nearer count binds). A count directly
+// followed by "of" is partitive ("one of the archives") and is skipped; the words after it are still read. A
+// compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of") cannot be resolved
+// and are refused.
+func archiveCountProblems(text string, archives int) (problems []string) {
+	var toks []string
+	for _, m := range countToken.FindAllString(text, -1) {
+		toks = append(toks, strings.ToLower(strings.TrimSpace(m)))
+	}
+	boundary := func(w string) bool { return len(w) == 1 && strings.ContainsAny(w, ".!?;:|") }
+	isCount := func(w string) bool {
+		_, n := countWords[w]
+		return n || vagueCounts[w] || digits.MatchString(w)
+	}
+	for i, w := range toks {
+		if !isCount(w) || (!vagueCounts[w] && i+1 < len(toks) && toks[i+1] == "of") {
+			continue
+		}
+		compound := false
+		for j := i + 1; j < len(toks) && j <= i+1+countWindow; j++ {
+			x := toks[j]
+			if boundary(x) {
+				break
+			}
+			if isCount(x) {
+				if j == i+1 {
+					compound = true
+					continue
+				}
+				break
+			}
+			if x != "archive" && x != "archives" {
+				continue
+			}
+			claim := strings.Join(toks[i:j+1], " ")
+			n, known := countWords[w]
+			if !known {
+				var err error
+				if n, err = strconv.Atoi(w); err != nil {
+					n = -1 // digits too large for an int: still not the count
+				}
+			}
+			switch {
+			case compound:
+				problems = append(problems, fmt.Sprintf("claims %q, a compound count this check does not resolve", claim))
+			case vagueCounts[w]:
+				problems = append(problems, fmt.Sprintf("claims %q, a count this check cannot resolve", claim))
+			case n != archives:
+				problems = append(problems, fmt.Sprintf("claims %q, but .goreleaser.yaml produces %d archives", claim, archives))
+			}
+			break
+		}
+	}
+	return problems
+}
 
 // docsScanned are the public docs that describe what a release ships.
 var docsScanned = []string{"README.md", "docs/install.md", "docs/docker-deploy.md", "RELEASING.md", "docs/verify-images.md"}
@@ -386,19 +664,17 @@ var notScanned = map[string]string{
 	".github/workflows/stage-acceptance-artifacts.yml": "frozen legacy stage file (legacy-stage-files.json); its archive check is rewritten by the release-chain pull requests",
 }
 
-// releaseArchiveCount is the number of archives the real .goreleaser.yaml produces: one per build, goos and
-// goarch. It fails the test if the config cannot be read.
+// releaseArchiveCount is the number of archive files the real .goreleaser.yaml produces, read from its
+// builds and its archives definitions. It fails the test if the config cannot be read.
 func releaseArchiveCount(t *testing.T) int {
 	t.Helper()
-	builds, problems := parseBuilds(read(t, ".goreleaser.yaml"))
-	if len(problems) > 0 {
+	text := read(t, ".goreleaser.yaml")
+	builds, problems := parseBuilds(text)
+	archives, aproblems := releaseArchives(text, builds)
+	if problems = append(problems, aproblems...); len(problems) > 0 {
 		t.Fatalf(".goreleaser.yaml cannot be read: %v", problems)
 	}
-	n := 0
-	for _, b := range builds {
-		n += len(b.goos) * len(b.goarch)
-	}
-	return n
+	return len(archives)
 }
 
 // unit is a run of Markdown a reader takes as one piece of text: a paragraph (consecutive non-blank lines
@@ -444,33 +720,26 @@ func units(text string) []unit {
 
 // checkDoc returns every problem in one scanned doc and the allowed texts it found: a darwin archive name;
 // an archive-count claim that is not the count .goreleaser.yaml produces; a platform name that does not lie
-// wholly inside one of the file's allowed texts.
+// wholly inside one of the file's allowed texts. Counts and platform names are read in plainText, and the
+// allowed texts are matched in plainText too.
 func checkDoc(file, text string, allowed []allowedLine, archives int) (problems []string, seen map[string]bool) {
 	seen = map[string]bool{}
 	for _, u := range units(text) {
+		plain := plainText(u.text)
 		if strings.Contains(strings.ToLower(u.text), "_darwin_") {
 			problems = append(problems, fmt.Sprintf("%s:%d names a darwin archive: %s", file, u.line, u.text))
 		}
-		for _, m := range archiveClaim.FindAllStringSubmatch(u.text, -1) {
-			if strings.Contains(" "+strings.ToLower(m[2])+" ", " of ") {
-				continue
-			}
-			n, ok := numberWords[strings.ToLower(m[1])]
-			if !ok {
-				n, _ = strconv.Atoi(m[1]) // m[1] is digits here; one too large for an int reads as 0, still not the count
-			}
-			if n != archives {
-				problems = append(problems, fmt.Sprintf("%s:%d claims %q, but .goreleaser.yaml produces %d archives", file, u.line, m[0], archives))
-			}
+		for _, p := range archiveCountProblems(plain, archives) {
+			problems = append(problems, fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
 		}
 		var spans [][2]int
 		for _, a := range allowed {
-			want := strings.Join(strings.Fields(a.text), " ")
+			want := plainText(a.text)
 			if a.file != file || want == "" {
 				continue
 			}
 			for off := 0; ; {
-				k := strings.Index(u.text[off:], want)
+				k := strings.Index(plain[off:], want)
 				if k < 0 {
 					break
 				}
@@ -479,7 +748,7 @@ func checkDoc(file, text string, allowed []allowedLine, archives int) (problems 
 				off += k + 1
 			}
 		}
-		for _, loc := range platformWord.FindAllStringIndex(u.text, -1) {
+		for _, loc := range platformWord.FindAllStringIndex(plain, -1) {
 			covered := false
 			for _, sp := range spans {
 				if sp[0] <= loc[0] && loc[1] <= sp[1] {
@@ -487,7 +756,7 @@ func checkDoc(file, text string, allowed []allowedLine, archives int) (problems 
 				}
 			}
 			if !covered {
-				problems = append(problems, fmt.Sprintf("%s:%d names a non-Linux platform (%q) outside an allowed text: %s", file, u.line, u.text[loc[0]:loc[1]], u.text))
+				problems = append(problems, fmt.Sprintf("%s:%d names a non-Linux platform (%q) outside an allowed text: %s", file, u.line, plain[loc[0]:loc[1]], u.text))
 			}
 		}
 	}
@@ -523,9 +792,11 @@ func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
 }
 
 // proves: REQ-PLAT-001-AC1
-// TestDocsCheckRefusesMutants: a platform claim wrapped across a Markdown soft line break, an OS X claim, an
-// archive count that disagrees with .goreleaser.yaml, and a darwin archive name are each refused; the
-// wrapped Apple Silicon mention in docs/install.md passes only through its named exception.
+// TestDocsCheckRefusesMutants: a platform claim wrapped across a Markdown soft line break or split by inline
+// Markdown, an OS X claim, an archive count that disagrees with .goreleaser.yaml (behind Markdown, up to five
+// words before "archives", after "one of", in any number word, digits, compound or vague), and a darwin
+// archive name are each refused; phrases that name archives without a wrong count pass; the wrapped Apple
+// Silicon mention in docs/install.md passes only through its named exception.
 func TestDocsCheckRefusesMutants(t *testing.T) {
 	const f = "docs/install.md"
 	install := read(t, f)
@@ -613,7 +884,7 @@ func checkNotes(text string, archives int) []string {
 	problems, _ := checkDoc(notesFile, text, []allowedLine{{notesFile, notesSentence, "the REQ-PLAT-001 release-notes line", false}}, archives)
 	count := 0
 	for _, u := range units(text) {
-		count += strings.Count(u.text, notesSentence)
+		count += strings.Count(plainText(u.text), notesSentence)
 	}
 	if count != 1 {
 		problems = append(problems, fmt.Sprintf("%s says %q %d times, want exactly once", notesFile, notesSentence, count))
@@ -689,16 +960,62 @@ func packageTests(t *testing.T) map[string]bool {
 	return tests
 }
 
+// platformsTestRef is an exact go-test reference to a test of this package.
+var platformsTestRef = regexp.MustCompile(`^internal/platforms:(Test[A-Za-z0-9_]+)$`)
+
 // checkEvidenceMappings returns every platform name in the evidence mappings outside an exact reference to
-// one of this package's tests.
+// one of this package's tests. The file is read twice and both readings must be clean: decoded by a YAML
+// loader (every document; every key, value, anchor, tag and comment, in plainText, so a quoted, escaped,
+// folded or wrapped scalar is read as the text it means), and as raw text in plainText (so nothing the
+// loader drops escapes). The one exception is the whole value of `ref` in an evidence item whose `type` is
+// `go-test`, when that value is exactly internal/platforms:<name> and tests holds name.
 func checkEvidenceMappings(text string, tests map[string]bool) (problems []string) {
-	_ = tests
-	names := regexp.MustCompile(`internal/platforms:Test[A-Za-z]+`)
-	for n, line := range strings.Split(text, "\n") {
-		if m := platformWord.FindString(names.ReplaceAllString(line, "")); m != "" {
-			problems = append(problems, fmt.Sprintf("%s:%d names %q: %s", mappingsFile, n+1, m, strings.TrimSpace(line)))
+	scan := func(where, s string) {
+		s = plainText(s)
+		for _, loc := range platformWord.FindAllStringIndex(s, -1) {
+			from, to := max(0, loc[0]-60), min(len(s), loc[1]+60)
+			problems = append(problems, fmt.Sprintf("%s names %q: ...%s...", where, s[loc[0]:loc[1]], s[from:to]))
 		}
 	}
+	docs, err := yamlDocs(text)
+	if err != nil {
+		return []string{mappingsFile + ": the YAML loader cannot read it: " + err.Error()}
+	}
+	exempt := map[string]bool{} // the exact references excepted
+	var walk func(n *yaml.Node, skip bool)
+	walk = func(n *yaml.Node, skip bool) {
+		where := fmt.Sprintf("%s:%d", mappingsFile, n.Line)
+		scan(where, n.HeadComment+" \n "+n.LineComment+" \n "+n.FootComment+" \n "+n.Anchor+" \n "+n.Tag)
+		if !skip {
+			scan(where, n.Value)
+		}
+		goTest := false
+		if n.Kind == yaml.MappingNode {
+			for i := 0; i+1 < len(n.Content); i += 2 {
+				if n.Content[i].Value == "type" && n.Content[i+1].Kind == yaml.ScalarNode && n.Content[i+1].Value == "go-test" {
+					goTest = true
+				}
+			}
+		}
+		for i, c := range n.Content {
+			ok := false
+			if goTest && i%2 == 1 && n.Content[i-1].Value == "ref" && c.Kind == yaml.ScalarNode {
+				if m := platformsTestRef.FindStringSubmatch(c.Value); m != nil && tests[m[1]] {
+					ok = true
+					exempt[c.Value] = true
+				}
+			}
+			walk(c, ok)
+		}
+	}
+	for _, d := range docs {
+		walk(d, false)
+	}
+	raw := text
+	for ref := range exempt {
+		raw = strings.ReplaceAll(raw, ref, " ")
+	}
+	scan(mappingsFile+" (raw text)", raw)
 	return problems
 }
 
