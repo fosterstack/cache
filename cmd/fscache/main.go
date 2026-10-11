@@ -306,8 +306,8 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	// the last process did not exit cleanly, so the stores may disagree
 	// and reconciliation must run before serving. It is removed only
 	// after a clean shutdown's successful Close — a crash, a kill, a
-	// failed reconcile or a failed close all leave it in place for the
-	// next start to see.
+	// panic, a failed reconcile, a serving or shutdown error or a failed
+	// close all leave it in place for the next start to see.
 	marker := uncleanMarkerPath(cfg.dataDir)
 	wasUnclean, err := markerPresent(marker)
 	if err != nil {
@@ -336,13 +336,16 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 			m.EvictedTotal.Inc()
 		}),
 	)
-	// keepMarker is set while the startup reconcile runs and released only
-	// when it succeeds: after an error or a panic the stores may be half
-	// repaired, so the marker stays and the next start reconciles again
-	// (REQ-STORE-005-AC4). It is set again on a serving or shutdown error:
-	// the HTTP server is then closed without waiting for active handlers,
-	// so an upload may leave a blob with no index record (REQ-STORE-005-AC5).
-	keepMarker := false
+	// keepMarker fails closed: the marker is kept on every exit (an error,
+	// a panic, an early return) except the single clean return at the end,
+	// after a graceful Shutdown and a serving goroutine that ended without
+	// a serving error. A failed or panicking reconcile may leave the stores
+	// half repaired (REQ-STORE-005-AC4); a serving or shutdown error closes
+	// the HTTP server without waiting for active handlers, so an upload may
+	// leave a blob with no index record (REQ-STORE-005-AC5). The deferred
+	// cleanup clears the marker only when this is false and the stores
+	// closed successfully.
+	keepMarker := true
 	defer func() {
 		if err := cacheClose(c); err != nil {
 			log.Error("fscache: store close failed; unclean marker kept", "error", err)
@@ -360,12 +363,10 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 	if wasUnclean {
 		log.Warn("fscache: unclean shutdown detected, reconciling stores before serving")
 		began := time.Now()
-		keepMarker = true
 		stats, err := cacheReconcile(c, context.Background())
 		if err != nil {
 			return fmt.Errorf("startup reconciliation: %w", err)
 		}
-		keepMarker = false
 		log.Info("fscache: reconciled",
 			"duration", reconcileDuration(time.Since(began)),
 			"adopted_blobs", stats.AdoptedBlobs,
@@ -439,16 +440,23 @@ func serve(ctx context.Context, log *slog.Logger, ready func()) error {
 
 	select {
 	case err := <-errCh:
-		keepMarker = true
 		return fmt.Errorf("serve: %w", err)
 	case <-ctx.Done():
 		log.Info("fscache: shutting down")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpShutdown(httpServer, shutdownCtx); err != nil {
-			keepMarker = true
 			return fmt.Errorf("shutdown: %w", err)
 		}
-		return nil
 	}
+	// Join the serving goroutine and read its result: a serving error that
+	// arrived together with the shutdown signal is still an error.
+	<-done
+	select {
+	case err := <-errCh:
+		return fmt.Errorf("serve: %w", err)
+	default:
+	}
+	keepMarker = false // the one clean return
+	return nil
 }
