@@ -2917,14 +2917,37 @@ check("r11 R11-5: a quoted require path is refused by removed (exit 2, go.mod:2,
       rc_ == 2 and r8p("q.mod") + ":2:" in err_ and not os.path.exists(rm_out_), (rc_, err_))
 # ===== r12 (micro-verification at cba7d4c, advisor NARROW CUT; Codex #300 b11, B item 2: the literal marker conversion lost
 # statement identity). A VEX value that literally holds a redaction-marker form ('<redacted>', '(redacted)', '\(redacted\)',
-# '\<redacted\>', their JSON, HTML-entity, percent and backslash escaped spellings, any case) is REFUSED before any
+# '\<redacted\>', their JSON, HTML-entity and backslash escaped spellings, any case; r13: percent-encoded,
+# fullwidth and nested spellings are cut, see CUT_) is REFUSED before any
 # redaction (ValueError naming the statement and the field; exit 2, nothing written); the conversion of a literal marker in a
 # value is deleted; vendor-name redaction and the position fallbacks are unchanged (REQ-REL-009-AC8, AC14)
-FORMS_ = ["<redacted>", "(redacted)", "\\(redacted\\)", "\\<redacted\\>", "<REDACTED>", "(Redacted)", "\\(ReDacted\\)",
-          "\\u003credacted\\u003e", "\\u003credacted>", "<redacted\\u003e", "\\u003Credacted\\u003E", "\\u0028redacted\\u0029",
-          "&lt;redacted&gt;", "&LT;redacted&GT;", "&#60;redacted&#62;", "&#x3c;redacted&#x3E;", "&lpar;redacted&rpar;",
-          "\\\\(redacted\\\\)", "\\\\u003credacted\\\\u003e", "&amp;lt;redacted&amp;gt;", "%3Credacted%3E", "%28redacted%29",
-          "\uff1credacted\uff1e", "\uff08redacted\uff09"]
+# r13 (Codex #300 b12, B Medium: a nested spelling passed the decoder; advisor CUT, Oct 12): the decoding is deleted. The
+# refusal covers exactly the forms the printer and the readers recognise, each read ONE way, never nested or iterated:
+# the marker as written ('<redacted>', '(redacted)', '\<redacted\>', '\(redacted\)', any case); read once with the Markdown
+# backslash escapes undone (what _marked and _clean_free read); read once as a JSON string body (the printer's quoted form:
+# <, >, (, ) in any hex case, \\ for a backslash); read once with HTML character references decoded
+# (&lt; &gt; &lpar; &rpar;, decimal and hex references). Each delimiter of the marker may be spelled in any one family.
+WORDS13_ = ["redacted", "REDACTED", "ReDacted"]
+SPELL13_ = {
+    "as written": {"<": ["<"], ">": [">"], "(": ["("], ")": [")"]},
+    "backslash": {"<": ["<", "\\<"], ">": [">", "\\>"], "(": ["(", "\\("], ")": [")", "\\)"]},
+    "json": {"<": ["<", "\\u003c", "\\u003C"], ">": [">", "\\u003e", "\\u003E"], "(": ["(", "\\u0028"], ")": [")", "\\u0029"]},
+    "html": {"<": ["<", "&lt;", "&LT;", "&lt", "&#60;", "&#060;", "&#x3c;", "&#X3C;", "&#x003c;"],
+             ">": [">", "&gt;", "&GT;", "&gt", "&#62;", "&#x3e;", "&#X3E;"],
+             "(": ["(", "&lpar;", "&#40;", "&#x28;"], ")": [")", "&rpar;", "&#41;", "&#x29;"]}}
+RECOGNISED_ = sorted({o_ + w_ + c_ for fam_ in SPELL13_.values() for a_, b_ in (("<", ">"), ("(", ")"))
+                      for o_ in fam_[a_] for c_ in fam_[b_] for w_ in WORDS13_}
+                     | {"\\\\%s%s\\\\%s" % (a_, w_, b_) for a_, b_ in (("<", ">"), ("(", ")")) for w_ in WORDS13_})
+# the forms only the deleted decoding read: percent-encoded, compatibility (fullwidth), nested or iterated, the dropped
+# \x / \U code escapes, two families mixed in one marker, and the 64-pass limit: NOT refused, printed quoted as before
+CUT_ = ["%3Credacted%3E", "%3credacted%3e", "%28redacted%29", "%3CREDACTED%3E", "\uff1credacted\uff1e", "\uff08redacted\uff09",
+        "\uff1cREDACTED\uff1e", "&amp;lt;redacted&amp;gt;", "&amp;#60;redacted&amp;#62;", "\\\\u003credacted\\\\u003e",
+        "\\u0026lt;redacted\\u0026gt;", "%253Credacted%253E", "&#37;3Credacted&#37;3E", "\\u00253Credacted\\u00253E",
+        "%EF%BC\\x259Credacted%EF%BC\\x259E", "%EF%BC\\u00259Credacted%EF%BC\\u00259E",
+        "%EF%BC\\U000000259Credacted%EF%BC\\U000000259E", "%EF%BC\\x2588redacted%EF%BC\\x2589", "\\x3credacted\\x3e",
+        "\\U0000003credacted\\U0000003e", "\\u003credacted&gt;", "&lt;redacted\\u003e", "&#xff1c;redacted&#xff1e;",
+        "\\uff1credacted\\uff1e", "&" + "amp;" * 64, "&" + "amp;" * 64 + "lt;redacted&gt;"]
+FORMS_ = RECOGNISED_
 def vex_cli(old_doc, new_doc):
     """run `notes` with these VEX documents; (rc, stderr, the out file's text or None)"""
     out_ = r8p("notes12.md")
@@ -3001,7 +3024,7 @@ for f_ in FORMS_:
 check("r12 R12-2: every marker form (%d forms, 4 embeddings) in every field (%d) of either document is refused, naming the "
       "document, the statement and the field (%d cases); the printer (_lit) and notes() refuse it too"
       % (len(FORMS_), len(FIELDS_), n_), bad_ == [] and n_ == len(FORMS_) * 4 * len(FIELDS_) * 2, bad_[:3])
-for f_ in FORMS_[:6]:
+for f_ in ["<redacted>", "(redacted)", "\\(redacted\\)", "\\<redacted\\>", "<REDACTED>", "(Redacted)"]:
     rc_, err_, out_, sout_ = vex_cli(None, put_(f_, "products[1].subcomponents[1].@id"))
     check("r12 R12-2: notes with %r as a subcomponent @id exits 2, nothing written, named" % f_,
           rc_ == 2 and out_ is None and sout_ == "" and "statement 2: products[1].subcomponents[1].@id" in err_, (rc_, err_))
@@ -3021,6 +3044,9 @@ for _ in range(4000):
     if rng12_.random() < 0.15:
         i_ = rng12_.randint(0, len(v_))
         v_ = v_[:i_] + rng12_.choice(FORMS_) + v_[i_:]
+    elif rng12_.random() < 0.12:                     # r13: a cut form prints exactly as the pre-cut printer printed it
+        i_ = rng12_.randint(0, len(v_))
+        v_ = v_[:i_] + rng12_.choice(CUT_) + v_[i_:]
     for bc_ in (False, True):
         r_ = refused(P._lit, v_, before_colon=bc_)
         if is_ve(r_):
@@ -3066,8 +3092,11 @@ def rn12_(hit_):
     v_ = rng13_.choice(PREF_) + "".join(rng13_.choice(ALPH_) for _ in range(rng13_.randint(0, 6)))
     if rng13_.random() < 0.06:
         i_ = rng13_.randint(0, len(v_))
-        v_ = v_[:i_] + rng13_.choice(FORMS_) + v_[i_:]
+        v_ = v_[:i_] + " " + rng13_.choice(FORMS_) + " " + v_[i_:]   # r13: set apart, so no neighbour respells it
         hit_.append(v_)
+    elif rng13_.random() < 0.04:                     # r13: a cut form is an ordinary value: printed, read back
+        i_ = rng13_.randint(0, len(v_))
+        v_ = v_[:i_] + " " + rng13_.choice(CUT_) + " " + v_[i_:]
     return v_
 def rs12_(hit_):
     s_ = {"vulnerability": {"name": rn12_(hit_)}, "status": rng13_.choice(P.VEX_STATUS)}
@@ -3091,6 +3120,8 @@ for it_ in range(500):
             bad_.append((it_, "a marker form not refused", hit_, vc_))
         continue
     if is_ve(vc_):
+        if "marker" in vc_:                      # r13: no other value (a cut form included) is a marker form
+            bad_.append((it_, "a value that is not a recognised marker form refused", vc_))
         continue
     t_ = refused(P.notes, "v0.2.3", [], vc_)
     if is_ve(t_):
@@ -3102,6 +3133,43 @@ for it_ in range(500):
 check("r12 R12-5: 500 random VEX documents (%d holding a marker form, %d printed): a marker form in any printed value is "
       "refused naming its statement; every other document prints and reads back as the tag's notes and changelog"
       % (refd_, made_), bad_ == [] and refd_ > 50 and made_ > 200, bad_[:2])
+# ===== r13 (Codex #300 b12, B Medium; advisor CUT, Oct 12): the decoding is deleted; the refusal covers the recognised forms
+# only (RECOGNISED_ above, refused in every field by R12-2); every cut form is an ordinary value: not refused, printed quoted
+check("r13 R13-1: the recognised forms are derived per family (%d spellings: as written, backslash, JSON, HTML; any case)"
+      % len(RECOGNISED_), len(RECOGNISED_) > 250 and "\\(redacted\\)" in RECOGNISED_ and "&#x3c;REDACTED&gt" in RECOGNISED_
+      and "\\u0028ReDacted)" in RECOGNISED_ and "\\\\(redacted\\\\)" in RECOGNISED_, len(RECOGNISED_))
+bad_, n_ = [], 0
+for f_ in CUT_:
+    for emb_ in ("%s", "pkg:x%sy", "%sgpt", "CVE-1 %s"):
+        v_ = emb_ % f_
+        for fl_ in FIELDS_:
+            for side_ in ("new", "old"):
+                n_ += 1
+                d_ = put_(v_, fl_)
+                r_ = refused(P.vex_changes, d_, put_("ok", fl_)) if side_ == "old" else refused(P.vex_changes, None, d_)
+                if is_ve(r_):
+                    bad_.append((v_, fl_, side_, r_))
+        for bc_ in (False, True):
+            r_ = refused(P._lit, v_, before_colon=bc_)
+            if r_ != old_lit_(v_, bc_) or not r_.startswith("`"):
+                bad_.append((v_, "_lit", bc_, r_, old_lit_(v_, bc_)))
+        t_ = refused(P.notes, "v0.2.3", [], [{"cve": v_, "status": "fixed", "change": "added"}])
+        if is_ve(t_) or (P._lit(v_, before_colon=True) not in t_ and "gpt" not in v_) \
+                or refused(P.tag_notes, mktag("v0.2.3", t_)) != t_ or is_ve(refused(P.changelog, t_, None, "")):
+            bad_.append((v_, "notes", t_))
+check("r13 R13-2: every cut form (%d: percent-encoded, fullwidth, nested, \\x / \\U escapes, mixed families, the 64-pass "
+      "limit, B's '%%EF%%BC\\x259Credacted...'), 4 embeddings, in every field of either document (%d cases) is NOT refused; "
+      "the printer quotes it byte-identical to the pre-cut printer; the notes print it and read back" % (len(CUT_), n_),
+      bad_ == [] and n_ == len(CUT_) * 4 * len(FIELDS_) * 2, bad_[:3])
+B12_ = "%EF%BC\\x259Credacted%EF%BC\\x259E"
+rc_, err_, out_, sout_ = vex_cli(None, {"statements": [{"vulnerability": {"name": B12_}, "status": "fixed"}]})
+check("r13 R13-2: B's b12 document (vulnerability name %r) is not refused: exit 0, the notes print it quoted" % B12_,
+      rc_ == 0 and out_ is not None and P._lit(B12_, before_colon=True) == '`"%EF%BC\\\\x259Credacted%EF%BC\\\\x259E"`'
+      and P._lit(B12_, before_colon=True) in out_, (rc_, err_, out_))
+for f_ in ("&lt;redacted&gt;", "\\u003credacted>", "\\(redacted\\)", "&#40;REDACTED&#41;", "\\\\<redacted\\\\>"):
+    rc_, err_, out_, sout_ = vex_cli(None, put_(f_, "products[1].identifiers.purl"))
+    check("r13 R13-3: notes with the recognised form %r as an identifier exits 2, nothing written, named" % f_,
+          rc_ == 2 and out_ is None and sout_ == "" and "statement 2: products[1].identifiers.purl" in err_, (rc_, err_))
 shutil.rmtree(r8_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
