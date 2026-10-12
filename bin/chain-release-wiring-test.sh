@@ -131,7 +131,6 @@ rows = []
 for n, b in BODY.items():
     open(f"{w}/s/bin/{n}.sh", "w").write("#!/usr/bin/env bash\n" + b)
     t, s, r = ROWS[n]
-    r = [x for x in r if x not in ("bin/apk-tool.py", "bin/release-sign-apks.sh", "bin/vendor-provenance.py")]   # the cache scripts not on the chain yet are left out of `runs` (MISSING, KR-SIGN-1)
     rows.append({"path": f"bin/{n}.sh", "sha256": hashlib.sha256(open(f"{w}/s/bin/{n}.sh", "rb").read()).hexdigest(), "tools": t, "signs": s, "runs": r, "reason": "fixture"})
 open(w + "/s/bin/release-postverify.py", "w").write("import subprocess\n")
 rows.append({"path": "bin/release-postverify.py", "sha256": hashlib.sha256(open(w + "/s/bin/release-postverify.py", "rb").read()).hexdigest(), "tools": ["at", "bash", "command", "cosign", "gh", "jq", "just"], "signs": False, "runs": [], "reason": "fixture"})

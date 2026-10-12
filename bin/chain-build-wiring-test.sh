@@ -1654,7 +1654,7 @@ rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789ab
 # the committed list and the two suites' own wrapper
 rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull request event names the base and the body; locally the base is origin/chain-v030 and KNOWN_RED_ADD names new ids
 [ "$rc" = 0 ] && ok "known-red: the committed list is well formed and compares with the base" || bad "known-red: the committed test-evidence/known-red.json (exit $rc)"
-for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh; do
+for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh bin/chain-records-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
 # the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
@@ -1665,6 +1665,31 @@ for k in ("KR-SIGN-1", "KR-SIGN-3"):
     f = e[k].get("findings")
     assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
 for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 25, (k, len(e[k]["findings"]))
+PY
+# PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
+# listed rows yet. The judge accepts exactly those findings, refuses any other (the entry cannot grow silently) and any missing one (it shrinks only by an edit that
+# a pull request body names), and the cutover check covers it. The suite's own wrapper prints the findings as structured ids right before its FAIL line.
+KRE="bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py"
+RECCASE="the real repository: every produced record type has a row with a claim and a stage consumer"
+recids() { python3 - "$@" <<'PY'
+import json, sys
+print("FINDINGS-JSON " + json.dumps(["chain-scripts.json: chain-scripts.json: %s runs '%s', which is not listed" % (("bin/release-apks.sh" if "apk" in p else "bin/release-sign.sh"), p) for p in sys.argv[1:]]))
+PY
+}
+rec_run() { # rec_run LABEL WANT-EXIT PATHS...  : the records suite's output with those findings, judged against the committed list
+  local label=$1 want=$2 rc=0 out; shift 2
+  out=$( { recids "$@"; echo "FAIL $RECCASE -> chain-scripts.json: x"; echo "pass=96 fail=1"; } | python3 "$KR" judge --suite bin/chain-records-test.sh --list "$root/test-evidence/known-red.json" --inner-rc 1 2>&1) || rc=$?
+  if [ "$rc" = "$want" ]; then ok "known-red records: $label"; else bad "known-red records: $label (exit $rc, wanted $want: ${out:0:200})"; fi; }
+rec_run "exactly the entry's three cache scripts are accepted" 0 bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py
+rec_run "a fourth finding (a script the entry does not name) is refused: the entry cannot grow" 1 bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py bin/other.py
+rec_run "a missing finding (one script landed, the entry not shrunk) is refused" 1 bin/apk-tool.py bin/release-sign-apks.sh
+rec_run "a different set of the same size is refused" 1 bin/apk-tool.py bin/release-sign-apks.sh bin/other.py
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red records: KR-RECORDS-1 names the three cache scripts, in the records suite, with structured findings" || bad "known-red records: no KR-RECORDS-1 entry with the three findings"
+import json, sys
+e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}["KR-RECORDS-1"]
+assert e["suite"] == "bin/chain-records-test.sh" and e["case"].startswith("the real repository: every produced record type")
+f = e["findings"]
+assert len(f) == 3 and all(p in "".join(f) for p in ("bin/apk-tool.py", "bin/release-sign-apks.sh", "bin/vendor-provenance.py")), f
 PY
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
@@ -1860,7 +1885,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=646
+EXPECT=652
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
