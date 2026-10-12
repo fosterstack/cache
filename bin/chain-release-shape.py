@@ -351,11 +351,11 @@ def metadata(path):
     def at(pat, start=0):
         return next((i for i in range(start, len(lines)) if re.search(pat, lines[i])), None)
     marks = {"images": at(r"release-metadata\.py images "), "cp": at(r"^cp \.vex/fosterstack-cache\.openvex\.json release-metadata/"), "vex": at(r"python3 bin/vex-forms\.py "),
-             "baseline": at(r"release-metadata\.py baseline "), "manifest": at(r"release-metadata\.py manifest "), "list": at(r"release-metadata\.py list "), "first": at(r"^cosign (login|sign)"), "lsign": at(r"cosign sign-blob .*release-files\.sha256\.bundle")}
+             "baseline": at(r"release-metadata\.py baseline "), "manifest": at(r"release-metadata\.py manifest "), "list": at(r"release-metadata\.py list "), "first": at(r"^cosign (login|sign)"), "attest": at(r"^cosign attest "), "lsign": at(r"cosign sign-blob .*release-files\.sha256\.bundle")}
     bad = ["release-sign.sh has no %s step" % k for k, v in marks.items() if v is None]
     if bad:
         return bad
-    order = ["images", "cp", "vex", "baseline", "manifest", "list", "first", "lsign"]
+    order = ["images", "cp", "vex", "baseline", "manifest", "list", "first", "attest", "lsign"]
     for a, b in zip(order, order[1:]):
         if not marks[a] < marks[b]:
             bad.append("the %s step must come before the %s step (the VEX and CSAF files are generated before the manifest and the list, and nothing is signed before them)" % (a, b))
@@ -366,6 +366,22 @@ def metadata(path):
         for n in need:
             if n not in lines[marks[k]]:
                 bad.append("the %s step must carry %s" % (k, n))
+    # REQ-CHAIN-007-AC20 (advisor ruling H, Oct 12): the release manifest stays an OCI referrer of each public digest (the v0.2.x attestation customers have):
+    # one `cosign attest` per registry inside the loop over both digests, after every image signature, GHCR required and Docker Hub a loud, best-effort mirror
+    atts = [l for l in lines if l.startswith("cosign attest ")]
+    base = ('cosign attest --yes --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '
+            '--type https://fosterstack.com/attestations/release-manifest/v1 ')
+    want = {base + '"ghcr.io/$repo@$digest"', base + '"docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"'}
+    if sorted(atts) != sorted(want):
+        bad.append("release-sign.sh must hold exactly these two `cosign attest` lines (the manifest as a release-manifest/v1 referrer of each public digest; GHCR required, "
+                   "the Docker Hub mirror best-effort with a warning): %r" % atts)
+    elif marks.get("attest") is not None:
+        loop = next((i for i in range(marks["attest"], -1, -1) if lines[i].startswith("for digest in ")), None)
+        if loop is None or lines[loop] != 'for digest in "$prod" "$fips"; do':
+            bad.append('the manifest attestations must sit inside `for digest in "$prod" "$fips"; do` (both public digests)')
+        last_img_sign = max((i for i, l in enumerate(lines) if re.match(r'cosign sign --yes ', l)), default=-1)
+        if marks["attest"] < last_img_sign:
+            bad.append("the manifest attestations must come after every image signature (nothing is attached to an unsigned image)")
     return bad
 
 
