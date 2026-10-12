@@ -54,8 +54,8 @@ build. If you develop on Windows, run the server under WSL2 — that's
 echo "$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/; s/aarch64/arm64/')"
 ```
 
-If it prints anything else, there is no archive for this machine; run the
-container image instead ([docker-deploy.md](docker-deploy.md)).
+If it prints anything else, there is no prebuilt binary for this machine;
+run the container image instead ([docker-deploy.md](docker-deploy.md)).
 
 ## Install
 

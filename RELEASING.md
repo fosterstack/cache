@@ -31,7 +31,7 @@ step, never re-resolved from a registry.
   SBOMs, and signs a build predicate whose subjects are the archive
   digests as the builder itself emitted them.
 - **Image assembly** verifies each archive against that signed predicate
-  before opening it, assembles each variant with a COPY-only Dockerfile
+  before opening it. It assembles each variant with a COPY-only Dockerfile
   (digest-pinned distroless base, zero `RUN`), and pushes by digest only
   to a private candidates package — no tags, nothing public.
 - **Reproducibility** repeats the assembly on a separate runner and
@@ -188,8 +188,8 @@ one, the release fails rather than the documentation going quietly wrong.
 ### Binary archives
 
 The archives are not signed individually. `checksums.txt` is signed, and it
-pins every archive by SHA-256 — so verifying the checksums file and then
-checking an archive against it is a complete chain, not two half-measures.
+pins every archive by sha256 — so verifying the checksums file and then
+checking an archive against it is a complete chain; not two half-measures.
 
 ```sh
 # 1. Prove the checksums file is ours. The checksums bundle is signed by
