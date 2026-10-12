@@ -2020,7 +2020,7 @@ python3 "$work/mkmarker.py" "$work/marker-ok.json" v0.3.0-rc1 123456789 "$S1" "$
 cp "$work/marker-ok.json" "$RG/.github/policy/rc-proof.json"; rcg add -A > /dev/null; rcg commit -q -m marker; C2=$(rcg rev-parse HEAD)
 printf 'later\n' >> "$RG/README.md"; rcg add -A > /dev/null; rcg commit -q -m later; C3=$(rcg rev-parse HEAD)
 MK="$RG/.github/policy/rc-proof.json"
-cm() { cbx check-marker --marker "${3:-$MK}" --commit "$1" --repo "$RG"; }
+cm() { cbx check-marker --marker "${2:-$MK}" --commit "$1" --repo "$RG"; }   # cm COMMIT [MARKER]
 cm_ok() { local rc=0; cm "$2" "${3:-}" || rc=$?; [ "$rc" = 0 ] && ok "$1" || bad "$1 (exit $rc: $(head -c 200 "$work/cb.err"))"; }
 cm_no() { local l=$1 w=$2 rc=0; shift 2; cm "$@" || rc=$?   # cm_no LABEL "word|word" COMMIT [MARKER]
   local first miss=0 x ws; first=$(head -n 1 "$work/cb.err"); IFS='|' read -r -a ws <<< "$w"

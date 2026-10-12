@@ -60,6 +60,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # REQ-CHAIN-001-AC6: no patch decision proceeds unless the committed marker names a recorded green rc-tag run of exactly these chain files (a missing marker
+      # fails this step, so the job ends before anything is decided, scanned or tagged)
+      - name: the rc-proof marker validates for this commit
+        run: python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"
+
       - name: install the pinned tools (gitsign; grype)
         run: |
           set -euo pipefail

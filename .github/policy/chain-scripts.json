@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "3d6203538316c5b0d548f6a576ce1f318a9b16558529e8a5e1db7475db2bd5f0",
+      "sha256": "917bd7966cc7a0faea9de4faa3bba4550529713ac4b4fe16f09e23abe675292e",
       "tools": [
         "make",
         "at",
@@ -78,6 +78,17 @@
       "runs": [],
       "signs": false,
       "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+    },
+    {
+      "path": "bin/chain-bytes-sha.py",
+      "sha256": "f8436e37727a8df8d89dc12751605b400d70c8c9a479573dd6b2ef4d8e8991ca",
+      "tools": [
+        "at",
+        "git"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof, run by build-admit.py (from origin/main) and patch-decide.py rc-proof; reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
     },
     {
       "path": "bin/witnessed.sh",

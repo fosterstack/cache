@@ -626,6 +626,10 @@ def main(argv=None):
                         "tag whose release failed (Codex #159 r1, B4)")
     d.add_argument("--labels", help="JSON {sha: [labels]} of the PRs that merged each commit")
     d.add_argument("--out", required=True)
+    q = sub.add_parser("rc-proof", help="REQ-CHAIN-001-AC6: exit 0 only when the committed rc-proof marker validates for the commit about to be tagged; else exit 1, naming the marker")
+    q.add_argument("--marker", required=True)
+    q.add_argument("--commit", required=True)
+    q.add_argument("--repo", default=".")
     k = sub.add_parser("ready")
     k.add_argument("--required", required=True, help=".github/policy/required-checks.json")
     k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
@@ -652,6 +656,19 @@ def main(argv=None):
     c.add_argument("--changelog", required=True)
     c.add_argument("--next-notes", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "rc-proof":
+        # the helper is the ONE definition of the chain-file set and of the marker's checks (bin/chain-bytes-sha.py, next to this file); no marker, no helper,
+        # an unreadable or mismatching marker: no patch decision (never a skip)
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-bytes-sha.py")
+        if not os.path.isfile(helper):
+            print("refused at marker: %s is missing, so the rc-proof marker %s cannot be checked: no patch decision" % (helper, a.marker), file=sys.stderr)
+            return 1
+        r = subprocess.run([sys.executable, helper, "check-marker", "--marker", a.marker, "--commit", a.commit, "--repo", a.repo], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(_clean("refused at marker: no patch decision: " + (r.stderr.strip().splitlines() or ["the marker does not validate"])[0].replace("refused at marker: ", "")), file=sys.stderr)
+            return 1
+        print("rc-proof: the marker %s validates for %s" % (a.marker, a.commit))
+        return 0
     if a.cmd == "variants":
         m = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", a.version)
         if not m:
