@@ -123,6 +123,14 @@ facts = [s for s in steps if s.get("id") == "facts"]
 if not dstep or '--released "$RUNNER_TEMP/released.json"' not in dstep[0]["run"] or not facts or \
         "gh release list --exclude-drafts" not in facts[0]["run"] or "released.json" not in facts[0]["run"]:
     bad.append("decide's baseline is not the latest published release")
+# REQ-CHAIN-001-AC6 (advisor Oct 12): the step right after the checkout refuses, naming the marker, unless the committed rc-proof marker validates for the
+# commit being tagged; it is a plain run step (no `if`, no continue-on-error, no env), so a failure ends the job before anything is decided or tagged
+_RCP = 'python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"'
+_rcs = [s for s in steps if "patch-decide.py rc-proof" in (s.get("run") or "")]
+if len(_rcs) != 1 or len(steps) < 2 or steps[1] is not _rcs[0] or str(steps[0].get("uses", "")).split("@")[0] != "actions/checkout":
+    bad.append("decide's first step after the checkout is not the rc-proof marker check (exactly one such step)")
+elif set(_rcs[0]) - {"name", "run"} or "\n".join(l.strip() for l in _rcs[0]["run"].strip().splitlines() if l.strip() and not l.strip().startswith("#")) not in (_RCP, "set -euo pipefail\n" + _RCP):
+    bad.append("the rc-proof step is not exactly `%s` (no if, no continue-on-error, no env): %s" % (_RCP, _rcs[0]))
 scan = [s for s in steps if "patch-decide.py removed" in (s.get("run") or "")]
 # REQ-REL-009-AC3 (advisor 0389): the immediate cut scans the images that exist for the latest release's version (patch-decide.py variants: v0.3.0 dropped
 # the debug variant), never a literal -debug tag, and the notes read a variant's scan only when that scan was made
@@ -333,6 +341,14 @@ case_ real                    ok  ""
 case_ chain-on-main           bad "$J['build'].pop('if')"
 case_ decide-anywhere         bad "$D['if'] = '\${{ always() }}'"
 case_ decide-no-env           bad "$D.pop('environment')"
+case_ rcproof-absent          bad "$D.__setitem__('steps', [s for s in $D['steps'] if 'rc-proof' not in (s.get('run') or '')])"
+case_ rcproof-conditional     bad "[s.__setitem__('if', 'always()') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-continue        bad "[s.__setitem__('continue-on-error', 'true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-env             bad "[s.__setitem__('env', {'X': '1'}) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-late            bad "(lambda L: L.append(L.pop(1)))($D['steps'])"
+case_ rcproof-other-marker    bad "[s.__setitem__('run', s['run'].replace('.github/policy/rc-proof.json', 'docs/rc-proof.json')) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-no-commit       bad "[s.__setitem__('run', s['run'].replace(' --commit \"\$GITHUB_SHA\"', '')) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-swallowed       bad "[s.__setitem__('run', s['run'] + ' || true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
 case_ decide-writes           bad "$D['permissions']['contents'] = 'write'"
 case_ app-widened             bad "[s['with'].__setitem__('permission-pull-requests', 'write') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
 case_ token-to-decide-step    bad "[s.setdefault('env', {}).__setitem__('GH_TOKEN', '\${{ steps.app-token.outputs.token }}') for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"

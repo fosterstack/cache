@@ -676,6 +676,40 @@ for ver, want in (("0.2.2", ["0.2.2", "0.2.2-debug", "0.2.2-fips"]), ("0.1.0", [
     rc, got = variants(ver); check("AC3 the images scanned for release %s are exactly %s" % (ver, want), rc == 0 and got == want, (rc, got))
 for bad in ("v0.3.0", "0.3", "0.3.0-rc1", "", "0.3.0 -debug", "x.y.z"):
     rc, got = variants(bad); check("AC3 a version that is not X.Y.Z (%r) is refused and prints nothing" % bad, rc != 0 and got == [], (rc, got))
+# --- REQ-CHAIN-001-AC6 (advisor Oct 12): the decide job refuses, naming the marker, unless .github/policy/rc-proof.json validates for the commit being tagged
+import shutil
+rp = tempfile.mkdtemp(prefix="rcproof-")
+bindir = os.path.dirname(os.path.abspath(sys.argv[1]))
+def rg(*a): return subprocess.run(["git", "-C", rp, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"] + list(a), check=True, capture_output=True, text=True).stdout.strip()
+rg("init", "-q", "-b", "main")
+for d in (".github/workflows", ".github/policy", "bin"): os.makedirs(os.path.join(rp, d))
+open(os.path.join(rp, ".github/workflows/release.yml"), "w").write("name: Release\n")
+if os.path.exists(os.path.join(bindir, "chain-bytes-sha.py")): shutil.copy(os.path.join(bindir, "chain-bytes-sha.py"), os.path.join(rp, "bin/chain-bytes-sha.py"))
+else: open(os.path.join(rp, "bin/chain-bytes-sha.py"), "w").write("x\n")
+open(os.path.join(rp, ".github/policy/chain-scripts.json"), "w").write('{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n')
+rg("add", "-A"); rg("commit", "-q", "-m", "chain"); rg("tag", "v0.3.0-rc1"); rc_commit = rg("rev-parse", "HEAD")
+bs = subprocess.run([sys.executable, os.path.join(bindir, "chain-bytes-sha.py"), "sha", "--commit", rc_commit, "--repo", rp], capture_output=True, text=True).stdout.strip() or "0" * 64
+keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict"]
+good = {"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": bs, "records": {k: "0" * 64 for k in keys}}
+marker = os.path.join(rp, ".github/policy/rc-proof.json")
+def put(m): open(marker, "w").write(m if isinstance(m, str) else json.dumps(m))
+put(good); rg("add", "-A"); rg("commit", "-q", "-m", "marker"); head = rg("rev-parse", "HEAD")
+def rcp(commit=None, mpath=None, extra=()):
+    r = subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", mpath or marker, "--commit", commit or head, "--repo", rp] + list(extra), capture_output=True, text=True)
+    return r.returncode, r.stdout + r.stderr
+rc, msg = rcp(); check("AC6 decide: a marker for the bytes of the commit, with an rc tag that is an ancestor, lets the decision proceed (exit 0)", rc == 0, (rc, msg))
+rc, msg = rcp(mpath=os.path.join(rp, "no-such-marker.json"))
+check("AC6 decide: a missing marker is refused (exit 1), naming the marker, never skipped", rc == 1 and "marker" in msg and "missing" in msg, (rc, msg))
+put("{not json"); rc, msg = rcp(); check("AC6 decide: an unreadable marker is refused", rc == 1 and "marker" in msg, (rc, msg)); put(good)
+open(os.path.join(rp, ".github/workflows/release.yml"), "a").write("# edited\n"); rg("add", "-A"); rg("commit", "-q", "-m", "edit"); edited = rg("rev-parse", "HEAD")
+rc, msg = rcp(edited); check("AC6 decide: a marker for other bytes (a chain file changed since the proof) is refused, naming the bytes", rc == 1 and "marker" in msg and "bytes" in msg, (rc, msg))
+rg("checkout", "-q", "-b", "side", rc_commit); rg("commit", "-q", "--allow-empty", "-m", "side"); rg("tag", "v0.3.0-rc2"); rg("checkout", "-q", "main")
+put(dict(good, rc_tag="v0.3.0-rc2")); rc, msg = rcp(head)
+check("AC6 decide: an rc tag that is not an ancestor of the commit is refused", rc == 1 and "ancestor" in msg, (rc, msg)); put(good)
+put(dict(good, rc_tag="v0.3.0")); rc, msg = rcp(head); check("AC6 decide: a final tag as the rc tag is refused", rc == 1 and "rc_tag" in msg, (rc, msg)); put(good)
+rc, msg = rcp(); check("AC6 decide: the check does not change the repository (the marker file is unchanged)", rc == 0 and json.load(open(marker)) == good, (rc, msg))
+check("AC6 decide: the subcommand refuses without a commit (usage, never a default)", subprocess.run([sys.executable, sys.argv[1], "rc-proof", "--marker", marker], capture_output=True).returncode == 2)
+shutil.rmtree(rp, ignore_errors=True)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

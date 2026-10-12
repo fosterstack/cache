@@ -934,6 +934,50 @@ open(p("rekor-len.txt"), "w").write(str(len(PAY)))
 e = json.load(open(p("sign_prov.json")))["signatures"][0]
 open(p("chk.tst"), "wb").write(base64.b64decode(e["timestamps"][0]["data"]))
 sh("openssl", "ts", "-verify", "-digest", hashlib.sha256(base64.b64decode(e["sig"])).hexdigest(), "-in", p("chk.tst"), "-CAfile", p("tsaroot.pem"), "-no_check_time")
+# ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc run's records, laid out like Release's own directories ----
+# Every record is made for the release-candidate tag v0.3.0-rc1 (the identities of the policy made with --tag v0.3.0-rc1): Build's collection (digests.json and
+# items.json products), Sign's provenance with its Rekor stub, Rebuild's collection, the four Check records, and the hostile verdict's results file.
+TRC = "refs/tags/v0.3.0-rc1"
+add("rc_build", STAGES["build"], TRC, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
+add("rc_sign", STAGES["sign"], TRC, PROV, D)
+add("rc_rebuild", STAGES["rebuild"], TRC, COLL, None, stmt="v0.1", coll_file="digests.json")
+add("rc_rebuild_other", STAGES["rebuild"], TRC, COLL, None, stmt="v0.1", coll_file="digests-other.json")
+for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("rc_c_" + _sn, _sn, ref=TRC)
+_chk("rc_c_scanners_tag", "scanners", ref=T)                       # a Check record of the FINAL tag's identity, not the rc tag's
+dj("rc-rekor.json", {"entries": [entry("rc_sign", 7)]})
+_HF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
+       "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
+       "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml")}
+def _hrow(a, **k):
+    r = {"attempt": a, "outcome": "refused", "stage": _HF[a][0], "reason": _HF[a][1], "judged_by": "verifier", "exit_code": 1}
+    r.update(k); return r
+_CTL = {"attempt": "positive_control", "outcome": "accepted", "stage": "sign", "reason": "ok", "judged_by": "verifier", "exit_code": 0}
+dj("rc-hostile.json", {"attempts": [_hrow(a) for a in _HF] + [_CTL]})
+dj("rc-hostile-accepted.json", {"attempts": [_hrow(a, outcome="accepted", exit_code=0) if a == "mint_sign_cert" else _hrow(a) for a in _HF] + [_CTL]})
+dj("rc-hostile-missing.json", {"attempts": [_hrow(a) for a in _HF if a != "read_sign_key"] + [_CTL]})
+dj("rc-hostile-reworded.json", {"attempts": [_hrow(a, reason=_HF[a][1] + " ") for a in _HF] + [_CTL]})      # still a green verdict, other bytes
+def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", rekor="rc-rekor.json", hostile="rc-hostile", check=None, digests="digests.json"):
+    d = p(name)
+    files = [("witness-build/build-collection.json", build + ".json"), ("witness-build/digests.json", digests), ("witness-build/items.json", "items.json"),
+             ("provenance/provenance.json", sign + ".json"), ("provenance/provenance.rekor.json", rekor),
+             ("witness-rebuild/rebuild-collection.json", rebuild + ".json"), ("hostile-results/hostile-results.json", hostile + ".json")]
+    chk = {s: "rc_c_" + s for s in ("scanners", "acceptance", "runtime", "arm64")}
+    chk.update(check or {})
+    for slot, rec in chk.items():
+        if rec is not None: files.append(("witness-check/witness-%s/%s-collection.json" % (slot, slot), rec + ".json"))
+    for rel, src in files:
+        os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+        shutil.copy(p(src), os.path.join(d, rel))
+rcdir("rc_ok")
+rcdir("rc_badsign", sign="sign_othertag")
+rcdir("rc_norekor", rekor="rekor-empty.json")
+rcdir("rc_build_final", build="build_coll")
+rcdir("rc_check_missing", check={"arm64": None})
+rcdir("rc_check_finaltag", check={"scanners": "rc_c_scanners_tag"})
+rcdir("rc_rebuild_other", rebuild="rc_rebuild_other")
+rcdir("rc_hostile_accepted", hostile="rc-hostile-accepted")
+rcdir("rc_hostile_missing", hostile="rc-hostile-missing")
+rcdir("rc_hostile_reworded", hostile="rc-hostile-reworded")
 print("fixtures ok")
 PY
 python3 "$work/fx.py" "$work" > "$work/fx.log" 2>&1 || { cat "$work/fx.log"; echo "FAIL fixture generation"; exit 1; }
@@ -1913,6 +1957,155 @@ expect_refuse "PR4 check-list: one record for other digests among three right on
 expect_refuse "PR4 check-list: against another digest list of Build's none of the records matches" "check|digest" $(CLS cl_ok digests-other)
 expect_refuse "PR4 check-list: an empty directory is refused" "check|missing" $(CLS cl_empty)
 
+# ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc-proof marker, bin/chain-bytes-sha.py and `chain-verify.py rc-proof` ----
+# bin/chain-bytes-sha.py defines the chain-file set ONCE: the workflows release.yml and stage-*.yml, every script a row of .github/policy/chain-scripts.json lists, and every file
+# of .github/policy/ except the marker itself; its sha256 is taken over `<sha256>  <path>` lines sorted by path, read from the commit's objects. `check-marker` is what
+# admission and the patch decide job run: the marker is the closed object {rc_tag, run_id, chain_sha256, records}, the rc tag exists and is an ancestor of the commit, and
+# the chain files of the commit AND of the rc tag's commit hash to chain_sha256. `chain-verify.py rc-proof` adds the records of the rc run, verified under the rc tag's identities.
+CB="$root/bin/chain-bytes-sha.py"
+RG="$work/rcrepo"
+rcg() { git -C "$RG" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
+mkdir -p "$RG/.github/workflows" "$RG/.github/policy" "$RG/bin"
+git -C "$RG" init -q -b main
+for f in release stage-build stage-sign stage-verify; do printf 'name: %s\n' "$f" > "$RG/.github/workflows/$f.yml"; done
+printf 'name: ci\n' > "$RG/.github/workflows/ci.yml"
+cp "$CB" "$RG/bin/chain-bytes-sha.py" 2> /dev/null || printf 'x\n' > "$RG/bin/chain-bytes-sha.py"
+printf '#!/bin/sh\necho b\n' > "$RG/bin/b.sh"; printf '#!/bin/sh\necho other\n' > "$RG/bin/other.sh"
+printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
+printf '{"a":1}\n' > "$RG/.github/policy/x.json"; printf 'readme\n' > "$RG/README.md"
+rcg add -A > /dev/null; rcg commit -q -m c1; rcg tag v0.3.0-rc1
+C1=$(rcg rev-parse HEAD)
+cat > "$work/mkmarker.py" <<'PY'
+import hashlib, json, sys
+out, rc_tag, run_id, chain, d = sys.argv[1:6]
+M = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rekor": "provenance/provenance.rekor.json",
+     "rebuild": "witness-rebuild/rebuild-collection.json", "hostile_verdict": "hostile-results/hostile-results.json"}
+for s in ("scanners", "acceptance", "runtime", "arm64"): M[s] = "witness-check/witness-%s/%s-collection.json" % (s, s)
+rec = {k: hashlib.sha256(open("%s/%s" % (d, v), "rb").read()).hexdigest() for k, v in M.items()}
+json.dump({"rc_tag": rc_tag, "run_id": run_id, "chain_sha256": chain, "records": rec}, open(out, "w"), indent=1, sort_keys=True)
+PY
+cbx() { local rc=0; python3 "$CB" "$@" 2> "$work/cb.err" > "$work/cb.out" || rc=$?; return $rc; }
+S1=; cbx sha --commit "$C1" --repo "$RG" && S1=$(cat "$work/cb.out") || true
+if grep -E -q '^[0-9a-f]{64}$' <<< "$S1"; then ok "AC6 bytes: sha prints one lowercase sha256 for the chain files of a commit"; else bad "AC6 bytes: sha printed '$S1' ($(head -c 150 "$work/cb.err"))"; fi
+S1b=; cbx sha --commit "$C1" --repo "$RG" && S1b=$(cat "$work/cb.out") || true
+[ -n "$S1" ] && [ "$S1" = "$S1b" ] && ok "AC6 bytes: the same commit gives the same sha twice" || bad "AC6 bytes: not deterministic"
+cbx list --commit "$C1" --repo "$RG" || true
+lst=$(cat "$work/cb.out")
+want_in="bin/b.sh bin/chain-bytes-sha.py .github/policy/chain-scripts.json .github/policy/x.json .github/workflows/release.yml .github/workflows/stage-build.yml .github/workflows/stage-sign.yml .github/workflows/stage-verify.yml"
+miss=0; for f in $want_in; do grep -F -q "  $f" <<< "$lst" || miss=1; done
+[ "$miss" = 0 ] && [ "$(grep -c . <<< "$lst")" = 8 ] && ok "AC6 bytes: the set is the release and stage workflows, the listed scripts and the policy files, eight files here" || bad "AC6 bytes: the set is not the eight files: $(tr '\n' ' ' <<< "$lst" | head -c 300)"
+! grep -E -q 'other\.sh|ci\.yml|README' <<< "$lst" && ok "AC6 bytes: a file the chain does not use (an unlisted script, ci.yml, the README) is not in the set" || bad "AC6 bytes: an unrelated file is in the set"
+shaof() { local o rc=0; o=$(python3 "$CB" sha --commit "$1" --repo "$RG" 2> /dev/null) || rc=$?; [ "$rc" = 0 ] && echo "$o" || echo "ERR$rc"; }
+mutc() { # mutc NAME FILE TEXT : a commit on top of C1 with TEXT appended to FILE; prints its sha
+  rcg checkout -q -b "m-$1" "$C1"; printf '%s\n' "$3" >> "$RG/$2"; rcg add -A > /dev/null; rcg commit -q -m "m-$1"; rcg rev-parse HEAD; rcg checkout -q main; }
+for spec in "workflow:.github/workflows/release.yml" "stage:.github/workflows/stage-sign.yml" "script:bin/b.sh" "self:bin/chain-bytes-sha.py" "policy:.github/policy/x.json" "rows:.github/policy/chain-scripts.json"; do
+  n=${spec%%:*}; f=${spec#*:}; c=$(mutc "$n" "$f" "# changed")
+  [ "$(shaof "$c")" != "$S1" ] && ok "AC6 bytes: a changed $n file ($f) changes the sha" || bad "AC6 bytes: a changed $f did not change the sha"
+done
+for spec in "other:bin/other.sh" "readme:README.md" "ci:.github/workflows/ci.yml" "marker:.github/policy/rc-proof.json"; do
+  n=${spec%%:*}; f=${spec#*:}; c=$(mutc "u$n" "$f" "# changed")
+  [ "$(shaof "$c")" = "$S1" ] && ok "AC6 bytes: a changed $n file ($f) is outside the set and does not change the sha" || bad "AC6 bytes: a changed $f changed the sha"
+done
+rcg checkout -q -b gone "$C1"; printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"},{"path":"bin/gone.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
+rcg add -A > /dev/null; rcg commit -q -m gone; CGONE=$(rcg rev-parse HEAD); rcg checkout -q main
+rc=0; cbx sha --commit "$CGONE" --repo "$RG" || rc=$?
+[ "$rc" = 1 ] && grep -F -q "refused at marker:" "$work/cb.err" && grep -F -q "bin/gone.sh" "$work/cb.err" && ok "AC6 bytes: a listed script that is not in the commit is refused naming it, never left out of the sha" || bad "AC6 bytes: a missing listed script gave exit $rc: $(head -c 150 "$work/cb.err")"
+rcg checkout -q -b esc "$C1"; printf '{"scripts":[{"path":"../x"}]}\n' > "$RG/.github/policy/chain-scripts.json"; rcg add -A > /dev/null; rcg commit -q -m esc; CESC=$(rcg rev-parse HEAD); rcg checkout -q main
+rc=0; cbx sha --commit "$CESC" --repo "$RG" || rc=$?
+[ "$rc" = 1 ] && grep -F -q "refused at marker:" "$work/cb.err" && ok "AC6 bytes: a listed path that leaves bin/ is refused" || bad "AC6 bytes: an escaping path gave exit $rc"
+rc=0; cbx sha --commit 0123456789abcdef0123456789abcdef01234567 --repo "$RG" || rc=$?
+[ "$rc" = 1 ] && grep -F -q "refused at marker:" "$work/cb.err" && ok "AC6 bytes: a commit that does not exist is refused" || bad "AC6 bytes: an unknown commit gave exit $rc"
+# the marker, written for the rc tag's bytes and the records of rc_ok; committed on top of the rc tag's commit
+python3 "$work/mkmarker.py" "$work/marker-ok.json" v0.3.0-rc1 123456789 "$S1" "$work/rc_ok"
+cp "$work/marker-ok.json" "$RG/.github/policy/rc-proof.json"; rcg add -A > /dev/null; rcg commit -q -m marker; C2=$(rcg rev-parse HEAD)
+printf 'later\n' >> "$RG/README.md"; rcg add -A > /dev/null; rcg commit -q -m later; C3=$(rcg rev-parse HEAD)
+MK="$RG/.github/policy/rc-proof.json"
+cm() { cbx check-marker --marker "${3:-$MK}" --commit "$1" --repo "$RG"; }
+cm_ok() { local rc=0; cm "$2" "${3:-}" || rc=$?; [ "$rc" = 0 ] && ok "$1" || bad "$1 (exit $rc: $(head -c 200 "$work/cb.err"))"; }
+cm_no() { local l=$1 w=$2 rc=0; shift 2; cm "$@" || rc=$?   # cm_no LABEL "word|word" COMMIT [MARKER]
+  local first miss=0 x ws; first=$(head -n 1 "$work/cb.err"); IFS='|' read -r -a ws <<< "$w"
+  for x in "${ws[@]}"; do grep -F -q -- "$x" <<< "${first#refused at marker: }" || miss=1; done
+  if [ "$rc" = 1 ] && [ "$miss" = 0 ] && [[ "$first" == "refused at marker: "* ]] && ! grep -F -q Traceback "$work/cb.err"; then ok "$l"; else bad "$l (exit $rc, wanted 1 with '$w'; $first)"; fi; }
+cm_ok "AC6 marker: a marker for the bytes of the commit it is committed in, and an rc tag that is its ancestor, validates" "$C2"
+cm_ok "AC6 marker: it still validates at a later commit that changes no chain file (the README)" "$C3"
+cother=$(mutc chg .github/workflows/stage-build.yml "# edited after the proof"); cm_no "AC6 marker: a marker for other bytes (a chain file changed after the proof) is refused, naming the bytes" "bytes" "$cother"
+cm_no "AC6 marker: a missing marker file is refused, never skipped" "missing" "$C2" "$work/no-such-marker.json"
+mkdir -p "$work/markerdir"; cm_no "AC6 marker: an unreadable marker (a directory) is refused" "unreadable" "$C2" "$work/markerdir"
+: > "$work/marker-empty.json"; cm_no "AC6 marker: an empty marker is refused" "shape" "$C2" "$work/marker-empty.json"
+printf '{not json' > "$work/marker-junk.json"; cm_no "AC6 marker: a marker that is not JSON is refused" "shape" "$C2" "$work/marker-junk.json"
+python3 - "$work/marker-ok.json" "$work" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); w = sys.argv[2]
+def save(n, d): json.dump(d, open("%s/marker-%s.json" % (w, n), "w"))
+save("extra", dict(m, extra="x"))
+d = dict(m); del d["run_id"]; save("norun", d)
+save("final", dict(m, rc_tag="v0.3.0"))
+save("rcdot", dict(m, rc_tag="v0.3.0-rc.1"))
+save("badrun", dict(m, run_id="12ab"))
+save("upper", dict(m, chain_sha256=m["chain_sha256"].upper()))
+save("short", dict(m, chain_sha256=m["chain_sha256"][:60]))
+r = dict(m["records"]); del r["rekor"]; save("norecord", dict(m, records=r))
+r = dict(m["records"]); r["extra"] = "0" * 64; save("extrarecord", dict(m, records=r))
+r = dict(m["records"]); r["build"] = "XYZ"; save("badrecord", dict(m, records=r))
+save("other", dict(m, chain_sha256="0" * 64))
+open("%s/marker-dup.json" % w, "w").write(open(sys.argv[1]).read().replace('"rc_tag"', '"run_id": "1", "rc_tag"', 1))
+PY
+cm_no "AC6 marker: an unknown extra key is refused (the object is closed)" "shape" "$C2" "$work/marker-extra.json"
+cm_no "AC6 marker: a missing key (run_id) is refused" "shape" "$C2" "$work/marker-norun.json"
+cm_no "AC6 marker: a duplicate key is refused" "shape" "$C2" "$work/marker-dup.json"
+cm_no "AC6 marker: a final tag as the rc tag is refused (rc_tag must be vX.Y.Z-rcN)" "rc_tag" "$C2" "$work/marker-final.json"
+cm_no "AC6 marker: the dotted rc spelling is refused" "rc_tag" "$C2" "$work/marker-rcdot.json"
+cm_no "AC6 marker: a run id that is not digits is refused" "run_id" "$C2" "$work/marker-badrun.json"
+cm_no "AC6 marker: an upper-case chain sha is refused" "chain_sha256" "$C2" "$work/marker-upper.json"
+cm_no "AC6 marker: a short chain sha is refused" "chain_sha256" "$C2" "$work/marker-short.json"
+cm_no "AC6 marker: a record digest missing is refused" "shape" "$C2" "$work/marker-norecord.json"
+cm_no "AC6 marker: an extra record digest is refused" "shape" "$C2" "$work/marker-extrarecord.json"
+cm_no "AC6 marker: a record digest that is not a sha256 is refused" "records" "$C2" "$work/marker-badrecord.json"
+cm_no "AC6 marker: a sha for other bytes (all zero) is refused, naming the bytes" "bytes" "$C2" "$work/marker-other.json"
+# an rc tag that is not an ancestor: v0.3.0-rc2 sits on a side branch from C1
+rcg checkout -q -b side "$C1"; printf 'side\n' >> "$RG/README.md"; rcg add -A > /dev/null; rcg commit -q -m side; rcg tag v0.3.0-rc2; rcg checkout -q main
+python3 - "$work/marker-ok.json" "$work" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); json.dump(dict(m, rc_tag="v0.3.0-rc2"), open("%s/marker-rc2.json" % sys.argv[2], "w"))
+json.dump(dict(m, rc_tag="v0.3.0-rc9"), open("%s/marker-rc9.json" % sys.argv[2], "w"))
+PY
+cm_no "AC6 marker: an rc tag that is not an ancestor of the commit is refused" "ancestor" "$C2" "$work/marker-rc2.json"
+cm_no "AC6 marker: an rc tag that does not exist in the repository is refused" "does not exist" "$C2" "$work/marker-rc9.json"
+# an rc tag whose commit holds other chain files than the marker names: the proof is for bytes the rc run never ran
+rcg checkout -q -b rc3 "$C1"; printf '# rc3\n' >> "$RG/.github/workflows/release.yml"; rcg add -A > /dev/null; rcg commit -q -m rc3; rcg tag v0.3.0-rc3
+printf '# after\n' >> "$RG/bin/b.sh"; rcg add -A > /dev/null; rcg commit -q -m after; C_AFTER=$(rcg rev-parse HEAD); rcg checkout -q main
+S_AFTER=$(shaof "$C_AFTER")
+python3 - "$work/marker-ok.json" "$work" "$S_AFTER" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); json.dump(dict(m, rc_tag="v0.3.0-rc3", chain_sha256=sys.argv[3]), open("%s/marker-rc3.json" % sys.argv[2], "w"))
+PY
+cm_no "AC6 marker: the sha equals the commit's but the rc tag's commit holds other chain files: refused" "rc tag" "$C_AFTER" "$work/marker-rc3.json"
+# ---- chain-verify.py rc-proof: the rc run's records, verified under the rc tag's identities, and the marker's digests
+RCP() { echo rc-proof --marker "${3:-$MK}" --commit "${2:-$C2}" --repo "$RG" --records "$work/$1" --template "$work/template.json" --trust "$work/trust.json" \
+          --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW"; }
+expect_ok "AC6 rc-proof: the marker, the commit and a complete rc run (Build, Sign with its Rekor stub, Rebuild, the four Check records, the hostile verdict) are accepted" $(RCP rc_ok)
+expect_ok "AC6 rc-proof: the same proof is accepted at a later commit with the same chain files" $(RCP rc_ok "$C3")
+expect_refuse "AC6 rc-proof: a marker for other bytes is refused before any record is read" "marker|bytes" $(RCP rc_ok "$cother")
+expect_refuse "AC6 rc-proof: a missing marker file is refused" "marker|missing" $(RCP rc_ok "$C2" "$work/no-such-marker.json")
+expect_refuse "AC6 rc-proof: an rc tag that is not an ancestor of the commit is refused" "marker|ancestor" $(RCP rc_ok "$C2" "$work/marker-rc2.json")
+expect_refuse "AC6 rc-proof: a final tag in the marker is refused" "marker|rc_tag" $(RCP rc_ok "$C2" "$work/marker-final.json")
+expect_refuse "AC6 rc-proof: Sign's provenance made for another tag is refused (the rc tag's identity)" "sign|v0.3.1" $(RCP rc_badsign)
+expect_refuse "AC6 rc-proof: no Rekor entry for Sign's provenance is refused" "sign|rekor" $(RCP rc_norekor)
+expect_refuse "AC6 rc-proof: Build's record of the FINAL tag's identity is refused under the rc tag's policy" "build|v0.3.0" $(RCP rc_build_final)
+expect_refuse "AC6 rc-proof: a missing Check record (arm64) is refused" "check|arm64|missing" $(RCP rc_check_missing)
+expect_refuse "AC6 rc-proof: a Check record of the final tag's identity is refused" "check|v0.3.0" $(RCP rc_check_finaltag)
+expect_refuse "AC6 rc-proof: Rebuild's record about other digests is refused" "rebuild|digest" $(RCP rc_rebuild_other)
+expect_refuse "AC6 rc-proof: a hostile verdict in which an attempt was accepted is refused" "mint_sign_cert" $(RCP rc_hostile_accepted)
+expect_refuse "AC6 rc-proof: a hostile verdict with a missing case row stays an error, not a skip" "read_sign_key" $(RCP rc_hostile_missing)
+expect_refuse "AC6 rc-proof: a hostile verdict whose bytes are not the ones the marker names is refused (digest)" "marker|digest|hostile_verdict" $(RCP rc_hostile_reworded)
+python3 - "$work/marker-ok.json" "$work" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1])); r = dict(m["records"]); r["sign"] = "f" * 64
+json.dump(dict(m, records=r), open("%s/marker-signdigest.json" % sys.argv[2], "w"))
+PY
+expect_refuse "AC6 rc-proof: a record whose sha256 is not the marker's is refused naming the record" "marker|digest|sign" $(RCP rc_ok "$C2" "$work/marker-signdigest.json")
+rc=0; python3 "$cv" rc-proof --help > /dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "AC6 rc-proof: the subcommand exists (usage)" || bad "AC6 rc-proof: no such subcommand (exit $rc)"
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs plus the S1 cases (where
 # cosign returned a bad bundle and Sign refused it); never one for a refusal of the check itself
 n=$(grep -c . "$work/cosign-all.log" 2> /dev/null || true)
@@ -1925,7 +2118,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=707
+EXPECT=763
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

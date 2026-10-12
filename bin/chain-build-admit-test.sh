@@ -36,8 +36,9 @@
 # for bin/admission-tag-signer.py and bin/install-scanner.sh, the re-tag race, pagination (--paginate in either argument order) and the CI patch /
 # keyless baseline path with a REAL PKCS7 block (openssl) are cases now; the AC5 comparison reads the committed snapshot
 # bin/chain-admission-old-steps.txt (the step names of the old stage-admission.yml, so the test keeps working after PR 2 deletes that file).
-# THE TEN CHECKS, in order (names are the counterpart of each step of stage-admission.yml):
-CHECKS="tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature ancestor-of-main required-checks baseline admission-evidence"
+# THE ELEVEN CHECKS, in order (names are the counterpart of each step of stage-admission.yml, and rc-proof, REQ-CHAIN-001-AC6: a final or patch tag is admitted only
+# when the marker .github/policy/rc-proof.json of origin/main names an rc tag that is an ancestor and the chain files hash to its sha; an rc tag is exempt):
+CHECKS="tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature ancestor-of-main required-checks baseline rc-proof admission-evidence"
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 BA="$root/bin/build-admit.py"; BV="$root/bin/build-version-check.py"
@@ -94,7 +95,7 @@ r=$(cj "$W/old2.txt" "$CHECKS");
 [ "${r%%|*}" = 1 ] && grep -Fq "brand new admission rule" <<< "$r" && ok "AC5 judge: a new old-stage step with no counterpart is caught" || bad \
     "AC5 judge new step -> $r"
 r=$(cj "$root/bin/chain-admission-old-steps.txt" \
-    "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature required-checks baseline admission-evidence");
+    "tag-ref tag-syntax policy-from-main tag-annotated tag-signature commit-signature required-checks baseline rc-proof admission-evidence");
 [ "${r%%|*}" = 1 ] && grep -Fq "ancestor-of-main" <<< "$r" && ok "AC5 judge: a check dropped from list-checks is caught" || bad \
     "AC5 judge dropped check -> $r"
 printf 'uses:actions/setup-go\n' >> "$W/old2.txt";
@@ -121,7 +122,7 @@ then bad "AC5 bin/build-admit.py does not exist (RED: not implemented yet): list
 bad "AC5 bin/build-admit.py does not exist (RED): comparison with the snapshot of the old stage"
 else
   got=$(python3 "$BA" list-checks 2> /dev/null | tr '\n' ' ' | sed 's/ $//' || true)
-  [ "$got" = "$CHECKS" ] && ok "AC5 build-admit.py list-checks is exactly the ten checks in order" || bad "AC5 list-checks is '$got', wanted '$CHECKS'"
+  [ "$got" = "$CHECKS" ] && ok "AC5 build-admit.py list-checks is exactly the eleven checks in order" || bad "AC5 list-checks is '$got', wanted '$CHECKS'"
   r=$(cj "$root/bin/chain-admission-old-steps.txt" "$got");
   [ "${r%%|*}" = 0 ] && ok "AC5 every step of the old stage-admission.yml has a counterpart in list-checks" || bad "AC5 real comparison -> $r"
 fi
@@ -243,6 +244,11 @@ mkbase() { # base fixture in $W/base: origin.git + repo with main, a signed tagg
       '{"required_checks":[{"context":"ci","integration_id":15368,"scope":"push"},{"context":"review","integration_id":15368,"scope":"pull_request"}]}\n' \
       > .github/policy/required-checks.json
   cp "$root/bin/admission-tag-signer.py" bin/; printf '#!/bin/sh\nexit 0\n' > bin/install-scanner.sh
+  # commit A: the chain files (release.yml, the listed script bin/chain-bytes-sha.py, the policy files) and the release candidate tag on it
+  mkdir -p .github/workflows; printf 'name: Release\n' > .github/workflows/release.yml
+  cp "$root/bin/chain-bytes-sha.py" bin/ 2> /dev/null || printf 'x\n' > bin/chain-bytes-sha.py
+  printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"}]}\n' > .github/policy/chain-scripts.json
+  git add -A; git commit -q -S -m "chain files"; git tag v0.3.0-rc1; C_A=$(git rev-parse HEAD)
   cat > requirements/requirements.yaml <<'YAML'
 requirements:
   - id: REQ-REL-004
@@ -257,7 +263,16 @@ YAML
     > requirements/releases/v0.3.0.yaml
   printf 'release_blocking_acs:\n  - {id: REQ-REL-004-AC1, method: unit, phase: candidate}\n' >> requirements/releases/v0.3.0.yaml
   printf 'module x\n' > tools/requirements/go.mod
-  git add -A; git commit -q -S -m "release prep"; git push -q origin main 2> /dev/null; git fetch -q origin
+  # commit B: the marker, for the chain bytes of commit A (the record digests are not read by admission: they were verified when the marker was merged)
+  python3 - "$root" "$C_A" > .github/policy/rc-proof.json <<'PY'
+import json, subprocess, sys
+root, a = sys.argv[1:3]
+r = subprocess.run([sys.executable, root + "/bin/chain-bytes-sha.py", "sha", "--commit", a, "--repo", "."], capture_output=True, text=True)
+sha = r.stdout.strip() or "0" * 64
+keys = ["build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict"]
+print(json.dumps({"rc_tag": "v0.3.0-rc1", "run_id": "1234567890", "chain_sha256": sha, "records": {k: "0" * 64 for k in keys}}, indent=1, sort_keys=True))
+PY
+  git add -A; git commit -q -S -m "release prep"; git push -q origin main 2> /dev/null; git push -q origin refs/tags/v0.3.0-rc1 2> /dev/null; git fetch -q origin
   git tag -s -m "v0.3.0" v0.3.0; git push -q origin refs/tags/v0.3.0 2> /dev/null
   cd "$root"
 }
@@ -742,11 +757,44 @@ expect_refuse "AC4 baseline (patch): a product AC changed since the owner baseli
 PATCH_BASE_TAG=attacker patch_setup; run_patch
 pfix "no owner-signed baseline, the real rule says no" "no no owner-approved"
 expect_refuse "AC4 baseline (patch): the line's only v0.3.0 tag is signed by a key outside main's allowed signers: there is no owner baseline" baseline owner
+# ---- rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12): a final or patch tag needs the committed marker of origin/main; an rc tag is exempt -------------
+mainfix() { # mainfix DESCRIPTION CMD : on main, run CMD in the clone (the file edit), commit it owner-signed, push, retag v0.3.0 at it, serve green checks for it
+  fresh; G checkout -q main; (cd "$W/c/repo" && eval "$2"); G add -A
+  G -c user.signingkey="$W/keys/owner" commit -q -S --allow-empty -m "$1"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+  retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; }
+mainfix "marker removed" "git rm -q .github/policy/rc-proof.json"; run_admit
+expect_refuse "AC6 a final tag with no marker on origin/main is refused at rc-proof, naming the marker (never skipped)" rc-proof marker
+mainfix "marker for other bytes (release.yml changed after the proof)" "printf '# edited\n' >> .github/workflows/release.yml"; run_admit
+expect_refuse "AC6 a final tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
+mainfix "marker is not JSON" "printf '{not json' > .github/policy/rc-proof.json"; run_admit
+expect_refuse "AC6 an unreadable marker is refused" rc-proof shape
+mainfix "marker names a final tag" "sed -i.bak 's/v0.3.0-rc1/v0.3.0/' .github/policy/rc-proof.json; rm -f .github/policy/rc-proof.json.bak"; run_admit
+expect_refuse "AC6 a marker whose rc_tag is a final tag is refused" rc-proof rc_tag
+mainfix "marker names an rc tag on a side branch" "git checkout -q -b rcside HEAD~1 2> /dev/null; git -c user.signingkey=$W/keys/owner commit -q -S --allow-empty -m rcside; git tag v0.3.0-rc2; git checkout -q main; sed -i.bak 's/v0.3.0-rc1/v0.3.0-rc2/' .github/policy/rc-proof.json; rm -f .github/policy/rc-proof.json.bak"; run_admit
+expect_refuse "AC6 a marker naming an rc tag that is not an ancestor of the tagged commit is refused" rc-proof ancestor
+mainfix "marker names an rc tag that does not exist" "sed -i.bak 's/v0.3.0-rc1/v0.3.0-rc7/' .github/policy/rc-proof.json; rm -f .github/policy/rc-proof.json.bak"; run_admit
+expect_refuse "AC6 a marker naming an rc tag that does not exist is refused" rc-proof "does not exist"
+# the marker is read from origin/main, never from the tagged commit: a tagged commit that carries its own marker for its own bytes does not satisfy a main without one
+fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json; G -c user.signingkey="$W/keys/owner" commit -q -S -m "marker removed"; G push -q origin main 2> /dev/null
+G fetch -q origin 2> /dev/null; G checkout -q --detach v0.3.0; run_admit
+expect_refuse "AC6 the marker is read from origin/main: v0.3.0 (whose own tree has a marker) is refused when main has none" rc-proof marker
+# an rc tag is exempt: no marker on main, an owner-signed annotated rc tag with its own baseline, every other check green
+fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
+sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.0-rc2 v0.3.0-rc2; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit GITHUB_REF=refs/tags/v0.3.0-rc2 GITHUB_REF_NAME=v0.3.0-rc2
+expect_ok "AC6 a release candidate tag is exempt: it is admitted with no marker on main"
+fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
+sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.0-rc2.yaml"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
+expect_refuse "AC6 control: the same tree with the final tag v0.3.0 is refused at rc-proof (only the tag's kind differs)" rc-proof marker
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=124
+EXPECT_TOTAL=133
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
