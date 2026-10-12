@@ -724,9 +724,9 @@ printf '{"value":"fake-token-value"}'
 EOF
 cat > "$hw/fakebin/timeout" <<'EOF'
 #!/usr/bin/env bash
-echo "timeout $1" >> "$HW_LOG"
+if [ "$1" = -k ]; then echo "timeout -k $2 $3" >> "$HW_LOG"; shift 3; else echo "timeout $1" >> "$HW_LOG"; shift; fi
 [ -z "${FAKE_OUTLIVE:-}" ] || exit 124
-shift; exec "$@"
+exec "$@"
 EOF
 cat > "$hw/fakebin/witness" <<'EOF'
 #!/usr/bin/env bash
@@ -746,7 +746,7 @@ reset_h() { rm -rf "$hw"/witness-*; : > "$work/hwlog"; : > "$work/hwargv"; }
 reset_h; hrun X=1 -- scanners bin/step.sh scanners
 h_ok=0; [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.json" ] && h_ok=1
 if [ "$rc" = 0 ] && [ -f "$hw/witness-scanners/scanners-collection.json" ] && grep -q '^step scanners' "$work/hwlog"; then ok "AC11 the helper runs the script with its arguments under Witness and writes witness-scanners/scanners-collection.json (PR 2's naming)"; else bad "AC11 helper normal run -> rc=$rc ${out:0:140}"; fi
-if [ "$(grep -c '^timeout ' "$work/hwlog")" = 1 ] && grep -qx 'timeout 540' "$work/hwlog"; then ok "AC11 the wrapped command is run through exactly one timeout of 540 seconds (9 minutes)"; else bad "AC11 the helper must run the command through exactly one 'timeout 540': $(tr '\n' ' ' < "$work/hwlog")"; fi
+if [ "$(grep -c '^timeout ' "$work/hwlog")" = 1 ] && grep -qx 'timeout -k 20 540' "$work/hwlog"; then ok "AC11 the wrapped command is run through exactly one timeout of 540 seconds (9 minutes) with a kill-after of 20 seconds"; else bad "AC11 the helper must run the command through exactly one 'timeout -k 20 540': $(tr '\n' ' ' < "$work/hwlog")"; fi
 if grep -q -- '--step scanners' "$work/hwargv" && grep -q -- '-o witness-scanners/scanners-collection.json' "$work/hwargv" && grep -q -- '-t https://timestamp.sigstore.dev/api/v1/timestamp' "$work/hwargv" \
    && grep -q -- '--env-filter-sensitive-vars' "$work/hwargv" && ! grep -Eq -- '-a [a-z,-]*(github|slsa)' "$work/hwargv"; then ok "AC9 the helper gives Witness the step name, the record path, the Sigstore timestamp authority and the environment filter, and never the github or slsa attestor"; else bad "AC9 witness argv: $(cat "$work/hwargv" | cut -c1-200)"; fi
 if [ "$h_ok" = 1 ] && ! grep -rq 'fake-token-value' "$work/hwargv" "$work/hwlog" "$hw/witness-records" 2> /dev/null; then ok "AC9 the token value is in no argument, log or record (Witness reads it once through a process substitution)"; else bad "AC9 the token value leaked into the argv, log or record"; fi

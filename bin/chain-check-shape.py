@@ -69,7 +69,7 @@ def witnessed_lines():
             "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
             '--signer-fulcio-token-path <(printf %%s "$tok") -t https://timestamp.sigstore.dev/api/v1/timestamp '
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"' % keys]
+            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"' % keys]
 
 
 def commands_of(raw):

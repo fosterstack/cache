@@ -139,7 +139,7 @@ exec witness run --step "$step" \\
   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \\
   --env-add-sensitive-key GH_TOKEN \\
   --env-add-sensitive-key GITHUB_TOKEN \\
-  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"
+  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"
 """)
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]
 PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results"]),
@@ -348,8 +348,11 @@ m s_xupdup '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a8
 m s_xrec 'witness-runtime\n' 'witness-runtime\n            witness-extra\n' 'check step' "AC1 round 1 F6: the witness-check upload holds an extra record directory"
 # ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
 hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
-hm h_notmo   ' -- timeout 540 bash "\$@"'                      ' -- bash "$@"'                                          'the helper'        "AC11 no timeout around the wrapped command"
-hm h_600     'timeout 540'                                      'timeout 600'                                            'the helper'        "AC11 a cap of 10 minutes (the certificate lifetime)"
+hm h_notmo   ' -- timeout -k 20 540 bash "\$@"'                      ' -- bash "$@"'                                          'the helper'        "AC11 no timeout around the wrapped command"
+hm h_600     'timeout -k 20 540'                                'timeout -k 20 600'                                            'the helper'        "AC11 a cap of 10 minutes (the certificate lifetime)"
+hm h_nok     'timeout -k 20 540'                                'timeout 540'                                            'the helper'        "AC11 round 1: the timeout without its kill-after (a command that ignores TERM would hold the job)"
+hm h_k30     'timeout -k 20 540'                                'timeout -k 30 540'                                      'the helper'        "AC11 round 1: another kill-after"
+hm h_k0      'timeout -k 20 540'                                'timeout -k 0 540'                                       'the helper'        "AC11 round 1: a kill-after of zero"
 hm h_two     'echo "::add-mask'                                 'timeout 540 true\necho "::add-mask'                      'the helper'        "AC11 timeout stated twice"
 hm h_twowit  'unset ACTIONS_RUNTIME_TOKEN'                      'witness run --step x -- true\nunset ACTIONS_RUNTIME_TOKEN' 'the helper'     "AC11 a second witness run"
 hm h_dflag   '  -o "witness-'                                   '  -d out -o "witness-'                                   'the helper'        "AC9 the working-directory flag"
@@ -522,7 +525,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=212
+EXPECT=215
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
