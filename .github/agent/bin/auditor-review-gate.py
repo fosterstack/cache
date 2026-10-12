@@ -32,7 +32,7 @@ round 7), every line is written with every control character and every non-ASCII
 forged second one) and then, when longer than SAY_CHARS, shortened in the middle (the bound applies after escaping, which
 writes one character as up to ten; round 7: the front and the last SAY_TAIL characters are kept, so no refusal loses its
 requirement tag or the statement that no substitute is accepted), a git failure looking up or reading a record path is
-refused naming the path, and a failure to judge is a named refusal (exit 1) that says no substitute is accepted, never a
+refused naming the path (round 8: git that cannot be started included, made the same failure in _git), and a failure to judge is a named refusal (exit 1) that says no substitute is accepted, never a
 pass.
 
 A record clears the gate (REQ-AUD-018 AC5, AC6) when its schema is auditor-review-record/v2, it binds <tree>, and
@@ -200,7 +200,14 @@ class _Problems(list):
 
 
 def _git(*a, raw=False):
-    r = subprocess.run(["git", *a], capture_output=True)
+    """git's output for the arguments `a`; RuntimeError, naming them, when git fails OR cannot be started (round 8: a
+    launch failure, an OSError such as FileNotFoundError, PermissionError or E2BIG, a subprocess error, or a ValueError
+    for an argument it cannot pass, becomes the same RuntimeError here, at the one call of subprocess.run, so every
+    record boundary refuses it naming the record path)."""
+    try:
+        r = subprocess.run(["git", *a], capture_output=True)
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        raise RuntimeError("git %s: could not be started (%s: %s)" % (" ".join(a), type(e).__name__, e)) from None
     if r.returncode != 0:
         raise RuntimeError("git %s: %s" % (" ".join(a), r.stderr.decode("utf-8", "replace").strip()))
     return r.stdout if raw else r.stdout.decode("utf-8", "surrogateescape")
