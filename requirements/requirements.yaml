@@ -1496,7 +1496,7 @@ requirements:
     statement: >
       A Dependabot patch or minor bump shall merge on its own once every
       required check is green; a major shall be left to the reviewer.
-    source: [.github/workflows/dependabot-auto-merge.yml]
+    source: [.github/workflows/dependabot-auto-merge.yml, .github/workflows/dependabot-reviewer.yml]
     tier: community
     introduced: v0.3.0
     origin: register row 75 (e) (owner, Sep 29 2026)
@@ -1506,6 +1506,12 @@ requirements:
         given: a Dependabot patch or minor pull request
         when: the auto-merge lane runs
         then: it gets squash auto-merge armed only after the required-check guard matches, so it merges only when every required check is green; a major is left to the reviewer
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-DEP-003-AC2
+        given: a Dependabot pull request that changes a file under tools/govulncheck/ (go.mod and go.sum, the pin of the Go source scanner, whose version ci.yml repeats by hand so a bump alone cannot be right), or whose file list holds 100 or more entries (the API lists at most 100, so a longer one cannot be judged)
+        when: the auto-merge lane or the hourly reviewer sees it
+        then: the lane does not arm auto-merge for it (its arming step reads the pull request's files and stops), the reviewer does not review or arm it and turns off an arm made earlier (a failed state read or a failed disarm skips it and fails the step); it is held out of auto-merge and handled as a normal lane pull request, which a lane reviews with both Codex seats and merges; a path that only looks like the directory (tools/govulncheck-evil/) is not held, and 99 listed files are judged as usual
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
 
@@ -1581,7 +1587,7 @@ requirements:
       - id: REQ-REL-009-AC1
         given: "the commits on main since the latest release tag"
         when: "release.yml's decide job classifies them"
-        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why"
+        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, a change of a base input listed in .github/policy/base-inputs.json (the apko base locks, the melange lock and the archive records of the image build; an executable, symlinked or deleted one never counts), or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why; the decide job prints the listed base inputs that changed since the latest release (bin/patch-decide.py base-moved); no base image is scanned (none exists), so no distribution-package finding counts as removed"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC2
@@ -1591,7 +1597,7 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC3
-        given: "a push to main that removes a critical or high finding present in the latest release, on a patch-clean main"
+        given: "a push to main that removes a critical or high finding present in the latest release, on a patch-clean main (the latest release being scanned in every image that exists for its version: X.Y.Z and X.Y.Z-fips, and X.Y.Z-debug only for releases before v0.3.0)"
         when: "release.yml runs on that push"
         then: "it cuts the patch in that run"
         verification: { method: ci-workflow, release_blocking: false }
@@ -1623,7 +1629,7 @@ requirements:
       - id: REQ-REL-009-AC8
         given: "a patch release"
         when: "its notes are generated"
-        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release and in the changelog, and name no vendor or model"
+        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release by the patch-notes job and in the changelog, and name no vendor or model"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC9
@@ -2151,7 +2157,7 @@ requirements:
       - id: REQ-SUP-001-AC1
         given: "Dependabot's configuration"
         when: "it is read"
-        then: "the github-actions and pip entries wait 7 days (a 7-day cooldown), and the gomod and docker entries are unchanged"
+        then: "the github-actions and pip entries and the gomod entry of the tool module tools/govulncheck (weekly) wait 7 days (a 7-day cooldown, default-days 7 and nothing else), the product's gomod entry for the root is unchanged, and no docker entry exists (rule 61: there is no Dockerfile)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC2
@@ -2577,7 +2583,7 @@ requirements:
       job over the two native runners plus one assemble job; (c) cutover through the integration branch chain-v030: PR 2, 3 and 4 each merge into it, the
       old chain stays live on main, and one integration-to-main PR with its own final review round switches it; PR 2's real-tree red cases become green only
       on chain-v030 after PR 1 and PR 2 merge there; (d) the GH_TOKEN for bin/build-admit.py reaches only the admission job's Witness step (confirmed). Rule
-      68 as amended by the owner: every command run under Witness is wrapped in timeout 540. The wrapping lives in ONE committed helper, bin/witnessed.sh,
+      68 as amended by the owner: every command run under Witness is wrapped in timeout -k 20 540. The wrapping lives in ONE committed helper, bin/witnessed.sh,
       which holds ALL the Witness flags; the judges are the three functions of the Rule 68 seam in bin/chain-test-shape.py. Fulcio's keyless certificate
       lives ten minutes and Witness verifies it at the timestamp's time (harness spike (d) tests that against a build longer than 12 minutes: if the
       wrapping has to change, only the seam and its fixtures change; the real phase times, cache-48, are about 3 minutes for build-apk.sh emulated and 8
@@ -2706,13 +2712,13 @@ requirements:
       - id: REQ-CHAIN-004-AC2
         given: "the steps of the Build job"
         when: "they are read"
-        then: "the Witness step of each job is exactly one line, bash bin/witnessed.sh STEP bin/build-stage-KIND.sh, with STEP from the closed list apk, build, rapk, rebuild; the committed helper bin/witnessed.sh is the only place that holds the Witness flags: it fetches the job's identity token into a shell variable (masked in the log, never exported, never written to a file), then UNSETS the identity-token request variables and the runtime-token variables (ACTIONS_ID_TOKEN_REQUEST_TOKEN, ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_RUNTIME_TOKEN and ACTIONS_RUNTIME_URL, so the wrapped script's environment holds none of the names or the values), and then runs witness run once, handing the token to --signer-fulcio-token-path through a one-read process substitution so no file holds it while the command runs, with fixed Fulcio and timestamp-authority addresses, the attestors environment, git, material and product only (never github, whose record embeds the raw identity token, and never slsa, which is Sign's alone), the identity-token variables and the GitHub tokens filtered out of the environment record, the record written to witness-STEP/STEP-collection.json, no working-directory flag so the command runs from the repository root, and the command wrapped in timeout 540, because Fulcio's keyless certificate lives ten minutes and Witness verifies it at the timestamp's time (rule 68 as amended by the owner); every other command of the job is the install, the downloads and the uploads, and no stage file and no stage script names witness run; the Build stage file exposes one workflow_call output, digests, read from the assemble job's output, which one pinned step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) fills from the digests.json the Witness step wrote, so Sign receives the digests.json text; the Rebuild stage file has no output"
+        then: "the Witness step of each job is exactly one line, bash bin/witnessed.sh STEP bin/build-stage-KIND.sh, with STEP from the closed list apk, build, rapk, rebuild; the committed helper bin/witnessed.sh is the only place that holds the Witness flags: it fetches the job's identity token into a shell variable (masked in the log, never exported, never written to a file), then UNSETS the identity-token request variables and the runtime-token variables (ACTIONS_ID_TOKEN_REQUEST_TOKEN, ACTIONS_ID_TOKEN_REQUEST_URL, ACTIONS_RUNTIME_TOKEN and ACTIONS_RUNTIME_URL, so the wrapped script's environment holds none of the names or the values), and then runs witness run once, handing the token to --signer-fulcio-token-path through a one-read process substitution so no file holds it while the command runs, with fixed Fulcio and timestamp-authority addresses, the attestors environment, git, material and product only (never github, whose record embeds the raw identity token, and never slsa, which is Sign's alone), the identity-token variables and the GitHub tokens filtered out of the environment record, the record written to witness-STEP/STEP-collection.json, no working-directory flag so the command runs from the repository root, and the command wrapped in timeout -k 20 540 (a kill-after of 20 seconds, so a command that ignores the TERM cannot hold the job past the certificate), because Fulcio's keyless certificate lives ten minutes and Witness verifies it at the timestamp's time (rule 68 as amended by the owner); every other command of the job is the install, the downloads and the uploads, and no stage file and no stage script names witness run; the Build stage file exposes one workflow_call output, digests, read from the assemble job's output, which one pinned step (id digests, echo of jq -c . digests.json to GITHUB_OUTPUT) fills from the digests.json the Witness step wrote, so Sign receives the digests.json text; the Rebuild stage file has no output"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC3
         given: "bin/build-stage.sh"
         when: "its commands are read in order"
-        then: "in each of the four committed scripts bin/build-stage-apk.sh, -assemble.sh, -rebuild-apk.sh and -rebuild-assemble.sh every line is exactly the line the grammar names (no dispatch, no extra command, no suffix, no option the grammar does not spell out, no control character other than tab and newline, so no carriage return either); a long line may be broken after a space with a trailing backslash on a command line (a comment is never continued, and a backslash anywhere else at the end of a line is refused). The apk script's first command is the admission script, followed by unset GH_TOKEN so that cache's scripts never see the token; then SOURCE_DATE_EPOCH is assigned from the digits cache's bin/build-apk.sh --print-source-date-epoch prints for the tagged commit and exported on a second line (so a failing print stops the job); then cache's bin/build-apk.sh runs for each variant with --version the tag minus the leading v, and the version check runs on each variant's apk (it finds the apk itself and extracts its binary); then the items fragment is written to out/items-apk.json. The assemble script makes the tag's policy, verifies the signed Witness record of each architecture's apk job, binds every file of each downloaded apk artifact to the product the record holds under the same name BEFORE it assembles the melange repository, exports SOURCE_DATE_EPOCH, runs bin/assemble-image.sh for each variant, builds the four Linux archives and merges the items, which writes digests.json and items.json at the repository root; no script contains a network fetch, a failure-ignoring step, a sudo, sysctl or unshare of its own, a direct melange or apko call, a proxy or module-fetch setting, or a signing-key variable or flag; and each script is a row of .github/policy/chain-scripts.json with its sha256"
+        then: "in each of the four committed scripts bin/build-stage-apk.sh, -assemble.sh, -rebuild-apk.sh and -rebuild-assemble.sh every line is exactly the line the grammar names (no dispatch, no extra command, no suffix, no option the grammar does not spell out, no control character other than tab and newline, so no carriage return either); a long line may be broken after a space with a trailing backslash on a command line (a comment is never continued, and a backslash anywhere else at the end of a line is refused). The apk script's first command is the admission script, followed by unset GH_TOKEN so that cache's scripts never see the token; then SOURCE_DATE_EPOCH is assigned from the digits cache's bin/build-apk.sh --print-source-date-epoch prints for the tagged commit and exported on a second line (so a failing print stops the job); then cache's bin/build-apk.sh runs for each variant with --version the tag minus the leading v, and the version check runs on each variant's apk (it finds the apk itself and extracts its binary); then the items fragment is written to out/items-apk.json. The assemble script makes the tag's policy, verifies the signed Witness record of each architecture's apk job, binds every file of each downloaded apk artifact to the product the record holds under the same name BEFORE it assembles the melange repository, exports SOURCE_DATE_EPOCH, runs bin/assemble-image.sh for each variant, builds the four Linux archives and merges the items, which writes digests.json and items.json at the repository root; no script contains a network fetch, a failure-ignoring step, a sudo, sysctl or unshare of its own, a direct melange or apko call, a proxy or module-fetch setting, or a signing-key variable or flag; and each script is a row of .github/policy/chain-scripts.json with its sha256; in the stage file the apk job installs melange only and the assemble job apko only, each by the pinned installer line (`bash bin/install-build-tools.sh melange` or `bash bin/install-build-tools.sh apko`) as one step right after the Witness (and Go) install and so before admission, with no env and no secret"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-004-AC4
@@ -3065,4 +3071,133 @@ requirements:
         when: "bin/check-artifacts.sh runs with --arch arm64 under the step arm64"
         then: "before anything of the candidate is loaded or run, the step makes the release policy for the run's tag, verifies Build's record for the digests it was given, isolated as python3 -I -B, and a failed verification stops it; then, on the digest file so verified and no other, the linux/arm64 fscache and fscache-fips binaries each start, answer /healthz and round-trip a key; the loaded linux/arm64 production and -fips images serve cache traffic; the three FIPS postures are read from the arm64 binaries as on amd64; the result names the same candidate digests as the amd64 record; the step signs one Witness record, witness-arm64/arm64-collection.json, under the stage file's own identity; Release requires that record beside the three of Check (a missing, extra or unverifiable one is refused and names Check)"
         verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+  - id: REQ-CHAIN-007
+    title: Release verifies everything first, then alone holds the credentials and publishes the exact bytes
+    statement: >
+      The Release stage shall verify every earlier stage's signed record, in a fixed order and before any credential exists in its job, and only then use the apk signing key and the registry credentials, which no other job holds, to sign the released apks, publish by digest the exact bytes Build made and Rebuild and Check judged, read the registry back, sign everything a customer verifies keyless with a Rekor entry (images in both registries, SBOMs, lock files, the dependency evidence and the release policy), and attach the evidence to the release, without building anything and without creating a version tag.
+    source: [.github/workflows/stage-promote.yml, .github/workflows/release.yml, bin/release-verify.sh, bin/release-apks.sh, bin/release-publish.sh, bin/release-sign.sh, bin/release-assets.sh, .github/policy/chain-scripts.json]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 5, 17, 29, 50, 52, 53, 53b, 56, 57, 60, 61, 63, 64, 65, 69, 70, 71 (owner RATIFIED Oct 9 2026 11:51 EDT, ops/docs/ratify/2026-10-09-v030-rules.md, rule 68 as amended with the timeout sentence; PR 4 read-back approved by the advisor Oct 9, ops/handoffs/outbox/2026-10-09-pipeline-readback-release.md, with three rulings that are quoted in the notes)
+    confidence: implementation-only
+    notes: >
+      ADVISOR RULINGS (Oct 9, on the read-back). (a) A release candidate verifies exactly like a final release, so the tag rule is vX.Y.Z and vX.Y.Z-rc.N and nothing else; PR 1's policy make --tag must accept the same two shapes (its tests and code are on the PR 1 branch and need the same widening). (b) The release policy is signed with cosign, keyless, under Release's identity, so it has a Rekor entry a customer can check; Witness records stay extra evidence. (c) Signatures are made in both registries. (d) The dry-run proof of the whole chain (REQ-CHAIN-001-AC5) must be green before the cutover merge into main, not before each merge into chain-v030 (advisor confirmed).
+      CUTOVER RULE (advisor 0341): PR 4 merges into the integration branch chain-v030 only; the live chain on main is untouched until the one cutover pull request, which has its own read-back, a final whole-diff review round and names the switch moment. A v* tag is the owner's; the first real run is the owner's rc tag. Release creates no tag.
+      THE WITNESS WRAPPING is the one seam shared with PR 2 and 3 (owner's rule 68 amendment, Oct 9, and the readability request): every Witness step runs through the single helper bin/witnessed.sh STEP SCRIPT with timeout -k 20 540 inside it; the stage file never repeats Witness flags. Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify) so that a credential reaches only the step that needs it and a step stays far below the ten-minute Fulcio certificate.
+      PROPOSED/UNVERIFIED: the script names and command lines of bin/release-*.sh; the tool that re-signs an apk with the stored key (melange sign is assumed; cache-3f's apk-tool.py signer reports assembly.rsa.pub, release.rsa.pub or unsigned and is fixed by cache's tests); the copy tool (crane, pinned by checksum through bin/install-scanner.sh); the registry-state check before publishing; the artifact names images and apks; the floating tags (REQ-REL-009 moves them for finals only); and that cosign's bundle for a sign-blob holds a Rekor entry (tlogEntries) in the shape PR 1 verifies; that PR 1's stage-start accepts --rekor-stub for Sign's provenance (else one more verify line); the crane entry of bin/install-scanner.sh (version, asset names, CRANE_BASE_URL; tested by bin/chain-install-crane-test.sh). The environment named release restricted to v* tags is the owner's setting (note only, no test). This PR cannot be run end to end before PRs 1 to 3 exist.
+    acceptance_criteria:
+      - id: REQ-CHAIN-007-AC1
+        given: "stage-promote.yml"
+        when: "it is parsed"
+        then: "it is a reusable workflow with exactly one job, release, on a fresh GitHub-hosted runner, in the environment named release, with permissions exactly contents write, packages write and id-token write and no container, services, env, defaults, strategy, needs or inherited secrets; its steps are exactly, in this order, a digest-pinned checkout (persist-credentials false and nothing else), one step per tool each running `bash bin/install-scanner.sh witness`, `bash bin/install-scanner.sh cosign` or `bash bin/install-scanner.sh crane`, digest-pinned downloads of named artifacts into explicit paths outside bin/ and .github/ (among them the artifact check-results into check-results/, Check's govulncheck stream), then the six witnessed steps release-verify, release-apks, release-publish, release-sign, release-assets and release-postverify (rule 79 as amended by the owner on Oct 10), each one line `bash bin/witnessed.sh STEP bin/STEP.sh` and nothing else in the step except, for every step after release-verify, the one condition `if: ${{ !contains(github.ref_name, '-') }}` (a release candidate ends after release-verify, AC14); bin/witnessed.sh accepts exactly these six step names besides the ones of Build, Rebuild and Check and writes each record to witness-STEP/STEP-collection.json, then digest-pinned uploads of named artifacts; no third-party action runs after Witness starts and no build command, docker login, or action other than checkout, download-artifact and upload-artifact appears"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC2
+        given: "the steps of the release job"
+        when: "the credentials they name are read"
+        then: "no step up to and including release-verify has an env key or names a secret, a token or an environment credential; afterwards each credential reaches only the steps that need it, as a whole read of a secret or of the job token and nothing else: the apk signing key (APK_RELEASE_SIGNING_KEY) only in release-apks, the registry credentials (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) only in release-publish and release-sign, the GitHub token (GH_TOKEN) only in release-publish, release-sign and release-assets; any other name, a second use, or a name read in part is refused"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC3
+        given: "every other workflow file of the release chain and release.yml"
+        when: "they are read"
+        then: "none grants packages write, names a secret (stage files), the registry token DOCKERHUB_TOKEN or the apk signing key APK_RELEASE_SIGNING_KEY, or uses the release environment; only the release job of stage-promote.yml holds them, release.yml grants write only to its release job's call of stage-promote.yml and passes no secrets to the stage calls (the daily rescan keeps its own read-only Docker Hub Scout token, DOCKERHUB_SCOUT_TOKEN, in the agent environment: a different credential)"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC4
+        given: "bin/release-verify.sh, the first witnessed step"
+        when: "its commands are read"
+        then: "after set -euo pipefail it refuses any tag that is not vX.Y.Z or a release candidate vX.Y.Z-rcN (AC14), then makes the release policy for that tag with bin/chain-verify.py policy make --tag, then, in this order and with nothing else between or after, verifies Build's record, Sign's provenance with its Rekor entry, Rebuild's record, Check's four records and the govulncheck stream bound to Check's scanners record (AC16); each verification command is the only thing on its line, nothing swallows its failure and no switch skips or waives one; the check that the registry holds nothing at the target tags that differs from the attested digests is made by release-publish.sh before anything is pushed (AC7)"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC5
+        given: "release-verify.sh run against stub records"
+        when: "one earlier stage's record is missing, invalid or about other digests, or the tag is not allowed"
+        then: "it exits non-zero at the first failure, its first stderr line names that stage (build, rebuild, check or sign) or the tag, no later verification runs, v0.3.0 and v0.3.0-rc1 pass and v0.3, v0.3.0-rc, v0.3.0-rc.1, v0.3.0-RC1, v0.3.0-rc1x, v0.3.0rc1, v0.3.0-beta.1, v0.3.0.1, a branch name and the empty string are refused, and the script never touches a secret, a registry or the network"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC6
+        given: "bin/release-apks.sh with the stored key in APK_RELEASE_SIGNING_KEY"
+        when: "it signs the released apks"
+        then: "it maps Build's artifacts to the layout cache's bin/release-sign-apks.sh reads through the fixed table of AC17, checks that each of the four apks (standard and fips, amd64 and arm64) has exactly the digest Build attested in digests.json (apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64) and refuses before signing otherwise, writes the key to a private file named release.rsa that is removed on every exit and never put on a command line, in the output or in a log, runs `bash bin/release-sign-apks.sh --build-dir B --rebuild-dir R --key K` (it alone compares Build's and Rebuild's control and data sections and signs; Release does not call melange itself), requires each result to carry the release key and the attested digest again, and refuses at once, naming the variable, when the key is missing"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC7
+        given: "bin/release-publish.sh with the attested digest list"
+        when: "it publishes"
+        then: "it pushes each candidate image index by its attested digest (never by a tag, never after any build command) from the image layout Build made to ghcr.io and to the Docker Hub mirror with the version tag, a final release also moving the floating tags of REQ-REL-009-AC11 (production image only; the -fips image gets its exact tag only), refusing a tag that is not vX.Y.Z (a release candidate never publishes, AC14), refusing before any push when an exact version tag already shows another digest, reading each registry back and requiring the digest it shows to equal the attested one, stopping at the first difference with a message naming the image and both digests, and the script contains no build command"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC8
+        given: "bin/release-sign.sh after the dependency evidence is produced by bin/vendor-provenance.py evidence --out release-evidence --provenance dependency-provenance.json (the tagged checkout's own file) --govulncheck check-results/govulncheck.json (Check's product) --date EPOCH (the admitted commit's committer date, git log -1 --format=%ct $GITHUB_SHA, never a clock); a stream or dependency list that is missing, a symlink or empty, and a date that is not epoch seconds, stop the step before anything is produced or signed"
+        when: "it signs"
+        then: "it signs keyless with cosign, in both registries, each published image digest, and attaches the release manifest (release-metadata/release-manifest.json, the file release-files.sha256 lists) to each published image digest as a release-manifest/v1 attestation (type https://fosterstack.com/attestations/release-manifest/v1, an OCI referrer, as on v0.2.x), after the image signatures: the GHCR referrer is required and stops the run before any file is signed when it cannot be attached, the Docker Hub mirror is attempted too and a failure there is a warning (a ::warning:: line, never a silent skip; referrer support there varies and GHCR is authoritative, as on main); and signs with a bundle the SBOMs, the lock files, vendor-evidence.json, the dependency list (attached as dependency-list.json), checksums.txt of the release archives and the release policy; it never turns the transparency log off and it requires a Rekor entry in every bundle, failing and naming the file when one has none; the Witness records of the earlier stages are attached as extra evidence and not signed again"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC9
+        given: "bin/release-assets.sh"
+        when: "it attaches the evidence"
+        then: "it uploads the apks (each attached as <arch>-<file name> because both architectures carry the same file names), archives, checksums.txt with its bundle, SBOMs and lock files (under their variant's name), dependency evidence, release policy with its bundle, release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release; the release is created, public, only when none exists and only with --verify-tag; nothing creates, moves or pushes a tag; no step undrafts a release and the release notes are not posted here (REQ-REL-009-AC8 is the patch-notes job's)"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC10
+        given: "the five release scripts and the witnessed helper"
+        when: "chain-scripts.json and the scripts are read"
+        then: "each is listed with its sha256 and exactly the tools it uses (release-verify: python3 only; release-apks: melange, jq and python3 for the apk tool; release-publish: crane and jq; release-sign: cosign, jq and python3; release-assets: gh), signs false for release-verify, release-publish and release-assets and other, with a reason, for release-apks and release-sign, no script starts another script except through the list, no script prints a credential, and a run with credential sentinels in the environment shows none of them in any output or file"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC11
+        given: "release.yml's job graph"
+        when: "it is read"
+        then: "the release job needs exactly rebuild, check and sign (rule 70; it reaches build through check), no job of the chain has an if that can skip it on a failed predecessor, a continue-on-error or inherited secrets, the release job carries exactly `if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}` (a branch run is not a release, a dry run publishes nothing), and a failed predecessor stops release; the dry-run and cutover wiring of REQ-CHAIN-001-AC5 is untouched"
+        verification: { method: ci-workflow, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC12
+        given: "a Witness record of any of the five release steps"
+        when: "its environment variables are read (the payload of the signed envelope is decoded first)"
+        then: "none of the credential names or values, no compact JWT and no ACTIONS_ID_TOKEN_REQUEST or ACTIONS_RUNTIME variable is in it, whether plain or inside the base64 payload"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC13
+        given: "the repository on the integration branch"
+        when: "the old release machinery is looked for"
+        then: "bin/authorize-acceptance-check.py and its test no longer exist, stage-promote.yml neither reads nor writes a release-authorization predicate and no job of release.yml named authorization remains; each removal is named in the pull request description (stage-authorize.yml itself is removed by the Check pull request)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-CHAIN-007-AC14
+        given: "a tag that matches exactly ^v[0-9]+\\.[0-9]+\\.[0-9]+-rc[0-9]+$ (case-sensitive, anchored; leading zeros accepted as for vX.Y.Z)"
+        when: "release.yml runs on it"
+        then: "Build, Sign, Rebuild, Check, the hostile jobs and Release's release-verify run exactly as for a final tag, and then the release job ends: every step of stage-promote.yml after release-verify carries `if: ${{ !contains(github.ref_name, '-') }}` and is skipped, so no step reads the apk signing key or a registry credential, nothing is pushed to any registry, no GitHub release is created, no floating tag moves and no patch automation runs; every script after release-verify also refuses a tag that is not vX.Y.Z; a tag that contains rc but does not match (-RC1, -rc, -rc1x, -rc.1, rc in the middle, a missing hyphen) is not a release candidate and release-verify's tag rule refuses it before any record is read; a record made for a release candidate is refused for the final tag with the same digests and the reverse (the policy and the identities carry the tag)"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC15
+        given: "bin/witnessed.sh"
+        when: "its Witness call is read"
+        then: "it keeps out of every record, through --env-add-sensitive-key, the identity-token variables (ACTIONS_ID_TOKEN_REQUEST*, ACTIONS_RUNTIME_TOKEN), GH_TOKEN, GITHUB_TOKEN and Release's three credential names APK_RELEASE_SIGNING_KEY, DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, and the judge of the helper's exact text pins the list; a record that names one of them is refused (AC12)"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC16
+        given: "Check's artifact witness-check"
+        when: "release-verify reads it"
+        then: "bin/chain-verify.py has a list verifier (check-list) that takes the four records scanners, acceptance, runtime and arm64 by name and verifies each (identity: Check's workflow at this tag under the policy, the Witness certificate chain and timestamp, and the exact digest list Build attested); a missing, extra, duplicated, reordered-with-substitution or unverifiable record, a record of another step name, another stage's identity, another tag or other digests, and four records whose digests match each other but not Build's verified digests, are refused, naming Check and the record; items.json is bound to Build's record by bin/chain-verify.py bind-items (a product of the record with the same sha256, else refused); check-results/govulncheck.json, which release-sign hands the dependency evidence step, is bound to Check's scanners record by bin/chain-verify.py bind-check (the record verified under Check's identity at the tag, the record of the step scanners, naming Build's verified digest list as its material, holding exactly one product named check-results/govulncheck.json with the file's sha256), else refused naming Check"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC17
+        given: "Build's and Rebuild's uploaded artifacts and digests.json"
+        when: "Release's scripts read them"
+        then: "they read them only through this table, each row tested: artifact apk-ubuntu-24.04 holds x86_64/ (amd64) and apk-ubuntu-24.04-arm holds aarch64/ (arm64), each with fscache-<ver>-r0.apk (standard) and fscache-fips-<ver>-r0.apk (fips); the Rebuild artifacts rapk-<runner> are laid out the same; the digest keys are apk-standard-amd64, apk-standard-arm64, apk-fips-amd64, apk-fips-arm64, image-production, image-fips and archive-linux-*/archive-fips-linux-*; the images artifact holds, per variant production and fips, the image layout, <variant>.digest, <variant>.manifests, <variant>.full.lock.json and <variant>-sbom/sbom.json; the Witness records are witness-build/build-collection.json (digests.json and items.json beside it), witness-rebuild/rebuild-collection.json, provenance/provenance.json with provenance.rekor.json and witness-check/<step>-collection.json; a name outside the table is an error"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC18
+        given: "chain-scripts.json and the five stage files that run the chain"
+        when: "they are judged"
+        then: "a stored secret (secrets.*) appears in no step, condition or job of Build, Sign, Rebuild or Check, and in Release only as the exact value of the four named env entries; the run's own token (GH_TOKEN = ${{ github.token }}) appears only in Build job apk for the admission step (bin/witnessed.sh, bin/build-stage-apk.sh, bin/build-admit.py) with job permissions exactly contents, checks, statuses, pull-requests read and id-token write, and in Release job release (contents, packages, id-token write) for release-publish, release-sign, release-assets and release-postverify; APK_RELEASE_SIGNING_KEY only for release-apks; DOCKERHUB_USERNAME and DOCKERHUB_TOKEN only for release-publish and release-sign; any other name, place or script, a name twice at one place, a sixth row or a value that is not the exact one is refused"
+        verification: { method: unit, release_blocking: true }
+        status: approved
+      - id: REQ-CHAIN-007-AC19
+        given: "the release assets"
+        when: "Release makes and publishes them"
+        then: "release-sign.sh makes the four metadata files before its first signature: the OpenVEX file is copied from the checkout of the tag, the CSAF and inspector-filters files are made by bin/vex-forms.py from that one file and release-metadata/vex-images.json, release-manifest.json by bin/release-metadata.py manifest; bin/release-metadata.py images writes {production:{index,children{linux/amd64,linux/arm64}},fips:{...}} only from Build's verified digests.json and items.json and images/<variant>.digest and .manifests (a third key, a missing key, a value that is not sha256:<64 hex>, an index, child, lock or SBOM that is not Build's verified item, or a repeated, missing, unknown or malformed child line is refused, naming the file or key); the manifest is deterministic (no clock), keeps `.images[].variant` and `.images[].digest` with both registry references, records the sha256 of the three VEX files, records the requirements baseline of the release (path requirements/releases/<baseline>.yaml, its version and sha256): the tag's own for an owner-signed tag, and for a CI patch tag the baseline version admission recorded (Build's admission-baseline.json, a product of Build's signed record that release-verify binds and release-metadata.py baseline reads: for this tag and this commit, vX.Y.Z, not newer than the tag), never a version Release chooses itself, and the sha256 of test-evidence/mappings.yaml (a missing or symlinked file, a baseline version that is not vX.Y.Z, and an admission-baseline.json that is missing, forged or not admission's choice, are refused), lists the archives and apks as Build attested them and is refused for a version that is not vX.Y.Z; release-files.sha256 lists exactly the four files in order and is signed keyless with a Rekor entry (bundle release-files.sha256.bundle); a gate refuses a symlink, a missing checksums.txt, checksums.txt.bundle, release-files.sha256, release-files.sha256.bundle or metadata file, an extra, missing or altered line, and an asset covered by nothing (covered: in checksums.txt or release-files.sha256, a bundle of an asset, a file with its own bundle, an apk, a Witness record, Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature), and a release without Sign's three files is refused), runs before the upload and again on what the release stores, and a v0.3.0 release without the four files is refused"
+        verification: { method: unit, release_blocking: true }
         status: approved
