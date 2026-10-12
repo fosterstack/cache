@@ -4,7 +4,7 @@
   build-archives.py --melange-repo DIR --version V --out DIR      (V is the tag minus the leading v; SOURCE_DATE_EPOCH is read from the environment)
 
 DIR/x86_64/ and DIR/aarch64/ each hold one standard apk (fscache-<ver>-r0.apk) and one fips apk (fscache-fips-<ver>-r0.apk). For each variant and
-architecture the binary is read with `python3 bin/apk-tool.py cat APK usr/bin/fscache` and written to OUT as goreleaser names the archive:
+architecture the binary is read with `python3 bin/apk-tool.py cat APK usr/bin/fscache` and written to OUT under the archive names of the release:
   fscache_<V>_linux_<amd64|arm64>.tar.gz       holds one file, fscache       (standard)
   fscache-fips_<V>_linux_<amd64|arm64>.tar.gz  holds one file, fscache-fips  (fips)
 Layout choice (deterministic): the archive holds only the binary, at the top level, mode 0755, uid/gid 0, no user/group name, mtime =

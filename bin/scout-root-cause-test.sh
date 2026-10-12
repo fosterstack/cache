@@ -267,7 +267,7 @@ if grep -q 'inconclusive (the create failed' "$e4/out5/summary.md" && ! grep -qF
   echo "ok: a failed create is inconclusive and the unchanged copy is never scanned as the built index"; pass=$((pass+1))
 else echo "FAIL: a failed create was scanned or not reported inconclusive"; fail=$((fail+1)); fi
 # rule 61: nothing in the probe names buildx or imagetools any more, and every source it hands crane is a digest (a tag could move between the read and the append)
-if ! grep -qE 'buildx|imagetools' "$LOG4" && ! grep -E '^crane ' "$LOG4" | grep -qE ' -m [^ ]*:[A-Za-z][A-Za-z0-9._-]*( |$)' \
+if ! grep -qE 'buildx|imagetools' "$LOG4" && ! grep -E '^crane ' "$LOG4" | grep -qE ' -m [^ @]+:[A-Za-z0-9._-]+( |$)' \
    && ! grep -qE 'buildx|imagetools' "$here/scout-root-cause.sh"; then
   echo "ok: no buildx or imagetools call, and every crane source is named by digest"; pass=$((pass+1))
 else echo "FAIL: a buildx or imagetools call remains, or a crane source is named by a tag"; fail=$((fail+1)); fi

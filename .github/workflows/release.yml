@@ -4,7 +4,7 @@ name: Release
 # workflow with its own OIDC identity; one signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
 # are sha256 digests emitted by the stage that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
 # pushes anything, and Release (the final stage) is the only path that can make anything public, and only after it has verified every earlier
-# stage's record. Releases build ONLY here; `goreleaser release` (without --snapshot) is never invoked anywhere else.
+# stage's record. Releases build ONLY here, by the chain below; nothing else builds or publishes a release.
 #
 # build -> { sign, rebuild } ; { build, sign } -> check ; { check, rebuild, sign } -> release
 
@@ -112,17 +112,13 @@ jobs:
           # each scan goes to the decision on its own and is validated there — no aggregation that turns a malformed
           # document into an empty one; a base-image failure is the base's alone (Codex #159 r2, B2 / NEW-1)
           rel_args=(); for f in "${rel[@]}"; do rel_args+=(--release-grype "$f"); done
-          base_arg=(); base_ok=1
-          if bases=$(grep -h -o -E '^FROM [^ ]+@sha256:[0-9a-f]{64}' build/docker/Dockerfile.* | awk '{print $2}' | sort -u) && [ -n "$bases" ]; then
-            for b in $bases; do
-              f="$RUNNER_TEMP/base-$(echo "$b" | sha256sum | cut -c1-12).json"
-              if grype "$b" -o json > "$f"; then base_arg+=(--base-grype "$f"); else base_ok=0; fi
-            done
-            [ "$base_ok" = 1 ] || base_arg=()           # no base evidence: no deb finding counts as removed
-            [ "$base_ok" != 1 ] || touch "$RUNNER_TEMP/base-ok"
-          fi
+          # Rules 61 and 62: no base image exists (the image is assembled by apko from committed locks), so none is scanned and no distribution package
+          # finding counts as removed (unknown never counts). The base inputs are the committed locks and records of .github/policy/base-inputs.json; the
+          # ones that moved since the release are printed here, and bin/patch-decide.py classifies a commit from the same list (the base-input-changed signal).
+          python3 bin/patch-decide.py base-moved --base-inputs .github/policy/base-inputs.json --since "$SINCE" > "$RUNNER_TEMP/base-moved.txt" || exit 1
+          cat "$RUNNER_TEMP/base-moved.txt" >> "$GITHUB_STEP_SUMMARY"
           if [ "$ok" != 1 ] || ! python3 bin/patch-decide.py removed "${rel_args[@]}" --gomod go.mod \
-               "${base_arg[@]}" --out "$RUNNER_TEMP/removed.json"; then
+               --out "$RUNNER_TEMP/removed.json"; then
             touch "$RUNNER_TEMP/removed-unknown"
           fi
 
@@ -232,11 +228,10 @@ jobs:
           for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
             v="${t#"$ver"}"; var+=(--variant-grype "${v#-}=$RUNNER_TEMP/rel-${t}.json")   # "", "debug" or "fips": the variant name the notes use
           done
-          base=(); if [ -f "$RUNNER_TEMP/base-ok" ]; then for f in "$RUNNER_TEMP"/base-*.json; do base+=(--base-grype "$f"); done; fi
           old=(); if git show "${SINCE}:.vex/fosterstack-cache.openvex.json" > "$RUNNER_TEMP/vex-old.json" 2>/dev/null; then
             old=(--vex-old "$RUNNER_TEMP/vex-old.json"); fi
           { git for-each-ref 'refs/tags/v*' --format='%(contents)'; cat docs/quality/releases/CHANGELOG.md 2>/dev/null || true; } > "$RUNNER_TEMP/published.txt"
-          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${base[@]}" "${old[@]}" \
+          python3 bin/patch-decide.py notes --version "$VERSION" "${var[@]}" --gomod go.mod "${old[@]}" \
             --vex-new .vex/fosterstack-cache.openvex.json --next-notes docs/next-release-notes.md \
             --published "$RUNNER_TEMP/published.txt" --out "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md" >> "$GITHUB_STEP_SUMMARY"

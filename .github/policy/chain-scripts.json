@@ -314,7 +314,7 @@
       "runs": [],
       "signs": false,
       "reason": "the four Linux archives from the apks (PROPOSED layout)",
-      "sha256": "28cb359a20c9affa0be33c599ef60074fef2c344a46309b51378c4033053a583"
+      "sha256": "0033149642f2c7ed3982ec3ffcc71a6d487d6f2513ae824ea4eac9e24e57d483"
     },
     {
       "path": "bin/chain_items.py",
@@ -327,7 +327,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "fc327f6a37ca7b905f7ff48a551866ab5935bcde64ec83b6206ebacd1792ca6f"
+      "sha256": "febcc4a646d1687c3663bfe7d1441b46a16fde4e58b35889fa06d102354c02b8"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -1158,7 +1158,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "b330cafa126bf35cf00ba797c736a5319a0128b4c41c7699c157c2e5486787c6",
+      "sha256": "193e0bd7829f10f7aeb77f0326e60f00790439cbbb74b1ff45d62e46ca9ddc90",
       "tools": [
         "at",
         "gh",

@@ -321,7 +321,7 @@ def image_items(images_dir):
 
 
 def archive_items(archives_dir, version):
-    """The four Linux archives under goreleaser's names (PROPOSED): fscache_VER_linux_ARCH.tar.gz, fscache-fips_VER_linux_ARCH.tar.gz."""
+    """The four Linux archives under the release archive names (PROPOSED): fscache_VER_linux_ARCH.tar.gz, fscache-fips_VER_linux_ARCH.tar.gz."""
     items = {}
     for arch in ARCHES.values():
         for item, file in (("archive-linux-" + arch, "fscache_%s_linux_%s.tar.gz" % (version, arch)),
