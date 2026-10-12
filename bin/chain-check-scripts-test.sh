@@ -131,13 +131,29 @@ PYD
 mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
-cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$fx/bin/" 2> /dev/null || true
+cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$root"/bin/rescan-statement.py "$root"/bin/inspector-gate.py "$fx/bin/" 2> /dev/null || true
+mkdir -p "$fx/.vex"; cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
 D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
 for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
 mkdig "$fx"
 mkdir -p "$fx/tools/requirements"; printf 'module example.com/a\n' > "$fx/go.mod"; printf 'module example.com/b\n' > "$fx/tools/requirements/go.mod"
 printf '{"scanners":["grype","osv-scanner"],"pr_gate":["grype","inspector"]}\n' > "$fx/.github/policy/scanners.json"
 fake="$work/fake"; mkdir -p "$fake"
+cat > "$work/osvout.py" <<'PYO2'
+import json, os, sys
+# osv-scanner 2.6.0 --format json --all-packages: results[].packages[] of {package, vulnerabilities[{id, aliases}], groups}; FAKE_OSV_VULNS (a JSON list of
+# {"pkg": "name@version", "id": ..., "aliases": [...]}) puts those vulnerabilities on the first packages
+n, eco = int(sys.argv[1]), sys.argv[2]
+vulns = json.loads(os.environ.get("FAKE_OSV_VULNS") or "[]")
+pk = []
+for i in range(n):
+    name, ver, vs = "p%d" % i, "1", []
+    if i < len(vulns):
+        name, ver = vulns[i]["pkg"].rsplit("@", 1)
+        vs = [{"id": vulns[i]["id"], "aliases": vulns[i].get("aliases", [])}]
+    pk.append({"package": {"name": name, "version": ver, "ecosystem": eco}, "vulnerabilities": vs, "groups": []})
+print(json.dumps({"results": [{"source": {"path": "/x", "type": "os"}, "packages": pk}]} if n else {"results": []}))
+PYO2
 mkfake() { # mkfake NAME EXIT PACKAGES  -> a scanner that logs its argv and prints its real output shape with PACKAGES packages
   cat > "$fake/$1" <<EOF
 #!/usr/bin/env bash
@@ -175,7 +191,7 @@ if [ "\$name" = grype ]; then
   python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({"matches":[],"source":{"type":"image","target":{}},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
-  python3 -c 'import json,sys; print(json.dumps({"results":[{"source":{"path":"/x","type":"os"},"packages":[{"package":{"name":"p%d" % i,"version":"1","ecosystem":sys.argv[2]},"vulnerabilities":[],"groups":[]} for i in range(int(sys.argv[1]))]}]} if int(sys.argv[1]) else {"results":[]}))' "\$n" "\$eco"
+  python3 "$work/osvout.py" "\$n" "\$eco"
 fi
 exit $2
 EOF
@@ -276,6 +292,23 @@ d = json.load(open(sys.argv[1])); d.pop("archive-fips-linux-arm64"); json.dump(d
 PYX
 want_fail "AC4 F1 a digest list without the digest of an archive that is scanned is refused naming it" archive-fips-linux-arm64 "${SCAN[@]}"
 cp "$work/dig.f1" "$fx/digests.json"
+# ---- round 1 F3 (Codex A2): osv-scanner's findings are held to the published VEX, as the rescan holds them (grype reads it itself) ----
+# The decision is the rescan filter's: a not_affected or fixed statement whose vulnerability name or alias equals one of the finding's ids, whose product
+# is this image repository (scoped to nothing or to the variant) or the Go product, and whose subcomponents (when it names any) include the finding's
+# package at its version. Every finding must be covered; one that is not, an unreadable VEX or a failure with nothing parseable to cover fails.
+VBUSY='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}]'
+mkfake grype 0 120; mkfake osv-scanner 1 80
+FAKE_OSV_VULNS="$VBUSY" want_ok "AC4 F3 osv-scanner exit 1 on a finding the published VEX excepts (CVE-2025-60876 on busybox 1.37.0) passes" "${SCAN[@]}"
+if jq -e '[.scanners[] | select(.name == "osv-scanner") | .subjects[] | select(.name == "production")] | length == 1 and .[0].verdict == "pass" and .[0].vex_suppressed == 1' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC4 F3 the result says how many findings the VEX excepted on the subject"; else bad "AC4 F3 vex_suppressed missing from the osv subject: $(jq -c '[.scanners[] | select(.name == "osv-scanner") | .subjects[0]]' "$fx/out/scan-results.json" 2>&1 | cut -c1-200)"; fi
+FAKE_OSV_VULNS='[{"pkg": "github.com/golang-jwt/jwt/v4@v4.5.0", "id": "GHSA-29wx-vh33-7x7r", "aliases": ["CVE-2024-51744", "GO-2024-3250"]}]' \
+  want_ok "AC4 F3 a finding whose id differs from the statement's name but whose alias equals it is excepted (the OSV id is the GHSA, the VEX names the CVE)" "${SCAN[@]}"
+FAKE_OSV_VULNS='[{"pkg": "busybox@1.36.0", "id": "CVE-2025-60876"}]' want_fail "AC4 F3 the same CVE on another version of the package than the statement's subcomponent is not excepted" osv-scanner "${SCAN[@]}"
+FAKE_OSV_VULNS='[{"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 F3 a finding no statement names is not excepted" osv-scanner "${SCAN[@]}"
+FAKE_OSV_VULNS='[{"pkg": "busybox@1.37.0", "id": "CVE-2025-60876"}, {"pkg": "libssl3@3.0.0", "id": "CVE-2025-99999"}]' want_fail "AC4 F3 one excepted and one uncovered finding: the uncovered one fails the scan" osv-scanner "${SCAN[@]}"
+printf '{"statements": "not a list"}\n' > "$fx/.vex/fosterstack-cache.openvex.json"
+FAKE_OSV_VULNS="$VBUSY" want_fail "AC4 F3 an unreadable VEX document excepts nothing (fail closed)" osv-scanner "${SCAN[@]}"
+cp "$root/.vex/fosterstack-cache.openvex.json" "$fx/.vex/"
+mkfake osv-scanner 0 80
 # ---- REQ-CHAIN-006-AC15: fresh vulnerability databases from the scanner's own host --------------------------------------------
 printf '{"scanners":["grype"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"
 want_ok "AC15 a fresh grype database (built 17.5 h before now) from grype.anchore.io: the scan proceeds" "${SCAN[@]}"
@@ -736,7 +769,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=163
+EXPECT=170
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
