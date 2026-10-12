@@ -781,7 +781,7 @@ class Cli(unittest.TestCase):
         path = self.r.record(bad)
         rc, out, _ = self.r.judge()
         self.assertEqual(rc, 1)
-        self.assertIn("::error file=%s::review gate (REQ-AUD-18 AC3): stop verdict for codex_b is 'blocked': %s" % (path, NO_SUB), out)
+        self.assertIn("::error file=%s::review gate (REQ-AUD-18 AC3): stop verdict for codex_b is 'blocked', want 'clear': %s" % (path, NO_SUB), out)
         self.assertIn("codex_a and codex_b name the same model", out)
 
     def test_a_record_with_a_wrong_tree_at_the_right_path_fails(self):

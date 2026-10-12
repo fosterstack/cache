@@ -51,8 +51,10 @@ name: allowlist_entry, exception, waiver, change, label, residuals, ...), and an
 record that contains "substitut" (any case) fails, naming it and saying no substitute is accepted. So does every other
 refusal of a key or a value the gate does not permit (round 5): a former allow-list id or a model alias in any string
 field, a value of the wrong type, a record that is not an object, an old-schema record; the statement is written by the
-one helper _no_substitute. Only a missing field or seat, an integer out of range and a relation between permitted values
-(the same model, the same evidence, round order, a well-formed tree that is another tree) are stated plainly. The record holds no
+one helper _no_substitute, and so does a record at the tree's path that cannot be read or is not a regular file (round
+6); every written refusal line ends with its problem. Only a missing field, seat or record, an integer out of range and
+a relation between permitted values (the same model, the same evidence, round order, a well-formed tree that is another
+tree) are stated plainly. The record holds no
 free text at all (round 3: no pattern on free text tells an entry id from a word): every string field is an exact value
 from the gate's lists (schema, reviewer, vendor, seat, model, effort, the stop verdicts) or a fixed hex form (tree,
 reviewed_commit, evidence_sha256), and every key is from a closed set. Residuals live in the pull request body and the
@@ -159,7 +161,8 @@ def _key(k):
 
 def _no_substitute(line, why=""):
     """The one place a refusal says that no substitute is accepted (AC4, round 5): `line` names the key or value refused,
-    `why` (PERMITTED or V2_REQUIRED, each ending ", and ") what else holds; the statement always ends the refusal."""
+    `why` (PERMITTED or V2_REQUIRED, each ending ", and ") what else holds; the statement always ends the refusal, and
+    every written refusal line ends with its problem (round 6: the requirement tag comes first)."""
     return "%s: %s%s" % (line, why, NO_SUBSTITUTE)
 
 
@@ -553,7 +556,8 @@ def added_record_problems(head, touched, skip, probs):
         if len(probs) >= MAX_PROBLEMS:
             probs.unread += 1
             continue
-        at = "::error file=%s::review gate: record %s is added or changed by this pull request and " % (path, path)
+        at = "::error file=%s::review gate (REQ-AUD-18 %%s): record %s is added or changed by this pull request and " % (
+            path, path)
         try:
             rec = _read_record(head, path)
         except (RuntimeError, ValueError) as e:
@@ -561,11 +565,11 @@ def added_record_problems(head, touched, skip, probs):
         else:
             if isinstance(rec, dict) and rec.get("schema") == SCHEMA:
                 judged = _judge(rec, _tree_named(path))
-                probs.extend(at + "does not clear: %s (REQ-AUD-18 AC4, AC5)" % p for p in judged)
+                probs.extend(at % "AC4, AC5" + "does not clear: %s" % p for p in judged)
                 probs.more += judged.more
                 continue
             why = "its schema is %s, not %s" % (_show(rec.get("schema") if isinstance(rec, dict) else None), SCHEMA)
-        probs.append(at + _no_substitute(why, V2_REQUIRED) + " (REQ-AUD-18 AC7)")
+        probs.append(at % "AC7" + _no_substitute(why, V2_REQUIRED))
 
 
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
@@ -594,11 +598,17 @@ def _emit(report):
     return 1
 
 
+ABSENT = "no regular file there"      # the one cause _no_record states plainly
+
+
 def _no_record(report, changed, path, why):
-    """The change has no valid record at `path`: one more problem line, then everything is written; returns 1."""
-    report.append("::error::review gate: %d auditor path(s) changed (e.g. %s) but no valid review record at %s (%s). Run "
-                  "both Codex reviews (seat A and seat B, two different models) on this exact content and commit its "
-                  "record (REQ-AUD-18 AC3)." % (len(changed), _show(changed[0]), path, why))
+    """The change has no valid record at `path`: one more problem line, then everything is written; returns 1. Every
+    cause but ABSENT (a record that cannot be read, a non-regular object, a git failure reading it) is a record-shaped
+    input the gate refuses, so the line ends saying that no substitute is accepted (AC4, round 6)."""
+    line = ("::error::review gate (REQ-AUD-18 AC3): %d auditor path(s) changed (e.g. %s); run both Codex reviews (seat A "
+            "and seat B, two different models) on this exact content and commit its record; no valid review record at "
+            "%s: %s" % (len(changed), _show(changed[0]), path, why))
+    report.append(line if why is ABSENT else _no_substitute(line))
     return _emit(report)
 
 
@@ -700,7 +710,7 @@ def _main(argv):
                                     "pull request, at the merge base %s and on the trusted revision %s"
                                     % (where, _show(base), _show(trusted)), V2_REQUIRED)]
         else:
-            return _no_record(report, changed, path, "no regular file there")
+            return _no_record(report, changed, path, ABSENT)
     else:
         try:
             rec = _read_record(head, path)
@@ -714,7 +724,7 @@ def _main(argv):
         judged = _judge(rec, tree)
         probs = list(judged)
         report.more += judged.more
-    report.extend("::error file=%s::review gate: %s (REQ-AUD-18 AC3)" % (where, p) for p in probs)
+    report.extend("::error file=%s::review gate (REQ-AUD-18 AC3): %s" % (where, p) for p in probs)
     if report:
         return _emit(report)
     _say("review gate: %d auditor path(s) changed; %s clears the stop rule (%d round(s))"
