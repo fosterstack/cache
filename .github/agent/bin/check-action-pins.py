@@ -248,10 +248,25 @@ EXECUTOR_INPUTS = {
 
 
 class StrLoader(yaml.SafeLoader):
-    """Every plain scalar is a string; GitHub reads `uses: 1.0` as the string "1.0"."""
+    """Every plain scalar is a string; GitHub reads `uses: 1.0` as the string "1.0". Every node also records whether the source
+    wrote an explicit YAML tag on it (REQ-REL-005-AC2: the matrix path refuses any, even `!!seq` or `!!map`, which name the
+    default type and so leave no trace in the node's resolved tag)."""
 
 
 StrLoader.yaml_implicit_resolvers = {}
+
+
+def _records_explicit_tag(compose):
+    def compose_node(self, anchor):
+        explicit = self.peek_event().tag is not None     # None: no tag in the source; `!` and every written tag are not None
+        node = compose(self, anchor)
+        node.explicit_tag = explicit
+        return node
+    return compose_node
+
+
+for _kind in ("compose_scalar_node", "compose_sequence_node", "compose_mapping_node"):
+    setattr(StrLoader, _kind, _records_explicit_tag(getattr(yaml.SafeLoader, _kind)))
 
 
 # ---------------------------------------------------------------------------- the tree read
@@ -2688,9 +2703,17 @@ def plain_str(node):
     return isinstance(node, yaml.ScalarNode) and node.tag == STR_TAG
 
 
+def untagged(node):
+    """AC2 (Codex round 1 at 643db58, fail closed per advisor 0080): the source wrote no explicit YAML tag on the node. A node
+    that StrLoader did not read carries no record and counts as tagged."""
+    return not getattr(node, "explicit_tag", True)
+
+
 def exact_map(node):
-    """A mapping's entries by their exact key text, or None if it is not a mapping or a key is not a plain string."""
-    if not isinstance(node, yaml.MappingNode) or not all(plain_str(k) for k, _ in node.value):
+    """A mapping's entries by their exact key text, or None if it is not a mapping, the mapping carries an explicit tag, or a key
+    is not a plain string written without a tag."""
+    if (not isinstance(node, yaml.MappingNode) or not untagged(node)
+            or not all(plain_str(k) and untagged(k) for k, _ in node.value)):
         return None
     return {k.value: v for k, v in node.value}
 
@@ -2707,13 +2730,15 @@ def known_ubuntu_labels(job):
     around it, no index or property) and the matrix lists, under that key, only labels of MATRIX_RUNNER_LABELS, so the steps
     surely run on an ubuntu runner and are judged as bash EVEN IF the rest of the shape is refused (Codex round 1, M1).
     Anything that could add another runner or make the reading ambiguous is False: a key given twice in the job, its strategy
-    or its matrix, a key spelled include or exclude in any letter case, an include entry beside the key. False leaves the steps
+    or its matrix, a key spelled include or exclude in any letter case, an include entry beside the key, an explicit YAML tag
+    on the job, runs-on, the strategy, the matrix, a key in them or the label list (only !!str on a label resolves to the
+    plain string and is read as one; Codex round 1 at 643db58). False leaves the steps
     under pwsh, never a silent bash."""
     entries = exact_map(job)
     if entries is None or repeated_keys(job):
         return False
     runs_on = entries.get("runs-on")
-    named = MATRIX_RUNS_ON.fullmatch(runs_on.value) if plain_str(runs_on) else None
+    named = MATRIX_RUNS_ON.fullmatch(runs_on.value) if plain_str(runs_on) and untagged(runs_on) else None
     strategy = exact_map(entries.get("strategy"))
     if not named or strategy is None or repeated_keys(entries["strategy"]):
         return False
@@ -2724,7 +2749,7 @@ def known_ubuntu_labels(job):
     if key.lower() in ("include", "exclude") or any(name.lower() == "include" for name in matrix):
         return False
     labels = matrix.get(key)
-    return (isinstance(labels, yaml.SequenceNode) and bool(labels.value)
+    return (isinstance(labels, yaml.SequenceNode) and untagged(labels) and bool(labels.value)
             and all(plain_str(label) and label.value in MATRIX_RUNNER_LABELS for label in labels.value))
 
 

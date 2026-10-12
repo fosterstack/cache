@@ -1026,7 +1026,8 @@ case_out() {
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
   : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"
-  for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh; do   # committed, plain, pin-clean stubs
+  for s in build.sh witnessed.sh build-stage-apk.sh build-stage-rebuild-apk.sh install-scanner.sh build-stage-refuse-mode.sh \
+           build-stage-snapshot-apk.sh build-stage-snapshot-rebuild-apk.sh; do   # committed, plain, pin-clean stubs
     printf '#!/usr/bin/env bash\nset -euo pipefail\n:\n' > "$d/bin/$s"; chmod +x "$d/bin/$s"
   done
   if [ -n "${6:-}" ]; then (cd "$d" && eval "$6"); fi
@@ -1046,8 +1047,9 @@ mx() { printf 'on: push\njobs:\n  apk:\n    runs-on: %s\n%s\n    steps:\n      -
 st() { printf '    strategy:\n      matrix:\n        runner: %s\n' "$1"; }
 M='${{ matrix.runner }}'
 BOTH='[ubuntu-24.04, ubuntu-24.04-arm]'
-# the two real jobs, copied verbatim from the PR 2 branch (origin/pipeline-chain-build-rebuild @ 2942097): stage-build.yml and
-# stage-reproducibility.yml, job `apk` in full (permissions, checkout with:, the Witness install step, GH_TOKEN env, the artifact steps)
+# the two real jobs, copied verbatim from dad677d (Codex round 1 at 643db58: refreshed from the older 2942097 copies): stage-build.yml
+# and stage-reproducibility.yml, job `apk` in full (permissions, checkout with:, the mode guard, the install steps, the release and
+# snapshot steps, GH_TOKEN env, the artifact steps)
 REAL_BUILD_APK=$(cat <<'REALEOF'
   apk:
     runs-on: ${{ matrix.runner }}
@@ -1065,13 +1067,22 @@ REAL_BUILD_APK=$(cat <<'REALEOF'
         with:
           persist-credentials: false
           fetch-depth: 0
-          fetch-tags: true
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
       - name: install Witness (pinned by checksum)
-        run: ./bin/install-scanner.sh witness
+        run: bash bin/install-scanner.sh witness
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
       - name: apk under Witness
+        if: ${{ inputs.mode == 'release' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh apk bin/build-stage-apk.sh
+      - name: snapshot-apk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: apk-${{ matrix.runner }}
@@ -1080,6 +1091,11 @@ REAL_BUILD_APK=$(cat <<'REALEOF'
         with:
           name: witness-apk-${{ matrix.runner }}
           path: witness-apk
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ inputs.mode == 'release' && matrix.runner == 'ubuntu-24.04' }}
+        with:
+          name: admission
+          path: admission.json
 REALEOF
 )
 REAL_REBUILD_APK=$(cat <<'REALEOF'
@@ -1096,9 +1112,12 @@ REAL_REBUILD_APK=$(cat <<'REALEOF'
         with:
           persist-credentials: false
           fetch-depth: 0
-          fetch-tags: true
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
       - name: install Witness (pinned by checksum)
-        run: ./bin/install-scanner.sh witness
+        run: bash bin/install-scanner.sh witness
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: witness-build
@@ -1108,7 +1127,11 @@ REAL_REBUILD_APK=$(cat <<'REALEOF'
           name: digests
           path: build-in
       - name: rapk under Witness
+        if: ${{ inputs.mode == 'release' }}
         run: bash bin/witnessed.sh rapk bin/build-stage-rebuild-apk.sh
+      - name: snapshot-rapk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rapk-${{ matrix.runner }}
@@ -1224,6 +1247,9 @@ case_out pm-dup-strategy-valid-last    bad "$(dupjob "$(printf '    runs-on: ${{
 case_out pm-dup-strategy-invalid-last  bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n'"$OKS"'    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n')")" "duplicate key 'strategy'"
 case_out pm-dup-matrix-valid-last      bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [macos-14]\n      matrix:\n        runner: [ubuntu-24.04]\n')")" "duplicate key 'matrix'"
 case_out pm-dup-matrix-invalid-last    bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n      matrix:\n        runner: [macos-14]\n')")" "duplicate key 'matrix'"
+# Codex round 1 at 643db58 (seat B): the runs-on key itself given twice in the matrix is named, whichever copy is valid
+case_out pm-dup-runner-key-valid-last   bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [macos-14]\n        runner: [ubuntu-24.04]\n')")" "matrix: duplicate key 'runner'"
+case_out pm-dup-runner-key-invalid-last bad "$(dupjob "$(printf '    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        runner: [macos-14]\n')")" "matrix: duplicate key 'runner'"
 # a reusable-workflow call job is a job too
 case_out pm-dup-key-in-a-call-job      bad "on: push
 jobs:
@@ -1261,11 +1287,22 @@ SK_EXCLUDE='    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-
 for SK in SECOND PARALLEL EXCLUDE; do
   eval "SKB=\$SK_$SK"
   case_out pm-known-$SK-runner bad "$(mx "$M" "$(printf "$SKB")" "$DOCKER")" 'runs-on'
-  case_out pm-known-$SK-step   bad "$(mx "$M" "$(printf "$SKB")" "$DOCKER")" 'alpine'
+  case_out pm-known-$SK-step   bad "$(mx "$M" "$(printf "$SKB")" "$DOCKER")" 'alpine' 'pwsh'
 done
-case_out pm-unknown-windows-pwsh   bad "$(mx "$M" "$(st '[windows-2022]')" "$DOCKER")" 'runs-on' 'alpine'
-case_out pm-unknown-include-pwsh   bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        include:\n          - runner: windows-2022\n')" "$DOCKER")" 'runs-on' 'alpine'
-case_out pm-unknown-duplicate-pwsh bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [windows-2022]\n        runner: [ubuntu-24.04]\n')" "$DOCKER")" 'duplicate key' 'alpine'
+# Codex round 1 at 643db58 (F2): each also requires the step's own pwsh finding (a checker that skipped the steps would pass without it)
+# and exactly one runs-on finding; the safely known cases above require that NO pwsh finding appears
+PW='jobs\.apk\.steps\[1\]\.run: a `pwsh` step'
+case_out pm-unknown-windows-pwsh   bad "$(mx "$M" "$(st '[windows-2022]')" "$DOCKER")" "runs-on|$PW" 'alpine'
+case_out pm-unknown-windows-pwsh-step bad "$(mx "$M" "$(st '[windows-2022]')" "$DOCKER")" "$PW" 'alpine'
+case_out pm-unknown-include-pwsh   bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        include:\n          - runner: windows-2022\n')" "$DOCKER")" "runs-on|$PW" 'alpine'
+case_out pm-unknown-include-pwsh-step bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        include:\n          - runner: windows-2022\n')" "$DOCKER")" "$PW" 'alpine'
+case_out pm-unknown-duplicate-pwsh bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [windows-2022]\n        runner: [ubuntu-24.04]\n')" "$DOCKER")" "duplicate key 'runner'" 'alpine'
+case_out pm-unknown-duplicate-pwsh-step bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [windows-2022]\n        runner: [ubuntu-24.04]\n')" "$DOCKER")" "runs-on|$PW" 'alpine'
+# Codex round 1 at 643db58: Include / INCLUDE beside the runner key, in another letter case, is not safely known: pwsh, runner named once
+for IX in Include INCLUDE; do
+  case_out pm-unknown-$IX-beside-pwsh bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        %s:\n          - runner: windows-2022\n' $IX)" "$DOCKER")" "runs-on|$PW" 'alpine'
+  case_out pm-unknown-$IX-beside-step bad "$(mx "$M" "$(printf '    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        %s:\n          - runner: windows-2022\n' $IX)" "$DOCKER")" "$PW" 'alpine'
+done
 # Codex round 1, L2: fail-fast is the plain unquoted true or false; a quoted or explicitly tagged string is refused
 for FF in '"true"' "'false'" '!!str true'; do
   case_out "pm-fail-fast-string-$(printf %s "$FF" | tr -c 'a-z' _)" bad "$(mx "$M" "$(printf '    strategy:\n      fail-fast: %s\n      matrix:\n        runner: [ubuntu-24.04]\n' "$FF")")" 'runs-on'
@@ -1288,10 +1325,44 @@ jobs:
       matrix: *m
     steps:
       - run: true" 'anchor'
+# Codex round 1 at 643db58 (an unknown tag on the label list from seat A, a str tag on it from seat B): any explicit YAML tag on
+# the matrix path (the job, runs-on, strategy, matrix, a key there, the label list, fail-fast) is a finding that names the runner,
+# fail closed (advisor 0080); a tag naming the node's default type (!!seq, !!map) too. Only !!str on a label is accepted (above).
+TL='[ubuntu-24.04, ubuntu-24.04-arm]'
+tagm() { printf '    strategy:\n      matrix:\n%b\n' "$1"; }
+case_out pm-tag-unknown-flow-list    bad "$(mx "$M" "$(st '!x [ubuntu-24.04]')")" 'runs-on'
+case_out pm-tag-str-flow-list        bad "$(mx "$M" "$(st '!!str [ubuntu-24.04]')")" 'runs-on'
+case_out pm-tag-seq-flow-list        bad "$(mx "$M" "$(st "!!seq $TL")")" 'runs-on'
+case_out pm-tag-set-flow-map         bad "$(mx "$M" "$(st '!!set {ubuntu-24.04}')")" 'runs-on'
+case_out pm-tag-verbatim-seq-list    bad "$(mx "$M" "$(st "!<tag:yaml.org,2002:seq> $TL")")" 'runs-on'
+case_out pm-tag-nonspecific-list     bad "$(mx "$M" "$(st "! $TL")")" 'runs-on'
+case_out pm-tag-seq-block-list       bad "$(mx "$M" "$(tagm '        runner: !!seq\n          - ubuntu-24.04\n          - ubuntu-24.04-arm')")" 'runs-on'
+case_out pm-tag-unknown-block-list   bad "$(mx "$M" "$(tagm '        runner: !x\n          - ubuntu-24.04')")" 'runs-on'
+case_out pm-tag-verbatim-element     bad "$(mx "$M" "$(st '[!<tag:example.org,2026:x> ubuntu-24.04]')")" 'runs-on'
+case_out pm-tag-map-block-matrix     bad "$(mx "$M" "$(printf '    strategy:\n      matrix: !!map\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
+case_out pm-tag-unknown-flow-matrix  bad "$(mx "$M" "$(printf '    strategy:\n      matrix: !x {runner: [ubuntu-24.04]}\n')")" 'runs-on'
+case_out pm-tag-map-block-strategy   bad "$(mx "$M" "$(printf '    strategy: !!map\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
+case_out pm-tag-unknown-flow-strategy bad "$(mx "$M" "$(printf '    strategy: !x {matrix: {runner: [ubuntu-24.04]}}\n')")" 'runs-on'
+case_out pm-tag-str-runs-on          bad "$(mx "!!str $M" "$(st "$TL")")" 'runs-on'
+case_out pm-tag-unknown-runs-on      bad "$(mx "!x $M" "$(st "$TL")")" 'runs-on'
+case_out pm-tag-bool-fail-fast       bad "$(mx "$M" "$(printf '    strategy:\n      fail-fast: !!bool false\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
+case_out pm-tag-str-matrix-key       bad "$(mx "$M" "$(tagm '        !!str runner: [ubuntu-24.04]')")" 'runs-on'
+case_out pm-tag-str-strategy-key     bad "$(mx "$M" "$(printf '    !!str strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n')")" 'runs-on'
+case_out pm-tag-exclude-beside       bad "$(mx "$M" "$(tagm "        runner: $TL\n        exclude: !!seq\n          - runner: ubuntu-24.04-arm")")" 'runs-on'
+case_out pm-tag-include-beside       bad "$(mx "$M" "$(tagm '        runner: [ubuntu-24.04]\n        include: !x [{runner: ubuntu-24.04}]')")" 'runs-on'
+case_out pm-tag-map-job              bad "$(printf 'on: push\njobs:\n  apk: !!map\n    runs-on: %s\n%s\n    steps:\n      - run: bash bin/build.sh' "$M" "$(st "$TL")")" 'runs-on'
+# a tagged label list is not safely known: its steps are judged under pwsh (the step's own pwsh finding), the runner named once
+case_out pm-tag-list-stays-pwsh      bad "$(mx "$M" "$(st '!x [ubuntu-24.04]')" "$DOCKER")" "runs-on|$PW" 'alpine'
+case_out pm-tag-list-stays-pwsh-step bad "$(mx "$M" "$(st '!x [ubuntu-24.04]')" "$DOCKER")" "$PW" 'alpine'
+# an anchor beside a tag is refused as today, and an unrelated anchor is the ONE finding of a file whose step has a finding of its own
+case_out pm-tag-anchored-matrix      bad "$(mx "$M" "$(printf '    strategy:\n      matrix: &m !!map\n        runner: [ubuntu-24.04]\n')")" 'uses a YAML anchor or alias' 'runs-on'
+case_out pm-anchor-unrelated-only    bad "$(printf 'on: push\nx: &a hello\n%s' "$(mx "$M" "$(st "$TL")" "$DOCKER" | sed 1d)")" 'w\.yml: uses a YAML anchor or alias$' 'alpine|runs-on|pwsh'
+case_out pm-anchor-unrelated-count   bad "$(printf 'on: push\nx: &a hello\n%s' "$(mx "$M" "$(st "$TL")" "$DOCKER" | sed 1d)")" ' 1 finding\(s\)'
 # an unresolved runs-on is a finding about the runner (it names the job), never only a pwsh misreading of the steps
 case_out pm-unresolved-names-the-runner bad "$(mx '${{ inputs.runner }}' "$(st "$BOTH")")" "jobs\\.apk\\.runs-on: .* is not an ubuntu runner"
-# scope: the runner rule is read in .github/workflows/ files only; in another .github YAML file a valid matrix reads as bash and an
-# unresolved runs-on only makes its steps read as pwsh (a finding of its own, no runs-on finding)
+# scope: the runner rule is read in .github/workflows/ files only; in another .github YAML file a valid matrix reads as bash, and a
+# runs-on holding an expression (or naming Windows) only makes its steps read as pwsh (a finding of its own, no runs-on finding);
+# any other runs-on there (self-hosted, say) leaves its steps read as bash, with no finding (Codex round 1 at 643db58, F4)
 OTHER_OK='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n    steps:\n      - run: bash bin/build.sh\n'
 OTHER_UNRESOLVED='on: push\njobs:\n  a:\n    runs-on: ${{ inputs.runner }}\n    steps:\n      - run: bash bin/build.sh\n'
 W_PLAIN='on: push
@@ -1304,7 +1375,7 @@ case_out pm-scope-other-file-valid      ok  "$W_PLAIN" '0 finding' 'pwsh|runs-on
 case_out pm-scope-other-file-unresolved bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_UNRESOLVED' > .github/other.yml"
 OTHER_WINDOWS='on: push\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [windows-2022]\n    steps:\n      - run: bash bin/build.sh\n'
 case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` step' 'runs-on' "printf '$OTHER_WINDOWS' > .github/other.yml"
-PM_EXPECT=97
+PM_EXPECT=132
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed

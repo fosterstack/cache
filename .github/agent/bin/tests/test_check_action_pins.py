@@ -409,13 +409,15 @@ class LiteralRunnerMatrix(unittest.TestCase):
     FILES = {".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
              "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",   # the gate's committed programs
              **dict.fromkeys(["bin/build.sh", "bin/witnessed.sh", "bin/build-stage-apk.sh", "bin/build-stage-rebuild-apk.sh",
-                              "bin/install-scanner.sh"], STUB)}
+                              "bin/install-scanner.sh", "bin/build-stage-refuse-mode.sh", "bin/build-stage-snapshot-apk.sh",
+                              "bin/build-stage-snapshot-rebuild-apk.sh"], STUB)}
     DIGEST = "sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667"
     CHECKOUT = f"      - uses: actions/checkout@{SHA} # v7.0.1\n"
     BUILD = "      - run: bash bin/build.sh\n"
     MATRIX = "    strategy:\n      matrix:\n        runner: [ubuntu-24.04, ubuntu-24.04-arm]\n"
     OK_HEAD = "    runs-on: ${{ matrix.runner }}\n" + MATRIX
-    # the two real jobs, `apk` in full, copied verbatim from the PR 2 branch (origin/pipeline-chain-build-rebuild @ 2942097)
+    # the two real jobs, `apk` in full, copied verbatim from dad677d (stage-build.yml and stage-reproducibility.yml; Codex round 1 at
+    # 643db58: refreshed from the older 2942097 copies)
     REAL_BUILD_APK = """  apk:
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -432,13 +434,22 @@ class LiteralRunnerMatrix(unittest.TestCase):
         with:
           persist-credentials: false
           fetch-depth: 0
-          fetch-tags: true
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
       - name: install Witness (pinned by checksum)
-        run: ./bin/install-scanner.sh witness
+        run: bash bin/install-scanner.sh witness
+      - name: install Go (pinned by checksum)
+        run: bash bin/install-scanner.sh go
       - name: apk under Witness
+        if: ${{ inputs.mode == 'release' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash bin/witnessed.sh apk bin/build-stage-apk.sh
+      - name: snapshot-apk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed.sh snapshot-apk bin/build-stage-snapshot-apk.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: apk-${{ matrix.runner }}
@@ -447,6 +458,11 @@ class LiteralRunnerMatrix(unittest.TestCase):
         with:
           name: witness-apk-${{ matrix.runner }}
           path: witness-apk
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ inputs.mode == 'release' && matrix.runner == 'ubuntu-24.04' }}
+        with:
+          name: admission
+          path: admission.json
 """
     REAL_REBUILD_APK = """  apk:
     runs-on: ${{ matrix.runner }}
@@ -461,9 +477,12 @@ class LiteralRunnerMatrix(unittest.TestCase):
         with:
           persist-credentials: false
           fetch-depth: 0
-          fetch-tags: true
+      - name: the mode is release or snapshot
+        env:
+          MODE: ${{ inputs.mode }}
+        run: bash bin/build-stage-refuse-mode.sh "$MODE"
       - name: install Witness (pinned by checksum)
-        run: ./bin/install-scanner.sh witness
+        run: bash bin/install-scanner.sh witness
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: witness-build
@@ -473,7 +492,11 @@ class LiteralRunnerMatrix(unittest.TestCase):
           name: digests
           path: build-in
       - name: rapk under Witness
+        if: ${{ inputs.mode == 'release' }}
         run: bash bin/witnessed.sh rapk bin/build-stage-rebuild-apk.sh
+      - name: snapshot-rapk under Witness
+        if: ${{ inputs.mode == 'snapshot' }}
+        run: bash bin/witnessed.sh snapshot-rapk bin/build-stage-snapshot-rebuild-apk.sh
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: rapk-${{ matrix.runner }}
@@ -643,8 +666,9 @@ class LiteralRunnerMatrix(unittest.TestCase):
             with self.subTest(name):
                 code, out = self.findings(self.job(ro + strategy, self.CHECKOUT + "      - run: docker pull alpine:latest\n"))
                 self.assertNotEqual(code, 0, out)
-                self.assertRegex(out, r"\.runs-on: ")
+                self.assertEqual(len([l for l in out.splitlines() if ".runs-on: " in l]), 1, out)
                 self.assertRegex(out, "alpine")
+                self.assertNotIn("pwsh", out)        # Codex round 1 at 643db58 (F2): safely known labels are judged under bash
 
     def test_labels_not_safely_known_stay_pwsh(self):
         ro = "    runs-on: ${{ matrix.runner }}\n    strategy:\n"
@@ -652,11 +676,20 @@ class LiteralRunnerMatrix(unittest.TestCase):
             "windows": "      matrix:\n        runner: [windows-2022]\n",
             "include beside ubuntu": "      matrix:\n        runner: [ubuntu-24.04]\n        include:\n          - runner: windows-2022\n",
             "a repeated key": "      matrix:\n        runner: [windows-2022]\n        runner: [ubuntu-24.04]\n",
+            # Codex round 1 at 643db58 (both seats): a key spelled Include in another letter case, beside the runner key
+            "Include beside ubuntu, another letter case": "      matrix:\n        runner: [ubuntu-24.04]\n        Include:\n          - runner: windows-2022\n",
+            "INCLUDE beside ubuntu, another letter case": "      matrix:\n        runner: [ubuntu-24.04]\n        INCLUDE:\n          - runner: windows-2022\n",
+            # Codex round 1 at 643db58 (both seats): a list behind an explicit YAML tag is not safely known either
+            "a tagged label list": "      matrix:\n        runner: !x [ubuntu-24.04]\n",
         }.items():
             with self.subTest(name):
                 code, out = self.findings(self.job(ro + strategy, self.CHECKOUT + "      - run: docker pull alpine:latest\n"))
                 self.assertNotEqual(code, 0, out)
                 self.assertNotIn("alpine", out)
+                # Codex round 1 at 643db58 (F2): the steps are judged under pwsh (the step's own pwsh finding), and the runner is
+                # named exactly once; a checker that skipped the steps would otherwise pass this test
+                self.assertRegex(out, r"jobs\.apk\.steps\[1\]\.run: a `pwsh` step")
+                self.assertEqual(len([l for l in out.splitlines() if ".runs-on: " in l]), 1, out)
 
     def test_fail_fast_as_a_string_is_refused(self):
         """Codex round 1, L2: AC2 says the literal true or false: a quoted or explicitly tagged string is not it."""
@@ -680,6 +713,55 @@ class LiteralRunnerMatrix(unittest.TestCase):
     def test_an_explicit_str_tag_is_accepted(self):
         """!!str resolves to the plain string tag, so it is the same scalar; any other explicit tag is refused (above)."""
         self.accepted("    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [!!str ubuntu-24.04]\n")
+
+    def test_an_explicit_yaml_tag_on_the_matrix_path_is_refused(self):
+        """Codex round 1 at 643db58 (both seats, F1): any explicit YAML tag on the matrix path (the job, runs-on, strategy, matrix,
+        a key there, the label list, fail-fast) is a finding that names the runner, fail closed (advisor 0080); a tag that names
+        the default type of its node (!!seq, !!map) is refused as well. Only !!str on a label is accepted (the notes)."""
+        R, L = "    runs-on: ${{ matrix.runner }}\n", "[ubuntu-24.04, ubuntu-24.04-arm]"
+        S = "    strategy:\n      matrix:\n        runner: %s\n"
+        for name, head in {
+            # the reviewers' exact shapes
+            "an unknown tag on the flow list (seat A)": R + S % "!x [ubuntu-24.04]",
+            "a str tag on the flow list (seat B)": R + S % "!!str [ubuntu-24.04]",
+            # the label list and an element
+            "seq on the flow list": R + S % ("!!seq " + L),
+            "set on a flow mapping of labels": R + S % "!!set {ubuntu-24.04}",
+            "a verbatim seq tag on the flow list": R + S % ("!<tag:yaml.org,2002:seq> " + L),
+            "the non-specific tag on the flow list": R + S % ("! " + L),
+            "seq on the block list": R + "    strategy:\n      matrix:\n        runner: !!seq\n          - ubuntu-24.04\n          - ubuntu-24.04-arm\n",
+            "an unknown tag on the block list": R + "    strategy:\n      matrix:\n        runner: !x\n          - ubuntu-24.04\n",
+            "a verbatim custom tag on an element": R + S % "[!<tag:example.org,2026:x> ubuntu-24.04]",
+            # the matrix and the strategy, in block and flow style
+            "map on the block matrix": R + "    strategy:\n      matrix: !!map\n        runner: [ubuntu-24.04]\n",
+            "an unknown tag on the flow matrix": R + "    strategy:\n      matrix: !x {runner: [ubuntu-24.04]}\n",
+            "map on the block strategy": R + "    strategy: !!map\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "an unknown tag on the flow strategy": R + "    strategy: !x {matrix: {runner: [ubuntu-24.04]}}\n",
+            # runs-on and fail-fast
+            "str on runs-on": "    runs-on: !!str ${{ matrix.runner }}\n" + S % L,
+            "an unknown tag on runs-on": "    runs-on: !x ${{ matrix.runner }}\n" + S % L,
+            "bool on fail-fast": R + "    strategy:\n      fail-fast: !!bool false\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            # a key on the path, and include/exclude beside the key
+            "str on the matrix key": R + "    strategy:\n      matrix:\n        !!str runner: [ubuntu-24.04]\n",
+            "str on the strategy key": R + "    !!str strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n",
+            "a tagged exclude list beside the key": R + "    strategy:\n      matrix:\n        runner: " + L + "\n        exclude: !!seq\n          - runner: ubuntu-24.04-arm\n",
+            "a tagged include list beside the key": R + "    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n        include: !x [{runner: ubuntu-24.04}]\n",
+        }.items():
+            with self.subTest(name):
+                self.refused(head)
+
+    def test_an_explicit_tag_on_the_job_mapping_is_refused(self):
+        """Codex round 1 at 643db58 (seat B): the job mapping that holds runs-on and the strategy carries no explicit tag either."""
+        code, out = self.findings("on: push\njobs:\n  apk: !!map\n" + self.OK_HEAD + "    steps:\n" + self.CHECKOUT + self.BUILD)
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(len([l for l in out.splitlines() if ".runs-on: " in l]), 1, out)
+
+    def test_an_anchored_tagged_matrix_is_still_refused_as_an_anchor(self):
+        """An anchor beside a tag is refused as today: the whole file, with that one finding."""
+        code, out = self.findings("on: push\njobs:\n  apk:\n    runs-on: ${{ matrix.runner }}\n    strategy:\n"
+                                  "      matrix: &m !!map\n        runner: [ubuntu-24.04]\n    steps:\n" + self.CHECKOUT + self.BUILD)
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual([l for l in out.splitlines() if "finding(s)" not in l], [".github/workflows/w.yml: uses a YAML anchor or alias"])
 
     def test_refused_strategy_shapes(self):
         for name, head in {
@@ -716,6 +798,11 @@ class LiteralRunnerMatrix(unittest.TestCase):
                                                        "    strategy:\n      max-parallel: 1\n      matrix:\n        runner: [ubuntu-24.04]\n"),
             "matrix, the last valid": ("matrix", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [macos-14]\n"
                                                  "      matrix:\n        runner: [ubuntu-24.04]\n"),
+            # Codex round 1 at 643db58 (seat B): the runs-on key itself given twice in the matrix is named too
+            "the runner key, the last valid": ("runner", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [macos-14]\n"
+                                                         "        runner: [ubuntu-24.04]\n"),
+            "the runner key, the last invalid": ("runner", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
+                                                           "        runner: [macos-14]\n"),
             "matrix, the last invalid": ("matrix", "    runs-on: ${{ matrix.runner }}\n    strategy:\n      matrix:\n        runner: [ubuntu-24.04]\n"
                                                    "      matrix:\n        runner: [macos-14]\n"),
         }.items():
@@ -741,6 +828,15 @@ class LiteralRunnerMatrix(unittest.TestCase):
                                   "    runs-on: ${{ matrix.runner }}\n    steps:\n      - run: true\n")
         self.assertNotEqual(code, 0, out)
         self.assertIn("runs-on", out)
+
+    def test_an_unrelated_anchor_is_the_one_finding_of_the_file(self):
+        """Codex round 1 at 643db58 (F2): an anchor that has nothing to do with the matrix, in a file whose step would make a finding
+        of its own, refuses the whole file with exactly that one finding."""
+        code, out = self.findings("on: push\nx: &a hello\njobs:\n  apk:\n" + self.OK_HEAD + "    steps:\n"
+                                  + self.CHECKOUT + "      - run: docker pull alpine:latest\n")
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual([l for l in out.splitlines() if "finding(s)" not in l], [".github/workflows/w.yml: uses a YAML anchor or alias"])
+        self.assertIn("1 finding(s)", out)
 
     def test_any_anchor_in_the_file_is_refused(self):
         code, out = self.findings("on: push\nx-m: &m\n  runner: [ubuntu-24.04]\njobs:\n  a:\n    runs-on: ${{ matrix.runner }}\n"

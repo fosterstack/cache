@@ -1197,7 +1197,7 @@ requirements:
     confidence: implementation-only
     notes: |
       REQ-REL-005-AC2 (the literal-label runner matrix) is advisor-approved at the read-back of Oct 9 (pin matrix): the v0.3.0 Build and Rebuild run their per-architecture apk jobs as a matrix of the two native GitHub-hosted labels, and the check accepts exactly that one expression form and nothing looser (the owner's pin-checker scope: plain forms only). The label list is closed on purpose; adding a runner label is a reviewed edit of the check.
-      Scope: the runner rule is read in files under .github/workflows/ only. In another YAML file under .github/ a valid literal matrix reads its steps as bash, and an unresolved runs-on only makes its steps read as pwsh (a finding of its own, no runs-on finding).
+      Scope: the runner rule is read in files under .github/workflows/ only. In another YAML file under .github/ a valid literal matrix reads its steps as bash, and a runs-on that holds an expression (or names Windows) only makes its steps read as pwsh (a finding of its own, no runs-on finding); any other runs-on there, self-hosted for one, leaves its steps read as bash with no finding.
       Duplicate keys: YAML keeps the last copy of a repeated key, and GitHub rejects such a file. A key given twice in a job (a job that calls a
       reusable workflow included), in its strategy or in its matrix is refused with the key named, whatever the last copy holds.
       Refused forms of REQ-REL-005-AC2, each a finding that names the runner:
@@ -1206,6 +1206,7 @@ requirements:
       - a label not on the two-label list (another case or version, ubuntu-latest, a larger runner, self-hosted, macOS or Windows, a space around a label, a trailing newline, a look-alike character, an explicit YAML tag other than str; !!str resolves to the plain string tag and is accepted), a nested list, a non-string label, an empty list, a scalar instead of a list, a duplicate key;
       - a matrix key that does not exist or is defined on another job or at the workflow level;
       - and a matrix reached through a YAML anchor (the check refuses a file that holds any anchor or alias, whatever it anchors).
+      Explicit YAML tags: any explicit YAML tag on the matrix path (the job, its runs-on, its strategy, the matrix, a key in them, the label list, fail-fast) is a finding that names the runner, even a tag that names the node's default type such as !!seq or !!map; the one exception is !!str on a label (above).
     acceptance_criteria:
       - id: REQ-REL-005-AC1
         given: any pull request into main, and any push to main
