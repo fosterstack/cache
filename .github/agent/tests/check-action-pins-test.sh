@@ -1018,10 +1018,10 @@ jobs:
 # case_out <name> <ok|bad> <workflow text> <regex the output must match, or ''> [regex it must NOT match] [setup commands]
 # IMPLICIT RULE: a bad case whose <must match> regex mentions runs-on is also held to exactly ONE finding line with `.runs-on: ` in it
 # (the rule reports a job once); a case that must NOT print a runs-on finding says so in its <must NOT match> regex instead.
-pm_run=0
+pm_run=0 pm_names=""
 case_out() {
   local name=$1 expect=$2 d="$work/$1" out got n
-  pm_run=$((pm_run+1))
+  pm_run=$((pm_run+1)); pm_names+="$1"$'\n'
   mkdir -p "$d/.github/workflows" "$d/.github/agent/bin" "$d/bin" "$d/.github/agent/tests"
   printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"
@@ -1378,6 +1378,11 @@ case_out pm-scope-other-file-windows    bad "$W_PLAIN" 'other\.yml.*a `pwsh` ste
 PM_EXPECT=132
 if [ "$pm_run" = "$PM_EXPECT" ]; then pass=$((pass+1)); echo "PASS pm-case-count → $pm_run"
 else failn=$((failn+1)); echo "FAIL pm-case-count → $pm_run cases ran, want $PM_EXPECT"; fi
+# Codex round 1 at 643db58 (both seats): the count alone does not pin WHICH cases ran; the sha256 of the sorted case names does
+PM_NAMES_SHA=0163536e0856f6f4eb0a70d2dc6eac52a213dfca69801b916badbc325541f878
+pm_names_sha=$(printf '%s' "$pm_names" | LC_ALL=C sort | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')
+if [ "$pm_names_sha" = "$PM_NAMES_SHA" ]; then pass=$((pass+1)); echo "PASS pm-case-names → $pm_names_sha"
+else failn=$((failn+1)); echo "FAIL pm-case-names → the sorted pm case names hash to $pm_names_sha, want $PM_NAMES_SHA"; fi
 # --- Sonnet #164 r9 (NEW-11): a command name computed by a substitution fused into the word fails closed
 case_ n11-fused-docker         bad "$(rb 'd$()ocker run alpine')"
 case_ n11-fused-pip            bad "$(rb 'pi$()p install requests')"
