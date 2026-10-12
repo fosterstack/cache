@@ -947,6 +947,9 @@ requirements:
       archive-count exception applies only while the whole clause equals
       its allowed text exactly, so no exception survives an edit to the
       clause, and a bound is refused before any exception is looked up.
+      The exception is compared with the raw clause as written in the
+      file, byte for byte, never with a reading that removes marks or
+      collapses whitespace.
     acceptance_criteria:
       - id: REQ-PLAT-001-AC1
         given: a release's artifact set
