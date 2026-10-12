@@ -205,7 +205,16 @@ if os.path.exists(listpath):
 def verify_form(c):
     """Every pipe segment is a verify form or jq (what Release's post-publish step runs from this list)."""
     segs = split_pipes(c)
-    return segs is not None and all(s.strip().startswith(FORMS2 + FORMS3 + ("jq ",)) for s in segs)
+    if segs is None:
+        return False
+    for seg in segs:
+        try:
+            w = shlex.split(seg)
+        except ValueError:
+            return False
+        if not (w[:1] == ["jq"] or " ".join(w[:2]) in FORMS2 or " ".join(w[:3]) in FORMS3):
+            return False
+    return True
 for c in excused:
     if not verify_form(c):
         fail("the cannot-run entry `%s` is not a verify form (Release runs only the verify forms from this list)" % c)
