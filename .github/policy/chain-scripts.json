@@ -414,7 +414,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "af12a53f81156510b14b54e643c0f115a249698e580f7cec8843680ffe1e114d",
+      "sha256": "009f528d391034898e4bb9164d6cd8175dc471fade5ca2a2352b8b9b92130d52",
       "tools": [
         "curl",
         "docker",
@@ -732,7 +732,7 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "35362c7799209e4a3dc7cad1761d256e92c42c5db188982b3fc976ae3bf697ab",
+      "sha256": "5ee4bfb8ac032686443a18e5519d40ceebfed903dd8c132df14b70063eeb3bf7",
       "tools": [
         "at",
         "command",
@@ -870,7 +870,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "7d7c414a15c527d4a192171c202422424bc507d6a97e11b1e61f55ad571ceca3",
+      "sha256": "7d77aefc27702bef4313eee641a499eded4e7f1f99506d0ec1264707c003f0fe",
       "tools": [
         "at",
         "curl",

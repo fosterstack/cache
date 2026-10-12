@@ -25,15 +25,21 @@ cmd_all() { # all [--count-only] FLOORS [ROOT]: runs every suite the floors file
   local only=() ; [ "${1:-}" != --count-only ] || { only=(--count-only); shift; }
   local floors=$1 root=${2:-.} bad=0 s
   [ -s "$floors" ] || die "the floors file $floors is empty or missing"
+  # the suite names are read synchronously: a floors file that is not a non-empty JSON object of integers fails here, before any suite runs
+  local names
+  names=$(python3 - "$floors" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+if not isinstance(d, dict) or not d or not all(isinstance(v, int) and not isinstance(v, bool) for v in d.values()):
+    sys.exit("the floors file is not a non-empty JSON object of integer floors")
+print("\n".join(d))
+PY
+  ) || die "the floors file $floors cannot be read as suite floors"
   while IFS= read -r s; do
     local found=(); mapfile -t found < <(find "$root" -type f -name "$s" -not -path '*/.git/*')
     [ "${#found[@]}" = 1 ] || { echo "suite-guard: the floors file names $s, which is ${#found[@]} files under $root (it must be exactly one)" >&2; bad=1; continue; }
     cmd_run ${only[@]+"${only[@]}"} "$floors" "$s" "${found[0]}" || bad=1
-  done < <(python3 - "$floors" <<'PY'
-import json, sys
-print("\n".join(json.load(open(sys.argv[1]))))
-PY
-)
+  done <<< "$names"
   [ "$bad" = 0 ] || exit 1
 }
 sub=${1:-}; shift || true
