@@ -17,8 +17,10 @@ mkdir -p release-metadata
 python3 bin/release-metadata.py images --digests witness-build/digests.json --images-dir images --items witness-build/items.json --out release-metadata/vex-images.json
 cp .vex/fosterstack-cache.openvex.json release-metadata/
 python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images release-metadata/vex-images.json --version "$GITHUB_REF_NAME" --out-dir release-metadata
-# the baseline is the tag's own (an owner-signed tag); a CI patch tag uses admission's choice, which Build does not yet deliver to Release (TODO: PR 2, admission.json as an artifact)
-python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --vex-dir release-metadata --baseline-version "$GITHUB_REF_NAME" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --out release-metadata/release-manifest.json
+# the baseline is the one admission chose (REQ-CHAIN-007-AC19): read from Build's verified admission-baseline.json (bound to Build's record by release-verify), so an
+# owner-signed tag uses its own and a CI patch tag the line's owner baseline; Release never picks one itself
+baseline=$(python3 bin/release-metadata.py baseline --admission witness-build/admission-baseline.json --tag "$GITHUB_REF_NAME" --commit "$GITHUB_SHA")
+python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --vex-dir release-metadata --baseline-version "$baseline" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --out release-metadata/release-manifest.json
 python3 bin/release-metadata.py list --version "$GITHUB_REF_NAME" --dir release-metadata --out release-metadata/release-files.sha256
 cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"
 cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"

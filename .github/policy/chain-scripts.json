@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "917bd7966cc7a0faea9de4faa3bba4550529713ac4b4fe16f09e23abe675292e",
+      "sha256": "85511942337c63191b10b4891108fd47a1a05b1a8205ce496a1d5931385638d5",
       "tools": [
         "make",
         "at",
@@ -862,7 +862,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
-      "sha256": "40ab4d8e6e70c112f32da040658f4c6d1e4f9a7ee01126863a3480c220ce8cfa",
+      "sha256": "dee8d7f3d7ea025728c18399c00ffabcb1c7903a777dc8cba1e782e5a907b1ff",
       "exceptions": [
         {
           "rule": "deny",
@@ -929,7 +929,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "1e4cf8a5538d1180a277ca404f61e78814e2e71b774f5203f9a265c5f2f220b9",
+      "sha256": "3a0ec298491e110121f257f247c8b0902b154ea5e9b92cb9ee4fd98489448120",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -991,7 +991,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "79cfe26b36291e995480edd515a7713bf42df5e9e8367a99c5b679373723d328"
+      "sha256": "e48cc9a290e6b95fc01e85ca6a1ab10f58d26dfa3e0e9d00b58bc08ae77908bb"
     },
     {
       "path": "bin/vex-forms.py",

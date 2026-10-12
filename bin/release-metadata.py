@@ -132,6 +132,37 @@ def cmd_images(a):
     write_atomic(a.out, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
+def cmd_baseline(a):
+    """REQ-CHAIN-007-AC19 (advisor ruling B): prints the requirements baseline version admission chose for this tag, read from Build's admission-baseline.json (a product of
+    Build's verified record, bound by release-verify). The file is a regular file holding exactly {baseline, baseline_version, sha, tag}; it must be for this tag and
+    this commit, the version vX.Y.Z at requirements/releases/<version>.yaml, and not newer than the tag. Release never picks a baseline itself."""
+    p = a.admission
+    if os.path.islink(p):
+        refuse("%s is a symlink" % p)
+    if not os.path.isfile(p):
+        refuse("%s is missing: Build's verified admission-baseline.json is required" % p)
+    try:
+        with open(p, "rb") as f:
+            d = json.loads(f.read().decode("utf-8"))
+    except (OSError, ValueError):
+        refuse("%s is not JSON" % p)
+    keys = ("baseline", "baseline_version", "sha", "tag")
+    if not isinstance(d, dict) or sorted(d) != list(keys) or not all(isinstance(d[k], str) for k in keys):
+        refuse("%s must be exactly the object {%s}, strings" % (p, ", ".join(keys)))
+    if d["tag"] != a.tag:
+        refuse("%s is for tag %s, this run is %s" % (p, d["tag"], a.tag))
+    if d["sha"] != a.commit:
+        refuse("%s is for commit %s, this run is %s" % (p, d["sha"], a.commit))
+    v = d["baseline_version"]
+    if not FINAL.fullmatch(v) or d["baseline"] != "requirements/releases/%s.yaml" % v:
+        refuse("baseline %r at %r is not a vX.Y.Z baseline at requirements/releases/<version>.yaml" % (v, d["baseline"]))
+    num = lambda s: tuple(int(x) for x in s[1:].split("."))
+    tm = re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", a.tag or "")
+    if not tm or num(v) > num(a.tag):
+        refuse("baseline %s is not a version at or before the tag %s" % (v, a.tag))
+    print(v)
+
+
 def cmd_manifest(a):
     if not FINAL.fullmatch(a.version or ""):
         refuse("version %r is not vX.Y.Z (a release candidate has no release manifest)" % a.version)
@@ -237,7 +268,7 @@ def cmd_gate(a):
     metadata files; checksums.txt lists existing files with their hashes; release-files.sha256 lists exactly the four metadata files with theirs;
     and every asset is covered: it is in checksums.txt or in release-files.sha256, or it is a bundle whose signed file is an asset, or it has its
     own bundle, or it is an apk (signed by the release key inside the file), a Witness record (`*-collection.json`, a signed envelope the stages
-    verified) or Build's digests.json or items.json (products of Build's signed record). A symlink, a directory, or anything else is refused by name."""
+    verified) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record). A symlink, a directory, or anything else is refused by name."""
     names = sorted(os.listdir(a.dir))
     for n in names:
         p = os.path.join(a.dir, n)
@@ -281,7 +312,7 @@ def cmd_gate(a):
             if signed_by(n) not in have:
                 refuse("%s signs %s, which is not an asset" % (n, signed_by(n)))
             continue
-        if bundle_of(n) in have or n.endswith(".apk") or n.endswith("-collection.json") or n in ("digests.json", "items.json"):
+        if bundle_of(n) in have or n.endswith(".apk") or n.endswith("-collection.json") or n in ("digests.json", "items.json", "admission-baseline.json"):
             continue
         refuse("%s is covered by nothing: not in checksums.txt, not in release-files.sha256, and no bundle signs it" % n)
     if a.same_as:
@@ -295,10 +326,11 @@ def main(argv):
     m = sub.add_parser("manifest")
     for k in ("digests", "images-dir", "items", "vex-dir", "baseline-version", "repo-root", "version", "commit", "ci-url", "workflow", "out"):
         m.add_argument("--" + k, required=True)
+    b = sub.add_parser("baseline"); b.add_argument("--admission", required=True); b.add_argument("--tag", required=True); b.add_argument("--commit", required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
     a = p.parse_args(argv)
-    {"images": cmd_images, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate}[a.cmd](a)
+    {"images": cmd_images, "baseline": cmd_baseline, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate}[a.cmd](a)
 
 
 if __name__ == "__main__":
