@@ -836,6 +836,23 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		"N8 env item as !!binary GOOS=darwin":     edit("      - GOFIPS140=v1.0.0\n", "      - GOFIPS140=v1.0.0\n      - !!binary R09PUz1kYXJ3aW4=\n"),
 		"N8 %YAML directive":                      "%YAML 1.2\n---\n" + real,
 		"N8 %TAG directive remaps !!":             "%TAG !! tag:example.com,2000:\n---\n" + real,
+		// Post-9 round (scope cut): the YAML tag scan reads the raw text before decoding and refuses every "!" (A9-1/R9-2:
+		// a bare "!" is an explicit non-specific tag the decoder does not flag), wherever it is: the files hold none, and a
+		// raw scan does not parse YAML's quoting, comments or flow context to tell a tag token from text.
+		"A9-1/R9-2 main tagged with a bare !":  edit("  - id: fscache\n    main: ./cmd/fscache\n", "  - id: fscache\n    main: ! ./cmd/fscache\n"),
+		"P9 hook item tagged with a bare !":    edit("    - go mod verify\n", "    - ! go mod verify\n"),
+		"P9 project name tagged with a bare !": edit("project_name: fscache\n", "project_name: ! fscache\n"),
+		"P9 binary tagged with a bare !":       edit("    binary: fscache-fips\n", "    binary: ! fscache-fips\n"),
+		"P9 verbatim tag":                      edit("project_name: fscache\n", "project_name: !<tag:yaml.org,2002:str> fscache\n"),
+		"P9 local tag":                         edit("project_name: fscache\n", "project_name: !local fscache\n"),
+		"P9 bare ! on a mapping":               edit("  github:\n    owner: fosterstack\n", "  github: !\n    owner: fosterstack\n"),
+		"P9 bare ! on a sequence":              edit("  hooks:\n", "  hooks: !\n"),
+		"P9 bare ! in a flow sequence":         edit("    env:\n      - CGO_ENABLED=0\n    goos:", "    env: [! CGO_ENABLED=0]\n    goos:"),
+		"P9 bare ! in a flow mapping":          edit("  - artifacts: archive\n", "  - {artifacts: ! archive}\n"),
+		"P9 bare ! after a tab":                edit("    binary: fscache\n", "    binary:\t! fscache\n"),
+		"P9 bare ! on a quoted scalar":         edit("  name_template: \"checksums.txt\"\n", "  name_template: ! \"checksums.txt\"\n"),
+		"P9 ! in a whole-line comment":         real + "# Linux only!\n",
+		"P9 ! in a line comment":               edit("version: 2\n", "version: 2 # pinned!\n"),
 		// Round-5 regressions (B1): every build's binary output path is resolved (dist/<id>_<os>_<arch>_<level>/<binary>)
 		// and enters the collision check; a binary name that leaves its build directory, holds a path separator or a
 		// template, or is missing is refused.
@@ -1803,6 +1820,74 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"N8 zero of the archives":                      install + "\nZero of the archives are signed.\n",
 		"N8 none of the four archives":                 install + "\nNone of the four archives exist.\n",
 		"N8 none of the archives after a colon":        install + "\nRelease archives: none of them.\n",
+		// Post-9 round (scope cut): the doors are closed by refusal. Strikethrough ("~~") is refused outright and no
+		// sign is rewritten into words (R9-1: "si~~x~~" became "si at least x at least" and the count vanished); the
+		// count reader reads the text as written and with the inline marks removed.
+		"R9-1 strikethrough splits six":            install + "\nEvery release ships si~~x~~ archives.\n",
+		"P9 single-tilde strikethrough splits six": install + "\nEvery release ships si~x~ archives.\n",
+		"P9 strikethrough inside a count clause":   install + "\nThe four ~~signed~~ archives are attached.\n",
+		"P9 strikethrough splits Windows":          install + "\nNative binaries for Win~~dows~~ are attached.\n",
+		"P9 single-tilde strikethrough in Windows": install + "\nNative binaries for Win~dows~ are attached.\n",
+		"P9 tilde fence (round-7 precision)":       install + "\n~~~ sh `x`\nkubectl exec -it POD_NAME -- sh\n~~~\n",
+		"P9 strikethrough alone on a line":         install + "\n~~\n",
+		"P9 strikethrough across a soft break":     install + "\nEvery release ships si~~x\n~~ archives.\n",
+		"P9 four tildes":                           install + "\n~~~~\n",
+		"P9 strikethrough in a table row":          install + "\n| ~~six~~ | archives |\n",
+		"P9 strikethrough in link text":            install + "\nEvery release ships [si~~x~~](y) archives.\n",
+		// Reference-style links are refused in every form (A9-2/R9-3: a definition without a destination authorized a
+		// hidden label); the definition reader is deleted.
+		"A9-2/R9-3 definition without a destination": install + "\nThe release ships [the][six] archives.\n\n[six]:\n",
+		"P9 full reference with a definition":        install + "\nThe release ships [the][six] archives.\n\n[six]: https://example.com/x\n",
+		"P9 full reference (round-8 precision)":      install + "\nThe release ships [the][Four] archives.\n\n[four]: https://example.com/x\n",
+		"P9 collapsed reference with a definition":   install + "\nThe release ships [six][] archives.\n\n[six]: https://example.com/x\n",
+		"P9 definition alone":                        install + "\n[four]: https://example.com/x\n",
+		"P9 definition indented three spaces":        install + "\n   [four]: https://example.com/x\n",
+		"P9 definition in a block quote":             install + "\n> [four]: https://example.com/x\n",
+		"P9 definition in a list item":               install + "\n- [four]: https://example.com/x\n",
+		"P9 definition label across a line break":    install + "\n[si\nx]: https://example.com/x\n",
+		"P9 full reference in a table row":           install + "\n| [a][b] | four archives |\n",
+		"P9 definition with a title naming Windows":  install + "\n[x]: https://example.com/x \"Windows\"\n",
+		"P9 shortcut reference with a definition":    install + "\nThe release ships [six] archives.\n\n[six]: https://example.com/x\n",
+		// Nested links are refused (R9-4: CommonMark leaves the outer link's suffix as text, the reader hid it).
+		"R9-4 nested link hides a count":           install + "\nRelease archives: [[count](x)](six).\n",
+		"P9 link inside link text":                 install + "\nRelease archives: [a [b](c) d](six).\n",
+		"P9 three nested links":                    install + "\nRelease archives: [[[a](b)](c)](six).\n",
+		"P9 unclosed opener before a link":         install + "\nEvery release ships [x [y](z) archives.\n",
+		"P9 nested link splits Windows":            install + "\nNative binaries for Win[[do](x)](ws) are attached.\n",
+		"P9 nested link around a count":            install + "\nEvery release ships [[four](x)](six) archives.\n",
+		"P9 nested link inside emphasis":           install + "\nRelease archives: [**[count](x)**](six).\n",
+		"P9 nested link with a title":              install + "\nRelease archives: [[count](x \"t\")](six).\n",
+		"P9 nested link inside a code span":        install + "\nRelease archives: [`[count](x)`](six).\n",
+		"P9 nested link with a space before":       install + "\nRelease archives: [[count](x)] (six).\n",
+		"P9 nested link with an angle destination": install + "\nRelease archives: [[count](x)](<six>).\n",
+		// A math sign in a count clause is refused, not interpreted (R9-5: "4+Linux" and "≥(4)" escaped the sign
+		// rewriting); every earlier bound mutant stays refused.
+		"R9-5 plus joined to a word":                install + "\nThe release ships 4+Linux archives.\n",
+		"R9-5 sign before a parenthesis":            install + "\nRelease archives: ≥(4).\n",
+		"P9 greater-than before a parenthesis":      install + "\nRelease archives: >(4).\n",
+		"P9 fullwidth greater-than":                 install + "\nRelease archives: ＞4.\n",
+		"P9 greater-than over equal":                install + "\nRelease archives: ≧ 4.\n",
+		"P9 slanted greater-or-equal":               install + "\nRelease archives: ⩾4.\n",
+		"P9 less-than before a digit":               install + "\nRelease archives: <4.\n",
+		"P9 almost-equal sign":                      install + "\nRelease archives: ≈ 4.\n",
+		"P9 plus-minus":                             install + "\nRelease archives: 4±0.\n",
+		"P9 plus joined to a number word":           install + "\nThe release ships four+Linux archives.\n",
+		"P9 plus between words (round-8 precision)": install + "\nThe four archives cover `linux/amd64` + `linux/arm64`.\n",
+		"P9 equals sign":                            install + "\nRelease archives: = 4.\n",
+		"P9 sign inside parentheses":                install + "\nRelease archives: (≥4).\n",
+		"P9 plus between digits":                    install + "\nThe release ships 4 + 0 archives.\n",
+		// "no" after the archive noun in its clause is a count of zero (R9-6).
+		"R9-6 no after the noun":       install + "\nRelease archives: no.\n",
+		"P9 no after the noun, plain":  install + "\nThe archives: no.\n",
+		"P9 no after a singular noun":  install + "\nRelease archive: no.\n",
+		"P9 no after a dash":           install + "\nRelease archives — no.\n",
+		"P9 no in bold":                install + "\nRelease archives: **no**.\n",
+		"P9 no split by emphasis":      install + "\nRelease archives: n**o**.\n",
+		"P9 no in capitals":            install + "\nRelease archives: NO.\n",
+		"P9 no as link text":           install + "\nRelease archives: [no](x).\n",
+		"P9 no after a verb":           install + "\nArchives shipped: no.\n",
+		"P9 no after a comma":          install + "\nRelease archives, no.\n",
+		"P9 no followed by more words": install + "\nRelease archives: no, never.\n",
 	}
 	for name, text := range mutants {
 		ps, _ := checkDoc(f, text, allowedLines, archives)
@@ -1839,17 +1924,20 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"The version is pinned for all four archives. <!-- pinned: upstream -->",
 		"The version is pinned for all four archives.\n<!-- pinned: historical -->",
 		"   ```sh\n   kubectl exec -it POD_NAME -- sh\n   ```",
-		"~~~ sh `x`\nkubectl exec -it POD_NAME -- sh\n~~~",
 		// Round-7 precision: the allowed "no archive for this machine" (docs/install.md:57's form) and an escaped
 		// parenthesis in a destination pass.
 		"If it prints anything else, there is no archive for this machine; run the container.",
 		"Every release ships [four](https://example.com/a\\(b) archives.",
-		// Round-8 precision: a full reference link whose label is defined in the file hides its label (case-insensitive,
-		// as CommonMark matches labels); a parenthesized title without a nested "(" is read; a "+" between words is
-		// not a bound on a count.
-		"The release ships [the][Four] archives.\n\n[four]: https://example.com/x",
+		// Round-8 precision: a parenthesized title without a nested "(" is read. (The round-8 precision cases for a
+		// defined reference label and a "+" between words are refused since the post-9 round: see the mutants.)
 		"Every release ships [four](https://example.com/a (a title)) archives.",
-		"The four archives cover `linux/amd64` + `linux/arm64`.",
+		// Post-9 precision: a single tilde as plain text outside a count clause ("~5 GB", "~/.gradle"), adjacent links,
+		// "no" before a word that is not an archive, and a math sign in a clause without an archive count pass.
+		"Size it from your eviction cap plus ~20% headroom.",
+		"rm -rf ~/.gradle/caches/build-cache-1",
+		"See [one](x) and [two](y) for the four archives.",
+		"There is no shortcut; download the four archives.",
+		"The cap is a + b bytes; each release ships four archives.",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
@@ -2016,6 +2104,15 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"placeholder in a fence":                  notes + "\n```sh\nkubectl exec -it <pod> -- sh\n```\n",
 		"star entry with another citation":        notes + "* " + notesSentence + " (advisor 0130).\n",
 		"indented entry with another citation":    notes + "  - " + notesSentence + " (advisor 0130).\n",
+		// Post-9 round (scope cut): strikethrough, reference-style links, nested links, a math sign in a count clause and
+		// "no" after the archive noun are refused in the notes as in the docs.
+		"R9-1 strikethrough splits six":  notes + "- The release ships si~~x~~ archives (advisor 0130).\n",
+		"P9 reference link":              notes + "- The release ships [the][six] archives (advisor 0130).\n\n[six]:\n",
+		"P9 definition":                  notes + "\n[six]: https://example.com/x\n",
+		"R9-4 nested link hides a count": notes + "- Release archives: [[count](x)](six) (advisor 0130).\n",
+		"R9-5 plus joined to a word":     notes + "- The release ships 4+Linux archives (advisor 0130).\n",
+		"R9-6 no after the noun":         notes + "- Release archives: no (advisor 0130).\n",
+		"P9 single-tilde strikethrough":  notes + "- The release ships si~x~ archives (advisor 0130).\n",
 	}
 	for name, text := range mutants {
 		if text == notes {
@@ -2073,6 +2170,16 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		"N8 a cited entry and an emphasized bullet":     published + "- **" + notesSentence + "**\n",
 		"N8 a cited entry and the sentence mid-entry":   published + "- Packaging changed. " + notesSentence + " (owner decision, Oct 9; advisor 0390).\n",
 		"N8 a cited entry and the sentence in a header": published + "\n## " + notesSentence + "\n",
+		// Post-9 round (scope cut): the changelog fallback refuses the same forms outright (R9-4: a nested link hid an
+		// uncited, visibly rendered sentence; a link form the reader does not read is refused), and a tilde fence is
+		// strikethrough's "~~".
+		"R9-4 a nested link hides an uncited sentence":     published + "[[entry](x)](y \"" + notesSentence + "\")\n",
+		"P9 a nested link around the sentence":             published + "[[a](b) " + notesSentence + "](c)\n",
+		"P9 a link with no opener in the changelog":        published + "x](" + notesSentence + ")\n",
+		"P9 strikethrough in the changelog":                published + "- ~~Old entry~~ (advisor 0130).\n",
+		"P9 a reference link in the changelog":             published + "- [the][x] (advisor 0130).\n\n[x]: https://example.com\n",
+		"P9 a definition title holds the sentence":         published + "\n[x]: https://example.com \"" + notesSentence + "\"\n",
+		"P9 a tilde-fenced changelog entry (was accepted)": "# Changelog\n\n~~~text\n" + strings.TrimRight(entry, "\n") + "\n~~~\n",
 	} {
 		if ps := checkNotes(cleared, cl, archives); len(ps) == 0 {
 			t.Errorf("the cleared notes pass with %s", name)
@@ -2087,7 +2194,6 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 	// is read as a plain-line entry, by decision).
 	for name, cl := range map[string]string{
 		"a fenced changelog entry":            "# Changelog\n\n## v0.3.1 — patch release\n\n```\n" + strings.TrimRight(entry, "\n") + "\n```\n",
-		"a tilde-fenced changelog entry":      "# Changelog\n\n~~~text\n" + strings.TrimRight(entry, "\n") + "\n~~~\n",
 		"an unclosed-fence changelog entry":   "# Changelog\n\n```text\n" + strings.TrimRight(entry, "\n") + "\n",
 		"a star changelog entry":              "# Changelog\n\n* " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
 		"an indented changelog entry":         "# Changelog\n\n  - " + strings.TrimPrefix(strings.TrimRight(entry, "\n"), "- ") + "\n",
@@ -2423,6 +2529,30 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		{"N8 placeholder in an indented comment", edit(lastRef, lastRef+"      # go-test refs are \"<package dir>:<TestName>\"\n"), "inline HTML"},
 		{"N8 placeholder in a later column-0 comment", real + "# go-test refs are \"<package dir>:<TestName>\"\n", "inline HTML"},
 		{"N8 placeholder in a second document's comment", real + "---\n# \"<package dir>:<TestName>\"\nx: 1\n", "inline HTML"},
+		// Post-9 round (scope cut): the raw-text tag scan refuses every "!" before decoding (A9-1/R9-2: a bare "!" is an
+		// explicit non-specific tag the decoder does not flag; the mappings use no tag, so !!str is refused too), wherever
+		// it is: a raw scan does not parse quoting, comments or flow context to tell a tag token from text.
+		{"A9-1/R9-2 ref tagged with a bare !", edit(lastRef, lastRef+"      - { type: inspection, ref: ! ordinary }\n"), "explicit YAML tag"},
+		{"P9 block ref tagged with a bare !", edit(lastRef, lastRef+"      - type: inspection\n        ref: ! ordinary\n"), "explicit YAML tag"},
+		{"P9 !!str no longer excepted", edit(lastRef, lastRef+"      - { type: inspection, ref: !!str ordinary }\n"), "explicit YAML tag"},
+		{"P9 local tag", edit(lastRef, lastRef+"      - { type: inspection, ref: !x ordinary }\n"), "explicit YAML tag"},
+		{"P9 verbatim tag", edit(lastRef, lastRef+"      - { type: inspection, ref: !<tag:yaml.org,2002:str> ordinary }\n"), "explicit YAML tag"},
+		{"P9 bare ! on a flow mapping", edit(lastRef, lastRef+"      - ! { type: inspection, ref: x }\n"), "explicit YAML tag"},
+		{"P9 bare ! on a key", edit(lastRef, lastRef+"      - { type: inspection, ! ref: x }\n"), "explicit YAML tag"},
+		{"P9 bare ! in a flow sequence", edit(lastRef, lastRef+"      - { type: inspection, ref: [! x] }\n"), "explicit YAML tag"},
+		{"P9 bare ! on a block scalar", edit(lastRef, lastRef+"      - type: inspection\n        ref: ! |\n          ordinary\n"), "explicit YAML tag"},
+		{"P9 ! after an apostrophe in a plain scalar", edit(lastRef, lastRef+"      - { type: inspection, ref: it's, note: ! x }\n"), "explicit YAML tag"},
+		{"P9 ! after a quoted # in a flow mapping", edit(lastRef, lastRef+"      - { type: inspection, ref: \"a #\", note: ! x }\n"), "explicit YAML tag"},
+		{"P9 ! in a quoted scalar", edit(lastRef, lastRef+"      - { type: inspection, ref: \"x ! y\" }\n"), "explicit YAML tag"},
+		{"P9 ! in a comment", edit(lastRef, lastRef+"      # tags are refused!\n"), "explicit YAML tag"},
+		{"P9 %YAML directive", "%YAML 1.2\n---\n" + real, "directive"},
+		// The prose forms are refused in the mappings as in the docs: strikethrough, every reference-style link form and
+		// a nested link.
+		{"P9 strikethrough in a comment", edit(lastRef, lastRef+"      # ~~x~~\n"), "strikethrough"},
+		{"P9 strikethrough in a value", edit(lastRef, lastRef+"      - { type: inspection, ref: \"Win~~dows~~\" }\n"), "strikethrough"},
+		{"P9 full reference in a value", edit(lastRef, lastRef+"      - { type: inspection, ref: \"[a][b]\" }\n"), "reference-style link"},
+		{"P9 definition in a comment", edit(lastRef, lastRef+"      # [a]: https://example.com/x\n"), "reference-style link"},
+		{"P9 nested link in a comment", edit(lastRef, lastRef+"      # [[a](b)](c)\n"), "link this check does not read"},
 	}
 	// A test function that is commented out, or that is not a top-level test, does not authorize a reference.
 	const fake = "package platforms\n\nimport \"testing\"\n\n/*\nfunc TestDarwin(t *testing.T) {\n}\n*/\n\n// func TestMacOS(t *testing.T) {\n\nvar s = `\nfunc TestWindows(t *testing.T) {\n`\n\nfunc TestReal(t *testing.T) {}\n"
@@ -2635,6 +2765,32 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 			}
 		}
 	}
+	// Post-9 round (scope cut): strikethrough ("~~", a tilde fence included) and every reference-style link form (a full
+	// "[text][label]", a collapsed "[text][]", a "[label]:" definition anywhere on a line) are refused outright, naming
+	// the line, in every file the guard reads.
+	for _, f := range []string{md, notesFile, mappingsFile} {
+		for name, c := range map[string]struct{ s, want string }{
+			"strikethrough":               {"si~~x~~ archives", "strikethrough"},
+			"tilde fence":                 {"~~~", "strikethrough"},
+			"full reference":              {"[a][b]", "reference-style link"},
+			"collapsed reference":         {"[a][]", "reference-style link"},
+			"definition":                  {"[a]: https://example.com/x", "reference-style link"},
+			"indented definition":         {"   [a]: https://example.com/x", "reference-style link"},
+			"definition in a quote":       {"> [a]: https://example.com/x", "reference-style link"},
+			"definition without a target": {"[six]:", "reference-style link"},
+			"escaped bracket then label":  {"\\[a\\][b]", "reference-style link"},
+			"label closing a wrapped def": {"x]: https://example.com/x", "reference-style link"},
+		} {
+			ps := contentProblems(f, "a first line\n"+c.s+"\n")
+			found := false
+			for _, p := range ps {
+				found = found || (strings.HasPrefix(p, f+":2: ") && strings.Contains(p, c.want))
+			}
+			if !found {
+				t.Errorf("%s: %s is not refused at line 2 as %s: %v", f, name, c.want, ps)
+			}
+		}
+	}
 	for _, f := range []string{md, notesFile, mappingsFile} {
 		for _, s := range []string{"Win&#100;ows", "Win&#x64;ows", "Apple&nbsp;Silicon", "Win&shy;dows", "a &amp; b", "Win&#x034F;dows"} {
 			ps := contentProblems(f, "a first line\n"+s+"\n")
@@ -2683,7 +2839,8 @@ func TestContentGuardRefusesMutants(t *testing.T) {
 		"Run `kubectl exec -it POD_NAME -- sh`.",
 		"use `kubectl debug POD_NAME -it --copy-to=NEW_POD_NAME\n--image=...`, and more",
 		"```sh\nkubectl debug -it POD_NAME --target=CONTAINER_NAME -- sh\n```",
-		"~~~\nremote(HttpBuildCache::class) {\n~~~",
+		"rm -rf ~/.gradle/caches/build-cache-1",
+		"cache cap + ~5 GB for OS/overhead",
 		"Built with `GOFIPS140=v1.0.0`, selecting the module. <!-- pinned: upstream -->",
 		"Cut four times. <!-- pinned: historical -->",
 		"<!-- pinned: historical -->",
