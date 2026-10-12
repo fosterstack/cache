@@ -781,7 +781,7 @@ class Cli(unittest.TestCase):
         path = self.r.record(bad)
         rc, out, _ = self.r.judge()
         self.assertEqual(rc, 1)
-        self.assertIn("::error file=%s::review gate: stop verdict for codex_b is 'blocked'" % path, out)
+        self.assertIn("::error file=%s::review gate (REQ-AUD-18 AC3): stop verdict for codex_b is 'blocked': %s" % (path, NO_SUB), out)
         self.assertIn("codex_a and codex_b name the same model", out)
 
     def test_a_record_with_a_wrong_tree_at_the_right_path_fails(self):
@@ -1594,7 +1594,7 @@ class ControlSafeDiagnostics(unittest.TestCase):
         self.assertEqual(rc, 1, out)
         lines = out.splitlines()
         self.assertEqual(len(lines), 1, out)
-        self.assertTrue(lines[0].startswith("::error::review gate:"), lines[0][:200])
+        self.assertTrue(lines[0].startswith("::error::review gate (REQ-AUD-18 AC3): "), lines[0][:200])
         self.assertNotIn("\x1b", out + err)
         self.assertNotIn("\r", out + err)
         self.assertIn("a\\n::notice::forged\\x1b[31m\\r", out)
@@ -2129,6 +2129,129 @@ class ExactProblemCounts(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertEqual(len(out.splitlines()), G.MAX_PROBLEMS + 1)
         self.assertEqual(self.last(out), "::error::review gate: ... and 200 more problem(s) not shown")
+
+
+
+class SelectedRecordRefusals(unittest.TestCase):
+    """REQ-AUD-018-AC4 ("saying that no substitute is accepted") and AC5 ("a message naming it"), round 6: the record at
+    the tree-hash path that cannot be read (not JSON, a repeated key such as a doubled substitute_id, NaN, a byte order
+    mark, bytes that are not UTF-8, over the size bound, nested deeper than 16) or is not a regular file is refused by a
+    line that names why and ENDS saying that no substitute is accepted, exactly as an added record with the same bytes
+    is; only an absent record is stated plainly. Every refusal line written for a record ends with its problem: the
+    requirement tag comes first."""
+
+    LEAD = ("::error::review gate (REQ-AUD-18 AC3): 1 auditor path(s) changed (e.g. '.github/agent/bin/x.py'); run both "
+            "Codex reviews (seat A and seat B, two different models) on this exact content and commit its record; "
+            "no valid review record at %s: %s")
+
+    def bodies(self, t):
+        body = json.dumps(good(t))
+        return [("not json", b"not json"),
+                ("a doubled substitute_id", b'{"substitute_id": "0350", "substitute_id": "0317"}'),
+                ("NaN", body.replace('"blockers_open": 0', '"blockers_open": NaN', 1).encode()),
+                ("a byte order mark", b"\xef\xbb\xbf" + body.encode()),
+                ("not UTF-8", b'{"schema": "\xff"}'),
+                ("over the size bound", b'{"x": "' + b"a" * G.MAX_RECORD_BYTES + b'"}'),
+                ("deeper than 16", b"[" * 17 + b"]" * 17)]
+
+    def why(self, raw):
+        with self.assertRaises(ValueError) as cm:
+            G.load_record(raw)
+        return str(cm.exception).splitlines()[0]
+
+    def test_an_unreadable_selected_record_ends_saying_no_substitute_is_accepted(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        top = c.rev()
+        for name, _ in self.bodies(c.tree()):
+            with self.subTest(name=name):
+                c.git("reset", "-q", "--hard", top)
+                raw = dict(self.bodies(c.tree()))[name]
+                path = c.record(None, raw=raw)
+                rc, out, err = run_main_utf8("--base", c.base, "--head", "HEAD")
+                self.assertEqual(rc, 1, (out, err))
+                self.assertEqual(out.splitlines(), [self.LEAD % (path, self.why(raw)) + ": " + NO_SUB])
+
+    def test_the_same_bytes_as_an_added_record_say_it_too(self):
+        c = CliRepo(); c.start(self)
+        h = "%064x" % 9
+        for name, raw in self.bodies(h):
+            with self.subTest(name=name):
+                c.git("reset", "-q", "--hard", c.base)
+                c.change(rec_path(h), raw)
+                rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(out.splitlines(), [
+                    "::error file=%s::review gate (REQ-AUD-18 AC7): record %s is added or changed by this pull request "
+                    "and cannot be read (%s): a schema v2 record is required, and %s" % (rec_path(h), rec_path(h),
+                                                                                         self.why(raw), NO_SUB)])
+
+    def test_a_selected_record_with_a_lone_surrogate_ends_saying_it(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        path = c.record(None, raw='{"schema": "\\ud800"}')
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.splitlines(), [
+            "::error file=%s::review gate (REQ-AUD-18 AC3): record %s has schema '\\ud800', not %s: a schema v2 record "
+            "is required, and %s" % (path, path, V2, NO_SUB)])
+        c.git("reset", "-q", "--hard", "HEAD~1")
+        path = c.record(None, raw=lambda t: json.dumps(good(t)).replace('"gpt-6.1-sol"', '"\\ud800"', 1))
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.splitlines(), [
+            "::error file=%s::review gate (REQ-AUD-18 AC3): codex_a model '\\ud800' is not on the gate's list of Codex "
+            "models: %s" % (path, NO_SUB)])
+
+    def test_a_non_regular_selected_record_ends_saying_it(self):
+        for kind in ("link", "gitlink"):
+            with self.subTest(kind=kind):
+                c = CliRepo(); c.start(self)
+                c.change(".github/agent/bin/x.py", "b\n")
+                path = rec_path(c.tree())
+                special(path, kind)
+                rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(out.splitlines(), [self.LEAD % (path, G.NON_REGULAR) + ": " + NO_SUB])
+
+    def test_an_absent_record_is_stated_plainly(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.splitlines(), [self.LEAD % (rec_path(c.tree()), "no regular file there")])
+
+    def test_no_record_says_it_for_every_cause_but_absence(self):
+        for why, says in ((G.NON_REGULAR, True), ("the record is not valid JSON (x)", True), ("git failed", True),
+                          (G.ABSENT, False)):
+            report = G._Problems()
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(G._no_record(report, ["a"], "p", why), 1)
+            self.assertEqual(report[-1].endswith(": " + NO_SUB), says, why)
+            self.assertTrue(report[-1].endswith("no valid review record at p: %s%s" % (why, ": " + NO_SUB if says else "")))
+
+    def test_every_refusal_site_is_known_and_no_record_routes_through_the_helper(self):
+        """Every function that writes a refusal line is one of the known sites (a new one fails this test until it is
+        added here after review), _no_record writes through _no_substitute, and the plain absence is passed to it once,
+        by name."""
+        with open(SCRIPT) as fh:
+            tree = ast.parse(fh.read())
+        funcs = {f.name: f for f in ast.walk(tree) if isinstance(f, ast.FunctionDef)}
+        sites = sorted({name for name, f in funcs.items() for n in ast.walk(f)
+                        if isinstance(n, ast.Constant) and isinstance(n.value, str) and "::error" in n.value})
+        self.assertEqual(sites, ["_emit", "_main", "_no_record", "added_record_problems", "main"])
+        self.assertIn("_no_substitute", [n.func.id for n in ast.walk(funcs["_no_record"])
+                                         if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)])
+        calls = [n for n in ast.walk(funcs["_main"]) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                 and n.func.id == "_no_record"]
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(sum(isinstance(c.args[3], ast.Name) and c.args[3].id == "ABSENT" for c in calls), 1)
+        consts = [n.value for c in calls for n in ast.walk(c.args[3]) if isinstance(n, ast.Constant)]
+        self.assertEqual(consts, [0])      # only the [0] of the read error's first line: no cause spelt inline
+        # the _main refusals that are not record-shaped name a command-line argument (exit 2) or the count line
+        main_errors = sorted(re.match(r"::error(?: file=%s)?::([\w-]+)", n.value).group(1) for n in ast.walk(funcs["_main"])
+                             if isinstance(n, ast.Constant) and isinstance(n.value, str) and "::error" in n.value)
+        self.assertEqual(main_errors, ["auditor-review-gate"] * 5 + ["review"])
 
 
 if __name__ == "__main__":
