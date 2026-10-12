@@ -822,11 +822,12 @@ if [ "${VERIFY_STRICT:-}" = 1 ]; then   # a record that is not there is refused,
 fi
 exit "${VERIFY_RC:-0}"
 EOF
-for s in check-scan check-govulncheck check-fips check-artifacts check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n' "$s" > "$dp/bin/$s.sh"; done
+for s in check-scan check-fips check-artifacts check-acceptance check-guide; do printf '#!/usr/bin/env bash\necho "%s $*" >> "$DP_LOG"\n' "$s" > "$dp/bin/$s.sh"; done
 cat > "$dp/bin/python3" <<'EOF'
 #!/usr/bin/env bash
 [ "$1 $2" = "-I -B" ] || { echo "python3 not isolated: $*" >> "$DP_LOG"; exit 3; }
-shift 3; bash "bin/chain-verify.py" "$@"
+script=$3; shift 3
+case "$script" in bin/check-govulncheck.py) echo "check-govulncheck $*" >> "$DP_LOG" ;; *) bash "bin/chain-verify.py" "$@" ;; esac
 EOF
 chmod +x "$dp/bin/python3"
 drun() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" VERIFY_RC="${VERIFY_RC:-0}" GITHUB_REF_NAME=v0.3.0 bash bin/check-stage.sh "$@") 2>&1) || rc=$?; }   # a release run always has its tag (Q5)
@@ -860,13 +861,13 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-# ---- ruling G (advisor Oct 12): bin/check-govulncheck.sh, the source scan of the product module, whose output Release reads from Check's record -----------------------
+# ---- ruling G (advisor Oct 12): bin/check-govulncheck.py, the source scan of the product module, whose output Release reads from Check's record -----------------------
 # `govulncheck -json ./...` runs once in the scanners step with the pinned Go (the fixed path /usr/local/bin/fscache-go/bin first on PATH, GOTOOLCHAIN=local,
 # GOFLAGS=-mod=readonly, never a flag or toolchain of the caller's environment); the raw stream is written byte for byte to OUT/govulncheck.json, which the Witness
 # record of the step carries as a product. Exit 0 only when the tool ran (a config message of scanner govulncheck, database https://vuln.go.dev) and no finding
 # reaches a called symbol (a trace whose first frame has a function); the file is written in every case that ran.
 gvt="$work/gv"; mkdir -p "$gvt/bin" "$gvt/.github/policy" "$gvt/fake" "$gvt/out"
-cp "$root/bin/check-govulncheck.sh" "$gvt/bin/" 2> /dev/null || true
+cp "$root/bin/check-govulncheck.py" "$gvt/bin/" 2> /dev/null || true
 printf 'module example.com/a\n' > "$gvt/go.mod"
 printf '{"scanners":["grype","osv-scanner"],"source_scanners":["govulncheck"],"pr_gate":["grype","inspector"]}\n' > "$gvt/.github/policy/scanners.json"
 cat > "$gvt/fake/govulncheck" <<'EOF'
@@ -892,7 +893,7 @@ EOF
 chmod +x "$gvt/fake/govulncheck"
 gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tree with the fake first on PATH
   local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
-  rc=0; : > "$work/gvlog"; rm -rf "$gvt/out"; out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" GV_LOG="$work/gvlog" bash bin/check-govulncheck.sh "$@") 2>&1) || rc=$?; }
+  rc=0; : > "$work/gvlog"; rm -rf "$gvt/out"; out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" GV_LOG="$work/gvlog" python3 -I -B bin/check-govulncheck.py "$@") 2>&1) || rc=$?; }
 GVARGS=(--scanners .github/policy/scanners.json --out out)
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && grep -q '^govulncheck -json ./\.\.\.$' "$work/gvlog" && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 2 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as `govulncheck -json ./...`"
@@ -933,8 +934,8 @@ if [ "$rc" = 2 ]; then ok "G an unknown argument is a usage error (exit 2)"; els
 rm -f "$gvt/go.mod"; gvrun GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G no go.mod in the working directory fails (a source scan of nothing is not a scan)"; else bad "G a tree without go.mod was scanned"; fi
 printf 'module example.com/a\n' > "$gvt/go.mod"
-if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.sh" 2> /dev/null && [ -f "$root/bin/check-govulncheck.sh" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
-else bad "G bin/check-govulncheck.sh is missing or names a signing tool or credential"; fi
+if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
+else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
 EXPECT=288
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi

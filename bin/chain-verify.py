@@ -911,6 +911,47 @@ def cmd_bind_items(a):
     print("ok")
 
 
+BIND_CHECK_PRODUCT = re.compile(r"check-results/[A-Za-z0-9][A-Za-z0-9._-]*")
+PRODUCT_PREFIX = "https://witness.dev/attestations/product/v0.1/file:"
+
+
+def cmd_bind_check(a):
+    """A file of Check's artifact check-results (govulncheck.json, advisor ruling G) is a PRODUCT of Check's scanners record with the same sha256: the record is
+    verified under Check's identity at the tag, is the record of the step scanners, and names Build's verified digest list as its material (rule 55: results tied to
+    the exact digests). A missing, duplicated, material-named or different product, or a record of another step, is refused."""
+    pol = _release_policy(a, "check")
+    now = parse_now(a.now)
+    if not BIND_CHECK_PRODUCT.fullmatch(a.product):
+        refuse("check", "product: %r is not a plain file of check-results/" % a.product)
+    try:
+        with open(a.digests, "rb") as f:
+            d_bytes = f.read()
+    except OSError:
+        refuse("check", "the digest list is missing or unreadable")
+    chain_items.check_digest_bytes("check", d_bytes)
+    parse_digest_bytes(d_bytes, "check")
+    want = hashlib.sha256(d_bytes).hexdigest()
+    have = _sha256_bytes_of(a.file, "check", a.product)
+    with tempfile.TemporaryDirectory() as tmp:
+        stmt, _payload, dsse = verify_record(pol, "check", a.record, None, now, tmp)
+    if dsse["payloadType"] == POLT:
+        refuse("check", "predicate: a signed release policy is not Check's record")
+    step = (stmt.get("predicate") or {}).get("name") if isinstance(stmt.get("predicate"), dict) else None
+    if step != "scanners":
+        refuse("check", "the record is the record of step %r, not scanners (a product is bound only to the record of the step that made it)" % step)
+    mats = [x for x in typed_subjects("check", stmt) if x["name"] == MATERIAL]
+    if len(mats) != 1:
+        refuse("check", "digests: the scanners record names %d material subjects file:witness-build/digests.json, exactly one is required" % len(mats))
+    if mats[0]["digest"].get("sha256") != want:
+        refuse("check", "digest: the scanners record is about another digests list than the one Build attested")
+    hits = [x for x in typed_subjects("check", stmt) if x["name"] == PRODUCT_PREFIX + a.product]
+    if len(hits) != 1:
+        refuse("check", "%s: Check's scanners record holds %d product subjects named file:%s, exactly one is required" % (a.product, len(hits), a.product))
+    if hits[0]["digest"].get("sha256") != have:
+        refuse("check", "digest: %s is not the file Check's scanners record holds" % a.product)
+    print("ok")
+
+
 def cmd_check_list(a):
     """Exactly the four Check records, scanners, acceptance, runtime and arm64, each verified under Check's identity at the tag and each tied by its
     material digest list to the digest list Build attested; a missing, extra, duplicated, substituted, unverifiable or wrong-job record is refused."""
@@ -1462,6 +1503,13 @@ def build_parser():
     bi.add_argument("--items", required=True)
     bi.add_argument("--product")
     bi.add_argument("--now")
+    bc = sub.add_parser("bind-check")
+    bc.add_argument("--policy", required=True)
+    bc.add_argument("--record", required=True)
+    bc.add_argument("--digests", required=True)
+    bc.add_argument("--file", required=True)
+    bc.add_argument("--product", required=True)
+    bc.add_argument("--now")
     cl = sub.add_parser("check-list")
     cl.add_argument("--policy", required=True)
     cl.add_argument("--digests", required=True)
@@ -1514,6 +1562,8 @@ def main(argv):
             cmd_bind_items(a)
         elif a.cmd == "check-list":
             cmd_check_list(a)
+        elif a.cmd == "bind-check":
+            cmd_bind_check(a)
         elif a.cmd == "actions":
             cmd_actions(a)
         elif a.cmd in chain_items.COMMANDS:

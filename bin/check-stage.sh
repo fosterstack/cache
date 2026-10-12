@@ -10,6 +10,7 @@ python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --r
 case "$1" in
   scanners)
     bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results
+    python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results
     ;;
   acceptance)
     bash bin/check-acceptance.sh gradle --digests witness-build/digests.json --images images --out check-results

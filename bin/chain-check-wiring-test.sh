@@ -148,7 +148,7 @@ exec witness run --step "$step" \\
 """)
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]
 PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results",
-                    "bash bin/check-govulncheck.sh --scanners .github/policy/scanners.json --out check-results"]),
+                    "python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results"]),
       ("acceptance", ["bash bin/check-acceptance.sh gradle --digests witness-build/digests.json --images images --out check-results",
                       "bash bin/check-acceptance.sh maven --digests witness-build/digests.json --images images --out check-results"]),
       ("runtime", ["bash bin/check-acceptance.sh egress --digests witness-build/digests.json --images images --out check-results",
@@ -220,7 +220,7 @@ jobs:
 """)
 os.makedirs(w + "/plain", exist_ok=True)
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
-    open(f"{w}/plain/{n}.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
+    open(f"{w}/plain/{n}" + (".py" if n == "check-govulncheck" else ".sh"), "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
@@ -408,10 +408,10 @@ sm c_nofirst 'python3 -I -B bin/chain-verify.py stage-start[^\n]*\n'   ''       
 sm c_nopol   'python3 -I -B bin/chain-verify.py policy make[^\n]*\n'   ''                                                 'not the pinned form' "AC3 the policy is not made per tag (Q5)"
 sm c_poltag  '--tag "\$GITHUB_REF_NAME"'                       '--tag v0.3.0'                                           'not the pinned form' "AC3 the policy made for a fixed tag instead of the run's tag (Q5)"
 sm c_noiso   'python3 -I -B bin/chain-verify.py stage-start'  'python3 bin/chain-verify.py stage-start'                'not the pinned form' "AC3 the verifier not isolated (PR 1: python3 -I -B)"
-sm c_nogv    'bash bin/check-govulncheck.sh[^\n]*\n'      ''                                                       'not the pinned form' "G the source scan dropped from the scanners phase"
-sm c_gvfirst 'scanners\)\n(bash bin/check-scan.sh[^\n]*\n)(bash bin/check-govulncheck.sh[^\n]*\n)' 'scanners)\n\2\1' 'not the pinned form' "G the source scan before the image scanners"
-sm c_gvlist  'bash bin/check-govulncheck.sh --scanners \.github/policy/scanners.json' 'bash bin/check-govulncheck.sh --scanners scanners.json' 'not the pinned form' "G the source scan reads another list than the policy file"
-sm c_gvdig   'bash bin/check-govulncheck.sh --scanners \.github/policy/scanners.json --out check-results' 'bash bin/check-govulncheck.sh --scanners .github/policy/scanners.json --out /tmp/gv' 'not the pinned form' "G the source scan writes outside check-results (the Witness record would not carry it as a product Release can bind)"
+sm c_nogv    'python3 -I -B bin/check-govulncheck.py[^\n]*\n'      ''                                                       'not the pinned form' "G the source scan dropped from the scanners phase"
+sm c_gvfirst 'scanners\)\n(bash bin/check-scan.sh[^\n]*\n)(python3 -I -B bin/check-govulncheck.py[^\n]*\n)' 'scanners)\n\2\1' 'not the pinned form' "G the source scan before the image scanners"
+sm c_gvlist  'python3 -I -B bin/check-govulncheck.py --scanners \.github/policy/scanners.json' 'python3 -I -B bin/check-govulncheck.py --scanners scanners.json' 'not the pinned form' "G the source scan reads another list than the policy file"
+sm c_gvdig   'python3 -I -B bin/check-govulncheck.py --scanners \.github/policy/scanners.json --out check-results' 'python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out /tmp/gv' 'not the pinned form' "G the source scan writes outside check-results (the Witness record would not carry it as a product Release can bind)"
 sm c_nok8s   'bash bin/check-acceptance.sh k8s[^\n]*\n'       ''                                                       'not the pinned form' "AC14 the k8s suite dropped from the runtime phase"
 sm c_withsign 'case "\$1" in' 'python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\ncase "$1" in' 'not the pinned form' "AC3 Check verifies Sign's provenance (Release's to verify; Check's previous stage is Build)"
 sm c_after   'python3 -I -B bin/chain-verify.py stage-start[^\n]*\ncase "\$1" in\nscanners\)\n(bash bin/check-scan.sh[^\n]*\n)' 'case "$1" in\nscanners)\n\\1python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC3 the checks run before the verify step"
@@ -466,7 +466,7 @@ os.makedirs(w + "/bin", exist_ok=True)
 rows = []
 for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
           "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve", "install-kind"):
-    p = f"bin/{n}.sh"; open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
+    p = f"bin/{n}" + (".py" if n == "check-govulncheck" else ".sh"); open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
     rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
 os.makedirs(w + "/.github/policy", exist_ok=True)
 json.dump({"env_names": [], "scripts": rows}, open(w + "/.github/policy/chain-scripts.json", "w"))
@@ -561,7 +561,7 @@ for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-pha
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
-expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.sh "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
+expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.py "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
 expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.0 against their committed sha256 (AC14)" "" kind "$root/bin/install-kind.sh"

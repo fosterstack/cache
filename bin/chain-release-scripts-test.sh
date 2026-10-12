@@ -105,7 +105,7 @@ for f in "$a"/*/*.apk; do melange sign --signing-key "$t/release.rsa" "$f"; done
 echo "git $*" >> "$LOG.git"
 [ "$1 $2 $3" = "log -1 --format=%ct" ] || { echo "git: unexpected $*" >&2; exit 2; }
 [ -z "${GIT_FAIL:-}" ] || { echo "fatal: bad object $4" >&2; exit 128; }
-printf '%s\\n' "${GIT_EPOCH-1760000000}"''',
+printf '%s\n' "${GIT_EPOCH-1760000000}"''',
  "bin/vendor-provenance.py": r'''import json, os, sys
 open(os.environ["LOG"], "a").write("vendor-provenance %s\n" % " ".join(sys.argv[1:]))
 if os.environ.get("EVIDENCE_FAIL"): sys.exit(1)
@@ -371,11 +371,11 @@ for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, "c
                            ("is a symlink", lambda t: (os.remove(os.path.join(t, "check-results/govulncheck.json")), os.symlink("/etc/hosts", os.path.join(t, "check-results/govulncheck.json"))), {}),
                            ("is empty", lambda t: open(os.path.join(t, "check-results/govulncheck.json"), "w").close(), {}),
                            ("(dependency-provenance.json) is missing", lambda t: os.remove(os.path.join(t, "dependency-provenance.json")), {})):
-    t = tree(); mutate(t); rc, so, se = run(t, "release-sign", creds=REG)
-    check(rc != 0 and not [l for l in log(t) if l.startswith(("vendor-provenance", "cosign"))], "G the file Release hands the evidence step %s: nothing is produced or signed" % label, "rc=%s %s" % (rc, first(se)))
+    tg = tree(); mutate(tg); rc, so, se = run(tg, "release-sign", creds=REG)
+    check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G the file Release hands the evidence step %s: nothing is produced or signed" % label, "rc=%s %s" % (rc, first(se)))
 for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT_EPOCH": ""}), ("negative", {"GIT_EPOCH": "-5"}), ("git failing", {"GIT_FAIL": "1"}), ("two lines", {"GIT_EPOCH": "1760000000\n1760000001"})):
-    t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env=env)
-    check(rc != 0 and not [l for l in log(t) if l.startswith(("vendor-provenance", "cosign"))], "G a commit date that is %s stops before the evidence step and any signature" % label, "rc=%s %s" % (rc, first(se)))
+    tg = tree(); rc, so, se = run(tg, "release-sign", creds=REG, env=env)
+    check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G a commit date that is %s stops before the evidence step and any signature" % label, "rc=%s %s" % (rc, first(se)))
 imgs = [l for l in L if l.startswith("cosign sign ")]
 check({(re.search(r"(ghcr\.io|docker\.io)/fosterstack/cache@(sha256:\w+)", l).groups()) for l in imgs} == {(h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()}, "AC8 each published image digest is signed in BOTH registries", str(imgs))
 # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays attached to each public image digest as an OCI referrer (as on v0.2.x), type
