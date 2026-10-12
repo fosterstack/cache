@@ -1215,10 +1215,24 @@ r = reqs["REQ-CHAIN-001"]
 then = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["then"]
 given = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["given"]
 assert "a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)" in given, "AC5 given does not name the signed rc-tag run"
-for words in ("before the cutover pull request merges chain-v030 to main",
-              "no v0.3.0 tag may be pushed unless an rc-tag run of that same commit's chain files", "a branch dry run does not satisfy this AC",
+when = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["when"]
+# the accepted text of Oct 12 (cutover prep, advisor): five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every final or patch tag
+for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls stage-sign.yml, is not a runtime case: no second workflow file exists; it is judged by Sign's caller check in the static judge and by the offline hostile test, which is a stated limit of this proof)"):
+    assert words in when, "AC5 when lacks: " + words
+assert "six separate cases" not in when and "throwaway commit" not in when, "AC5 when still has the six-case wording"
+for words in ("is cut on main after the cutover pull request has merged, must be green and its run linked before any final or patch tag is cut on main",
+              "until a recorded green rc-tag run of those same chain files (the workflows, bin/ and .github/policy/ files the chain uses, identical bytes) exists as the committed marker of REQ-CHAIN-001-AC6, no patch decision and no admission of a final or patch tag proceeds",
+              "each of the five runtime cases is judged by the verifier invocation pinned for it", "a branch dry run does not satisfy this AC",
               "bin/chain-hostile-test.sh", "the wiring tests judge the files"):
     assert words in then, "AC5 lacks: " + words
+assert "before the cutover pull request merges chain-v030 to main" not in then and "each of the six cases" not in then, "AC5 then still has the old order or six cases"
+a6 = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC6")
+assert a6["given"] == "a final (v0.3.0) or patch tag, or the patch automation's decide job, on main", "AC6 given"
+assert a6["when"] == "admission and decide read .github/policy/rc-proof.json (the marker)", "AC6 when"
+for words in ("both refuse (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5)",
+              "bin/chain-verify.py against the rc tag's own identities", "an rc tag that is not an ancestor of the commit, an unreadable marker, or a missing one is refused, never skipped"):
+    assert words in a6["then"], "AC6 lacks: " + words
+assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
 assert "green rc-tag run of the same commit's chain files, linked" in r["notes"], "REQ-CHAIN-001 notes lack the rc-tag cutover checklist line (advisor 0383)"
