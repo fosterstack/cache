@@ -1637,7 +1637,7 @@ requirements:
       - id: REQ-REL-007-AC3
         given: "a go-test mapping in test-evidence/mappings.yaml naming a package directory and a test function"
         when: "the requirements check runs"
-        then: "the mapping counts only when the function is declared at the top level of a _test.go file of that package, with the signature func TestX(t *testing.T), in a file that the Go toolchain selects on both linux/amd64 and linux/arm64 (file-name GOOS/GOARCH suffixes and //go:build lines applied); a function that appears only in a file the build rules exclude on either platform does not count and the check fails"
+        then: "the mapping counts only when the function is declared at the top level of a _test.go file of that package, with the signature func TestX(t *testing.T), in a file that the Go toolchain selects on both linux/amd64 and linux/arm64 (file-name GOOS/GOARCH suffixes and //go:build lines applied); a function that appears only in a file the build rules exclude on either platform does not count and the check fails; a file whose build constraint names any tag other than a GOOS, a GOARCH, unix or a go1.N release tag (cgo, race, a CPU feature tag, a goexperiment tag, a tag given with -tags) is not counted either, because whether the toolchain selects it depends on how the tests are invoked; and a test function with type parameters does not count"
         verification: { method: unit, release_blocking: false }
         status: approved
 

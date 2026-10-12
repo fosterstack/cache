@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"go/ast"
 	"go/build"
+	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io"
@@ -395,12 +396,17 @@ func goTestExists(dir, name string) bool {
 
 // buildSelected reports whether the Go build rules (file-name GOOS/GOARCH suffixes, //go:build and // +build lines)
 // select the file on BOTH linux/amd64 and linux/arm64, the two platforms this project ships (REQ-REL-007-AC3); a test
-// in a file either platform excludes does not run there and does not count. A file whose constraints cannot be read is
-// not selected.
+// in a file either platform excludes does not run there and does not count. Fail closed: a file whose constraints
+// cannot be read, or that names any tag other than a GOOS, a GOARCH, unix or a go1.N release tag (cgo, race, a CPU
+// feature tag, a goexperiment tag, a tag given with -tags), is not counted: whether the toolchain selects it depends
+// on how the tests are invoked, which this tool does not know.
 func buildSelected(dir, name string) bool {
+	if !constraintsResolvable(filepath.Join(dir, name)) {
+		return false
+	}
 	for _, arch := range []string{"amd64", "arm64"} {
 		ctx := build.Default
-		ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled, ctx.BuildTags = "linux", arch, false, nil
+		ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled, ctx.BuildTags, ctx.ToolTags = "linux", arch, false, nil, nil
 		if ok, err := ctx.MatchFile(dir, name); err != nil || !ok {
 			return false
 		}
@@ -408,11 +414,63 @@ func buildSelected(dir, name string) bool {
 	return true
 }
 
+var (
+	knownGOOS = map[string]bool{"aix": true, "android": true, "darwin": true, "dragonfly": true, "freebsd": true, "hurd": true,
+		"illumos": true, "ios": true, "js": true, "linux": true, "nacl": true, "netbsd": true, "openbsd": true, "plan9": true,
+		"solaris": true, "wasip1": true, "windows": true, "zos": true}
+	knownGOARCH = map[string]bool{"386": true, "amd64": true, "amd64p32": true, "arm": true, "armbe": true, "arm64": true,
+		"arm64be": true, "loong64": true, "mips": true, "mipsle": true, "mips64": true, "mips64le": true, "mips64p32": true,
+		"mips64p32le": true, "ppc": true, "ppc64": true, "ppc64le": true, "riscv": true, "riscv64": true, "s390": true,
+		"s390x": true, "sparc": true, "sparc64": true, "wasm": true}
+	goReleaseTag = regexp.MustCompile(`^go1\.[0-9]+$`)
+)
+
+// constraintsResolvable reports whether every build-constraint line before the package clause parses and names only
+// tags whose value does not depend on how the tests are invoked: a GOOS, a GOARCH, unix or a go1.N release tag.
+func constraintsResolvable(path string) bool {
+	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments|parser.PackageClauseOnly)
+	if err != nil {
+		return false
+	}
+	for _, cg := range f.Comments {
+		if cg.End() > f.Package {
+			break
+		}
+		for _, c := range cg.List {
+			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
+				continue
+			}
+			e, err := constraint.Parse(c.Text)
+			if err != nil || !stableTags(e) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func stableTags(e constraint.Expr) bool {
+	switch x := e.(type) {
+	case *constraint.AndExpr:
+		return stableTags(x.X) && stableTags(x.Y)
+	case *constraint.OrExpr:
+		return stableTags(x.X) && stableTags(x.Y)
+	case *constraint.NotExpr:
+		return stableTags(x.X)
+	case *constraint.TagExpr:
+		return knownGOOS[x.Tag] || knownGOARCH[x.Tag] || x.Tag == "unix" || goReleaseTag.MatchString(x.Tag)
+	}
+	return false
+}
+
 // goTestName is what `go test` runs: Test, then nothing or a character that is not a lower-case letter.
 var goTestName = regexp.MustCompile(`^Test([^a-z].*)?$`)
 
-// isTestingT reports whether fn takes exactly one parameter of type *testing.T and returns nothing.
+// isTestingT reports whether fn takes exactly one parameter of type *testing.T, returns nothing and has no type parameters.
 func isTestingT(fn *ast.FuncDecl) bool {
+	if fn.Type.TypeParams != nil {
+		return false // `go test` rejects a test function with type parameters
+	}
 	p := fn.Type.Params.List
 	if len(p) != 1 || len(p[0].Names) > 1 || fn.Type.Results != nil {
 		return false

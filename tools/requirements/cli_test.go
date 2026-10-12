@@ -1041,7 +1041,7 @@ func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
 	}
 	for _, name := range []string{"TestIgnored", "TestOldTagIgnored", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux", "TestAmd64Expr", "TestArm64Expr", "TestCombinedSuffix", "TestNeedsCgo", "TestNeedsNoCgo", "TestFeatureTag", "TestFeatureTagArm", "TestRaceTag", "TestExperimentTag", "TestCustomTag", "TestOldCustomTag", "TestMalformed", "TestGeneric"} {
 		if goTestExists(dir, name) {
-			t.Errorf("%s is in a file the build rules exclude on a Linux platform but was accepted", name)
+			t.Errorf("%s is excluded by the build rules, names an unresolved tag, or has type parameters, but was accepted", name)
 		}
 	}
 }
