@@ -1438,8 +1438,9 @@ class RevisionArguments(unittest.TestCase):
             with unittest.mock.patch.object(G, "auditor_changes", side_effect=exc):
                 rc, out, err = run_main_utf8("--base", self.r.base, "--head", "HEAD")
             self.assertEqual(rc, 1, (exc, out, err))
-            self.assertIn("::error::review gate: the change could not be judged (%s" % type(exc).__name__, out)
+            self.assertIn("::error::review gate (REQ-AUD-18 AC3): the change could not be judged (%s" % type(exc).__name__, out)
             self.assertIn("it does not clear", out)
+            self.assertTrue(out.splitlines()[-1].endswith(": " + NO_SUB), out)      # round 7: fail closed, said
 
 
 
@@ -2244,7 +2245,7 @@ class SelectedRecordRefusals(unittest.TestCase):
                                          if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)])
         calls = [n for n in ast.walk(funcs["_main"]) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
                  and n.func.id == "_no_record"]
-        self.assertEqual(len(calls), 4)
+        self.assertEqual(len(calls), 5)      # round 7: a git failure reading a record path, by _git_failure
         self.assertEqual(sum(isinstance(c.args[3], ast.Name) and c.args[3].id == "ABSENT" for c in calls), 1)
         consts = [n.value for c in calls for n in ast.walk(c.args[3]) if isinstance(n, ast.Constant)]
         self.assertEqual(consts, [0])      # only the [0] of the read error's first line: no cause spelt inline
@@ -2252,6 +2253,136 @@ class SelectedRecordRefusals(unittest.TestCase):
         main_errors = sorted(re.match(r"::error(?: file=%s)?::([\w-]+)", n.value).group(1) for n in ast.walk(funcs["_main"])
                              if isinstance(n, ast.Constant) and isinstance(n.value, str) and "::error" in n.value)
         self.assertEqual(main_errors, ["auditor-review-gate"] * 5 + ["review"])
+
+
+
+def elided(line):
+    """What _say writes for an escaped ASCII line (round 7): the whole line when it fits; else its first
+    SAY_CHARS - SAY_TAIL characters, a count of the characters, and its last SAY_TAIL characters, so the requirement tag
+    at the front and the required ending at the back both survive."""
+    if len(line) <= G.SAY_CHARS:
+        return line
+    return line[:G.SAY_CHARS - G.SAY_TAIL] + "... (%d characters) ..." % len(line) + line[-G.SAY_TAIL:]
+
+
+class EndingSurvivesTheBound(unittest.TestCase):
+    """REQ-AUD-018-AC4 ("saying that no substitute is accepted") and the bounded diagnostics, round 7: a line longer than
+    SAY_CHARS is shortened in the MIDDLE after escaping, so the requirement tag at its front and the statement at its end
+    are always written; a git failure reading a record path is refused naming the path and saying the statement; the
+    selected record's own refusal always has a line, however many added records fail; the failure-to-judge line says
+    the statement too (fail closed)."""
+
+    def said(self, line):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            G._say(line)
+        return out.getvalue()
+
+    def test_a_long_line_keeps_its_front_and_its_ending(self):
+        end = ": " + NO_SUB
+        for n in (G.SAY_CHARS - 1, G.SAY_CHARS, G.SAY_CHARS + 1, G.SAY_CHARS + 2, 2500, 100000):
+            line = "::error::review gate (REQ-AUD-18 AC3): " + "x" * (n - 39 - len(end)) + end
+            self.assertEqual(len(line), n)
+            got = self.said(line)
+            self.assertEqual(got, elided(line) + "\n", n)
+            self.assertTrue(got.startswith("::error::review gate (REQ-AUD-18 AC3): "), n)
+            self.assertTrue(got.endswith(end + "\n"), n)
+            self.assertLessEqual(len(got), G.SAY_CHARS + 40, n)
+        line = "::error::review gate (REQ-AUD-18 AC3): " + " " * 3000 + end      # escaped first, then shortened
+        esc = line.encode("ascii", "backslashreplace").decode("ascii")
+        self.assertEqual(self.said(line), elided(esc) + "\n")
+        self.assertGreater(G.SAY_TAIL, len("only the permitted fields are read, and " + NO_SUB) + 10)
+
+    def nested(self, t, width):
+        """good(t) with a field nested 16 levels deep (the most strict reading allows) whose leaf names a substitute:
+        its field path is long (each key of `width` characters shown bounded)."""
+        r = good(t); o = r
+        keys = ["%02d%s" % (i, "k" * (width - 2)) for i in range(16)]
+        for k in keys[:-1]:
+            o[k] = {}; o = o[k]
+        o[keys[-1]] = "substitute"
+        return r, "record field record." + ".".join(map(G._key, keys)) + " names a substitute ('substitute'): " + NO_SUB
+
+    def test_a_long_added_record_problem_keeps_its_ending(self):
+        h = "%064x" % 11
+        for width, length in ((100, 1997), (1000, 2013), (60000, 2029)):      # the full line's length: around the bound
+            with self.subTest(width=width):
+                c = CliRepo(); c.start(self)
+                rec, problem = self.nested(h, width)
+                c.change(rec_path(h), json.dumps(rec))
+                rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+                self.assertEqual(rc, 1, out)
+                full = ("::error file=%s::review gate (REQ-AUD-18 AC4, AC5): record %s is added or changed by this pull "
+                        "request and does not clear: %s" % (rec_path(h), rec_path(h), problem))
+                self.assertEqual(len(full), length)
+                self.assertIn(elided(full), out.splitlines())
+                self.assertTrue(all(l.endswith(NO_SUB) for l in out.splitlines()), out[-300:])
+
+    LEAD = SelectedRecordRefusals.LEAD
+
+    def failing(self, message):
+        real = G._git
+        def git(*a, **k):
+            if a[0] == "cat-file":
+                raise RuntimeError(message)
+            return real(*a, **k)
+        return unittest.mock.patch.object(G, "_git", git)
+
+    def test_a_long_git_failure_reading_the_selected_record_keeps_its_ending(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        path = c.record(good)
+        msg = "git cat-file blob x: " + "e" * 5000
+        with self.failing(msg + "\nsecond line"):
+            rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.splitlines(), [elided(self.LEAD % (path, msg) + ": " + NO_SUB)])
+
+    def test_a_git_failure_reading_a_merged_record_is_refused_naming_its_path(self):
+        for at_legacy, make in ((False, good), (True, legacy)):
+            with self.subTest(at_legacy=at_legacy):
+                r = CliRepo().start(self)
+                r.change(".github/agent/bin/x.py", "b\n")
+                path = r.record(make, legacy=at_legacy)
+                r.change(".github/agent/bin/x.py", "c\n")
+                r.base = r.rev()
+                r.change(".github/agent/bin/x.py", "b\n")
+                self.assertEqual(r.judge()[0], 0)      # the merged record clears when it can be read
+                msg = "git cat-file blob: fatal: bad object"
+                with self.failing(msg):
+                    rc, out, _ = run_main_utf8("--base", r.base, "--head", "HEAD")
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(out.splitlines(), [self.LEAD % (path, "git could not read it (%s)" % msg) + ": " + NO_SUB])
+
+    def test_a_git_failure_looking_up_a_record_path_is_refused_naming_it(self):
+        c = CliRepo(); c.start(self)
+        c.change(".github/agent/bin/x.py", "b\n")
+        path = rec_path(c.tree())
+        real = G._git
+        def git(*a, **k):
+            if a[:2] == ("ls-tree", "-z") and a[-1] == path:
+                raise RuntimeError("git ls-tree: boom")
+            return real(*a, **k)
+        with unittest.mock.patch.object(G, "_git", git):
+            rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(out.splitlines(), [self.LEAD % (path, "git could not read it (git ls-tree: boom)") + ": " + NO_SUB])
+
+    def test_the_selected_record_s_refusal_always_has_a_line(self):
+        c = CliRepo(); c.start(self)
+        for i in range(150):
+            c.write(rec_path("%064x" % (i + 100)), '{"schema": "%s"}' % V1)
+        c.write(".github/agent/bin/x.py", "b\n"); c.git("add", "-A"); c.git("commit", "-qm", "many")
+        path = c.record(None, raw="not json")
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), G.MAX_PROBLEMS + 1, len(lines))
+        self.assertTrue(all("is added or changed by this pull request" in l for l in lines[:G.MAX_PROBLEMS - 1]))
+        why = SelectedRecordRefusals.why(self, b"not json")
+        self.assertEqual(lines[G.MAX_PROBLEMS - 1], self.LEAD % (path, why) + ": " + NO_SUB)
+        self.assertEqual(lines[-1], "::error::review gate: ... and 0 more problem(s) not shown; 51 more added record(s) "
+                                    "not read (the gate stops reading at %d problems)" % (G.MAX_PROBLEMS - 1))
 
 
 if __name__ == "__main__":
