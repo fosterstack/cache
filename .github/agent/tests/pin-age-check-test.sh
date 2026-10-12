@@ -2854,7 +2854,7 @@ PYC8
 # or && that are each ONE local command with its listed options: sha256sum -c FILE; test -f|-s|-e PATH; mv SRC DST; mkdir [-p] DIR; tar -x [-z] -f FILE
 # [-C DIR] or tar -t [-z] -f FILE (long-separated only, FILE holds no :); ls [PATH...]; echo [WORD...]. A host line (form (a)) is the same: segments
 # joined only by ; or &&, each curl (at least one) or one of those local commands. Everything else is refused: every other command, a keyword, || | &,
-# a joiner at the start or the end, a redirection, a substitution, an operand starting with - or $ or holding gh, git, curl or wget.
+# a joiner at the start or the end, a redirection, a substitution, an operand starting with - or holding $, a backtick, ~, gh, git, curl or wget.
 # FLIPPED tests (listed before this cut, refused now; each moved and marked FLIPPED where it stands):
 #   the KEY fixture ('... || exit 1' became '... && test -s key.pub'); PYC1 PLAIN 'if curl ...; then ok=1; break; fi', 'curl ... || exit 1';
 #   PYC3 PLAIN 'if curl ...; then ok=1; fi', 'export X=1; curl ...', 'for u in a b; do curl ...; done'; PYC5 PLAIN 'curl ... || exit 1';
@@ -3320,6 +3320,24 @@ for v in ['curl', 'wget', '"curl"', "'wget'", 'a-curl', 'wget.x', '"$x/curl"']:
         assert ac._unlisted(GHD + ' ' + o + ' ' + v, repo_self=True) is not None, (o, v)
 for o in ['-p', '--pattern', '-D', '--dir', '-O', '--output', '-A', '--archive']:
     assert ac._unlisted(GHD + ' ' + o + ' gh', repo_self=True) is None, o
+PY
+# the post-9 micro-verification (advisor, Oct 11): the notes' (c) operand sentence and (a) curl-argument sentence state what the code does (pinned
+# against the code: an operand with $, a backtick or ~ is refused, and a net word behind ${name} is refused in an operand and in a curl argument)
+CASE="AC19'' (0) post-9 micro-verification: the notes' operand sentence says no \$, backtick or ~ and the raw word is read, and the code does so"
+check python3 - "$chk" "$root/requirements/requirements.yaml" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+text = open(sys.argv[2]).read()
+assert "it does not start with -; it holds no $, backtick or ~ at all, quoted or not" in text
+assert "read in the word as written as well as with ${name} read as $name (a${curl}b holds curl, Codex B9 P3)." in text
+assert "and no downloader word, read in the word as written as well as with ${name} read as $name;" in text
+assert "it does not start with - or with $;" not in text
+GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+for op in ['"h$R"', '"${R}"', "'$R'", '"~"', '"a${curl}b"']:
+    assert ac._unlisted(GHD + ' ; tar -x -f ' + op, repo_self=True) is not None, op
+    assert ac._unlisted('curl -fsS https://h.example.dev/a ; echo ' + op) is not None, op
+assert ac._unlisted('curl -fsS -o "a${curl}b" https://h.example.dev/a') is not None
+assert ac._unlisted('curl -fsS -o "${out}" https://h.example.dev/a') is None
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
