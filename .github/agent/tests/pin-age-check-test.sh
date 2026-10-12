@@ -3229,9 +3229,11 @@ d = json.load(open(sys.argv[2]))
 assert d["unmeasured_input_fetch"] == [] and ac.load_input_fetch(sys.argv[2], required=True) == {}, d.get("unmeasured_input_fetch")
 assert "REQ-SUP-001-AC19" in d["_format_unmeasured_input_fetch"]
 # Codex round 6 (A P3, B info): the note states AC19'': only a listed plain form is ruled (no verifier admits another form, wget or /usr/bin/curl included);
-# the ruled and the verifier line are physical lines of a literal-block run:; -R and --repo refused in every segment of a repo:self line
+# the ruled and the verifier line are physical lines of a literal-block run:; the AC19'' scope cut (post-9): a repo:self line holds only the prefix's
+# listed options, then only ; or && and the listed local commands (the phrase "every command segment" of round 6 is replaced by that list)
 note = d["_format_unmeasured_input_fetch"]
-for want in ["AC19''", "listed plain form", "no verifier admits", "literal-block run:", "every command segment"]:
+for want in ["AC19''", "listed plain form", "no verifier admits", "literal-block run:", "(-p, -D, -O, -A, --clobber, --skip-existing)",
+             "then only ; or && and the local commands sha256sum -c, test -f/-s/-e, mv, mkdir [-p], tar -x/-t [-z] -f [-C], ls, echo"]:
     assert want in note, want
 assert "for any line that is not the bare curl without L" not in note
 PY
