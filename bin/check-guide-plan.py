@@ -54,7 +54,10 @@ VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--cer
                "--type", "--key", "--bundle", "--signature", "--certificate", "--certificate-chain", "--trusted-root", "--output", "-o",
                "--owner", "--repo", "-R", "--predicate-type", "--signer-workflow", "--signer-repo", "--cert-identity",
                "--cert-identity-regex", "--cert-oidc-issuer", "--source-ref", "--source-digest", "--digest-alg", "--format", "--jq", "-q",
-               "--template", "-t", "--hostname", "--custom-trusted-root", "--signer-digest"}
+               "--template", "-t", "--hostname", "--custom-trusted-root", "--signer-digest", "--cert", "--sig", "--rekor-url"}
+# The value of these flags names a file the command reads: a file operand unless it is a URL (a value with ://), so a command whose only file operand is
+# such a value, not local to Check, is not runnable at Check (it may be listed; Release's post-publish verification runs it with the downloaded files).
+FILE_FLAGS = {"--bundle", "--certificate", "--cert", "--signature", "--sig", "--key", "--certificate-chain", "--rekor-url"}
 JQ_TWO = {"--arg", "--argjson", "--slurpfile", "--rawfile"}
 LOCAL = {"TAG", "IDENTITY"}     # placeholders Check fills with a local value
 IMAGE = {"IMAGE_REF", "IMAGE_REF_FIPS"}
@@ -66,6 +69,40 @@ def image_ref(word):
         return True
     w = PH.sub("X", word)
     return "://" not in w and "/" in w and (":" in w or "@" in w)
+
+
+def file_value(v, nonlocal_):
+    """The value of a file-valued flag: a URL is not a file operand; anything else is a local-file operand (judged as the file it names in Check)."""
+    if v and "://" not in v and not os.path.isfile(fill(v)):
+        nonlocal_.append(v)
+
+
+def split_pipes(c):
+    """The pipe segments of a command: split on | outside single and double quotes only (a backslash escapes the next character outside single quotes);
+    None when a quote is left open (the command cannot be placed)."""
+    segs, cur, quote, i = [], "", None, 0
+    while i < len(c):
+        ch = c[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+        elif quote == '"':
+            if ch == "\\" and i + 1 < len(c):
+                cur += ch; i += 1; ch = c[i]
+            elif ch == '"':
+                quote = None
+        elif ch == "\\" and i + 1 < len(c):
+            cur += ch; i += 1; ch = c[i]
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "|":
+            segs.append(cur); cur = ""; i += 1
+            continue
+        cur += ch; i += 1
+    if quote:
+        return None
+    segs.append(cur)
+    return segs
 
 
 def classify(c):
@@ -126,7 +163,17 @@ def classify(c):
         while i < len(words):
             w = words[i]
             if w.startswith("-"):
-                i += 2 if ("=" not in w and w in VALUE_FLAGS) else 1
+                flag, eq, val = w.partition("=")
+                if eq:
+                    if flag in FILE_FLAGS:
+                        file_value(val, nonlocal_)
+                    i += 1
+                elif w in VALUE_FLAGS:
+                    if w in FILE_FLAGS and i + 1 < len(words):
+                        file_value(words[i + 1], nonlocal_)
+                    i += 2
+                else:
+                    i += 1
                 continue
             if image_ref(w):
                 registry.append(w)
@@ -157,7 +204,8 @@ if os.path.exists(listpath):
         excused[r["command"]] = r["reason"]
 def verify_form(c):
     """Every pipe segment is a verify form or jq (what Release's post-publish step runs from this list)."""
-    return all(s.strip().startswith(FORMS2 + FORMS3 + ("jq ",)) for s in c.split("|"))
+    segs = split_pipes(c)
+    return segs is not None and all(s.strip().startswith(FORMS2 + FORMS3 + ("jq ",)) for s in segs)
 for c in excused:
     if not verify_form(c):
         fail("the cannot-run entry `%s` is not a verify form (Release runs only the verify forms from this list)" % c)

@@ -675,6 +675,56 @@ g "$(blk "cosign verify-blob --certificate-identity fail-me --certificate-oidc-i
 gwant_fail "AC7 a runnable command that exits non-zero fails the script naming it" "fail-me"
 g "$(blk "cosign verify-blob --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
 gwant_fail "AC7 a command on a file that is not local to Check is not runnable and fails unless listed" "not runnable"
+# PR 3 fix7 (found by running the planner read-only on cache's draft docs/verify-release.md):
+# (1) the verify-form judgement of a LISTED command splits on `|` outside single and double quotes only (a pipe inside a quoted jq filter is jq's);
+#     every F8 check still holds, and a chain to anything that is not a verify form or jq is still refused.
+JQF="jq -e --arg ref <IMAGE_REF> '.payload | @base64d | fromjson | .subject[0].digest.sha256 == \$ref'"
+Q1="cosign verify-attestation --type slsaprovenance1 --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS <IMAGE_REF> | $JQF"
+g "$(blk "$Q1")"; lst "$Q1"
+gwant_ok "AC7 fix7 a listed verify command piped to a jq filter that itself holds pipes inside single quotes is one verify form (not refused as 'not a verify form')"
+if jq -e '(.commands | length) == 1 and .commands[0].outcome == "not-run"' "$fx/out/guide-results.json" > /dev/null 2>&1; then ok "AC7 fix7 the quoted-pipe jq command is recorded as not-run"; else bad "AC7 fix7 quoted-pipe results"; fi
+g "$(blk "$Q1")"; gwant_fail "AC7 fix7 the same command unlisted still fails closed (it needs a registry)" "unlisted command needs a registry"
+g "$(blk "jq -n '\"a\" | length'")"; gwant_ok "AC7 fix7 a runnable jq whose filter holds a quoted pipe runs"
+QD="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | jq -e \".[0] | .critical\""
+g "$(blk "$QD")"; lst "$QD"; gwant_ok "AC7 fix7 a pipe inside double quotes (no expansion) is jq's too"
+for c in "cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS | sh" \
+         "jq -n '.a | .b' | rm -rf x" \
+         "jq -n '.a | .b' | jq -n '.c' | curl http://example.com/x" \
+         "jq -n \\'.a | rm -rf x" \
+         "jq -n '.a | .b"; do
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a chain to a command that is not a verify form or jq (or an unterminated quote) is still refused: ${c:0:60}" "verify form"
+done
+for c in "jq -n '.a | .b' ; rm -rf x" \
+         "jq -n '.a | .b' \$(id)" \
+         "jq -n '.a | .b' \"\$(id)\"" \
+         "jq -n \".a | \`id\`\"" \
+         "jq -n '.a | .b' && rm -rf x" \
+         "jq -n '.a | .b' > /etc/x"; do
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a quoted pipe cannot smuggle shell syntax past the F8 checks: ${c:0:60}" "shell syntax"
+done
+# (2) a value of --bundle, --certificate, --cert, --signature, --sig, --key, --certificate-chain, --rekor-url is a file operand unless it is a URL: a command whose
+#     only file operand is such a value, not local to Check, is not runnable at Check (it may be listed; Release runs it with the downloaded files).
+BA="cosign verify-blob-attestation --type slsaprovenance1 --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS"
+FX2=0
+for f in "--bundle X" "--bundle=X" "--certificate X" "--certificate=X" "--cert X" "--cert=X" "--signature X" "--signature=X" "--sig X" "--sig=X" \
+         "--key X" "--key=X" "--certificate-chain X" "--certificate-chain=X" "--rekor-url X" "--rekor-url=X"; do
+  c="$BA ${f//X/provenance.intoto.jsonl.bundle}"
+  g "$(blk "$c")"; gwant_fail "AC7 fix7 a flag value that is a file not local to Check makes the command not runnable (unlisted, refused): ${f%% *}" "not runnable"
+  g "$(blk "$c")"; lst "$c"; gwant_ok "AC7 fix7 the same command listed with its reason is not run and is recorded as not-run (exit 0): $f"
+  if ! grep -q '^cosign' "$work/log"; then ok "AC7 fix7 the listed flag-value command was not run: $f"; else bad "AC7 fix7 the listed flag-value command ran: $f"; fi
+done
+c="$BA --bundle=https://example.com/provenance.bundle checksums.txt"
+g "$(blk "$c")"; gwant_ok "AC7 fix7 a URL value of --bundle is not a file operand: the command (local blob) runs"
+g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 fix7 a runnable command with a URL flag value is still never excused" "runnable"
+c="$BA --bundle checksums.txt.bundle checksums.txt"
+g "$(blk "$c")"; gwant_ok "AC7 fix7 a --bundle value that is a local file runs"
+c="$BA --bundle provenance.intoto.jsonl.bundle"
+g "$(blk "$c")"; printf '[{"command": "%s ", "reason": "run after publishing"}]\n' "$c" > "$fx/guide.cannot-run.json"
+gwant_fail "AC7 fix7 a flag-value command listed with text that does not match exactly is refused" "not in the guide"
+g "$(blk "$c")"; printf '[{"command": "%s", "reason": " "}]\n' "$c" > "$fx/guide.cannot-run.json"
+gwant_fail "AC7 fix7 a flag-value command listed without a reason is refused" "cannot-run entry"
+g "$(blk "$c")"; rm -f "$fx/guide.cannot-run.json"
+gwant_fail "AC7 fix7 a flag-value command neither runnable nor listed is refused" "not runnable"
 g "$(blk "jq -n \"\$TAG\"")"; gwant_fail "AC7 \$ inside double quotes (\"\$TAG\") is refused" "shell syntax"
 g "$(blk "jq -n \"\${TAG}\"")"; gwant_fail "AC7 \${...} inside double quotes is refused" "shell syntax"
 g "$(blk "jq -n \"\$(id)\"")"; gwant_fail "AC7 a command substitution inside double quotes is refused" "shell syntax"
@@ -810,7 +860,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=197
+EXPECT=267
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
