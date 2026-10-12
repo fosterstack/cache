@@ -27,6 +27,16 @@ updates:
     schedule:
       interval: "weekly"
 
+  # The pinned Go source scanner of the release chain's Check stage (advisor Oct 12, ruling G): tools/govulncheck is its own module (go.mod and go.sum are the pin), so a
+  # new version reaches it through this reviewed path, with the same 7-day wait as the actions and the pip pins. Dependabot moves go.mod and go.sum; ci.yml's `go install
+  # golang.org/x/vuln/cmd/govulncheck@vX` is by hand, and bin/chain-install-witness-test.sh is red until the two agree (so a bump cannot merge half done).
+  - package-ecosystem: "gomod"
+    directory: "/tools/govulncheck"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+
   # The hash-pinned adjudicator SDK (anthropic) the auditor's real model client imports.
   # Dependabot bumps the pin + regenerates hashes; the workflow installs it with
   # --require-hashes only on real/schedule runs.
