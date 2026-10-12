@@ -906,6 +906,28 @@ func TestReleaseConfigCheckRefusesMutants(t *testing.T) {
 		}
 		t.Logf("%s: refused: %v", name, ps)
 	}
+	// Final verification after the advisor decision (b): a CR byte (B's post-9 finding: "# comment\r%YAML 1.1\r---\n"
+	// hid a directive from the LF-only line scans, and the pinned decoder read it) and every other line break the
+	// pinned decoder reads (NEL, LS, PS) is refused outright before decoding, naming file:line.
+	for _, c := range []struct{ name, text, want string }{
+		{"B10 CR hides a %YAML directive", "# comment\r%YAML 1.1\r---\n" + real, ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 NEL hides a %YAML directive", "# comment\u0085%YAML 1.1\u0085---\n" + real, ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 LS hides a %YAML directive", "# comment\u2028%YAML 1.1\u2028---\n" + real, ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 PS hides a %YAML directive", "# comment\u2029%YAML 1.1\u2029---\n" + real, ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 CR hides a %TAG directive", "# comment\r%TAG !! tag:example.com,2000:\r---\n" + real, ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 CR after a byte order mark", "\ufeff# comment\r%YAML 1.1\r---\n" + real, ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 CRLF line ends", strings.ReplaceAll(real, "\n", "\r\n"), ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 CR inside a comment mid-file", edit("\narchives:", "\n# note\rgoos: [darwin]\narchives:"), "a line break other than LF"},
+		{"X10 CR at the end of a value", edit("    binary: fscache-fips\n", "    binary: fscache-fips\r\n"), "a line break other than LF"},
+		{"X10 CR at the end of the file", real + "\r", "a line break other than LF"},
+		{"X10 lone CR before a document marker", "# a\r---\r" + real, ".goreleaser.yaml:1: a line break other than LF"},
+		{"X10 NEL inside a comment mid-file", edit("\narchives:", "\n# note\u0085goos: [darwin]\narchives:"), "a line break other than LF"},
+	} {
+		ps := checkReleaseConfig(c.text)
+		if !strings.Contains(strings.Join(ps, "\n"), c.want) {
+			t.Errorf("%s: not refused with %q: %v", c.name, c.want, ps)
+		}
+	}
 	// Round-5 regression (B1): the binary output paths of the real configuration are resolved, one per build and
 	// platform, each inside its own build directory.
 	builds, _ := parseBuilds(real)
@@ -1629,6 +1651,10 @@ func TestDocsClaimNoDarwinOrWindowsBinary(t *testing.T) {
 	}
 }
 
+// lineBreaks are the line breaks other than LF that the pinned YAML decoder (gopkg.in/yaml.v3 v3.0.1) reads as a line
+// break: each is refused outright in every file the checks scan, which split lines on LF alone.
+var lineBreaks = map[string]string{"CR": "\r", "NEL": "\u0085", "LS": "\u2028", "PS": "\u2029"}
+
 // proves: REQ-PLAT-001-AC1
 // TestDocsCheckRefusesMutants: a platform claim wrapped across a Markdown soft line break or split by inline
 // Markdown or by a link whose destination holds balanced parentheses, a platform name in a link destination, title
@@ -1914,7 +1940,6 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"One of the archives is the FIPS build.",
 		"One of the four archives is the FIPS build; two of the four archives are arm64.",
 		"Download an archive for your machine, then verify the archive.",
-		"There is no archive for this machine.",
 		"All **four** Linux archives are signed.",
 		"Every release ships a `checksums.txt` covering all four Linux archives.",
 		"All four of the release archives are signed.",
@@ -1951,9 +1976,108 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"See [this](x) and [that](y) for the four archives.",
 		"There is no shortcut; download the four archives.",
 		"The cap is a + b bytes; each release ships four archives.",
+		// Final verification (advisor decision): a single tilde outside an archive-count clause still passes.
+		"All four archives are signed; the cap is ~5 GB.",
 	} {
 		if ps, _ := checkDoc(f, install+"\n"+ok+"\n", allowedLines, archives); len(ps) > 0 {
 			t.Errorf("%q is refused: %v", ok, ps)
+		}
+	}
+	// Final verification after the advisor decision (a): an allowedCountClaims exception applies only when the whole
+	// clause the count reader examines equals the allowed text exactly, so no exception survives any edit to the clause
+	// (A's post-9 P2: "(stages A + B)" inserted before "verifies each archive" in RELEASING.md kept the zero/no
+	// exceptions); each edit below, anywhere in an excepted clause, is refused naming a claim.
+	edited := func(file, old, new string) string {
+		text := read(t, file)
+		if strings.Count(text, old) != 1 {
+			t.Fatalf("%s: mutant anchor not found exactly once: %q", file, old)
+		}
+		return strings.Replace(text, old, new, 1)
+	}
+	for _, c := range []struct{ name, file, text, want string }{
+		{"A10 a math sign before the excepted claims (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "**Image assembly** verifies each archive", "**Image assembly** (stages A + B) verifies each archive"), "a bound"},
+		{"X10 words before the excepted claims (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "**Image assembly** verifies each archive", "**Image assembly** (stage C) verifies each archive"), "claims"},
+		{"X10 the clause's label changed (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "**Image assembly** verifies each archive", "**Image build** verifies each archive"), "claims"},
+		{"X10 a code span removed in the clause (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "zero `RUN`)", "zero RUN)"), "claims"},
+		{"X10 emphasis added in the clause (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "with a COPY-only Dockerfile\n", "with a **COPY-only** Dockerfile\n"), "claims"},
+		{"X10 a word before the hash's count (RELEASING.md:191)", "RELEASING.md", edited("RELEASING.md", "`checksums.txt` is signed, and it", "`checksums.txt` is unsigned, and it"), "claims"},
+		{"X10 the verb before the hash changed (RELEASING.md:191)", "RELEASING.md", edited("RELEASING.md", "pins every archive by SHA-256", "lists every archive by SHA-256"), "claims"},
+		{"X10 words after the excepted two (RELEASING.md:192)", "RELEASING.md", edited("RELEASING.md", "not two half-measures.", "not two half-measures at all."), "claims"},
+		{"X10 the condition before no archive changed (install.md:57)", "docs/install.md", edited("docs/install.md", "If it prints anything else, there is no archive", "If it prints nothing, there is no archive"), "claims"},
+		{"X10 a plus before no archive (install.md:57)", "docs/install.md", edited("docs/install.md", "If it prints anything else, there is no archive", "If it prints a + b, there is no archive"), "a bound"},
+		{"X10 the excepted clause alone (install.md:57)", "docs/install.md", edited("docs/install.md", "If it prints anything else, there is no archive for this machine;", "There is no archive for this machine;"), "claims"},
+		{"X10 a tilde in the excepted clause (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "zero `RUN`)", "~zero `RUN`)"), "a bound"},
+	} {
+		ps, _ := checkDoc(c.file, c.text, allowedLines, archives)
+		found := false
+		for _, p := range ps {
+			found = found || (strings.HasPrefix(p, c.file+":") && strings.Contains(p, c.want))
+		}
+		if !found {
+			t.Errorf("%s: not refused with %q: %v", c.name, c.want, ps)
+		}
+	}
+	// The advisor decision (a), the order: the bound check runs before any exception lookup, so an exception can never
+	// mask a bound. Each clause below is given an exact allowedCountClaims entry for the test and is still refused as a
+	// bound; the control (a clause with no bound, given an entry) passes, so the entry is the whole clause, applied.
+	for _, clause := range []string{
+		"- **Image assembly** (stages A + B) verifies each archive, zero `RUN`, no tags, nothing public",
+		"The release ships 4+ archives",
+		"The release ships ~4 archives",
+		"The release ships ≥ 4 archives",
+		"The release ships at least four archives",
+		"The release ships four or more archives",
+		"The release ships more than four archives",
+		"The release ships four-plus archives",
+		"The release ships up to four archives",
+		"The four archives cover a + b",
+		"The release ships ~fo**ur** archives",
+		"The release ships zero archives = none",
+	} {
+		allowedCountClaims[clause] = "test entry"
+		ps, _ := checkDoc(f, install+"\n"+clause+".\n", allowedLines, archives)
+		delete(allowedCountClaims, clause)
+		if !strings.Contains(strings.Join(ps, "\n"), "a bound") {
+			t.Errorf("an exact exception masks the bound in %q: %v", clause, ps)
+		}
+	}
+	const control = "The release ships **six** `RUN` archives"
+	allowedCountClaims[control] = "test entry"
+	cps, _ := checkDoc(f, install+"\n"+control+".\n", allowedLines, archives)
+	delete(allowedCountClaims, control)
+	if len(cps) > 0 {
+		t.Errorf("an exact whole-clause exception is not applied to %q: %v", control, cps)
+	}
+	// The advisor decision (c), B's post-9 second finding: a tilde before a count split by inline marks is a bound in a
+	// reading that keeps the sign and removes the marks (the plain reading removes the tilde too, so "~fo**ur**" read
+	// "four"); each is refused as a bound.
+	for _, s := range []string{
+		"The release ships ~fo**ur** archives.",
+		"The release ships ~fo_ur_ archives.",
+		"The release ships ~f`our` archives.",
+		"The release ships ~[four](x) archives.",
+		"The release ships ~fo\\ur archives.",
+		"The release ships ~ fo**ur** archives.",
+		"The release ships ~**four** archives.",
+		"The release ships ~fo*u*r archives.",
+		"Release archives: ~fo**ur**.",
+		"The ~fo**ur** archives are signed.",
+		"| ~fo**ur** | archives |",
+		"The release ships ~fo[u]r archives.",
+	} {
+		ps, _ := checkDoc(f, install+"\n"+s+"\n", allowedLines, archives)
+		if !strings.Contains(strings.Join(ps, "\n"), "a bound") {
+			t.Errorf("%q is not refused as a bound: %v", s, ps)
+		}
+	}
+	// The advisor decision (b): a CR byte, and every other line break the pinned YAML decoder reads (NEL, LS, PS), is
+	// refused outright in each scanned doc, naming file:line.
+	for _, file := range docsScanned {
+		for name, br := range lineBreaks {
+			ps, _ := checkDoc(file, "a first line\nThe release ships four archives."+br+"Win dows.\n", allowedLines, archives)
+			if !strings.Contains(strings.Join(ps, "\n"), file+":2: a line break other than LF") {
+				t.Errorf("%s: %s is not refused at line 2 as a line break other than LF: %v", file, name, ps)
+			}
 		}
 	}
 	var without []allowedLine
@@ -2225,6 +2349,33 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 	} {
 		if ps := checkNotes(cleared, cl, archives); len(ps) > 0 {
 			t.Errorf("the cleared notes are refused with %s: %v", name, ps)
+		}
+	}
+	// Final verification after the advisor decision: (a) the notes' excepted count clause is excepted only as written,
+	// so an edit anywhere in it is refused; (c) a tilde before a count split by marks is a bound; (b) a CR byte and
+	// every other line break the pinned YAML decoder reads are refused outright in the notes and in the changelog
+	// fallback, naming file:line.
+	for name, text := range map[string]string{
+		"X10 a word before the excepted notes clause":   strings.Replace(notes, "The release archives are fscache", "These release archives are fscache", 1),
+		"X10 a possessive in the excepted notes clause": strings.Replace(notes, "The release archives are fscache", "The release's archives are fscache", 1),
+		"X10 a plus in the excepted notes clause":       strings.Replace(notes, "The release archives are fscache", "The release archives are + fscache", 1),
+		"B10 a tilde before a split count in the notes": notes + "- The release ships ~fo**ur** archives (advisor 0130).\n",
+	} {
+		if text == notes {
+			t.Fatalf("mutant %q does not change the notes", name)
+		}
+		if ps := checkNotes(text, "", archives); !strings.Contains(strings.Join(ps, "\n"), "claims") {
+			t.Errorf("%s: no count claim refused: %v", name, ps)
+		}
+	}
+	for name, br := range lineBreaks {
+		ps := checkNotes(notes+"- The release ships four archives (advisor 0130)."+br+"x\n", "", archives)
+		if !strings.Contains(strings.Join(ps, "\n"), notesFile+":10: a line break other than LF") {
+			t.Errorf("notes: %s is not refused at line 10 as a line break other than LF: %v", name, ps)
+		}
+		ps = checkNotes(cleared, published+"- Older entry (advisor 0130)."+br+"x\n", archives)
+		if !strings.Contains(strings.Join(ps, "\n"), changelogFile+":8: a line break other than LF") {
+			t.Errorf("changelog: %s is not refused at line 8 as a line break other than LF: %v", name, ps)
 		}
 	}
 }
@@ -2573,6 +2724,19 @@ func TestEvidenceMappingsCheckRefusesMutants(t *testing.T) {
 		{"P9 full reference in a value", edit(lastRef, lastRef+"      - { type: inspection, ref: \"[a][b]\" }\n"), "reference-style link"},
 		{"P9 definition in a comment", edit(lastRef, lastRef+"      # [a]: https://example.com/x\n"), "reference-style link"},
 		{"P9 nested link in a comment", edit(lastRef, lastRef+"      # [[a](b)](c)\n"), "link this check does not read"},
+		// Final verification after the advisor decision (b): a CR byte and every other line break the pinned decoder
+		// reads (NEL, LS, PS) are refused outright before decoding, naming the line.
+		{"B10 CR hides a %YAML directive", "# comment\r%YAML 1.1\r---\n" + real, mappingsFile + ":1: a line break other than LF"},
+		{"X10 NEL hides a %YAML directive", "# comment\u0085%YAML 1.1\u0085---\n" + real, mappingsFile + ":1: a line break other than LF"},
+		{"X10 LS hides a %YAML directive", "# comment\u2028%YAML 1.1\u2028---\n" + real, mappingsFile + ":1: a line break other than LF"},
+		{"X10 PS hides a %YAML directive", "# comment\u2029%YAML 1.1\u2029---\n" + real, mappingsFile + ":1: a line break other than LF"},
+		{"X10 CRLF line ends in the mappings", strings.ReplaceAll(real, "\n", "\r\n"), mappingsFile + ":1: a line break other than LF"},
+		{"X10 CR in a comment mid-file", edit(lastRef, lastRef+"      # note\rx: 1\n"), "a line break other than LF"},
+		{"X10 CR escape in a quoted value", edit(lastRef, lastRef+"      - { type: inspection, ref: \"a\\rb\" }\n"), "a line break other than LF"},
+		{"X10 NEL escape in a quoted value", edit(lastRef, lastRef+"      - { type: inspection, ref: \"a\\Nb\" }\n"), "a line break other than LF"},
+		{"X10 LS escape in a quoted value", edit(lastRef, lastRef+"      - { type: inspection, ref: \"a\\Lb\" }\n"), "a line break other than LF"},
+		{"X10 PS escape in a quoted value", edit(lastRef, lastRef+"      - { type: inspection, ref: \"a\\Pb\" }\n"), "a line break other than LF"},
+		{"X10 CR at the end of the file", real + "\r", "a line break other than LF"},
 	}
 	// A test function that is commented out, or that is not a top-level test, does not authorize a reference.
 	const fake = "package platforms\n\nimport \"testing\"\n\n/*\nfunc TestDarwin(t *testing.T) {\n}\n*/\n\n// func TestMacOS(t *testing.T) {\n\nvar s = `\nfunc TestWindows(t *testing.T) {\n`\n\nfunc TestReal(t *testing.T) {}\n"
