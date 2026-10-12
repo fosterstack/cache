@@ -48,7 +48,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "284b3cc53f253fcef6c210ba929490243c4c25f7e7d925c51690d15934fc0c69",
+      "sha256": "a0e8363415eecc2dfc10c4b0c2f679789dcbd31566cd5aa01d90e2a2b74a3c87",
       "tools": [
         "curl",
         "bash",
@@ -71,7 +71,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "6ab3b518f81534e428be0d112dbdfe630b59e2d1d4d471151104257194a0b96a",
+      "sha256": "18fbd3427b42cd47c0be27063702a007975bdacbe4761d127b8004bb164d098e",
       "tools": [
         "at"
       ],

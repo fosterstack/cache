@@ -1049,18 +1049,18 @@ d=$(mk w_nosignrec); pymut "$(rel "$d")" " --sign-record provenance/provenance.j
 d=$(mk w_handsign); pymut "$(rel "$d")" "check-build-record --digests" "sign --check --signer cosign --digests"; wexpect caught "wiring: the hand-code attempt runs sign --check again (a signer in a job that must hold no signing right)" "$d"
 d=$(mk w_pinstage); pymut "$(rel "$d")" "--stage sign --record attempts/forge_provenance" "--stage build --record attempts/forge_provenance"; wexpect caught "wiring: the forge attempt is verified as stage build, not as the Sign stage (pinned invocation)" "$d"
 d=$(mk w_pinrec); pymut "$(rel "$d")" "--record attempts/mint_sign_cert.json --policy" "--record attempts/forge_provenance.json --policy"; wexpect caught "wiring: a case verifies another attempt's material (pinned --record)" "$d"
-d=$(mk w_sixthstep); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "      - run: |
-          rc=0
-          python3 bin/chain-verify.py verify --stage sign --record attempts/call_sign_from_other_workflow.json --policy policy.json 2> /tmp/call_sign_from_other_workflow.err || rc=\$?
-          python3 bin/chain-verify.py hostile-row --attempt call_sign_from_other_workflow --exit-code \"\$rc\" --stderr /tmp/call_sign_from_other_workflow.err --out results/call_sign_from_other_workflow.json
-      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"; wexpect caught "wiring: a sixth runtime case step (call_sign_from_other_workflow) in the verify job is refused: the list is exactly the five (G2)" "$d"
+dupstep() { python3 - "$1" "$2" <<'PY2'
+import sys
+t = open(sys.argv[1]).read()
+i = t.index("      - run: |\n          rc=0\n          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json")
+j = t.index("      - run: |", i + 10)
+open(sys.argv[1], "w").write(t[:j] + t[i:j].replace("mint_sign_cert", sys.argv[2]) + t[j:])
+PY2
+}
+d=$(mk w_sixthstep); dupstep "$(rel "$d")" call_sign_from_other_workflow; wexpect caught "wiring: a sixth runtime case step (call_sign_from_other_workflow) in the verify job is refused: the list is exactly the five (G2)" "$d"
 d=$(mk w_sixthfn); printf 'attempt_call_sign_from_other_workflow() { :; }\nattempt_call_sign_from_other_workflow\n' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step defines and calls a sixth attempt (G2)" "$d"
 d=$(mk w_othersixth); printf 'attempt_sneak() { :; }\nattempt_sneak\n' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step defines and calls any other added attempt" "$d"
-d=$(mk w_othersteps); pymut "$(rel "$d")" "      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json" "      - run: |
-          rc=0
-          python3 bin/chain-verify.py verify --stage sign --record attempts/extra.json --policy policy.json 2> /tmp/extra.err || rc=\$?
-          python3 bin/chain-verify.py hostile-row --attempt extra --exit-code \"\$rc\" --stderr /tmp/extra.err --out results/extra.json
-      - run: python3 bin/chain-verify.py hostile-collect results --out hostile-results.json"; wexpect caught "wiring: any other added case step in the verify job is refused" "$d"
+d=$(mk w_othersteps); dupstep "$(rel "$d")" extra_case; wexpect caught "wiring: any other added case step in the verify job is refused" "$d"
 d=$(mk w_dropmint); python3 - "$(rel "$d")" <<'PY2'
 import sys,re
 t=open(sys.argv[1]).read()
