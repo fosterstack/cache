@@ -58,7 +58,7 @@
 #   Q2 the helper cases run PR 2's helper (token through stdout and a process substitution, witness-STEP/STEP-collection.json, the closed
 #      step list with PR 3's three steps; a fourth unknown step is refused).
 #   AC15 (advisor, Oct 10): each scanner's vulnerability database is fetched fresh from the scanner's own host at scan time and the
-#      results record its source URL, build date and digest; stale (> 48 h, `now` injectable as CHECK_SCAN_NOW, epoch seconds), unfetchable,
+#      results record its source URL, build date and digest; stale (> 48 h; `now` is the runner's `date +%s`, given by a fake date on PATH here: round 1 F4), unfetchable,
 #      foreign-host, dateless or digestless databases fail closed. grype's database status is read from the shape recorded in
 #      the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json (descriptor.db.status: from = the download URL with ?checksum=sha256:..., built, valid);
 #      its host there is grype.anchore.io. osv-scanner (advisor, Oct 10, from osv-scanner v2.6.0 docs/offline-mode.md): it runs with
@@ -77,7 +77,7 @@ pass=0 failn=0
 command -v jq > /dev/null || { echo "FAIL jq is required"; exit 1; }
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
-CHECK_SCAN_NOW=$(jq -n '"2026-10-10T00:00:00Z" | fromdateiso8601'); export CHECK_SCAN_NOW   # AC15: the scan's `now`
+FAKE_NOW=$(jq -n '"2026-10-10T00:00:00Z" | fromdateiso8601'); export FAKE_NOW   # AC15: the scan's `now`, given by a fake `date` first on PATH (round 1 F4: no variable of the stage's environment sets the clock)
 GDB_SUM=972de542534d3461cc3c3849a37a3f917b823de3b9c367e289db0d163519b42b
 GDB_FROM="https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-10-09T00:33:02Z_1790058641.tar.zst?checksum=sha256%3A$GDB_SUM"
 export FAKE_DB_FROM="$GDB_FROM" FAKE_DB_BUILT=2026-10-09T06:30:41Z FAKE_DB_RC=0
@@ -198,6 +198,7 @@ EOF
   chmod +x "$fake/$1"
 }
 mkfake grype 0 120; mkfake osv-scanner 0 80; mkfake trivy 0 5
+printf '#!/usr/bin/env bash\n[ "$*" != "+%%s" ] || { echo "$FAKE_NOW"; exit 0; }\nexec /bin/date "$@"\n' > "$fake/date"; chmod +x "$fake/date"
 run() { # run SCRIPT ARGS...  -> sets rc, out; runs in the fake tree with the fakes first on PATH
   local s=$1; shift; : > "$work/log"; rc=0
   out=$( (cd "$fx" && PATH="$fake:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$work/fakedir" bash "bin/$s" "$@") 2>&1) || rc=$?
@@ -316,6 +317,11 @@ if [ -f "$fx/out/scan-results.json" ] && jq -e --arg u "$GDB_FROM" --arg s "sha2
 u=$(grep -n '^grype db update$' "$work/log" | head -1 | cut -d: -f1 || true); s=$(grep -n '^grype .*\(oci-dir\|file\):' "$work/log" | head -1 | cut -d: -f1 || true)
 if [ -n "$u" ] && [ -n "$s" ] && [ "$u" -lt "$s" ]; then ok "AC15 the database is fetched fresh (grype db update) before the first scan"; else bad "AC15 db update (line ${u:-none}) must come before the first scan (line ${s:-none})"; fi
 FAKE_DB_BUILT=2026-10-07T00:00:00Z want_fail "AC15 a database built 72 h before now fails closed" "older than 48 hours" "${SCAN[@]}"
+# round 1 F4 (Codex A3): the clock is the runner's. A CHECK_SCAN_NOW in the environment (an older `now` makes any database fresh) is refused, never read.
+OLD=$(jq -n '"2026-10-07T00:00:00Z" | fromdateiso8601')
+CHECK_SCAN_NOW=$OLD FAKE_DB_BUILT=2026-10-07T00:00:00Z want_fail "AC15 F4 an inherited CHECK_SCAN_NOW does not make a 72 h old database fresh: the variable is refused" CHECK_SCAN_NOW "${SCAN[@]}"
+CHECK_SCAN_NOW=$OLD want_fail "AC15 F4 an inherited CHECK_SCAN_NOW is refused even beside a fresh database (no silent use of a variable the stage cannot set)" CHECK_SCAN_NOW "${SCAN[@]}"
+FAKE_NOW=$(jq -n '"2026-10-12T00:00:00Z" | fromdateiso8601') want_fail "AC15 F4 the runner's clock decides: a database built 2026-10-09 is stale on 2026-10-12" "older than 48 hours" "${SCAN[@]}"
 rm -f "$fx/out/scan-results.json"; FAKE_DB_RC=1 run "${SCAN[@]}"
 if [ "$rc" = 1 ] && grep -Fq "could not fetch" <<< "$out" && ! grep -q '^grype .*archive' "$work/log" && ! jq -e 'any(.scanners[]?; .verdict == "pass")' "$fx/out/scan-results.json" > /dev/null 2>&1; then ok "AC15 a database that cannot be fetched fails closed: nothing is scanned and nothing is recorded as clean"; else bad "AC15 fetch failure -> rc=$rc: ${out:0:140}"; fi
 FAKE_DB_FROM="https://mirror.example.com/databases/v6/db.tar.zst?checksum=sha256%3A$GDB_SUM" want_fail "AC15 a database from a host that is not grype's own fails closed" "own database host" "${SCAN[@]}"
@@ -769,7 +775,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=170
+EXPECT=173
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
