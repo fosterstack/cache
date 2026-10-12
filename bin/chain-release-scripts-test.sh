@@ -177,6 +177,8 @@ def tree(extra_env=None):
                       "image-%s-manifest-amd64" % v: "sha256:" + "1" * 64, "image-%s-manifest-arm64" % v: "sha256:" + "2" * 64})
     json.dump(items, open(os.path.join(t, "witness-build/items.json"), "w"))
     adm(t, "v0.3.0", "v0.3.0")
+    for f in ["provenance/provenance.rekor.json", "provenance/provenance.bundle.json"]:      # Sign's three files (REQ-CHAIN-007-AC9: attached to the release; provenance.json is below)
+        open(os.path.join(t, f), "w").write("{}")
     for f in ["witness-build/build-collection.json", "witness-rebuild/rebuild-collection.json", "provenance/provenance.json", "dist/checksums.txt"] + ["witness-check/witness-%s/%s-collection.json" % (n, n) for n in ("scanners", "acceptance", "runtime", "arm64")]:
         os.makedirs(os.path.dirname(os.path.join(t, f)), exist_ok=True); open(os.path.join(t, f), "w").write("{}")
     os.makedirs(os.path.join(t, "docs"), exist_ok=True); open(os.path.join(t, "docs/verify-release.cannot-run.json"), "w").write("[]")
@@ -415,8 +417,11 @@ def full_assets():
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
 for what in ("release upload v0.3.0", "release-upload/amd64-a.apk", "release-upload/arm64-a.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
-             "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json"):
+             "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json", "release-upload/provenance.json", "release-upload/provenance.rekor.json", "release-upload/provenance.bundle.json"):
     check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
+for pf in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):     # Sign's provenance is part of every release: a run without one stops before the upload, naming it
+    tp = full_assets(); os.remove(os.path.join(tp, "provenance", pf)); rcp, sop, sep = run(tp, "release-assets", creds=["GH_TOKEN"])
+    check(rcp != 0 and pf in sep and not [l for l in log(tp) if l.startswith("gh release upload")], "AC9 without Sign's %s the release is not published: nothing is uploaded, the file is named" % pf, "rc=%s %s" % (rcp, first(sep)))
 t2 = full_assets(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_FAIL_ON": "release view"})
 check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(l.endswith("--verify-tag") for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
 check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-file" in l or "--notes-from-tag" in l], "AC9 no undraft and no tag notes here (REQ-REL-009-AC8 is the patch-notes job's)")
@@ -522,7 +527,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "245"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "251"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

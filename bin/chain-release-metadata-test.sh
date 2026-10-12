@@ -134,6 +134,7 @@ def release_dir():
     open(a + "/production.sbom.json", "w").write("{}"); open(a + "/production.sbom.json.bundle", "w").write("{}")
     open(a + "/policy.json", "w").write("{}"); open(a + "/release-policy.bundle", "w").write("{}")
     open(a + "/build-collection.json", "w").write("{}")
+    for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"): open(os.path.join(a, n), "w").write("{}")      # Sign's three files (REQ-CHAIN-007-AC9, AC19)
     return a
 def gate(label, mutate, word=None):
     a = release_dir(); mutate(a); rc, so, se = run("gate", "--dir", a)
@@ -151,10 +152,12 @@ gate("a missing release-files.sha256.bundle is refused (v0.3.0 is not released w
 gate("a missing metadata file is refused", lambda a: os.remove(a + "/fosterstack-cache.openvex.json"), "fosterstack-cache.openvex.json")
 gate("a missing checksums.txt.bundle is refused", lambda a: os.remove(a + "/checksums.txt.bundle"), "checksums.txt.bundle")
 gate("a file with its own bundle (the SBOM) is covered by it", lambda a: None)
+for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):
+    gate("a release without Sign's %s is refused, naming it (Sign's provenance is part of every release)" % n, lambda a, n=n: os.remove(os.path.join(a, n)), n)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "62"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "65"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
