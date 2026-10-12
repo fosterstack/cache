@@ -1003,7 +1003,9 @@ func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
 	files := map[string]string{
 		"plain_test.go":           body("TestPlain", ""),
 		"ignore_test.go":          body("TestIgnored", "//go:build ignore\n\n"),
-		"oldtag_test.go":          body("TestOldTagIgnored", "// +build ignore\n\n"),
+		"oldtag_test.go":          body("TestOldTagWindows", "// +build windows\n\n"),
+		"oldlinux_test.go":        body("TestOldTagLinux", "// +build linux\n\n"),
+		"linux_amd64_test.go":     body("TestLinuxAmd64Suffix", ""),
 		"win_windows_test.go":     body("TestWindowsByName", ""),
 		"mac_darwin_test.go":      body("TestDarwinByName", ""),
 		"only_amd64_test.go":      body("TestAmd64Only", ""),
@@ -1034,14 +1036,70 @@ func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"TestPlain", "TestEitherArch", "TestLinuxName", "TestReleaseTag", "TestUnixTag"} {
+	for _, name := range []string{"TestPlain", "TestOldTagLinux", "TestEitherArch", "TestLinuxName", "TestReleaseTag", "TestUnixTag"} {
 		if !goTestExists(dir, name) {
 			t.Errorf("%s is selected on linux/amd64 and linux/arm64 but was not found", name)
 		}
 	}
-	for _, name := range []string{"TestIgnored", "TestOldTagIgnored", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux", "TestAmd64Expr", "TestArm64Expr", "TestCombinedSuffix", "TestNeedsCgo", "TestNeedsNoCgo", "TestFeatureTag", "TestFeatureTagArm", "TestRaceTag", "TestExperimentTag", "TestCustomTag", "TestOldCustomTag", "TestMalformed", "TestGeneric"} {
+	for _, name := range []string{"TestIgnored", "TestOldTagWindows", "TestLinuxAmd64Suffix", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux", "TestAmd64Expr", "TestArm64Expr", "TestCombinedSuffix", "TestNeedsCgo", "TestNeedsNoCgo", "TestFeatureTag", "TestFeatureTagArm", "TestRaceTag", "TestExperimentTag", "TestCustomTag", "TestOldCustomTag", "TestMalformed", "TestGeneric"} {
 		if goTestExists(dir, name) {
 			t.Errorf("%s is excluded by the build rules, names an unresolved tag, or has type parameters, but was accepted", name)
+		}
+	}
+}
+
+// The file header is read as the Go toolchain reads it (REQ-REL-007-AC3): only a line Go treats as a constraint can
+// make a tag unresolved; the package must load; the name must be one `go test` registers.
+func TestGoTestExistsFollowsTheToolchainHeaderAndPackageRules(t *testing.T) {
+	chdirTemp(t)
+	write := func(dir, file, src string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fn := func(name string) string { return "import \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n" }
+	// a +build line inside the package documentation (no blank line before the package clause) is a comment to Go
+	write("hdr", "doc_test.go", "// Package p documents a flag.\n// +build integration\npackage p\n\n"+fn("TestDocBuildLine"))
+	// a legacy line followed by a blank line is a constraint
+	write("hdr", "legacy_test.go", "// +build integration\n\npackage p\n\n"+fn("TestLegacyCustom"))
+	// when a //go:build line is present Go ignores the // +build lines
+	write("hdr", "both_test.go", "//go:build linux\n// +build integration\n\npackage p\n\n"+fn("TestGoBuildWins"))
+	// a constraint written after the package clause selects nothing and names nothing
+	write("hdr", "after_test.go", "package p\n\n//go:build integration\n\n"+fn("TestAfterPackage"))
+	// a directive inside a block comment is text
+	write("hdr", "block_test.go", "/*\n//go:build integration\n*/\n\npackage p\n\n"+fn("TestInBlockComment"))
+	for _, c := range []struct {
+		name string
+		want bool
+	}{{"TestDocBuildLine", true}, {"TestLegacyCustom", false}, {"TestGoBuildWins", true}, {"TestAfterPackage", true}, {"TestInBlockComment", true}} {
+		if got := goTestExists("hdr", c.name); got != c.want {
+			t.Errorf("%s: counted=%v, want %v", c.name, got, c.want)
+		}
+	}
+	// a file the package loader ignores or rejects does not run
+	write("doc", "mapped_test.go", "package documentation\n\n"+fn("TestInDocumentationPackage"))
+	write("mixed", "a.go", "package a\n")
+	write("mixed", "b_test.go", "package b\n\n"+fn("TestMixedPackages"))
+	write("ok", "a.go", "package a\n")
+	write("ok", "x_test.go", "package a_test\n\n"+fn("TestExternal"))
+	write("ok", "y_test.go", "package a\n\n"+fn("TestInternal"))
+	for _, c := range []struct {
+		dir, name string
+		want      bool
+	}{{"doc", "TestInDocumentationPackage", false}, {"mixed", "TestMixedPackages", false}, {"ok", "TestExternal", true}, {"ok", "TestInternal", true}} {
+		if got := goTestExists(c.dir, c.name); got != c.want {
+			t.Errorf("%s/%s: counted=%v, want %v", c.dir, c.name, got, c.want)
+		}
+	}
+	// the registered-name rule is Go's: the rune after Test must not be a lower-case letter (any script)
+	write("names", "n_test.go", "package n\n\n"+fn("Testé")+"\n"+"func TestÉ(t *testing.T) {}\nfunc Test_u(t *testing.T) {}\nfunc Test(t *testing.T) {}\nfunc Test9(t *testing.T) {}\n")
+	for name, want := range map[string]bool{"Testé": false, "TestÉ": true, "Test_u": true, "Test": true, "Test9": true} {
+		if got := goTestExists("names", name); got != want {
+			t.Errorf("name %q: counted=%v, want %v", name, got, want)
 		}
 	}
 }
