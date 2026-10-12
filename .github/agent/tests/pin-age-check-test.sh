@@ -2949,12 +2949,12 @@ GH_LISTED = [GHD, GHD + ' -p manifest.json -D dist', GHD + ' --pattern "*.json" 
              GHD + ' -A tar.gz -D d', GHD + ' --pattern gh', GHD + ' -O a.json --clobber', GHD + ' --output a.json', GHD + ' --archive zip', GHD + ' -p a -p b',
              GHD + " -p 'a b'", GHD + ' -p "${PAT}"', GHD + ' -p a.json && echo done', GHD + ' -D dist; ls dist', GHD + ' -p a.json; sha256sum -c a.sha256',
              GHD + ' -p a.tgz ; test -s a.tgz && mkdir -p out && tar -x -z -f a.tgz -C out && ls out', GHD + ' -O a ; mv a b ; test -f b', GHD + ' ; echo ok',
-             GHD + ' ; mv "dist/$f" out', GHD + ' -p a.tgz && tar -t -z -f a.tgz', GHD + ' -p a.tgz && tar -x -f a.tgz', GHD + ' -p a.tgz && tar -t -f a.tgz',
+             GHD + ' -p a.tgz && tar -t -z -f a.tgz',   # FLIPPED (post-9 micro-verification): GHD ' ; mv "dist/$f" out' is refused now (no $ in an operand) GHD + ' -p a.tgz && tar -x -f a.tgz', GHD + ' -p a.tgz && tar -t -f a.tgz',
              GHD + ' && tar -x -f a.tgz -C out', GHD + ' ; test -e a ; mkdir d ; ls ; echo', GHD + ' -p x; ls', GHD + ' ; echo a=b "c d" \'e f\'',
              GHD + ' ; test -f a && test -s a && test -e a', GHD + ' ; ls a b c']
 HOST_LISTED = [A, A + ' && sha256sum -c a.sha256', A + ' ; test -s a.tgz && mkdir -p out && tar -x -z -f a.tgz -C out && ls out', 'mkdir -p d && ' + A,
                A + '; echo done', A + ' && mv a.tgz b.tgz', A + ' ; curl -fsS -o b https://h.example.dev/b', 'test -e a ; ' + A, A + ' && tar -t -f a.tgz',
-               A + ' ; echo "dist/$f"', A + '; ls']
+               A + '; ls']   # FLIPPED (post-9 micro-verification): A ' ; echo "dist/$f"' is refused now (a local-command operand holds no $)
 bad = []
 for line in REFUSED:
     rs = line.startswith(GHD)
@@ -2974,6 +2974,75 @@ for line in HOST_LISTED:
 assert not bad, bad[:40]
 print("PYC9: %d refused, %d controls" % (len(REFUSED), len(GH_LISTED) + len(HOST_LISTED)))
 PYC9
+# --- AC19'' POST-9 MICRO-VERIFICATION (advisor, Oct 11; Codex A10 P2, Codex B9 P3 at ed97e14) ------------------------------------------------------------
+# REQ-SUP-001-AC19 (0): (1) a local-command operand holds no $, backtick or ~ at all (tar -x -f "h$R" with R=:archive hands tar the REMOTE archive name
+# h:archive: the : check on the written operand is not enough); a single-quoted '$R' is literal in bash but is refused too: one rule, no $ in an operand,
+# whatever the quotes; (2) the gh, git, curl or wget word checks read the RAW word as well as its ${name}-normalised text (echo "a${curl}b" was turned
+# into a$curlb, which erased the word boundary: refused at 8884f01, accepted at ed97e14).
+# A10 P2, the reviewer's exact shape: R=:archive in the script, then the fetch line whose tar FILE is "h$R", repo:self and host, both verifier kinds
+LA10="$G0 -p asset ; sha256sum -c sums && tar -x -f \"h\$R\""
+LA10h="curl -fsS -o asset $U0 ; sha256sum -c sums && tar -x -f \"h\$R\""
+one ifa10 "${FETCH}R=:archive"$'\n'"$LA10"$'\n' "$LA10" repo:self
+CASE="AC19'' (0) Codex A10 P2: R=:archive, then the repo:self line $LA10: exit 1, not a listed plain form"
+refused 0; check grep -q 'listed plain form' "$work/if.out"
+one ifa10h "${FETCH}R=:archive"$'\n'"$LA10h"$'\n' "$LA10h"
+CASE="AC19'' (0) Codex A10 P2: R=:archive, then the host line $LA10h: exit 1, not a listed plain form"
+refused 0; check grep -q 'listed plain form' "$work/if.out"
+ghrefused "$LA10"
+plainrefused "$LA10h" 'Codex A10 P2 a tar FILE built by an expansion'
+# B9 P3, the reviewer's exact shapes on a host line (and the curl FILE shape the reviewer reproduced with them)
+for W in curl wget git gh; do
+  plainrefused "curl -fsS $U0 ; echo \"a\${$W}b\"" "Codex B9 P3 a $W word behind a brace expansion"
+done
+plainrefused "curl -fsS -o \"a\${curl}b\" $U0" 'Codex B9 P3 a curl word behind a brace expansion in the curl FILE'
+CASE="AC19'' (0) post-9 micro-verification: no \$, backtick or ~ in a local-command operand; the net-word checks read the raw word; 10 neighbours per family, unit"
+check python3 - "$chk" <<'PYC10'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+A = 'curl -fsS -o a.tgz https://h.example.dev/a'
+U = 'https://h.example.dev/a'
+REFUSED = []
+# T: tar's FILE (and -C DIR) built by an expansion or holding ~, in every listed tar shape
+TAR_FILE = ['"h$R"', '"$R"', '"${R}"', '"h${R}"', "'$R'", "'h$R'", '"$R.tgz"', '"a/$R"', '"h${R}.tgz"', '"~"', '"~/a.tgz"', "'~h'", '"a~b"', '"h$R:"']
+for x in TAR_FILE:
+    for t in ['tar -x -f ' + x, 'tar -x -z -f ' + x, 'tar -t -f ' + x, 'tar -t -z -f ' + x, 'tar -x -f a.tgz -C ' + x, 'tar -x -z -f a.tgz -C ' + x]:
+        REFUSED += [GHD + ' ; ' + t, GHD + ' -p a && ' + t, A + ' ; ' + t, A + ' && ' + t]
+# L: every other local command's operand holding $ (quoted or braced) or ~
+LOCAL_X = ['sha256sum -c "a$x"', 'sha256sum -c "${x}.sha256"', "sha256sum -c 'a$x'", 'test -f "a$x"', 'test -s "a${x}"', 'test -e "a/$x"', "test -f '~a'",
+           'mv "h$R" b', 'mv a "d/$x"', 'mv "dist/$f" out', 'mv "${a}" b', "mv '~a' b", 'mkdir "d$x"', 'mkdir -p "d/${x}"', 'mkdir -p "~d"', "mkdir 'a$x'",
+           'ls "d$x"', 'ls a "b$x"', 'ls "~/x"', "ls 'a${x}'", 'echo "a$x"', "echo 'a$x'", 'echo "dist/$f"', 'echo "~"', 'echo "a~b"', 'echo ok "${x}"',
+           'test -s "~"', 'echo "a$R:b"', 'ls "-$x"', 'mv "a${R}" "b"']
+for c in LOCAL_X:
+    REFUSED += [GHD + ' ; ' + c, GHD + ' -p a && ' + c, A + ' ; ' + c, A + ' && ' + c]
+# N: a net word behind any expansion form, as a local operand (host and repo:self), and inside a curl FILE or address (host)
+for w in ['curl', 'wget', 'git', 'gh', 'ssh', 'rsync']:
+    NET = ['echo "a${%s}b"', 'echo "${%s}"', 'echo "a${%s}"', 'echo "${%s}b"', 'echo "a$%s"', 'ls "d/${%s}/x"', 'mv "${%s}" b', 'echo "a${%s:-x}b"',
+           'echo "${!%s}"', 'echo $(%s)', 'echo `%s`', "echo 'a${%s}b'", 'test -f "a${%s}b"', 'tar -x -f "a${%s}b"', 'mkdir -p "${%s}d"']
+    for c in NET:
+        c = c % w
+        REFUSED += [GHD + ' ; ' + c, A + ' ; ' + c, A + ' && ' + c, 'curl -fsS ' + U + ' ; ' + c]
+for w in ['curl', 'wget']:
+    for c in ['-o "a${%s}b" ' + U, '--output "a${%s}b" ' + U, '-o "${%s}" ' + U, '-o "$d/${%s}" ' + U, '-o "${%s}.tgz" ' + U, '-o "x${%s}" ' + U,
+              '-fsSo "a${%s}b" ' + U, '--output "${%s}b" ' + U, '-o a "https://h.example.dev/a${%s}b"', '-o a "https://h.example.dev/${%s}"',
+              '-o "a${%s:-x}b" ' + U, '-o "a$%s" ' + U]:
+        REFUSED.append('curl -fsS ' + c % w)
+CONTROLS = [(GHD + ' -p "${PAT}"', True), (GHD + ' -D "$out"', True), (GHD + ' -p a.tgz ; tar -x -f a.tgz', True), (GHD + ' -p a.tgz && tar -x -z -f a.tgz -C out', True),
+            (GHD + " ; echo 'a b' done", True), (GHD + ' ; mv a.tgz b.tgz', True), ('curl -fsS -o "$tmp/i" ' + U, False), ('curl -fsS -o "${out}" ' + U, False),
+            (A + ' ; tar -t -z -f a.tgz', False), (A + ' ; echo "a b"', False), (A + ' ; mkdir -p out && tar -x -f a.tgz -C out', False)]
+bad = []
+for line in REFUSED:
+    rs = line.startswith(GHD)
+    if ac._unlisted(line, repo_self=rs) is None:
+        bad.append(("listed, should be refused", line))
+for line, rs in CONTROLS:
+    why = ac._unlisted(line, repo_self=rs)
+    if why is not None:
+        bad.append(("control refused", line, why))
+print("\n".join(map(repr, bad)))
+assert not bad, len(bad)
+print("PYC10: %d refused, %d controls" % (len(REFUSED), len(CONTROLS)))
+PYC10
 # (3) the verifier line is matched against PHYSICAL lines of a literal-block run: (|, |-, |+) of exactly one step, never a parsed value (outbox 4a R1-R6)
 VC='cosign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out'
 vwcase() { # FILE TEXT EXPECTED-RC WHY
