@@ -1823,18 +1823,27 @@ requirements:
       readable back (notes, then the tag, the changelog's notes and later the history), _lit's quoted form writes '<' and
       '&' as \u003c and \u0026 (the same JSON string, as a hyphen before four more is written \u002d), so no printed VEX
       value holds a refused form; a reader sees the JSON string (a statement named <b>x shows "\u003cb>x" in its code
-      span). notes() checks its whole text, and every line, a VEX line too, is printed and read back by the one function
+      span); the value is redacted as text before it is encoded (an escape ends in a letter or digit and would erase the
+      word boundary the redactor reads: '<google', '&o1'), and a statement whose CVE name or @id redaction changes is
+      named by its position. notes() checks its whole text, and every line, a VEX line too, is printed and read back by the one function
       _clean_free (a VEX line holding the redaction marker is written in the escape-whole-line form). Each line of a
       multi-line source value is checked before the value is made one line, and the whole go.mod line a Go fix's version
       is read from. go.mod is read by a strict parser of its grammar (Go's modfile lexer: '//' comments, 'verb (' ... ')'
       blocks): the versions and the line judged come from one parse of the require directives only (never a comment,
       replace or exclude line), and anything the parser does not read (a '/* */' comment, a quoted string, a control or
       other space character, a module required twice, a require that is not a path and a semantic version, an unclosed
-      block) is refused, naming go.mod:line; Go is not on the decide job's PATH, so the parser is in the script. A fix record is judged on the scan match that produced it (the
+      block) is refused, naming go.mod:line; Go is not on the decide job's PATH, so the parser is in the script. Versions
+      are read as golang.org/x/mod/semver reads them (vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD], ASCII digits, no leading
+      zero, no empty identifier), the go directive as a Go release version (1.21, 1.21.0, 1.21rc1), and every supported
+      directive in its own shape (module, toolchain, require, exclude, replace, retract, godebug, tool, ignore); the name
+      'stdlib' is reserved for the toolchain and refused in any directive, and a stdlib fix is compared with 'go' + the go
+      directive's version. Documented limit (advisor, Oct 11): a quoted path, which Go accepts, is refused (fail closed):
+      the parser reads the go.mod forms the repository's go.mod files use. A fix record is judged on the scan match that produced it (the
       first match HEAD fixes, variants sorted, document order: the one fixed_findings prints from). The collision check
       (5) is one set across every published line (fix, VEX and behavior); a fix record is named by its scan file and key
       path; in the readers (a tag's notes, the changelog's notes, the history) two '- ' lines of one release block that
-      publish the same line are refused, both named; the same line in two release blocks is not a collision. In a generated patch tag (release tagger, gitsign signature last, heading naming the tag) a '-----BEGIN '
+      publish the same line once cleaned as published ('- gpt' and '- claude'; a marker line and its escaped spelling) are
+      refused, both named by their source lines; the same line in two release blocks is not a collision. In a generated patch tag (release tagger, gitsign signature last, heading naming the tag) a '-----BEGIN '
       anywhere before that last signature is refused (exit 2, the line named); any other tag exits 1 as before. Beyond
       the four forms, a free-text line holding the redaction marker that continues the line above it (neither blank nor a
       heading) is refused in tag notes and changelog inputs (a construct spanning lines could hide the marker); --published (every v* tag message and CHANGELOG.md) is not a source and is not checked for '-----BEGIN '
