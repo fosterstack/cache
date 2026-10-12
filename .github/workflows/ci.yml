@@ -363,6 +363,8 @@ jobs:
         run: bash bin/chain-snapshot-test.sh
       - name: "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)"
         run: bash bin/chain-install-witness-test.sh
+      - name: "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)"
+        run: bash bin/chain-check-scripts-test.sh
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: bash bin/dependabot-reviewer-test.sh
