@@ -132,8 +132,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="The review-loop record clears the stop rule (or the PR changes nothing under .github/agent/), and every action reference is a commit digest."
-          else conclusion=failure; summary="No valid review-loop record for this .github/agent/ content, or an action reference that is not a commit digest (or the judge did not finish) — see the run log."; fi
+          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard and the pin-wiring judge passed."
+          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard or the pin-wiring judge failed (or the judge did not finish) — see the run log."; fi
           gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
             -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
             -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" >/dev/null
