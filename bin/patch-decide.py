@@ -20,7 +20,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           image no longer reports); unknown or unreadable never counts as removed.
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import argparse, json, os, re, subprocess, sys, unicodedata
+import argparse, html, json, os, re, subprocess, sys, unicodedata, urllib.parse
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
@@ -50,14 +50,14 @@ VENDOR_ALONE = re.compile(r"(?i)(?:(?<![a-z0-9])|(?<=[a-z0-9])(?-i:(?=[A-Z])))("
 MODULE_PATH = re.compile(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(/[a-z0-9_.@~+-]+)*/?$")   # every part lowercase (Sonnet r3c, NEW-BLOCKER-3)
 
 
-def _alone(m):
+def _alone(m, mark="<redacted>"):
     text, i, j = m.string, m.start(), m.end()
     while i > 0 and not text[i - 1].isspace() and text[i - 1] not in "([{\"'<,;":
         i -= 1
     while j < len(text) and not text[j].isspace() and text[j] not in ")]}\"'>,;":
         j += 1
     token = text[i:j].rstrip(".:")
-    return m.group(0) if MODULE_PATH.match(token) else "<redacted>"
+    return m.group(0) if MODULE_PATH.match(token) else mark
 
 
 # the release chain's build inputs shape the shipped image: never neutral (Codex #158 r1, B04). Fail closed (Sonnet #158 r2,
@@ -267,9 +267,17 @@ def _clean(s):
     return VENDOR_ALONE.sub(_alone, VENDOR.sub("<redacted>", str(s)))
 
 
+def _clean_value(v):
+    """a VEX value redacted for its quoted form (_lit): each vendor or model name replaced as _clean replaces it, the
+    code writing the visible marker '(redacted)' itself. Nothing in the value is converted into the marker: a value
+    holding a marker form is refused before this runs (_marker_form; advisor narrow cut, Codex #300 b11, B item 2)"""
+    return VENDOR_ALONE.sub(lambda m: _alone(m, "(redacted)"), VENDOR.sub("(redacted)", str(v)))
+
+
 def _visible(s):
     """Markdown output (notes, changelog, tag notes): the redaction marker as visible text — "<redacted>" parses as an
-    HTML tag and renders as nothing (Codex #300 r4, B low)"""
+    HTML tag and renders as nothing (Codex #300 r4, B low). Lines only: a VEX value is never converted (_lit; Codex #300
+    b11, B item 2: a value holding a marker form is refused, _marker_form)"""
     return s.replace("<redacted>", "(redacted)")
 
 
@@ -284,6 +292,36 @@ ESCAPED = re.compile(r"(?:\\[%s]|[^%s])*\Z" % (PUNCT, PUNCT))
 UNESC = re.compile(r"\\([%s])" % PUNCT)
 MARKS = ("(redacted)", "\\(redacted\\)")         # the marker as the notes print it, and as it renders after one escape
 FREE_PRE = re.compile(r"- |#{1,6} ")             # a bullet or an ATX heading stays one
+MARKER_FORM = re.compile(r"(?i)<redacted>|\(redacted\)")     # the marker the code writes, and the one the notes print
+CODE_ESC = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|x([0-9A-Fa-f]{2}))")
+
+
+def _decode_esc(m):
+    n = int(m.group(1) or m.group(2) or m.group(3), 16)
+    return chr(n) if n <= 0x10FFFF else m.group(0)
+
+
+def _marker_form(v):
+    """v holds a redaction-marker form: '<redacted>' or '(redacted)', in any case, as written or in any spelling the
+    readers or a renderer could turn into it — backslash-escaped ('\\(redacted\\)', '\\<redacted\\>'), JSON or code
+    escapes ('\\u003c', '\\x3c'), HTML character references ('&lt;', '&#60;', '&lpar;'), percent-encoded ('%3C'), a
+    compatibility form (fullwidth '\uff1c'), each nested in any other. Every decoding is applied repeatedly until nothing
+    changes; a value that does not settle within 64 passes counts as holding one (fail closed). A VEX value holding a
+    marker form is refused before any redaction, never converted (advisor narrow cut, Codex #300 b11, B item 2:
+    a literal marker turned into the printed one lost the statement's identity)."""
+    s = str(v)
+    for _ in range(64):
+        if MARKER_FORM.search(s):
+            return True
+        t = unicodedata.normalize("NFKC", s)
+        t = html.unescape(t)
+        t = urllib.parse.unquote(t)
+        t = CODE_ESC.sub(_decode_esc, t)
+        t = UNESC.sub(r"\1", t)
+        if t == s:
+            return False
+        s = t
+    return True
 
 
 def _marked(s):
@@ -452,15 +490,19 @@ def _lit(v, before_colon=False):
     quoted form '<' and '&' are written \\u003c and \\u0026 (the same JSON string; advisor decision Oct 11, option A): no
     printed value holds a refused form of REQ-REL-009-AC14, so the notes' own VEX lines pass every reader with no
     exemption. A reader sees the JSON string: a statement named <b>x shows as "\\u003cb\\u003ex" in its code span. The
-    quoted value is redacted (_clean_md) before it is encoded, so a vendor or model name right after an escaped character is
+    quoted value is redacted before it is encoded, so a vendor or model name right after an escaped character is
     redacted as it would be in plain text (Codex #300 r10, B 1); vex_changes names a statement whose name or @id redaction
-    changes by its position."""
+    changes by its position. A value holding a redaction-marker form (_marker_form) is refused (ValueError) before any
+    redaction; the redaction of a vendor or model name is written as the visible '(redacted)' directly, and no value is
+    ever converted into the marker (advisor narrow cut, Codex #300 b11, B item 2)."""
     v = str(v)
+    if _marker_form(v):
+        raise ValueError("a VEX value holds a redaction-marker form (refused, never converted)")
     if BARE.match(v) and not NOT_BARE.search(v + (":" if before_colon else "")):
         return v
     # the value is redacted as text BEFORE it is encoded: an escape ('<' -> \u003c) ends in a letter or digit and would
     # erase the word boundary the redactor reads ('<google', '&o1'; Codex #300 r10, B 1)
-    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(_clean_md(v), ensure_ascii=True).replace("`", "\\u0060")
+    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(_clean_value(v), ensure_ascii=True).replace("`", "\\u0060")
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
@@ -750,9 +792,37 @@ def vex_changes(old_doc, new_doc):
     def canon(v):
         return json.dumps(v, sort_keys=True)
 
+    def printed_values(s_):
+        """(field, value) of every string of a statement the notes can print: its vulnerability name, its @id, each
+        product's and subcomponent's @id and identifiers, and its field names (advisor narrow cut, Codex #300 b11)"""
+        yield "vulnerability.name", s_["vulnerability"]["name"]
+        if isinstance(s_.get("@id"), str):
+            yield "@id", s_["@id"]
+        for k in s_:
+            yield "a field name", k
+
+        def comp(c, at):
+            if isinstance(c.get("@id"), str):
+                yield at + ".@id", c["@id"]
+            if isinstance(c.get("identifiers"), dict):
+                for k, v in c["identifiers"].items():
+                    yield "%s.identifiers.%s" % (at, k), k
+                    if isinstance(v, str):
+                        yield "%s.identifiers.%s" % (at, k), v
+        for i, p in enumerate(s_.get("products") if isinstance(s_.get("products"), list) else [], 1):
+            if isinstance(p, dict):
+                yield from comp(p, "products[%d]" % i)
+                for j, c in enumerate(p.get("subcomponents") if isinstance(p.get("subcomponents"), list) else [], 1):
+                    if isinstance(c, dict):
+                        yield from comp(c, "products[%d].subcomponents[%d]" % (i, j))
+
     def by_cve(doc, side):
         if not isinstance(doc, dict) or not isinstance(doc.get("statements"), list):
             raise ValueError("VEX %s document: not an object with a statements array" % side)
+        for k in doc:
+            if _marker_form(k):
+                raise ValueError("VEX %s document: a document field name holds a redaction-marker form (refused, never "
+                                 "converted)" % side)
         out, ids = {}, {}
         for pos, s_ in enumerate(doc["statements"], 1):
             v_ = s_.get("vulnerability") if isinstance(s_, dict) else None
@@ -760,6 +830,10 @@ def vex_changes(old_doc, new_doc):
                 raise ValueError("VEX %s document: statement %d has no vulnerability name" % (side, pos))
             if not isinstance(s_.get("status"), str) or s_["status"] not in VEX_STATUS:
                 raise ValueError("VEX %s document: statement %d has no OpenVEX status" % (side, pos))
+            for field, val in printed_values(s_):
+                if _marker_form(val):
+                    raise ValueError("VEX %s document: statement %d: %s holds a redaction-marker form (refused, never "
+                                     "converted)" % (side, pos, field))
             out.setdefault(v_["name"], []).append((pos, s_))
             if isinstance(s_.get("@id"), str):
                 ids[s_["@id"]] = ids.get(s_["@id"], 0) + 1
