@@ -761,6 +761,10 @@ gwant_fail "AC7 a cannot-run entry that is not one of the verify forms fails (Re
 for c in "cosign verify <IMAGE_REF> --certificate-identity \\'x\${HOME}y\\' --certificate-oidc-issuer $ISS" "jq -n \\'\$TAG\\'"; do
   g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 round 2 an escaped quote does not open a quoted region: a \$ after it is refused: ${c:0:70}" "shell syntax"
 done
+# round 4 (both seats): the command words are compared one word at a time, so a quoted "cosign verify" (one word holding a space) is not the verify form
+for c in "\"cosign verify\" | jq ." "'gh attestation' verify | jq ." "cosign 'verify' | jq ."; do
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 round 4 a listed command whose quoted word holds a space is not a verify form (compared word by word): ${c:0:60}" "not a verify form"
+done
 for c in "cosign verify-evil x" "cosign verifyx y" "gh attestation verify-evil z" "jqx ."; do
   g "$(blk "$L2" "$c")"; printf '[{"command": "%s", "reason": "x"}]\n' "$c" > "$fx/guide.cannot-run.json"
   gwant_fail "AC7 round 2 a cannot-run entry whose first words only START with a verify form is not a verify form (the form is compared by whole words): $c" "not a verify form"
@@ -875,7 +879,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=277
+EXPECT=280
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
