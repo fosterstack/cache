@@ -295,7 +295,7 @@ def _marked(s):
 
 
 def _clean_free(line):
-    """one line of free text (a fix line, a behavior entry, any line of a tag's own text outside a VEX section) for
+    """one line of free text (a fix line, a behavior entry, a VEX line, any line of a tag's own text) for
     Markdown output: the escape-whole-line rule (Codex #300 r5, A R4-4 / B F3; r8, advisor step 5). A line whose cleaned
     text holds the marker is written with every ASCII punctuation character backslash-escaped, the marker '\\(redacted\\)':
     no link, image, HTML, code span or other construct can take it into its syntax; any other line is _clean's output
@@ -312,78 +312,18 @@ def _clean_free(line):
 
 
 VEX_HEAD = "### VEX"
-# The grammar of the lines notes() prints in its VEX section (Codex #300 r8, A High / B F1: refuse, don't decode). A value
-# prints through _lit: a quoted JSON string in a code span (ASCII, no backtick), or a bare token — letters, digits and
-# - . _ / : only, where redaction may have left the marker '(redacted)'. Nothing else in a VEX line comes from a document.
-VEX_SPAN = r'`"(?:[ !#-\[\]-_a-~]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"`'
-VEX_SPAN_RE = re.compile(VEX_SPAN)
-_VLIT = r"(?:%s|(?:[A-Za-z0-9._/:-]|\(redacted\))+)" % VEX_SPAN
-_VIDS = r"%s(?: %s)*" % (_VLIT, _VLIT)
-_VPROD = r"%s(?: \(subcomponents: %s(?:, %s)*\))?" % (_VIDS, _VIDS, _VIDS)
-_VSTATUS = r"(?:not_affected|affected|fixed|under_investigation)"
-_VFIELDS = r"%s(?:, %s)*" % (_VLIT, _VLIT)
-VEX_STMT = re.compile(r"- %s(?: \[(?:products unreadable|%s(?:, %s)*)\])?: %s \((?:added|removed|changed: %s|changed from %s(?:; also %s)?)\)"
-                      r"(?: — statement (?:\d+ of the (?:old|new) document|%s))?" % (_VLIT, _VPROD, _VPROD, _VSTATUS, _VFIELDS,
-                                                                                    _VSTATUS, _VFIELDS, _VLIT))
-VEX_DOC = re.compile(r"- document fields changed \(%s\)(?:; no statement changed)?" % _VFIELDS)
-
-
-def _vex_stmt(line):
-    """line is an exact member of the grammar notes() prints for a VEX section line: '- no change', a statement line or the
-    document-fields line, each quoted value exactly _lit's form of the JSON string it holds (so it renders literally), a
-    fixed point of _clean_md, and nothing outside its code spans that AC14 refuses; '-----BEGIN ' never"""
-    if line == "- no change":
-        return True
-    if not (VEX_STMT.fullmatch(line) or VEX_DOC.fullmatch(line)) or SIG_DELIM in line or _clean_md(line) != line:
-        return False
-    for sp in VEX_SPAN_RE.findall(line):
-        try:
-            v = json.loads(sp[1:-1])
-        except ValueError:
-            return False
-        if not isinstance(v, str) or _lit(v) != sp:
-            return False
-    return _refused_form(VEX_SPAN_RE.sub("C", line)) is None
-
-
-def _vex_head(lines, i):
-    """lines[i] is the '### VEX' heading at the place notes() writes it: right after the Fixes section that follows a
-    release heading — '## vX.Y.Z — patch release', a blank line, '### Fixes', one or more '- ' lines, a blank line. So a
-    release block has at most one, and a heading anywhere else is text like any other (Codex #300 r8, A High)"""
-    if lines[i] != VEX_HEAD or i < 5 or lines[i - 1] != "":
-        return False
-    k = i - 2
-    while k >= 0 and lines[k].startswith("- "):
-        k -= 1
-    return k < i - 2 and k >= 2 and lines[k] == "### Fixes" and lines[k - 1] == "" and bool(PATCH_HEAD.fullmatch(lines[k - 2]))
-
-
-def _vex_flags(lines):
-    """for each line, whether it is a VEX statement line: in the run of '- ' lines right after a generated '### VEX'
-    heading (_vex_head), and an exact member of the VEX line grammar (_vex_stmt). Only these are exempt from the source
-    refusals (advisor step 5 (1)); any other line, a '- ' line in that run included, is checked like free text"""
-    out = [False] * len(lines)
-    for i in range(len(lines)):
-        if _vex_head(lines, i):
-            j = i + 1
-            while j < len(lines) and lines[j].startswith("- "):
-                out[j] = _vex_stmt(lines[j])
-                j += 1
-    return out
 
 
 def _clean_lines(s):
     """the notes text cleaned one line at a time, split at every line boundary str.splitlines() knows (LF, CR, CRLF, VT,
     FF, FS, GS, RS, NEL, LS, PS), each written back as LF: no redaction ever matches across a line break and merges two
-    lines (Codex #300 r3 B1; r4 A R3-4, B low). A VEX statement line (by its section, r8) is kept as written when
-    redaction changes nothing in it (so the notes' own VEX lines read back unchanged); otherwise, and for every other line,
-    _clean_free writes it."""
+    lines (Codex #300 r3 B1; r4 A R3-4, B low). Every line, a VEX line too, is written by _clean_free, the one function
+    notes() prints each line with: the notes' own lines read back unchanged (advisor decision Oct 11: no VEX exemption)."""
     parts = str(s).splitlines(True)
-    bodies = [(ln.splitlines() or [""])[0] for ln in parts]
     out = []
-    for ln, body, vex in zip(parts, bodies, _vex_flags(bodies)):
-        c = body if vex and _clean_md(body) == body else _clean_free(body)
-        out.append(c + ("\n" if len(body) < len(ln) else ""))
+    for ln in parts:
+        body = (ln.splitlines() or [""])[0]
+        out.append(_clean_free(body) + ("\n" if len(body) < len(ln) else ""))
     return "".join(out)
 
 
@@ -411,15 +351,29 @@ def _refused_form(line):
     return None
 
 
-def _refuse_text(text, name, skip_vex=False):
-    """refuse (ValueError naming name:line) a text any line of which holds a refused form; skip_vex: the VEX statement
-    lines of each '### VEX' section are exempt (advisor step 5 (1))"""
-    lines = str(text).splitlines()
-    flags = _vex_flags(lines) if skip_vex else [False] * len(lines)
-    for n, (ln, vex) in enumerate(zip(lines, flags), 1):
-        why = None if vex else _refused_form(ln)
+def _refuse_text(text, name):
+    """refuse (ValueError naming name:line) a text any line of which holds a refused form: every line, a line of a
+    '### VEX' section too (advisor decision Oct 11: no VEX exemption; _lit prints no refused form in a VEX line)"""
+    for n, ln in enumerate(str(text).splitlines(), 1):
+        why = _refused_form(ln)
         if why:
             raise ValueError("%s:%d: %s" % (name, n, why))
+
+
+def _no_dup_bullets(text, name):
+    """refuse (ValueError naming both name:line) two '- ' lines of one release block (from one '## ' heading to the next)
+    that publish the same line, trailing whitespace ignored (REQ-REL-009-AC14 (5) in the readers: a tag's notes, the
+    changelog's notes, the history; Codex #300 r9, B 4). The same line in two release blocks is a repetition across
+    releases, not a collision."""
+    seen = {}
+    for n, ln in enumerate(str(text).splitlines(), 1):
+        if ln.startswith("## "):
+            seen = {}
+        elif ln.startswith("- "):
+            k = ln.rstrip()
+            if k in seen:
+                raise ValueError("%s:%d: %s:%d: two entries publish the same line" % (name, seen[k], name, n))
+            seen[k] = n
 
 
 ATX = re.compile(r"#{1,6}(?:[ \t]|$)")
@@ -432,9 +386,8 @@ def _refuse_continued_marker(text, name):
     above can take a continuation line into its syntax, and escaping that line cannot stop it (Codex #300 r8, B F5); a
     bullet or heading interrupts any paragraph, and no inline construct crosses a blank line. Refused, never rewritten."""
     lines = str(text).splitlines()
-    flags = _vex_flags(lines)
     for n, ln in enumerate(lines):
-        if flags[n] or FREE_PRE.match(ln) or not _marked(ln):
+        if FREE_PRE.match(ln) or not _marked(ln):
             continue
         prev = lines[n - 1] if n else ""
         if prev.strip() and not ATX.match(prev):
@@ -492,11 +445,15 @@ def _lit(v, before_colon=False):
     """the printed form of a document-supplied value; before_colon: the notes print ':' right after it (a CVE name). A
     value holding five hyphens is never bare (a space the notes print after it would complete '-----BEGIN '; Codex #300
     r7, B F4), and in the quoted form a hyphen followed by four more is written \\u002d (the same JSON string): no run of
-    five hyphens, a signature-block delimiter, is ever printed, so the tag of the notes stays readable (r6, B F4)"""
+    five hyphens, a signature-block delimiter, is ever printed, so the tag of the notes stays readable (r6, B F4). In the
+    quoted form '<' and '&' are written \\u003c and \\u0026 (the same JSON string; advisor decision Oct 11, option A): no
+    printed value holds a refused form of REQ-REL-009-AC14, so the notes' own VEX lines pass every reader with no
+    exemption. A reader sees the JSON string: a statement named <b>x shows as "\\u003cb\\u003ex" in its code span."""
     v = str(v)
     if BARE.match(v) and not NOT_BARE.search(v + (":" if before_colon else "")):
         return v
-    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(v, ensure_ascii=True).replace("`", "\\u0060"))
+    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(v, ensure_ascii=True).replace("`", "\\u0060")
+                           .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
 CITED = re.compile(r"\((?:[^()]*[\s;,])?(?:advisor|handoff) \d{4}\)\.?$")
@@ -584,14 +541,13 @@ def _fix_raw(f):
 
 
 def notes(version, fixes, vex_changes, behavior=(), fix_locs=None, behavior_locs=None):
-    """every line is one line (_oneline) cleaned on its own: a VEX line as _clean_md (its document values are bare
-    identifier text or code spans; vex_changes checked that final form), every other line as free text (_clean_free:
-    a line holding the marker is written escaped, Codex #300 r5). The fix records and behavior entries are notes sources
+    """every line is one line (_oneline) cleaned on its own by _clean_free, a VEX line too (its document values are bare
+    identifier text or code spans, _lit; a line holding the marker is written escaped, Codex #300 r5). The fix records and behavior entries are notes sources
     (REQ-REL-009-AC14): a field (each of its own lines, then its one-line form; r8 B F2), a fix line or an entry holding a
     refused form is refused (ValueError), and so are any two published lines — fix, VEX or behavior — that are the same
     line (one set across all of them, r8 B medium); fix_locs / behavior_locs name each record's source ('scan:matches[i]:',
-    'file:line:'; else 'fix record N:' / 'behavior entry N:'). The written text is checked to hold no refused form outside
-    its VEX section, no '-----BEGIN ', and to read back unchanged as a tag's notes."""
+    'file:line:'; else 'fix record N:' / 'behavior entry N:'). The written text is checked to hold no refused form on any
+    line, its VEX section included (advisor decision Oct 11: no exemption), and to read back unchanged as a tag's notes."""
     fix_locs = list(fix_locs) if fix_locs is not None else ["fix record %d:" % i for i in range(1, len(fixes) + 1)]
     behavior_locs = (list(behavior_locs) if behavior_locs is not None
                      else ["behavior entry %d:" % i for i in range(1, len(behavior) + 1)])
@@ -620,20 +576,19 @@ def notes(version, fixes, vex_changes, behavior=(), fix_locs=None, behavior_locs
         published.append((lines[-1], "the Fixes section:"))
     lines += ["", "### VEX"]
     stmts = [v for v in vex_changes if "document" not in v]
-    vl = [_clean_md(_vex_line(v)) for v in stmts]
+    # a VEX line is printed by _clean_free like every other line, the function every reader cleans each line with (advisor
+    # decision Oct 11: no VEX exemption; one printer, so a printed line is never refused by its own reader: Codex #300 r9,
+    # A (a)(2) / B 3); unmarked, it is _clean_md's text, so vex_changes' checks of the rendered line still hold
+    vl = [_clean_free(_vex_line(v)) for v in stmts]
     if len(set(vl)) != len(vl):  # every published statement line is its own (Codex #300 r3)
         raise ValueError("VEX notes: two statement lines read alike")
-    if any(_clean_md(ln) != ln for ln in vl):       # the tag of the notes reads back as the notes (r6; r8 by section)
-        raise ValueError("VEX notes: a statement line the tag would not read back unchanged")
     lines += vl
-    lines += [_clean_md("- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]),
-                                                             "" if stmts else "; no statement changed"))
+    lines += [_clean_free("- document fields changed (%s)%s" % (", ".join(_lit(k) for k in v["document"]),
+                                                               "" if stmts else "; no statement changed"))
               for v in vex_changes if "document" in v]
     if not vex_changes:
         lines.append("- no change")
     vex_lines = lines[lines.index(VEX_HEAD) + 1:]
-    if not all(_vex_stmt(ln) for ln in vex_lines):  # what the readers exempt is exactly what is printed (Codex #300 r8)
-        raise ValueError("VEX notes: a line outside the grammar the notes print for a VEX line")
     published += [(ln, "VEX line %d:" % i) for i, ln in enumerate(vex_lines, 1)]
     bl = [_entry_line(b) for b in behavior]
     published += list(zip(bl, behavior_locs))
@@ -643,9 +598,7 @@ def notes(version, fixes, vex_changes, behavior=(), fix_locs=None, behavior_locs
     else:
         lines += ["", "No behavior change: this release contains fixes only."]
     text = "\n".join(lines) + "\n"
-    _refuse_text(text, "notes", skip_vex=True)       # fail closed: no refused form reaches the published text (AC14)
-    if SIG_DELIM in text:
-        raise ValueError("notes: the signature delimiter '-----BEGIN ' in a VEX line")
+    _refuse_text(text, "notes")      # fail closed: no refused form on any line of the published text (AC14; no exemption)
     if _clean_lines(text) != text:
         raise ValueError("notes: the tag of these notes would not read back unchanged")
     return text
@@ -978,7 +931,8 @@ RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"   # de
 def tag_notes(raw):
     """AC8: the notes a generated patch tag carries (`git cat-file tag` output), or None for any other tag (an owner's
     release keeps the fixed release text). The heading must name the tag itself; the signature block is dropped. A
-    generated tag's notes holding a refused form outside a VEX section are refused (ValueError naming the line of the
+    generated tag's notes holding a refused form on any line, or two bullets of one release block publishing the same
+    line, are refused (ValueError naming the line of the
     tag message; REQ-REL-009-AC14, advisor step 5: tag-notes exits 2 like notes and changelog)."""
     head, _, body = raw.partition("\n\n")
     tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
@@ -1001,7 +955,8 @@ def tag_notes(raw):
     # a generated patch tag from here. Exactly one signature-shaped block, genuinely last (Codex #159 fresh r2d): a
     # '-----BEGIN ' anywhere in the notes region — a second block, before or after a real one, or a delimiter in a note
     # line — is refused with the line named (exit 2, as notes and changelog; Codex #300 r8, A (c) / B F4), never read
-    _refuse_text(body, "tag message", skip_vex=True)
+    _refuse_text(body, "tag message")
+    _no_dup_bullets(body, "tag message")
     out = _clean_lines(body)
     _refuse_continued_marker(out, "tag message")
     return out
@@ -1010,7 +965,8 @@ def tag_notes(raw):
 def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHANGELOG.md", "docs/next-release-notes.md")):
     """AC8 + advisor 0130: (CHANGELOG.md with these notes on top, newest first; next-release-notes.md without the
     entries these notes published — an entry added since stays). The three inputs are notes sources (REQ-REL-009-AC14):
-    a line holding a refused form outside a VEX section, or two next-release-notes entries publishing the same line, is
+    a line holding a refused form (any line, a VEX line too), or two entries publishing the same line (in
+    next-release-notes, or two bullets of one release block of the notes or the history), is
     refused (ValueError naming file:line; names: the three inputs' names) before anything is cleaned or removed. The new
     notes are cleaned line by line; the existing history is copied unchanged, never rewritten — and is refused unless it
     is exactly what this function writes, so cleaning it would change nothing: LF line ends only, no name, no unescaped
@@ -1019,8 +975,10 @@ def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHAN
     next-release-notes only when a whole line of the cleaned notes is the line notes() prints for it, trailing whitespace
     ignored (r8, R14-9)."""
     notes_name, cl_name, nn_name = names
-    _refuse_text(notes_text, notes_name, skip_vex=True)
-    _refuse_text(changelog_text or "", cl_name, skip_vex=True)
+    _refuse_text(notes_text, notes_name)
+    _refuse_text(changelog_text or "", cl_name)
+    _no_dup_bullets(notes_text, notes_name)
+    _no_dup_bullets(changelog_text or "", cl_name)
     _source_entries(next_notes_text, nn_name)
     notes_text = _clean_lines(notes_text)
     _refuse_continued_marker(notes_text, notes_name)     # r8 B F5: refused, never rewritten
@@ -1171,7 +1129,8 @@ def check_fix_sources(fixes, docs, gomod_path, gomod_text, head):
     named by the scan file and the JSON key path (JSON has no line) or by go.mod:line. docs: {variant: (path, grype
     document)}; head as fixed_findings takes it. A finding HEAD does not fix is not printed and not judged. Returns each
     record's location 'scan:matches[i]:' (the collision check names it)."""
-    glines = gomod_text.splitlines()
+    glines = gomod_text.split("\n")
+    parsed = parse_gomod(gomod_text, gomod_path)      # the same parse gomod_versions read the versions from
     first = {}
     for v, i, f_, _ in _fixing({v: grype_findings(docs[v][1]) for v in docs}, head):
         first.setdefault((f_["id"], f_["package"]), (v, i))
@@ -1193,10 +1152,13 @@ def check_fix_sources(fixes, docs, gomod_path, gomod_text, head):
                 raise ValueError("%s:matches[%d].%s: %s" % (path, i, key, why))
         where = ""
         if go:
-            pat = re.compile(r"^go\s" if f["package"] == "stdlib" else r"(^|\s)%s\s+%s(\s|$)" % (re.escape(f["package"]), re.escape(str(f["new"]))))
-            n = next((k for k, ln in enumerate(glines, 1) if pat.search(ln.strip())), None)
-            where = " %s:%s:" % (gomod_path, n if n else "?")
-            why = _refused_value(f["new"]) or (_refused_form(glines[n - 1]) if n else None)
+            # the line the version came from: the parsed require (or the go directive for stdlib), never a text search
+            src = parsed["go"] if f["package"] == "stdlib" else parsed["require"].get(f["package"])
+            if src is None or (f["package"] != "stdlib" and src[0] != f["new"]):
+                raise ValueError("%s:matches[%d]: %s: no require line in %s gives %s" % (path, i, f["package"], gomod_path, f["new"]))
+            n = src[1]
+            where = " %s:%d:" % (gomod_path, n)
+            why = _refused_value(f["new"]) or _refused_form(glines[n - 1])
             if why:
                 raise ValueError("%s:matches[%d]:%s %s" % (path, i, where, why))
         why = _refused_form(_fix_raw(f))
@@ -1206,12 +1168,81 @@ def check_fix_sources(fixes, docs, gomod_path, gomod_text, head):
     return locs
 
 
-def gomod_versions(text):
-    """{module: version} from go.mod, plus the toolchain as stdlib (go1.X.Y from the go directive)."""
-    out = {m.group(1): m.group(2) for m in re.finditer(r"(?m)^\s*(?:require\s+)?([\w./-]+\.[\w./-]+)\s+(v\S+)", text)}
-    m = re.search(r"(?m)^go\s+(\d+\.\d+(?:\.\d+)?)\s*$", text)
-    if m:
-        out["stdlib"] = "go" + m.group(1)
+# go.mod, read by a strict parser of its grammar (advisor decision Oct 11 (2): the parsed require directives only, one
+# source of truth for the version and the line a fix is judged on; Codex #300 r9, A (a)(3) / B 1). It follows Go's modfile
+# lexer (golang.org/x/mod/modfile): '//' starts a comment anywhere outside a quoted string and runs to the line end; ( )
+# [ ] { } , are tokens of their own; a directive is one line 'verb args...' or a block 'verb (' ... ')'. Fail closed: what
+# this reader does not read is refused (ValueError naming name:line), never guessed — a '/* */' comment (Go refuses it), a
+# quoted string, a character other than a printable one, space or tab (a CR only at the line end), a block opened on a
+# line with anything after '(', a ')' outside a block, a block never closed, an unknown directive, a 'require' that is
+# not exactly a path and a semantic version, a module required twice, a 'go' directive twice or inside a block, and
+# [ ] { } , outside a 'retract' line. Go itself is not on the decide job's PATH (release.yml installs no Go toolchain),
+# so the parser is this code, not `go mod edit -json`.
+GO_DIRECTIVES = {"module", "go", "toolchain", "require", "replace", "exclude", "retract", "tool", "ignore", "godebug"}
+GO_BLOCKS = GO_DIRECTIVES - {"go", "toolchain"}
+GO_SEMVER = re.compile(r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z")
+GO_TOKEN = re.compile(r"[()\[\]{},]|[^ \t()\[\]{},]+")
+
+
+def _gomod_tokens(line, name, n):
+    """the tokens of one go.mod line, its comment dropped; ValueError naming name:n for what the parser does not read"""
+    body = line[:-1] if line.endswith("\r") else line
+    cut = body.find("//")
+    if cut >= 0:
+        body = body[:cut]
+    if "/*" in body:
+        raise ValueError("%s:%d: a /* */ comment (go.mod uses // comments only)" % (name, n))
+    if any(c in "\"`" or not (c in " \t" or (c.isprintable() and not c.isspace())) for c in body):
+        raise ValueError("%s:%d: a quoted string or a character the go.mod reader does not read" % (name, n))
+    return GO_TOKEN.findall(body)
+
+
+def parse_gomod(text, name="go.mod"):
+    """{"require": {module: (version, line)}, "go": (version, line) or None} of a go.mod text, lines numbered from 1;
+    ValueError naming name:line for anything the strict reader refuses (see above)"""
+    req, go, block = {}, None, None
+    for n, line in enumerate(str(text).split("\n"), 1):
+        toks = _gomod_tokens(line, name, n)
+        if not toks:
+            continue
+        if block is not None:
+            if toks == [")"]:
+                block = None
+                continue
+            verb, args = block[0], toks
+        elif len(toks) == 2 and toks[1] == "(":
+            if toks[0] not in GO_BLOCKS:
+                raise ValueError("%s:%d: a block of an unknown directive %r" % (name, n, toks[0]))
+            block = (toks[0], n)
+            continue
+        else:
+            verb, args = toks[0], toks[1:]
+            if verb not in GO_DIRECTIVES:
+                raise ValueError("%s:%d: not a go.mod directive the reader knows" % (name, n))
+        if "(" in args or ")" in args or (verb != "retract" and any(t in ("[", "]", ",") for t in args)) or "{" in args or "}" in args:
+            raise ValueError("%s:%d: a block opened or closed where the reader does not read one" % (name, n))
+        if verb == "require":
+            if len(args) != 2 or not GO_SEMVER.match(args[1]) or args[0] in GO_DIRECTIVES:
+                raise ValueError("%s:%d: a require that is not a module path and a version" % (name, n))
+            if args[0] in req:
+                raise ValueError("%s:%d: %s required twice (also line %d)" % (name, n, args[0], req[args[0]][1]))
+            req[args[0]] = (args[1], n)
+        elif verb == "go":
+            if block is not None or len(args) != 1 or go is not None:
+                raise ValueError("%s:%d: a go directive the reader does not read" % (name, n))
+            go = (args[0], n)
+    if block is not None:
+        raise ValueError("%s:%d: a %s block never closed" % (name, block[1], block[0]))
+    return {"require": req, "go": go}
+
+
+def gomod_versions(text, name="go.mod"):
+    """{module: version} of go.mod's parsed require directives (parse_gomod), plus the toolchain as stdlib (go1.X.Y from
+    the go directive). ValueError for a go.mod the parser refuses."""
+    g = parse_gomod(text, name)
+    out = {m: v for m, (v, _) in g["require"].items()}
+    if g["go"] and re.fullmatch(r"\d+\.\d+(?:\.\d+)?", g["go"][0]):
+        out["stdlib"] = "go" + g["go"][0]
     return out
 
 
@@ -1270,7 +1301,7 @@ def main(argv=None):
             if a.vex_old and old is None:       # a supplied file holding null is not "no old document" (Codex #300 r2, B)
                 raise ValueError("VEX old document %s: null" % a.vex_old)
             gomod_text = open(a.gomod).read()
-            head = {"go": gomod_versions(gomod_text), "base_findings": base}
+            head = {"go": gomod_versions(gomod_text, a.gomod), "base_findings": base}
             fixes = fixed_findings(rel, head)
             fix_locs = check_fix_sources(fixes, docs, a.gomod, gomod_text, head)
             # every source is refused before any entry is dropped as already published (REQ-REL-009-AC14 (5)): a fix line
@@ -1327,7 +1358,12 @@ def main(argv=None):
             base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
         except (ValueError, OSError):
             base = None                     # an unusable base scan removes no deb finding
-        found = removed_critical_high(release, {"go": gomod_versions(open(a.gomod).read()), "base_findings": base})
+        try:
+            gov = gomod_versions(open(a.gomod).read(), a.gomod)
+        except (ValueError, OSError) as e:      # a go.mod the parser refuses: unknown, never "nothing removed"
+            print("removed: %s" % e, file=sys.stderr)
+            return 2
+        found = removed_critical_high(release, {"go": gov, "base_findings": base})
         with open(a.out, "w") as fh:
             json.dump(found, fh, indent=1)
         return 0
