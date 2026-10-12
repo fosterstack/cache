@@ -2,7 +2,8 @@
 # bin/check-fips.sh --digests FILE --images DIR --out DIR
 # The FIPS start check (v0.3.0 rule 72; REQ-CHAIN-006-AC6). For each candidate image (the OCI layout directories DIR/production and DIR/fips) it loads (as a tar made of the layout) the
 # image, starts it, reads /statusz and removes the container (always, also on failure). The -fips image must report fips140 true with
-# a note that starts "active (Go validated module v1.0.0"; the production image must report fips140 false. Anything else, or a status
+# the whole note of the documented mapping (module version v1.0.0 and its certificate line), the boolean and the note together; the production image must
+# report fips140 false with the note off. Anything else, or a status
 # that cannot be read, fails naming the image. Writes OUT/fips-result.json with what each image reported: the booleans and the module
 # version only. The certificate number is a documented mapping, not something a binary reports, so it is never written here.
 set -euo pipefail
@@ -36,7 +37,10 @@ tmp=$(mktemp -d)
 cleanup() { rm -rf "$tmp"; for v in production fips; do docker rm -f "fscache-check-$v" > /dev/null 2>&1 || true; done; }
 trap cleanup EXIT
 
-PREFIX="active (Go validated module v1.0.0"
+# The -fips image's note is compared WHOLE and together with its boolean (round 1 F5): the note the validated build reports is the documented mapping of
+# module version v1.0.0 to its certificate line, so a longer version (v1.0.01), another suffix (v1.0.0-other), a note without the certificate line or
+# a contradiction between the boolean and the note is not the validated-module posture. The production image is exactly: false and the note off.
+FIPS_NOTE="active (Go validated module v1.0.0, CMVP cert #5247)"
 failed=0
 results="[]"
 for v in production fips; do
@@ -62,7 +66,7 @@ for v in production fips; do
   fi
   fips=$(jq -r '.fips140' <<< "$status"); note=$(jq -r '.fips140_note // ""' <<< "$status")
   module=null
-  [[ "$note" == "$PREFIX"* ]] && module='"v1.0.0"'
+  [ "$fips" = true ] && [ "$note" = "$FIPS_NOTE" ] && module='"v1.0.0"'
   case "$v" in
     fips)
       if [ "$fips" != true ] || [ "$module" = null ]; then
@@ -70,8 +74,8 @@ for v in production fips; do
         failed=1
       fi ;;
     production)
-      if [ "$fips" != false ]; then
-        echo "check-fips: production: the production image must report the FIPS mode off; it reports fips140=$fips" >&2
+      if [ "$fips" != false ] || [ "$note" != off ]; then
+        echo "check-fips: production: the production image must report the FIPS mode off with the note off, exactly; it reports fips140=$fips, note: $note" >&2
         failed=1
       fi ;;
   esac

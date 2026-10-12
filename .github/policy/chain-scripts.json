@@ -414,7 +414,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "b0c44c76bf001ea936975b5d22329ff17fd14b21b76abd387663b4e5ce54fd13",
+      "sha256": "af12a53f81156510b14b54e643c0f115a249698e580f7cec8843680ffe1e114d",
       "tools": [
         "curl",
         "docker",
@@ -870,7 +870,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "b332e43dcbe3b7c7f5630cdad8bf67f9c0e734d993ecb714c54b5215929c8d0a",
+      "sha256": "7d7c414a15c527d4a192171c202422424bc507d6a97e11b1e61f55ad571ceca3",
       "tools": [
         "at",
         "curl",
