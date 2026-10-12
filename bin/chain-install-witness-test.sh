@@ -140,15 +140,32 @@ gvins "govulncheck: a missing tools/govulncheck/go.sum is refused (the h1 hashes
 gvins "govulncheck: no tools/govulncheck module at all is refused" "$gv/repo-nomod" "$gv/dest" "tools/govulncheck.*PIPELINE failure|PIPELINE failure.*tools/govulncheck"
 gvins "govulncheck: a failing build is a pipeline failure and installs nothing" "$gv/repo" "$gv/dest" "build.*PIPELINE failure|PIPELINE failure.*build" GV_BUILD_RC=1
 gvins "govulncheck: a built binary that reports another version than the module pins is refused" "$gv/repo" "$gv/dest" "version.*PIPELINE failure|PIPELINE failure.*version" GV_REPORTS=v9.9.9
-if [ -f "$root/tools/govulncheck/go.mod" ] && [ -f "$root/tools/govulncheck/go.sum" ] && [[ "$GV_PIN" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-   && grep -q "golang.org/x/vuln $GV_PIN h1:" "$root/tools/govulncheck/go.sum" && grep -q "govulncheck@$GV_PIN" "$root/.github/workflows/ci.yml" \
-   && ! grep -Eq '^[[:space:]]*(replace|exclude|retract)\b' "$root/tools/govulncheck/go.mod"; then
+# the pin is ONE version in two places that Dependabot moves separately (it bumps tools/govulncheck/go.mod and go.sum; ci.yml's `go install ...@vX` is by hand): the
+# equality is a test, so a bump of either one alone is red (ruling G; the module has its own Dependabot entry)
+gvpin_ok() { # gvpin_ok GOMOD GOSUM CIYML: the module pins golang.org/x/vuln at a version, go.sum holds its h1, ci.yml installs that same version, no replace/exclude
+  local gm=$1 gs=$2 ci=$3 pin
+  [ -f "$gm" ] && [ -f "$gs" ] && [ -f "$ci" ] || return 1
+  pin=$(sed -n 's/^[[:space:]]*golang.org\/x\/vuln \(v[0-9][0-9.]*\).*/\1/p' "$gm" | head -1)
+  [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  grep -q "golang.org/x/vuln $pin h1:" "$gs" && grep -q "govulncheck@$pin" "$ci" && ! grep -Eq '^[[:space:]]*(replace|exclude|retract)\b' "$gm"
+}
+if gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$root/.github/workflows/ci.yml"; then
   ok "govulncheck: the module pins golang.org/x/vuln $GV_PIN with an h1 hash in go.sum, the version ci.yml's govulncheck job installs, and has no replace or exclude"
 else bad "govulncheck: tools/govulncheck is missing or does not pin the version ci.yml installs ($GV_PIN)"; fi
+mkdir -p "$gv/eq"
+sed 's/golang.org\/x\/vuln v[0-9.]*/golang.org\/x\/vuln v9.9.9/' "$root/tools/govulncheck/go.mod" > "$gv/eq/go.mod"
+if ! gvpin_ok "$gv/eq/go.mod" "$root/tools/govulncheck/go.sum" "$root/.github/workflows/ci.yml"; then ok "govulncheck: a go.mod bumped without ci.yml (what Dependabot does alone) is red"
+else bad "govulncheck: a bumped go.mod alone was accepted"; fi
+sed 's/govulncheck@v[0-9.]*/govulncheck@v9.9.9/' "$root/.github/workflows/ci.yml" > "$gv/eq/ci.yml"
+if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/eq/ci.yml"; then ok "govulncheck: a ci.yml bumped without the module is red"
+else bad "govulncheck: a bumped ci.yml alone was accepted"; fi
+sed "s/golang.org\/x\/vuln $GV_PIN h1:/golang.org\/x\/vuln v9.9.9 h1:/" "$root/tools/govulncheck/go.sum" > "$gv/eq/go.sum"
+if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$gv/eq/go.sum" "$root/.github/workflows/ci.yml"; then ok "govulncheck: a go.mod whose go.sum holds no h1 for the pin is red"
+else bad "govulncheck: a go.sum without the pin's hash was accepted"; fi
 if ! grep -Eq '\$\{(GOPROXY|GOFLAGS|GOTOOLCHAIN|GOSUMDB|GONOSUMDB|GOPRIVATE|GOWORK)' "$sut" && [ "$(grep -c 'GOPROXY=https://proxy.golang.org' "$sut")" = 1 ] && ! grep -q 'GOSUMDB=off' "$sut"; then
   ok "govulncheck: the proxy is one literal in the script, no Go environment variable is read from the caller, and the checksum database stays on"
 else bad "govulncheck: the installer reads the Go environment from the caller, names another proxy or turns the checksum database off"; fi
-EXPECT=31
+EXPECT=34
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
