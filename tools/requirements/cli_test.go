@@ -578,9 +578,19 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join("pkgnotatest", "notatest.go"), []byte("package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A dangling symlink with the suffix is not a regular file and is skipped.
-	if err := os.Symlink("missing", filepath.Join(dir, "dangling_test.go")); err != nil {
+	// A dangling symlink with the suffix is not a regular file and is not searched; the loader follows a symlink and
+	// this tool does not, so it keeps its own package from counting.
+	if err := os.Mkdir("pkgdangling", 0o755); err != nil {
 		t.Fatal(err)
+	}
+	if err := os.Symlink("missing", filepath.Join("pkgdangling", "dangling_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("pkgdangling", "real_test.go"), []byte("package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("pkgdangling", "TestReal") {
+		t.Error("a package with a symlinked Go file was accepted")
 	}
 	// An unparsable test file is never searched as text, and it keeps its package from loading (own directory).
 	if err := os.Mkdir("pkgbroken", 0o755); err != nil {
@@ -1035,7 +1045,6 @@ func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
 		"exp_test.go":       body("TestExperimentTag", "//go:build !goexperiment.swissmap\n\n"),
 		"custom_test.go":    body("TestCustomTag", "//go:build !integration\n\n"),
 		"oldcustom_test.go": body("TestOldCustomTag", "// +build !integration\n\n"),
-		"malformed_test.go": body("TestMalformed", "//go:build &&\n\n"),
 		"release_test.go":   body("TestReleaseTag", "//go:build go1.1\n\n"),
 		"unix_test.go":      body("TestUnixTag", "//go:build unix\n\n"),
 		"generic_test.go":   "package p\n\nimport \"testing\"\n\nfunc TestGeneric[P any](t *testing.T) {}\n",
@@ -1045,12 +1054,22 @@ func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// a malformed constraint is an error to Go: it keeps its package from loading, so no test beside it counts
+	if err := os.Mkdir("pkgmalformed", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("pkgmalformed", "m_test.go"), []byte(body("TestMalformed", "//go:build &&\n\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("pkgmalformed", "TestMalformed") {
+		t.Error("TestMalformed is in a file whose constraint does not parse but was accepted")
+	}
 	for _, name := range []string{"TestPlain", "TestOldTagLinux", "TestEitherArch", "TestLinuxName", "TestReleaseTag", "TestUnixTag"} {
 		if !goTestExists(dir, name) {
 			t.Errorf("%s is selected on linux/amd64 and linux/arm64 but was not found", name)
 		}
 	}
-	for _, name := range []string{"TestIgnored", "TestOldTagWindows", "TestLinuxAmd64Suffix", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux", "TestAmd64Expr", "TestArm64Expr", "TestCombinedSuffix", "TestNeedsCgo", "TestNeedsNoCgo", "TestFeatureTag", "TestFeatureTagArm", "TestRaceTag", "TestExperimentTag", "TestCustomTag", "TestOldCustomTag", "TestMalformed", "TestGeneric"} {
+	for _, name := range []string{"TestIgnored", "TestOldTagWindows", "TestLinuxAmd64Suffix", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux", "TestAmd64Expr", "TestArm64Expr", "TestCombinedSuffix", "TestNeedsCgo", "TestNeedsNoCgo", "TestFeatureTag", "TestFeatureTagArm", "TestRaceTag", "TestExperimentTag", "TestCustomTag", "TestOldCustomTag", "TestGeneric"} {
 		if goTestExists(dir, name) {
 			t.Errorf("%s is excluded by the build rules, names an unresolved tag, or has type parameters, but was accepted", name)
 		}

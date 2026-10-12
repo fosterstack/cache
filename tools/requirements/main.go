@@ -14,6 +14,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -440,6 +442,7 @@ func constraintsResolvable(path string) bool {
 	if err != nil {
 		return false
 	}
+	src = bytes.TrimPrefix(src, []byte("\xef\xbb\xbf")) // Go's reader strips one leading byte-order mark
 	trimmed, goBuild, ok := fileHeader(src)
 	if !ok {
 		return false
@@ -543,36 +546,80 @@ func goTestName(name string) bool {
 	return !unicode.IsLower(r)
 }
 
+// importPathChars is the import-path alphabet this tool accepts in a selected Go file: anything else is refused, not
+// resolved (fail closed: the Go loader's own path rules are wider).
+var importPathChars = regexp.MustCompile(`^[A-Za-z0-9._~/+-]+$`)
+
 // packageLoads reports whether the Go files of the directory that the build rules select on linux/amd64 or linux/arm64
-// parse and belong to one package (a file in package documentation is ignored, and an external test package is the package name
-// plus _test): a directory with two package names does not load, so no test in it runs.
+// load as one package, as far as this tool can tell, and refuses what it cannot tell: every selected file parses; none
+// is a symlink (the loader follows one, this tool does not), has a constraint the matcher cannot read, imports "C" or
+// a path outside importPathChars, or carries a //go:embed or //go:binary-only-package directive; and the files belong
+// to one package (a file in package documentation is ignored without being parsed further, and an external test
+// package is the package name plus _test, recognised only in a _test.go file).
 func packageLoads(dir string, entries []os.DirEntry) bool {
 	names := map[string]bool{}
 	for _, e := range entries {
-		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".go") {
+		n := e.Name()
+		if !strings.HasSuffix(n, ".go") {
+			continue
+		}
+		if e.Type()&os.ModeSymlink != 0 {
+			return false
+		}
+		if !e.Type().IsRegular() {
 			continue
 		}
 		selected := false
 		for _, arch := range []string{"amd64", "arm64"} {
 			ctx := build.Default
 			ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled, ctx.BuildTags, ctx.ToolTags = "linux", arch, false, nil, nil
-			if ok, err := ctx.MatchFile(dir, e.Name()); err == nil && ok {
-				selected = true
+			ok, err := ctx.MatchFile(dir, n)
+			if err != nil {
+				return false
 			}
+			selected = selected || ok
 		}
 		if !selected {
 			continue
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
+		path := filepath.Join(dir, n)
+		head, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.PackageClauseOnly)
 		if err != nil {
-			return false // a selected file that does not parse: the package does not load
+			return false
 		}
-		if f.Name.Name == "documentation" {
+		if head.Name.Name == "documentation" {
 			continue
 		}
-		names[strings.TrimSuffix(f.Name.Name, "_test")] = true
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution|parser.ParseComments)
+		if err != nil || !loaderPlain(f) {
+			return false
+		}
+		pkg := f.Name.Name
+		if strings.HasSuffix(n, "_test.go") {
+			pkg = strings.TrimSuffix(pkg, "_test")
+		}
+		names[pkg] = true
 	}
 	return len(names) <= 1
+}
+
+// loaderPlain reports whether a parsed file uses nothing the Go loader checks beyond syntax that this tool does not
+// check: no cgo, no embed directive, no binary-only package, only plain import paths.
+func loaderPlain(f *ast.File) bool {
+	for _, im := range f.Imports {
+		p, err := strconv.Unquote(im.Path.Value)
+		if err != nil || p == "C" || !importPathChars.MatchString(p) {
+			return false
+		}
+	}
+	for _, cg := range f.Comments {
+		for _, c := range cg.List {
+			if strings.HasPrefix(c.Text, "//go:embed") || strings.HasPrefix(c.Text, "//go:binary-only-package") {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // isTestingT reports whether fn takes exactly one parameter of type *testing.T, returns nothing and has no type parameters.
