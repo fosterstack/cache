@@ -414,7 +414,7 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "009f528d391034898e4bb9164d6cd8175dc471fade5ca2a2352b8b9b92130d52",
+      "sha256": "0f4e8a99308eacb828efb6be188ce31f6f9b23eab7ca7654001dd3eaeb903484",
       "tools": [
         "curl",
         "docker",

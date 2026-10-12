@@ -66,7 +66,7 @@ for v in production fips; do
   fi
   fips=$(jq -r '.fips140' <<< "$status"); note=$(jq -r '.fips140_note // ""' <<< "$status")
   module=null
-  # the note is compared as the JSON string itself (command substitution would drop a trailing newline of $note)
+  # the note is compared as the JSON string itself (a shell variable would drop a trailing newline of the note)
   jq -e --arg n "$FIPS_NOTE" '.fips140 == true and .fips140_note == $n' <<< "$status" > /dev/null 2>&1 && module='"v1.0.0"'
   jq -e '.fips140 == false and .fips140_note == "off"' <<< "$status" > /dev/null 2>&1 && prod_ok=1 || prod_ok=0
   case "$v" in
