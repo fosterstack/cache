@@ -12,34 +12,28 @@ a single static binary or a distroless container image, MIT-licensed, with
 security patches under a standing policy ([SECURITY.md](SECURITY.md)). Every
 image is keylessly signed (Sigstore); every binary archive is covered by a
 signed checksums file; both carry SLSA provenance naming the CI run that built
-them. ["Verifying a release"][releasing-verify] has the commands.
+them. ["Verifying a release"](RELEASING.md#verifying-a-release) has the commands.
 
 **Website:** [fosterstack.com](https://fosterstack.com) · **Docs:**
 [Install](docs/install.md) · [Docker](docs/docker-deploy.md) ·
 [Kubernetes](docs/kubernetes.md) · [Gradle](docs/gradle.md) ·
 [Maven](docs/maven.md)
 
-[releasing-verify]: RELEASING.md#verifying-a-release
-
 ## Why this exists
 
 Gradle Inc. is discontinuing the free, standalone [Develocity Build Cache
-Node][bcn-eol] — no further distribution, support, or updates after
+Node](https://docs.develocity.ai/bcn/21.2/) — no further distribution, support, or updates after
 **December 31, 2026**. Teams running the free cache node on open-source
 Gradle (no Develocity subscription) need a maintained, drop-in replacement.
-FosterStack Cache speaks Gradle's documented [`HttpBuildCache`][gradle-http]
+FosterStack Cache speaks Gradle's documented [`HttpBuildCache`](https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote)
 protocol (a plain content-addressed `GET`/`PUT` over HTTP) and the [Apache
-Maven Build Cache Extension][maven-cache]'s remote HTTP mode
+Maven Build Cache Extension](https://maven.apache.org/extensions/maven-build-cache-extension/)'s remote HTTP mode
 (`GET`/`PUT`/`HEAD`) — same server, same core. The Gradle path is
 acceptance-tested against a real multi-module build in CI, and so is the Maven
 path: a real multi-module Maven project with the extension (versions 1.2.0 and 1.2.3) <!-- pinned: upstream -->
 restores its second build from the remote cache with byte-identical jars,
 and wrong or missing credentials fail the documented way. The Maven suite is a
 release-blocking check.
-
-[bcn-eol]: https://docs.develocity.ai/bcn/21.2/
-[gradle-http]: https://docs.gradle.org/current/userguide/build_cache.html#sec:build_cache_configure_remote
-[maven-cache]: https://maven.apache.org/extensions/maven-build-cache-extension/
 
 ## Status
 
