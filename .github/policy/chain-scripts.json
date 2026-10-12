@@ -162,7 +162,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "3c7315296fe843b96aed848c3507680e22ffeeb9cea9ffaef46b7a2405a8d470",
+      "sha256": "696e181334efe864a5b3e55cbec289ff7695e1fdf366a91cb41e9f1f40adf330",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -180,7 +180,7 @@
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
-      "sha256": "5fa22e9865bd996bbec13cf203f91949a3fc3f47ec7ab2507743d19ac5563cdc"
+      "sha256": "80219e55402fd8ae50870cf0c23f8bec4a2237d2aeab1b486ae3c12f4e1e914c"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -230,7 +230,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "8c6f3797dc5e051098649709dae6aeb97f1449f733bdc89cac6a8e205ea959f5",
+      "sha256": "b1d13307173c9692457873a1b758e606402f86fa12261ad393b9c5339990fd68",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -299,7 +299,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "6d69d9dd3950648f903b53bbbe4ad58dc17effb1f9f8c81924a7a42bb922b6b0"
+      "sha256": "fc327f6a37ca7b905f7ff48a551866ab5935bcde64ec83b6206ebacd1792ca6f"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
