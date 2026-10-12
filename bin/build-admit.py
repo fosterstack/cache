@@ -480,7 +480,7 @@ def check_rc_proof(ctx):
     if script is None:
         raise Refusal("rc-proof", "%s is not on origin/main, so the marker cannot be checked" % RC_BYTES)
     marker_path = os.path.join(ctx.policy, "rc-proof.json")
-    script_path = os.path.join(ctx.policy, "chain-bytes-sha.py")
+    script_path = os.path.join(ctx.policy, os.path.basename(RC_BYTES))
     for path, data in ((marker_path, marker), (script_path, script)):
         with open(path, "wb") as fh:
             fh.write(data)

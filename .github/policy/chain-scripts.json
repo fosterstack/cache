@@ -81,7 +81,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "f8436e37727a8df8d89dc12751605b400d70c8c9a479573dd6b2ef4d8e8991ca",
+      "sha256": "d9baa427920d244ccd573271d6b6778de228756aaafd0a2ff407937e74382f60",
       "tools": [
         "at",
         "git"
@@ -226,11 +226,12 @@
       ],
       "runs": [
         "bin/admission-tag-signer.py",
+        "bin/chain-bytes-sha.py",
         "bin/install-scanner.sh"
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "b1d13307173c9692457873a1b758e606402f86fa12261ad393b9c5339990fd68",
+      "sha256": "54ed0504dbc63598c821e681c90d06290c7993b91076f57f45594db2c7e59a6b",
       "reads_env": [
         "GH_TOKEN"
       ],

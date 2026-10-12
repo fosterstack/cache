@@ -7,15 +7,15 @@
                                                            exit 0 when the marker validates for the commit, else exit 1 and the first stderr line is
                                                            `refused at marker: <reason>`
 
-The chain files of a commit are read from the commit's own objects (git), never from a working tree:
-  * the workflows .github/workflows/release.yml and .github/workflows/stage-*.yml,
-  * every script a row of .github/policy/chain-scripts.json lists (a listed script that is not in the commit, or a path that leaves bin/, is refused),
+The chain files of a commit are read from the commit's own objects, never from a working tree:
+  * the workflows release.yml and stage-*.yml,
+  * every file a row of .github/policy/chain-scripts.json lists (one that is not in the commit, or a path that leaves bin/, is refused),
   * every file of .github/policy/ except the marker .github/policy/rc-proof.json itself (the marker cannot hash itself).
 The marker is the closed object {rc_tag, run_id, chain_sha256, records}: rc_tag is vX.Y.Z-rcN, run_id the digits of the rc run, chain_sha256 the sha256 above and
 records the sha256 of each record the rc run produced (build, sign, rekor, rebuild, scanners, acceptance, runtime, arm64, hostile_verdict). check-marker is what
-admission (bin/build-admit.py) and the patch decide job (bin/patch-decide.py rc-proof) run at tag time: the marker must be readable and closed, the rc tag must exist
-and be an ancestor of the commit, and the chain files of the commit AND of the rc tag's commit must both hash to chain_sha256 (the rc run ran those bytes). The
-records themselves were verified when the marker was merged (bin/chain-verify.py rc-proof). Nothing is skipped: a missing marker is a refusal.
+admission and the patch decide job run at tag time: the marker must be readable and closed, the rc tag must exist and be an ancestor of the commit, and the chain
+files of the commit AND of the rc tag's commit must both hash to chain_sha256 (the rc run ran those bytes). The records themselves were verified when the marker was
+merged (the verifier's rc-proof subcommand). Nothing is skipped: a missing marker is a refusal.
 
 Standard library only; git is run with an argument list, never a shell.
 """
