@@ -48,6 +48,9 @@ if len(cmds) > 10:
 
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
 FORMS3 = ("gh attestation verify",)
+# the forms as tuples of words: a command word that holds a space ("cosign verify") is one word and is not a form
+FORM_WORDS2 = tuple(tuple(f.split()) for f in FORMS2)
+FORM_WORDS3 = tuple(tuple(f.split()) for f in FORMS3)
 # The flags of the verify forms that take a value (an unknown flag is taken as taking none, so its next word is judged as an operand:
 # the safe direction, a command the check cannot place is not run).
 VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "--certificate-oidc-issuer-regexp",
@@ -110,8 +113,14 @@ def classify(c):
     command of the guide may have (judged before the cannot-run list is consulted, so a listed command is never excused for its syntax)."""
     if "`" in c:
         return "syntax", "shell syntax: a backquote"
-    quote = None
-    for ch in c:
+    quote, i = None, 0
+    while i < len(c):
+        ch = c[i]
+        if ch == "\\" and quote != "'":
+            # a backslash outside single quotes makes the next character literal: it never opens or closes a quoted region (a $ stays refused)
+            if i + 1 < len(c) and c[i + 1] != "$":
+                i += 2
+                continue
         if quote:
             if ch == quote:
                 quote = None
@@ -121,6 +130,7 @@ def classify(c):
             quote = ch
         elif ch == "$":
             return "syntax", "shell syntax: an expansion ($) outside single quotes"
+        i += 1
     lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
     lx.whitespace_split = True
     try:
@@ -153,9 +163,9 @@ def classify(c):
                     nonlocal_.append(w)
                 i += 1
             continue
-        if " ".join(s[:2]) in FORMS2:
+        if tuple(s[:2]) in FORM_WORDS2:
             words = s[2:]
-        elif " ".join(s[:3]) in FORMS3:
+        elif tuple(s[:3]) in FORM_WORDS3:
             words = s[3:]
         else:
             return "no", "`%s` is not one of the verify forms or jq" % " ".join(s[:3])
@@ -205,7 +215,16 @@ if os.path.exists(listpath):
 def verify_form(c):
     """Every pipe segment is a verify form or jq (what Release's post-publish step runs from this list)."""
     segs = split_pipes(c)
-    return segs is not None and all(s.strip().startswith(FORMS2 + FORMS3 + ("jq ",)) for s in segs)
+    if segs is None:
+        return False
+    for seg in segs:
+        try:
+            w = shlex.split(seg)
+        except ValueError:
+            return False
+        if not (w[:1] == ["jq"] or tuple(w[:2]) in FORM_WORDS2 or tuple(w[:3]) in FORM_WORDS3):
+            return False
+    return True
 for c in excused:
     if not verify_form(c):
         fail("the cannot-run entry `%s` is not a verify form (Release runs only the verify forms from this list)" % c)

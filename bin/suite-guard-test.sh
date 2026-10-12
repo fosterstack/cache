@@ -116,10 +116,16 @@ brk=$(git rev-parse HEAD); printf '{"suite-a": 50, "suite-b": 10}\n' > test-evid
 expect 1 "vs-base: a floors file at the base that is not valid JSON fails" "base" -- floors-vs-base "$brk" test-evidence/suite-floors.json
 expect 0 "vs-base: a readable base without the floors file still passes" "no floors file" -- floors-vs-base "$(git rev-list --max-parents=0 HEAD)" test-evidence/suite-floors.json
 cd "$root"
+# round 2 (Codex B): an unreadable or empty floors file makes `all` fail, not pass having run nothing
+printf 'not json\n' > "$work/bad-floors.json"; printf '{}\n' > "$work/empty-floors.json"; printf '[]\n' > "$work/list-floors.json"; printf '{"x-test.sh": "many"}\n' > "$work/str-floors.json"
+expect 1 "all: a floors file that is not JSON fails (it must not pass having run no suite)" "floors" -- all --count-only "$work/bad-floors.json" "$work"
+expect 1 "all: a floors file with no suite in it fails" "floors" -- all --count-only "$work/empty-floors.json" "$work"
+expect 1 "all: a floors file that is a list, not an object, fails" "floors" -- all --count-only "$work/list-floors.json" "$work"
+expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- all --count-only "$work/str-floors.json" "$work"
 # round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.sh all), not only the floors file against the base
 if grep -Eq 'run: bash bin/suite-guard-run\.sh all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.sh all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
-EXPECT=49
+EXPECT=53
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

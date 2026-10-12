@@ -516,6 +516,15 @@ expect caught "AC7 a cannot-run entry with no reason is refused" "reason" guidel
 expect caught "AC7 a cannot-run entry that is not a command of the guide is refused (stale list)" "not in the guide" guidelist "$work/gl6/docs/verify-release.md"
 expect caught "AC7 a cannot-run entry that is not a verify form is refused (Release would refuse it)" "not a verify form" guidelist "$work/gl7/docs/verify-release.md"
 expect caught "AC7 an unparsable cannot-run list is refused with a named failure" "not JSON" guidelist "$work/gl8/docs/verify-release.md"
+# round 3 (Codex A): the structural judge compares the verify form by whole words, as the planner does (cosign verify-evil is not cosign verify)
+for n in 9 10; do mkdir -p "$work/gl$n/docs"; done
+printf '# guide\n\n```sh\ncosign verify-evil <IMAGE_REF>\n```\n' > "$work/gl9/docs/verify-release.md"
+printf '[{"command": "cosign verify-evil <IMAGE_REF>", %s}]\n' "$R" > "$work/gl9/docs/verify-release.cannot-run.json"
+expect caught "AC7 round 3 a cannot-run entry whose first words only start with a verify form is refused by the structural judge too" "not a verify form" guidelist "$work/gl9/docs/verify-release.md"
+GJ="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> | jq -e '.[0] | .critical'"
+printf '# guide\n\n```sh\n%s\n```\n' "$GJ" > "$work/gl10/docs/verify-release.md"
+python3 -c 'import json,sys; json.dump([{"command": sys.argv[1], "reason": "needs the image in a registry; run right after publishing"}], open(sys.argv[2], "w"))' "$GJ" "$work/gl10/docs/verify-release.cannot-run.json"
+expect ok "AC7 round 3 a verify form piped to a jq filter that holds a quoted pipe is one verify form (the planner's rule)" "" guidelist "$work/gl10/docs/verify-release.md"
 # ---- AC10: the old acceptance stages --------------------------------------------------------------------------------
 mkdir -p "$work/r/.github/workflows"; cp "$work/release.yml" "$work/r/.github/workflows/release.yml"
 expect ok "fixture: none of the old acceptance stages and no call to them" "" removed "$work/r"
@@ -568,7 +577,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=237
+EXPECT=239
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
