@@ -1002,7 +1002,6 @@ func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
 	}
 	files := map[string]string{
 		"plain_test.go":           body("TestPlain", ""),
-		"linux_test.go":           body("TestLinuxOnlyByName", ""),
 		"ignore_test.go":          body("TestIgnored", "//go:build ignore\n\n"),
 		"oldtag_test.go":          body("TestOldTagIgnored", "// +build ignore\n\n"),
 		"win_windows_test.go":     body("TestWindowsByName", ""),
@@ -1012,18 +1011,35 @@ func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
 		"notlinux_test.go":        body("TestNotLinux", "//go:build !linux\n\n"),
 		"either_test.go":          body("TestEitherArch", "//go:build linux && (amd64 || arm64)\n\n"),
 		"linuxname_linux_test.go": body("TestLinuxName", ""),
+		// a constraint that names an architecture on its own cannot select both platforms
+		"onlyamd_expr_test.go":       body("TestAmd64Expr", "//go:build linux && amd64\n\n"),
+		"onlyarm_expr_test.go":       body("TestArm64Expr", "//go:build linux && arm64\n\n"),
+		"comb_windows_amd64_test.go": body("TestCombinedSuffix", ""),
+		// tags whose value depends on how the tests are invoked are not resolved: the file is not counted
+		"cgo_test.go":       body("TestNeedsCgo", "//go:build cgo\n\n"),
+		"nocgo_test.go":     body("TestNeedsNoCgo", "//go:build !cgo\n\n"),
+		"feat_test.go":      body("TestFeatureTag", "//go:build !amd64.v1\n\n"),
+		"feat2_test.go":     body("TestFeatureTagArm", "//go:build !arm64.v8.0\n\n"),
+		"race_test.go":      body("TestRaceTag", "//go:build !race\n\n"),
+		"exp_test.go":       body("TestExperimentTag", "//go:build !goexperiment.swissmap\n\n"),
+		"custom_test.go":    body("TestCustomTag", "//go:build !integration\n\n"),
+		"oldcustom_test.go": body("TestOldCustomTag", "// +build !integration\n\n"),
+		"malformed_test.go": body("TestMalformed", "//go:build &&\n\n"),
+		"release_test.go":   body("TestReleaseTag", "//go:build go1.1\n\n"),
+		"unix_test.go":      body("TestUnixTag", "//go:build unix\n\n"),
+		"generic_test.go":   "package p\n\nimport \"testing\"\n\nfunc TestGeneric[P any](t *testing.T) {}\n",
 	}
 	for n, src := range files {
 		if err := os.WriteFile(filepath.Join(dir, n), []byte(src), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"TestPlain", "TestLinuxOnlyByName", "TestEitherArch", "TestLinuxName"} {
+	for _, name := range []string{"TestPlain", "TestEitherArch", "TestLinuxName", "TestReleaseTag", "TestUnixTag"} {
 		if !goTestExists(dir, name) {
 			t.Errorf("%s is selected on linux/amd64 and linux/arm64 but was not found", name)
 		}
 	}
-	for _, name := range []string{"TestIgnored", "TestOldTagIgnored", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux"} {
+	for _, name := range []string{"TestIgnored", "TestOldTagIgnored", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux", "TestAmd64Expr", "TestArm64Expr", "TestCombinedSuffix", "TestNeedsCgo", "TestNeedsNoCgo", "TestFeatureTag", "TestFeatureTagArm", "TestRaceTag", "TestExperimentTag", "TestCustomTag", "TestOldCustomTag", "TestMalformed", "TestGeneric"} {
 		if goTestExists(dir, name) {
 			t.Errorf("%s is in a file the build rules exclude on a Linux platform but was accepted", name)
 		}
