@@ -305,21 +305,19 @@ func yamlDocs(text string) ([]*yaml.Node, error) {
 	}
 }
 
-// explicitTags refuses, by name, every explicit YAML tag in docs other than the allowed ones: a tagged node
-// (!!binary, !!int, !!map, a local or verbatim tag) means what its tag decodes, which the raw text does not show, so
-// the checks read only untagged nodes (and the allowed tags, whose value is the text itself).
-func explicitTags(file string, docs []*yaml.Node, allowed ...string) (problems []string) {
-	var walk func(n *yaml.Node)
-	walk = func(n *yaml.Node) {
-		if n.Style&yaml.TaggedStyle != 0 && !slices.Contains(allowed, n.Tag) {
-			problems = append(problems, fmt.Sprintf("%s:%d: explicit YAML tag %s refused (only an untagged node is read%s)", file, n.Line, n.Tag, strings.Join(append([]string{""}, allowed...), ", or ")))
+// yamlTagProblems is the YAML tag scan. It reads the raw text, before anything is decoded and without any decoder
+// flag, and refuses, naming file and line: every "!" anywhere in the text (every tag token, "!", "!!x", "!x",
+// "!<...>", is one; the scan does not parse YAML's quoting, comments or flow context to tell a tag token from text,
+// and the files it reads hold no "!" at all, so any "!" is refused), and every YAML directive (a line starting "%",
+// a byte order mark before it ignored: a %TAG directive can remap a tag).
+func yamlTagProblems(file, text string) (problems []string) {
+	for n, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimPrefix(line, "\ufeff"), "%") {
+			problems = append(problems, fmt.Sprintf("%s:%d: a YAML directive refused (a %%TAG directive can remap a tag): %s", file, n+1, line))
 		}
-		for _, c := range n.Content {
-			walk(c)
+		if strings.Contains(line, "!") {
+			problems = append(problems, fmt.Sprintf("%s:%d: explicit YAML tag refused: a \"!\" anywhere in the raw text (a tag token, or text the scan does not tell from one) is refused before decoding: %s", file, n+1, strings.TrimSpace(line)))
 		}
-	}
-	for _, d := range docs {
-		walk(d)
 	}
 	return problems
 }
@@ -474,14 +472,14 @@ var archLevel = map[string]string{"amd64": "v1", "arm64": "v8.0"}
 // binary at dist/<id>_<os>_<arch>_<level>/<binary>. A build without a binary name, or with one plainBinary refuses,
 // is refused, and no two outputs may share a path.
 func releaseOutputs(text string, lineBuilds []relBuild) (archives []releaseArchive, outputs map[string]string, problems []string) {
+	problems = yamlTagProblems(".goreleaser.yaml", text)
 	docs, err := yamlDocs(text)
 	if err != nil {
-		return nil, nil, []string{"the YAML loader cannot read it: " + err.Error()}
+		return nil, nil, append(problems, "the YAML loader cannot read it: "+err.Error())
 	}
 	if len(docs) != 1 || len(docs[0].Content) != 1 {
-		return nil, nil, []string{fmt.Sprintf("%d YAML documents, want exactly one", len(docs))}
+		return nil, nil, append(problems, fmt.Sprintf("%d YAML documents, want exactly one", len(docs)))
 	}
-	problems = explicitTags(".goreleaser.yaml", docs)
 	top := yamlFields(docs[0].Content[0], "the top level", releaseTopKeys, &problems)
 	project := yamlString(top["project_name"], "project_name (without it GoReleaser takes a default)", &problems)
 	pinnedFields(top, "the top-level", pinnedTop, &problems)
@@ -933,10 +931,15 @@ var markdownMarks = strings.NewReplacer("*", "", "_", "", "`", "", "~", "", "[",
 // a letter, /, ! or ?, which opens a tag, a comment, a processing instruction, a declaration, CDATA or an autolink)
 // anywhere in the file, code spans and code fences included (the guard reads no Markdown structure, so nothing can
 // hide one), other than the exact allowedMarkup entries (an exception marker only where it ends its line); any
-// character reference (charRef; the docs use none); and any invisible or non-printing character (invisibleRune).
+// character reference (charRef; the docs use none); any invisible or non-printing character (invisibleRune);
+// strikethrough ("~~", which also opens a tilde fence); and every reference-style link form (refForm: "][", which a
+// full "[text][label]" and a collapsed "[text][]" reference hold, and "]:", which ends every "[label]:" definition
+// label, also one wrapped across lines or inside a quote or a list item), escaped or not: the checks read only inline
+// links, "[text](destination)", so a reference form is refused rather than resolved.
 var (
 	htmlStart = regexp.MustCompile(`<[A-Za-z/!?]`)
 	charRef   = regexp.MustCompile(`&(?:#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);`)
+	refForm   = regexp.MustCompile(`\]\[|\]:`)
 )
 
 // invisibleRune reports a character a reader cannot see as itself: everything that is not a letter, number,
@@ -993,10 +996,12 @@ func leadingLines(lines []string) []bool {
 // guardText returns the guard's refusals for text, one per kind per line, each labelled by where(line). It reads no
 // Markdown structure: a tag-like "<" is refused wherever it is on a line, in a code span or a code fence too, in a
 // Markdown file and in the YAML mappings file (and its decoded values) alike. The allowed texts are excepted only
-// where markupPlaced holds on the original line; every placement is decided before anything is scrubbed.
+// where markupPlaced holds on the original line; every placement is decided before anything is scrubbed. The prose
+// forms (proseFormProblems) are refused too.
 func guardText(where func(line int) string, allowed []string, text string) (problems []string) {
 	lines := strings.Split(text, "\n")
 	leading := leadingLines(lines)
+	problems = proseFormProblems(where, text)
 	for n, line := range lines {
 		for i := 0; i < len(line); {
 			r, size := utf8.DecodeRuneInString(line[i:])
@@ -1033,40 +1038,40 @@ func guardText(where func(line int) string, allowed []string, text string) (prob
 	return problems
 }
 
+// proseFormProblems refuses outright, one per kind per line, each labelled by where(line), the prose forms the checks
+// do not interpret: strikethrough ("~~") and every reference-style link form (refForm).
+func proseFormProblems(where func(line int) string, text string) (problems []string) {
+	for n, line := range strings.Split(text, "\n") {
+		if strings.Contains(line, "~~") {
+			problems = append(problems, fmt.Sprintf("%s: strikethrough \"~~\" (or a tilde fence) refused outright: %q", where(n+1), line))
+		}
+		if m := refForm.FindString(line); m != "" {
+			problems = append(problems, fmt.Sprintf("%s: a reference-style link form (%q: a [text][label] or [text][] reference, or a [label]: definition) refused outright (write an inline link, [text](destination)): %q", where(n+1), m, line))
+		}
+	}
+	return problems
+}
+
 // contentProblems is the content guard for one whole file, naming file:line.
 func contentProblems(file, text string) []string {
 	return guardText(func(n int) string { return fmt.Sprintf("%s:%d", file, n) }, markupFor(file), text)
 }
 
-// refDef is a Markdown link reference definition line ("[label]: destination", indented at most three spaces).
-var refDef = regexp.MustCompile(`(?m)^ {0,3}\[([^\]\\]+)\]:`)
-
-// refLabel is a reference label as CommonMark matches it: case-insensitive, whitespace collapsed.
-func refLabel(s string) string {
-	return strings.ToLower(collapse(s))
-}
-
-// refDefs are the reference labels text defines.
-func refDefs(text string) map[string]bool {
-	defs := map[string]bool{}
-	for _, m := range refDef.FindAllStringSubmatch(text, -1) {
-		defs[refLabel(m[1])] = true
-	}
-	return defs
-}
-
 // linkParts splits Markdown text into what a reader sees and what is hidden: an inline link's destination and
-// title ("](dest "title")", the destination with balanced parentheses, as CommonMark reads it) and a full reference
-// link's label ("][label]", when defs holds the label) are hidden; everything else is visible (a backslash escape is
-// visible text and opens or closes nothing). ok is false, and the text stays visible, when a "](" or "][" is a form
-// it does not read: no unescaped "[" before it (CommonMark renders it as text), a reference label that defs does not
-// define (a collapsed "[]" included), an unclosed destination or title, an angle-bracket destination, a backslash in a
-// destination or title before a character CommonMark cannot escape (anything but ASCII punctuation), or a
-// parenthesized title holding an unescaped "(": the caller refuses it rather than guess.
-func linkParts(s string, defs map[string]bool) (visible, hidden string, ok bool) {
+// title ("](dest "title")", the destination with balanced parentheses, as CommonMark reads it) are hidden; everything
+// else is visible (a backslash escape is visible text and opens or closes nothing). It reads inline links only (the
+// content guard refuses every reference-style form). ok is false, and the text stays visible, when a "](" is a form
+// it does not read: no unescaped "[" before it (CommonMark renders it as text), a nested link (another link's
+// unescaped "[" still open when a link closes: a link inside link text, or an opener left unclosed before a link;
+// CommonMark leaves the outer suffix as text; an image's "![" inside a link's text is not one), an unclosed
+// destination or title, an angle-bracket destination, a backslash in a destination
+// or title before a character CommonMark cannot escape (anything but ASCII punctuation), or a parenthesized title
+// holding an unescaped "(": the caller refuses it rather than guess.
+func linkParts(s string) (visible, hidden string, ok bool) {
 	var v, h strings.Builder
 	ok = true
-	opens := 0 // unescaped "[" not yet closed
+	var openers []bool // the unescaped "[" not yet closed, innermost last: true for an image's "![", false for a link's
+	esc := -1          // the index of the last backslash-escaped character
 	skipSpace := func(j int) int {
 		for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n') {
 			j++
@@ -1076,37 +1081,35 @@ func linkParts(s string, defs map[string]bool) (visible, hidden string, ok bool)
 	for i := 0; i < len(s); {
 		if s[i] == '\\' && i+1 < len(s) {
 			v.WriteString(s[i : i+2])
+			esc = i + 1
 			i += 2
 			continue
 		}
 		if s[i] == '[' {
-			opens++
+			openers = append(openers, i > 0 && s[i-1] == '!' && esc != i-1)
 		}
-		if s[i] != ']' || i+1 >= len(s) || (s[i+1] != '(' && s[i+1] != '[') {
-			if s[i] == ']' && opens > 0 {
-				opens--
+		if s[i] != ']' || i+1 >= len(s) || s[i+1] != '(' {
+			if s[i] == ']' && len(openers) > 0 {
+				openers = openers[:len(openers)-1]
 			}
 			v.WriteByte(s[i])
 			i++
 			continue
 		}
-		if opens == 0 {
+		if len(openers) == 0 {
+			ok = false // no opener: CommonMark renders the "](" as text
+			v.WriteByte(s[i])
+			i++
+			continue
+		}
+		image := openers[len(openers)-1]
+		openers = openers[:len(openers)-1]
+		if !image && slices.Contains(openers, false) {
+			// a nested link: a link closes while another link's "[" is still open (an image, "![alt](src)", may sit
+			// inside a link's text, as a badge does; a link may not, at any depth)
 			ok = false
 			v.WriteByte(s[i])
 			i++
-			continue
-		}
-		opens--
-		if s[i+1] == '[' {
-			end := strings.IndexByte(s[i+2:], ']')
-			if end < 0 || !defs[refLabel(s[i+2:i+2+end])] {
-				ok = false
-				v.WriteByte(s[i])
-				i++
-				continue
-			}
-			h.WriteString(" " + s[i+2:i+2+end] + " ")
-			i += 2 + end + 1
 			continue
 		}
 		j, depth := skipSpace(i+2), 0
@@ -1184,22 +1187,16 @@ func collapse(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// plainText is Markdown text as a reader of the rendered page sees it: link destinations, titles and reference
-// labels removed (linkParts), the allowed markers removed (they render nothing), inline marks removed, whitespace
-// collapsed to single spaces. The content guard has refused anything else a renderer would interpret.
-// It reads no reference definitions, so a reference link's label stays visible (plainTextIn reads them).
+// plainText is Markdown text as a reader of the rendered page sees it: link destinations and titles removed
+// (linkParts), the allowed markers removed (they render nothing), inline marks removed, whitespace collapsed to single
+// spaces. The content guard has refused anything else a renderer would interpret.
 func plainText(s string) string {
-	return plainTextIn(s, nil)
-}
-
-// plainTextIn is plainText with the reference labels defs defines hidden, as linkParts hides them.
-func plainTextIn(s string, defs map[string]bool) string {
-	return collapse(markdownMarks.Replace(visibleText(s, defs)))
+	return collapse(markdownMarks.Replace(visibleText(s)))
 }
 
 // visibleText is linkParts' visible text with the allowed markers removed (they render nothing).
-func visibleText(s string, defs map[string]bool) string {
-	visible, _, _ := linkParts(s, defs)
+func visibleText(s string) string {
+	visible, _, _ := linkParts(s)
 	for _, m := range allowedMarkup {
 		if m.files == "*.md" {
 			visible = strings.ReplaceAll(visible, m.text, " ")
@@ -1208,14 +1205,12 @@ func visibleText(s string, defs map[string]bool) string {
 	return visible
 }
 
-// comparisonSign is a comparison sign before a count (>, <, ≥, ≤, ≈ or ~, with an optional "=" and spaces): the
-// count is a bound, so countText writes the sign as the comparison phrase "at least".
-var comparisonSign = regexp.MustCompile(`[<>≤≥≈~]=?\s*([0-9A-Za-z*_` + "`" + `\[])`)
-
-// countText is the text the archive-count check reads: plainTextIn, with a comparison sign before a count written as
-// "at least" first (plainText removes "~" as a strikethrough mark, so the sign is read before the marks are removed).
-func countText(s string, defs map[string]bool) string {
-	return collapse(markdownMarks.Replace(comparisonSign.ReplaceAllString(visibleText(s, defs), " at least $1")))
+// countReadings are the texts the archive-count check reads, each without bare URLs: the visible text as written
+// (visibleText: nothing rewritten, every sign and mark kept, so a math sign stands in its clause) and the plain text
+// (plainText: the inline marks removed, so a count split by a mark, "si**x**", is read whole). No sign or mark is
+// ever rewritten into a word; a count either reading refuses is refused.
+func countReadings(s string) []string {
+	return []string{bareURL.ReplaceAllString(collapse(visibleText(s)), " "), bareURL.ReplaceAllString(plainText(s), " ")}
 }
 
 // bareURL is a URL written out as text: its digits are not a count, so the count check reads the text without it.
@@ -1246,14 +1241,18 @@ var comparisonWords = keySet("than", "least", "most", "over", "under", "about", 
 	"almost", "roughly", "exceeding", "beyond")
 
 // comparisonPhrases anywhere in a clause make every count in it a bound, before or after the count ("more than the
-// four archives", "four or more", "four archives at least", "4+" read as "4 or more"): refused, not resolved.
+// four archives", "four or more", "four archives at least"): refused, not resolved.
 var comparisonPhrases = keySet("or more", "or fewer", "or less", "or greater", "or above", "or over", "or below",
 	"or under", "or so", "at least", "at most", "more than", "fewer than", "less than", "up to", "and up", "and above",
 	"and more", "and over")
 
-// plusCount is a count written with a trailing plus ("4+", also before punctuation, "4+." or "(4+)", and a fullwidth
-// or superscript plus): read as "4 or more".
-var plusCount = regexp.MustCompile(`\b([0-9A-Za-z]+)[+＋⁺]([^0-9A-Za-z]|$)`)
+// mathSign reports a count token that is a math symbol (Unicode Sm: + < = > ~ ± ≥ ≤ ≈ ＋ ⁺ ...) other than the
+// table bar: a math sign anywhere in a count's clause makes the count a bound or an expression this check does not
+// read ("4+", "4+Linux", "≥(4)", "~4", "a + b"), so it is refused, never interpreted.
+func mathSign(w string) bool {
+	r, size := utf8.DecodeRuneInString(w)
+	return size == len(w) && w != "|" && unicode.Is(unicode.Sm, r)
+}
 
 // shippingWords make a clause a claim about what a release ships: a partitive count in such a clause ("each
 // release ships three of the four archives") is a total, not a subset.
@@ -1261,10 +1260,11 @@ var shippingWords = keySet("ship", "ships", "shipped", "shipping", "publish", "p
 	"produces", "produced", "include", "includes", "included", "contain", "contains", "attach", "attaches",
 	"attached", "provide", "provides", "carry", "carries", "offer", "offers")
 
-// countToken splits plain text into words (a hyphen separates words, so "six-archive" is two) and boundaries:
-// a sentence or clause end (. ! ? ; before a space or the end) and a table cell bar. A colon is not a boundary:
-// a label and its value ("Release archives: six") are one clause.
-var countToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[./+][A-Za-z0-9]+)*|[.!?;](?:\s|$)|\|`)
+// countToken splits text into words (a hyphen or a plus separates words, so "six-archive" and "4+Linux" are two),
+// boundaries (a sentence or clause end, . ! ? ; before a space or the end, and a table cell bar) and math signs (each
+// Unicode Sm character other than the bar is a token of its own, mathSign). A colon is not a boundary: a label and its
+// value ("Release archives: six") are one clause.
+var countToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[./][A-Za-z0-9]+)*|[.!?;](?:\s|$)|\||\p{Sm}`)
 
 var digits = regexp.MustCompile(`^[0-9]+$`)
 
@@ -1277,6 +1277,7 @@ var allowedCountClaims = map[string]string{
 	"archive against that signed predicate before opening it assembles each variant with a copy only dockerfile digest pinned distroless base zero": "RELEASING.md: zero RUN instructions in the Dockerfile, not a count of archives",
 	"archive against it is a complete chain not two":                                                                                                "RELEASING.md: not two half-measures, not a count of archives",
 	"no archive for this machine": "docs/install.md: the architecture check's failure branch (no archive for this machine's architecture), not a count of the release's archives",
+	"archive against that signed predicate before opening it assembles each variant with a copy only dockerfile digest pinned distroless base zero run and pushes by digest only to a private candidates package no tags nothing public": "RELEASING.md: no tags on the private candidates package, not a count of archives (the noun stands earlier in the clause)",
 }
 
 // archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Every
@@ -1294,19 +1295,19 @@ var allowedCountClaims = map[string]string{
 //     ("six or four archives") cannot be resolved and is refused;
 //   - "a" or "an" after "only", "just" or "solely" is a count of one; "none" and "zero" are counts of zero, and so is
 //     "no" with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end (only an exact
-//     allowedCountClaims entry, "no archive for this machine", excepts one); a count of zero is a total in any
-//     clause ("none of the archives exist"), so it must equal the archives;
-//   - a count after a comparison word, also across "the" or "of" ("more than the four", "over", "about", ...), or
-//     in a clause holding a comparison phrase anywhere ("four or more", "at least", "or fewer", "up to", "4+" also
-//     before punctuation and with a fullwidth or superscript plus, a comparison sign before the count that countText
-//     writes as "at least"), or followed by "plus" ("four-plus"), is a bound, not a count, and is refused;
+//     allowedCountClaims entry, "no archive for this machine", excepts one), or with "archive(s)" before it in its
+//     clause ("Release archives: no"), whose claim runs from the noun to the clause end; a count of zero is a total
+//     in any clause ("none of the archives exist"), so it must equal the archives;
+//   - a count after a comparison word, also across "the" or "of" ("more than the four", "over", "about", ...), in a
+//     clause holding a comparison phrase anywhere ("four or more", "at least", "or fewer", "up to"), followed by
+//     "plus" ("four-plus"), or in a clause holding a math sign anywhere (mathSign: "4+", "≥ 4", "~4", "4+Linux",
+//     "a + b"; the text is read as written, no sign is rewritten), is a bound, not a count, and is refused;
 //   - a compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of", "some of the
 //     archives") cannot be resolved and are refused.
 //
 // A claim this reading gets wrong is excepted only by an exact entry in allowedCountClaims.
 func archiveCountProblems(text string, archives int) (problems []string) {
 	var toks []string
-	text = plusCount.ReplaceAllString(text, "$1 or more$2")
 	for _, m := range countToken.FindAllString(text, -1) {
 		toks = append(toks, strings.ToLower(strings.TrimSpace(m)))
 	}
@@ -1357,8 +1358,8 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 			ce++
 		}
 		comparison := after(i, comparisonWords) || (i+1 < len(toks) && toks[i+1] == "plus") // "four-plus" is a bound
-		for k := cs; k+1 < ce; k++ {
-			comparison = comparison || comparisonPhrases[toks[k]+" "+toks[k+1]]
+		for k := cs; k < ce; k++ {
+			comparison = comparison || mathSign(toks[k]) || (k+1 < ce && comparisonPhrases[toks[k]+" "+toks[k+1]])
 		}
 		vague := vagueCounts[w]
 		total := after(i, all)
@@ -1385,9 +1386,9 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 			}
 		}
 		// "no" is a count of zero wherever an archive follows it in its clause ("ships no archive", "has no
-		// archive", "no archive exists"); its claim runs from "no" to the clause end, so only an exact
-		// allowedCountClaims entry excepts it ("no archive for this machine").
-		if zeroNo && nounAt < 0 {
+		// archive", "no archive exists"), or stands before it ("Release archives: no"); its claim runs to the clause
+		// end, so only an exact allowedCountClaims entry excepts it ("no archive for this machine").
+		if zeroNo && nounAt < 0 && nounBefore < 0 {
 			continue
 		}
 		if partitive && wholeAt >= 0 && !vagueCounts[toks[wholeAt]] {
@@ -1401,8 +1402,10 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		}
 		var claim string
 		switch {
-		case zeroNo:
+		case zeroNo && nounAt >= 0:
 			claim = strings.Join(toks[i:ce], " ")
+		case zeroNo:
+			claim = strings.Join(toks[nounBefore:ce], " ")
 		case nounAt >= 0:
 			claim = strings.Join(toks[i:nounAt+1], " ")
 		case nounBefore >= 0:
@@ -1419,7 +1422,7 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		case vague:
 			problems = append(problems, fmt.Sprintf("claims %q, a count this check cannot resolve", claim))
 		case comparison:
-			problems = append(problems, fmt.Sprintf("claims %q, a bound (a comparison) this check does not resolve", claim))
+			problems = append(problems, fmt.Sprintf("claims %q, a bound (a comparison word or phrase, or a math sign in its clause) this check does not resolve", claim))
 		case total || limiting || n == 0 || nounAt < 0 || (partitive && shipping):
 			if n != archives {
 				problems = append(problems, fmt.Sprintf("claims %q, a total or limit (or a shipping claim), but .goreleaser.yaml produces %d archives", claim, archives))
@@ -1526,11 +1529,16 @@ func units(text string) []unit {
 	return out
 }
 
+// linkProblem is the refusal of a text holding a link form linkParts does not read.
+func linkProblem(where, text string) string {
+	return fmt.Sprintf("%s holds a link this check does not read (no opening bracket, a nested link, an unclosed destination or title, an angle-bracket destination, an unescaped \"(\" in a parenthesized title): %s", where, collapse(text))
+}
+
 // checkDoc returns every problem in one scanned doc and the allowed texts it found: the content guard's refusals
-// (inline HTML, a character reference, an invisible or non-printing character); a darwin archive name; a link form
-// linkParts does not read; an archive-count claim that is not the count .goreleaser.yaml produces; a platform name
-// in the visible text that does not lie wholly inside one of the file's allowed texts; and any platform name in a
-// link destination, title or reference label. Counts are read in the visible text without URLs.
+// (inline HTML, a character reference, an invisible or non-printing character, strikethrough, a reference-style link
+// form); a darwin archive name; a link form linkParts does not read (linkProblem); an archive-count claim that is not
+// the count .goreleaser.yaml produces, in either of countReadings; a platform name in the visible text that does not
+// lie wholly inside one of the file's allowed texts; and any platform name in a link destination or title.
 func checkDoc(file, text string, allowed []allowedLine, archives int) (problems []string, seen map[string]bool) {
 	seen = map[string]bool{}
 	reported := map[string]bool{}
@@ -1543,21 +1551,22 @@ func checkDoc(file, text string, allowed []allowedLine, archives int) (problems 
 	for _, p := range contentProblems(file, text) {
 		report(p)
 	}
-	defs := refDefs(text)
 	for _, u := range units(text) {
 		if strings.Contains(strings.ToLower(u.text), "_darwin_") {
 			report(fmt.Sprintf("%s:%d names a darwin archive: %s", file, u.line, u.text))
 		}
-		_, hidden, ok := linkParts(u.text, defs)
+		_, hidden, ok := linkParts(u.text)
 		if !ok {
-			report(fmt.Sprintf("%s:%d holds a link this check does not read (no opening bracket, an undefined reference label, an unclosed destination or title, an angle-bracket destination, an unescaped \"(\" in a parenthesized title): %s", file, u.line, u.text))
+			report(linkProblem(fmt.Sprintf("%s:%d", file, u.line), u.text))
 		}
 		for _, loc := range platformWord.FindAllStringIndex(hidden, -1) {
-			report(fmt.Sprintf("%s:%d names a non-Linux platform (%q) in a link destination, title or label: %s", file, u.line, hidden[loc[0]:loc[1]], u.text))
+			report(fmt.Sprintf("%s:%d names a non-Linux platform (%q) in a link destination or title: %s", file, u.line, hidden[loc[0]:loc[1]], u.text))
 		}
-		plain := plainTextIn(u.text, defs)
-		for _, p := range archiveCountProblems(bareURL.ReplaceAllString(countText(u.text, defs), " "), archives) {
-			report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
+		plain := plainText(u.text)
+		for _, r := range countReadings(u.text) {
+			for _, p := range archiveCountProblems(r, archives) {
+				report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
+			}
 		}
 		var spans [][2]int
 		for _, a := range allowed {
@@ -1935,7 +1944,7 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		// "no" before a word that is not an archive, and a math sign in a clause without an archive count pass.
 		"Size it from your eviction cap plus ~20% headroom.",
 		"rm -rf ~/.gradle/caches/build-cache-1",
-		"See [one](x) and [two](y) for the four archives.",
+		"See [this](x) and [that](y) for the four archives.",
 		"There is no shortcut; download the four archives.",
 		"The cap is a + b bytes; each release ships four archives.",
 	} {
@@ -2017,6 +2026,14 @@ func checkNotes(text, changelog string, archives int) []string {
 		problems = append(problems, fmt.Sprintf("%s says %q outside an entry that starts with it and ends with %q (%d mentions, %d such entries)", notesFile, notesSentence, notesCitation, mentions, entries))
 	case entries > 1:
 		problems = append(problems, fmt.Sprintf("%s says %q %d times, want at most once", notesFile, notesSentence, entries))
+	}
+	// The changelog fallback is read for the sentence only, so the forms that would hide or rewrite what it shows are
+	// refused in it outright: strikethrough, every reference-style link form and a link form linkParts does not read.
+	problems = append(problems, proseFormProblems(func(n int) string { return fmt.Sprintf("%s:%d", changelogFile, n) }, changelog)...)
+	for _, u := range units(changelog) {
+		if _, _, ok := linkParts(u.text); !ok {
+			problems = append(problems, linkProblem(fmt.Sprintf("%s:%d", changelogFile, u.line), u.text))
+		}
 	}
 	published, pmentions := linuxOnly(changelog)
 	if pmentions != published {
@@ -2334,15 +2351,16 @@ func mappingsReadings(s string) []string {
 // in every one of mappingsReadings, and a link form linkParts does not read is refused (as checkDoc refuses it). The one exception is the whole value of `ref` in an evidence item whose
 // `type` is `go-test`, when that value is exactly internal/platforms:<name> and tests holds name. The content
 // guard reads the raw text and every decoded comment and value first, and refuses inline HTML, character
-// references and invisible characters outright (the allowed placeholder only in its leading comment line, never in a
-// decoded key, value, anchor or tag). A YAML directive and any explicit tag other than !!str are refused by name;
-// a !!binary scalar's decoded text is read as well.
+// references, invisible characters, strikethrough and every reference-style link form outright (the allowed
+// placeholder only in its leading comment line, never in a decoded key, value, anchor or tag). Before anything is
+// decoded, the raw-text tag scan (yamlTagProblems) refuses every "!" (any explicit tag, !!str included) and a YAML
+// directive; a !!binary scalar's decoded text is read as well.
 func checkEvidenceMappings(text string, tests map[string]bool) (problems []string) {
 	reported := map[string]bool{}
 	scan := func(where, s string) {
 		for _, v := range []string{s, strings.ReplaceAll(s, "#", "")} {
-			if _, _, ok := linkParts(v, nil); !ok {
-				p := fmt.Sprintf("%s holds a link this check does not read (no opening bracket, a reference label, an unclosed destination or title, an angle-bracket destination, an unescaped \"(\" in a parenthesized title): %s", where, collapse(v))
+			if _, _, ok := linkParts(v); !ok {
+				p := linkProblem(where, v)
 				if !reported[p] {
 					reported[p] = true
 					problems = append(problems, p)
@@ -2360,17 +2378,11 @@ func checkEvidenceMappings(text string, tests map[string]bool) (problems []strin
 			}
 		}
 	}
-	problems = contentProblems(mappingsFile, text)
-	for n, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(line, "%") {
-			problems = append(problems, fmt.Sprintf("%s:%d: a YAML directive refused (a %%TAG directive can remap a tag): %s", mappingsFile, n+1, line))
-		}
-	}
+	problems = append(contentProblems(mappingsFile, text), yamlTagProblems(mappingsFile, text)...)
 	docs, err := yamlDocs(text)
 	if err != nil {
 		return append(problems, mappingsFile+": the YAML loader cannot read it: "+err.Error())
 	}
-	problems = append(problems, explicitTags(mappingsFile, docs, "!!str")...)
 	exempt := map[string]bool{} // the exact references excepted
 	var walk func(n *yaml.Node, skip bool)
 	walk = func(n *yaml.Node, skip bool) {
