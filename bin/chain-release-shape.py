@@ -366,7 +366,7 @@ def metadata(path):
         for n in need:
             if n not in lines[marks[k]]:
                 bad.append("the %s step must carry %s" % (k, n))
-    # REQ-CHAIN-007-AC20 (advisor ruling H, Oct 12): the release manifest stays an OCI referrer of each public digest (the v0.2.x attestation customers have):
+    # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays an OCI referrer of each public digest (the v0.2.x attestation customers have):
     # one `cosign attest` per registry inside the loop over both digests, after every image signature, GHCR required and Docker Hub a loud, best-effort mirror
     atts = [l for l in lines if l.startswith("cosign attest ")]
     base = ('cosign attest --yes --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json '

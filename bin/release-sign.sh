@@ -29,6 +29,12 @@ for host in ghcr.io docker.io; do
     cosign sign --yes --signing-config .github/policy/cosign-signing-config.json "$host/$repo@$digest"
   done
 done
+# the release manifest stays attached to each public digest as an OCI referrer, as on v0.2.x (REQ-CHAIN-007-AC8): GHCR is authoritative and required; the Docker Hub mirror
+# is best-effort with a loud warning, never a silent skip (referrer support there varies). The predicate is the file release-files.sha256 lists and signs.
+for digest in "$prod" "$fips"; do
+  cosign attest --yes --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "ghcr.io/$repo@$digest"
+  cosign attest --yes --signing-config .github/policy/cosign-signing-config.json --predicate release-metadata/release-manifest.json --type https://fosterstack.com/attestations/release-manifest/v1 "docker.io/$repo@$digest" || echo "::warning::could not attach the manifest referrer on docker.io/$repo@$digest: the GHCR referrer is authoritative"
+done
 mkdir -p release-evidence
 # the dependency list is signed and attached as dependency-list.json: a signing call that names provenance is read as a provenance signer, which only Sign may be
 cp dependency-provenance.json release-evidence/dependency-list.json
