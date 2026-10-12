@@ -9,14 +9,14 @@ guard=$(cd "$(dirname "$0")" && pwd)/suite-guard.sh
 die() { echo "suite-guard: $*" >&2; exit 1; }
 cmd_run() {
   local only=0; [ "${1:-}" != --count-only ] || { only=1; shift; }
-  local floors=$1 name=$2 path=$3 log rc=0 n
+  local floors=$1 name=$2 path=$3 log rc=0 n fl
   # Every step returns its failure explicitly: `all` calls this in an `||` context, where `set -e` is off and a bare failing command would be swallowed.
   [ -s "$path" ] || { echo "suite-guard: suite $name: $path is empty or missing" >&2; return 1; }
   log=$(mktemp) || return 1
   bash "$path" < /dev/null > "$log" 2>&1 || rc=$?
   n=$(bash "$guard" count "$log" 2>&1) || { rm -f "$log"; echo "suite-guard: suite $name: $n (rc=$rc)" >&2; return 1; }
   rm -f "$log"
-  bash "$guard" floor "$floors" "$name" "$n" > /dev/null || { bash "$guard" floor "$floors" "$name" "$n" >&2 || true; return 1; }
+  fl=$(bash "$guard" floor "$floors" "$name" "$n" 2>&1) || { echo "$fl" >&2; return 1; }
   echo "suite-guard: $name: count $n rc=$rc"
   [ "$only" = 1 ] || [ "$rc" = 0 ] || { echo "suite-guard: suite $name exited $rc" >&2; return 1; }
   return 0
