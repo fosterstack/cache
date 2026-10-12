@@ -81,7 +81,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "f8436e37727a8df8d89dc12751605b400d70c8c9a479573dd6b2ef4d8e8991ca",
+      "sha256": "d9baa427920d244ccd573271d6b6778de228756aaafd0a2ff407937e74382f60",
       "tools": [
         "at",
         "git"
@@ -95,11 +95,26 @@
       "sha256": "4703b2ee829fa12247e1abd1c1fcdaeacece6fb495a1a172e100a58505ae4267",
       "tools": [
         "at",
+        "command",
         "curl",
-        "tar"
+        "find",
+        "tar",
+        "trap"
       ],
       "runs": [],
       "signs": "other",
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "command -v sha256sum >/dev/null 2>&1",
+          "why": "a feature test only: `command -v` prints where sha256sum is and launches nothing; the installer picks sha256sum or shasum for the checksum of the archive it fetched"
+        },
+        {
+          "rule": "script-name",
+          "text": "$(uname -m) in",
+          "why": "the operand of `case $(uname -m) in`: a pattern match on this machine's architecture name (x86_64 or aarch64), never run as a command"
+        }
+      ],
       "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
     },
     {
@@ -174,7 +189,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "696e181334efe864a5b3e55cbec289ff7695e1fdf366a91cb41e9f1f40adf330",
+      "sha256": "8a0dd834bf709677c2d79218ef4ccd2bcf1de6de7c1ab0454b9c936ebb1d5756",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -238,11 +253,12 @@
       ],
       "runs": [
         "bin/admission-tag-signer.py",
+        "bin/chain-bytes-sha.py",
         "bin/install-scanner.sh"
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "b1d13307173c9692457873a1b758e606402f86fa12261ad393b9c5339990fd68",
+      "sha256": "54ed0504dbc63598c821e681c90d06290c7993b91076f57f45594db2c7e59a6b",
       "reads_env": [
         "GH_TOKEN"
       ],
