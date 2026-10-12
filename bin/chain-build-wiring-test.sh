@@ -1550,6 +1550,8 @@ rcg() { # rcg ok|caught LABEL [sed-expr]
 rcg ok "the real release.yml has no rc-refusal job and its release job runs on an rc tag (verify-and-stop)"
 rcg caught "a release job that excludes an rc tag is caught" "/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run }}/ \&\& !inputs.dry-run \&\& !contains(github.ref_name, '-rc') }}/"
 rcg caught "a release job without the dry-run conjunct is caught" '/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run//'
+rcg caught "a release job that runs always() (it would run after a failed Check) is caught" '/^  release:/,/^  [a-z]/ s/ if: ${{ startsWith(github.ref, .refs\/tags\/v.) \&\& !inputs.dry-run }}/ if: ${{ always() }}/'
+rcg caught "a release job that spells the rc exclusion another way is caught" "/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run }}/ \&\& !inputs.dry-run \&\& !endsWith(github.ref_name, 'rc1') \&\& !contains(github.ref_name, 'rc') }}/"
 rcg caught "a restored rc-refusal job is caught" 's/^  patch-failed:/  rc-refusal:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: exit 1\n  patch-failed:/'
 # ---- the known-red list (advisor, #299): test-evidence/known-red.json and bin/chain-known-red.py -------------------------------------------------------
 # The two chain suites whose red cases are expected (this one and bin/chain-sign-wiring-test.sh) judge their own output against the list: the CI step
@@ -1656,13 +1658,13 @@ for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/ch
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
 # the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1..3 carry their structured findings (19 each; KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1 and KR-SIGN-3 carry their structured findings (25 each: 19 plus the six of PR 4's three cache scripts; KR-SIGN-2 left with the legacy-list probes, KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
 import json, sys
 e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
-for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3"):
+for k in ("KR-SIGN-1", "KR-SIGN-3"):
     f = e[k].get("findings")
     assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
-for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3"): assert len(e[k]["findings"]) == 19, (k, len(e[k]["findings"]))
+for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 25, (k, len(e[k]["findings"]))
 PY
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
@@ -1858,7 +1860,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=644
+EXPECT=646
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -869,7 +869,7 @@ def cmd_stage_start(a):
 
 
 # ---- Release's two refuse-only bindings (PR 4; advisor read-back verifier-bindings) -------------------------------------------------------
-# Both are new commands run by Release's first witnessed step only. They add refusals and change no existing command, pin or message.
+# Both are new commands run by Release's first witnessed step only. They add refusals and change no existing subcommand, pin or message.
 CHECK_RECORDS = ("scanners", "acceptance", "runtime", "arm64")        # the four Check records, by step name (REQ-CHAIN-007-AC16)
 MATERIAL = "https://witness.dev/attestations/material/v0.1/file:witness-build/digests.json"
 ITEMS_PRODUCT = "https://witness.dev/attestations/product/v0.1/file:items.json"

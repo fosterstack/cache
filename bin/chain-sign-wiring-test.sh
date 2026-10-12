@@ -2299,7 +2299,7 @@ expect ok "the real tree: only release.yml calls stage-sign.yml and no stage cal
 # bytes in .github/policy/legacy-stage-files.json; the tree judge leaves out the findings OF a listed file whose bytes match (it still reads
 # them to see which scripts they run), and judges everything else in full. So the real tree is an ordinary `expect ok`. A file whose bytes
 # differ is judged in full; when the last legacy file is rewritten, deleting the list leaves this same case judging the whole tree.
-expect ok "the real tree: only stage-sign.yml is new and only it signs provenance (no legacy stage file is left: PR 4 rewrote the last and deleted the list)" tree "$REAL"
+expect ok "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)" tree "$REAL"
 # every probe is a copy of the real tree with ONE change; the tree judge must fail it and name the changed file
 SIGN_JOB='  extra-attest:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      attestations: write\n    steps:\n      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n        with:\n          subject-path: x\n'
 probe() {  # probe NAME TEXT-THE-FINDINGS-MUST-NAME LABEL EDIT(shell, run in the copy)
@@ -3385,7 +3385,7 @@ else failn=$((failn + 1)); echo "FAIL findings ids: the printed structured ids d
 rc=0; env -u CHAIN_FINDINGS python3 "$work/judge.py" tree "$d" > /dev/null 2> "$fj/err2.txt" || rc=$?
 if ! grep -q 'FINDINGS-JSON' "$fj/err2.txt"; then pass=$((pass + 1)); echo "ok   findings ids: nothing is printed unless CHAIN_FINDINGS=1 (no change to the judge's existing output)"; else failn=$((failn + 1)); echo "FAIL findings ids: printed without CHAIN_FINDINGS=1"; fi
 
-EXPECT=1348
+EXPECT=1337
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

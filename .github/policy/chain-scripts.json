@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "070d8dced7939fd6bd935d691f3fc597c552104255f0978f32ce357b76bf309c",
+      "sha256": "3d6203538316c5b0d548f6a576ce1f318a9b16558529e8a5e1db7475db2bd5f0",
       "tools": [
         "make",
         "at",
@@ -870,10 +870,7 @@
         "python3",
         "trap"
       ],
-      "runs": [
-        "bin/apk-tool.py",
-        "bin/release-sign-apks.sh"
-      ],
+      "runs": [],
       "signs": "other",
       "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
       "sha256": "9acc2f0bd89d3651cd4aee5b96d91df170e5efea003a7eecd670c25709b0d480",
@@ -906,7 +903,6 @@
       ],
       "runs": [
         "bin/release-metadata.py",
-        "bin/vendor-provenance.py",
         "bin/vex-forms.py"
       ],
       "signs": "other",

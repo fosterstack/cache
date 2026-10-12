@@ -196,6 +196,11 @@ d=$(mk cosshort); printf 'jobs:\n  c:\n    steps:\n      - run: cosign attest --
 expect ok "cosign attest --type slsaprovenance1 resolves to SLSA provenance v1 (already has a row)" "$d"
 d=$(mk cossign); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "cosign sign (an image signature) with no row fails" "$d"
+# PR 4 (Release signs the release files keyless, one bundle each): a literal sign-blob has the cosign signature type and needs its row
+d=$(mk relblob); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --bundle release-files.sha256.bundle release-files.sha256\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "a literal cosign sign-blob of the release file list with no row fails" "$d"
+addrow "$d" "urn:cosign:signature" "a signature on the release files, each with a Rekor entry" customer
+expect ok "the same sign-blob with the cosign signature row (consumer: customer) passes" "$d"
 # (Codex #249 r7 B7, the class closed) a signing call whose type cannot be resolved fails closed BY NAME, even when the rows it would
 # need exist: an unresolved attestor list, type, datatype or argument is an explicit error, never an assumption
 uncase() { # uncase NAME 'run line' LABEL WORD [ok]: stage-verify.yml with that run line; caught and naming WORD (or ok)
@@ -342,7 +347,7 @@ tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$roo
 expect ok "the real repository: every produced record type has a row with a claim and a stage consumer " "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-EXPECT=95
+EXPECT=97
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
