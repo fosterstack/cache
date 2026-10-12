@@ -309,8 +309,10 @@ func yamlDocs(text string) ([]*yaml.Node, error) {
 // flag, and refuses, naming file and line: every "!" anywhere in the text (every tag token, "!", "!!x", "!x",
 // "!<...>", is one; the scan does not parse YAML's quoting, comments or flow context to tell a tag token from text,
 // and the files it reads hold no "!" at all, so any "!" is refused), and every YAML directive (a line starting "%",
-// a byte order mark before it ignored: a %TAG directive can remap a tag).
+// a byte order mark before it ignored: a %TAG directive can remap a tag). It first refuses every line break other
+// than LF (lineBreakProblems), so no line the scan reads hides a line the decoder reads.
 func yamlTagProblems(file, text string) (problems []string) {
+	problems = lineBreakProblems(func(n int) string { return fmt.Sprintf("%s:%d", file, n) }, text)
 	for n, line := range strings.Split(text, "\n") {
 		if strings.HasPrefix(strings.TrimPrefix(line, "\ufeff"), "%") {
 			problems = append(problems, fmt.Sprintf("%s:%d: a YAML directive refused (a %%TAG directive can remap a tag): %s", file, n+1, line))
@@ -1062,9 +1064,26 @@ func guardText(where func(line int) string, allowed []string, text string) (prob
 	return problems
 }
 
+// lineBreakProblems refuses outright, once per line, each labelled by where(line), every line break other than LF
+// (lineBreaks: CR, NEL, LS, PS): the checks split lines on LF alone and the pinned YAML decoder reads each as a line
+// break, so a CR could hide a line ("# comment\r%YAML 1.1") from a line scan.
+func lineBreakProblems(where func(line int) string, text string) (problems []string) {
+	for n, line := range strings.Split(text, "\n") {
+		for _, name := range []string{"CR", "NEL", "LS", "PS"} {
+			if strings.Contains(line, lineBreaks[name]) {
+				problems = append(problems, fmt.Sprintf("%s: a line break other than LF (%s) refused outright: the checks split lines on LF alone and the YAML decoder reads it as a line break: %q", where(n+1), name, line))
+				break
+			}
+		}
+	}
+	return problems
+}
+
 // proseFormProblems refuses outright, one per kind per line, each labelled by where(line), the prose forms the checks
-// do not interpret: strikethrough ("~~") and every reference-style link form (refForm).
+// do not interpret: a line break other than LF (lineBreakProblems), strikethrough ("~~") and every reference-style
+// link form (refForm).
 func proseFormProblems(where func(line int) string, text string) (problems []string) {
+	problems = lineBreakProblems(where, text)
 	for n, line := range strings.Split(text, "\n") {
 		if strings.Contains(line, "~~") {
 			problems = append(problems, fmt.Sprintf("%s: strikethrough \"~~\" (or a tilde fence) refused outright: %q", where(n+1), line))
@@ -1229,12 +1248,31 @@ func visibleText(s string) string {
 	return visible
 }
 
+// countReading is one text the archive-count check reads, and form, which turns an allowedCountClaims entry (a clause
+// of the visible text as written) into this reading's text of that clause.
+type countReading struct {
+	text string
+	form func(clause string) string
+}
+
+// signMarks are markdownMarks but the tilde, the one math sign among them: removed, a "~" before a count split by a
+// mark ("~fo**ur**") vanished from the plain reading, and the count lost its bound.
+var signMarks = strings.NewReplacer("*", "", "_", "", "`", "", "[", "", "]", "", "\\", "")
+
 // countReadings are the texts the archive-count check reads, each without bare URLs: the visible text as written
-// (visibleText: nothing rewritten, every sign and mark kept, so a math sign stands in its clause) and the plain text
-// (plainText: the inline marks removed, so a count split by a mark, "si**x**", is read whole). No sign or mark is
-// ever rewritten into a word; a count either reading refuses is refused.
-func countReadings(s string) []string {
-	return []string{bareURL.ReplaceAllString(collapse(visibleText(s)), " "), bareURL.ReplaceAllString(plainText(s), " ")}
+// (visibleText: nothing rewritten, every sign and mark kept, so a math sign stands in its clause), the plain text
+// (plainText: the inline marks removed, so a count split by a mark, "si**x**", is read whole) and the plain text with
+// its math signs kept (signMarks: the marks removed but the tilde, so "~fo**ur**" reads "~four", a bound). No sign or
+// mark is ever rewritten into a word; a count any reading refuses is refused.
+func countReadings(s string) []countReading {
+	v := visibleText(s)
+	plain := func(c string) string { return collapse(markdownMarks.Replace(c)) }
+	signs := func(c string) string { return collapse(signMarks.Replace(c)) }
+	return []countReading{
+		{bareURL.ReplaceAllString(collapse(v), " "), collapse},
+		{bareURL.ReplaceAllString(plain(v), " "), plain},
+		{bareURL.ReplaceAllString(signs(v), " "), signs},
+	}
 }
 
 // bareURL is a URL written out as text: its digits are not a count, so the count check reads the text without it.
@@ -1292,16 +1330,16 @@ var countToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[./][A-Za-z0-9]+)*|[.!?;](?:
 
 var digits = regexp.MustCompile(`^[0-9]+$`)
 
-// allowedCountClaims are exact claims (as archiveCountProblems words them: lower case, one space between words,
-// from the count through "archive(s)", or from "archive(s)" through a count after it) that read as a count
-// claim but are not one, each with its reason. A new entry is reviewed.
+// allowedCountClaims are whole clauses, exactly as written in the visible text (link destinations hidden, every mark
+// and sign kept, whitespace collapsed; each reading compares its own form of the entry, countReading.form), whose count
+// claims are not counts of the release's archives, each with its reason. An entry excepts the counts of its clause
+// only while the whole clause the count reader examines equals it exactly: no exception survives any edit to its
+// clause, and none masks a bound (the bound check runs first). A new entry is reviewed.
 var allowedCountClaims = map[string]string{
-	"256 so verifying the checksums file and then checking an archive":                                                                              "RELEASING.md: the 256 of SHA-256 (the hyphen splits the hash name), not a count",
-	"archives are fscache and fscache fips for linux/amd64 and linux/arm64 owner decision oct 9":                                                    "docs/next-release-notes.md: the 9 of the citation's date (Oct 9), not a count",
-	"archive against that signed predicate before opening it assembles each variant with a copy only dockerfile digest pinned distroless base zero": "RELEASING.md: zero RUN instructions in the Dockerfile, not a count of archives",
-	"archive against it is a complete chain not two":                                                                                                "RELEASING.md: not two half-measures, not a count of archives",
-	"no archive for this machine": "docs/install.md: the architecture check's failure branch (no archive for this machine's architecture), not a count of the release's archives",
-	"archive against that signed predicate before opening it assembles each variant with a copy only dockerfile digest pinned distroless base zero run and pushes by digest only to a private candidates package no tags nothing public": "RELEASING.md: no tags on the private candidates package, not a count of archives (the noun stands earlier in the clause)",
+	"`checksums.txt` is signed, and it pins every archive by SHA-256 — so verifying the checksums file and then checking an archive against it is a complete chain, not two half-measures":                                                                                            "RELEASING.md: the 256 of SHA-256 (the hyphen splits the hash name) and not two half-measures, not counts of archives",
+	"The release archives are fscache and fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9":                                                                                                                                                                        "docs/next-release-notes.md: the 9 of the citation's date (Oct 9), not a count",
+	"- **Image assembly** verifies each archive against that signed predicate before opening it, assembles each variant with a COPY-only Dockerfile (digest-pinned distroless base, zero `RUN`), and pushes by digest only to a private candidates package — no tags, nothing public": "RELEASING.md: zero RUN instructions in the Dockerfile and no tags on the private candidates package, not counts of archives",
+	"If it prints anything else, there is no archive for this machine": "docs/install.md: the architecture check's failure branch (no archive for this machine's architecture), not a count of the release's archives",
 }
 
 // archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Every
@@ -1319,7 +1357,8 @@ var allowedCountClaims = map[string]string{
 //     ("six or four archives") cannot be resolved and is refused;
 //   - "a" or "an" after "only", "just" or "solely" is a count of one; "none" and "zero" are counts of zero, and so is
 //     "no" with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end (only an exact
-//     allowedCountClaims entry, "no archive for this machine", excepts one), or with "archive(s)" before it in its
+//     allowedCountClaims entry, the whole install.md clause "If it prints anything else, there is no archive for this
+//     machine", excepts one), or with "archive(s)" before it in its
 //     clause ("Release archives: no"), whose claim runs from the noun to the clause end; a count of zero is a total
 //     in any clause ("none of the archives exist"), so it must equal the archives;
 //   - a count after a comparison word, also across "the" or "of" ("more than the four", "over", "about", ...), in a
@@ -1329,11 +1368,13 @@ var allowedCountClaims = map[string]string{
 //   - a compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of", "some of the
 //     archives") cannot be resolved and are refused.
 //
-// A claim this reading gets wrong is excepted only by an exact entry in allowedCountClaims.
-func archiveCountProblems(text string, archives int) (problems []string) {
+// A bound is refused first; a claim this reading gets wrong otherwise is excepted only when its whole clause, as this
+// reading reads it, equals form(entry) for an allowedCountClaims entry.
+func archiveCountProblems(text string, archives int, form func(clause string) string) (problems []string) {
 	var toks []string
-	for _, m := range countToken.FindAllString(text, -1) {
-		toks = append(toks, strings.ToLower(strings.TrimSpace(m)))
+	locs := countToken.FindAllStringIndex(text, -1)
+	for _, l := range locs {
+		toks = append(toks, strings.ToLower(strings.TrimSpace(text[l[0]:l[1]])))
 	}
 	boundary := func(w string) bool { return len(w) == 1 && strings.ContainsAny(w, ".!?;|") }
 	noun := func(w string) bool { return w == "archive" || w == "archives" }
@@ -1411,7 +1452,8 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		}
 		// "no" is a count of zero wherever an archive follows it in its clause ("ships no archive", "has no
 		// archive", "no archive exists"), or stands before it ("Release archives: no"); its claim runs to the clause
-		// end, so only an exact allowedCountClaims entry excepts it ("no archive for this machine").
+		// end, so only an allowedCountClaims entry equal to its whole clause excepts it (install.md's "If it prints
+		// anything else, there is no archive for this machine").
 		if zeroNo && nounAt < 0 && nounBefore < 0 {
 			continue
 		}
@@ -1437,7 +1479,25 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		default:
 			continue // no archive in its clause
 		}
-		if _, ok := allowedCountClaims[claim]; ok {
+		if comparison {
+			// the bound check runs before any exception lookup: no exception masks a bound
+			problems = append(problems, fmt.Sprintf("claims %q, a bound (a comparison word or phrase, or a math sign in its clause) this check does not resolve", claim))
+			continue
+		}
+		// the whole clause as this reading reads it: from the end of the boundary before it to the start of the one after
+		from, to := 0, len(text)
+		if cs > 0 {
+			from = locs[cs-1][1]
+		}
+		if ce < len(toks) {
+			to = locs[ce][0]
+		}
+		clause := strings.TrimSpace(text[from:to])
+		excepted := false
+		for entry := range allowedCountClaims {
+			excepted = excepted || form(entry) == clause
+		}
+		if excepted {
 			continue
 		}
 		switch {
@@ -1445,8 +1505,6 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 			problems = append(problems, fmt.Sprintf("claims %q, a compound count this check does not resolve", claim))
 		case vague:
 			problems = append(problems, fmt.Sprintf("claims %q, a count this check cannot resolve", claim))
-		case comparison:
-			problems = append(problems, fmt.Sprintf("claims %q, a bound (a comparison word or phrase, or a math sign in its clause) this check does not resolve", claim))
 		case total || limiting || n == 0 || nounAt < 0 || (partitive && shipping):
 			if n != archives {
 				problems = append(problems, fmt.Sprintf("claims %q, a total or limit (or a shipping claim), but .goreleaser.yaml produces %d archives", claim, archives))
@@ -1588,7 +1646,7 @@ func checkDoc(file, text string, allowed []allowedLine, archives int) (problems 
 		}
 		plain := plainText(u.text)
 		for _, r := range countReadings(u.text) {
-			for _, p := range archiveCountProblems(r, archives) {
+			for _, p := range archiveCountProblems(r.text, archives, r.form) {
 				report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
 			}
 		}
@@ -1962,7 +2020,7 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"The version is pinned for all four archives. <!-- pinned: upstream -->",
 		"The version is pinned for all four archives.\n<!-- pinned: historical -->",
 		"   ```sh\n   kubectl exec -it POD_NAME -- sh\n   ```",
-		// Round-7 precision: the allowed "no archive for this machine" (docs/install.md:57's form) and an escaped
+		// Round-7 precision: the allowed "no archive for this machine" (docs/install.md:57's whole clause, exactly) and an escaped
 		// parenthesis in a destination pass.
 		"If it prints anything else, there is no archive for this machine; run the container.",
 		"Every release ships [four](https://example.com/a\\(b) archives.",
@@ -2062,7 +2120,7 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"The release ships ~fo*u*r archives.",
 		"Release archives: ~fo**ur**.",
 		"The ~fo**ur** archives are signed.",
-		"| ~fo**ur** | archives |",
+		"| Release | ~fo**ur** archives |",
 		"The release ships ~fo[u]r archives.",
 	} {
 		ps, _ := checkDoc(f, install+"\n"+s+"\n", allowedLines, archives)
