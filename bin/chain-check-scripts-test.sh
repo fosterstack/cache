@@ -82,13 +82,59 @@ GDB_SUM=972de542534d3461cc3c3849a37a3f917b823de3b9c367e289db0d163519b42b
 GDB_FROM="https://grype.anchore.io/databases/v6/vulnerability-db_v6.1.9_2026-10-09T00:33:02Z_1790058641.tar.zst?checksum=sha256%3A$GDB_SUM"
 export FAKE_DB_FROM="$GDB_FROM" FAKE_DB_BUILT=2026-10-09T06:30:41Z FAKE_DB_RC=0
 export FAKE_OSV_DB_RC=0 FAKE_OSV_ZIP=ok FAKE_OSV_MODIFIED=2026-10-09T20:00:00Z FAKE_OSV_ECOS="Go Debian:12"
-D1="sha256:$(printf 'a%.0s' $(seq 64))"; D2="sha256:$(printf 'b%.0s' $(seq 64))"
+# REAL OCI image layouts (round 1 F1): an index of linux/amd64 and linux/arm64 child manifests, each with a config blob and a layer blob, every blob
+# under the name of its sha256; the digest Build records is the index blob's. SEED makes two layouts valid and different. LIE_ARCH makes every config say
+# another architecture than the index's platform entry (a lying descriptor).
+cat > "$work/mkoci.py" <<'PYM'
+import hashlib, json, os, sys
+root, seed = sys.argv[1], sys.argv[2]
+plats = sys.argv[3:] or ["linux/amd64", "linux/arm64"]
+lie = os.environ.get("LIE_ARCH", "")
+def blob(data):
+    h = hashlib.sha256(data).hexdigest()
+    d = os.path.join(root, "blobs", "sha256"); os.makedirs(d, exist_ok=True)
+    with open(os.path.join(d, h), "wb") as f: f.write(data)
+    return "sha256:" + h, len(data)
+kids = []
+names = {}
+for p in plats:
+    os_, arch = p.split("/")
+    layer, ls = blob(("layer %s %s" % (seed, p)).encode())
+    cfg, cs = blob(json.dumps({"architecture": lie or arch, "os": os_, "rootfs": {"type": "layers", "diff_ids": [layer]}, "seed": seed}, sort_keys=True).encode())
+    man, ms = blob(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+        "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": cfg, "size": cs},
+        "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar", "digest": layer, "size": ls}]}, sort_keys=True).encode())
+    kids.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": man, "size": ms, "platform": {"os": os_, "architecture": arch}})
+    names[arch] = {"layer": layer.split(":")[1], "config": cfg.split(":")[1], "manifest": man.split(":")[1]}
+idx, isz = blob(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": kids}, sort_keys=True).encode())
+with open(os.path.join(root, "index.json"), "w") as f:
+    json.dump({"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": idx, "size": isz}]}, f)
+with open(os.path.join(root, "oci-layout"), "w") as f: f.write('{"imageLayoutVersion":"1.0.0"}')
+names["index"] = idx.split(":")[1]
+with open(root.rstrip("/") + ".map", "w") as f: json.dump(names, f)   # blob file names by role, next to the layout (not inside it)
+print(idx)
+PYM
+# Build's digest list for a tree: the image index digests of images/production and images/fips and the sha256 of each archive under its item name
+cat > "$work/mkdig.py" <<'PYD'
+import hashlib, json, os, re, sys
+d = sys.argv[1]
+out = {"apk": "sha256:" + "c" * 64}
+for v in ("production", "fips"):
+    try: out["image-" + v] = json.load(open(os.path.join(d, "images", v, "index.json")))["manifests"][0]["digest"]
+    except (OSError, ValueError, KeyError, IndexError): pass
+for f in sorted(os.listdir(os.path.join(d, "dist"))):
+    m = re.fullmatch(r"(fscache|fscache-fips)_[^_]+_linux_(amd64|arm64)\.tar\.gz", f)
+    if m:
+        out["archive-%slinux-%s" % ("fips-" if m.group(1) == "fscache-fips" else "", m.group(2))] = "sha256:" + hashlib.sha256(open(os.path.join(d, "dist", f), "rb").read()).hexdigest()
+json.dump(out, open(os.path.join(d, "digests.json"), "w"))
+PYD
+mkdig() { python3 "$work/mkdig.py" "$1"; }
 # ---- the throw-away tree and the fake tools ---------------------------------------------------------------------------------
 fx="$work/fx"; mkdir -p "$fx/bin" "$fx/images" "$fx/dist" "$fx/.github/policy" "$fx/out"
-cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$fx/bin/" 2> /dev/null || true
-printf '{"image-production":"%s","image-fips":"%s","apk":"sha256:%s"}\n' "$D1" "$D2" "$(printf 'c%.0s' $(seq 64))" > "$fx/digests.json"
-for v in production fips; do mkdir -p "$fx/images/$v"; printf '{"imageLayoutVersion":"1.0.0"}' > "$fx/images/$v/oci-layout"; printf '{"schemaVersion":2,"manifests":[]}' > "$fx/images/$v/index.json"; done   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
-        : > "$fx/dist/fscache_0.3.0_linux_amd64.tar.gz"; : > "$fx/dist/fscache_0.3.0_linux_arm64.tar.gz"; : > "$fx/dist/fscache-fips_0.3.0_linux_amd64.tar.gz"; : > "$fx/dist/fscache-fips_0.3.0_linux_arm64.tar.gz"
+cp "$root"/bin/check-*.sh "$root"/bin/check-*.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$fx/bin/" 2> /dev/null || true
+D1=$(python3 "$work/mkoci.py" "$fx/images/production" production); D2=$(python3 "$work/mkoci.py" "$fx/images/fips" fips)   # images/<variant>/ is an OCI layout directory (PR 2's interface, PROPOSED)
+for a in amd64 arm64; do printf 'archive fscache %s\n' "$a" > "$fx/dist/fscache_0.3.0_linux_$a.tar.gz"; printf 'archive fscache-fips %s\n' "$a" > "$fx/dist/fscache-fips_0.3.0_linux_$a.tar.gz"; done
+mkdig "$fx"
 mkdir -p "$fx/tools/requirements"; printf 'module example.com/a\n' > "$fx/go.mod"; printf 'module example.com/b\n' > "$fx/tools/requirements/go.mod"
 printf '{"scanners":["grype","osv-scanner"],"pr_gate":["grype","inspector"]}\n' > "$fx/.github/policy/scanners.json"
 fake="$work/fake"; mkdir -p "$fake"
@@ -163,7 +209,7 @@ if grep -E '^grype .*-o json .*-o cyclonedx-json=' "$work/log" > /dev/null 2>&1 
 # "exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64), no darwin or windows archive exists": the scanners phase refuses any other
 # set before it scans, so a fifth archive, a darwin or windows file of any kind, a missing one and a doubled platform all fail.
 FOUR=(fscache_0.3.0_linux_amd64.tar.gz fscache_0.3.0_linux_arm64.tar.gz fscache-fips_0.3.0_linux_amd64.tar.gz fscache-fips_0.3.0_linux_arm64.tar.gz)
-mkdist() { rm -f "$fx"/dist/*; for f in "$@"; do : > "$fx/dist/$f"; done; }
+mkdist() { rm -f "$fx"/dist/*; for f in "$@"; do printf 'archive %s\n' "$f" > "$fx/dist/$f"; done; mkdig "$fx"; }
 mkdist "${FOUR[@]}"; want_ok "PLAT-001-AC1 exactly the four Linux archives: the scan runs" "${SCAN[@]}"
 mkdist "${FOUR[@]}" fscache_0.3.0_linux_riscv64.tar.gz; want_fail "PLAT-001-AC1 a fifth Linux archive fails" "exactly the four" "${SCAN[@]}"
 mkdist "${FOUR[@]}" fscache_0.3.0_darwin_arm64.tar.gz; want_fail "PLAT-001-AC1 a darwin archive fails" darwin "${SCAN[@]}"
@@ -198,9 +244,38 @@ rm -rf "$fx/images/fips"; : > "$fx/images/fips.tar"
 want_fail "AC4 a docker-save style tarball where the OCI layout directory belongs is refused (PR 2's interface)" layout "${SCAN[@]}"
 rm -f "$fx/images/fips.tar"; mkdir -p "$fx/images/fips"; printf '{"schemaVersion":2,"manifests":[]}' > "$fx/images/fips/index.json"
 want_fail "AC4 an image directory without oci-layout is not a layout and is refused" layout "${SCAN[@]}"
-printf '{"imageLayoutVersion":"1.0.0"}' > "$fx/images/fips/oci-layout"
+rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" fips > /dev/null
 want_ok "AC4 grype scans each image layout directory by oci-dir: and osv-scanner a tar made of it" "${SCAN[@]}"
 if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 'oci-archive' "$work/log" && grep -Eq '^osv-scanner scan image --archive .*\.tar$' "$work/log" 2> /dev/null; then ok "AC4 the scanner argv carries the layout: oci-dir for grype, an archive made of the layout for osv"; else bad "AC4 layout argv: $(grep -E '^(grype|osv)' "$work/log" | head -4 | cut -c1-160 | tr '\n' '|')"; fi
+# ---- round 1 F1 (Codex A1, B1): the bytes Check reads are the bytes Build recorded -------------------------------------------------------------
+# stage-start authenticates digests.json; the layouts and archives it downloads must be bound to it before any scan, load or run (an index.json that
+# merely exists is no binding): the layout is re-derived from the digest (index, child manifests, every blob re-hashed) and each archive re-hashed.
+nothing_ran() { ! grep -Eq '^(grype|osv-scanner) (oci-dir|scan|file)|^docker (load|run)' "$work/log"; }
+keep="$work/keep-fips"; rm -rf "$keep"; cp -R "$fx/images/fips" "$keep"
+rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" other > /dev/null
+want_fail "AC4 F1 a valid OCI layout that is not the image Build recorded (digests.json intact) is refused naming the image" image-fips "${SCAN[@]}"
+if nothing_ran; then ok "AC4 F1 nothing was scanned behind the refused layout"; else bad "AC4 F1 a scanner ran on a layout that is not Build's: $(grep -E '^(grype|osv)' "$work/log" | head -2 | cut -c1-100 | tr '\n' '|')"; fi
+rm -rf "$fx/images/fips"; cp -R "$keep" "$fx/images/fips"
+printf 'tampered\n' > "$fx/images/fips/blobs/sha256/$(jq -r .arm64.layer "$fx/images/fips.map")"
+want_fail "AC4 F1 a layer blob that no longer hashes to its name (every manifest and index blob intact) is refused" image-fips "${SCAN[@]}"
+rm -rf "$fx/images/fips"; cp -R "$keep" "$fx/images/fips"
+rm -f "$fx/images/fips/blobs/sha256/$(jq -r .arm64.manifest "$fx/images/fips.map")"
+want_fail "AC4 F1 a child manifest blob that is missing from the layout is refused" image-fips "${SCAN[@]}"
+rm -rf "$fx/images/fips"; cp -R "$keep" "$fx/images/fips"
+rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" other > /dev/null
+want_fail "AC4 F1 the production layout replaced by another valid one is refused naming the image" image-production "${SCAN[@]}"
+rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" production > /dev/null
+want_ok "AC4 F1 the layouts and archives Build recorded still pass the scan" "${SCAN[@]}"
+printf 'another archive\n' > "$fx/dist/fscache_0.3.0_linux_amd64.tar.gz"
+want_fail "AC4 F1 an archive that is not the one Build recorded (digests.json intact) is refused naming the file" fscache_0.3.0_linux_amd64.tar.gz "${SCAN[@]}"
+if nothing_ran; then ok "AC4 F1 no archive was scanned behind the refused one"; else bad "AC4 F1 a scanner ran on an archive that is not Build's"; fi
+mkdist "${FOUR[@]}"
+cp "$fx/digests.json" "$work/dig.f1"; python3 - "$fx/digests.json" <<'PYX'
+import json, sys
+d = json.load(open(sys.argv[1])); d.pop("archive-fips-linux-arm64"); json.dump(d, open(sys.argv[1], "w"))
+PYX
+want_fail "AC4 F1 a digest list without the digest of an archive that is scanned is refused naming it" archive-fips-linux-arm64 "${SCAN[@]}"
+cp "$work/dig.f1" "$fx/digests.json"
 # ---- REQ-CHAIN-006-AC15: fresh vulnerability databases from the scanner's own host --------------------------------------------
 printf '{"scanners":["grype"]}\n' > "$fx/.github/policy/scanners.json"; rm -f "$fx/out/scan-results.json"
 want_ok "AC15 a fresh grype database (built 17.5 h before now) from grype.anchore.io: the scan proceeds" "${SCAN[@]}"
@@ -281,6 +356,13 @@ resetf; rm -f "$work/fakedir/removed"; st fips '{"fips140":false,"fips140_note":
 if [ "$rc" = 1 ] && [ -f "$work/fakedir/removed" ]; then ok "AC6 the containers are removed even when the check fails"; else bad "AC6 cleanup after a failure (rc=$rc, removed file present: $([ -f "$work/fakedir/removed" ] && echo yes || echo no))"; fi
 resetf; st fips '{"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
 want_fail "AC6 a status without the fips140 field fails" fips "${FIPS[@]}"
+# round 1 F1: the candidate image is the one Build recorded, checked before it is loaded or started
+for v in fips production; do
+  resetf; rm -rf "$work/keep-$v"; cp -R "$fx/images/$v" "$work/keep-$v"; rm -rf "$fx/images/$v"; python3 "$work/mkoci.py" "$fx/images/$v" other > /dev/null
+  want_fail "AC6 F1 a valid OCI layout that is not Build's $v image (digests.json intact) is refused naming the image" "image-$v" "${FIPS[@]}"
+  if ! grep -q '^docker' "$work/log"; then ok "AC6 F1 nothing was loaded or started behind the refused $v layout"; else bad "AC6 F1 docker ran on a layout that is not Build's: $(head -2 "$work/log" | tr '\n' '|')"; fi
+  rm -rf "$fx/images/$v"; cp -R "$work/keep-$v" "$fx/images/$v"
+done
 # ---- the artifact checks ported from stage-acceptance-artifacts.yml (advisor ruling 0384): bin/check-artifacts.sh ----------------------
 # artifact checks (each Linux amd64 binary executes: it starts, answers /healthz and round-trips a key), REQ-FIPS-001-AC1 (the module selection is
 # read from the binary's build info), REQ-FIPS-001-AC2 and REQ-FIPS-002-AC1 (three runtime postures; the forced-standard build never claims the module),
@@ -319,30 +401,13 @@ for b in fscache fscache-fips; do { echo '#!/usr/bin/env python3'; cat "$fa/serv
 mkarch() { # mkarch DIR: the four Linux archives, each holding its binary
   rm -rf "$1"; mkdir -p "$1"
   for n in fscache fscache-fips; do for a in amd64 arm64; do tar -czf "$1/${n}_0.3.0_linux_${a}.tar.gz" -C "$fa/real" "$n"; done; done
+  mkdig "$fa"
 }
 mkarch "$fa/dist"
-# OCI image layout DIRECTORIES as Build writes them (PR 2: oci-layout, index.json with ONE descriptor to an image index blob with the platform entries)
-python3 - "$fa/images" <<'PYO'
-import hashlib, json, os, sys
-def blob(root, data):
-    h = hashlib.sha256(data).hexdigest()
-    os.makedirs(os.path.join(root, "blobs/sha256"), exist_ok=True)
-    with open(os.path.join(root, "blobs/sha256", h), "wb") as f: f.write(data)
-    return "sha256:" + h
-def mk(root, platforms):
-    os.makedirs(root, exist_ok=True)
-    idx = {"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [
-        {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + "%064x" % (i + 1), "size": 1,
-         "platform": {"os": p.split("/")[0], "architecture": p.split("/")[1]}} for i, p in enumerate(platforms)]}
-    d = blob(root, json.dumps(idx).encode())
-    top = {"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": d, "size": 1}]}
-    with open(os.path.join(root, "index.json"), "w") as f: json.dump(top, f)
-    with open(os.path.join(root, "oci-layout"), "w") as f: f.write('{"imageLayoutVersion":"1.0.0"}')
-for v in ("production", "fips"):
-    mk(sys.argv[1] + "/" + v, ["linux/amd64", "linux/arm64"])
-mk(sys.argv[1] + "/fips-amd64only", ["linux/amd64"])
-PYO
-cp "$fx/digests.json" "$fa/digests.json"
+# OCI image layout DIRECTORIES as Build writes them (real manifests, configs and layers: mkoci.py above)
+python3 "$work/mkoci.py" "$fa/images/production" production > /dev/null; python3 "$work/mkoci.py" "$fa/images/fips" fips > /dev/null
+python3 "$work/mkoci.py" "$fa/images/fips-amd64only" fips linux/amd64 > /dev/null
+mkdig "$fa"
 fake2="$work/fake2"; mkdir -p "$fake2"
 cat > "$fake2/go" <<'GOEOF'
 #!/usr/bin/env bash
@@ -399,13 +464,24 @@ arun -- "${ART[@]}"; if grep -Fq 'FSCACHE_USERNAME' "$work/log" && ls "$work"/fa
 mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz"
 afail "PLAT-001-AC1 a missing amd64 archive fails naming it" fscache-fips -- "${ART[@]}"
 mkarch "$fa/dist"; printf '#!/usr/bin/env bash\nexit 1\n' > "$fa/real/fscache-fips.bad"; mkdir -p "$fa/bad"; cp "$fa/real/fscache-fips.bad" "$fa/bad/fscache-fips"; chmod +x "$fa/bad/fscache-fips"
-tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips
+tar -czf "$fa/dist/fscache-fips_0.3.0_linux_amd64.tar.gz" -C "$fa/bad" fscache-fips; mkdig "$fa"
 afail "PLAT-001-AC1 a binary that exits at once does not execute: fails naming healthz" healthz -- "${ART[@]}"
 # REQ-CHAIN-006-AC17 (advisor 0385): the same checks for the linux/arm64 binaries and images, run by the check-arm64 job on an arm64 runner
 mkarch "$fa/dist"
 aok "AC17 --arch arm64: the arm64 binaries execute, the postures are truthful, the images have no shell and serve: exit 0" -- "${ART[@]}" --arch arm64
 if grep -Fq -- '--platform linux/arm64' "$work/log" && [ -f "$fa/out/artifacts-result-arm64.json" ] && jq -e '.arch == "arm64" and .production.digest and .fips.digest' "$fa/out/artifacts-result-arm64.json" > /dev/null 2>&1; then ok "AC17 the arm64 images run with --platform linux/arm64 and the result names the arch and the same candidate digests"; else bad "AC17 arm64 run: no --platform linux/arm64, or artifacts-result-arm64.json incomplete"; fi
 arun -- "${ART[@]}"; if ! grep -Fq -- '--platform' "$work/log"; then ok "AC17 the default (amd64) run passes no --platform"; else bad "AC17 the amd64 run passed --platform"; fi
+# round 1 F1: the images and archives are the ones Build recorded, bound before anything is loaded or executed
+mkarch "$fa/dist"
+rm -rf "$work/keep-fa"; cp -R "$fa/images/fips" "$work/keep-fa"; rm -rf "$fa/images/fips"; python3 "$work/mkoci.py" "$fa/images/fips" other > /dev/null
+afail "ART F1 a valid OCI layout that is not Build's -fips image (digests.json intact) is refused naming the image" image-fips -- "${ART[@]}"
+if ! grep -q '^docker' "$work/log"; then ok "ART F1 nothing was loaded or started behind the refused layout"; else bad "ART F1 docker ran on a layout that is not Build's"; fi
+rm -rf "$fa/images/fips"; cp -R "$work/keep-fa" "$fa/images/fips"
+mkdir -p "$fa/real2"; { cat "$fa/real/fscache"; echo '# not the binary Build recorded'; } > "$fa/real2/fscache"; chmod +x "$fa/real2/fscache"
+tar -czf "$fa/dist/fscache_0.3.0_linux_amd64.tar.gz" -C "$fa/real2" fscache
+afail "ART F1 an archive that is not the one Build recorded (a runnable binary, digests.json intact) is refused naming the file" fscache_0.3.0_linux_amd64.tar.gz -- "${ART[@]}"
+if ! grep -q '^docker' "$work/log" && ! ls "$work"/fakedir/srv-* > /dev/null 2>&1; then ok "ART F1 the foreign archive's binary was not executed"; else bad "ART F1 something ran behind the refused archive"; fi
+mkarch "$fa/dist"
 mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_arm64.tar.gz"
 afail "AC17 --arch arm64 with the arm64 -fips archive missing fails naming it" fscache-fips -- "${ART[@]}" --arch arm64
 mkarch "$fa/dist"
@@ -424,15 +500,29 @@ afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state)
 afail "PLAT-003-AC1 a shell at /bin/sh in the production image fails naming production" production FAKE_SHELL="production:/bin/sh" -- "${ART[@]}"
 afail "PLAT-003-AC1 a shell at /busybox/sh in the -fips image fails naming fips" fips FAKE_SHELL="fips:/busybox/sh" -- "${ART[@]}"
 afail "PLAT-003-AC1 a shell at another path (/usr/bin/bash) fails" shell FAKE_SHELL="production:/usr/bin/bash" -- "${ART[@]}"
-mv "$fa/images/fips" "$work/fips.keep"; cp -R "$fa/images/fips-amd64only" "$fa/images/fips"
+mv "$fa/images/fips" "$work/fips.keep"; cp -R "$fa/images/fips-amd64only" "$fa/images/fips"; mkdig "$fa"
 afail "PLAT-002-AC1 an image archive without the linux/arm64 platform entry fails naming it" linux/arm64 -- "${ART[@]}"
-rm -rf "$fa/images/fips"; mv "$work/fips.keep" "$fa/images/fips"
+rm -rf "$fa/images/fips"; mv "$work/fips.keep" "$fa/images/fips"; mkdig "$fa"
 cp "$fa/digests.json" "$work/dig.keep"; printf '{"image-production":"%s"}\n' "$D1" > "$fa/digests.json"
 afail "ART a digest list without the -fips image digest fails" image-fips -- "${ART[@]}"
 cp "$work/dig.keep" "$fa/digests.json"
 mv "$fa/images/production" "$fa/images/production.off"
 afail "ART a missing production image fails naming it" production -- "${ART[@]}"
 mv "$fa/images/production.off" "$fa/images/production"
+# round 1 F1: the platform helper reads the manifests and configs the platform entries refer to (a descriptor that merely says linux/arm64 is not an arm64 image)
+plat() { local d=$1; rc=0; out=$(python3 "$root/bin/check-image-platforms.py" "$d" 2>&1) || rc=$?; }
+plat_want_fail() { local l=$1 w=$2; plat "$3"; if [ "$rc" = 1 ] && grep -Fq -- "$w" <<< "$out"; then ok "$l (caught: ${out:0:70})"; else bad "$l -> rc=$rc, wanted exit 1 naming '$w': ${out:0:140}"; fi; }
+pl="$work/pl"; mkdir -p "$pl"
+python3 "$work/mkoci.py" "$pl/good" good > /dev/null
+plat "$pl/good"; if [ "$rc" = 0 ] && [ "$out" = "$(printf 'linux/amd64\nlinux/arm64')" ]; then ok "PLAT-002-AC1 F1 a real two-platform layout lists linux/amd64 and linux/arm64"; else bad "PLAT-002-AC1 F1 real layout -> rc=$rc: $out"; fi
+cp -R "$pl/good" "$pl/nomanifest"; rm -f "$pl/nomanifest/blobs/sha256/$(jq -r .arm64.manifest "$pl/good.map")"
+plat_want_fail "PLAT-002-AC1 F1 a platform entry whose manifest blob is missing is not a platform of the image" linux/arm64 "$pl/nomanifest"
+cp -R "$pl/good" "$pl/badhash"; printf '{}\n' > "$pl/badhash/blobs/sha256/$(jq -r .arm64.manifest "$pl/good.map")"
+plat_want_fail "PLAT-002-AC1 F1 a manifest blob that does not hash to its name is refused" "hash" "$pl/badhash"
+LIE_ARCH=amd64 python3 "$work/mkoci.py" "$pl/lie" lie > /dev/null
+plat_want_fail "PLAT-002-AC1 F1 a linux/arm64 entry whose config says amd64 is refused naming the platform" linux/arm64 "$pl/lie"
+cp -R "$pl/good" "$pl/nocfg"; rm -f "$pl/nocfg/blobs/sha256/$(jq -r .arm64.config "$pl/good.map")"
+plat_want_fail "PLAT-002-AC1 F1 a platform entry whose config blob is missing is refused" linux/arm64 "$pl/nocfg"
 # ---- REQ-CHAIN-006-AC7: check-guide.sh (a FIXTURE guide in cache-3f's format; the real docs/verify-release.md does not exist yet) ------
 # REVISIT (cache-3f's run on the real draft, Oct 10): a verify command whose subject is an image reference (<IMAGE_REF>,
 # <IMAGE_REF_FIPS>, a literal registry reference with `:` or `@`, or oci://...) needs a registry: it is NEVER run, it must be listed
@@ -546,6 +636,10 @@ gwant_fail "AC7 a missing guide file fails" "guide"
 want_rc "AC5 an unknown suite name is a named refusal (exit 2)" 2 check-acceptance.sh nosuch --digests digests.json --images images --out out
 want_rc "AC5 no suite name is a named refusal (exit 2)" 2 check-acceptance.sh --digests digests.json --images images --out out
 want_rc "AC5 a missing image directory is a named refusal (exit 2)" 2 check-acceptance.sh gradle --digests digests.json --images /nonexistent --out out
+rm -rf "$work/keep-p"; cp -R "$fx/images/production" "$work/keep-p"; rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" other > /dev/null
+want_fail "AC5 F1 a valid OCI layout that is not Build's production image (digests.json intact) is refused naming the image before the suite or docker" image-production check-acceptance.sh gradle --digests digests.json --images images --out out
+if ! grep -q '^docker' "$work/log"; then ok "AC5 F1 nothing was loaded behind the refused production layout"; else bad "AC5 F1 docker ran: $(head -2 "$work/log" | tr '\n' '|')"; fi
+rm -rf "$fx/images/production"; cp -R "$work/keep-p" "$fx/images/production"
 # ---- REQ-CHAIN-006-AC11 (rule 68, amended): the helper bin/witnessed.sh and its 9-minute cap -------------------------------------------
 hw="$work/hw"; mkdir -p "$hw/bin" "$hw/fakebin" "$hw/tmp"
 cp "$root/bin/witnessed.sh" "$hw/bin/" 2> /dev/null || true
@@ -642,7 +736,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=139
+EXPECT=163
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
