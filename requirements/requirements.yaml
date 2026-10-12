@@ -1817,16 +1817,24 @@ requirements:
     confidence: implementation-only
     notes: >
       AC14 (origin: advisor step 5 Oct 11, owner rule 5 engineering AC): the refusals protect AC8's owner sentence (rule 5,
-      ops/docs/ratify/2026-10-02-automatic-patch-releases.md) and leave AC8's text untouched. A line is exempt from the
-      changelog-input and tag refusals only when it is an exact member of the grammar the code prints for a VEX line (each
-      quoted value exactly its _lit spelling, nothing outside the code spans that the four forms name, never '-----BEGIN '),
-      in the run of '- ' lines right after a '### VEX' heading at the place the generator writes it (after the release
-      heading, a blank line, the Fixes section and a blank line); every other line is checked, and notes() refuses to print
-      a VEX line outside that grammar. Each line of a multi-line source value is checked before the value is made one
-      line, and the whole go.mod line a Go fix is read from. A fix record is judged on the scan match that produced it (the
+      ops/docs/ratify/2026-10-02-automatic-patch-releases.md) and leave AC8's text untouched. No line is exempt (advisor
+      decision Oct 11, option A, replacing the round-9 VEX-section exemption): the refusals apply to every line of the
+      changelog inputs and a generated tag's notes, a '### VEX' section's lines included. To keep the generator's own notes
+      readable back (notes, then the tag, the changelog's notes and later the history), _lit's quoted form writes '<' and
+      '&' as \u003c and \u0026 (the same JSON string, as a hyphen before four more is written \u002d), so no printed VEX
+      value holds a refused form; a reader sees the JSON string (a statement named <b>x shows "\u003cb>x" in its code
+      span). notes() checks its whole text, and every line, a VEX line too, is printed and read back by the one function
+      _clean_free (a VEX line holding the redaction marker is written in the escape-whole-line form). Each line of a
+      multi-line source value is checked before the value is made one line, and the whole go.mod line a Go fix's version
+      is read from. go.mod is read by a strict parser of its grammar (Go's modfile lexer: '//' comments, 'verb (' ... ')'
+      blocks): the versions and the line judged come from one parse of the require directives only (never a comment,
+      replace or exclude line), and anything the parser does not read (a '/* */' comment, a quoted string, a control or
+      other space character, a module required twice, a require that is not a path and a semantic version, an unclosed
+      block) is refused, naming go.mod:line; Go is not on the decide job's PATH, so the parser is in the script. A fix record is judged on the scan match that produced it (the
       first match HEAD fixes, variants sorted, document order: the one fixed_findings prints from). The collision check
       (5) is one set across every published line (fix, VEX and behavior); a fix record is named by its scan file and key
-      path. In a generated patch tag (release tagger, gitsign signature last, heading naming the tag) a '-----BEGIN '
+      path; in the readers (a tag's notes, the changelog's notes, the history) two '- ' lines of one release block that
+      publish the same line are refused, both named; the same line in two release blocks is not a collision. In a generated patch tag (release tagger, gitsign signature last, heading naming the tag) a '-----BEGIN '
       anywhere before that last signature is refused (exit 2, the line named); any other tag exits 1 as before. Beyond
       the four forms, a free-text line holding the redaction marker that continues the line above it (neither blank nor a
       heading) is refused in tag notes and changelog inputs (a construct spanning lines could hide the marker); --published (every v* tag message and CHANGELOG.md) is not a source and is not checked for '-----BEGIN '
