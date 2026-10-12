@@ -2138,6 +2138,54 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 			}
 		}
 	}
+	// Micro-verification after the final verification at 5c226f4 (A and B, one P2 each): an allowedCountClaims exception
+	// is compared with the raw clause, as written in the file byte for byte after the same clause segmentation, never
+	// with a reading that removes marks ("there is n**o** archive" kept the install.md exception: the as-written reading
+	// saw no count, the mark-stripped readings rejoined "no" and matched the entry). Each of the four clauses as written
+	// is accepted; each with a mark inserted at any character boundary, or a space doubled or turned into a tab, is
+	// refused naming a claim.
+	refusedClaim := func(name, file, text string) {
+		t.Helper()
+		ps, _ := checkDoc(file, text, allowedLines, archives)
+		for _, p := range ps {
+			if strings.HasPrefix(p, file+":") && strings.Contains(p, "claims") {
+				return
+			}
+		}
+		t.Errorf("%s: not refused naming a claim: %v", name, ps)
+	}
+	refusedClaim("the reviewers' shape (install.md:57)", "docs/install.md", edited("docs/install.md", "there is no archive for this machine", "there is n**o** archive for this machine"))
+	if len(allowedCountClaims) != 4 {
+		t.Errorf("want the four reviewed allowedCountClaims entries, found %d", len(allowedCountClaims))
+	}
+	for entry, why := range allowedCountClaims {
+		file, _, _ := strings.Cut(why, ":")
+		text := read(t, file)
+		if strings.Count(text, entry) != 1 {
+			t.Errorf("%s: the allowedCountClaims entry is not its clause as written, exactly once: %q", file, entry)
+			continue
+		}
+		if ps, _ := checkDoc(file, text, allowedLines, archives); len(ps) > 0 {
+			t.Errorf("%s: the excepted clause as written is refused: %v", file, ps)
+		}
+		at := strings.Index(text, entry)
+		for i := 0; i <= len(entry); i++ {
+			if i < len(entry) && !utf8.RuneStart(entry[i]) {
+				continue
+			}
+			for _, m := range []string{"**", "*", "_", "`", "~"} {
+				refusedClaim(fmt.Sprintf("%s: %q inserted at byte %d of %q", file, m, i, entry), file, text[:at+i]+m+text[at+i:])
+			}
+		}
+		for i := 0; i < len(entry); i++ {
+			if entry[i] != ' ' {
+				continue
+			}
+			for _, ws := range []string{"  ", "\t"} {
+				refusedClaim(fmt.Sprintf("%s: the space at byte %d of %q made %q", file, i, entry, ws), file, text[:at+i]+ws+text[at+i+1:])
+			}
+		}
+	}
 	var without []allowedLine
 	for _, a := range allowedLines {
 		if a.file != f || !strings.Contains(a.text, "Apple Silicon") {
