@@ -3,9 +3,10 @@
 (register row 78). A tag or branch reference fails. Fails closed: a file it cannot parse, or a
 reference it cannot classify, is a finding.
 
-It lives under .github/agent/ so that changing it needs the two-vendor review record
-(auditor-review-gate.py): the enforcement cannot be loosened by an ordinary merge. The gate runs the
-DEFAULT branch's copy over a PR head read as git objects (--git), never checked out.
+It lives under .github/agent/, whose changes the independent second review clears before merge
+(REQ-AUD-018 AC3; enforced outside this repository): the enforcement cannot be loosened by an ordinary
+merge. The gate runs the DEFAULT branch's copy over a PR head read as git objects (--git), never
+checked out.
 
 What is read: every file under .github/workflows/ (a non-.yml/.yaml file there is itself a finding),
 every other .yml/.yaml under .github/, and every action.yml/action.yaml (any case) anywhere. A
@@ -47,8 +48,8 @@ written — never trimmed — so a trailing non-breaking space (legal in a git t
              pass (row 78 pass on PR #148, Oct 2: documented here rather than pinned).
   The gate's own wiring: .github/workflows/agent-review-gate.yml is pinned here by GATE_WORKFLOW_SHA256
              (its action pins masked, so a Dependabot bump still passes). Any other edit to it fails
-             until this file is updated — a change under .github/agent/, so it needs the review record:
-             the enforcement cannot be removed from its caller by an ordinary merge either.
+             until this file is updated — a change under .github/agent/, so it needs the independent
+             second review: the enforcement cannot be removed from its caller by an ordinary merge either.
   container: / image: / each service: <image>@sha256:<64 hex>, optionally docker://; never ${{ }}.
   Executor images: a pinned action that runs a container image of its own must be given that image
              by digest through its input (EXECUTOR_INPUTS) — a pinned action with a mutable default
@@ -224,7 +225,7 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-GATE_WORKFLOW_SHA256 = "6f7a76b5be372f035b4f7427bf040f209471fefb33447e2af8f3ff7032068357"
+GATE_WORKFLOW_SHA256 = "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d"
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
