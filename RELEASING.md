@@ -8,7 +8,7 @@ laptop cannot forge a release that GitHub's own runners never built).
 
 ## Pipeline (`.github/workflows/release.yml`)
 
-From v0.3.0 the release is five stages, each one reusable workflow file with its
+From v0.3.0 the release is five stages, each one reusable workflow file with its <!-- pinned: historical -->
 own job and its own signing identity, on a fresh GitHub-hosted runner:
 
 ```
@@ -59,7 +59,7 @@ signing key or `packages: write`.
   `X.Y.Z` tags of `ghcr.io/fosterstack/cache`); the `-fips` image gets its exact
   tag only.
 
-Releases before v0.3.0 were built by the earlier eight-stage chain (source
+Releases before v0.3.0 were built by the earlier eight-stage chain (source <!-- pinned: historical -->
 admission, build, image assembly, reproducibility, scans and acceptance,
 release authorization, promotion); the image signer of those releases is
 `stage-promote.yml` too.
@@ -77,66 +77,60 @@ release path.
 
 ## What a release contains
 
-- `linux/amd64` + `linux/arm64` container images on a digest-pinned
-  `gcr.io/distroless/static:nonroot` base (a COPY-only Dockerfile: the
-  verified release binary added to the unmodified base, zero `RUN`
-  steps, reproducible digests), at `ghcr.io/fosterstack/cache:X.Y.Z` —
-  and mirrored, same digests, at `docker.io/fosterstack/cache:X.Y.Z`.
-  GHCR is canonical; the Docker Hub mirror exists for tooling that
-  defaults there. Pull-by-digest is identical at either.
-- A `:X.Y.Z-debug` variant on `gcr.io/distroless/static:debug-nonroot`
-  (busybox shell at `/busybox/sh`, for interactive troubleshooting only —
-  never the default). See below on why there is no `/bin/sh`.
-### Decided: the `:debug` base is never modified
+From v0.3.0, with every file below made by the Release stage from what Build <!-- pinned: historical -->
+made (nothing is rebuilt), and every signature keyless (Fulcio certificate
+from GitHub OIDC, entry in Rekor; no signing key exists to steal, except the
+apk release key, which only Release's `release-apks` step reads):
 
-`:debug` ships the **unmodified** `gcr.io/distroless/static:debug-nonroot`
-base. Its shell is at `/busybox/sh`; there is no `/bin/sh` and no
-`/bin/bash`.
+- Two image variants, `production` and `-fips`, each a `linux/amd64` +
+  `linux/arm64` index on the unmodified distroless base with one binary added,
+  at `ghcr.io/fosterstack/cache` and mirrored, same digests, at
+  `docker.io/fosterstack/cache`. Tags: `:X.Y.Z` and `:X.Y.Z-fips` exactly;
+  `:X.Y` moves to every final release of that line; `:X` and `:latest` move
+  only when the release is the highest released version. Releases before
+  v0.3.0 also had a `-debug` variant; v0.3.0 and later do not. <!-- pinned: historical -->
+- Per image: a cosign signature by digest in both registries, made by
+  `stage-promote.yml` at the release tag. Sign's SLSA provenance, signed under
+  `stage-sign.yml`, is verified by Release before anything is published.
+- The apks of both architectures, re-signed with the release key and attached
+  as `<arch>-<name>` (both architectures carry the same file names).
+- The Linux archives with `checksums.txt` and its bundle
+  (`checksums.txt.bundle`), which covers every archive transitively by hash.
+- Per variant: the SBOM (`<variant>.sbom.json`) and the lock file
+  (`<variant>.full.lock.json`), each with its bundle; the vendor evidence and
+  the dependency list, each with its bundle; the release policy
+  (`policy.json`) with its bundle.
+- Four metadata files, covered by `release-files.sha256` and its bundle:
+  `release-manifest.json` (image digests, both registry references, the
+  requirements-baseline and test-evidence hashes; the daily rescan reads its
+  digests, never tags), `fosterstack-cache.openvex.json`,
+  `fosterstack-cache-vX.Y.Z.csaf.json` and
+  `fosterstack-cache-vX.Y.Z.inspector-filters.json`.
+- The Witness records of Build, Rebuild and Check (and Build's `digests.json`
+  and `items.json`), which later stages and customers verify.
+- A coverage gate: Release refuses to publish unless every asset is in
+  `checksums.txt`, in `release-files.sha256`, a bundle of a covered file, or
+  one of the kinds that carry their own signature (an apk, a Witness record,
+  Build's digest and item lists). The gate runs again on what the release
+  stores after the upload.
 
-**We do not add a `/bin/sh` symlink layer, now or later.** It would be a
-one-line convenience, and it was considered and rejected on 2026-09-02.
-The reason is that "our images are the upstream distroless base, pinned by
-digest, with one Go binary added" is a claim that holds for all three
-variants or none. Adding a layer to `:debug` to make it feel familiar
-trades a verifiable property for ergonomics, and the ergonomics problem is
-better solved by documentation — which is what
-[the variant docs](docs/verify-images.md#the-images-have-no-shell-and-debugs-is-not-where-you-expect)
-and [the troubleshooting section](docs/docker-deploy.md#troubleshooting-with-the-debug-image)
-now do. Do not revisit without a reason that outweighs that.
+### Earlier releases and the `:debug` base
 
-- A `:X.Y.Z-fips` variant, `GOFIPS140=v1.0.0` baked in at compile time <!-- pinned: upstream -->
-  (Go's CMVP FIPS 140-3 validated module, cert #5247) — built from the
-  first release even before the Compliance tier ships.
-- Bare binaries + `checksums.txt` (via `goreleaser`), `linux`/`darwin` ×
-  `amd64`/`arm64`, for container-averse or air-gapped environments.
-- Per image: a cosign keyless signature **in both registries**, a SLSA
-  provenance attestation, and the full release-chain predicates
-  (image-build, reproducibility, per-scanner scan verdicts, acceptance,
-  release authorization) in GitHub's attestation store, keyed to the
-  image digest. The SBOMs of record are the per-archive SPDX documents
-  on the release page — the image is the unmodified distroless base
-  plus exactly that archive's binary.
-- For the binary archives: a SLSA provenance attestation covering
-  `dist/*.tar.gz` + `checksums.txt`, and a cosign keyless blob signature
-  bundle (`checksums.txt.bundle`) covering every archive transitively by
-  hash.
-- `release-manifest.json`: the release evidence bundle — every artifact
-  digest, both registry references per image, the requirements-baseline
-  and test-evidence hashes, per-AC acceptance results, and the Rekor log
-  index of every statement the authorization stage verified. The daily
-  rescan reads this file's digests, never tags.
-- All Sigstore material is keyless: identity-bound short-lived certs from
-  Fulcio via GitHub OIDC, logged to Rekor. No signing key exists anywhere
-  to steal.
+Releases built by the earlier eight-stage chain shipped a `-debug` variant on
+the unmodified `gcr.io/distroless/static:debug-nonroot` base (shell at
+`/busybox/sh`, no `/bin/sh`; a `/bin/sh` symlink layer was considered and
+rejected on 2026-09-02 because "the upstream distroless base, pinned by digest,
+with one Go binary added" must hold for every variant). Those releases are
+verified as their own documentation says; see
+[docs/verify-images.md](docs/verify-images.md).
+
+The `-fips` variant has `GOFIPS140=v1.0.0` baked in at compile time <!-- pinned: upstream -->
+(Go's CMVP FIPS 140-3 validated module, cert #5247).
 
 ## Verifying a release
 
-The **pull** and the **cosign** verifications below are fully anonymous —
-no GitHub or registry credentials. The `gh attestation verify` command is
-different: it reads GitHub's attestation API and needs a token in the
-environment (`GH_TOKEN` or `gh auth login`) even for a public repo. Where
-"no credentials" is the requirement, use the cosign route. Resolve the
-current release first and the rest parameterize themselves:
+The **pull** and the **cosign** verifications are fully anonymous: no GitHub
+or registry credentials. Resolve the current release first:
 
 ```sh
 VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest \
@@ -144,95 +138,60 @@ VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest 
 echo "$VER"
 ```
 
-That uses only `curl` and `sed` — no `jq`, no GNU-only flags, and no
-authentication, so it works on a stock macOS or a minimal container.
-
 ```sh
-# Image SIGNATURE (cosign) — who signed these exact bytes. This is the
-# image signature only; the build provenance is verified via the
-# gh attestation route below. The signer is the promotion workflow at
-# this release tag.
+# Image signature: who signed these exact bytes. The signer is the Release
+# stage's workflow at this release tag.
 cosign verify "ghcr.io/fosterstack/cache:${VER}" \
   --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
-
-# GitHub's own attestation store — confirms which workflow run built it.
-# Needs a token (GH_TOKEN / gh auth login). Pin the producing workflow:
-gh attestation verify "oci://ghcr.io/fosterstack/cache:${VER}" \
-  --repo fosterstack/cache \
-  --signer-workflow fosterstack/cache/.github/workflows/stage-image.yml
 ```
 
-The `--signer-workflow` to pin is **version-scoped**: releases built by
-the current chain use `stage-image.yml`, while the earliest release used
-the old `release.yml` — pin whichever matches the `${VER}` you resolved. <!-- pinned: historical -->
-On a current-chain release the image signature is made by the promotion
-workflow (`stage-promote.yml`), and the publication-phase outcomes
-(anonymous verification and every-tag anonymous pull) are recorded in a
-separate signed attestation over the same digests — see
-[docs/verify-images.md](docs/verify-images.md#2b-verify-the-whole-chain).
+The same command verifies the `-fips` variant with `${VER}-fips`. The whole
+chain (Build, Sign, Rebuild, Check, Release) is verifiable record by record;
+the commands are in [docs/verify-images.md](docs/verify-images.md).
 
-The `gh attestation verify` output includes a `Build workflow:` line naming
-the image-assembly stage (`.github/workflows/stage-image.yml`) at the tag
-being verified. That line is cryptographic proof the bytes you pulled came
-from this repo's CI. The whole release chain is additionally verifiable —
-see [docs/verify-images.md](docs/verify-images.md#2b-verify-the-whole-chain).
+### Archives and metadata files
 
-The same two commands verify the other variants — use `${VER}-debug` or
-`${VER}-fips` in place of `${VER}`.
-
-The `:debug` variant's documented entry point is checked the same way. The
-docs tell users to exec `/busybox/sh`, so that path has to work:
+The archives are not signed individually: `checksums.txt` is signed and pins
+every archive by SHA-256. The four metadata files are pinned the same way by
+`release-files.sha256`.
 
 ```sh
-docker run --rm --entrypoint /busybox/sh \
-  "ghcr.io/fosterstack/cache:${VER}-debug" -c 'echo shell-ok'
-# shell-ok
-```
+# 1. Prove each list is ours (pin the Release stage at this tag).
+for f in checksums.txt release-files.sha256; do
+  cosign verify-blob "$f" \
+    --bundle "$f.bundle" \
+    --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
+    --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
+done
 
-CI runs this assertion against the snapshot images on every release, before
-anything is published — see the "debug variant must have a working shell"
-step in `.github/workflows/release.yml`. It also asserts that `/bin/sh` is
-*absent*, because the docs say so; if an upstream base change ever added
-one, the release fails rather than the documentation going quietly wrong.
-
-### Binary archives
-
-The archives are not signed individually. `checksums.txt` is signed, and it
-pins every archive by SHA-256 — so verifying the checksums file and then
-checking an archive against it is a complete chain, not two half-measures.
-
-```sh
-# 1. Prove the checksums file is ours. The checksums bundle is signed by
-#    the promotion workflow at this release tag - pin it (same identity as
-#    the image signature above), not "any workflow in this repo".
-cosign verify-blob checksums.txt \
-  --bundle checksums.txt.bundle \
-  --certificate-identity-regexp="^https://github.com/fosterstack/cache/.github/workflows/stage-promote.yml@refs/tags/v${VER}$" \
-  --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
-
-# 2. Prove the archive matches that file
+# 2. Prove the files you downloaded match those lists.
 sha256sum -c <(grep "fscache_${VER}_linux_amd64.tar.gz" checksums.txt)
+sha256sum -c release-files.sha256
 ```
 
-Do step 1. Without it, `checksums.txt` is self-referential: it proves the
-archive matches a file that anyone could have written.
+Do step 1. Without it, a list is self-referential: it proves the files match
+a file that anyone could have written.
 
 ### What is signed, and what that covers
 
-| Artifact | Signature | SLSA provenance | SBOM |
-|---|---|---|---|
-| Images (`${VER}`, `-debug`, `-fips`) | cosign, per digest, both registries | yes, in the attestation store | via the archive SBOMs |
-| Binary archives | via the signed `checksums.txt` | yes | no |
-| `checksums.txt` | cosign `sign-blob` bundle | yes | — |
+| Artifact | Signature | Covered by |
+|---|---|---|
+| Images (`${VER}`, `-fips`) | cosign, per digest, both registries | the signature itself |
+| Binary archives | via the signed `checksums.txt` | `checksums.txt` |
+| `checksums.txt`, `release-files.sha256`, SBOMs, lock files, vendor evidence, dependency list, release policy | cosign `sign-blob` bundle each | its own bundle |
+| `release-manifest.json`, OpenVEX, CSAF, Inspector filters | via the signed `release-files.sha256` | `release-files.sha256` |
+| apks | the release key, inside the file | the apk signature |
+| Witness records | Witness envelope, keyless, per stage | the stage that made it |
 
 ### VEX statements
 
 Any scanner finding we ship past is answered by a published statement in
 [`.vex/`](.vex/), attached to the release as
-`fosterstack-cache.openvex.json`. Both release scanners read it, so an
-exception is one public claim rather than two tool-local suppressions. No
-statement, no exception, no push.
+`fosterstack-cache.openvex.json` and, generated from it, as a CSAF file and an
+Inspector filters file. Both release scanners read it, so an exception is one
+public claim rather than two tool-local suppressions. No statement, no
+exception, no push.
 
 ## CI-only releases, verified in practice
 
