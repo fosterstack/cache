@@ -1826,9 +1826,12 @@ requirements:
       span); the value is redacted as text before it is encoded (an escape ends in a letter or digit and would erase the
       word boundary the redactor reads: '<google', '&o1'), and a statement whose CVE name or @id redaction changes is
       named by its position. A VEX value (a CVE name, an @id, a product or subcomponent @id or identifier, a field name)
-      that holds a redaction-marker form ('<redacted>' or '(redacted)' in any case, as written or in any escaped, entity,
-      percent-encoded or compatibility spelling) is refused before any redaction, naming the document, the statement and
-      the field (exit 2, no notes, no patch); a value is never converted into the marker (advisor narrow cut, Oct 12). notes() checks its whole text, and every line, a VEX line too, is printed and read back by the one function
+      that holds a redaction-marker form ('<redacted>' or '(redacted)' in any case, as written, Markdown backslash-escaped,
+      JSON-escaped or as HTML character references, each read once) is refused before any redaction, naming the document,
+      the statement and the field (exit 2, no notes, no patch); a value is never converted into the marker (advisor narrow
+      cut, Oct 12). Exotic nested spellings of the marker in a VEX field (percent-encoded, fullwidth, nested or mixed
+      escapes) are not decoded; the refusal covers the forms our printer and readers recognise (advisor cut, Oct 12, Codex
+      #300 b12). notes() checks its whole text, and every line, a VEX line too, is printed and read back by the one function
       _clean_free (a VEX line holding the redaction marker is written in the escape-whole-line form). Each line of a
       multi-line source value is checked before the value is made one line, and the whole go.mod line a Go fix's version
       is read from. go.mod is read by a strict parser of its grammar (Go's modfile lexer: '//' comments, 'verb (' ... ')'
