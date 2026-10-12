@@ -3237,6 +3237,21 @@ for want in ["AC19''", "listed plain form", "no verifier admits", "literal-block
     assert want in note, want
 assert "for any line that is not the bare curl without L" not in note
 PY
+# the advisor's T5 (post-9, Oct 11): the (c) value sentence states what the code does: a prefix option's value holds no curl or wget word (pinned
+# against the code: such a value is refused; gh as a value stays listed)
+CASE="AC19'' (0) T5: the notes' (c) value sentence says a value holds no curl or wget word, and the code refuses one (gh as a value stays listed)"
+check python3 - "$chk" "$root/requirements/requirements.yaml" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+text = open(sys.argv[2]).read()
+assert "it may start with $ and may be the word gh; it never starts with -, and it holds no curl or wget word." in text
+GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+for v in ['curl', 'wget', '"curl"', "'wget'", 'a-curl', 'wget.x', '"$x/curl"']:
+    for o in ['-p', '--pattern', '-D', '--dir', '-O', '--output', '-A', '--archive']:
+        assert ac._unlisted(GHD + ' ' + o + ' ' + v, repo_self=True) is not None, (o, v)
+for o in ['-p', '--pattern', '-D', '--dir', '-O', '--output', '-A', '--archive']:
+    assert ac._unlisted(GHD + ' ' + o + ' gh', repo_self=True) is None, o
+PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
 mkdir -p "$work/stubbin"
