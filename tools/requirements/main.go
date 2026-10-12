@@ -30,6 +30,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
@@ -364,14 +366,14 @@ func freeze(args []string) {
 // `func TestX(t *testing.T)`. The files are parsed, so a name inside a string or a comment never counts,
 // and a helper function is not a test.
 func goTestExists(dir, name string) bool {
-	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || !goTestName.MatchString(name) {
+	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || !goTestName(name) {
 		return false
 	}
 	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
 		return false
 	}
 	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if err != nil || !packageLoads(dir, entries) {
 		return false
 	}
 	for _, e := range entries {
@@ -384,6 +386,9 @@ func goTestExists(dir, name string) bool {
 		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
 		if err != nil {
 			continue
+		}
+		if f.Name.Name == "documentation" {
+			continue // go/build ignores a file in package documentation
 		}
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name && isTestingT(fn) {
@@ -425,28 +430,90 @@ var (
 	goReleaseTag = regexp.MustCompile(`^go1\.[0-9]+$`)
 )
 
-// constraintsResolvable reports whether every build-constraint line before the package clause parses and names only
-// tags whose value does not depend on how the tests are invoked: a GOOS, a GOARCH, unix or a go1.N release tag.
+// constraintsResolvable reports whether the build constraint Go itself would apply to the file names only tags whose value
+// does not depend on how the tests are invoked: a GOOS, a GOARCH, unix or a go1.N release tag. The constraint lines are
+// found by the toolchain's own header rules (go/build's parseFileHeader): a //go:build line in the header wins and the
+// // +build lines are then ignored; otherwise // +build lines count only above the last blank line of the header. A line
+// that is documentation, a block comment's text or after the package clause is not a constraint.
 func constraintsResolvable(path string) bool {
-	f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments|parser.PackageClauseOnly)
+	src, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	for _, cg := range f.Comments {
-		if cg.End() > f.Package {
-			break
-		}
-		for _, c := range cg.List {
-			if !constraint.IsGoBuild(c.Text) && !constraint.IsPlusBuild(c.Text) {
-				continue
-			}
-			e, err := constraint.Parse(c.Text)
-			if err != nil || !stableTags(e) {
-				return false
+	trimmed, goBuild, ok := fileHeader(src)
+	if !ok {
+		return false
+	}
+	var lines []string
+	if goBuild != "" {
+		lines = []string{goBuild}
+	} else {
+		for _, l := range strings.Split(string(trimmed), "\n") {
+			if l = strings.TrimSpace(l); constraint.IsPlusBuild(l) {
+				lines = append(lines, l)
 			}
 		}
 	}
+	for _, l := range lines {
+		e, err := constraint.Parse(l)
+		if err != nil || !stableTags(e) {
+			return false
+		}
+	}
 	return true
+}
+
+// fileHeader mirrors go/build's parseFileHeader: it returns the part of the file in which a // +build line may appear
+// (up to the last blank line before the first non-comment text), and the //go:build line if there is exactly one;
+// ok is false for a second //go:build line.
+func fileHeader(content []byte) (trimmed []byte, goBuild string, ok bool) {
+	end := 0
+	p := content
+	ended, inSlashStar := false, false
+Lines:
+	for len(p) > 0 {
+		line := p
+		if i := strings.IndexByte(string(line), '\n'); i >= 0 {
+			line, p = line[:i], p[i+1:]
+		} else {
+			p = p[len(p):]
+		}
+		l := strings.TrimSpace(string(line))
+		if l == "" && !ended {
+			end = len(content) - len(p)
+			continue Lines
+		}
+		if !strings.HasPrefix(l, "//") {
+			ended = true
+		}
+		if !inSlashStar && constraint.IsGoBuild(l) {
+			if goBuild != "" {
+				return nil, "", false
+			}
+			goBuild = l
+		}
+	Comments:
+		for len(l) > 0 {
+			if inSlashStar {
+				if i := strings.Index(l, "*/"); i >= 0 {
+					inSlashStar = false
+					l = strings.TrimSpace(l[i+2:])
+					continue Comments
+				}
+				continue Lines
+			}
+			if strings.HasPrefix(l, "//") {
+				continue Lines
+			}
+			if strings.HasPrefix(l, "/*") {
+				inSlashStar = true
+				l = strings.TrimSpace(l[2:])
+				continue Comments
+			}
+			break Lines
+		}
+	}
+	return content[:end], goBuild, true
 }
 
 func stableTags(e constraint.Expr) bool {
@@ -463,8 +530,47 @@ func stableTags(e constraint.Expr) bool {
 	return false
 }
 
-// goTestName is what `go test` runs: Test, then nothing or a character that is not a lower-case letter.
-var goTestName = regexp.MustCompile(`^Test([^a-z].*)?$`)
+// goTestName is what `go test` registers (its isTest rule): Test, then nothing or a rune that is not a lower-case
+// letter in any script.
+func goTestName(name string) bool {
+	if !strings.HasPrefix(name, "Test") {
+		return false
+	}
+	if len(name) == len("Test") {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(name[len("Test"):])
+	return !unicode.IsLower(r)
+}
+
+// packageLoads reports whether the Go files of the directory that the build rules select on linux/amd64 or linux/arm64
+// belong to one package (a file in package documentation is ignored, and an external test package is the package name
+// plus _test): a directory with two package names does not load, so no test in it runs.
+func packageLoads(dir string, entries []os.DirEntry) bool {
+	names := map[string]bool{}
+	for _, e := range entries {
+		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		selected := false
+		for _, arch := range []string{"amd64", "arm64"} {
+			ctx := build.Default
+			ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled, ctx.BuildTags, ctx.ToolTags = "linux", arch, false, nil, nil
+			if ok, err := ctx.MatchFile(dir, e.Name()); err == nil && ok {
+				selected = true
+			}
+		}
+		if !selected {
+			continue
+		}
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.PackageClauseOnly)
+		if err != nil || f.Name.Name == "documentation" {
+			continue
+		}
+		names[strings.TrimSuffix(f.Name.Name, "_test")] = true
+	}
+	return len(names) <= 1
+}
 
 // isTestingT reports whether fn takes exactly one parameter of type *testing.T, returns nothing and has no type parameters.
 func isTestingT(fn *ast.FuncDecl) bool {
