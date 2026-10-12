@@ -502,10 +502,7 @@ _UNMEASURED = [
     (re.compile(r"\b(?:npm|pnpm|yarn|bun|deno)\b[^\n;&|]*?\s(?:install|add|i|exec|x|dlx)(?=\s|$)|\b(?:npx|bunx)\b|\bcargo\s+(?:install|binstall)\b|\bgem\s+install\b|\bpipx\s+(?:install|run)\b|\buvx?\s+\S|\bbrew\s+(?:install|reinstall|upgrade)\b|\bconda\s+(?:install|create)\b|\bmamba\s+install\b|\bbundle\s+(?:install|add)\b|\bdotnet\s+(?:tool\s+install|add\s+package|restore)\b|\bgo\s+(?:get|run)\b[^\n]*\$"), "a package-manager install"),
     (re.compile(r"\b(?:apt|apt-get|dnf|yum|microdnf|zypper|apk|snap|pacman|choco|winget)\s+(?:-\S+\s+)*(?:install|add|reinstall|upgrade)\b"), "a system package install"),
     (re.compile(r"\bgh\s+(?:release\s+download|extension\s+install)\b"), "a gh release or extension download"),
-    # a git clone, submodule, remote add/set-url, archive --remote, or a fetch, pull or ls-remote naming a URL (scheme:// or user@host:), WHATEVER words
-    # come between git and the subcommand in the segment (global options with separate values: -C dir, -c k=v, --git-dir x, --work-tree x; Codex A
-    # round 8 P2). A fetch from a remote NAME (origin) configured elsewhere is outside the line, like a ~/.curlrc.
-    (re.compile(r"\bgit\b[^\n;&|]*?\s(?:(?:clone|submodule)\b|remote\s+(?:add|set-url)\b|archive\s+--remote\b|(?:fetch|pull|ls-remote)\b[^\n;&|]*?(?:[A-Za-z][A-Za-z0-9+.-]*://|[\w.-]+@[\w.-]+:))"), "a git clone or remote fetch"),
+    (re.compile(r"\bgit\s+(?:-\S+\s+)*(?:clone|submodule\s+update|fetch\s+\S*https?://|archive\s+--remote)\b"), "a git clone or remote fetch"),
     (re.compile(r"\b(?:helm\s+(?:repo\s+add|install|upgrade)|kubectl\s+(?:apply|create)\s+[^\n]*https?://)"), "a helm or kubectl fetch"),
     (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*(?:git\+|https?://)"), "a pip install from a URL"),
     (re.compile(r"\bpip[0-9.]*\b[^\n;&|]*?\b(?:install|download)\b[^\n]*\s(?:-r|--requirement)[\s=]*(?![^\s]*requirements[\w.-]*\.txt(?:\s|$))\S+"), "a pip requirements file not named requirements*.txt"),

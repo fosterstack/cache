@@ -750,21 +750,20 @@ def _context(data, path, flat):
 
 _DOWNLOADER = re.compile(r"\b(?:curl|wget)\b")    # the inventory's own recogniser of "a download" (pin-inventory.unmeasured_occurrences)
 _STR_PREFIX = re.compile(r"^[bBrRuUfFtT]{1,2}(?=[\"'])")
-# REQ-SUP-001-AC19 (0) (AC19'', advisor step 5, Oct 11, AC19 positive list): a row binds only a line in one of the LISTED plain forms; any other form is
-# refused, whatever it does (a cosign verifier does not admit it). The WHOLE line is read and every word on it must be positively plain (OPEN-2: nothing
-# after a ; is looser than the command). A shape this reader does not list is refused, fail closed (advisor 0080): a new shape the list does not refuse
-# is a defect in the list. The forms: (a) a plain shell line whose download is the command word curl with arguments from the curl option list;
-# (b) "curl" first in the list that is the whole first argument of a subprocess call that IS the line; (c) for repo:self, the gh release download prefix
-# followed by plain words, never -R or --repo and no later gh in ANY command segment of the line (OPEN-1, OPEN-2; Codex round 6). wget is not listed (OPEN-3).
-_SH_KEYWORDS = {"if", "then", "do", "else", "elif", "while", "until", "!", "time", "fi", "done"}
-_SH_SEP = {";", "&&", "||", "|"}
+# REQ-SUP-001-AC19 (0) (AC19'', advisor step 5, Oct 11, AC19 positive list; advisor step 5 Oct 11, post-9 scope cut): a row binds only a line in one
+# of the LISTED plain forms; any other form is refused, whatever it does (a cosign verifier does not admit it). The WHOLE line is read and every word on
+# it must be positively plain (OPEN-2: nothing after a ; is looser than the command). A shape this reader does not list is refused, fail closed (advisor
+# 0080): a new shape the list does not refuse is a defect in the list. The forms: (a) a plain shell line of command segments joined only by ; or &&, each
+# segment the command word curl with arguments from the curl option list (at least one) or one of the LOCAL commands below; (b) "curl" first in the list
+# that is the whole first argument of a subprocess call that IS the line; (c) for repo:self, the gh release download prefix with only its listed options
+# (-p, -D, -O, -A, --clobber, --skip-existing), then only ; or && and the local commands sha256sum -c, test -f/-s/-e, mv, mkdir [-p],
+# tar -x/-t [-z] -f [-C], ls, echo; never -R or --repo (OPEN-1). Every other command (git, gh, wget, python, ssh, rsync, env, xargs, bash -c, sudo, ...),
+# keyword, joiner (|| | &) and option is refused. wget is not listed (OPEN-3).
+_SH_SEP = {";", "&&"}                                                  # the only joiners: || | & are refused (the scope cut)
 _SH_WORD = re.compile(r"""(?:"[^"]*"|'[^']*'|[^\s"'])+""")
 _SH_LIT = re.compile(r"[A-Za-z0-9_./:%+@,=][A-Za-z0-9_./:%+@,=-]*")    # no ~ ? * [ ] { } $ ` \ ! # & ; | < > ( ) or quote: nothing bash expands
 _SH_SQ = re.compile(r"'([^']*)'")
 _SH_DQ = re.compile(r'"((?:[^"\\`$]|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*)*)"')
-# an option of a command other than curl (and after the repo:self prefix), spelled plainly: -x (exactly ONE letter: a cluster, a digit or a glued value
-# such as -Cforeign, -xvf, -j4, -o/tmp/x is not listed; only curl has listed clusters) or --name, nothing glued (Codex A round 7 P2)
-_SH_OPTION = re.compile(r"-[A-Za-z]|--[a-z0-9][a-z0-9-]*")
 # outside quotes, none of: a group, a subscript, a brace, a redirection, a quote left open, a tilde, a glob, a comment, an expansion, a backtick, a backslash
 _SH_UNQUOTED = set("()[]{}<>\"'~*?#$`\\")
 _PY_WORDS = {"and", "or", "not", "is", "in", "if", "else", "for", "as", "lambda"}   # after curl, a Python operator word: curl is a name, not a command
@@ -867,17 +866,22 @@ _GH_WORD = re.compile(r"\bgh\b")
 _GIT_WORD = re.compile(r"\bgit\b")
 
 
-# the options of the repo:self prefix's gh release download whose next word is a value (a pattern, a directory, a file, an archive format): a gh word
-# there is data, never a command (Codex A round 7 P3); after any other word, and in every later segment, a gh word is refused
+# the options of the repo:self prefix's gh release download (checked against gh 2.102.0, the GitHub CLI of the ubuntu-latest runner image the workflows
+# run): the valued ones, whose next word is a value (a pattern, a directory, a file, an archive format; a gh word there is data, never a command: Codex A
+# round 7 P3), and the flags; every other option (-R and --repo among them) is refused
 _GH_VALUED = {"-p", "--pattern", "-D", "--dir", "-O", "--output", "-A", "--archive"}
+_GH_FLAGS = {"--clobber", "--skip-existing"}
+# the LOCAL commands a later segment may be (they verify and unpack the downloaded asset; none of them can fetch): the command word exactly as written
+_LOCAL = ("sha256sum", "test", "mv", "mkdir", "tar", "ls", "echo")
+_NET_WORD = re.compile(r"\b(?:gh|git|curl|wget)\b")
 
 
 def _repo_selector(t, value=False):
     """Why the word T (its quotes removed) names a repository or runs gh after the repo:self prefix, else None. OPEN-1: -R (any single-dash word holding
     R, glued -Rfoo too) and --repo (--r, --re, --rep, --repo, --repo=..., --repository) are refused by name; OPEN-2 (Codex round 6, A P1 and B P2): in EVERY
-    command segment of the line, not only the first, and no word after the prefix holds gh (the prefix is the only listed gh: a later gh release download,
-    gh api, env GH_REPO=x gh, bash -c 'gh ...' is not pinned to the repository itself). VALUE: T is the value of a _GH_VALUED option of the prefix's own
-    command, where a gh word is data (--pattern gh); -R and --repo are refused there too."""
+    command segment of the line, not only the first, and no word after the prefix holds gh, git, curl or wget. VALUE: T is the value of a _GH_VALUED
+    option of the prefix's own command, where a gh or git word is data (--pattern gh); -R and --repo are refused there too. The scope cut refuses all of
+    these again by the per-command lists; this names the reason."""
     a = t.replace('"', "").replace("'", "")
     name = a.split("=", 1)[0]
     if a.startswith("-") and not a.startswith("--") and "R" in a:
@@ -894,24 +898,73 @@ def _repo_selector(t, value=False):
 
 
 def _gh_options(args):
-    """None when the words after the repo:self prefix are plain (options spelled plainly, never -R or --repo or any spelling of them: OPEN-1), else why."""
-    after_option = False
-    for a in args:
-        if a.startswith("-"):
-            if _repo_selector(a):
-                return _repo_selector(a)
-            if not _SH_OPTION.fullmatch(a):
-                return f"the option {a} is not spelled plainly"
-            after_option = True
+    """None when the words after the repo:self prefix (up to the first joiner) are only its listed options, each valued one followed by a plain value
+    word (a $ start and a gh word allowed, never a - start), else why."""
+    i = 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        why = _repo_selector(a)
+        if why:
+            return why
+        if a in _GH_FLAGS:
             continue
-        if _sh_word(a, after_option) is None or _DOWNLOADER.search(a):
-            return f"the word {a} is not a plain word"
-        after_option = False
+        if a not in _GH_VALUED:
+            return f"{a} is not a listed option of gh release download (-p, --pattern, -D, --dir, -O, --output, -A, --archive, --clobber, --skip-existing)"
+        if i >= len(args):
+            return f"the option {a} has no value after it"
+        v = args[i]
+        i += 1
+        why = _repo_selector(v, value=True)
+        if why:
+            return why
+        if _sh_word(v, True) is None:
+            return f"the value {v} of {a} is not a plain word"
     return None
 
 
+def _operand(w):
+    """The text of W as an operand of a local command, or None: a plain word (_sh_word) whose text starts with neither - nor $ and holds no gh, git,
+    curl or wget word."""
+    t = _sh_word(w)
+    return None if t is None or t.startswith(("-", "$")) or _NET_WORD.search(t) else t
+
+
+def _local_args(cmd, args):
+    """None when ARGS are exactly what the local command CMD takes (each option spelled as listed, as a word of its own, in the listed order), else why:
+    sha256sum -c FILE; test -f|-s|-e PATH; mv SRC DST; mkdir [-p] DIR; tar -x [-z] -f FILE [-C DIR], tar -t [-z] -f FILE (FILE holds no :, which tar
+    reads as HOST:FILE, a remote archive); ls [PATH...]; echo [WORD...]."""
+    ops = [_operand(a) for a in args]
+    plain = lambda xs: all(x is not None for x in xs)
+    ok = False
+    if cmd == "sha256sum":
+        ok = len(args) == 2 and args[0] == "-c" and plain(ops[1:])
+    elif cmd == "test":
+        ok = len(args) == 2 and args[0] in ("-f", "-s", "-e") and plain(ops[1:])
+    elif cmd == "mv":
+        ok = len(args) == 2 and plain(ops)
+    elif cmd == "mkdir":
+        ok = (len(args) == 1 and plain(ops)) or (len(args) == 2 and args[0] == "-p" and plain(ops[1:]))
+    elif cmd == "tar":
+        for head in (["-x", "-f"], ["-x", "-z", "-f"], ["-t", "-f"], ["-t", "-z", "-f"]):
+            n = len(head)
+            tail = args[n + 1:]
+            if (args[:n] == head and len(args) > n and ops[n] is not None and ":" not in ops[n]
+                    and (not tail or (head[0] == "-x" and len(tail) == 2 and tail[0] == "-C" and ops[n + 2] is not None))):
+                ok = True
+    elif cmd in ("ls", "echo"):
+        ok = plain(ops)
+    if ok:
+        return None
+    return (f"{cmd} {' '.join(args)} is not a listed use of the local command {cmd} (sha256sum -c FILE, test -f|-s|-e PATH, mv SRC DST, mkdir [-p] DIR, "
+            "tar -x [-z] -f FILE [-C DIR], tar -t [-z] -f FILE, ls [PATH...], echo [WORD...]; an operand is a plain word not starting with - or $, "
+            "holding no gh, git, curl or wget word; a tar FILE holds no :)")
+
+
 def _shell_listed(flat, gh=False):
-    """None when FLAT is a plain shell line of form (a), or with GH of form (c), else why not: the whole line, every word positively plain."""
+    """None when FLAT is a plain shell line of form (a), or with GH of form (c), else why not: the whole line, every word positively plain. Segments are
+    joined only by ; or && (a word ending in a single ; is that word and ;), never at the start or the end of the line, never two in a row; each
+    segment is curl (form (a) only), the repo:self prefix (form (c), the first segment only) or one of the local commands, nothing else."""
     if "$(" in flat or any(c in flat for c in "`\\"):
         return "the line holds $(, a backtick or a backslash"
     bare = set(re.sub(r'"[^"]*"|\'[^\']*\'', " ", flat)) & _SH_UNQUOTED
@@ -921,55 +974,48 @@ def _shell_listed(flat, gh=False):
         if not (flat == _GH_SELF or flat.startswith(_GH_SELF + " ")):
             return f"a repo:self line begins with {_GH_SELF}"
         flat = flat[len(_GH_SELF):]
-    toks = []
+    segs, cur = [], (["gh"] if gh else [])
     for w in _SH_WORD.findall(flat):
         if w.endswith(";") and w != ";":
             if w[:-1] in _SH_SEP or w[:-1].endswith(";"):
                 return f"{w} is not a plain separator"
-            toks += [w[:-1], ";"]
+            ws = [w[:-1], ";"]
         else:
-            toks.append(w)
-    (state, cmd, args), curls, word0 = (("args", "gh", []) if gh else ("start", None, [])), 0, None
-    finish = lambda: (_option_list(_sh_items(args)) if args else "curl with no argument") if cmd == "curl" else _gh_options(args) if cmd == "gh" else None
-    prev = None
-    for t in toks:
-        prev_t = prev
-        value = cmd == "gh" and prev in _GH_VALUED          # the value of a value option of the prefix's own gh release download (Codex A round 7 P3)
-        if gh and t not in _SH_SEP and _repo_selector(t, value):    # OPEN-1 and OPEN-2: every segment of a repo:self line, not only the first (Codex round 6)
-            return _repo_selector(t, value)
-        prev = t
-        if t in _SH_SEP:
-            if state == "start":
-                return f"an empty command before {t}"
-            why = finish()
+            ws = [w]
+        for t in ws:
+            if t in ("||", "|", "&"):
+                return f"the joiner {t} is refused: segments are joined only by ; or &&"
+            if t in _SH_SEP:
+                if not cur:
+                    return f"an empty command before {t} (a joiner at the start of the line, or two in a row)"
+                segs.append(cur)
+                cur = []
+            else:
+                cur.append(t)
+    if not cur:
+        return "the line ends in a joiner (the command continues on the next line)" if segs else "no command"
+    segs.append(cur)
+    curls = 0
+    for i, seg in enumerate(segs):
+        word0, args = seg[0], seg[1:]
+        if gh and i == 0:
+            why = _gh_options(args)
+        else:
+            why = next((_repo_selector(t) for t in seg if _repo_selector(t)), None) if gh else None    # OPEN-1, OPEN-2: the named reasons first
             if why:
                 return why
-            state, cmd, args = "start", None, []
-        elif state == "start":
-            if t in _SH_KEYWORDS:
-                continue
-            if t == "curl":
-                state, cmd, args, curls = "args", "curl", [], curls + 1
-                continue
-            if _DOWNLOADER.search(t):
-                return f"the downloader word in {t} is not the command word curl"
-            if _sh_word(t) is None:
-                return f"the command word {t} is not a plain word"
-            state, cmd, word0 = "args", "other", t
-        elif cmd in ("curl", "gh"):
-            if cmd == "curl" and not args and t in _PY_WORDS:
-                return f"curl is followed by the Python word {t}: a name, not a command"
-            args.append(t)
-        # a double-quoted word starting with $ is listed as the value of a gh option (the word after an option of the command gh: Codex B round 7 P3)
-        elif _DOWNLOADER.search(t) or not (_sh_word(t, word0 == "gh" and _SH_OPTION.fullmatch(prev_t or "")) is not None or _SH_OPTION.fullmatch(t)):
-            return f"the word {t} is not a plain word (or holds a downloader word that is not a command word curl)"
-    if not toks and not gh:
-        return "no command"
-    if state == "start" and toks and toks[-1] in ("&&", "||", "|"):
-        return f"the line ends in {toks[-1]}: the command continues on the next line"
-    why = finish() if state == "args" else None
-    if why:
-        return why
+            if word0 == "curl" and not gh:
+                curls += 1
+                if args and args[0] in _PY_WORDS:
+                    return f"curl is followed by the Python word {args[0]}: a name, not a command"
+                why = _option_list(_sh_items(args)) if args else "curl with no argument"
+            elif word0 in _LOCAL:
+                why = _local_args(word0, args)
+            else:
+                why = (f"the command {word0} is not {'curl or ' if not gh else ''}a listed local command (sha256sum, test, mv, mkdir, tar, ls, echo): "
+                       "every other command, keyword, path or assignment is refused")
+        if why:
+            return why
     return None if gh or curls else "no command word curl"
 
 
