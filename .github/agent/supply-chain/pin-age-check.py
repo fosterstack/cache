@@ -858,6 +858,8 @@ def _sh_items(args):
     out = []
     for a in args:
         t, v = _sh_word(a), _sh_word(a, True)
+        if _DOWNLOADER.search(a):      # the RAW word too: the ${name} normalisation erases a word boundary (a${curl}b reads a$curlb; Codex B9 P3)
+            t = v = None
         out.append(("opt", a) if a.startswith("-") else ("word", t) if t is not None else ("value", v) if v is not None else ("bad", a))
     return out
 
@@ -924,10 +926,13 @@ def _gh_options(args):
 
 
 def _operand(w):
-    """The text of W as an operand of a local command, or None: a plain word (_sh_word) whose text starts with neither - nor $ and holds no gh, git,
-    curl or wget word."""
+    """The text of W as an operand of a local command, or None: a plain word (_sh_word) whose text does not start with -, holding no $, backtick or ~
+    at all, quoted or not (an expansion can make a : or a leading -: tar -x -f "h$R" with R=:archive names a remote archive; Codex A10 P2), and no gh,
+    git, curl or wget word, read in the RAW word as well as in its text (the ${name} normalisation erases a word boundary; Codex B9 P3)."""
     t = _sh_word(w)
-    return None if t is None or t.startswith(("-", "$")) or _NET_WORD.search(t) else t
+    if t is None or t.startswith("-") or any(c in w for c in "$`~") or _NET_WORD.search(w) or _NET_WORD.search(t):
+        return None
+    return t
 
 
 def _local_args(cmd, args):
@@ -957,8 +962,8 @@ def _local_args(cmd, args):
     if ok:
         return None
     return (f"{cmd} {' '.join(args)} is not a listed use of the local command {cmd} (sha256sum -c FILE, test -f|-s|-e PATH, mv SRC DST, mkdir [-p] DIR, "
-            "tar -x [-z] -f FILE [-C DIR], tar -t [-z] -f FILE, ls [PATH...], echo [WORD...]; an operand is a plain word not starting with - or $, "
-            "holding no gh, git, curl or wget word; a tar FILE holds no :)")
+            "tar -x [-z] -f FILE [-C DIR], tar -t [-z] -f FILE, ls [PATH...], echo [WORD...]; an operand is a plain word not starting with -, "
+            "holding no $, backtick or ~ and no gh, git, curl or wget word; a tar FILE holds no :)")
 
 
 def _shell_listed(flat, gh=False):
