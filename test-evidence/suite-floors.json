@@ -15,7 +15,7 @@
  "chain-install-witness-test.sh": 19,
  "chain-rebuild-test.sh": 102,
  "chain-records-test.sh": 97,
- "chain-release-metadata-test.sh": 65,
+ "chain-release-metadata-test.sh": 69,
  "chain-release-scripts-test.sh": 251,
  "chain-release-wiring-test.sh": 187,
  "chain-sign-wiring-test.sh": 1340,
