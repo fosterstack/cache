@@ -434,6 +434,9 @@ mappings:
     evidence:
       - { type: go-test, ref: "tools/requirements:TestGoTestExistsAsksTheToolchain" }
       - { type: go-test, ref: "tools/requirements:TestGoTestExistsFailsClosedWithoutAModule" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsIgnoresPersistedGoFlags" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsAcceptsAPackagePathEndingInTest" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsEdgesOfTheAnswer" }
   - ac: REQ-DEP-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }

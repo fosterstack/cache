@@ -1170,3 +1170,66 @@ func TestGoTestExistsAcceptsAPackagePathEndingInTest(t *testing.T) {
 		t.Error("a test in a package directory ending in .test was not found")
 	}
 }
+
+// The bare name Test is registered by go test; a symlinked test file is not searched (the repository's own rule for
+// mapped evidence), and when go itself is missing or answers something unreadable nothing counts.
+func TestGoTestExistsEdgesOfTheAnswer(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	src := "package p\n\nimport \"testing\"\n\nfunc Test(t *testing.T) {}\n"
+	if err := os.MkdirAll("bare", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("bare", "b_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !goTestExists("bare", "Test") {
+		t.Error("the bare name Test was not found")
+	}
+	if err := os.MkdirAll("sym", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("sym", "target.src"), []byte(strings.Replace(src, "func Test(", "func TestViaLink(", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target.src", filepath.Join("sym", "link_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("sym", "TestViaLink") {
+		t.Error("a test in a symlinked file was counted")
+	}
+	// go missing: no PATH entry holds it (a directory of its own: answers are cached per directory)
+	if err := os.MkdirAll("nogo", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("nogo", "b_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if goTestExists("nogo", "Test") {
+		t.Error("counted although the go command was not found")
+	}
+	// go present but answering garbage, then nothing: unreadable answers do not count
+	stub := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in\n*-test*) exit 0 ;;\n*) echo '{\"ImportPath\": \"x\"}' ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(stub, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub)
+	if err := os.MkdirAll("stubbed", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("stubbed", "Test") {
+		t.Error("counted although go list printed no test variants")
+	}
+	garbage := "#!/bin/sh\necho 'not json'\n"
+	if err := os.WriteFile(filepath.Join(stub, "go"), []byte(garbage), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll("garbled", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("garbled", "Test") {
+		t.Error("counted although go list printed something unreadable")
+	}
+}

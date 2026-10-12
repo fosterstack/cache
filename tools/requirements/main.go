@@ -401,15 +401,21 @@ func goTestExists(dir, name string) bool {
 	sort.Strings(names)
 	for _, n := range names {
 		path := filepath.Join(dir, n)
-		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
-			continue
+		// the signature and type-parameter rules are the toolchain's: a package with a wrong-signature or generic test
+		// function is refused above by go list itself, so only a top-level function of that name is looked for here
+		info, err := os.Lstat(path)
+		if err == nil && info.Mode().IsRegular() && declaresFunc(path, name) {
+			return true
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
-		if err != nil {
-			continue
-		}
+	}
+	return false
+}
+
+// declaresFunc reports whether the Go file declares a top-level function (not a method) called name.
+func declaresFunc(path, name string) bool {
+	if f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution); err == nil {
 		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name && isTestingT(fn) {
+			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
 				return true
 			}
 		}
@@ -433,23 +439,16 @@ var goListCache = map[string]map[string]bool{}
 
 // listTestFiles returns the test files (_test.go, in-package and external) that `go list` reports for the package in dir
 // on linux/<arch> with CGO_ENABLED=cgo, and false when go list fails or reports any error for the package, its test
-// variants or their dependencies. Answers are cached for one run, keyed by the directory's file names, sizes and times.
+// variants or their dependencies. Answers are cached for one run, keyed by the directory and its entries' names (one validation run; the files do not change during it).
 func listTestFiles(dir, arch, cgo string) (map[string]bool, bool) {
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, false
 	}
-	abs, err := filepath.Abs(dir)
-	if err != nil {
-		return nil, false
-	}
-	key := arch + cgo + "\x00" + abs
+	abs, _ := filepath.Abs(dir)
+	key := arch + cgo + "\x00" + dir + "\x00" + abs
 	for _, e := range ents {
-		info, err := e.Info()
-		if err != nil {
-			return nil, false
-		}
-		key += fmt.Sprintf("\x00%s|%d|%d|%v", e.Name(), info.Size(), info.ModTime().UnixNano(), info.Mode())
+		key += fmt.Sprintf("\x00%s|%v", e.Name(), e.Type())
 	}
 	if got, ok := goListCache[key]; ok {
 		return got, got != nil
@@ -526,27 +525,6 @@ func goTestName(name string) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(name[len("Test"):])
 	return !unicode.IsLower(r)
-}
-
-// isTestingT reports whether fn takes exactly one parameter of type *testing.T, returns nothing and has no type parameters.
-func isTestingT(fn *ast.FuncDecl) bool {
-	if fn.Type.TypeParams != nil {
-		return false // `go test` rejects a test function with type parameters
-	}
-	p := fn.Type.Params.List
-	if len(p) != 1 || len(p[0].Names) > 1 || fn.Type.Results != nil {
-		return false
-	}
-	star, ok := p[0].Type.(*ast.StarExpr)
-	if !ok {
-		return false
-	}
-	sel, ok := star.X.(*ast.SelectorExpr)
-	if !ok {
-		return false
-	}
-	pkg, ok := sel.X.(*ast.Ident)
-	return ok && pkg.Name == "testing" && sel.Sel.Name == "T"
 }
 
 func repoRoot() string {
