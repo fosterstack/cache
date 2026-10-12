@@ -132,9 +132,13 @@ cat > "$FB/go" <<'EOF'
 echo "go $*" >> "${FAKE_LOG:-/dev/null}"
 echo "GOTOOLCHAIN=${GOTOOLCHAIN:-unset}" >> "${FAKE_LOG:-/dev/null}"
 if [ "${1:-}" = version ] && [ "${2:-}" = -m ]; then cat "${FAKE_BUILDINFO:?}"; exit 0; fi
+[ -z "${FAKE_GO_MSG:-}" ] || echo "$FAKE_GO_MSG" >&2
 exit "${FAKE_GO_RC:-0}"
 EOF
 chmod +x "$FB/go"
+# the PINNED Go (what bash bin/install-scanner.sh go leaves at the fixed path): the same fake, marked, so a case can tell which go ran
+PINNED="$W/pinned/fscache-go/bin"; mkdir -p "$PINNED"
+{ echo '#!/usr/bin/env bash'; echo 'echo "WHICH-GO pinned" >> "${FAKE_LOG:-/dev/null}"'; tail -n +2 "$FB/go"; } > "$PINNED/go"; chmod +x "$PINNED/go"
 SHA=0123456789abcdef0123456789abcdef01234567
 bi() { printf '%s\n' "$1: go1.27.2" "	path	github.com/fosterstack/cache/cmd/fscache" "	mod	github.com/fosterstack/cache	$2	" \
     "	build	-ldflags=\"-s -w\"" "	build	vcs=git" "	build	vcs.revision=$3" "	build	vcs.modified=$4";
@@ -315,7 +319,7 @@ run_admit() { # run_admit [ENV=VAL...]  -> sets RC; stderr in $W/c/err, stdout i
   (cd "$W/c/repo" && env GITHUB_REF=refs/tags/v0.3.0 GITHUB_REF_NAME=v0.3.0 GITHUB_SHA="$sha" GITHUB_REPOSITORY=fosterstack/cache GITHUB_RUN_ID=1 \
       GITHUB_RUN_ATTEMPT=1 \
      GH_TOKEN=SENTINEL-GH-TOKEN GH_FIXTURES="$W/c/gh" FAKE_LOG="$W/c/calls.log" FAKE_BUILDINFO="$W/buildinfo.txt" PATH="$FB:$PATH" "$@" \
-     python3 "$BA" run --out admission.json > "$W/c/out" 2> "$W/c/err") || RC=$?
+     python3 "$BA" run --out admission.json ${RUN_GO_ARG-"--go"} ${RUN_GO_ARG-"$PINNED/go"} > "$W/c/out" 2> "$W/c/err") || RC=$?
 }
 expect_ok() { n_cases=$((n_cases + 1)); if [ ! -f "$BA" ]; then bad "$1 (bin/build-admit.py does not exist: RED)"; return; fi
   if grep -q Traceback "$W/c/err" 2> /dev/null; then bad "$1 -> a Python traceback is a crash"; return; fi
@@ -414,13 +418,13 @@ fi
 # ---- tag-ref, tag-syntax ---------------------------------------------------------------------------------------------------------
 fresh; run_admit GITHUB_REF=refs/heads/main;                  expect_refuse "AC4 a branch ref is refused (tag pushes only)" tag-ref
 fresh; run_admit GITHUB_REF= GITHUB_REF_NAME=;                 expect_refuse "AC4 an empty ref is refused" tag-ref
-for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x "v0.3.0
+for t in v1.2 v1.2.3-rc V0.3.0 "v0.3.0 " v0.3.0-rc.x 0.3.0 v0.3.0-rc.1-x v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x v0.3.0rc1 v0.3.0-rc1-rc1 "v0.3.0
 x"; do
   fresh;
   run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
   expect_refuse "AC4 the tag syntax gate refuses '$(printf '%s' "$t" | tr '\n' '|')'" tag-syntax
 done
-for t in v0.3.0-rc.1 v10.20.30;
+for t in v0.3.0-rc1 v0.3.0-rc01 v10.20.30;
 do fresh;
 run_admit "GITHUB_REF=refs/tags/$t" "GITHUB_REF_NAME=$t";
 [ -f "$BA" ] && { [ "$RC" = 0 ] || ! grep -q 'tag-syntax' "$W/c/err";
@@ -601,12 +605,34 @@ fresh; base_edit 'd["release_blocking_acs"] = []'; run_admit;      expect_refuse
 fresh;
 run_admit FAKE_GO_RC=1;
 expect_refuse "AC4 a baseline that fails the requirements tool's freeze check is refused" baseline freeze
-fresh;
-run_admit;
-if grep -q 'go -C tools/requirements run . verify-freeze v0.3.0' "$W/c/calls.log" 2> /dev/null && grep -q 'GOTOOLCHAIN=local' "$W/c/calls.log";
-then ok "AC4 the freeze check is exactly go -C tools/requirements run . verify-freeze <tag> with GOTOOLCHAIN=local";
-else bad "AC4 the freeze check call is not the pinned one: $(grep -E 'go |GOTOOLCHAIN' "$W/c/calls.log" 2> /dev/null | head -3 | tr '\n' ' ')";
-fi
+# Codex A r2 blocker 4 / r3 F4: admission's freeze check runs the PINNED Go at its fixed path (`bash bin/install-scanner.sh go` puts it there), never the runner's
+# own `go` on PATH, which may be older than go.mod. GOTOOLCHAIN=local stays: no toolchain download.
+grep -q 'GO_BIN = "/usr/local/bin/fscache-go/bin/go"' "$BA" 2> /dev/null && ok "AC4 the freeze check's Go is the fixed path /usr/local/bin/fscache-go/bin/go (the installer's output)" || bad "AC4 build-admit.py has no fixed GO_BIN path"
+# a runner Go older than go.mod, first on PATH: it must never be used
+OLD="$W/oldgo"; mkdir -p "$OLD"
+cat > "$OLD/go" <<'EOF'
+#!/usr/bin/env bash
+echo "WHICH-GO runner-path" >> "${FAKE_LOG:-/dev/null}"
+echo "go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)" >&2
+exit 1
+EOF
+chmod +x "$OLD/go"
+fresh; RUN_GO_ARG= ; run_admit "PATH=$OLD:$FB:$PATH"
+n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && [ "$RC" = 2 ] && grep -q 'fscache-go' "$W/c/err" && ! grep -q 'runner-path' "$W/c/calls.log" 2> /dev/null; then
+  ok "AC4 with no pinned Go at the fixed path admission stops with an environment error and does not fall back to the runner's go"
+else bad "AC4 no pinned go: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
+unset RUN_GO_ARG
+fresh; run_admit "PATH=$OLD:$FB:$PATH"; n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && [ "$RC" = 0 ] && grep -q 'WHICH-GO pinned' "$W/c/calls.log" && ! grep -q 'runner-path' "$W/c/calls.log" \
+   && grep -q 'go -C tools/requirements run . verify-freeze v0.3.0' "$W/c/calls.log" && grep -q 'GOTOOLCHAIN=local' "$W/c/calls.log" && ! grep -q 'GOTOOLCHAIN=auto' "$W/c/calls.log"; then
+  ok "AC4 a runner Go older than go.mod first on PATH is NOT used: the freeze check runs the pinned Go, with GOTOOLCHAIN=local and no toolchain download"
+else bad "AC4 pinned go: exit $RC $(grep -E 'WHICH|go ' "$W/c/calls.log" 2> /dev/null | head -3 | tr '\n' ' ') $(head -c 160 "$W/c/err")"; fi
+fresh
+run_admit "PATH=$OLD:$FB:$PATH" "FAKE_GO_RC=1" "FAKE_GO_MSG=go: go.mod requires go >= 1.99 (running go 1.20; GOTOOLCHAIN=local)"; n_cases=$((n_cases + 1))
+if [ -f "$BA" ] && [ "$RC" = 1 ] && grep -q '^admission refused at baseline: ' < <(head -1 "$W/c/err") && ! grep -q 'runner-path' "$W/c/calls.log" && [ ! -e "$W/c/repo/admission.json" ]; then
+  ok "AC4 a freeze check that fails under the pinned Go refuses admission at baseline (never retried with another go)"
+else bad "AC4 pinned go failing: exit $RC $(head -c 200 "$W/c/err" | tr '\n' ' ')"; fi
 # the ACs baseline of a CI patch (REQ-REL-009-AC13) goes through bin/admission-tag-signer.py baseline: its own tests and cache's auto-baseline PR
 # cover the rules; here only that a patch tag with no owner-approved baseline of its line is refused (the owner-baselines route fails closed)
 fresh; patch_tag v0.3.1; run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1 FAKE_GITSIGN_RC=0
@@ -721,6 +747,6 @@ TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=115
+EXPECT_TOTAL=124
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

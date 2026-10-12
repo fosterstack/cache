@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # bin/check-acceptance.sh SUITE --digests FILE --images DIR --out DIR   (SUITE: gradle | maven | egress | k8s)
 # Runs one existing acceptance suite against the production candidate from Build's artifacts (v0.3.0 rule 55; REQ-CHAIN-006-AC5).
-# It loads DIR/production.tar and runs the suite's shared scripts (the bodies acceptance.yml and the old stages ran, unchanged: the
+# It loads DIR/production (an OCI layout directory, as a tar made of it) and runs the suite's shared scripts (the bodies acceptance.yml and the old stages ran, unchanged: the
 # bin/acceptance-SUITE scripts) against that image: gradle and maven start the candidate as acceptance.yml's release-chain mode does (bin/acceptance-serve.sh),
 # maven once per extension version of acceptance.yml's matrix (1.2.0, 1.2.3) from a clean state; egress runs it as REF; k8s loads it into
 # its kind cluster as CANDIDATE_LOCAL. The suite's last step writes the ACs it asserted as results=JSON to $GITHUB_OUTPUT; the script
@@ -28,13 +28,14 @@ done
 [ -f "$digests" ] || fail "the digest list $digests does not exist"
 d=$(jq -r '."image-production" // empty' "$digests")
 [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-production digest"
-[ -f "$images/production.tar" ] || fail "the production image $images/production.tar is missing"
+[ -d "$images/production" ] && [ -f "$images/production/oci-layout" ] && [ -f "$images/production/index.json" ] || fail "the production image $images/production is missing or not an OCI layout directory (oci-layout and index.json)"
 [ -f "bin/acceptance-$suite.sh" ] || fail "the $suite suite script is not in the tree"
 mkdir -p "$out"
-loaded=$(docker load -i "$images/production.tar")
+tmp=$(mktemp -d)
+tar -C "$images/production" -cf "$tmp/production.tar" . || fail "the production image layout could not be archived"
+loaded=$(docker load -i "$tmp/production.tar")
 ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
 [ -n "$ref" ] || fail "docker load named no image for the production candidate"
-tmp=$(mktemp -d)
 cleanup() { [ ! -f "$tmp/extensions.xml" ] || cp "$tmp/extensions.xml" bench/maven-sample/.mvn/extensions.xml; bash bin/acceptance-serve.sh gradle stop; rm -rf "$tmp"; }
 trap cleanup EXIT
 # The suites ran under setup-java 21 in acceptance.yml; the ubuntu-24.04 runner carries a Java 21 beside its default.

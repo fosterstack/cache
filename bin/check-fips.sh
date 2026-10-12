@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # bin/check-fips.sh --digests FILE --images DIR --out DIR
-# The FIPS start check (v0.3.0 rule 72; REQ-CHAIN-006-AC6). For each candidate image (DIR/production.tar, DIR/fips.tar) it loads the
+# The FIPS start check (v0.3.0 rule 72; REQ-CHAIN-006-AC6). For each candidate image (the OCI layout directories DIR/production and DIR/fips) it loads (as a tar made of the layout) the
 # image, starts it, reads /statusz and removes the container (always, also on failure). The -fips image must report fips140 true with
 # a note that starts "active (Go validated module v1.0.0"; the production image must report fips140 false. Anything else, or a status
 # that cannot be read, fails naming the image. Writes OUT/fips-result.json with what each image reported: the booleans and the module
 # version only. The certificate number is a documented mapping, not something a binary reports, so it is never written here.
 set -euo pipefail
+# an OCI layout directory (PR 2's interface, PROPOSED): oci-layout and an index.json; a docker-save tarball or any other directory is refused
+is_layout() { [ -d "$1" ] && [ -f "$1/oci-layout" ] && [ -f "$1/index.json" ]; }
 usage() { echo "usage: check-fips.sh --digests FILE --images DIR --out DIR" >&2; exit 2; }
 fail() { echo "check-fips: $*" >&2; exit 1; }
 digests="" images="" out=""
@@ -25,10 +27,11 @@ done
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k] // empty' "$digests")
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
-  [ -f "$images/$v.tar" ] || fail "the $v image $images/$v.tar is missing"
+  is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
 mkdir -p "$out"
-cleanup() { for v in production fips; do docker rm -f "fscache-check-$v" > /dev/null 2>&1 || true; done; }
+tmp=$(mktemp -d)
+cleanup() { rm -rf "$tmp"; for v in production fips; do docker rm -f "fscache-check-$v" > /dev/null 2>&1 || true; done; }
 trap cleanup EXIT
 
 PREFIX="active (Go validated module v1.0.0"
@@ -37,7 +40,7 @@ results="[]"
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k]' "$digests")
   name="fscache-check-$v"
-  loaded=$(docker load -i "$images/$v.tar") || { echo "check-fips: $v: the image could not be loaded" >&2; failed=1; continue; }
+  tar -C "$images/$v" -cf "$tmp/$v.tar" . && loaded=$(docker load -i "$tmp/$v.tar") || { echo "check-fips: $v: the image could not be loaded" >&2; failed=1; continue; }
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || { echo "check-fips: $v: docker load named no image" >&2; failed=1; continue; }
   if ! docker run -d --name "$name" -p 127.0.0.1::8080 "$ref" > /dev/null; then

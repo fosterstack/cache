@@ -1,0 +1,106 @@
+{
+ "_note": "Expected-red cases of the release chain's integration branch chain-v030 (advisor, #299). A chain suite listed here passes its CI step only when its red cases equal these entries exactly (bin/chain-known-red.py judge). An entry is removed in the PR that turns its case green; an added entry must be named in the PR body by a line `known-red-add: <id>`. The cutover pull request needs this file's entries empty.",
+ "entries": [
+  {
+   "id": "KR-SIGN-1",
+   "suite": "bin/chain-sign-wiring-test.sh",
+   "case": "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)",
+   "reason": "the real-tree judge still finds the missing cache files (bin/build-apk.sh, bin/assemble-image.sh, bin/apk-tool.py, archive/): the build-stage scripts run them and `runs` entries must be listed rows",
+   "green_by": "cache P4/P5",
+   "findings": [
+    "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-snapshot-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-version-check.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/chain_items.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list"
+   ]
+  },
+  {
+   "id": "KR-SIGN-2",
+   "suite": "bin/chain-sign-wiring-test.sh",
+   "case": "shrink: row + pinned entry removed was refused",
+   "reason": "the same real-tree findings (missing cache scripts) make the shrink probe red",
+   "green_by": "cache P4/P5",
+   "findings": [
+    "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-snapshot-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-version-check.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/chain_items.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list"
+   ]
+  },
+  {
+   "id": "KR-SIGN-3",
+   "suite": "bin/chain-sign-wiring-test.sh",
+   "case": "an UNTRACKED file holding a signer is not in the tracked copy CI judges",
+   "reason": "the same real-tree findings (missing cache scripts)",
+   "green_by": "cache P4/P5",
+   "findings": [
+    "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-snapshot-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
+    "AC1: bin/build-version-check.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/chain_items.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list"
+   ]
+  },
+  {
+   "id": "KR-CHECK-2",
+   "suite": "bin/chain-check-wiring-test.sh",
+   "case": "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)",
+   "reason": "the customer guide docs/verify-release.md is cache-3f's and is not in the repository yet; check-guide.sh has nothing to run (rule 79)",
+   "green_by": "cache-3f (docs/verify-release.md)",
+   "findings": [
+    "the customer guide docs/verify-release.md does not exist (rule 79 cannot be satisfied without it)"
+   ]
+  },
+  {
+   "id": "KR-CUTOVER",
+   "suite": "bin/chain-build-wiring-test.sh",
+   "case": "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case",
+   "reason": "the cutover pull request (chain-v030 to main) needs this list empty AND every hosted check green on hosted runners, not only the suite cases: build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; the case is red while any entry exists, and listed itself until then",
+   "green_by": "cutover (the last entry removed)"
+  }
+ ]
+}

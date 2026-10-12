@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "2613e56cdab7c7b668869fb7db273329a32bf4f3519216b0ba840580dd867a20",
+      "sha256": "070d8dced7939fd6bd935d691f3fc597c552104255f0978f32ce357b76bf309c",
       "tools": [
         "make",
         "at",
@@ -32,14 +32,15 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "943a45ea5471b3ac4088b0c1d7095cfd2548b545332a1e3d4172a9fde27e3ceb",
+      "sha256": "20f11876c6862d6e9c77f789db627317a639895c7de213a0a3dcddcdd9a2bd81",
       "tools": [
-        "curl",
-        "trap",
-        "source",
-        "git",
         "at",
-        "tar"
+        "curl",
+        "git",
+        "go",
+        "source",
+        "tar",
+        "trap"
       ],
       "runs": [],
       "signs": "other",
@@ -218,7 +219,7 @@
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "efd9caf860ad4476324c52b1a2f2afbc5d42bf44e666f123516c8c4255f218bd",
+      "sha256": "8c6f3797dc5e051098649709dae6aeb97f1449f733bdc89cac6a8e205ea959f5",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -227,6 +228,15 @@
           "name": "PATH",
           "text": "`git show REV:PATH`",
           "why": "a docstring naming the path operand of git show; nothing is set"
+        }
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "GO_BIN = \"/usr/local/bin/fscache-go/bin/go\"",
+          "line_sha256": "b0307bc8efcdaafbd89419f85d8a61f4af5918195bfe389b355fc0db4ba5b41f",
+          "count": 1,
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); admission runs exactly this go for the freeze check, never the runner's"
         }
       ]
     },
@@ -278,7 +288,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "9e9b0d27ffd8f2949a9d3df8ceb6bc62b6fea198ad558d2e0759389ffaa9e10f"
+      "sha256": "6d69d9dd3950648f903b53bbbe4ad58dc17effb1f9f8c81924a7a42bb922b6b0"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -361,7 +371,7 @@
     },
     {
       "path": "bin/check-stage.sh",
-      "sha256": "7b2c4d398fca956428ca1e6eb40b605c0fd328d8a5650d59897b75a98874c37b",
+      "sha256": "dd0121ee69b09ecf037bca2a6a15d333e962a9de314ffd2147187ee480b790f4",
       "tools": [
         "bash",
         "make",
@@ -388,23 +398,19 @@
           "rule": "script-name",
           "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
           "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
         }
       ]
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "e5b37c8708d9f598ba462085385e3f4146c7d7785938a0364b48454708881341",
+      "sha256": "be4721e445ee64d3d286d27ceb07f58e6cb18eede5def8e2b749c0af3b3a927b",
       "tools": [
         "find",
         "python3",
         "script",
         "sed",
         "source",
+        "tar",
         "trap"
       ],
       "runs": [
@@ -415,11 +421,12 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "7d5c08c8a160f8e450974e52be9bafac8f83bdfa07bcae19a05c0a929263fb51",
+      "sha256": "45358b09b1a7724908724782ea9afbf642dfde94f0ddf5a22f15e896fc61f5d8",
       "tools": [
         "curl",
         "docker",
         "sed",
+        "tar",
         "trap"
       ],
       "runs": [],
@@ -428,13 +435,14 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "9608b6f495d3eac144c02bae259e0cbdeaba7d6a9e92aa8bd210376f89f32397",
+      "sha256": "ab6bc49fbc37cd4a666501011ed96d3e5e0204c51ad8a7a527bd6b402ffda99f",
       "tools": [
         "bash",
         "docker",
         "env",
         "script",
         "sed",
+        "tar",
         "trap"
       ],
       "runs": [
@@ -1026,7 +1034,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "2501123e8a17a1a45b814f28522832fd5bf84dd6dfc277a309167333066ebe59",
+      "sha256": "2695f35ea6d3c4f97eca63c7838b98e480387f2f4e9c6901dbe36d6b32b760ca",
       "tools": [
         "at",
         "curl",
@@ -1046,7 +1054,7 @@
     },
     {
       "path": "bin/check-image-platforms.py",
-      "sha256": "d0403bf764fc978c051ab8f469fd8df869d1c777139f3e312986980da960f100",
+      "sha256": "ea009d1e7467e7b7e992a219237e3874a1cb756485c6961e427fecf24346625d",
       "tools": [
         "at"
       ],
@@ -1056,7 +1064,7 @@
     },
     {
       "path": "bin/check-phase-arm64.sh",
-      "sha256": "5bad5e479e109f5a9136bfe78319ed6f3db13f2ccabfdeda50ceb84274badf1e",
+      "sha256": "6065475e20aac72ccd9ab6f0845e29fe7dc4a67c9dab194cfcdf33a5e8cb2711",
       "tools": [
         "bash",
         "make",
@@ -1077,11 +1085,6 @@
         {
           "rule": "script-name",
           "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
           "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
         }
       ]

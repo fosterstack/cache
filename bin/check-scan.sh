@@ -7,10 +7,10 @@
 # A scanner exits 0 (clean), 1 (findings the published VEX document does not except) or anything else (could not run). The package
 # count is read from the tool's own machine output: the components of the CycloneDX SBOM grype writes (-o cyclonedx-json=FILE, as
 # the PR scan script counts them for REQ-REL-004-AC1) and the packages osv-scanner lists with --format json --all-packages (shapes as
-# recorded in .github/agent/fixtures/scanners).
+# recorded in the scanner fixtures of the auditor directory (fixtures/scanners)).
 # Vulnerability databases (REQ-CHAIN-006-AC15): grype fetches its database fresh (grype db update) before the first scan, and every scan
 # is then held to that database (no auto-update, a 48-hour built-age limit); the database each scan used is read from its own output
-# (descriptor.db.status, the shape recorded in .github/agent/fixtures/scanners/grype.json) and must come from grype.anchore.io, carry
+# (descriptor.db.status, the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json) and must come from grype.anchore.io, carry
 # its sha256 in the download URL's checksum and be built less than 48 hours before now (CHECK_SCAN_NOW, epoch seconds, default the
 # clock). osv-scanner runs in its documented offline mode (v2.6.0 docs/offline-mode.md): --offline-vulnerabilities
 # --download-offline-databases with OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY an empty directory (made fresh for this run, or, when the
@@ -24,6 +24,8 @@
 # run, found anything, reports no version or zero packages, or when the number that ran differs from the number listed.
 # Writes OUT/scan-results.json {listed, ran, scanners: [{name, version, verdict, subjects: [{name, digest, packages, verdict}]}]}.
 set -euo pipefail
+# an OCI layout directory (PR 2's interface, PROPOSED): oci-layout and an index.json; a docker-save tarball or any other directory is refused
+is_layout() { [ -d "$1" ] && [ -f "$1/oci-layout" ] && [ -f "$1/index.json" ]; }
 usage() { echo "usage: check-scan.sh --scanners FILE --digests FILE --images DIR --archives DIR --out DIR" >&2; exit 2; }
 fail() { echo "check-scan: $*" >&2; exit 1; }
 list="" digests="" images="" archives="" out=""
@@ -48,7 +50,7 @@ mapfile -t scanners < <(jq -r '.scanners[]' "$list")
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k] // empty' "$digests")
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
-  [ -f "$images/$v.tar" ] || fail "the $v image $images/$v.tar is missing"
+  is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
 shopt -s nullglob
 # REQ-PLAT-001-AC1 (Linux only): the archive set is exactly the four Linux archives, fscache and fscache-fips for amd64 and arm64, of one version,
@@ -68,7 +70,7 @@ mkdir -p "$out"
 VEX=.vex/fosterstack-cache.openvex.json
 now=${CHECK_SCAN_NOW:-$(date +%s)}
 [[ "$now" =~ ^[0-9]+$ ]] || fail "CHECK_SCAN_NOW must be epoch seconds: $now"
-GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (.github/agent/fixtures/scanners/grype.json)
+GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
@@ -108,7 +110,7 @@ for s in "${scanners[@]}"; do
   [ -n "$version" ] || { echo "check-scan: $s reports no version" >&2; verdict=fail; }
   subjects="[]"
   tname=() tdigest=() tpath=()
-  for v in production fips; do add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v.tar"; done
+  for v in production fips; do add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v"; done
   if [ "$s" = grype ]; then
     for a in "${tars[@]}"; do add_target "$(basename "$a")" "sha256:$(sha256sum "$a" | cut -d' ' -f1)" "$a"; done
   else
@@ -120,9 +122,9 @@ for s in "${scanners[@]}"; do
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-archive:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
-      osv-scanner:*) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
+      osv-scanner:*) tar -C "$path" -cf "$tmp/img-$name.tar" . && OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$tmp/img-$name.tar" > "$tmp/out.json" || rc=$? ;;
     esac
     # A tool that failed before writing leaves nothing to read, and anything but a number is 0 packages (did not run).
     if [ "$s" = grype ]; then

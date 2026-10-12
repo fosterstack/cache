@@ -42,7 +42,7 @@ collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the 
 import hashlib, json, os, re, sys, yaml
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
-DOWN = {"witness-build", "digests", "dist", "locks", "provenance", "images"}   # Build's and Sign's artifacts; images travel as files (OCI tarballs)
+DOWN = {"witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
 RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           # PR 2's helper writes witness-STEP/STEP-collection.json
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifact name -> the path(s) it may carry
 KIND_STEP = "bash bin/install-kind.sh"
@@ -108,10 +108,9 @@ def control_chars(raw):
 
 POLICY = (r'python3 -I -B bin/chain-verify\.py policy make --template \.github/policy/release-policy\.template\.json --tag "\$GITHUB_REF_NAME" '
           r'--out policy\.json')   # Q5 (advisor, Oct 10): Check makes the release policy per tag, as PR 2's Rebuild does, before it verifies
-VERIFY = [  # bin/check-stage.sh after `set -euo pipefail` and the policy line: the verify step first (rule 58), before any check (every phase re-verifies);
+VERIFY = [  # bin/check-stage.sh after `set -euo pipefail` and the policy line: the verify step first (rule 58: Check's previous stage is Build), before any check (every phase re-verifies);
             # isolated and with no bytecode cache, as PR 1's Sign step runs the verifier (python3 -I -B, PR 1 r5)
     r"python3 -I -B bin/chain-verify\.py stage-start --stage check --previous build --record witness-build/build-collection\.json --digests witness-build/digests\.json --policy policy\.json",
-    r"python3 -I -B bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json",
 ]
 PHASES = {  # rules 55, 72, 79; the phases are split so that no witnessed command nears the 9-minute cap (rule 68, amended)
     "scanners": [r"bash bin/check-scan\.sh --scanners \.github/policy/scanners\.json --digests witness-build/digests\.json --images images --archives dist --out check-results"],
@@ -162,13 +161,13 @@ def load(path):
 ARM_STEP = "arm64"
 ARM_TARGET = "bin/check-phase-arm64.sh"
 ARM_LINE = "bash bin/check-artifacts.sh --arch arm64 --digests witness-build/digests.json --images images --archives dist --out check-results"
-ARM_DOWNLOADS = [("witness-build", "witness-build"), ("digests", "witness-build"), ("provenance", "provenance"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
+ARM_DOWNLOADS = [("witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
 
 
 def arm_job(j):
     """REQ-CHAIN-006-AC1 (advisor 0385): the one second job, check-arm64: runs-on the literal ubuntu-24.04-arm, permissions exactly contents read +
     id-token write, no other key (no if, needs, env, strategy, container), and EXACTLY these steps in this order: a digest-pinned checkout without
-    persisted credentials, the checksum-pinned Witness install, the digest-pinned downloads of witness-build, digests (into witness-build), provenance, dist and images, the one
+    persisted credentials, the checksum-pinned Witness install, the digest-pinned downloads of witness-build, digests (into witness-build), dist and images, the one
     witnessed step `bash bin/witnessed.sh arm64 bin/check-phase-arm64.sh`, and the digest-pinned upload of witness-check-arm64 carrying witness-arm64."""
     bad = []
     if not isinstance(j, dict):
@@ -355,10 +354,10 @@ def phase(path, step):
     if lines and lines[0].startswith("#!"):
         lines = lines[1:]
     if step == ARM_STEP:
-        # rule 58: set -euo pipefail, the policy line, the two verifications (isolated), THEN the artifact checks on the digest file verified
+        # rule 58: set -euo pipefail, the policy line, the verification of Build's record (isolated), THEN the artifact checks on the digest file verified
         want = [("lit", "set -euo pipefail"), ("rx", POLICY)] + [("rx", r) for r in VERIFY] + [("lit", ARM_LINE)]
         if len(lines) != len(want):
-            bad.append("the arm64 target must be exactly set -euo pipefail, the policy line, the two verifications and the artifact checks (%d lines), found %d" % (len(want), len(lines)))
+            bad.append("the arm64 target must be exactly set -euo pipefail, the policy line, the verification of Build's record and the artifact checks (%d lines), found %d" % (len(want), len(lines)))
         for i, (k, w) in enumerate(want):
             got = lines[i] if i < len(lines) else "<missing>"
             if (k == "lit" and got != w) or (k == "rx" and not re.fullmatch(w, got)):
@@ -383,8 +382,8 @@ def graph(path):
         return bad
     if (jobs["check"].get("uses") or "") != "./.github/workflows/stage-verify.yml":
         bad.append("the check job must call ./.github/workflows/stage-verify.yml")
-    if needs("check") != {"build", "sign"}:
-        bad.append("check must need exactly build and sign, found %s" % sorted(needs("check")))
+    if needs("check") != {"build"}:
+        bad.append("check must need exactly build (its previous stage; Sign's provenance is Release's to verify, rule 58), found %s" % sorted(needs("check")))
     if "check" in needs("rebuild") or "rebuild" in needs("check"):
         bad.append("check and rebuild must run side by side (rule 70)")
     if needs("release") != {"check", "rebuild", "sign"}:   # exactly PR 2's set (3e883b3): build is reached through check

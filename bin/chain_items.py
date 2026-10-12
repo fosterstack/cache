@@ -244,10 +244,63 @@ def read_bytes(directory, name, what=None):
         return f.read()
 
 
+def check_layout(images_dir, image, digest):
+    """The image's OCI layout directory out/<image>/ (PROPOSED/UNVERIFIED, cache P5): oci-layout 1.0.0, an index.json with exactly ONE descriptor that
+    is the digest Build records, that blob a real OCI image index present and hashing to its name, and its linux/amd64 and linux/arm64 child manifests present
+    and hashing to theirs. Returns {arch: child digest}, which the caller binds to the sidecar. A docker-save tarball (manifest.json, no oci-layout) is not a layout:
+    pushing it changes the digest, pushing the layout directory does not."""
+    root = os.path.join(images_dir, image)
+    if os.path.islink(root) or not os.path.isdir(root):
+        refuse("build", "layout: %s is not an OCI layout directory (out/%s/)" % (image, image))
+    try:
+        with open(os.path.join(root, "oci-layout"), "rb") as f:
+            if strict_json(f.read()) != {"imageLayoutVersion": "1.0.0"}:
+                raise ValueError
+    except (OSError, ValueError):
+        refuse("build", "layout: %s has no oci-layout file of imageLayoutVersion 1.0.0 (a docker-save tarball is not a layout)" % image)
+    try:
+        with open(os.path.join(root, "index.json"), "rb") as f:
+            index = strict_json(f.read())
+        descriptors = index["manifests"]
+        if not isinstance(descriptors, list) or len(descriptors) != 1 or descriptors[0]["digest"] != digest:
+            raise ValueError
+    except (OSError, ValueError, KeyError, TypeError):
+        refuse("build", "layout: %s index.json does not hold exactly one descriptor, the digest %s" % (image, digest))
+    def blob_bytes(dg, what):
+        path = os.path.join(root, "blobs", "sha256", dg.split(":", 1)[1])
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+        except OSError:
+            data = None
+        if os.path.islink(path) or data is None or hashlib.sha256(data).hexdigest() != dg.split(":", 1)[1]:
+            refuse("build", "layout: %s %s blob %s is missing or does not hash to its name" % (image, what, dg))
+        return data
+    try:
+        platforms = strict_json(blob_bytes(digest, "index"))["manifests"]
+        found = {}
+        for m in platforms:
+            p = m.get("platform") or {}
+            if p.get("os") == "linux" and p.get("architecture") in ARCHES.values():
+                if p["architecture"] in found or not DIGEST.fullmatch(str(m.get("digest", ""))):
+                    raise ValueError
+                found[p["architecture"]] = m["digest"]
+        if sorted(found) != sorted(ARCHES.values()):
+            raise ValueError
+    except (ValueError, KeyError, TypeError, AttributeError):
+        refuse("build", "layout: %s index blob is not an OCI image index with exactly one linux/amd64 and one linux/arm64 descriptor" % image)
+    for arch, dg in sorted(found.items()):
+        blob_bytes(dg, "%s manifest" % arch)
+    return found
+
+
 def image_items(images_dir):
     items = {}
     for image in IMAGES:
         items["image-" + image] = read_bytes(images_dir, image + ".digest").decode().strip()
+        if not DIGEST.fullmatch(items["image-" + image]):
+            refuse("build", "layout: %s.digest is not a sha256 digest" % image)
+        in_index = check_layout(images_dir, image, items["image-" + image])
         seen = {}
         for line in read_bytes(images_dir, image + ".manifests").decode().split("\n"):
             if line.strip():
@@ -258,6 +311,8 @@ def image_items(images_dir):
                 seen[parts[0]] = parts[1]
         if sorted(seen) != sorted(ARCHES.values()):
             refuse("build", "manifests: an architecture is missing in %s.manifests" % image)
+        if seen != in_index:
+            refuse("build", "layout: %s sidecar %s.manifests does not name the platform descriptors of the image index" % (image, image))
         for arch, digest in seen.items():
             items["image-%s-manifest-%s" % (image, arch)] = digest
         items["lock-" + image] = "sha256:" + hashlib.sha256(read_bytes(images_dir, image + ".full.lock.json")).hexdigest()
@@ -309,9 +364,10 @@ def cmd_items_merge(a):
         json.dump(items, f, sort_keys=True, indent=1)
         f.write("\n")
     if a.digests:
+        # compact, sorted, no trailing newline: these are the bytes `jq -c .` and a command substitution carry to Sign, which writes them with printf '%s' and
+        # compares their sha256 with the product hash of THIS file in the signed record (Codex B r2 B1); any other layout makes Sign refuse every release
         with open(a.digests, "w") as f:
-            json.dump(digests_of(items), f, sort_keys=True, indent=1)
-            f.write("\n")
+            json.dump(digests_of(items), f, sort_keys=True, separators=(",", ":"))
 
 
 # ---- rebuild-compare --------------------------------------------------------------------------------------------------------------
@@ -402,6 +458,19 @@ def cmd_rebuild_compare(a):
 
 
 # ---- record-env -------------------------------------------------------------------------------------------------------------------
+def check_record_env(stage, envelope, payload):
+    """AC8 on an already-read record (REQ-CHAIN-004-AC8): no ACTIONS_ID_TOKEN_REQUEST_* name (the whole prefix), runtime-token name, GH_TOKEN or GITHUB_TOKEN, no compact JWT
+    and no GitHub token value anywhere in the envelope or the decoded payload. The verifiers call it for every verified Witness collection, naming the record's own stage."""
+    text = json.dumps(envelope) + "\n" + payload.decode("utf-8", "replace")
+    found = sorted(set(re.findall(r"ACTIONS_ID_TOKEN_REQUEST_[A-Za-z0-9_]*", text)) | {n for n in TOKEN_NAMES if n in text})
+    if found:
+        refuse(stage, "env: the record names " + " ".join(found))
+    if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", text):
+        refuse(stage, "env: the record holds a compact JWT")
+    if re.search(r"\bgh[pousr]_[A-Za-z0-9]{20,}", text):
+        refuse(stage, "env: the record holds a GitHub token")
+
+
 def cmd_record_env(a):
     try:
         with open(a.record, "rb") as f:
@@ -419,16 +488,10 @@ def cmd_record_env(a):
     if isinstance(name, str) and SNAPSHOT_NAME.fullmatch(name):
         refuse("build", "snapshot record")          # nothing can token-check a snapshot record; nothing consumes one (REQ-CHAIN-004-AC13)
     try:
-        text = json.dumps(envelope) + "\n" + b64d(envelope["payload"]).decode("utf-8", "replace")
+        payload = b64d(envelope["payload"])
     except ValueError:
         refuse("build", "env: the DSSE payload is not base64")
-    found = [n for n in TOKEN_NAMES if n in text]
-    if found:
-        refuse("build", "env: the record names " + " ".join(found))
-    if re.search(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*", text):
-        refuse("build", "env: the record holds a compact JWT")
-    if re.search(r"\bgh[pousr]_[A-Za-z0-9]{20,}", text):
-        refuse("build", "env: the record holds a GitHub token")
+    check_record_env("build", envelope, payload)
     print("ok")
 
 

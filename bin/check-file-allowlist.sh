@@ -144,7 +144,8 @@ ALLOW_PATTERNS=(
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
-  '^bin/chain-test-(harness|shape)\.py$'
+  '^bin/chain-(test-(harness|shape)|known-red)\.py$'
+  '^test-evidence/known-red\.json$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
   # suite), the kind installer, and the Check suites with their shape judge
   '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
@@ -153,6 +154,9 @@ ALLOW_PATTERNS=(
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/install-kind\.sh$'
+  # the suite guard: no empty test file, a printed case count held to a committed floor that only rises
+  '^bin/suite-guard(-run|-test)?\.sh$'
+  '^test-evidence/suite-floors\.json$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.

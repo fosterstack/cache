@@ -256,6 +256,15 @@ jobs:
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: bash bin/check-file-allowlist-test.sh
 
+      - name: suite guard (no tracked test file is empty; the guard's own regressions)
+        run: bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh
+
+      - name: suite floors only rise (against the merge base on a pull request)
+        if: ${{ github.base_ref != '' }}
+        env:
+          BASE: ${{ github.base_ref }}
+        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+
       - name: branch sweep and local prune regressions
         run: bash bin/branch-sweep-test.sh
 
@@ -342,6 +351,22 @@ jobs:
         run: bash bin/chain-sign-wiring-test.sh
       - name: "the release chain's record types: one row, claim and consumer per signed type (REQ-CHAIN-003-AC3)"
         run: bash bin/chain-records-test.sh
+      - name: "Build's wiring: the exact stage grammar, the scripts' behaviour, the snapshot callers, the graph (REQ-CHAIN-004, 005; red on 005-AC5 until PRs 3 and 4)"
+        run: bash bin/chain-build-wiring-test.sh
+      - name: "Build's admission: every check of the former admission stage, with a counterpart (REQ-CHAIN-004-AC4, AC5)"
+        run: bash bin/chain-build-admit-test.sh
+      - name: "the files a stage binds and the items it writes (REQ-CHAIN-004-AC3, AC8, AC9; REQ-CHAIN-005-AC1)"
+        run: bash bin/chain-bind-test.sh
+      - name: "Rebuild's comparison of every item (REQ-CHAIN-005-AC3)"
+        run: bash bin/chain-rebuild-test.sh
+      - name: "snapshot records and versions are refused by every verifier (REQ-CHAIN-004-AC13, AC15)"
+        run: bash bin/chain-snapshot-test.sh
+      - name: "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)"
+        run: bash bin/chain-install-witness-test.sh
+      - name: "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)"
+        run: bash bin/chain-check-scripts-test.sh
+      - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the release job until PR 4 and the guide until cache-3f, known-red.json)"
+        run: bash bin/chain-check-wiring-test.sh
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: bash bin/dependabot-reviewer-test.sh

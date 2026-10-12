@@ -221,6 +221,13 @@ VERDICT_ARTIFACT = "witness-rebuild"
 MODE_RELEASE_IF = "${{ inputs.mode == 'release' }}"
 MODE_SNAPSHOT_IF = "${{ inputs.mode == 'snapshot' }}"
 MODE_GUARD_ENV = {"MODE": "${{ inputs.mode }}"}
+# Build's apk job installs the Go toolchain admission's verify-freeze needs (the old stage-admission did, from go.mod) the way the chain installs Witness: a
+# checksum-pinned `bash bin/install-scanner.sh go` run line, AFTER the Witness install (rule 68: Witness first) and before the downloads and the Witness step
+# (advisor, Codex A r3 F4: no setup-go action; the toolchain bytes are pinned by a committed sha256)
+# admission.json is written once per apk leg (the Witness record of each leg holds it as a product) but uploaded ONCE, from the leg on ubuntu-24.04 and only in a
+# release run, under the fixed name `admission` (PR 4's Release reads the baseline a CI patch tag used from it; a matrix upload under one name would clash)
+ADMISSION_IF = "${{ inputs.mode == 'release' && matrix.runner == 'ubuntu-24.04' }}"
+INSTALL_GO = "bash bin/install-scanner.sh go"
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -233,8 +240,8 @@ HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True,
-        up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk")]),
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True,
+        up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
     ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("dist", "dist"), ("images", "out")]),
@@ -322,6 +329,20 @@ def job(j, family, name, allowed):
         for s_ in steps:
             u_ = (s_.get("uses") or "").split(" ")[0]
             if PIN.match(u_) and u_ not in allowed: bad.append("action %s is not on the allowed-actions list" % u_)
+    if spec.get("gh"):       # the admission job: the advisor's reading of rule 51 (admission is the first TRUST decision), made a test
+        first_wit = next((k for k, x in enumerate(steps) if "witnessed.sh" in str(x.get("run", ""))), len(steps))
+        if first_wit < len(steps) and (steps[first_wit].get("if") != MODE_RELEASE_IF or "witnessed.sh apk " not in str(steps[first_wit].get("run", ""))):
+            bad.append("the first step that runs bin/witnessed.sh must be the release admission step `bash bin/witnessed.sh apk ...` under if: %s; another Witness "
+                       "step before it runs before admission" % MODE_RELEASE_IF)
+        for k, x in enumerate(steps[:first_wit]):
+            run_ = str(x.get("run", "")).strip()
+            kind = ("checkout" if k == 0 and set(x) <= {"uses", "with", "name"} and pinned(x.get("uses"), "actions/checkout", allowed) and (x.get("with") or {}) == CHECKOUT_WITH
+                    else "guard" if set(x) == {"name", "env", "run"} and x.get("env") == MODE_GUARD_ENV and run_ == MODE_GUARD_RUN
+                    else "install" if set(x) <= {"name", "run"} and run_ in ("bash bin/install-scanner.sh witness", INSTALL_GO) else None)
+            if kind is None:
+                bad.append("step %d runs before admission (the first step that runs bin/witnessed.sh) and is not the checkout, the mode guard or a checksum-pinned "
+                           "install line: %s (nothing with an env, a token, a secret, a build command, a download or an upload may come before admission)"
+                           % (k + 1, sorted(x)))
     i = 0
     s = steps[i]; i += 1
     if set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/checkout", allowed) or (s.get("with") or {}) != CHECKOUT_WITH:
@@ -332,7 +353,11 @@ def job(j, family, name, allowed):
             bad.append("step %d must be exactly env %s, run: %s, and no if (the mode guard)" % (i, MODE_GUARD_ENV, MODE_GUARD_RUN))
     s = steps[i] if i < len(steps) else {}; i += 1
     if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != "bash bin/install-scanner.sh witness":
-        bad.append("step 2 must be exactly: run bash bin/install-scanner.sh witness (checksum-pinned Witness install)")
+        bad.append("step 2 must be exactly: run bash bin/install-scanner.sh witness (checksum-pinned Witness install, FIRST)")
+    if spec.get("setup_go"):
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != INSTALL_GO:
+            bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of admission's verify-freeze, right after Witness)" % (i, INSTALL_GO))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
@@ -368,12 +393,12 @@ def job(j, family, name, allowed):
             bad.append("step %d must be a pinned actions/upload-artifact of %s under if: %s" % (i, HOSTILE_UP, HOSTILE_IF))
     for nm, path_ in spec["up"]:
         s = steps[i] if i < len(steps) else {}; i += 1
-        want_if = ALWAYS if nm == VERDICT_ARTIFACT else None      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
+        want_if = ALWAYS if nm == VERDICT_ARTIFACT else (ADMISSION_IF if nm == "admission" else None)      # the verdict is uploaded even when the comparison failed: it is the only place the differences are readable
         if (set(s) - {"uses", "with", "name", "if"} or s.get("if") != want_if or not pinned(s.get("uses"), "actions/upload-artifact", allowed)
                 or (s.get("with") or {}) != {"name": nm, "path": path_}):
             bad.append("step %d must be a pinned actions/upload-artifact with exactly name %s and the ONE path %s%s "
                        "(the artifact is rooted at its common ancestor, so a second path changes every file name in it)"
-                       % (i, nm, path_, " under if: always()" if want_if else " and no if"))
+                       % (i, nm, path_, " under if: %s" % want_if if want_if else " and no if"))
     if i != len(steps):
         bad.append("%d steps, the grammar has %d (no extra step)" % (len(steps), i))
     return bad
@@ -483,9 +508,8 @@ def listed(path, root):
 # ---- release.yml --------------------------------------------------------------------------------------------------------------------
 CHAIN = {"build": "stage-build.yml", "sign": "stage-sign.yml", "rebuild": "stage-reproducibility.yml", "check": "stage-verify.yml",
          "release": "stage-promote.yml"}
-# Check needs exactly build AND sign: it opens by verifying Sign's provenance, so the candidate is signed before it is checked (rule 80; advisor
-# ruling Oct 10, Q9). Rebuild runs beside Sign and Check; release needs all three.
-NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build", "sign"], "release": ["check", "rebuild", "sign"]}
+# Check needs exactly build (REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side; Codex B r2 R3). Release needs all three.
+NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"], "release": ["check", "rebuild", "sign"]}
 
 
 # The `if` of the chain jobs (REQ-CHAIN-005-AC5). ONE gate G, the same exact text on build and sign: the chain starts on a v* tag PUSH, or in a dry-run
@@ -497,7 +521,8 @@ NEEDS = {"build": [], "sign": ["build"], "rebuild": ["build"], "check": ["build"
 GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 RELEASE_IF = "${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 GATED = ("build", "sign")      # sign runs in a release and in a dry run, so it carries the same gate G (Build hands it the digests)
-BUILD_WITH = {"hostile": "${{ inputs.dry-run == true && github.ref_type == 'branch' }}"}
+RC_PUSH = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
+BUILD_WITH = {"hostile": "${{ %s }}" % RC_PUSH}      # the hostile Build step runs on a push of a release-candidate tag only (advisor 0383)
 SIGN_PERMISSIONS = {"contents": "read", "id-token": "write"}
 # PR 1's stage-sign.yml takes exactly ONE input, digests (Build's record is downloaded by the fixed artifact name witness-build, not passed). PR 1's
 # placeholder needs.build.outputs.checksums (raw checksums.txt text) is replaced at the cutover by Build's digests output, the digests.json text.
@@ -551,7 +576,7 @@ def graph(path):
         if name == "rebuild" and "with" in job:
             bad.append("rebuild may not pass inputs (stage-reproducibility.yml takes none; a mode there would make a snapshot Rebuild), got %s" % job["with"])
         if name == "build" and job.get("with") != BUILD_WITH:
-            bad.append("build must pass exactly with: %s (the hostile Build step runs only in a dry run on a branch), got %s" % (BUILD_WITH, job.get("with")))
+            bad.append("build must pass exactly with: %s (the hostile Build step runs only on a push of an rc tag), got %s" % (BUILD_WITH, job.get("with")))
         if name == "sign":
             if job.get("permissions") != SIGN_PERMISSIONS:
                 bad.append("sign must hold exactly the permissions %s, got %s" % (SIGN_PERMISSIONS, job.get("permissions")))
@@ -720,5 +745,7 @@ if __name__ == "__main__":
            "listed": lambda: listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
             "callers": lambda: callers(sys.argv[2]),
             "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
+    if bad and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py)
+        print("FINDINGS-JSON " + json.dumps(bad), file=sys.stderr)
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)

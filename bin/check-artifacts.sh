@@ -11,6 +11,8 @@
 # --arch arm64 (REQ-CHAIN-006-AC17) runs the same checks on the linux/arm64 binaries and images; the check-arm64 job runs it on an arm64 runner. The default
 # is amd64, run by the check job. Writes OUT/artifacts-result.json (arm64: artifacts-result-arm64.json, with the arch) naming both candidate digests and every AC asserted. The certificate number is never written.
 set -euo pipefail
+# an OCI layout directory (PR 2's interface, PROPOSED): oci-layout and an index.json; a docker-save tarball or any other directory is refused
+is_layout() { [ -d "$1" ] && [ -f "$1/oci-layout" ] && [ -f "$1/index.json" ]; }
 usage() { echo "usage: check-artifacts.sh [--arch amd64|arm64] --digests FILE --images DIR --archives DIR --out DIR" >&2; exit 2; }
 fail() { echo "check-artifacts: $*" >&2; exit 1; }
 digests="" images="" archives="" out="" arch=amd64
@@ -34,7 +36,7 @@ case "$arch" in amd64) plat=() ;; arm64) plat=(--platform linux/arm64) ;; *) ech
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k] // empty' "$digests")
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
-  [ -f "$images/$v.tar" ] || fail "the $v image $images/$v.tar is missing"
+  is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
 shopt -s nullglob
 tmp=$(mktemp -d)
@@ -94,11 +96,12 @@ passed REQ-FIPS-001-AC2 "fscache with GODEBUG=fips140=on"
 
 # the images: platform entries, no shell, serves cache traffic (production and -fips; -debug has no subject, owner Oct 9)
 for v in production fips; do
-  plats=$(python3 bin/check-image-platforms.py "$images/$v.tar") || fail "the $v image archive carries no readable platform list"
+  plats=$(python3 bin/check-image-platforms.py "$images/$v") || fail "the $v image archive carries no readable platform list"
   for want in linux/amd64 linux/arm64; do
     grep -qx "$want" <<< "$plats" || fail "the $v image archive has no $want platform entry"
   done
-  loaded=$(docker load -i "$images/$v.tar") || fail "the $v image could not be loaded"
+  tar -C "$images/$v" -cf "$tmp/$v.tar" . || fail "the $v image layout could not be archived"
+  loaded=$(docker load -i "$tmp/$v.tar") || fail "the $v image could not be loaded"
   ref=$(sed -n 's/^Loaded image: //p; s/^Loaded image ID: //p' <<< "$loaded" | tail -1)
   [ -n "$ref" ] || fail "docker load named no image for the $v candidate"
   for probe in busybox:sh busybox:ash bin:sh bin:ash bin:bash bin:dash usr-bin:sh usr-bin:bash sbin:sh; do
