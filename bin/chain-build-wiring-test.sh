@@ -149,7 +149,7 @@ def stage_text(family):
             out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         if sp.get("setup_go"): out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
-        if sp.get("tools"): out += "      - name: install melange (pinned by checksum)\n        run: %s\n      - name: install apko (pinned by checksum)\n        run: %s\n" % (S.INSTALL_MELANGE, S.INSTALL_APKO)
+        for tl in sp.get("tools", ()): out += "      - name: install %s (pinned by checksum)\n        run: %s\n" % (tl.rsplit(" ", 1)[1], tl)
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -297,11 +297,13 @@ st s_go_gone  "AC4 the Go toolchain install of admission is missing from Build's
 MELINST='      - name: install melange (pinned by checksum)\n        run: bash bin/install-build-tools.sh melange\n'
 APKINST='      - name: install apko (pinned by checksum)\n        run: bash bin/install-build-tools.sh apko\n'
 st s_bt_gone   "004-AC3 the melange install is missing from Build's apk job (rule 62: the VM runs melange)" "install-build-tools.sh melange" "$MELINST" ''
-st s_bt_apko   "004-AC3 the apko install is missing from Build's apk job" "install-build-tools.sh apko" "$APKINST" ''
-st s_bt_order  "004-AC3 apko installed before melange" "install-build-tools.sh" "$MELINST$APKINST" "$APKINST$MELINST"
+st s_bt_apko   "004-AC3 the apko install is missing from Build's assemble job" "install-build-tools.sh apko" "$APKINST" ''
+st s_bt_both   "004-AC3 the apk job installs apko too (an apk job installs melange only; each job installs only the tool it runs)" "install-build-tools.sh" "$MELINST" "$MELINST$APKINST"
+st s_bt_asm    "004-AC3 the assemble job installs melange too (an assemble job installs apko only)" "install-build-tools.sh" "$APKINST" "$MELINST$APKINST"
+st s_bt_swap   "004-AC3 the assemble job installs melange in place of apko" "install-build-tools.sh" "$APKINST" "$MELINST"
 st s_bt_early  "004-AC3 the build tools installed BEFORE Witness (rule 68: Witness first)" "install-" "$WINST" "$MELINST$WINST"
 st s_bt_other  "004-AC3 another install command in place of melange's (not the pinned installer)" "install-build-tools.sh melange" 'run: bash bin/install-build-tools.sh melange' 'run: bash bin/install-scanner.sh melange'
-st s_bt_tool   "004-AC3 a third build tool through the same installer" "install-build-tools.sh" "$APKINST" "$APKINST      - name: install helm\n        run: bash bin/install-build-tools.sh helm\n"
+st s_bt_tool   "004-AC3 a third build tool through the same installer" "download-artifact" "$APKINST" "$APKINST      - name: install helm\n        run: bash bin/install-build-tools.sh helm\n"
 st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
 st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
@@ -1978,7 +1980,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=676
+EXPECT=678
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -235,9 +235,9 @@ ADMISSION_COPY = "cp admission.json out/admission.json"
 ADMISSION_BASELINE = ('python3 bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json --admission apk/ubuntu-24.04-arm/admission.json '
                       '--tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --out admission-baseline.json')
 INSTALL_GO = "bash bin/install-scanner.sh go"
-# REQ-CHAIN-004-AC3 (rule 62, advisor 0393 item 1): the VM runs melange and apko, so every job of Build and Rebuild installs both from cache's bin/install-build-tools.sh, the
-# pinned and checksummed installer (version and sha256 per tool and architecture, fixed destination /usr/local/bin), one step each, right after the Witness (and Go)
-# install and so before admission; no secret, the same way as Witness and Go
+# REQ-CHAIN-004-AC3 (rule 62, advisor 0393 item 1; advisor Oct 12 item 4): the VM runs melange and apko, each in the job that uses it: an apk job of Build and Rebuild installs
+# melange ONLY and an assemble job apko ONLY, from cache's bin/install-build-tools.sh, the pinned and checksummed installer (version and sha256 per tool and architecture, fixed
+# destination /usr/local/bin), one step, right after the Witness (and Go) install and so before admission; no secret, the same way as Witness and Go
 INSTALL_MELANGE = "bash bin/install-build-tools.sh melange"
 INSTALL_APKO = "bash bin/install-build-tools.sh apko"
 PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO)
@@ -253,15 +253,15 @@ HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=True,
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,),
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=True, expose=True, hostile=True, mode=True,
+    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
-    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=True, mode=True,
+    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=(INSTALL_MELANGE,), mode=True,
         down=[("witness-build", "witness-build"), ("digests", "build-in")],
         up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=True, mode=True,
+    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True,
         down=[("witness-build", "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
@@ -371,10 +371,10 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != INSTALL_GO:
             bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of admission's verify-freeze, right after Witness)" % (i, INSTALL_GO))
-    for cmd in (INSTALL_MELANGE, INSTALL_APKO):
+    for cmd in spec["tools"]:       # an apk job installs melange only, an assemble job apko only (advisor Oct 12, item 4)
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
-            bad.append("step %d must be exactly: run %s (the checksum-pinned build tool, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
+            bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
