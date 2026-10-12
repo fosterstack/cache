@@ -3170,6 +3170,35 @@ for f_ in ("&lt;redacted&gt;", "\\u003credacted>", "\\(redacted\\)", "&#40;REDAC
     rc_, err_, out_, sout_ = vex_cli(None, put_(f_, "products[1].identifiers.purl"))
     check("r13 R13-3: notes with the recognised form %r as an identifier exits 2, nothing written, named" % f_,
           rc_ == 2 and out_ is None and sout_ == "" and "statement 2: products[1].identifiers.purl" in err_, (rc_, err_))
+def names_(c):
+    """every global name a function's code uses, nested generator code included"""
+    out = set(c.co_names)
+    for k in c.co_consts:
+        if hasattr(k, "co_names"):
+            out |= names_(k)
+    return out
+
+
+# ===== r14 (Codex #300 b13, B Medium; advisor (c), Oct 12): the readers recognise exactly what the refusal refuses: one
+# definition of the readings (_readings) used by _marker_form and _marked; the own-form check (_own_form) reads a line once
+bad_, n_ = [], 0
+for a_ in ("", "\\", "\\\\", "\\\\\\"):
+    for b_ in ("", "\\", "\\\\", "\\\\\\"):
+        for c_ in ("(redacted)", "(REDACTED)", "<redacted>"):
+            seed_ = "%s%s%s%s" % (a_, c_[:1], c_[1:-1], b_ + c_[-1])
+            v1_ = P._clean_free(seed_)
+            for t_ in (seed_, v1_, P._clean_free(v1_)):
+                n_ += 1
+                if (P._marked(t_) or P._own_form(t_)) and not P._marker_form(t_):
+                    bad_.append((seed_, t_))
+check("r14 R14-1: every string a reader recognises as the marker or as its own form is refused by _marker_form (%d "
+      "seeds and their cleaned forms, B's b13 seed '(redacted\\)' among them)" % n_, bad_ == [] and n_ > 90, bad_[:3])
+b13_ = P._clean_free("(redacted\\)")
+check("r14 R14-2: B's b13 value %r is not read as the printer's own form and is covered or not recognised" % b13_,
+      not P._own_form(b13_) and (not P._marked(b13_) or P._marker_form(b13_)), b13_)
+check("r14 R14-3: the refusal and the readers share one definition of the readings (_readings)",
+      names_(P._marker_form.__code__) >= {"_readings"} and names_(P._marked.__code__) >= {"_readings"}
+      and "_own_form" in names_(P._clean_free.__code__), None)
 shutil.rmtree(r8_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

@@ -303,6 +303,13 @@ def _json_body(s):
     return JSON_ESC.sub(lambda m: chr(int(m.group(1), 16)) if m.group(1) else JSON_CHAR[m.group(2)], s)
 
 
+def _readings(s):
+    """the one definition of the readings of a string (advisor (c), Codex #300 b13: the readers recognise exactly what the
+    refusal refuses): as written, with the Markdown backslash escapes undone once, as a JSON string body, with its HTML
+    character references decoded. _marker_form searches all four; _marked (the readers) uses the first two; each alone, once"""
+    return (s, UNESC.sub(r"\1", s), _json_body(s), html.unescape(s))
+
+
 def _marker_form(v):
     """v holds a redaction-marker form the printer or the readers recognise: '<redacted>' or '(redacted)' in any case, or
     its Markdown-escaped form ('\\<redacted\\>', '\\(redacted\\)'), found in v as written, in v read once with the
@@ -313,16 +320,20 @@ def _marker_form(v):
     printed quoted (advisor cut after Codex #300 b12, B Medium: the nested, iterated decoding is deleted). A VEX value
     holding a marker form is refused before any redaction, never converted (advisor narrow cut, Codex #300 b11, B item
     2: a literal marker turned into the printed one lost the statement's identity)."""
-    s = str(v)
-    return any(MARKER_FORM.search(t) for t in (s, UNESC.sub(r"\1", s), _json_body(s), html.unescape(s)))
+    return any(MARKER_FORM.search(t) for t in _readings(str(v)))
 
 
 def _marked(s):
     """s holds the marker, as written or read unescaped once (Codex #300 r8: the historical forms are cut back, advisor
     step 5: no published text ever held '<redacted>' or another form, and a source holding '<' before a letter is refused,
     REQ-REL-009-AC14; 'notredacted' is not the marker, r7 A medium)"""
-    u = UNESC.sub(r"\1", s)
-    return any(m in t for m in MARKS for t in (s, u))
+    return any(m in t for m in MARKS for t in _readings(s)[:2])
+
+
+def _own_form(body):
+    """body is a line this printer wrote: every punctuation character escaped, and the marker in it, the line read ONCE
+    (a second unescape would recognise a spelling the refusal does not cover; advisor (c), Codex #300 b13)"""
+    return bool("\\" in body and ESCAPED.match(body) and _marked(body))
 
 
 def _clean_free(line):
@@ -336,7 +347,7 @@ def _clean_free(line):
     m = FREE_PRE.match(line)
     pre = m.group(0) if m else ""
     body = line[len(pre):]
-    own = bool("\\" in body and ESCAPED.match(body) and _marked(UNESC.sub(r"\1", body)))   # this function's own form
+    own = _own_form(body)                       # this function's own form
     raw = UNESC.sub(r"\1", body) if own else body
     c = _visible(_clean(raw))
     return pre + (ESC.sub(r"\\\1", c) if _marked(c) else c)
