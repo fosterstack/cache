@@ -2949,7 +2949,7 @@ GH_LISTED = [GHD, GHD + ' -p manifest.json -D dist', GHD + ' --pattern "*.json" 
              GHD + ' -A tar.gz -D d', GHD + ' --pattern gh', GHD + ' -O a.json --clobber', GHD + ' --output a.json', GHD + ' --archive zip', GHD + ' -p a -p b',
              GHD + " -p 'a b'", GHD + ' -p "${PAT}"', GHD + ' -p a.json && echo done', GHD + ' -D dist; ls dist', GHD + ' -p a.json; sha256sum -c a.sha256',
              GHD + ' -p a.tgz ; test -s a.tgz && mkdir -p out && tar -x -z -f a.tgz -C out && ls out', GHD + ' -O a ; mv a b ; test -f b', GHD + ' ; echo ok',
-             GHD + ' -p a.tgz && tar -t -z -f a.tgz',   # FLIPPED (post-9 micro-verification): GHD ' ; mv "dist/$f" out' is refused now (no $ in an operand) GHD + ' -p a.tgz && tar -x -f a.tgz', GHD + ' -p a.tgz && tar -t -f a.tgz',
+             GHD + ' -p a.tgz && tar -t -z -f a.tgz', GHD + ' -p a.tgz && tar -x -f a.tgz', GHD + ' -p a.tgz && tar -t -f a.tgz',   # FLIPPED (post-9 micro-verification): GHD ' ; mv "dist/$f" out' is refused now (no $ in an operand)
              GHD + ' && tar -x -f a.tgz -C out', GHD + ' ; test -e a ; mkdir d ; ls ; echo', GHD + ' -p x; ls', GHD + ' ; echo a=b "c d" \'e f\'',
              GHD + ' ; test -f a && test -s a && test -e a', GHD + ' ; ls a b c']
 HOST_LISTED = [A, A + ' && sha256sum -c a.sha256', A + ' ; test -s a.tgz && mkdir -p out && tar -x -z -f a.tgz -C out && ls out', 'mkdir -p d && ' + A,
