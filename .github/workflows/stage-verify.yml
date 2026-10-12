@@ -1,6 +1,6 @@
 # The Check stage of the v0.3.0 release chain (rules 55, 58, 66, 68, 70; REQ-CHAIN-006). Called only from release.yml, after Build, beside Rebuild and Sign.
 # It downloads Build's artifacts (the candidate images as OCI layout directories, the digest list, the dist archives to scan alongside the images),
-# then runs three Witness steps through the one helper: scanners, acceptance and runtime. Each step first verifies Build's record (bin/check-stage.sh),
+# then installs the listed scanners (grype, osv-scanner) by checksum and runs three Witness steps through the one helper: scanners, acceptance and runtime. Each step first verifies Build's record (bin/check-stage.sh),
 # then runs its checks as listed plain scripts. No registry login, no packages permission, no secret: the stage only reads what the earlier stages made.
 # The shape of this file is judged by bin/chain-check-wiring-test.sh (an exact grammar).
 name: 'Stage: check'
@@ -20,6 +20,10 @@ jobs:
           persist-credentials: false
       - name: install Witness (pinned by checksum)
         run: bash bin/install-scanner.sh witness
+      - name: install grype (pinned by checksum)
+        run: bash bin/install-scanner.sh grype
+      - name: install osv-scanner (pinned by checksum)
+        run: bash bin/install-scanner.sh osv-scanner
       - name: install kind and kubectl (exact versions, committed checksums)
         run: bash bin/install-kind.sh
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1

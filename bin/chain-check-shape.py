@@ -8,7 +8,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         ubuntu-24.04; permissions exactly contents read + id-token write; no container, services, env, defaults, secrets,
                         strategy, needs, shell, working-directory, continue-on-error; steps EXACTLY, in order:
                           1. actions/checkout (full commit digest, persist-credentials: false, nothing else)
-                          2. run: bash bin/install-scanner.sh witness
+                          2. run: bash bin/install-scanner.sh witness, then one `bash bin/install-scanner.sh S` per listed scanner (grype, osv-scanner)
                           3. run: bash bin/install-kind.sh (REQ-CHAIN-006-AC14: kind and kubectl from exact versions and committed sha256)
                           4. digest-pinned actions/download-artifact steps, names from DOWN, explicit path outside bin/ and .github/, EXACTLY ONE
                              of them `images` (path images/; the candidates arrive as OCI tarballs, advisor ruling Q4)
@@ -16,6 +16,8 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                              from the closed list scanners, acceptance, runtime, in that order (REQ-CHAIN-006-AC11: the stage never calls
                              `witness` or `timeout` itself; the helper is the one place for both)
                           6. only digest-pinned upload-artifact steps with names from UP (witness-check carries the three record directories)
+  installs FILE JSON    REQ-CHAIN-006-AC4 (round 1 F2): the check job runs `bash bin/install-scanner.sh S` for every scanner S in the scanners list JSON
+                        (.github/policy/scanners.json) and for none it does not list.
   helper FILE           REQ-CHAIN-006-AC9, AC11 (the RULE 68 SEAM): bin/witnessed.sh, the one helper every stage calls, is EXACTLY PR 2's canonical
                         helper (origin/pipeline-chain-build-rebuild, bin/chain-test-shape.py witnessed_lines: the token by a one-read process
                         substitution, the record witness-DIR/STEP-collection.json, the four sensitive keys) with ONE PR 3 extension: the closed step
@@ -47,6 +49,7 @@ RECORD_DIRS = "witness-scanners\nwitness-acceptance\nwitness-runtime"           
 UP = {"witness-check": RECORD_DIRS, "check-results": "check-results"}   # artifact name -> the path(s) it may carry
 KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]
+SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
 STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64"   # PR 2's + PR 3's three
 SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # PR 2's; never github or slsa
@@ -253,7 +256,7 @@ def stage(path):
                 bad.append("upload-artifact must be digest-pinned, name and path from %s (witness-check carries witness-records/): %s" % (UP, w))
         elif u:
             bad.append("uses not allowed in the Check stage: %s" % u)
-        elif (s.get("run") or "").strip() == "bash bin/install-scanner.sh witness":
+        elif (s.get("run") or "").strip() in ["bash bin/install-scanner.sh " + n for n in ["witness"] + SCANNERS]:
             kinds.append("install")
         elif (s.get("run") or "").strip() == KIND_STEP:
             kinds.append("kind")
@@ -266,16 +269,17 @@ def stage(path):
                 names.append(m.group(1))
         else:
             bad.append("a step with neither uses nor run")
-    want = ["checkout", "install", "kind"]
-    got_down = [k for k in kinds if k == "down"]
-    body = [k for k in kinds if k != "down"]
-    if body[:3] != want or body[3:6] != ["witnessed"] * 3 or any(k != "up" for k in body[6:]) or len(body) < 7:
-        bad.append("steps must be checkout, install Witness, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, uploads (in that order); got %s" % kinds)
+    want = ["checkout", "install"] + ["install"] * len(SCANNERS) + ["kind"]
+    k = len(want)
+    got_down = [x for x in kinds if x == "down"]
+    body = [x for x in kinds if x != "down"]
+    if body[:k] != want or body[k:k + 3] != ["witnessed"] * 3 or any(x != "up" for x in body[k + 3:]) or len(body) < k + 4:
+        bad.append("steps must be checkout, install Witness, install each listed scanner, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, uploads (in that order); got %s" % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
-    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness"), ("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
+    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("run", "bash bin/install-scanner.sh " + s) for s in SCANNERS] + [("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
              [("run", "bash bin/witnessed.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
-    bad += exact_steps("check", steps, want_c, "checkout, Witness install, kind install, four downloads, the three witnessed steps, the two uploads")
+    bad += exact_steps("check", steps, want_c, "checkout, Witness install, one install per listed scanner, kind install, four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":
         bad.append("exactly one download of the images artifact, into images/, is required; found %d" % len(imgs))
@@ -286,6 +290,23 @@ def stage(path):
         bad.append("a download comes after Witness started (rule 68: third-party actions run before Witness or not at all)")
     if names != STEPS:
         bad.append("the witnessed steps must be exactly %s in that order, found %s" % (STEPS, names))
+    return bad
+
+
+def installs(path, scanners_path):
+    """REQ-CHAIN-006-AC4 (PR 3 round 1 F2): the Check job installs, by the checksum-pinned installer, every scanner .github/policy/scanners.json lists (and
+    only those): bin/check-scan.sh needs each of them on PATH and the clean runner has none."""
+    listed = (json.load(open(scanners_path)) or {}).get("scanners") or []
+    jobs = (load(path).get("jobs") or {})
+    runs = [(s.get("run") or "").strip() for s in ((jobs.get("check") or {}).get("steps") or []) if isinstance(s, dict)]
+    got = [r.split(" ")[-1] for r in runs if r.startswith("bash bin/install-scanner.sh ")]
+    bad = []
+    for s in listed:
+        if "bash bin/install-scanner.sh " + s not in runs:
+            bad.append("scanners.json lists %s but the check job has no step `bash bin/install-scanner.sh %s`" % (s, s))
+    for g in got:
+        if g != "witness" and g not in listed:
+            bad.append("the check job installs %s (`bash bin/install-scanner.sh %s`), which scanners.json does not list" % (g, g))
     return bad
 
 
@@ -515,7 +536,7 @@ if __name__ == "__main__":
         break
     fn = {"stage": lambda: stage(sys.argv[2]), "script": lambda: script(sys.argv[2]), "phase": lambda: phase(sys.argv[2], sys.argv[3]), "graph": lambda: graph(sys.argv[2]),
           "plain": lambda: plain(sys.argv[2:]), "helper": lambda: helper(sys.argv[2]), "kind": lambda: kind(sys.argv[2]),
-          "cluster": lambda: cluster(sys.argv[2]), "suites": lambda: suites(sys.argv[2]), "guidelist": lambda: guidelist(sys.argv[2]), "records": lambda: records(sys.argv[2]), "listed": lambda: listed(sys.argv[2], sys.argv[3]), "removed": lambda: removed(sys.argv[2])}[cmd]
+          "cluster": lambda: cluster(sys.argv[2]), "suites": lambda: suites(sys.argv[2]), "guidelist": lambda: guidelist(sys.argv[2]), "records": lambda: records(sys.argv[2]), "listed": lambda: listed(sys.argv[2], sys.argv[3]), "installs": lambda: installs(sys.argv[2], sys.argv[3]), "removed": lambda: removed(sys.argv[2])}[cmd]
     bad = fn()
     print("; ".join(bad) or "ok")
     sys.exit(1 if bad else 0)
