@@ -48,6 +48,9 @@ if len(cmds) > 10:
 
 FORMS2 = ("cosign verify", "cosign verify-attestation", "cosign verify-blob", "cosign verify-blob-attestation")
 FORMS3 = ("gh attestation verify",)
+# the forms as tuples of words: a command word that holds a space ("cosign verify") is one word and is not a form
+FORM_WORDS2 = tuple(tuple(f.split()) for f in FORMS2)
+FORM_WORDS3 = tuple(tuple(f.split()) for f in FORMS3)
 # The flags of the verify forms that take a value (an unknown flag is taken as taking none, so its next word is judged as an operand:
 # the safe direction, a command the check cannot place is not run).
 VALUE_FLAGS = {"--certificate-identity", "--certificate-identity-regexp", "--certificate-oidc-issuer", "--certificate-oidc-issuer-regexp",
@@ -160,9 +163,9 @@ def classify(c):
                     nonlocal_.append(w)
                 i += 1
             continue
-        if " ".join(s[:2]) in FORMS2:
+        if tuple(s[:2]) in FORM_WORDS2:
             words = s[2:]
-        elif " ".join(s[:3]) in FORMS3:
+        elif tuple(s[:3]) in FORM_WORDS3:
             words = s[3:]
         else:
             return "no", "`%s` is not one of the verify forms or jq" % " ".join(s[:3])
@@ -219,7 +222,7 @@ def verify_form(c):
             w = shlex.split(seg)
         except ValueError:
             return False
-        if not (w[:1] == ["jq"] or " ".join(w[:2]) in FORMS2 or " ".join(w[:3]) in FORMS3):
+        if not (w[:1] == ["jq"] or tuple(w[:2]) in FORM_WORDS2 or tuple(w[:3]) in FORM_WORDS3):
             return False
     return True
 for c in excused:
