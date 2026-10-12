@@ -3189,11 +3189,12 @@ for pth in archive/vi archive/ash /usr/bin/python3.11 x/rbash usr/bin/perl5.38 x
 d=$(py8 p8_ok1 "archive/go.tar"); expm ok "$d" - "round-4 (8): control: a data path archive/go.tar is admitted"
 d=$(py8 p8_ok2 "dist/data.json"); expm ok "$d" - "round-4 (8): control: dist/data.json is admitted"
 # (10) minimal: an absolute path or a substitution as the command word
-kc a10_a '/tmp/x arg' 'run time or absolute'
+ABS10="$work/abs10/x"   # an absolute path in this run's own temp dir: never a fixed host path (advisor ruling, finding 5)
+kc a10_a "$ABS10 arg" 'run time or absolute'
 kc a10_b '$(echo x) arg' 'run time or absolute'
 kc a10_c '`echo x` arg' 'run time or absolute'
 kc a10_d '/opt/zz/tool' 'run time or absolute'
-d=$(cfix a10_x '/tmp/x arg'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"/tmp/x arg","why":"x"}]'; expm ok "$d" - "round-4 (10): a script-name exception with the exact whole command waives an absolute-path command"
+d=$(cfix a10_x "$ABS10 arg"); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"'"$ABS10"' arg","why":"x"}]'; expm ok "$d" - "round-4 (10): a script-name exception with the exact whole command waives an absolute-path command"
 ko a10_ok 'cp x y'
 # (11) more forbidden env names
 for nm in PIP_INDEX_URL DOCKER_HOST KUBECONFIG KUBE_X TAR_OPTIONS MAKEFILES EDITOR VISUAL PAGER GH_HOST GH_REPO GH_EDITOR GH_PAGER GH_CONFIG_DIR OPENSSL_X REGISTRY_AUTH_FILE CC CXX CFLAGS LDFLAGS PWD; do
@@ -3385,7 +3386,30 @@ else failn=$((failn + 1)); echo "FAIL findings ids: the printed structured ids d
 rc=0; env -u CHAIN_FINDINGS python3 "$work/judge.py" tree "$d" > /dev/null 2> "$fj/err2.txt" || rc=$?
 if ! grep -q 'FINDINGS-JSON' "$fj/err2.txt"; then pass=$((pass + 1)); echo "ok   findings ids: nothing is printed unless CHAIN_FINDINGS=1 (no change to the judge's existing output)"; else failn=$((failn + 1)); echo "FAIL findings ids: printed without CHAIN_FINDINGS=1"; fi
 
-EXPECT=1337
+# ---- advisor ruling (finding 5): no file of the HOST may change a verdict ------------------------------------------------------------------------------
+# "an absolute command word is judged by the rule alone (refused unless listed), never by os.path.isfile/exists against the host": the same listed script is judged
+# with no file at the absolute path, and again with an executable file with a shebang there (and with a plain file): the three outputs must be the same text.
+hostjudge() { # hostjudge LABEL 'script line using $ABS' : the verdict does not depend on a host file at $ABS
+  local label=$1 line=$2 d abs o1 o2 o3 rc1=0 rc2=0 rc3=0
+  abs="$work/hostfile-$RANDOM/tool"
+  d=$(cfix "hj_$RANDOM" "${line//\$ABS/$abs}")
+  o1=$(judge tree "$d" 2>&1) || rc1=$?
+  mkdir -p "$(dirname "$abs")"; printf '#!/usr/bin/env bash\necho x\n' > "$abs"; chmod 755 "$abs"
+  o2=$(judge tree "$d" 2>&1) || rc2=$?
+  chmod 644 "$abs"; printf 'plain text\n' > "$abs"
+  o3=$(judge tree "$d" 2>&1) || rc3=$?
+  rm -rf "$(dirname "$abs")"
+  if [ "$rc1" = "$rc2" ] && [ "$rc1" = "$rc3" ] && [ "$o1" = "$o2" ] && [ "$o1" = "$o3" ]; then pass=$((pass + 1)); echo "ok   host independence: $label (same verdict with no file, an executable file and a plain file at the absolute path)"
+  else failn=$((failn + 1)); echo "FAIL host independence: $label -> rc $rc1/$rc2/$rc3; without: ${o1:0:200} | with an executable: ${o2:0:200}"; fi
+}
+hostjudge "an absolute command word" '$ABS arg'
+hostjudge "an absolute command word as the second command" 'echo a
+$ABS --flag x'
+hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
+hostjudge "an absolute path after an interpreter" 'python3 $ABS'
+hostjudge "an absolute path inside an assignment" 'x=$ABS'
+
+EXPECT=1342
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

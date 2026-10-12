@@ -1691,6 +1691,55 @@ assert e["suite"] == "bin/chain-records-test.sh" and e["case"].startswith("the r
 f = e["findings"]
 assert len(f) == 3 and all(p in "".join(f) for p in ("bin/apk-tool.py", "bin/release-sign-apks.sh", "bin/vendor-provenance.py")), f
 PY
+# ---- advisor ruling (finding 5): no suite reads or writes a fixed host path under /tmp --------------------------------------------------------------------
+# A stray /tmp/x once changed a verdict. Every file a chain suite makes or reads lives in its own mktemp -d ($work). This guard reads the suites' own shell and Python
+# text: a redirection, a file command or an open() whose target is a literal /tmp/ path outside any quote is a violation. Fixture TEXT (a workflow or a script held in
+# quotes, a command a judge must refuse) is data and is not flagged. The guard is proven on mutated lines, then applied to the suites.
+cat > "$work/tmpguard.py" <<'GUARDTXT'
+import re, sys
+FILE_CMD = r"(?:^|[;&|(]|\bthen\b|\bdo\b)\s*(?:cp|mv|rm|mkdir|touch|tee|cat|ln|chmod|install|sed|head|tail|python3|bash|source)\b[^;&|#]*"
+def unquoted(line):
+    out, q = [], None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q: q = None
+            out.append(" ")
+        elif ch in "\"'": q = ch; out.append(" ")
+        else: out.append(ch)
+    return "".join(out)
+CODE_HEREDOC = {"PY", "PYT", "PYF", "PYEOF", "PYX", "PYJ"}   # a heredoc with one of these delimiters is Python CODE and is read; any other heredoc is data (a workflow text, a script body)
+def violations(text):
+    bad, end = [], None
+    for n, l in enumerate(text.split("\n"), 1):
+        if end is not None:
+            if l.strip() == end: end = None
+            continue
+        m = re.search(r"<<-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?\s*$", l.rstrip()) or re.search(r"<<-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?\s", l)
+        if m and m.group(1) not in CODE_HEREDOC and "<<<" not in l:
+            end = m.group(1)
+        raw = l.strip()
+        if raw.startswith("#"): continue
+        u = unquoted(l)
+        # a literal /tmp path in the UNQUOTED part of the line, as a redirection or an operand of a file command; a "$TMPDIR/..." or "$work/..." is not literal
+        if re.search(r"(?:>>?|<|2>)\s*/tmp/\S", u) or re.search(FILE_CMD + r"(?<![\w$])/tmp/\S", u):
+            bad.append(n)
+        # Python file access to a literal /tmp path: open("/tmp/..."), Path("/tmp/..."), os.makedirs("/tmp/...")
+        if re.search(r"\b(?:open|Path|makedirs|mkdir|remove|unlink|rmtree|copy|copyfile|listdir|isfile|exists)\(\s*[rbf]*[\"']/tmp/", l):
+            bad.append(n)
+    return bad
+if sys.argv[1] == "--selftest":
+    ok = ["cat > /tmp/x <<EOF", "echo hi > /tmp/leak", "cp a /tmp/b", "rm -f /tmp/x", "python3 - < /tmp/in", 'open("/tmp/x", "w").write("y")', "mkdir -p /tmp/d"]
+    fine = ['cat > "$work/x"', "echo '/tmp/x is data'", 'printf "%s" "cp a /tmp/b" > "$work/t"', "# cp a /tmp/b", 'x="$TMPDIR/y"', "d=$(mktemp -d)", 'run "cosign verify <I> > /tmp/x"']
+    miss = [l for l in ok if not violations(l)]
+    over = [l for l in fine if violations(l)]
+    print("; ".join(["not caught: " + m for m in miss] + ["flagged: " + o for o in over]) or "ok"); sys.exit(1 if miss or over else 0)
+bad = []
+for f in sys.argv[1:]:
+    for n in violations(open(f).read()): bad.append("%s:%d" % (f, n))
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+GUARDTXT
+out=$(python3 "$work/tmpguard.py" --selftest 2>&1) && ok "no fixed /tmp path: the guard catches redirections, file commands and open() on /tmp and leaves fixture text alone" || bad "no fixed /tmp path: the guard itself is wrong: $out"
+out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/release-patch-wiring-test.sh bin/install-scanner-test.sh bin/patch-decide-test.sh 2>&1) && ok "no fixed /tmp path: no chain suite reads or writes a literal /tmp path (every file lives in its own mktemp -d)" || bad "no fixed /tmp path: $out"
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
@@ -1885,7 +1934,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=652
+EXPECT=654
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
