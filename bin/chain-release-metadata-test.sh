@@ -156,8 +156,25 @@ for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):
     gate("a release without Sign's %s is refused, naming it (Sign's provenance is part of every release)" % n, lambda a, n=n: os.remove(os.path.join(a, n)), n)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
+# ---- the accepted AC text of advisor rulings B, C and E (Oct 12): requirements.yaml says what the code now does ----------------------------------------------------------
+import yaml
+REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "requirements", "requirements.yaml")))["requirements"]}
+def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))
+t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
+t19 = ac("REQ-CHAIN-007", 19)["then"]
+check("the command wrapped in timeout -k 20 540 (a kill-after of 20 seconds, so a command that ignores the TERM cannot hold the job past the certificate)" in t4 and "wrapped in timeout 540," not in t4,
+      "text: REQ-CHAIN-004-AC2 says timeout -k 20 540 (E item A)")
+n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
+check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in n4 and "with timeout -k 20 540 inside it" in n7 and "with timeout 540 inside it" not in n7
+      and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
+      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps (E item B)")
+check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
+      "text: REQ-CHAIN-007-AC9 attaches Sign's three provenance files (ruling C)")
+check("Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature)" in t19
+      and "Build's admission-baseline.json" in t19 and "never a version Release chooses itself" in t19 and "the baseline admission chose for a CI patch)" not in t19,
+      "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance and takes the baseline from Build's verified file (rulings B and C)")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "65"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "69"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY
