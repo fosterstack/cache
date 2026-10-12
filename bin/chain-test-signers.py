@@ -1204,13 +1204,17 @@ def scan_script(path, text, row, rows, base):
     cw_budget = {}                                 # round 2 (1): a script path at a COMMAND POSITION is judged once, as the whole command (below),
     for c in cmds:                                 # never by its token: the token pass skips as many occurrences as there are commands named by it
         if c.cw is not None: cw_budget[c.cw] = cw_budget.get(c.cw, 0) + 1
+    def repo_file(n):
+        """Is `n` a regular file of THIS tree? Only a relative path without `..` is looked up: an absolute path, or one that climbs out, is judged by its text
+        and the rules alone and never by what the host has there (advisor ruling, finding 5: no host file may change a verdict)."""
+        return not n.startswith("/") and ".." not in n.split("/") and os.path.isfile(os.path.join(base, n))
     def script_like(t):
         n = t[2:] if t.startswith("./") else t
         pathlike = "/" in n and not n.startswith(("-", "$")) and "://" not in n
         ok = n.endswith(SCRIPT_EXTS) or n in rows or n.rsplit("/", 1)[-1] in listed_base
         if not ok and (pathlike or t.startswith("./")):
             full = os.path.join(base, n)
-            if os.path.isfile(full):          # Sonnet 1: the existence, shebang and executable tests run on the normalised path
+            if repo_file(n):                  # Sonnet 1: the existence, shebang and executable tests run on the normalised path (of the tree only)
                 with open(full, "rb") as fh: ok = fh.read(2) == b"#!" or os.access(full, os.X_OK)
         return ok
     for tm in re.finditer(r"[^\s;&|(){}<>`\"'=,]+", body):
@@ -1258,7 +1262,7 @@ def scan_script(path, text, row, rows, base):
                 if any(op.startswith("<") for op, _t in c.redirs) or not first or first.startswith("-") or fn not in runs:
                     add("script-name", span, "%s: %r is handed %r, not an exact listed path of this script's `runs` (no option, -c, stdin or other file)" % (path, w, first or "stdin"))
                 continue
-            in_tree = ("/" in w or w.startswith("./")) and os.path.isfile(os.path.join(base, n))
+            in_tree = ("/" in w or w.startswith("./")) and repo_file(n)
             if (w.startswith("./") or in_tree or script_like(w)) and n != path and n not in runs and n != selfbase:
                 add("script-name", span, "%s: %r at command position is not an exact listed path of this script's `runs`" % (path, w))
     for m in ENV_SET.finditer(text):
