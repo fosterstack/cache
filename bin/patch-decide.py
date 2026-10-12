@@ -20,7 +20,7 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           image no longer reports); unknown or unreadable never counts as removed.
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
-import argparse, html, json, os, re, subprocess, sys, unicodedata, urllib.parse
+import argparse, html, json, os, re, subprocess, sys, unicodedata
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
@@ -292,36 +292,29 @@ ESCAPED = re.compile(r"(?:\\[%s]|[^%s])*\Z" % (PUNCT, PUNCT))
 UNESC = re.compile(r"\\([%s])" % PUNCT)
 MARKS = ("(redacted)", "\\(redacted\\)")         # the marker as the notes print it, and as it renders after one escape
 FREE_PRE = re.compile(r"- |#{1,6} ")             # a bullet or an ATX heading stays one
-MARKER_FORM = re.compile(r"(?i)<redacted>|\(redacted\)")     # the marker the code writes, and the one the notes print
-CODE_ESC = re.compile(r"\\(?:u([0-9A-Fa-f]{4})|U([0-9A-Fa-f]{8})|x([0-9A-Fa-f]{2}))")
+# the marker the code writes and the one the notes print, as written or in its Markdown-escaped form, any case
+MARKER_FORM = re.compile(r"(?i)<redacted>|\(redacted\)|\\<redacted\\>|\\\(redacted\\\)")
+JSON_ESC = re.compile(r'\\(?:u([0-9A-Fa-f]{4})|(["\\/bfnrt]))')
+JSON_CHAR = {'"': '"', "\\": "\\", "/": "/", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
 
 
-def _decode_esc(m):
-    n = int(m.group(1) or m.group(2) or m.group(3), 16)
-    return chr(n) if n <= 0x10FFFF else m.group(0)
+def _json_body(s):
+    """s read once as the body of a JSON string (the printer's quoted form): \\uXXXX and the two-character escapes"""
+    return JSON_ESC.sub(lambda m: chr(int(m.group(1), 16)) if m.group(1) else JSON_CHAR[m.group(2)], s)
 
 
 def _marker_form(v):
-    """v holds a redaction-marker form: '<redacted>' or '(redacted)', in any case, as written or in any spelling the
-    readers or a renderer could turn into it — backslash-escaped ('\\(redacted\\)', '\\<redacted\\>'), JSON or code
-    escapes ('\\u003c', '\\x3c'), HTML character references ('&lt;', '&#60;', '&lpar;'), percent-encoded ('%3C'), a
-    compatibility form (fullwidth '\uff1c'), each nested in any other. Every decoding is applied repeatedly until nothing
-    changes; a value that does not settle within 64 passes counts as holding one (fail closed). A VEX value holding a
-    marker form is refused before any redaction, never converted (advisor narrow cut, Codex #300 b11, B item 2:
-    a literal marker turned into the printed one lost the statement's identity)."""
+    """v holds a redaction-marker form the printer or the readers recognise: '<redacted>' or '(redacted)' in any case, or
+    its Markdown-escaped form ('\\<redacted\\>', '\\(redacted\\)'), found in v as written, in v read once with the
+    Markdown backslash escapes undone (what _marked and _clean_free read), in v read once as a JSON string body (the
+    printer's quoted form: '\\u003c', '\\u0028', '\\\\'), or in v read once with its HTML character references decoded
+    ('&lt;', '&#60;', '&#x3c;', '&lpar;'). Each reading is applied alone and once: a spelling that needs two readings,
+    nested or mixed, a percent-encoding or a compatibility form (fullwidth) is not decoded and is an ordinary value,
+    printed quoted (advisor cut after Codex #300 b12, B Medium: the nested, iterated decoding is deleted). A VEX value
+    holding a marker form is refused before any redaction, never converted (advisor narrow cut, Codex #300 b11, B item
+    2: a literal marker turned into the printed one lost the statement's identity)."""
     s = str(v)
-    for _ in range(64):
-        if MARKER_FORM.search(s):
-            return True
-        t = unicodedata.normalize("NFKC", s)
-        t = html.unescape(t)
-        t = urllib.parse.unquote(t)
-        t = CODE_ESC.sub(_decode_esc, t)
-        t = UNESC.sub(r"\1", t)
-        if t == s:
-            return False
-        s = t
-    return True
+    return any(MARKER_FORM.search(t) for t in (s, UNESC.sub(r"\1", s), _json_body(s), html.unescape(s)))
 
 
 def _marked(s):
