@@ -41,7 +41,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         neither release.yml nor ci.yml calls them.
 Modelled on: in-toto-witness docs/attestors/environment.md and docs/commands.md (the flags), docs/tutorials/artifact-policy.md:58-70 (what a
 collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the same token-fetch lines)."""
-import hashlib, json, os, re, sys, yaml
+import hashlib, json, os, re, shlex, sys, yaml
 
 PIN = re.compile(r"^[\w.-]+/[\w./-]+@[0-9a-f]{40}$")
 DOWN = {"witness-build", "digests", "dist", "locks", "images"}   # Build's artifacts (Check's previous stage is Build; Sign's provenance is Release's to verify); images travel as files (OCI tarballs)
@@ -474,6 +474,42 @@ def records(jsonpath):
     return bad
 
 
+def verify_form(c):
+    """Every pipe segment (split outside single and double quotes, a backslash making the next character literal outside single quotes) starts with
+    the words of a verify form or jq, compared whole: the rule bin/check-guide-plan.py applies at run time."""
+    segs, cur, quote, i = [], "", None, 0
+    while i < len(c):
+        ch = c[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+        elif quote == '"':
+            if ch == "\\" and i + 1 < len(c):
+                cur += ch; i += 1; ch = c[i]
+            elif ch == '"':
+                quote = None
+        elif ch == "\\" and i + 1 < len(c):
+            cur += ch; i += 1; ch = c[i]
+        elif ch in "'\"":
+            quote = ch
+        elif ch == "|":
+            segs.append(cur); cur = ""; i += 1
+            continue
+        cur += ch; i += 1
+    if quote:
+        return False
+    segs.append(cur)
+    for seg in segs:
+        try:
+            w = shlex.split(seg)
+        except ValueError:
+            return False
+        if not (w[:1] == ["jq"] or w[:2] == ["cosign", "verify"] or w[:3] == ["gh", "attestation", "verify"]
+                or w[:2] in (["cosign", "verify-attestation"], ["cosign", "verify-blob"], ["cosign", "verify-blob-attestation"])):
+            return False
+    return True
+
+
 def guidelist(guide):
     """REQ-CHAIN-006-AC7, rule 79 (amended Oct 10): the guide exists and its cannot-run list (GUIDE minus .md, plus .cannot-run.json) is
     the one exact-text list Release's post-publish step reads: JSON, rows exactly {command, reason}, no duplicate, each command in the
@@ -501,7 +537,7 @@ def guidelist(guide):
         if c in seen:
             bad.append("the cannot-run list names `%s` twice" % c)
         seen.add(c)
-        if not all(s.strip().startswith(("cosign verify", "gh attestation verify", "jq ")) for s in c.split("|")):
+        if not verify_form(c):
             bad.append("the cannot-run entry `%s` is not a verify form" % c)
         if re.sub(r"[ \t]+", " ", c) not in text:
             bad.append("the cannot-run entry `%s` is not in the guide" % c)
