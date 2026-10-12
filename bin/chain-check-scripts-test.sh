@@ -661,6 +661,16 @@ g "$(blk "$RF")"; gwant_fail "AC7 an unlisted -fips verify command on <IMAGE_REF
 g "$(blk "$RL")"; gwant_fail "AC7 an unlisted -fips verify command on a literal registry reference (host/path:tag) fails closed" "unlisted command needs a registry"
 g "$(blk "$RO")"; gwant_fail "AC7 an unlisted verify command on an oci:// target fails closed" "unlisted command needs a registry"
 g "$(blk "$RL")"; lst "$RL"; gwant_ok "AC7 the literal -fips registry command, listed, is not run (exit 0)"
+# round 1 F8 (Codex B6): the syntax and the placeholders are judged BEFORE the cannot-run list excuses a command (a listed command is run unattended by
+# Release after publishing, so an excused `$(...)`, `;` or unsupported placeholder would be run there)
+X1="cosign verify <IMAGE_REF> --certificate-identity \"\$(id)\" --certificate-oidc-issuer $ISS"
+X2="cosign verify <IMAGE_REF> --certificate-identity \$IDENT --certificate-oidc-issuer $ISS"
+X3="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer $ISS; jq -n 1"
+X4="cosign verify <IMAGE_REF> --certificate-identity <IDENTITY> --certificate-oidc-issuer \`id\`"
+for c in "$X1" "$X2" "$X3" "$X4"; do g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 F8 a listed command with shell syntax is refused, not excused: ${c:0:70}" "shell syntax"; done
+printf '%s\n' "$DEFS" '- `<RELEASE_URL>`: the release page' "${FENCE}sh" "cosign verify <IMAGE_REF> --certificate-identity <RELEASE_URL> --certificate-oidc-issuer $ISS" "$FENCE" > "$fx/guide.md"
+lst "cosign verify <IMAGE_REF> --certificate-identity <RELEASE_URL> --certificate-oidc-issuer $ISS"
+gwant_fail "AC7 F8 a listed command with a placeholder Check and Release cannot substitute is refused, not excused" "unsupported placeholder"
 g "$(blk "cosign verify-blob --certificate-identity fail-me --certificate-oidc-issuer $ISS --bundle checksums.txt.bundle checksums.txt")"
 gwant_fail "AC7 a runnable command that exits non-zero fails the script naming it" "fail-me"
 g "$(blk "cosign verify-blob --bundle checksums.txt.bundle cache_0.3.0_linux_amd64.tar.gz")"
@@ -800,7 +810,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=192
+EXPECT=197
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
