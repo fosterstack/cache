@@ -933,6 +933,23 @@ _cl("cl_onebad_digests", dict(OK4, runtime="co_runtime"))
 os.makedirs(p("cl_stray/witness-scanners"), exist_ok=True)
 _cl("cl_stray", OK4); open(p("cl_stray/witness-scanners/stray.json"), "w").write("{}")
 _cl("cl_empty", {})
+# REQ-CHAIN-006-AC4 / REQ-CHAIN-007-AC16 (advisor Oct 12, ruling G): check-results/govulncheck.json is a PRODUCT of Check's scanners record, which carries Build's digest
+# list as its material; Release binds the file it uses to that product (bind-check), under Check's identity at the tag, as it binds items.json to Build's record
+dj("gv.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v1.7.0"}})
+dj("gv-other.json", {"config": {"scanner_name": "govulncheck", "scanner_version": "v9.9.9"}})
+_GVP = PRD + "check-results/govulncheck.json"
+def _gv(name, step="scanners", wf=None, ref=T, digests="digests.json", signed=True, prods=None, mats=None):
+    wf = wf or STAGES["check"]
+    m = mats if mats is not None else [{"name": MAT + "witness-build/digests.json", "digest": {"sha256": _fsha(digests)}}]
+    pr = prods if prods is not None else [{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}]
+    add(name, wf, ref, COLL, None, stmt="v0.1", signed=signed, payload=_coll(step, m + pr))
+_gv("gv_ok"); _gv("gv_otherfile", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
+_gv("gv_noprod", prods=[{"name": PRD + "check-results/scan-results.json", "digest": {"sha256": "9" * 64}}])
+_gv("gv_dup", prods=[{"name": _GVP, "digest": {"sha256": _fsha("gv.json")}}, {"name": _GVP, "digest": {"sha256": _fsha("gv-other.json")}}])
+_gv("gv_material", prods=[{"name": MAT + "check-results/govulncheck.json", "digest": {"sha256": _fsha("gv.json")}}])
+_gv("gv_wrongstep", step="acceptance"); _gv("gv_otherdigests", digests="digests-other.json")
+_gv("gv_nomat", mats=[]); _gv("gv_buildid", wf=STAGES["build"]); _gv("gv_tag2", ref=T2); _gv("gv_unsigned", signed=False)
+_gv("gv_branch", ref="refs/heads/main")
 # the verify times: NOW is 16+ minutes after every default leaf expired (leaf validity [now-5m, now+10m])
 open(p("now.txt"), "w").write(fmt(now + dt.timedelta(minutes=26)))
 open(p("now-in.txt"), "w").write(fmt(now + dt.timedelta(minutes=2)))
@@ -1973,6 +1990,24 @@ expect_refuse "PR4 check-list: four valid records whose digests match EACH OTHER
 expect_refuse "PR4 check-list: one record for other digests among three right ones is refused" "check|runtime|digest" $(CLS cl_onebad_digests)
 expect_refuse "PR4 check-list: against another digest list of Build's none of the records matches" "check|digest" $(CLS cl_ok digests-other)
 expect_refuse "PR4 check-list: an empty directory is refused" "check|missing" $(CLS cl_empty)
+# ruling G: bind-check, the same binding for the one file of Check's scanners record that Release uses (govulncheck.json)
+BC() { echo bind-check --policy "$work/policy.json" --now "$NOW" --record "$work/$1.json" --digests "$work/${3:-digests}.json" --file "$work/${2:-gv}.json" --product "${4:-check-results/govulncheck.json}"; }
+expect_ok     "G bind-check: govulncheck.json equal to the product of Check's verified scanners record, for Build's digests, is accepted" $(BC gv_ok)
+expect_refuse "G bind-check: a file that is not the one Check's record holds is refused" "check|govulncheck.json|digest" $(BC gv_ok gv-other)
+expect_refuse "G bind-check: a record that holds another file's hash is refused" "check|govulncheck.json|digest" $(BC gv_otherfile)
+expect_refuse "G bind-check: a record with no govulncheck.json product is refused" "check|govulncheck.json" $(BC gv_noprod)
+expect_refuse "G bind-check: two products of that name are refused" "check|govulncheck.json" $(BC gv_dup)
+expect_refuse "G bind-check: a material subject of that name does not count as the product" "check|govulncheck.json" $(BC gv_material)
+expect_refuse "G bind-check: the record of another step (acceptance) is refused: a record is accepted only for the scanners step" "check|scanners" $(BC gv_wrongstep)
+expect_refuse "G bind-check: a record about another digest list than Build's is refused" "check|digests" $(BC gv_otherdigests)
+expect_refuse "G bind-check: against another digest list of Build's the record does not match" "check|digests" $(BC gv_ok gv digests-other)
+expect_refuse "G bind-check: a record with no material digest list is refused" "check|digests" $(BC gv_nomat)
+expect_refuse "G bind-check: a record signed by stage-build.yml is refused (wrong identity)" "check|stage-build.yml" $(BC gv_buildid)
+expect_refuse "G bind-check: a record of another tag is refused" "check|v0.3.1" $(BC gv_tag2)
+expect_refuse "G bind-check: a record signed on a branch is refused" "check|refs/heads/main" $(BC gv_branch)
+expect_refuse "G bind-check: an unsigned record is refused" "check|signature" $(BC gv_unsigned)
+expect_refuse "G bind-check: a product name outside check-results/ is refused" "check|product" $(BC gv_ok gv digests ../gv.json)
+expect_refuse "G bind-check: a product name that is not a plain file of check-results/ is refused" "check|product" $(BC gv_ok gv digests check-results/a/b.json)
 
 # ---- cutover prep (advisor Oct 12; REQ-CHAIN-001-AC6): the rc-proof marker, bin/chain-bytes-sha.py and `chain-verify.py rc-proof` ----
 # bin/chain-bytes-sha.py defines the chain-file set ONCE: the workflows release.yml and stage-*.yml, every script a row of .github/policy/chain-scripts.json lists, and every file
@@ -2135,7 +2170,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=771
+EXPECT=787
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

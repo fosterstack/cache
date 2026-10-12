@@ -102,6 +102,8 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents:
          "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
          "      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n"
          "      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n"
+         "      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n"
+         "      - name: install govulncheck (pinned by go.sum)\n        run: bash bin/install-scanner.sh govulncheck\n"
          "      - name: install kind and kubectl (pinned by sha256)\n        run: bash bin/install-kind.sh\n"
          + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
@@ -145,7 +147,8 @@ exec witness run --step "$step" \\
   -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"
 """)
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]
-PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results"]),
+PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results",
+                    "bash bin/check-govulncheck.sh --scanners .github/policy/scanners.json --out check-results"]),
       ("acceptance", ["bash bin/check-acceptance.sh gradle --digests witness-build/digests.json --images images --out check-results",
                       "bash bin/check-acceptance.sh maven --digests witness-build/digests.json --images images --out check-results"]),
       ("runtime", ["bash bin/check-acceptance.sh egress --digests witness-build/digests.json --images images --out check-results",
@@ -216,17 +219,21 @@ jobs:
         run: bash bin/acceptance-maven-capped.sh
 """)
 os.makedirs(w + "/plain", exist_ok=True)
-for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide"):
     open(f"{w}/plain/{n}.sh", "w").write("#!/usr/bin/env bash\nset -euo pipefail\ngrype --version\nosv-scanner --version\ndocker run --rm -d image\ncurl -sS http://127.0.0.1:8080/statusz\n")
 PY
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
-printf '{"scanners": ["grype", "osv-scanner"], "pr_gate": ["grype", "inspector"]}\n' > "$work/scanners.json"
-printf '{"scanners": ["grype", "osv-scanner", "trivy"]}\n' > "$work/scanners3.json"
-printf '{"scanners": ["grype"]}\n' > "$work/scanners1.json"
+printf '{"scanners": ["grype", "osv-scanner"], "source_scanners": ["govulncheck"], "pr_gate": ["grype", "inspector"]}\n' > "$work/scanners.json"
+printf '{"scanners": ["grype", "osv-scanner", "trivy"], "source_scanners": ["govulncheck"]}\n' > "$work/scanners3.json"
+printf '{"scanners": ["grype"], "source_scanners": ["govulncheck"]}\n' > "$work/scanners1.json"
+printf '{"scanners": ["grype", "osv-scanner"], "source_scanners": ["govulncheck", "gosec"]}\n' > "$work/scanners4.json"
+printf '{"scanners": ["grype", "osv-scanner"]}\n' > "$work/scanners5.json"
 expect ok "fixture: the known-good stage installs every scanner scanners.json lists (round 1 F2)" "" installs "$work/stage.yml" "$work/scanners.json"
 expect caught "AC4 round 1 F2: a listed scanner the stage does not install (trivy added to scanners.json)" "install-scanner.sh trivy" installs "$work/stage.yml" "$work/scanners3.json"
 expect caught "AC4 round 1 F2: the stage installs a scanner scanners.json does not list" "install-scanner.sh osv-scanner" installs "$work/stage.yml" "$work/scanners1.json"
+expect caught "G a listed source scanner the stage does not install (gosec added to source_scanners)" "install-scanner.sh gosec" installs "$work/stage.yml" "$work/scanners4.json"
+expect caught "G the stage installs govulncheck but scanners.json lists no source scanner (the Go build and the tool would be an unlisted install)" "install-scanner.sh govulncheck" installs "$work/stage.yml" "$work/scanners5.json"
 expect ok "fixture: the known-good bin/witnessed.sh passes the helper judge (rule 68 seam)" "" helper "$work/witnessed.sh"
 # ---- the thin phase targets (ruling 0384): bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a one-line target ------------------
 for s in scanners acceptance runtime; do printf '#!/usr/bin/env bash\nbash bin/check-stage.sh %s\n' "$s" > "$work/ph_$s.sh"; done
@@ -312,6 +319,11 @@ m s_kindform 'run: bash bin/install-kind.sh' 'run: bash bin/install-kind.sh \&\&
 m s_xnogr  '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '' 'exactly its' "AC4 round 1 F2: Check without the grype install (check-scan.sh needs it)"
 m s_xnoosv '      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '' 'exactly its' "AC4 round 1 F2: Check without the osv-scanner install"
 m s_xinsord '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n' 'check step' "AC4 round 1 F2: the scanner installs out of the listed order"
+m s_xnogo  '      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '' 'exactly its' "G Check without the pinned Go install (the tool is built with it and the scan runs with it)"
+m s_xnogv  '      - name: install govulncheck \(pinned by go.sum\)\n        run: bash bin/install-scanner.sh govulncheck\n' '' 'exactly its' "G Check without the govulncheck install"
+m s_xgvord '      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n      - name: install govulncheck \(pinned by go.sum\)\n        run: bash bin/install-scanner.sh govulncheck\n' '      - name: install govulncheck (pinned by go.sum)\n        run: bash bin/install-scanner.sh govulncheck\n      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n' 'must be exactly' "G govulncheck installed before the Go toolchain it is built with"
+m s_xgvdir '      - name: install govulncheck \(pinned by go.sum\)\n        run: bash bin/install-scanner.sh govulncheck\n' '      - name: install govulncheck\n        run: bash bin/install-scanner.sh govulncheck /tmp\n' 'check step' "G govulncheck installed into another directory"
+m s_xgvgo  '      - name: install Go \(pinned by checksum\)\n        run: bash bin/install-scanner.sh go\n' '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n' 'uses not allowed' "G the setup-go action in place of the pinned Go install (its bytes are not pinned by a repository checksum)"
 m s_xinsdir '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '      - name: install grype\n        run: bash bin/install-scanner.sh grype /tmp\n' 'check step' "AC4 round 1 F2: grype installed into another directory"
 # the arm64 job (advisor 0385): exactly this job, this label, these steps, and nothing else
 m a_name   '  check-arm64:'                                    '  check-arm:'                                              'two jobs'          "AC1 the second job under another name"
@@ -396,6 +408,10 @@ sm c_nofirst 'python3 -I -B bin/chain-verify.py stage-start[^\n]*\n'   ''       
 sm c_nopol   'python3 -I -B bin/chain-verify.py policy make[^\n]*\n'   ''                                                 'not the pinned form' "AC3 the policy is not made per tag (Q5)"
 sm c_poltag  '--tag "\$GITHUB_REF_NAME"'                       '--tag v0.3.0'                                           'not the pinned form' "AC3 the policy made for a fixed tag instead of the run's tag (Q5)"
 sm c_noiso   'python3 -I -B bin/chain-verify.py stage-start'  'python3 bin/chain-verify.py stage-start'                'not the pinned form' "AC3 the verifier not isolated (PR 1: python3 -I -B)"
+sm c_nogv    'bash bin/check-govulncheck.sh[^\n]*\n'      ''                                                       'not the pinned form' "G the source scan dropped from the scanners phase"
+sm c_gvfirst 'scanners\)\n(bash bin/check-scan.sh[^\n]*\n)(bash bin/check-govulncheck.sh[^\n]*\n)' 'scanners)\n\2\1' 'not the pinned form' "G the source scan before the image scanners"
+sm c_gvlist  'bash bin/check-govulncheck.sh --scanners \.github/policy/scanners.json' 'bash bin/check-govulncheck.sh --scanners scanners.json' 'not the pinned form' "G the source scan reads another list than the policy file"
+sm c_gvdig   'bash bin/check-govulncheck.sh --scanners \.github/policy/scanners.json --out check-results' 'bash bin/check-govulncheck.sh --scanners .github/policy/scanners.json --out /tmp/gv' 'not the pinned form' "G the source scan writes outside check-results (the Witness record would not carry it as a product Release can bind)"
 sm c_nok8s   'bash bin/check-acceptance.sh k8s[^\n]*\n'       ''                                                       'not the pinned form' "AC14 the k8s suite dropped from the runtime phase"
 sm c_withsign 'case "\$1" in' 'python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\ncase "$1" in' 'not the pinned form' "AC3 Check verifies Sign's provenance (Release's to verify; Check's previous stage is Build)"
 sm c_after   'python3 -I -B bin/chain-verify.py stage-start[^\n]*\ncase "\$1" in\nscanners\)\n(bash bin/check-scan.sh[^\n]*\n)' 'case "$1" in\nscanners)\n\\1python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json\npython3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json\n' 'not the pinned form' "AC3 the checks run before the verify step"
@@ -448,7 +464,7 @@ import hashlib, json, os, sys
 w = sys.argv[1]
 os.makedirs(w + "/bin", exist_ok=True)
 rows = []
-for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
+for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "check-phase-runtime", "check-phase-arm64", "check-scan", "check-govulncheck", "check-fips", "check-artifacts", "check-acceptance", "check-guide", "acceptance-gradle", "acceptance-gradle-capped",
           "acceptance-maven", "acceptance-maven-capped", "acceptance-egress", "acceptance-k8s", "acceptance-serve", "install-kind"):
     p = f"bin/{n}.sh"; open(f"{w}/{p}", "w").write("#!/usr/bin/env bash\nset -euo pipefail\n")
     rows.append({"path": p, "sha256": hashlib.sha256(open(f"{w}/{p}", "rb").read()).hexdigest(), "tools": [], "signs": False, "runs": [], "reason": "fixture"})
@@ -545,14 +561,14 @@ for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-pha
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
 expect ok "the real chain-records.json has Check's Witness collection and no old acceptance record (rule 66)" "" records "$root/.github/policy/chain-records.json"
 expect ok "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, rebuild and sign" "" graph "$root/.github/workflows/release.yml"
-expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
+expect ok "the real check scripts are plain (check-stage.sh is judged by script alone, Q3)" "" plain "$root"/bin/check-scan.sh "$root"/bin/check-govulncheck.sh "$root"/bin/check-fips.sh "$root"/bin/check-artifacts.sh "$root"/bin/check-acceptance.sh "$root"/bin/check-guide.sh
 expect ok "the real check scripts are listed in chain-scripts.json with their sha256" "" listed "$root/.github/policy/chain-scripts.json" "$root"
 expect ok "the old acceptance stages are gone from the real repository and release.yml" "" removed "$root"
 expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.0 against their committed sha256 (AC14)" "" kind "$root/bin/install-kind.sh"
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=226
+EXPECT=237
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
