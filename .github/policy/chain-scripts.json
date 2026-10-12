@@ -732,7 +732,7 @@
     },
     {
       "path": "bin/check-guide-plan.py",
-      "sha256": "0e508184073000ca4cdbbf5ae85f1585e46ab2470dcf20145b71b79ddf12d57e",
+      "sha256": "e857b22c3b4d88a4bfe3f0b66941cd088a51152a53a737826017f86aa3b1c5f8",
       "tools": [
         "at",
         "command",
