@@ -768,7 +768,8 @@ def stage_grammar(rel, d, rows, env_names=frozenset(), path=None):
                 elif k not in env_names and k not in amb: errs.append("%s: env %s is not in the closed env_names list of chain-scripts.json" % (sp, k))
             if uses is not None:
                 if env: errs.append("%s: an action step passes env" % sp)
-                m = USES_OK.fullmatch(str(uses).split(" #")[0].strip())
+                ref = str(uses).partition(" #")[0]      # actions/setup-go is not allowed: Go is installed by the checksum-pinned `bash bin/install-scanner.sh go`
+                m = USES_OK.fullmatch(ref.strip())
                 if not m:
                     errs.append("%s: uses %r; a stage file may use only a digest-pinned actions/checkout, download-artifact or upload-artifact (no local composite action, docker://, github-script, reusable workflow)" % (sp, uses)); continue
                 act = m.group(1)

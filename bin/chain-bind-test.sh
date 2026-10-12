@@ -287,9 +287,9 @@ check("items-apk: the same apk re-signed with another key has the same apk and b
 rc, frag3, err = fragment_of(apk_tree("apk3", edit=flip_a_byte))
 check("items-apk: one changed byte outside the signature changes the apk and the binary item",
       rc == 0 and frag1 and frag3 and all(frag1["items"][k] != frag3["items"][k] for k in ("apk-standard-x86_64", "binary-standard-x86_64")), "exit %s" % rc)
-rc, frag4, err = fragment_of(apk_tree("apk4", tag="v0.3.0-rc.1"))
+rc, frag4, err = fragment_of(apk_tree("apk4", tag="v0.3.0-rc1"))
 check("items-apk: a release candidate's apk (fscache-0.3.0_rc1-r0.apk, PROPOSED) is found by its variant",
-      rc == 0 and frag4 == h.fragment("x86_64", "v0.3.0-rc.1"), "exit %s %s" % (rc, err[:120]))
+      rc == 0 and frag4 == h.fragment("x86_64", "v0.3.0-rc1"), "exit %s %s" % (rc, err[:120]))
 rc, frag4b, err = fragment_of(apk_tree("apk4b", tag="v0.0.0-rc.1"))
 check("items-apk: a SNAPSHOT build's apks (fscache-0.0.0_rc1-r0.apk and the fips one) are found and itemized (the 0.0.0 refusal is the verifiers')",
       rc == 0 and frag4b == h.fragment("x86_64", "v0.0.0-rc.1"), "exit %s %s" % (rc, err[:120]))
@@ -309,6 +309,8 @@ def merge_tree(name, tag="v0.3.0"):
         h.write("%s/apk/%s/items-apk.json" % (d, runner), json.dumps(h.fragment(arch, tag)))
     for image in h.IMAGES:
         o = h.image_outputs(image, tag)
+        for rel, data in h.layout_files(image, tag).items():
+            h.write("%s/out/%s/%s" % (d, image, rel), data)
         h.write("%s/out/%s.digest" % (d, image), o["digest"] + "\n")
         h.write("%s/out/%s.manifests" % (d, image), "\n".join(o["manifests"]) + "\n")
         h.write("%s/out/%s.full.lock.json" % (d, image), o["lock"])
@@ -346,6 +348,23 @@ check("items-merge: digests.json is exactly the oracle's: 2 images, 4 apks, 4 ar
       rc == 0 and got_digests == expected_digests and len(expected_digests) == 10, "exit %s" % rc)
 
 
+# B1 (Codex B r2): Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text with printf '%s'. The file the
+# Witness product hashes must therefore BE those bytes (compact, no trailing newline), or Sign's byte binding refuses every release. The test hashes what Sign
+# actually receives and runs the REAL verifier comparison on it.
+original = open(d + "/digests.json", "rb").read() if os.path.exists(d + "/digests.json") else b""
+transported = subprocess.run(["jq", "-c", "."], input=original, capture_output=True).stdout.rstrip(b"\n")      # the stage output text, as Sign's printf writes it
+check("items-merge: digests.json is byte-identical to what the stage output transports to Sign (compact JSON, no trailing newline)",
+      rc == 0 and original != b"" and original == transported, "%d bytes written, %d transported" % (len(original), len(transported)))
+_cv = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); cv = importlib.util.module_from_spec(_cv)
+sys.path.insert(0, root + "/bin"); _cv.loader.exec_module(cv)
+stmt = {"subject": [{"name": cv.PRODUCT, "digest": {"sha256": hashlib.sha256(original).hexdigest()}}]}      # the product the Witness record holds for the file
+try:
+    cv.digest_compare("build", stmt, transported, json.loads(transported)); bound = True
+except cv.Refuse:
+    bound = False
+check("items-merge: Sign's byte binding (digest_compare, the real verifier) accepts the text the stage output carries", bound, "refused")
+
+
 def edit_fragment(d, runner, edit):
     path = "%s/apk/%s/items-apk.json" % (d, runner)
     fragment = json.load(open(path))
@@ -380,6 +399,77 @@ refused("items-merge: an architecture outside amd64 and arm64 in <image>.manifes
 d = merge_tree("m4d")
 edit_manifests(d, "production", lambda L: [L[0] + " extra"] + L[1:])
 refused("items-merge: a malformed line in <image>.manifests is refused, never a traceback", d, do_merge(d), "manifests", "production.manifests")
+# Build's images artifact ships each variant as an OCI LAYOUT directory out/<variant>/ (oci-layout, index.json, blobs/), so the digest does not change between
+# Build and a push (real crane runs: a docker-format tarball push changes the digest, a layout directory keeps it). PROPOSED/UNVERIFIED: cache P5 decides the
+# shape of assemble-image.sh's output; the judge pins this one.
+def layout_refused(label, edit, fragment):
+    dd = merge_tree("lay-" + label.split()[0])
+    edit(dd)
+    refused("items-merge: " + label, dd, do_merge(dd), "layout", fragment)
+
+
+def child_digest(image, arch):
+    return h.image_outputs(image, "v0.3.0")["children"][arch][0]
+
+
+def flip_sidecar(dd):          # the sidecar names another amd64 child than the index blob does
+    p = dd + "/out/production.manifests"; lines = open(p).read().split("\n")
+    lines[0] = "amd64 sha256:" + "5" * 64; open(p, "w").write("\n".join(lines))
+
+
+def drop_child(dd):
+    os.remove("%s/out/production/blobs/sha256/%s" % (dd, child_digest("production", "arm64").split(":")[1]))
+
+
+def corrupt_child(dd):
+    open("%s/out/fips/blobs/sha256/%s" % (dd, child_digest("fips", "amd64").split(":")[1]), "ab").write(b" ")
+
+
+def non_json_index(dd):
+    # an index blob that is not JSON (the old test oracle's shape), with a descriptor and a name that match
+    blob = b"image|production|not json"; dg = hashlib.sha256(blob).hexdigest()
+    shutil.rmtree(dd + "/out/production/blobs"); h.write("%s/out/production/blobs/sha256/%s" % (dd, dg), blob)
+    h.write(dd + "/out/production/index.json", json.dumps({"manifests": [{"digest": "sha256:" + dg}]}))
+    h.write(dd + "/out/production.digest", "sha256:" + dg + "\n")
+
+
+def drop_layout(dd, image="production"):
+    shutil.rmtree("%s/out/%s" % (dd, image))
+
+
+d = merge_tree("lay-ok")
+rc, out, err = do_merge(d)
+check("items-merge: the digest Build records equals the descriptor of the image index in the uploaded layout (production and fips)",
+      rc == 0 and json.load(open(d + "/items.json"))["image-production"] == h.image_outputs("production", "v0.3.0")["digest"], "exit %s %s" % (rc, err[:120]))
+layout_refused("a docker-save tarball shape (manifest.json at the root, no oci-layout) is refused", lambda dd: (os.remove(dd + "/out/production/oci-layout"),
+               h.write(dd + "/out/production/manifest.json", "[]")), "production")
+layout_refused("a layout directory missing for a variant (only the old <variant>.tar file) is refused", lambda dd: (drop_layout(dd), h.write(dd + "/out/production.tar", "tar")), "production")
+def other_digest(dd):
+    p = dd + "/out/fips/index.json"; ix = json.load(open(p)); ix["manifests"][0]["digest"] = "sha256:" + "7" * 64; open(p, "w").write(json.dumps(ix))
+layout_refused("an index.json whose descriptor is not the recorded digest is refused", other_digest, "fips")
+def two_descriptors(dd):
+    p = dd + "/out/fips/index.json"; ix = json.load(open(p)); ix["manifests"] = ix["manifests"] * 2; open(p, "w").write(json.dumps(ix))
+layout_refused("an index.json with two descriptors is refused", two_descriptors, "fips")
+def no_blob(dd):
+    hexd = h.image_outputs("production", "v0.3.0")["digest"].split(":", 1)[1]; os.remove("%s/out/production/blobs/sha256/%s" % (dd, hexd))
+layout_refused("a layout whose index blob is missing is refused", no_blob, "production")
+def bad_blob(dd):
+    hexd = h.image_outputs("production", "v0.3.0")["digest"].split(":", 1)[1]; open("%s/out/production/blobs/sha256/%s" % (dd, hexd), "ab").write(b"x")
+layout_refused("a layout whose blob does not hash to its name is refused", bad_blob, "production")
+def bad_version(dd):
+    open(dd + "/out/production/oci-layout", "w").write('{"imageLayoutVersion": "2.0.0"}')
+layout_refused("an oci-layout file of another version is refused", bad_blob if False else bad_version, "production")
+# Codex A r3 F3: the sidecar digests are bound to the platform descriptors of the parsed index blob, and the child blobs exist and hash to their names
+d = merge_tree("idx-ok")
+rc, out, err = do_merge(d)
+ix = json.loads(open("%s/out/production/blobs/sha256/%s" % (d, h.image_outputs("production", "v0.3.0")["digest"].split(":")[1])).read())
+check("items-merge: the oracle's image index is real OCI JSON with a linux/amd64 and a linux/arm64 descriptor equal to the sidecar",
+      rc == 0 and sorted((m["platform"]["architecture"], m["platform"]["os"]) for m in ix["manifests"]) == [("amd64", "linux"), ("arm64", "linux")]
+      and sorted(m["digest"] for m in ix["manifests"]) == sorted(l.split()[1] for l in h.image_outputs("production", "v0.3.0")["manifests"]), "exit %s" % rc)
+layout_refused("a sidecar digest that is not the index's platform descriptor is refused", flip_sidecar, "production")
+layout_refused("a child manifest blob that is missing is refused", drop_child, "production")
+layout_refused("a child manifest blob that does not hash to its name is refused", corrupt_child, "fips")
+layout_refused("an index blob that is not JSON is refused", non_json_index, "production")
 d = merge_tree("m5")
 os.remove(d + "/dist/" + h.archive_files("v0.3.0")["archive-fips-linux-arm64"][0])
 refused("items-merge: a missing archive is refused", d, do_merge(d), "missing", "archive-fips-linux-arm64")
@@ -393,14 +483,14 @@ rc, out, err = do_merge(d, tag="v0.0.0-rc.1")
 check("items-merge: a snapshot build's files (version 0.0.0-rc.1, archives fscache_0.0.0-rc.1_linux_*) merge to the oracle's items",
       rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.0.0-rc.1"),
       "exit %s %s" % (rc, err[:100]))
-d = merge_tree("m7", "v0.3.0-rc.1")
-rc, out, err = do_merge(d, tag="v0.3.0-rc.1")
+d = merge_tree("m7", "v0.3.0-rc1")
+rc, out, err = do_merge(d, tag="v0.3.0-rc1")
 check("items-merge: a release candidate's files merge to the oracle's items (PROPOSED names)",
-      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc.1"),
+      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1"),
       "exit %s %s" % (rc, err[:100]))
 
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 55
+EXPECT = 70
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

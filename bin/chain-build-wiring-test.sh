@@ -52,6 +52,13 @@
 #   so a build longer than the 10-minute certificate may not verify (harness spike (d)); `timeout 540` is the answer in the tests.
 # INTEGRATION BRANCH (advisor 0341): PR 2 targets chain-v030; the real-tree cases are RED here and become green on chain-v030 after PR 1 and PR 2 merge.
 set -euo pipefail
+# the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
+if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
+  _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
+  printf '%s\n' "$_out"
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-build-wiring-test.sh --inner-rc "$_rc"
+  exit $?
+fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 shape="$root/bin/chain-test-shape.py"; harness="$root/bin/chain-test-harness.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
@@ -64,6 +71,9 @@ judge() { python3 "$shape" "$@"; }
 expect() { # expect ok|caught LABEL WORD judge-args...   (WORD: a word the fault message must contain, for caught)
   local want=$1 label=$2 word=$3; shift 3; local out rc=0
   out=$(judge "$@" 2>&1) || rc=$?
+  if grep -q '^FINDINGS-JSON ' <<< "$out"; then          # the structured ids go out BEFORE the verdict line (bin/chain-known-red.py reads the line before a FAIL)
+    grep '^FINDINGS-JSON ' <<< "$out"; out=$(grep -v '^FINDINGS-JSON ' <<< "$out")
+  fi
   if [ "$want" = ok ]; then
     if [ "$rc" = 0 ]; then ok "$label"; else bad "$label -> $out"; fi
   elif [ "$rc" = 1 ] && grep -Fq -- "$word" <<< "$out" && ! grep -q Traceback <<< "$out"; then ok "$label (caught: ${out:0:90})"
@@ -138,6 +148,7 @@ def stage_text(family):
         if sp.get("mode"):
             out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
+        if sp.get("setup_go"): out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -147,7 +158,7 @@ def stage_text(family):
             out += "        uses: %s # v7.0.1\n        with:\n" % UPLOAD
             out += "          name: hostile-attempts\n          path: attempts\n          if-no-files-found: error\n"
         for name, path in sp["up"]:
-            guard = "        if: always()\n" if name == S.VERDICT_ARTIFACT else ""
+            guard = "        if: always()\n" if name == S.VERDICT_ARTIFACT else ("        if: %s\n" % S.ADMISSION_IF if name == "admission" else "")
             out += "      - uses: %s # v7.0.1\n%s        with:\n          name: %s\n          path: %s\n" % (UPLOAD, guard, name, path)
     return out
 
@@ -182,7 +193,7 @@ jobs:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     uses: ./.github/workflows/stage-build.yml
     with:
-      hostile: ${{ inputs.dry-run == true && github.ref_type == 'branch' }}
+      hostile: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}
   sign:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     needs: build
@@ -196,10 +207,10 @@ jobs:
     needs: build
     uses: ./.github/workflows/stage-reproducibility.yml
   check:
-    needs: [build, sign]
+    needs: build
     uses: ./.github/workflows/stage-verify.yml
   release:
-    if: ${{ !inputs.dry-run }}
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [rebuild, check, sign]
     uses: ./.github/workflows/stage-promote.yml
   decide:
@@ -215,7 +226,7 @@ jobs:
       - run: echo ${{ secrets.AUDITOR_APP_ID }}
   patch-notes:
     needs: decide
-    if: ${{ needs.decide.outputs.tagged == 'true' }}
+    if: ${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}
     runs-on: ubuntu-latest
     environment: agent
     permissions:
@@ -274,6 +285,30 @@ st s_cred   "AC2 persisted credentials" "exactly" 'persist-credentials: false' '
 st s_ref    "AC2 checkout of another ref" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          ref: main'
 st s_repo   "AC2 checkout of another repository" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          repository: evil/fork'
 st s_token  "AC2 checkout with a token" "exactly" 'persist-credentials: false' 'persist-credentials: false\n          token: ${{ secrets.X }}'
+ADMUP='      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        if: ${{ inputs.mode == '"'release'"' && matrix.runner == '"'ubuntu-24.04'"' }}\n        with:\n          name: admission\n          path: admission.json\n'
+st s_adm_gone "AC8 Build's admission record is not uploaded (Release could not read the baseline a patch tag used)" "admission" "$ADMUP" ''
+st s_adm_all  "AC8 admission.json uploaded from every apk leg (one fixed name from a matrix clashes)" "admission" " && matrix.runner == 'ubuntu-24.04'" ''
+st s_adm_name "AC8 admission.json uploaded under another name" "admission" 'name: admission\n' 'name: admission-record\n'
+st s_adm_snap "AC8 admission.json uploaded in a snapshot run too (no admission ran: the upload would fail)" "admission" "inputs.mode == 'release' && matrix.runner" "matrix.runner"
+GOINST='      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n'
+WINST='      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n'
+st s_go_gone  "AC4 the Go toolchain install of admission is missing from Build's apk job" "install-scanner.sh go" "$GOINST" ''
+st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
+st s_go_other "AC4 the Go install line names another target" "install-scanner.sh go" 'install-scanner.sh go' 'install-scanner.sh go 1.20'
+st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
+st s_go_act   "AC4 the setup-go action instead of the pinned installer (its bytes are not pinned by a repository checksum)" "setup-go" "$GOINST" '      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n          cache: false\n'
+st s_go_if    "AC4 the Go install carries an if" "install-scanner.sh go" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        if: always()\n'
+# Codex A r4 #1 (advisor reading of rule 51, a reading and not a reworded rule): admission is the first TRUST decision of Build. Before the step that runs
+# bin/witnessed.sh apk (admission is its first command) the apk job may hold ONLY the checkout, the mode guard (a non-secret input, refuses only) and the two
+# checksum-verified install lines; nothing with a token, a secret, a build command, a download, an upload or the identity token may come before it.
+st s_pre_env   "AC4 an env on an install step before admission (a token or secret could reach tagged code)" "before admission" 'name: install Go (pinned by checksum)\n' 'name: install Go (pinned by checksum)\n        env:\n          GH_TOKEN: ${{ github.token }}\n'
+st s_pre_sec   "AC4 a secret on a step before admission" "before admission" 'name: install Witness (pinned by checksum)\n' 'name: install Witness (pinned by checksum)\n        env:\n          K: ${{ secrets.KEY }}\n'
+st s_pre_build "AC4 a build command before admission" "before admission" "$GOINST" "$GOINST      - name: build early\n        run: bash bin/build-apk.sh --variant standard\n"
+st s_pre_up    "AC4 an upload before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: early\n          path: out\n"
+st s_pre_down  "AC4 a download before admission" "before admission" "$GOINST" "$GOINST      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e65 # v5.0.0\n        with:\n          name: x\n          path: x\n"
+st s_pre_tok   "AC4 a step that reads the identity token before admission" "before admission" "$GOINST" "$GOINST      - name: token\n        run: bash bin/x.sh \"\$ACTIONS_ID_TOKEN_REQUEST_TOKEN\"\n"
+st s_pre_wit   "AC4 a Witness step before admission (the helper itself runs admission first, so it is the admission step, but a second early one is not)" "before admission" "$GOINST" "$GOINST      - name: early under Witness\n        run: bash bin/witnessed.sh apk bin/build-stage-apk.sh\n"
+st s_pre_other "AC4 any other run step before admission" "before admission" "$GOINST" "$GOINST      - name: other\n        run: bash bin/chain-hostile-step.sh\n"
 st s_shallow "AC2 a shallow checkout (build-admit needs the history and the tags)" "exactly" '          fetch-depth: 0\n' ''
 st s_install "AC2 Witness installed by an unpinned download" install 'run: bash bin/install-scanner.sh witness' \
        'run: curl -sSL https://example.com/witness | tar xz -C /usr/local/bin'
@@ -664,25 +699,24 @@ GATE_BODY="(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
 GATE="\${{ $GATE_BODY }}"
 OLDDRY="\${{ !cancelled() && (needs.admission.result == 'success' || inputs.dry-run) }}"
 TAGONLY="\${{ startsWith(github.ref, 'refs/tags/v') }}"
-PNIF="\${{ needs.decide.outputs.tagged == 'true' }}"
-RELIF="\${{ !inputs.dry-run }}"
+PNIF="\${{ needs.decide.outputs.tagged == 'true' && !inputs.dry-run }}"
+RELIF="\${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}"
 SIGN_HEAD="  sign:\n    if: $GATE\n    needs: build"
 BUILD_USES="    uses: ./.github/workflows/stage-build.yml"
 BUILD_HEAD="    if: $GATE\n$BUILD_USES"
 REL_HEAD="  release:\n    if: $RELIF\n    needs: [rebuild, check, sign]"
 gr g1  "005-AC5 rebuild waits for check" '  rebuild:\n    needs: build' '  rebuild:\n    needs: [build, check]' "rebuild must need exactly"
-gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: [build, sign]' '  check:\n    needs: [build, sign, rebuild]' "check must need exactly"
-# Check opens by verifying Sign's provenance: the candidate is signed before it is checked (rule 80; advisor ruling Oct 10, Q9). Check needs
-# exactly build AND sign, the same edge PR 3's Check judge pins.
-gr g2b "005-AC5 check does not need sign (it would run before the candidate is signed)" '  check:\n    needs: [build, sign]' '  check:\n    needs: build' \
+gr g2  "005-AC5 check waits for rebuild" '  check:\n    needs: build' '  check:\n    needs: [build, rebuild]' "check must need exactly"
+# REQ-CHAIN-005-AC5: Rebuild and Check each need only Build, so they run side by side (Codex B r2 R3: the earlier edge Check -> Sign is gone).
+gr g2b "005-AC5 check also needs sign (AC5: Check needs only Build)" '  check:\n    needs: build' '  check:\n    needs: [build, sign]' \
        "check must need exactly"
-gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: [build, sign]' '  check:\n    needs: sign' "check must need exactly"
+gr g2c "005-AC5 check needs sign but not build" '  check:\n    needs: build' '  check:\n    needs: sign' "check must need exactly"
 gr g3  "005-AC5 release does not need rebuild" 'needs: [rebuild, check, sign]' 'needs: [check, sign]' "release must need exactly"
 gr g4 "005-AC5 sign does not need build" "$SIGN_HEAD" "  sign:\n    if: $GATE\n    needs: check" \
     "sign must need exactly"
 gr g5  "005-AC5 rebuild with an if (it runs after build through needs; an if could skip it)" '  rebuild:\n    needs: build' \
        '  rebuild:\n    needs: build\n    if: always()' "rebuild may not carry an if"
-gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: [build, sign]' "  check:\n    needs: [build, sign]\n    if: $GATE" "check may not carry an if"
+gr g5b "005-AC5 check with an if (even the gate)" '  check:\n    needs: build' "  check:\n    needs: build\n    if: $GATE" "check may not carry an if"
 gr g6  "005-AC5 release ungated while the gate G is used (a dry run would publish)" "$REL_HEAD" '  release:\n    needs: [rebuild, check, sign]' \
        "release must carry exactly the if"
 gr g6b "005-AC5 release runs when a stage failed (if: always())" "$REL_HEAD" '  release:\n    if: always()\n    needs: [rebuild, check, sign]' \
@@ -755,7 +789,7 @@ gr g39 "005-AC5 sign passing an extra input" "      digests: \${{ needs.build.ou
 gr g40 "005-AC5 sign taking the digests from another job" "needs.build.outputs.digests" "needs.rebuild.outputs.digests" "sign must pass exactly with"
 gr g41 "005-AC5 sign taking PR 1's placeholder (raw checksums.txt text) instead of the digests.json text" "needs.build.outputs.digests" \
        "needs.build.outputs.checksums" "sign must pass exactly with"
-BHOST="hostile: \${{ inputs.dry-run == true && github.ref_type == 'branch' }}"
+BHOST="hostile: \${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') }}"
 gr g48 "005-AC5 build also passes mode: snapshot (a dry run builds the same way as a release)" "      $BHOST" "      $BHOST\n      mode: snapshot" \
        "build must pass exactly with"
 gr g49 "005-AC5 build passes no hostile input (the dry run's hostile step would never run)" "    with:\n      $BHOST\n" "" \
@@ -1435,7 +1469,7 @@ for tag in fixture real; do
       continue
     fi
     before=$((pass + failn))
-    for version in v0.3.0 v0.3.0-rc.1; do "beh_$(tr - _ <<< "$kind")" "$tag" "$(script_of "$tag" "$kind")" "$mode" "$version"; done
+    for version in v0.3.0 v0.3.0-rc1; do "beh_$(tr - _ <<< "$kind")" "$tag" "$(script_of "$tag" "$kind")" "$mode" "$version"; done
     [ $((pass + failn - before)) = "$n" ] || bad "the $kind behaviour cases ran $((pass + failn - before)) cases, cases_of says $n"
   done
 done
@@ -1452,7 +1486,7 @@ guard 1 "releasE is refused" releasE
 guard 1 "release with a trailing space is refused" "release "
 guard 1 "an empty mode is refused" ""
 guard 1 "no argument is refused"
-# Codex A r1 F1: the snapshot callers consume only what Build uploads (images, dist, digests, items), the images are Build's <variant>.tar archives of production and fips
+# Codex A r1 F1: the snapshot callers consume only what Build uploads (images, dist, digests, items), the images are Build's OCI layout directories <variant>/ of production and fips
 # (no debug variant: owner, Oct 9), and the checksum text is rebuilt from the digests.json output (Build has no checksums output)
 cat > "$work/f1.py" <<'PY'
 import re, sys, yaml
@@ -1466,7 +1500,8 @@ for jn, j in (d.get("jobs") or {}).items():
 for gone in ("oci-candidate", "dist-snapshot", "outputs.checksums"):
     if gone in text: bad.append("still names %s" % gone)
 if re.search(r"\bdebug\b", re.sub(r"(?m)^\s*#.*$", "", text)): bad.append("still names the debug variant")
-if re.search(r"\.oci\b", text): bad.append("still reads a <variant>.oci archive (Build's images artifact holds <variant>.tar)")
+if re.search(r"\.oci\b|\.tar\b(?!\.gz)|oci-archive:", text): bad.append("still reads an archive file (Build's images artifact holds the OCI layout directory <variant>/: skopeo oci:/tmp/oci/<variant>)")
+if "/tmp/oci/" in text and not re.search(r"\boci:/tmp/oci/\$\{v\}|\boci:%s", text): bad.append("does not read the layout with skopeo oci:")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 f1() { # f1 ok|caught LABEL FILE [sed-expr]
@@ -1479,8 +1514,168 @@ f1 caught "an old artifact name oci-candidate is caught" "$root/.github/workflow
 f1 caught "an old artifact name dist-snapshot is caught" "$root/.github/workflows/scan.yml" 's/name: dist$/name: dist-snapshot/'
 f1 caught "needs.build.outputs.checksums is caught" "$root/.github/workflows/scan.yml" 's/needs.build.outputs.digests }}$/needs.build.outputs.checksums }}/'
 f1 caught "the debug variant in a scan loop is caught" "$root/.github/workflows/scan.yml" 's/for v in production fips/for v in production debug fips/'
-f1 caught "a <variant>.oci archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#/tmp/oci/${v}.tar#/tmp/oci/${v}.oci#'
+f1 caught "a <variant>.tar archive path is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's#oci:/tmp/oci/${v}#oci-archive:/tmp/oci/${v}.tar#'
 f1 caught "a download of an artifact Build never uploads is caught" "$root/.github/workflows/main-candidate-rescan.yml" 's/name: images/name: oci-images/'
+# Codex A r2 blocker 1 / B4: the release-candidate tag (vX.Y.Z-rcN, advisor 0383) runs the REAL `policy make` of bin/chain-verify.py in both assemble scripts (the
+# harness no longer fakes it for an rc tag): the stage completes and the policy carries the FULL tag; a near-miss tag stops at the policy, before any build
+for kind in assemble rebuild-assemble; do
+  rd="$work/rcp-$kind"; mk "$rd" "$kind" "$root/bin/build-stage-$kind.sh" real v0.3.0-rc1; rc=$(run_stage "$rd" "$kind" real v0.3.0-rc1)
+  if [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" else 1)' "$rd/policy.json" 2> /dev/null; then
+    ok "AC12/rc $kind: the tag v0.3.0-rc1 passes the REAL policy make and the policy carries the full tag"
+  else bad "AC12/rc $kind: v0.3.0-rc1 through the real policy make: rc=$rc $(head -c 160 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
+  for nm in v0.3.0-rc.1 v0.3.0-RC1 v0.3.0-rc1x; do
+    rd="$work/rcn-$kind-$nm"; mk "$rd" "$kind" "$root/bin/build-stage-$kind.sh" real v0.3.0-rc1; rc=$(REF_NAME=$nm run_stage "$rd" "$kind" real v0.3.0-rc1)
+    if [ "$rc" != 0 ] && [ "$(n_calls '^image ' "$rd")" = 0 ] && grep -q 'refused at policy' "$rd/stage.err"; then ok "AC12/rc $kind: the near-miss tag $nm is refused at the real policy make, before any image is built"
+    else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
+  done
+done
+# Codex A r2 blocker 1: an rc tag FAILS CLOSED at Release until PR 4's verify-and-stop exists. A job rc-refusal runs on an rc-tag push and exits 1; the old
+# publishing path (the five jobs that start it, and promotion) is skipped on an rc tag, so nothing reaches a registry credential step (advisor 0383)
+cat > "$work/rcgate.py" <<'PY'
+import sys, yaml
+d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
+RC = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
+bad = []
+r = jobs.get("rc-refusal")
+if not r: bad.append("rc-refusal job missing")
+else:
+    if str(r.get("if", "")).strip() != "${{ %s && !inputs.dry-run }}" % RC: bad.append("rc-refusal if is not the rc-tag push condition: %r" % r.get("if"))
+    if r.get("needs") or r.get("uses") or r.get("environment") or r.get("permissions") != {"contents": "read"}: bad.append("rc-refusal has needs, uses, environment or other permissions")
+    steps = r.get("steps") or []
+    if len(steps) != 1 or "exit 1" not in str(steps[0].get("run", "")) or steps[0].get("uses") or "continue-on-error" in steps[0] or "continue-on-error" in r:
+        bad.append("rc-refusal is not exactly one run step that exits 1")
+for jn in ("scans", "acceptance-artifacts", "acceptance", "acceptance-egress", "acceptance-k8s", "acceptance-predicate", "authorization", "promotion"):
+    c = str((jobs.get(jn) or {}).get("if", ""))
+    if "!inputs.dry-run" not in c or "!contains(github.ref_name, '-rc')" not in c: bad.append("%s does not skip an rc tag: %r" % (jn, c))
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+PY
+rcg() { # rcg ok|caught LABEL [sed-expr]
+  local f="$work/rcg-$$.yml" out rc=0
+  if [ -n "${3:-}" ]; then sed -e "$3" "$root/.github/workflows/release.yml" > "$f"; else cp "$root/.github/workflows/release.yml" "$f"; fi
+  out=$(python3 "$work/rcgate.py" "$f") || rc=$?
+  if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
+rcg ok "the real release.yml refuses an rc tag (rc-refusal) and skips the old publishing path on it"
+rcg caught "promotion that does not skip an rc tag is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
+rcg caught "scans that does not skip an rc tag is caught" '/^  scans:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
+rcg caught "an rc-refusal that no longer exits 1 is caught" '/^  rc-refusal:/,/^  [a-z]/ s/exit 1/true/'
+rcg caught "an rc-refusal that also runs on a final tag is caught" "/^  rc-refusal:/,/^  [a-z]/ s/ \&\& contains(github.ref_name, '-rc')//"
+rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-gone:/'
+# ---- the known-red list (advisor, #299): test-evidence/known-red.json and bin/chain-known-red.py -------------------------------------------------------
+# The two chain suites whose red cases are expected (this one and bin/chain-sign-wiring-test.sh) judge their own output against the list: the CI step
+# passes only when the set of red cases EQUALS the list. The helper is proven here on synthetic output and a throw-away git repository.
+KR="$root/bin/chain-known-red.py"
+krj() { # krj WANT-EXIT LABEL FILE-LIST SUITE-OUTPUT-TEXT [FRAGMENT]   (KRJ_RC: the inner suite's exit status, default 1 with a FAIL line, else 0)
+  local rc=0 out inner=${KRJ_RC:-}
+  [ -n "$inner" ] || { if grep -q '^FAIL ' <<< "$4"; then inner=1; else inner=0; fi; }
+  out=$(printf '%s\n' "$4" | python3 "$KR" judge --suite s.sh --list "$3" --inner-rc "$inner" 2>&1) || rc=$?
+  if [ "$rc" = "$1" ] && { [ -z "${5:-}" ] || grep -F -q -- "$5" <<< "$out"; }; then ok "known-red $2"; else bad "known-red $2 (exit $rc: ${out:0:160})"; fi; }
+mkdir -p "$work/kr"
+printf '{"entries":[{"id":"KR-1","suite":"s.sh","case":"the real tree: a","reason":"r","green_by":"PR 3"},{"id":"KR-2","suite":"s.sh","case":"shrink: b","reason":"r","green_by":"P4"},{"id":"KR-9","suite":"other.sh","case":"x","reason":"r","green_by":"P5"}]}\n' > "$work/kr/list.json"
+SUM=$'pass=5 fail=2'
+krj 0 "the red set equals the list (a case with ' -> ' and one with ': ' details)" "$work/kr/list.json" $'ok   a\nFAIL the real tree: a -> details\nFAIL shrink: b: AC1: more\npass=5 fail=2'
+krj 1 "a red case that is not on the list fails and is named" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\nFAIL a new one -> d\npass=5 fail=3' "a new one"
+krj 1 "a listed case that now passes fails and is named" "$work/kr/list.json" $'FAIL the real tree: a -> d\npass=5 fail=1' "KR-2"
+krj 1 "a suite that printed no summary fails closed" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x' "no \`pass="
+krj 1 "an entry of another suite does not cover a red case" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\nFAIL x -> d\npass=1 fail=3' "x"
+# the judge does not trust the printed summary (Codex A r4 #2, B F1): fail=M must equal the FAIL lines, each listed case appears ONCE, the inner exit status
+# is accounted for, and an entry with `findings` is compared with the structured FINDINGS-JSON line printed right before the case's FAIL line
+krj 1 "a summary claiming fail=999 over two FAIL lines is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=999' "summary"
+krj 1 "a summary claiming fewer failures than FAIL lines is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=1' "summary"
+krj 1 "a listed case printed twice is refused (each exactly once)" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=3' "twice"
+KRJ_RC=1 krj 1 "a nonzero inner exit with no FAIL line is refused" "$work/kr/list.json" $'pass=5 fail=0' "exit"
+KRJ_RC=0 krj 1 "a zero inner exit with FAIL lines is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=2' "exit"
+KRJ_RC=2 krj 1 "an inner exit status that is neither 0 nor 1 is refused" "$work/kr/list.json" $'FAIL the real tree: a -> d\nFAIL shrink: b: x\npass=0 fail=2' "exit"
+rc=0; kout=$(printf 'pass=0 fail=0\n' | python3 "$KR" judge --suite s.sh --list "$work/kr/list.json" 2>&1) || rc=$?
+[ "$rc" != 0 ] && grep -q -- '--inner-rc' <<< "$kout" && ok "known-red: a judge call without --inner-rc is refused (the wrapper must pass the inner status)" || bad "known-red: --inner-rc is optional"
+printf '{"entries":[{"id":"KS-1","suite":"s.sh","case":"sign: tree","reason":"r","green_by":"P4","findings":["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/b.sh: names the script y"]}]}\n' > "$work/kr/struct.json"
+FJ() { printf 'FINDINGS-JSON %s\n' "$1"; }
+G3='["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/b.sh: names the script y"]'
+krj 0 "structured: the printed findings equal the entry's (with multiplicity)" "$work/kr/struct.json" "$(FJ "$G3")"$'\nFAIL sign: tree -> text\npass=0 fail=1'
+krj 1 "structured: an additional finding behind a matching label is refused" "$work/kr/struct.json" "$(FJ '["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/b.sh: names the script y","AC1: bin/c.sh: sets PATH"]')"$'\nFAIL sign: tree -> text\npass=0 fail=1' "c.sh"
+krj 1 "structured: a substituted finding is refused" "$work/kr/struct.json" "$(FJ '["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y","AC1: bin/z.sh: names the script y"]')"$'\nFAIL sign: tree -> text\npass=0 fail=1' "z.sh"
+krj 1 "structured: fewer occurrences than listed (multiplicity) is refused" "$work/kr/struct.json" "$(FJ '["AC1: bin/a.py: names the script x","AC1: bin/b.sh: names the script y"]')"$'\nFAIL sign: tree -> text\npass=0 fail=1'
+krj 1 "structured: B's probe (matching label plus UNEXPECTED text, no structured line) is refused" "$work/kr/struct.json" $'FAIL sign: tree -> UNEXPECTED: unlisted id-token job and non-Sign provenance signer\npass=0 fail=1' "FINDINGS-JSON"
+krj 1 "structured: a FINDINGS-JSON line that is not the line before the FAIL line is not used" "$work/kr/struct.json" "$(FJ "$G3")"$'\nok   something\nFAIL sign: tree -> text\npass=1 fail=1' "FINDINGS-JSON"
+krj 1 "structured: a FINDINGS-JSON line that is not a JSON list of strings is refused" "$work/kr/struct.json" $'FINDINGS-JSON {"a":1}\nFAIL sign: tree -> text\npass=0 fail=1' "FINDINGS-JSON"
+printf '{"entries":[{"id":"K","suite":"s.sh","case":"c"}]}\n' > "$work/kr/bad.json"
+krj 1 "an entry without a reason or green_by is refused" "$work/kr/bad.json" $'pass=1 fail=0' "exactly"
+printf '{"entries":[{"id":"K","suite":"s.sh","case":"c","reason":"r","green_by":"g"},{"id":"K","suite":"s.sh","case":"d","reason":"r","green_by":"g"}]}\n' > "$work/kr/dup.json"
+krj 1 "a duplicate entry id is refused" "$work/kr/dup.json" $'pass=1 fail=0' "twice"
+rc=0; python3 "$KR" empty --list "$work/kr/list.json" > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] && ok "known-red cutover: a non-empty list fails" || bad "known-red cutover: non-empty list gave exit $rc"
+printf '{"entries":[]}\n' > "$work/kr/empty.json"
+rc=0; python3 "$KR" empty --list "$work/kr/empty.json" > /dev/null 2>&1 || rc=$?; [ "$rc" = 0 ] && ok "known-red cutover: an empty list passes" || bad "known-red cutover: empty list gave exit $rc"
+# an entry added since the merge base is refused unless the PR body names it
+kg="$work/kr/repo"; rm -rf "$kg"; mkdir -p "$kg/test-evidence"
+( cd "$kg" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
+  && printf '{"entries":[]}\n' > test-evidence/known-red.json && git add -A && git commit -qm base && git tag base \
+  && cp "$work/kr/list.json" test-evidence/known-red.json && git add -A && git commit -qm add )
+printf '{"pull_request":{"body":"text\\nknown-red-add: KR-1\\nknown-red-add: KR-2\\nknown-red-add: KR-9\\n"}}' > "$work/kr/ev-ok.json"
+printf '{"pull_request":{"body":"known-red-add: KR-1\\n"}}' > "$work/kr/ev-part.json"
+printf '{"pull_request":{"body":"nothing"}}' > "$work/kr/ev-none.json"
+for c in "ok:ev-ok:0" "part:ev-part:1" "none:ev-none:1"; do
+  IFS=: read -r nm evf want <<< "$c"; rc=0
+  ( cd "$kg" && python3 "$KR" base-check --base base --event "$work/kr/$evf.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = "$want" ] && ok "known-red base-check ($nm): entries added since the merge base need the PR body to name them" || bad "known-red base-check ($nm): exit $rc, wanted $want"
+done
+# Codex A r5 #1 / B F1: the COMPLETE entry is compared, `findings` included
+kf="$work/kr/repo2"; rm -rf "$kf"; mkdir -p "$kf/test-evidence"
+( cd "$kf" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
+  && printf '{"entries":[{"id":"KF-1","suite":"s.sh","case":"c","reason":"r","green_by":"g","findings":["f1","f2","f2"]}]}\n' > test-evidence/known-red.json && git add -A && git commit -qm base )
+kfchg() { # kfchg NAME PYTHON-EDIT-OF-d  -> a commit that changes the entry; then base-check against HEAD~1 with and without the id in the PR body
+  python3 - "$kf/test-evidence/known-red.json" "$2" <<'PY'
+import json, sys
+p, edit = sys.argv[1:3]; d = json.load(open(p)); e = d["entries"][0]; exec(edit); json.dump(d, open(p, "w"))
+PY
+  ( cd "$kf" && git add -A && git -c commit.gpgsign=false commit -qm "kf-$1" )
+  local rc=0; ( cd "$kf" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = 1 ] && ok "known-red base-check: $1 in findings needs the PR body line" || bad "known-red base-check: $1 in findings was accepted without a line (exit $rc)"
+  printf '{"pull_request":{"body":"known-red-add: KF-1\\n"}}' > "$work/kr/ev-kf.json"; rc=0
+  ( cd "$kf" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-kf.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = 0 ] && ok "known-red base-check: $1 in findings passes when the PR body names KF-1" || bad "known-red base-check: $1 named but refused (exit $rc)"; }
+rc=0; ( cd "$kf" && python3 "$KR" base-check --base HEAD --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: an unchanged entry that carries findings passes against its own base" || bad "known-red base-check: an unchanged entry with findings was rejected (exit $rc)"
+kfchg "an added finding" 'e["findings"].append("f3")'
+kfchg "a removed finding" 'e["findings"].remove("f2")'
+kfchg "a substituted finding" 'e["findings"][0] = "other"'
+kfchg "a reordered finding list" 'e["findings"].reverse()'
+rc=0; python3 "$KR" base-check --base HEAD --event "$work/kr/ev-none.json" > /dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: the real committed list (entries with findings) passes against its own base" || bad "known-red base-check: the real committed list was rejected against HEAD (exit $rc)"
+# an entry kept under its id but changed (suite, case, reason or green_by) is an added entry: it needs its known-red-add line too
+cp "$kg/test-evidence/known-red.json" "$work/kr/committed.json"
+for fld in case suite reason green_by; do
+  python3 - "$kg/test-evidence/known-red.json" "$fld" <<'PY'
+import json, sys
+p, fld = sys.argv[1:3]
+d = json.load(open(p)); d["entries"][0][fld] += " changed"; json.dump(d, open(p, "w"))
+PY
+  rc=0; ( cd "$kg" && git add -A && git -c commit.gpgsign=false commit -qm "chg-$fld" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+  [ "$rc" = 1 ] && ok "known-red base-check: an existing id whose $fld changed counts as added and needs its line" || bad "known-red base-check: a changed $fld under a kept id was not refused (exit $rc)"
+done
+printf '{"pull_request":{"body":"known-red-add: KR-1\\n"}}' > "$work/kr/ev-kr1.json"
+rc=0; ( cd "$kg" && python3 "$KR" base-check --base HEAD~1 --event "$work/kr/ev-kr1.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: a changed entry passes when the PR body names its id" || bad "known-red base-check: a named changed entry gave exit $rc"
+rc=0; ( cd "$kg" && python3 "$KR" base-check --base HEAD --event "$work/kr/ev-none.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 0 ] && ok "known-red base-check: no entry added since the base passes without a PR body" || bad "known-red base-check: unchanged list gave exit $rc"
+rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789abcdef01234567 --event "$work/kr/ev-ok.json" --list test-evidence/known-red.json > /dev/null 2>&1 ) || rc=$?
+[ "$rc" = 1 ] && ok "known-red base-check: an unresolvable base fails closed" || bad "known-red base-check: unresolvable base gave exit $rc"
+# the committed list and the two suites' own wrapper
+rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull request event names the base and the body; locally the base is origin/chain-v030 and KNOWN_RED_ADD names new ids
+[ "$rc" = 0 ] && ok "known-red: the committed list is well formed and compares with the base" || bad "known-red: the committed test-evidence/known-red.json (exit $rc)"
+for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh; do
+  if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
+done
+# the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1..3 and KR-BUILD-1 carry their structured findings (19, 19, 19 and the graph's)" || bad "known-red: the real-suite entries lack their structured findings"
+import json, sys
+e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
+for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3", "KR-BUILD-1"):
+    f = e[k].get("findings")
+    assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
+for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3"): assert len(e[k]["findings"]) == 19, (k, len(e[k]["findings"]))
+PY
+# the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
+rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
@@ -1672,7 +1867,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=565
+EXPECT=656
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

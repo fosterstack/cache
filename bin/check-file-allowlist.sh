@@ -144,7 +144,8 @@ ALLOW_PATTERNS=(
   '^bin/chain_items\.py$'
   '^bin/chain-admission-old-steps\.txt$'
   '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
-  '^bin/chain-test-(harness|shape)\.py$'
+  '^bin/chain-(test-(harness|shape)|known-red)\.py$'
+  '^test-evidence/known-red\.json$'
   # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
   # suite), the kind installer, and the Check suites with their shape judge
   '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
