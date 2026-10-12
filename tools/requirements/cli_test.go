@@ -987,3 +987,45 @@ func TestVerifyFreezeRejectsMalformedFrozenFile(t *testing.T) {
 		t.Fatalf("malformed frozen file not rejected: code=%d stderr=%q", code, stderr)
 	}
 }
+
+// ── goTestExists under the build rules (REQ-REL-007-AC3) ─────────────
+
+// A mapped Go test counts only when its file is selected on BOTH linux/amd64 and linux/arm64.
+func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
+	chdirTemp(t)
+	dir := "pkg"
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := func(name, constraint string) string {
+		return constraint + "package p\n\nimport \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n"
+	}
+	files := map[string]string{
+		"plain_test.go":           body("TestPlain", ""),
+		"linux_test.go":           body("TestLinuxOnlyByName", ""),
+		"ignore_test.go":          body("TestIgnored", "//go:build ignore\n\n"),
+		"oldtag_test.go":          body("TestOldTagIgnored", "// +build ignore\n\n"),
+		"win_windows_test.go":     body("TestWindowsByName", ""),
+		"mac_darwin_test.go":      body("TestDarwinByName", ""),
+		"only_amd64_test.go":      body("TestAmd64Only", ""),
+		"only_arm64_test.go":      body("TestArm64Only", ""),
+		"notlinux_test.go":        body("TestNotLinux", "//go:build !linux\n\n"),
+		"either_test.go":          body("TestEitherArch", "//go:build linux && (amd64 || arm64)\n\n"),
+		"linuxname_linux_test.go": body("TestLinuxName", ""),
+	}
+	for n, src := range files {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"TestPlain", "TestLinuxOnlyByName", "TestEitherArch", "TestLinuxName"} {
+		if !goTestExists(dir, name) {
+			t.Errorf("%s is selected on linux/amd64 and linux/arm64 but was not found", name)
+		}
+	}
+	for _, name := range []string{"TestIgnored", "TestOldTagIgnored", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux"} {
+		if goTestExists(dir, name) {
+			t.Errorf("%s is in a file the build rules exclude on a Linux platform but was accepted", name)
+		}
+	}
+}
