@@ -2385,5 +2385,115 @@ class EndingSurvivesTheBound(unittest.TestCase):
                                     "not read (the gate stops reading at %d problems)" % (G.MAX_PROBLEMS - 1))
 
 
+
+class LaunchFailures(unittest.TestCase):
+    """REQ-AUD-018-AC4 and AC5 ("a message naming it"), round 8: git that cannot be started (FileNotFoundError,
+    PermissionError, an OSError such as E2BIG, a subprocess error, a ValueError for an argument it cannot pass) is
+    turned into _git's RuntimeError at its one call of subprocess.run, so every record boundary refuses it naming the
+    record path and saying that no substitute is accepted. The failures are injected THROUGH subprocess.run."""
+
+    LEAD = SelectedRecordRefusals.LEAD
+    ERRORS = (FileNotFoundError(2, "No such file or directory"), PermissionError(13, "Permission denied"),
+              OSError(7, "Argument list too long"), subprocess.SubprocessError("launch failed"),
+              ValueError("embedded null byte"))
+
+    def launch_failing(self, when, exc):
+        """subprocess.run raising `exc` for the first git call `when(args)` accepts; the args are kept in self.hit."""
+        real = subprocess.run
+        self.hit = None
+        def run(cmd, *a, **k):
+            if self.hit is None and cmd[0] == "git" and when(tuple(cmd[1:])):
+                self.hit = tuple(cmd[1:])
+                raise exc
+            return real(cmd, *a, **k)
+        return unittest.mock.patch.object(G.subprocess, "run", run)
+
+    def why(self, exc):
+        return "git could not read it (git %s: could not be started (%s: %s))" % (" ".join(self.hit), type(exc).__name__, exc)
+
+    def test_git_turns_every_launch_failure_into_its_runtime_error(self):
+        for exc in self.ERRORS:
+            with self.launch_failing(lambda a: True, exc):
+                with self.assertRaises(RuntimeError) as cm:
+                    G._git("rev-parse", "HEAD")
+            self.assertEqual(str(cm.exception), "git rev-parse HEAD: could not be started (%s: %s)" % (type(exc).__name__, exc))
+
+    def judge(self, base, when, exc):
+        with self.launch_failing(when, exc):
+            rc, out, _ = run_main_utf8("--base", base, "--head", "HEAD")
+        self.assertIsNotNone(self.hit)
+        return rc, out
+
+    def test_the_selected_tree_path_lookup(self):
+        for exc in self.ERRORS:
+            with self.subTest(exc=type(exc).__name__):
+                c = CliRepo(); c.start(self)
+                c.change(".github/agent/bin/x.py", "b\n")
+                path = rec_path(c.tree())
+                rc, out = self.judge(c.base, lambda a: a[:2] == ("ls-tree", "-z") and a[-1] == path, exc)
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(out.splitlines(), [self.LEAD % (path, self.why(exc)) + ": " + NO_SUB])
+
+    def merged(self, make, at_legacy):
+        r = CliRepo().start(self)
+        r.change(".github/agent/bin/x.py", "b\n")
+        path = r.record(make, legacy=at_legacy)
+        r.change(".github/agent/bin/x.py", "c\n")
+        r.base = r.rev()
+        r.change(".github/agent/bin/x.py", "b\n")
+        self.assertEqual(r.judge()[0], 0)      # the merged record clears when git can be started
+        return r, path
+
+    def test_a_merged_record_read(self):
+        for make, at_legacy in ((good, False), (legacy, True)):
+            for exc in (FileNotFoundError(2, "No such file or directory"), OSError(7, "Argument list too long")):
+                with self.subTest(at_legacy=at_legacy, exc=type(exc).__name__):
+                    r, path = self.merged(make, at_legacy)
+                    rc, out = self.judge(r.base, lambda a: a[0] == "cat-file", exc)
+                    self.assertEqual(rc, 1, out)
+                    self.assertEqual(out.splitlines(), [self.LEAD % (path, self.why(exc)) + ": " + NO_SUB])
+
+    def test_the_legacy_path_lookup(self):
+        """Round 8, seat A: the lookup of the path the legacy tree hash names, with nothing at the tree-hash path."""
+        for exc in self.ERRORS + (RuntimeError("git ls-tree: fatal: not a tree"),):
+            with self.subTest(exc=type(exc).__name__):
+                c = CliRepo(); c.start(self)
+                c.change(".github/agent/bin/x.py", "b\n")
+                where = rec_path(c.legacy_tree())
+                if isinstance(exc, RuntimeError):      # a git that started and failed: through _git's own contract
+                    real = G._git
+                    def git(*a, **k):
+                        if a[:2] == ("ls-tree", "-z") and a[-1] == where:
+                            raise exc
+                        return real(*a, **k)
+                    with unittest.mock.patch.object(G, "_git", git):
+                        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+                    why = "git could not read it (%s)" % exc
+                else:
+                    rc, out = self.judge(c.base, lambda a: a[:2] == ("ls-tree", "-z") and a[-1] == where, exc)
+                    why = self.why(exc)
+                self.assertEqual(rc, 1, out)
+                self.assertEqual(out.splitlines(), [self.LEAD % (where, why) + ": " + NO_SUB])
+
+    def test_the_selected_record_s_first_problem_has_the_kept_line(self):
+        """Round 8, seat A: beside 150 failing added records, a malformed schema v2 selected record's FIRST problem is
+        written on the line kept for it, and its other problems are counted."""
+        c = CliRepo(); c.start(self)
+        for i in range(150):
+            c.write(rec_path("%064x" % (i + 100)), '{"schema": "%s"}' % V1)
+        c.write(".github/agent/bin/x.py", "b\n"); c.git("add", "-A"); c.git("commit", "-qm", "many")
+        def bad(t):
+            r = good(t); final(r)["codex_a"]["blockers_open"] = 1; final(r)["codex_b"]["blockers_open"] = 2; return r
+        path = c.record(bad)
+        rc, out, _ = run_main_utf8("--base", c.base, "--head", "HEAD")
+        self.assertEqual(rc, 1, out)
+        lines = out.splitlines()
+        self.assertEqual(len(lines), G.MAX_PROBLEMS + 1)
+        self.assertEqual(lines[G.MAX_PROBLEMS - 1],
+                         "::error file=%s::review gate (REQ-AUD-18 AC3): codex_a blockers_open is 1, want the integer 0" % path)
+        self.assertEqual(lines[-1], "::error::review gate: ... and 1 more problem(s) not shown; 51 more added record(s) "
+                                    "not read (the gate stops reading at %d problems)" % (G.MAX_PROBLEMS - 1))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
