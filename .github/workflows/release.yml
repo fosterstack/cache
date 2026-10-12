@@ -386,9 +386,9 @@ jobs:
     uses: ./.github/workflows/stage-reproducibility.yml
 
   # Check (rules 55, 58, 70; REQ-CHAIN-006): scanners, acceptance suites, the FIPS check and the customer-guide commands against the exact candidate
-  # digests, as three Witness steps. It needs Build and Sign (it verifies both on entry) and runs beside Rebuild, never after it.
+  # digests, as three Witness steps. It needs Build only (it verifies Build's record on entry; Release verifies Sign's) and runs beside Rebuild and Sign, never after them.
   check:
-    needs: [build, sign]
+    needs: build
     permissions:
       contents: read
       id-token: write

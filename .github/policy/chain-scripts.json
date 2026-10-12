@@ -362,7 +362,7 @@
     },
     {
       "path": "bin/check-stage.sh",
-      "sha256": "7b2c4d398fca956428ca1e6eb40b605c0fd328d8a5650d59897b75a98874c37b",
+      "sha256": "dd0121ee69b09ecf037bca2a6a15d333e962a9de314ffd2147187ee480b790f4",
       "tools": [
         "bash",
         "make",
@@ -388,11 +388,6 @@
         {
           "rule": "script-name",
           "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
           "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
         }
       ]
@@ -898,7 +893,7 @@
     },
     {
       "path": "bin/check-phase-arm64.sh",
-      "sha256": "5bad5e479e109f5a9136bfe78319ed6f3db13f2ccabfdeda50ceb84274badf1e",
+      "sha256": "6065475e20aac72ccd9ab6f0845e29fe7dc4a67c9dab194cfcdf33a5e8cb2711",
       "tools": [
         "bash",
         "make",
@@ -919,11 +914,6 @@
         {
           "rule": "script-name",
           "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
-          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
-        },
-        {
-          "rule": "script-name",
-          "text": "python3 -I -B bin/chain-verify.py verify --stage sign --record provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json",
           "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
         }
       ]
