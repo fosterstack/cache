@@ -535,7 +535,7 @@ ARMED99=true DISARMFAIL=1 cand "" 1 "armed with no verdict and the disarm fails 
 LOOKUP99=fail cand "91 none," 1 "a failed check lookup skips that PR and FAILS the step (round-2 P2)"
 ONLY=90 cand "" 0 "pr=90 (a patch) selects nothing"
 
-# the pinned tool module (tools/govulncheck: go.mod and go.sum, with the version also written in ci.yml) is the human lane's: a bump there is never a candidate, never armed, and an
+# the pinned tool module (tools/govulncheck: go.mod and go.sum, with the version also written in ci.yml) is held out of auto-merge and handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): a bump there is never a candidate, never armed, and an
 # earlier arm is turned off (advisor Oct 12); a path that only looks like it is not held
 mkheld() { # mkheld NUMBER FILES-JSON : a major PR (the body of #99) that changes those files
   jq -n --slurpfile a "$FIX/pr-99.json" --arg n "$1" --argjson f "$2" '($a[0] + {number: ($n|tonumber), headRefOid: ("sha" + $n), files: $f})'
@@ -544,7 +544,7 @@ HELD='[{"path":"tools/govulncheck/go.mod"},{"path":"tools/govulncheck/go.sum"}]'
 jq -n --argjson h "$(mkheld 77 "$HELD")" '[$h]' > "$w/prs-held.json"
 jq -n --argjson h "$(mkheld 77 '[{"path":"go.mod"},{"path":"tools/govulncheck/go.sum"}]')" '[$h]' > "$w/prs-mixed.json"
 jq -n --argjson h "$(mkheld 77 '[{"path":"tools/govulncheck-evil/go.mod"}]')" '[$h]' > "$w/prs-lookalike.json"
-PRSF="$w/prs-held.json" cand "" 0 "a major whose files are tools/govulncheck/go.mod and go.sum is not a candidate (the human lane's)"
+PRSF="$w/prs-held.json" cand "" 0 "a major whose files are tools/govulncheck/go.mod and go.sum is not a candidate (held out of auto-merge: a normal lane PR)"
 grep -q "api repos/o/r/commits/sha77" "$w/gh.log" && { echo "FAIL: held: the held PR's checks were looked up (it was handled as a reviewable major)"; fail=$((fail+1)); } || { echo "ok: held: no verdict lookup, no review for the held PR"; pass=$((pass+1)); }
 PRSF="$w/prs-mixed.json" cand "" 0 "a PR with one file under tools/govulncheck/ among others is held too"
 ARMED99=true PRSF="$w/prs-held.json" cand "" 0 "a held PR that is armed is disarmed and still not a candidate"
@@ -553,6 +553,17 @@ ARMED99=false PRSF="$w/prs-held.json" cand "" 0 "a held PR that is not armed is 
 grep -q "disable-auto" "$w/gh.log" && { echo "FAIL: held: a needless disarm"; fail=$((fail+1)); } || { echo "ok: held: no needless disarm"; pass=$((pass+1)); }
 ARMED99=true DISARMFAIL=1 PRSF="$w/prs-held.json" cand "" 1 "a held PR that is armed and cannot be disarmed fails the step (nothing is left armed silently)"
 PRSF="$w/prs-lookalike.json" cand "77 none," 0 "tools/govulncheck-evil/ is not the held directory: an ordinary major"
+# a PR whose file list is at the 100 the API returns cannot be judged (a held path could be beyond it): held too; 99 files can be judged
+files_n() { jq -c -n --argjson n "$1" '[range($n) | {path: ("docs/f\(.).md")}]'; }
+jq -n --argjson h "$(mkheld 77 "$(files_n 99)")" '[$h]' > "$w/prs-f99.json"
+jq -n --argjson h "$(mkheld 77 "$(files_n 100)")" '[$h]' > "$w/prs-f100.json"
+jq -n --argjson h "$(mkheld 77 "$(files_n 150)")" '[$h]' > "$w/prs-f150.json"
+PRSF="$w/prs-f99.json" cand "77 none," 0 "99 files, none under tools/govulncheck/: judged as an ordinary major (the boundary below the cap)"
+PRSF="$w/prs-f100.json" cand "" 0 "100 files (the API's cap: the list may be cut): not judged, held out of auto-merge, not a candidate"
+PRSF="$w/prs-f150.json" cand "" 0 "more than 100 files: held out too"
+ARMED99=true PRSF="$w/prs-f100.json" cand "" 0 "a 100-file PR that is armed is disarmed"
+grep -q "pr merge --disable-auto 77" "$w/gh.log" && { echo "ok: held: the armed 100-file PR was disarmed"; pass=$((pass+1)); } || { echo "FAIL: held: the armed 100-file PR was not disarmed"; fail=$((fail+1)); }
+ARMED99=true DISARMFAIL=1 PRSF="$w/prs-f100.json" cand "" 1 "a 100-file PR that is armed and cannot be disarmed fails the step"
 
 # ============================================================================ streak step
 streak() { # history rc-expect want-issue name
