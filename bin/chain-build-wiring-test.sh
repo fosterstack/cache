@@ -1544,7 +1544,7 @@ else:
     steps = r.get("steps") or []
     if len(steps) != 1 or "exit 1" not in str(steps[0].get("run", "")) or steps[0].get("uses") or "continue-on-error" in steps[0] or "continue-on-error" in r:
         bad.append("rc-refusal is not exactly one run step that exits 1")
-for jn in ("scans", "acceptance-artifacts", "acceptance", "acceptance-egress", "acceptance-k8s", "acceptance-predicate", "authorization", "promotion"):
+for jn in ("promotion",):   # PR 3 removed the other old publishing jobs; the stage jobs that remain (promotion, until PR 4) must skip an rc tag
     c = str((jobs.get(jn) or {}).get("if", ""))
     if "!inputs.dry-run" not in c or "!contains(github.ref_name, '-rc')" not in c: bad.append("%s does not skip an rc tag: %r" % (jn, c))
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
@@ -1556,7 +1556,7 @@ rcg() { # rcg ok|caught LABEL [sed-expr]
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
 rcg ok "the real release.yml refuses an rc tag (rc-refusal) and skips the old publishing path on it"
 rcg caught "promotion that does not skip an rc tag is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
-rcg caught "scans that does not skip an rc tag is caught" '/^  scans:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
+rcg caught "a promotion that does not skip an rc tag by the conjunct alone is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !inputs.dry-run//'
 rcg caught "an rc-refusal that no longer exits 1 is caught" '/^  rc-refusal:/,/^  [a-z]/ s/exit 1/true/'
 rcg caught "an rc-refusal that also runs on a final tag is caught" "/^  rc-refusal:/,/^  [a-z]/ s/ \&\& contains(github.ref_name, '-rc')//"
 rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-gone:/'
@@ -1867,7 +1867,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=656
+EXPECT=645
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

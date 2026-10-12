@@ -89,30 +89,15 @@
    "id": "KR-BUILD-1",
    "suite": "bin/chain-build-wiring-test.sh",
    "case": "005-AC5 the real release.yml chain jobs",
-   "reason": "release.yml still has the old chain jobs (scans, acceptance*, authorization, promotion) and lacks the check and release jobs: PR 3 replaces the first group with Check, PR 4 with Release",
-   "green_by": "PR 3 and PR 4",
+   "reason": "release.yml still has the old promotion job and lacks the release job: PR 4 replaces it with Release (PR 3 replaced the old scans, acceptance and authorization jobs with check)",
+   "green_by": "PR 4 (the release job; PR 3 replaced the old scans, acceptance and authorization jobs with check)",
    "findings": [
     "workflow-level permissions must be exactly contents: read (every job asks for what it needs), got {'contents': 'write', 'id-token': 'write', 'attestations': 'write', 'packages': 'write', 'checks': 'read', 'statuses': 'read', 'pull-requests': 'read'}",
-    "chain job check is missing (the job id is the stage name, so a failure names it)",
     "chain job release is missing (the job id is the stage name, so a failure names it)",
-    "job scans has a job-level uses (./.github/workflows/stage-verify.yml): only the five chain jobs call a workflow",
-    "job scans is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job acceptance-artifacts has a job-level uses (./.github/workflows/stage-acceptance-artifacts.yml): only the five chain jobs call a workflow",
-    "job acceptance-artifacts is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job acceptance has a job-level uses (./.github/workflows/acceptance.yml): only the five chain jobs call a workflow",
-    "job acceptance is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job acceptance-egress has a job-level uses (./.github/workflows/stage-acceptance-egress.yml): only the five chain jobs call a workflow",
-    "job acceptance-egress is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job acceptance-k8s has a job-level uses (./.github/workflows/stage-acceptance-k8s.yml): only the five chain jobs call a workflow",
-    "job acceptance-k8s is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job acceptance-predicate has a job-level uses (./.github/workflows/stage-acceptance-predicate.yml): only the five chain jobs call a workflow",
-    "job acceptance-predicate is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job authorization has a job-level uses (./.github/workflows/stage-authorize.yml): only the five chain jobs call a workflow",
-    "job authorization is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
     "job promotion has a job-level uses (./.github/workflows/stage-promote.yml): only the five chain jobs call a workflow",
     "job promotion is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
     "job rc-refusal is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job patch-failed must need exactly ['build', 'check', 'rebuild', 'release', 'sign'], got ['acceptance', 'acceptance-artifacts', 'acceptance-egress', 'acceptance-k8s', 'acceptance-predicate', 'authorization', 'build', 'promotion', 'rebuild', 'scans', 'sign']"
+    "job patch-failed must need exactly ['build', 'check', 'rebuild', 'release', 'sign'], got ['build', 'check', 'promotion', 'rebuild', 'sign']"
    ]
   },
   {

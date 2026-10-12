@@ -399,13 +399,14 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "2da83fbf19e33d942dc09ba297fcf3826bc65f20047f0e3b27711b7725ea5f3c",
+      "sha256": "be4721e445ee64d3d286d27ceb07f58e6cb18eede5def8e2b749c0af3b3a927b",
       "tools": [
         "find",
         "python3",
         "script",
         "sed",
         "source",
+        "tar",
         "trap"
       ],
       "runs": [
@@ -416,11 +417,12 @@
     },
     {
       "path": "bin/check-fips.sh",
-      "sha256": "7d5c08c8a160f8e450974e52be9bafac8f83bdfa07bcae19a05c0a929263fb51",
+      "sha256": "45358b09b1a7724908724782ea9afbf642dfde94f0ddf5a22f15e896fc61f5d8",
       "tools": [
         "curl",
         "docker",
         "sed",
+        "tar",
         "trap"
       ],
       "runs": [],
@@ -429,13 +431,14 @@
     },
     {
       "path": "bin/check-acceptance.sh",
-      "sha256": "9608b6f495d3eac144c02bae259e0cbdeaba7d6a9e92aa8bd210376f89f32397",
+      "sha256": "ab6bc49fbc37cd4a666501011ed96d3e5e0204c51ad8a7a527bd6b402ffda99f",
       "tools": [
         "bash",
         "docker",
         "env",
         "script",
         "sed",
+        "tar",
         "trap"
       ],
       "runs": [
@@ -865,7 +868,7 @@
     },
     {
       "path": "bin/check-artifacts.sh",
-      "sha256": "2501123e8a17a1a45b814f28522832fd5bf84dd6dfc277a309167333066ebe59",
+      "sha256": "2695f35ea6d3c4f97eca63c7838b98e480387f2f4e9c6901dbe36d6b32b760ca",
       "tools": [
         "at",
         "curl",
@@ -885,7 +888,7 @@
     },
     {
       "path": "bin/check-image-platforms.py",
-      "sha256": "d0403bf764fc978c051ab8f469fd8df869d1c777139f3e312986980da960f100",
+      "sha256": "ea009d1e7467e7b7e992a219237e3874a1cb756485c6961e427fecf24346625d",
       "tools": [
         "at"
       ],

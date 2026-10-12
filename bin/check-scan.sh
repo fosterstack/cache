@@ -24,6 +24,8 @@
 # run, found anything, reports no version or zero packages, or when the number that ran differs from the number listed.
 # Writes OUT/scan-results.json {listed, ran, scanners: [{name, version, verdict, subjects: [{name, digest, packages, verdict}]}]}.
 set -euo pipefail
+# an OCI layout directory (PR 2's interface, PROPOSED): oci-layout and an index.json; a docker-save tarball or any other directory is refused
+is_layout() { [ -d "$1" ] && [ -f "$1/oci-layout" ] && [ -f "$1/index.json" ]; }
 usage() { echo "usage: check-scan.sh --scanners FILE --digests FILE --images DIR --archives DIR --out DIR" >&2; exit 2; }
 fail() { echo "check-scan: $*" >&2; exit 1; }
 list="" digests="" images="" archives="" out=""
@@ -48,7 +50,7 @@ mapfile -t scanners < <(jq -r '.scanners[]' "$list")
 for v in production fips; do
   d=$(jq -r --arg k "image-$v" '.[$k] // empty' "$digests")
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
-  [ -f "$images/$v.tar" ] || fail "the $v image $images/$v.tar is missing"
+  is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
 shopt -s nullglob
 # REQ-PLAT-001-AC1 (Linux only): the archive set is exactly the four Linux archives, fscache and fscache-fips for amd64 and arm64, of one version,
@@ -108,7 +110,7 @@ for s in "${scanners[@]}"; do
   [ -n "$version" ] || { echo "check-scan: $s reports no version" >&2; verdict=fail; }
   subjects="[]"
   tname=() tdigest=() tpath=()
-  for v in production fips; do add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v.tar"; done
+  for v in production fips; do add_target "$v" "$(jq -r --arg k "image-$v" '.[$k]' "$digests")" "$images/$v"; done
   if [ "$s" = grype ]; then
     for a in "${tars[@]}"; do add_target "$(basename "$a")" "sha256:$(sha256sum "$a" | cut -d' ' -f1)" "$a"; done
   else
@@ -120,9 +122,9 @@ for s in "${scanners[@]}"; do
     : > "$tmp/out.json"; rm -f "$tmp/sbom.json"
     case "$s:$path" in
       grype:*.tar.gz) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "file:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
-      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-archive:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
+      grype:*) GRYPE_DB_AUTO_UPDATE=false GRYPE_DB_MAX_ALLOWED_BUILT_AGE=48h grype "oci-dir:$path" --fail-on negligible --vex "$VEX" -o json -o "cyclonedx-json=$tmp/sbom.json" > "$tmp/out.json" || rc=$? ;;
       osv-scanner:*.mod) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan source --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
-      osv-scanner:*) OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$path" > "$tmp/out.json" || rc=$? ;;
+      osv-scanner:*) tar -C "$path" -cf "$tmp/img-$name.tar" . && OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY="$osvcache" osv-scanner scan image --archive --offline-vulnerabilities --download-offline-databases --format json --all-packages "$tmp/img-$name.tar" > "$tmp/out.json" || rc=$? ;;
     esac
     # A tool that failed before writing leaves nothing to read, and anything but a number is 0 packages (did not run).
     if [ "$s" = grype ]; then
