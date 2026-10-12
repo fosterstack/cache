@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io"
@@ -376,6 +377,9 @@ func goTestExists(dir, name string) bool {
 		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), "_test.go") {
 			continue
 		}
+		if !buildSelected(dir, e.Name()) {
+			continue
+		}
 		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
 		if err != nil {
 			continue
@@ -387,6 +391,21 @@ func goTestExists(dir, name string) bool {
 		}
 	}
 	return false
+}
+
+// buildSelected reports whether the Go build rules (file-name GOOS/GOARCH suffixes, //go:build and // +build lines)
+// select the file on BOTH linux/amd64 and linux/arm64, the two platforms this project ships (REQ-REL-007-AC3); a test
+// in a file either platform excludes does not run there and does not count. A file whose constraints cannot be read is
+// not selected.
+func buildSelected(dir, name string) bool {
+	for _, arch := range []string{"amd64", "arm64"} {
+		ctx := build.Default
+		ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled, ctx.BuildTags = "linux", arch, false, nil
+		if ok, err := ctx.MatchFile(dir, name); err != nil || !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // goTestName is what `go test` runs: Test, then nothing or a character that is not a lower-case letter.
