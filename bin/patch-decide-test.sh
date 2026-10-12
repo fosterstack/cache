@@ -115,7 +115,16 @@ check("B05 a higher released rc keeps :X and :latest", P.floating("v0.2.2", ["v2
 check("B05 a lower rc does not", P.floating("v0.2.2", ["v0.2.1", "v0.2.2-rc.1"]) == ["0.2", "0", "latest"], P.floating("v0.2.2", ["v0.2.1", "v0.2.2-rc.1"]))
 check("B05 the final release outranks its own rc", P.floating("v1.0.0", ["v1.0.0-rc.2"]) == ["1.0", "1", "latest"])
 # B06: no vendor or model names, the wider set
-txt = P.notes("v0.2.2", [], [{"cve": "CVE-2099-0001", "status": "fixed", "change": "confirmed by Meta Llama, Mistral, Grok, DeepSeek, Qwen and Copilot"}])
+# r9: notes() prints only the VEX lines vex_changes makes (a hand-built 'change' text outside that grammar is refused), so the
+# names ride in a changed field's name
+txt = P.notes("v0.2.2", [], P.vex_changes({"statements": [{"vulnerability": {"name": "CVE-2099-0001"}, "status": "fixed"}]},
+                                          {"statements": [{"vulnerability": {"name": "CVE-2099-0001"}, "status": "fixed",
+                                                           "confirmed by Meta Llama, Mistral, Grok, DeepSeek, Qwen and Copilot": 1}]}))
+try:
+    P.notes("v0.2.2", [], [{"cve": "CVE-2099-0001", "status": "fixed", "change": "confirmed by Meta Llama"}]); got = "accepted"
+except ValueError:
+    got = "ValueError"
+check("r9: a hand-built VEX change outside the printed grammar is refused by notes()", got == "ValueError", got)
 check("B06 notes name no vendor or model (wider set)", not re.search(r"(?i)meta|llama|mistral|grok|deepseek|qwen|copilot", txt), txt)
 check("B06 ordinary words survive (metadata, opusculum?)", "metadata" in P._clean("the release metadata"), P._clean("the release metadata"))
 # --- Sonnet #158 r2 (NEW-01, NEW-02)
@@ -1314,15 +1323,16 @@ try:
         got_ = repr(e)
     check("AC8 VEX relabel (r3, B gap): three FINAL lines that read alike are each relabelled by position",
           got_ == ["- CVE-N: not_affected (added) — statement %d of the new document" % i for i in (1, 2, 3)], got_)
-    # names and labels intact, only the change text redacted alike: the relabel loop alone tells the two lines apart
-    P._clean = lambda s: re.sub(r"\((added|removed)\)", "(-)", real_clean_(s))
+    # names and labels intact, only the change text redacted alike: the relabel loop alone tells the two lines apart (r9:
+    # the redactor writes '(added)' for both, a form inside the VEX line grammar notes() checks its lines against)
+    P._clean = lambda s: re.sub(r"\((added|removed)\)", "(added)", real_clean_(s))
     try:
         got_ = vlines(P.notes("v0.2.3", [], P.vex_changes(vd(vs(products=5)), vd(vs(products=5, status_notes="n2")))))
     except Exception as e:      # noqa: BLE001
         got_ = repr(e)
     check("AC8 VEX relabel (r3, B gap): removed + added lines that read alike only after redaction: each relabelled by position",
-          got_ == ["- CVE-7 [products unreadable]: not_affected (-) — statement 1 of the new document",
-                   "- CVE-7 [products unreadable]: not_affected (-) — statement 1 of the old document"], got_)
+          got_ == ["- CVE-7 [products unreadable]: not_affected (added) — statement 1 of the new document",
+                   "- CVE-7 [products unreadable]: not_affected (added) — statement 1 of the old document"], got_)
     P._clean = lambda s: re.sub(r"\d+ of the (old|new) document", "N of the document", re.sub(r"^- CVE-\d+", "- CVE-N", real_clean_(s)))
     try:
         got_ = vlines(P.notes("v0.2.3", [], P.vex_changes(None, vd(*(vs(vulnerability={"name": "CVE-%d" % i}) for i in (1, 2))))))
@@ -1556,8 +1566,15 @@ check("AC8 VEX redaction marker (r4, B low): a name and a document field 'gpt' p
       vlines(nt_) == ["- (redacted): fixed (added) — statement 2 of the new document", "- document fields changed ((redacted))"]
       and "<redacted>" not in nt_ and all(inert(l) for l in vlines(nt_)), vex_part(nt_))
 old_ = "## v0.2.2 — patch release\n\n### VEX\n- <redacted>: fixed (added)\n"
-check("AC8 VEX redaction marker (r4, B low; r5 escaped, A R4-4): an older tag's '<redacted>' is shown as '(redacted)' in the changelog",
-      "- \\(redacted\\)\\: fixed \\(added\\)\n" in P.changelog(old_, None, "")[0], P.changelog(old_, None, "")[0])
+def _r9_refuses(f, *a):
+    try:
+        f(*a)
+    except ValueError:
+        return True
+    return False
+check("AC14 (r9; was r4/r5 'an older tag's <redacted> shown escaped'): '- <redacted>: fixed (added)' under a '### VEX' heading "
+      "the generator does not write there, outside the VEX line grammar, is refused as changelog input",
+      _r9_refuses(P.changelog, old_, None, ""))
 ent_ = ["A gpt-assisted fix (advisor 0130)."]
 # r8 (REQ-REL-009-AC14, advisor step 5): the historical forms are cut back; an entry is published only as the line
 # notes() prints for it (no published text ever held another marker form: no CHANGELOG.md on main, no v* tag says 'redacted')
@@ -2422,6 +2439,131 @@ try:
 finally:
     P.main = orig_main_
 check("r9 B F7: a main() that prints on a refusal is caught by the notes and changelog helpers", caught_n and caught_c, (caught_n, caught_c))
+# ===== round 9 self-review: neighbour mutants of each round-8 family, each refused (or, for selection, judged on the
+# match that produced the fix)
+# family 1, VEX-section forgeries: a line or heading near the generated VEX section that is not exactly what notes()
+# prints is not exempt; each is refused as the changelog's notes, as history, and in a tag's notes (exit 2)
+VEXM_ = [("trailing text after a quoted value", GEN_B.replace("- no change", '- `"<b>"`: fixed (added) <!--')),
+         ("a bare product holding '<'", GEN_B.replace("- no change", "- CVE-1 [<b>]: fixed (added)")),
+         ("a bare field name holding '<'", GEN_B.replace("- no change", "- CVE-1: fixed (changed: <b>)")),
+         ("a statement label opening a comment", GEN_B.replace("- no change", "- CVE-1: fixed (added) — statement <!--")),
+         ("a document-fields line with a character reference", GEN_B.replace("- no change", "- document fields changed (&amp;)")),
+         ("'- no change' with text after it", GEN_B.replace("- no change", "- no change &amp;")),
+         ("a status outside OpenVEX's four", GEN_B.replace("- no change", '- `"<b>"`: bogus (added)')),
+         ("a code span with a space inside", GEN_B.replace("- no change", '- `"<b>" `: fixed (added)')),
+         ("a quoted value not in _lit's spelling ('\\/')", GEN_B.replace("- no change", '- `"<b\\/"`: fixed (added)')),
+         ("a quoted value holding '-----BEGIN '", GEN_B.replace("- no change", '- `"-----BEGIN x"`: fixed (added)')),
+         ("a VEX line after a blank line in the section", GEN_B.replace("- no change", '- no change\n\n- `"<b>"`: fixed (added)')),
+         ("'### VEX ' with a trailing space", GEN_B.replace("### VEX\n- no change", '### VEX \n- `"<b>"`: fixed (added)')),
+         ("a Fixes section holding a prose line", GEN_B.replace("- none (dependency or VEX maintenance only)",
+                                                                "- none (dependency or VEX maintenance only)\ntext").replace("- no change", '- `"<b>"`: fixed (added)')),
+         ("a Fixes section with no bullet", GEN_B.replace("- none (dependency or VEX maintenance only)\n", "").replace("- no change", '- `"<b>"`: fixed (added)'))]
+for what_, body_ in VEXM_:
+    trc_, terr_, tout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", body_))
+    check("r9 self-review VEX forgery: %s is refused as the changelog's notes, as history and in a tag's notes (exit 2, no stdout)" % what_,
+          is_ve(refused(P.changelog, body_, None, "")) and is_ve(refused(P.changelog, GOOD_NT, "# Changelog\n\n" + body_, ""))
+          and trc_ == 2 and tout_ == "", (refused(P.changelog, body_, None, ""), trc_, terr_))
+nt_ = P.notes("v0.2.3", [], P.vex_changes(vd(VS), vd(VS, vs(vulnerability={"name": "<b>"}), vs(vulnerability={"name": "-----BEGIN x"}),
+                                                     vs(vulnerability={"name": "gpt <x>"}))))
+check("r9 self-review VEX forgery control: generated VEX lines holding '<b>', a five-hyphen run and a redacted '<x>' pass "
+      "notes, tag-notes and changelog unchanged", P.tag_notes(mktag("v0.2.3", nt_)) == nt_ and P.changelog(nt_, None, "")[0] == "# Changelog\n\n" + nt_
+      and all(P._vex_stmt(l) for l in vlines(nt_)), vex_part(nt_))
+# family 2, collision sets: any two published lines that are the same line — fix, behavior or VEX, after redaction and
+# escaping, from the API or the CLI — are refused, both named
+FX1_ = {"cve": "CVE-1", "package": "pkg", "old": "1", "new": "2", "severity": "Low", "variants": ["(advisor 0130"]}
+ENT1_ = "CVE-1 in pkg: 1 → 2 (severity Low; variants: (advisor 0130)"
+COLL_ = [("two identical fix records", [FX1_, dict(FX1_)], []),
+         ("two fix records alike after redaction", [dict(FX1_, package="gpt"), dict(FX1_, package="claude")], []),
+         ("a fix line and an entry", [FX1_], [ENT1_]),
+         ("a fix line and an entry alike after redaction", [dict(FX1_, package="gpt")], [ENT1_.replace("pkg", "claude")]),
+         ("a fix line and an entry alike after escaping", [dict(FX1_, package="[click]gpt")], [ENT1_.replace("pkg", "[click]claude")]),
+         ("two identical entries", [], ["Same (advisor 0130).", "Same (advisor 0130)."]),
+         ("two entries alike after redaction", [], ["gpt helper (advisor 0130).", "claude helper (advisor 0130)."])]
+for what_, fx_, beh_ in COLL_:
+    check("r9 self-review collision: %s is refused by notes()" % what_, is_ve(refused(P.notes, "v0.2.3", fx_, [], behavior=beh_)),
+          refused(P.notes, "v0.2.3", fx_, [], behavior=beh_))
+GO1_ = {"(advisor 0130": {"matches": [M("CVE-2099-1", "golang.org/x/net", "v0.30.0", sev="High", fixv=["v0.33.0"], typ="go-module")]}}
+ENT_GO = "CVE-2099-1 in golang.org/x/net: v0.30.0 → v0.33.0 (severity High; variants: (advisor 0130)"
+rc_, err_, out_, p_ = notes_cli2(GO1_, nrn="# Notes\n\n- %s\n" % ENT_GO.replace("(severity", "\n  (severity"))
+check("r9 self-review collision: an entry over two lines joining to a fix line: refused, the key path and the entry line named",
+      refused_at(rc_, err_, out_, p_["(advisor 0130"] + ":matches[0]:") and p_["nn"] + ":3:" in err_, (rc_, err_))
+rc_, err_, out_, p_ = notes_cli2(GO1_, nrn="# Notes\n\n- %s\n" % ENT_GO, published="## v0.2.2 — patch release\n\n- %s\n" % ENT_GO)
+check("r9 self-review collision: a fix line and an entry already published: still refused before the entry is dropped",
+      refused_at(rc_, err_, out_, p_["nn"] + ":3:"), (rc_, err_))
+rc_, err_, out_, p_ = notes_cli2(GO1_, nrn="# Notes\n\n- Same (advisor 0130).  \n- Same (advisor 0130).\n")
+check("r9 self-review collision: two entries differing by trailing spaces: refused, both lines named",
+      refused_at(rc_, err_, out_, p_["nn"] + ":3:") and p_["nn"] + ":4:" in err_, (rc_, err_))
+# family 3, selection: the source judged is the match that produced the printed record (the first fixed match, variants
+# sorted, document order), never an unfixed or later one
+SELM_ = [("deb: unfixed '<b>' first, fixed clean second", {"": {"matches": [M("C-1", "l", "<b>"), M("C-1", "l", "1", fixv=["2"])]}}, None),
+         ("deb: unfixed clean first, fixed '&amp;' second", {"": {"matches": [M("C-1", "l", "1"), M("C-1", "l", "1", sev="&amp;", fixv=["2"])]}}, ("", 1)),
+         ("go: unfixed '<b>' first, fixed clean second", {"": {"matches": [M("C-1", "golang.org/x/net", "<b>", fixv=["v9.0.0"], typ="go-module"),
+                                                                           M("C-1", "golang.org/x/net", "v0.30.0", fixv=["v0.33.0"], typ="go-module")]}}, None),
+         ("go: unfixed clean first, fixed '<b>' second", {"": {"matches": [M("C-1", "golang.org/x/net", "v0.30.0", fixv=["v9.0.0"], typ="go-module"),
+                                                                           M("C-1", "golang.org/x/net", "v0.30.0", sev="<b>", fixv=["v0.33.0"], typ="go-module")]}}, ("", 1)),
+         ("unfixed '<b>' in the default scan, fixed clean in fips", {"": {"matches": [M("C-1", "l", "<b>")]},
+                                                                      "fips": {"matches": [M("C-1", "l", "1", fixv=["2"])]}}, None),
+         ("unfixed clean in the default scan, fixed '<b>' in fips", {"": {"matches": [M("C-1", "l", "1")]},
+                                                                      "fips": {"matches": [M("C-1", "l", "1", sev="<b>", fixv=["2"])]}}, ("fips", 0)),
+         ("both fixed, the first holding '<b>'", {"": {"matches": [M("C-1", "l", "<b>", fixv=["2"]), M("C-1", "l", "1", fixv=["2"])]}}, ("", 0)),
+         ("another CVE's unfixed '<b>' before the fix", {"": {"matches": [M("C-9", "l", "<b>"), M("C-1", "l", "1", fixv=["2"])]}}, None),
+         ("the sorted-first variant fixed with '<b>', a later one clean", {"zz": {"matches": [M("C-1", "l", "1", fixv=["2"])]},
+                                                                          "aa": {"matches": [M("C-1", "l", "1", sev="<b>", fixv=["2"])]}}, ("aa", 0)),
+         ("the sorted-first variant fixed clean, a later one unfixed '<b>'", {"aa": {"matches": [M("C-1", "l", "1", fixv=["2"])]},
+                                                                            "zz": {"matches": [M("C-1", "l", "<b>")]}}, None)]
+for what_, scans_, want_ in SELM_:
+    rc_, err_, out_, p_ = notes_cli2(scans_, base=[])
+    if want_ is None:
+        ok_ = rc_ == 0 and out_ is not None and "<b>" not in out_
+    else:
+        ok_ = refused_at(rc_, err_, out_, "%s:matches[%d]" % (p_[want_[0]], want_[1]))
+    check("r9 self-review selection: %s: %s" % (what_, "written" if want_ is None else "refused, named matches[%d] of that scan" % want_[1]),
+          ok_, (rc_, err_))
+rngs_ = random.Random(909)
+bad_ = []
+for it_ in range(300):
+    docs_, rel_ = {}, {}
+    for v_ in rngs_.sample(["", "fips", "debug"], rngs_.randint(1, 3)):
+        ms_ = [M("C-%d" % rngs_.randint(1, 2), "golang.org/x/net", rngs_.choice(["v0.30.0", "v0.31.0", "v0.32.0"]),
+                 sev=rngs_.choice(["Low", "High"]), fixv=[rngs_.choice(["v0.33.0", "v9.0.0"])], typ="go-module") for _ in range(rngs_.randint(1, 4))]
+        docs_[v_] = ("scan-%s" % v_, {"matches": ms_})
+        rel_[v_] = P.grype_findings(docs_[v_][1])
+    head_ = {"go": {"golang.org/x/net": "v0.33.0"}, "base_findings": []}
+    fx_ = P.fixed_findings(rel_, head_)
+    locs_ = P.check_fix_sources(fx_, docs_, "go.mod", "module x\n\nrequire golang.org/x/net v0.33.0\n", head_)
+    for f_, loc_ in zip(fx_, locs_):
+        m_ = re.match(r"scan-(\w*):matches\[(\d+)\]:", loc_)
+        src_ = docs_[m_.group(1)][1]["matches"][int(m_.group(2))]
+        if (src_["artifact"]["version"], src_["vulnerability"]["severity"], src_["vulnerability"]["id"]) != (f_["old"], f_["severity"], f_["cve"]) \
+                or src_["vulnerability"]["fix"]["versions"] != ["v0.33.0"]:
+            bad_.append((it_, f_, loc_))
+check("r9 self-review selection property: 300 random multi-variant scans: every record's judged source is a fixed match whose "
+      "values are exactly the printed ones", bad_ == [], bad_[:2])
+# family 4, exit codes: a generated tag's notes region holding a refused form exits 2 naming the line; a tag that is not
+# ours exits 1; notes and changelog refusals exit 2 with nothing on stdout
+SIGB_ = "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n"
+EXM_ = [("a behavior line", mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- a -----BEGIN b (advisor 0130).")), 2, ":10:"),
+        ("the Fixes line", mktag("v0.2.3", GEN_B.replace("- none (dependency or VEX maintenance only)", "- -----BEGIN x")), 2, ":4:"),
+        ("a VEX line", mktag("v0.2.3", GEN_B.replace("- no change", "- -----BEGIN x")), 2, ":7:"),
+        ("a prose line", mktag("v0.2.3", GEN_B + "\nsee -----BEGIN x\n"), 2, ":12:"),
+        ("a whole second signed block before the real one", mktag("v0.2.3", GEN_B + "\n" + SIGB_), 2, ":12:"),
+        ("a second signed block after the real one", mktag("v0.2.3", GEN_B) + SIGB_, 2, ":11:"),
+        ("'<b>' in a behavior line", mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- <b> (advisor 0130).")), 2, ":10:"),
+        ("a marker line continuing the line above", mktag("v0.2.3", GEN_B + "\n[a](/u \"\nx gpt\n\")\n"), 2, ":13:"),
+        ("an owner's tag with two delimiters", (mktag("v0.2.3", GEN_B) + SIGB_).replace("fosterstack release <release@users.noreply.github.com>", "O <o@x>"), 1, None),
+        ("the release tagger with an SSH signature last", (mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- -----BEGIN x")))
+         .replace("SIGNED MESSAGE", "SSH SIGNATURE"), 1, None),
+        ("another version's heading with a delimiter", mktag("v0.2.4", GEN_B.replace("- x (advisor 0130).", "- -----BEGIN x")), 1, None),
+        ("no signature at all", mktag("v0.2.3", GEN_B).split("-----BEGIN")[0], 1, None)]
+for what_, raw_, want_rc, line_ in EXM_:
+    rc_, err_, sout_ = cli(["tag-notes"], stdin=raw_)
+    check("r9 self-review exit code: tag-notes, %s: exit %d%s, nothing printed" % (what_, want_rc, ", " + line_ + " named" if line_ else ""),
+          rc_ == want_rc and sout_ == "" and (line_ is None or "tag message" + line_ in err_), (rc_, err_, sout_))
+rc_, err_, out_, p_ = notes_cli2({"": {"matches": [M("C-1", "l", "1", sev="<b>", fixv=["2"])]}}, base=[])
+check("r9 self-review exit code: a notes refusal exits 2, nothing on stdout, no file", refused_at(rc_, err_, out_, p_[""]), (rc_, err_))
+rc_, err_, cl_, nnout_, p_ = changelog_cli(GEN_B.replace("- no change", "- <!--"), HIST6, NN6)
+check("r9 self-review exit code: a changelog refusal exits 2, nothing on stdout, both files unchanged",
+      rc_ == 2 and LAST_STDOUT[0] == "" and cl_ == HIST6 and nnout_ == NN6, (rc_, err_))
 shutil.rmtree(r8_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

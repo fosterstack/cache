@@ -312,17 +312,63 @@ def _clean_free(line):
 
 
 VEX_HEAD = "### VEX"
+# The grammar of the lines notes() prints in its VEX section (Codex #300 r8, A High / B F1: refuse, don't decode). A value
+# prints through _lit: a quoted JSON string in a code span (ASCII, no backtick), or a bare token — letters, digits and
+# - . _ / : only, where redaction may have left the marker '(redacted)'. Nothing else in a VEX line comes from a document.
+VEX_SPAN = r'`"(?:[ !#-\[\]-_a-~]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"`'
+VEX_SPAN_RE = re.compile(VEX_SPAN)
+_VLIT = r"(?:%s|(?:[A-Za-z0-9._/:-]|\(redacted\))+)" % VEX_SPAN
+_VIDS = r"%s(?: %s)*" % (_VLIT, _VLIT)
+_VPROD = r"%s(?: \(subcomponents: %s(?:, %s)*\))?" % (_VIDS, _VIDS, _VIDS)
+_VSTATUS = r"(?:not_affected|affected|fixed|under_investigation)"
+_VFIELDS = r"%s(?:, %s)*" % (_VLIT, _VLIT)
+VEX_STMT = re.compile(r"- %s(?: \[(?:products unreadable|%s(?:, %s)*)\])?: %s \((?:added|removed|changed: %s|changed from %s(?:; also %s)?)\)"
+                      r"(?: — statement (?:\d+ of the (?:old|new) document|%s))?" % (_VLIT, _VPROD, _VPROD, _VSTATUS, _VFIELDS,
+                                                                                    _VSTATUS, _VFIELDS, _VLIT))
+VEX_DOC = re.compile(r"- document fields changed \(%s\)(?:; no statement changed)?" % _VFIELDS)
+
+
+def _vex_stmt(line):
+    """line is an exact member of the grammar notes() prints for a VEX section line: '- no change', a statement line or the
+    document-fields line, each quoted value exactly _lit's form of the JSON string it holds (so it renders literally), a
+    fixed point of _clean_md, and nothing outside its code spans that AC14 refuses; '-----BEGIN ' never"""
+    if line == "- no change":
+        return True
+    if not (VEX_STMT.fullmatch(line) or VEX_DOC.fullmatch(line)) or SIG_DELIM in line or _clean_md(line) != line:
+        return False
+    for sp in VEX_SPAN_RE.findall(line):
+        try:
+            v = json.loads(sp[1:-1])
+        except ValueError:
+            return False
+        if not isinstance(v, str) or _lit(v) != sp:
+            return False
+    return _refused_form(VEX_SPAN_RE.sub("C", line)) is None
+
+
+def _vex_head(lines, i):
+    """lines[i] is the '### VEX' heading at the place notes() writes it: right after the Fixes section that follows a
+    release heading — '## vX.Y.Z — patch release', a blank line, '### Fixes', one or more '- ' lines, a blank line. So a
+    release block has at most one, and a heading anywhere else is text like any other (Codex #300 r8, A High)"""
+    if lines[i] != VEX_HEAD or i < 5 or lines[i - 1] != "":
+        return False
+    k = i - 2
+    while k >= 0 and lines[k].startswith("- "):
+        k -= 1
+    return k < i - 2 and k >= 2 and lines[k] == "### Fixes" and lines[k - 1] == "" and bool(PATCH_HEAD.fullmatch(lines[k - 2]))
 
 
 def _vex_flags(lines):
-    """for each line, whether it is a VEX statement line: a '- ' line in the run directly after a '### VEX' line (the lines
-    notes() prints through _lit; advisor step 5 (1): exempt from the source refusals, nothing else is)"""
-    out, inside = [], False
-    for ln in lines:
-        inside = inside and ln.startswith("- ")
-        out.append(inside)
-        if ln == VEX_HEAD:
-            inside = True
+    """for each line, whether it is a VEX statement line: in the run of '- ' lines right after a generated '### VEX'
+    heading (_vex_head), and an exact member of the VEX line grammar (_vex_stmt). Only these are exempt from the source
+    refusals (advisor step 5 (1)); any other line, a '- ' line in that run included, is checked like free text"""
+    out = [False] * len(lines)
+    for i in range(len(lines)):
+        if _vex_head(lines, i):
+            j = i + 1
+            while j < len(lines) and lines[j].startswith("- "):
+                out[j] = _vex_stmt(lines[j])
+                j += 1
     return out
 
 
@@ -374,6 +420,36 @@ def _refuse_text(text, name, skip_vex=False):
         why = None if vex else _refused_form(ln)
         if why:
             raise ValueError("%s:%d: %s" % (name, n, why))
+
+
+ATX = re.compile(r"#{1,6}(?:[ \t]|$)")
+
+
+def _refuse_continued_marker(text, name):
+    """refuse (ValueError naming name:line) a cleaned text in which a free-text line holding the marker continues the line
+    above it — not a '- ' bullet or a heading, and right after a line that is neither blank nor a heading. Only a line
+    that starts a block shows the marker as text: a link title, link destination or any other construct opened on the line
+    above can take a continuation line into its syntax, and escaping that line cannot stop it (Codex #300 r8, B F5); a
+    bullet or heading interrupts any paragraph, and no inline construct crosses a blank line. Refused, never rewritten."""
+    lines = str(text).splitlines()
+    flags = _vex_flags(lines)
+    for n, ln in enumerate(lines):
+        if flags[n] or FREE_PRE.match(ln) or not _marked(ln):
+            continue
+        prev = lines[n - 1] if n else ""
+        if prev.strip() and not ATX.match(prev):
+            raise ValueError("%s:%d: a line holding the marker continues the line above it (a construct spanning lines could "
+                             "hide the marker)" % (name, n + 1))
+
+
+def _refused_value(v):
+    """why REQ-REL-009-AC14 refuses a source value, or None: each of its own lines (every boundary str.splitlines() knows),
+    checked before it is made one line, then its one-line form (Codex #300 r8, B F2)"""
+    for ln in str(v).splitlines():
+        why = _refused_form(ln)
+        if why:
+            return why + " (a line of the value)"
+    return _refused_form(_oneline(v))
 
 
 def _no_collision(items):
@@ -452,18 +528,18 @@ def _source_entries(text, name):
     return ents
 
 
-def behavior_entries(text, name="docs/next-release-notes.md"):
+def behavior_entries(text, name="docs/next-release-notes.md", located=False):
     """The entries of docs/next-release-notes.md (advisor 0130). An entry is only a change the owner or the advisor judged
     unable to affect supported clients, so each must end by citing that handoff, "(... advisor NNNN)"; an entry without
     one is refused (ValueError) and nothing is cut. The file is a notes source (REQ-REL-009-AC14): a refused form or two
-    entries publishing the same line are refused, naming name:line."""
+    entries publishing the same line are refused, naming name:line. located: each entry with its location 'name:line:'."""
     ents = _source_entries(text, name)
     for e, n in ents:
         try:
             _check_entry(e)
         except ValueError as x:
             raise ValueError("%s:%d: %s" % (name, n, x))
-    return [e for e, _ in ents]
+    return [(e, "%s:%d:" % (name, n)) for e, n in ents] if located else [e for e, _ in ents]
 
 
 def _check_entry(e):
@@ -507,36 +583,41 @@ def _fix_raw(f):
         f["cve"], f["package"], f["old"], f["new"], f["severity"], ", ".join(f.get("variants") or [])))
 
 
-def notes(version, fixes, vex_changes, behavior=()):
+def notes(version, fixes, vex_changes, behavior=(), fix_locs=None, behavior_locs=None):
     """every line is one line (_oneline) cleaned on its own: a VEX line as _clean_md (its document values are bare
     identifier text or code spans; vex_changes checked that final form), every other line as free text (_clean_free:
     a line holding the marker is written escaped, Codex #300 r5). The fix records and behavior entries are notes sources
-    (REQ-REL-009-AC14): a field, a fix line or an entry holding a refused form is refused (ValueError), and so are two fix
-    records or two entries whose published lines are the same line; the written text is checked to hold no refused form
-    outside its VEX section, no '-----BEGIN ', and to read back unchanged as a tag's notes."""
-    for i, f in enumerate(fixes, 1):
+    (REQ-REL-009-AC14): a field (each of its own lines, then its one-line form; r8 B F2), a fix line or an entry holding a
+    refused form is refused (ValueError), and so are any two published lines — fix, VEX or behavior — that are the same
+    line (one set across all of them, r8 B medium); fix_locs / behavior_locs name each record's source ('scan:matches[i]:',
+    'file:line:'; else 'fix record N:' / 'behavior entry N:'). The written text is checked to hold no refused form outside
+    its VEX section, no '-----BEGIN ', and to read back unchanged as a tag's notes."""
+    fix_locs = list(fix_locs) if fix_locs is not None else ["fix record %d:" % i for i in range(1, len(fixes) + 1)]
+    behavior_locs = (list(behavior_locs) if behavior_locs is not None
+                     else ["behavior entry %d:" % i for i in range(1, len(behavior) + 1)])
+    for f, loc in zip(fixes, fix_locs):
         for k in FIX_FIELDS:
-            why = _refused_form(_oneline(f[k]))
+            why = _refused_value(f[k])
             if why:
-                raise ValueError("fix record %d, %s: %s" % (i, k, why))
+                raise ValueError("%s %s: %s" % (loc, k, why))
         for v in f.get("variants") or []:
-            why = _refused_form(_oneline(v))
+            why = _refused_value(v)
             if why:
-                raise ValueError("fix record %d, variant: %s" % (i, why))
+                raise ValueError("%s variant: %s" % (loc, why))
         why = _refused_form(_fix_raw(f))
         if why:
-            raise ValueError("fix record %d, its fix line: %s" % (i, why))
-    for i, b in enumerate(behavior, 1):
+            raise ValueError("%s its fix line: %s" % (loc, why))
+    for b, loc in zip(behavior, behavior_locs):
         _check_entry(b)
-        why = _refused_form("- " + _oneline(b))
+        why = _refused_value(b) or _refused_form("- " + _oneline(b))
         if why:
-            raise ValueError("behavior entry %d: %s" % (i, why))
+            raise ValueError("%s %s" % (loc, why))
     fl = [_clean_free(_fix_raw(f)) for f in fixes]
-    _no_collision([(ln, "fix record %d:" % i) for i, ln in enumerate(fl, 1)])
-    _no_collision([(_entry_line(b), "behavior entry %d:" % i) for i, b in enumerate(behavior, 1)])
+    published = list(zip(fl, fix_locs))
     lines = [_clean_free("## %s — patch release" % _oneline(version)), "", "### Fixes"] + fl
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
+        published.append((lines[-1], "the Fixes section:"))
     lines += ["", "### VEX"]
     stmts = [v for v in vex_changes if "document" not in v]
     vl = [_clean_md(_vex_line(v)) for v in stmts]
@@ -550,8 +631,15 @@ def notes(version, fixes, vex_changes, behavior=()):
               for v in vex_changes if "document" in v]
     if not vex_changes:
         lines.append("- no change")
+    vex_lines = lines[lines.index(VEX_HEAD) + 1:]
+    if not all(_vex_stmt(ln) for ln in vex_lines):  # what the readers exempt is exactly what is printed (Codex #300 r8)
+        raise ValueError("VEX notes: a line outside the grammar the notes print for a VEX line")
+    published += [(ln, "VEX line %d:" % i) for i, ln in enumerate(vex_lines, 1)]
+    bl = [_entry_line(b) for b in behavior]
+    published += list(zip(bl, behavior_locs))
+    _no_collision(published)        # one set across every published line: fix, VEX and behavior (Codex #300 r8, B medium)
     if behavior:
-        lines += ["", "### Behavior changes"] + [_entry_line(b) for b in behavior]
+        lines += ["", "### Behavior changes"] + bl
     else:
         lines += ["", "No behavior change: this release contains fixes only."]
     text = "\n".join(lines) + "\n"
@@ -641,21 +729,29 @@ def _fixed(f, head):
     return None
 
 
+def _fixing(release_by_variant, head):
+    """(variant, index, finding, the version HEAD fixes it at) for each finding HEAD fixes, in reading order: variants
+    sorted, each scan in document order. fixed_findings prints a record from the first of these for its CVE and package,
+    and check_fix_sources judges that same one (Codex #300 r8, A medium / B F3)"""
+    for variant in sorted(release_by_variant):
+        for i, f in enumerate(release_by_variant[variant]):
+            new = _fixed(f, head)
+            if new is not None:
+                yield variant, i, f, new
+
+
 def fixed_findings(release_by_variant, head):
     """AC8: every finding of the latest release (any severity) that HEAD fixes, one per CVE and package, with the image
-    variants it was found in ("" is the default image). release_by_variant: {variant: [grype findings]}."""
+    variants it was found in ("" is the default image). release_by_variant: {variant: [grype findings]}. The record's
+    old version, fix and severity come from the first fixing match (_fixing)."""
     out = {}
-    for variant in sorted(release_by_variant):
-        for f in release_by_variant[variant]:
-            new = _fixed(f, head)
-            if new is None:
-                continue
-            k = (f["id"], f["package"])
-            e = out.setdefault(k, {"cve": f["id"], "package": f["package"], "old": f.get("installed", ""), "new": new,
-                                   "severity": f.get("severity", ""), "variants": []})
-            name = variant or "default"
-            if name not in e["variants"]:
-                e["variants"].append(name)
+    for variant, _, f, new in _fixing(release_by_variant, head):
+        k = (f["id"], f["package"])
+        e = out.setdefault(k, {"cve": f["id"], "package": f["package"], "old": f.get("installed", ""), "new": new,
+                               "severity": f.get("severity", ""), "variants": []})
+        name = variant or "default"
+        if name not in e["variants"]:
+            e["variants"].append(name)
     for e in out.values():
         e["variants"].sort()
     return [out[k] for k in sorted(out)]
@@ -887,14 +983,11 @@ def tag_notes(raw):
     head, _, body = raw.partition("\n\n")
     tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
     tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
-    # exactly one signature-shaped block, genuinely last (Codex #159 fresh r2d): "the real signature is last" alone
-    # is not fail-closed — ssh-keygen's own check does not require a signature to be an object's literal last bytes,
-    # so a hand-crafted object could carry a real signature then append a second, fake block after it. No block, or
-    # more than one anywhere, is refused; exactly one is read if it is the message's own last bytes.
-    if body.count("-----BEGIN ") == 1:
-        body, _, sig = body.partition("-----BEGIN ")
-    else:
-        sig = ""
+    # the signature is the LAST signature-shaped block (Sonnet #159 r2b); everything before it is the notes region
+    cut = body.rfind(SIG_DELIM)
+    if cut < 0:
+        return None
+    body, sig = body[:cut], body[cut + len(SIG_DELIM):]
     # only the release workflow's own patch tag: its tagger and a gitsign (x509) signature — an owner's tag is SSH-signed
     # and never carries notes, whatever its message (Sonnet #159 r2, BLOCKER-1); admission verified the signature
     if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
@@ -905,8 +998,13 @@ def tag_notes(raw):
     m = PATCH_HEAD.fullmatch(head_) if lf_ else None
     if not (m and m.group(1) == tag):
         return None
+    # a generated patch tag from here. Exactly one signature-shaped block, genuinely last (Codex #159 fresh r2d): a
+    # '-----BEGIN ' anywhere in the notes region — a second block, before or after a real one, or a delimiter in a note
+    # line — is refused with the line named (exit 2, as notes and changelog; Codex #300 r8, A (c) / B F4), never read
     _refuse_text(body, "tag message", skip_vex=True)
-    return _clean_lines(body)
+    out = _clean_lines(body)
+    _refuse_continued_marker(out, "tag message")
+    return out
 
 
 def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHANGELOG.md", "docs/next-release-notes.md")):
@@ -925,6 +1023,7 @@ def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHAN
     _refuse_text(changelog_text or "", cl_name, skip_vex=True)
     _source_entries(next_notes_text, nn_name)
     notes_text = _clean_lines(notes_text)
+    _refuse_continued_marker(notes_text, notes_name)     # r8 B F5: refused, never rewritten
     title = "# Changelog\n"
     rest = (changelog_text or title)
     if rest.startswith(title):
@@ -933,6 +1032,7 @@ def changelog(notes_text, changelog_text, next_notes_text, names=("notes", "CHAN
     if _clean_lines(rest) != rest:
         raise ValueError("%s: the history is not clean (a line end other than LF, a name, or an unescaped marker in free "
                          "text): refused, not rewritten" % cl_name)
+    _refuse_continued_marker(changelog_text or "", cl_name)
     new_cl = title + "\n" + notes_text.rstrip("\n") + "\n" + ("\n" + rest if rest else "")
     published = _published_lines(notes_text)
     lines, keep, i = next_notes_text.splitlines(keepends=True), [], 0
@@ -1064,26 +1164,31 @@ def grype_findings(doc):
     return out
 
 
-def check_fix_sources(fixes, docs, gomod_path, gomod_text):
-    """REQ-REL-009-AC14: each printed fix record's source values — the scan match it comes from (the first variant, in
-    the order fixed_findings reads them) and, for a Go module, its go.mod line — and its composed fix line are refused
-    (ValueError) when they hold a refused form, named by the scan file and the JSON key path (JSON has no line) or by
-    go.mod:line. docs: {variant: (path, grype document)}. A finding HEAD does not fix is not printed and not judged."""
+def check_fix_sources(fixes, docs, gomod_path, gomod_text, head):
+    """REQ-REL-009-AC14: each printed fix record's source values — the scan match that produced it (the first match HEAD
+    fixes, in the order fixed_findings reads them: _fixing; Codex #300 r8, A medium / B F3) and, for a Go module, its
+    go.mod line, whole — and its composed fix line are refused (ValueError) when any line of them holds a refused form,
+    named by the scan file and the JSON key path (JSON has no line) or by go.mod:line. docs: {variant: (path, grype
+    document)}; head as fixed_findings takes it. A finding HEAD does not fix is not printed and not judged. Returns each
+    record's location 'scan:matches[i]:' (the collision check names it)."""
     glines = gomod_text.splitlines()
+    first = {}
+    for v, i, f_, _ in _fixing({v: grype_findings(docs[v][1]) for v in docs}, head):
+        first.setdefault((f_["id"], f_["package"]), (v, i))
+    locs = []
     for f in fixes:
-        loc = next(((path, i, m) for v in sorted(docs) for path, doc in [docs[v]] for i, m in enumerate(doc["matches"])
-                    if m["vulnerability"]["id"] == f["cve"] and m["artifact"]["name"] == f["package"]), None)
-        if loc is None:
+        if (f["cve"], f["package"]) not in first:
             raise ValueError("fix record %s: no scan match" % f["cve"])
-        path, i, m = loc
+        v, i = first[(f["cve"], f["package"])]
+        path, m = docs[v][0], docs[v][1]["matches"][i]
         go = m["artifact"].get("type") in ("go-module", "golang")
         vals = [("vulnerability.id", m["vulnerability"]["id"]), ("artifact.name", m["artifact"]["name"]),
                 ("artifact.version", m["artifact"].get("version")), ("vulnerability.severity", m["vulnerability"].get("severity"))]
         if not go:                          # a distribution package prints its scan's fix versions
             vals += [("vulnerability.fix.versions[%d]" % j, x)
                      for j, x in enumerate((m["vulnerability"].get("fix") or {}).get("versions") or [])]
-        for key, v in vals:
-            why = _refused_form(_oneline(v)) if v is not None else None
+        for key, val in vals:
+            why = _refused_value(val) if val is not None else None
             if why:
                 raise ValueError("%s:matches[%d].%s: %s" % (path, i, key, why))
         where = ""
@@ -1091,12 +1196,14 @@ def check_fix_sources(fixes, docs, gomod_path, gomod_text):
             pat = re.compile(r"^go\s" if f["package"] == "stdlib" else r"(^|\s)%s\s+%s(\s|$)" % (re.escape(f["package"]), re.escape(str(f["new"]))))
             n = next((k for k, ln in enumerate(glines, 1) if pat.search(ln.strip())), None)
             where = " %s:%s:" % (gomod_path, n if n else "?")
-            why = _refused_form(_oneline(f["new"]))
+            why = _refused_value(f["new"]) or (_refused_form(glines[n - 1]) if n else None)
             if why:
                 raise ValueError("%s:matches[%d]:%s %s" % (path, i, where, why))
         why = _refused_form(_fix_raw(f))
         if why:
             raise ValueError("%s:matches[%d]:%s the composed fix line: %s" % (path, i, where, why))
+        locs.append("%s:matches[%d]:%s" % (path, i, where))
+    return locs
 
 
 def gomod_versions(text):
@@ -1151,22 +1258,29 @@ def main(argv=None):
             rel, docs = {}, {}
             for v in a.variant_grype:
                 name, _, path = v.partition("=")
-                why = _refused_form(_oneline(name))
+                why = _refused_value(name)
                 if why:
                     raise ValueError("--variant-grype %s: the variant name: %s" % (path, why))
                 docs[name] = (path, json.load(open(path)))
                 rel[name] = grype_findings(docs[name][1])
             base = [f for p in a.base_grype for f in grype_findings(json.load(open(p)))] if a.base_grype else None
             nn = open(a.next_notes).read() if os.path.exists(a.next_notes) else ""     # no file: no entries
-            # every source is refused before any entry is dropped as already published (REQ-REL-009-AC14 (5))
-            behavior = unpublished(behavior_entries(nn, a.next_notes), open(a.published).read())
+            ents = behavior_entries(nn, a.next_notes, located=True)
             old = json.load(open(a.vex_old)) if a.vex_old else None
             if a.vex_old and old is None:       # a supplied file holding null is not "no old document" (Codex #300 r2, B)
                 raise ValueError("VEX old document %s: null" % a.vex_old)
             gomod_text = open(a.gomod).read()
-            fixes = fixed_findings(rel, {"go": gomod_versions(gomod_text), "base_findings": base})
-            check_fix_sources(fixes, docs, a.gomod, gomod_text)
-            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=behavior)
+            head = {"go": gomod_versions(gomod_text), "base_findings": base}
+            fixes = fixed_findings(rel, head)
+            fix_locs = check_fix_sources(fixes, docs, a.gomod, gomod_text, head)
+            # every source is refused before any entry is dropped as already published (REQ-REL-009-AC14 (5)): a fix line
+            # and any entry publishing the same line, both named (one set across them; Codex #300 r8, B medium)
+            _no_collision([(_clean_free(_fix_raw(f)), loc) for f, loc in zip(fixes, fix_locs)]
+                          + [(_entry_line(e), loc) for e, loc in ents])
+            keep = set(unpublished([e for e, _ in ents], open(a.published).read()))
+            ents = [(e, loc) for e, loc in ents if e in keep]
+            text = notes(a.version, fixes, vex_changes(old, json.load(open(a.vex_new))), behavior=[e for e, _ in ents],
+                         fix_locs=fix_locs, behavior_locs=[loc for _, loc in ents])
         except (ValueError, OSError, KeyError, TypeError) as e:
             print("notes: %s — no notes, no patch" % _clean(str(e)), file=sys.stderr)
             return 2
