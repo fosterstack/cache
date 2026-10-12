@@ -2915,6 +2915,193 @@ rc_, err_, sout_ = cli(["removed", "--release-grype", r8p("rel-r11.json"), "--go
                         "--out", rm_out_])
 check("r11 R11-5: a quoted require path is refused by removed (exit 2, go.mod:2, no output): a documented limit",
       rc_ == 2 and r8p("q.mod") + ":2:" in err_ and not os.path.exists(rm_out_), (rc_, err_))
+# ===== r12 (micro-verification at cba7d4c, advisor NARROW CUT; Codex #300 b11, B item 2: the literal marker conversion lost
+# statement identity). A VEX value that literally holds a redaction-marker form ('<redacted>', '(redacted)', '\(redacted\)',
+# '\<redacted\>', their JSON, HTML-entity, percent and backslash escaped spellings, any case) is REFUSED before any
+# redaction (ValueError naming the statement and the field; exit 2, nothing written); the conversion of a literal marker in a
+# value is deleted; vendor-name redaction and the position fallbacks are unchanged (REQ-REL-009-AC8, AC14)
+FORMS_ = ["<redacted>", "(redacted)", "\\(redacted\\)", "\\<redacted\\>", "<REDACTED>", "(Redacted)", "\\(ReDacted\\)",
+          "\\u003credacted\\u003e", "\\u003credacted>", "<redacted\\u003e", "\\u003Credacted\\u003E", "\\u0028redacted\\u0029",
+          "&lt;redacted&gt;", "&LT;redacted&GT;", "&#60;redacted&#62;", "&#x3c;redacted&#x3E;", "&lpar;redacted&rpar;",
+          "\\\\(redacted\\\\)", "\\\\u003credacted\\\\u003e", "&amp;lt;redacted&amp;gt;", "%3Credacted%3E", "%28redacted%29",
+          "\uff1credacted\uff1e", "\uff08redacted\uff09"]
+def vex_cli(old_doc, new_doc):
+    """run `notes` with these VEX documents; (rc, stderr, the out file's text or None)"""
+    out_ = r8p("notes12.md")
+    if os.path.exists(out_):
+        os.remove(out_)
+    argv = ["notes", "--version", "v0.2.3", "--variant-grype", "=" + r8p("scan12.json", json.dumps(gr(R8_FIND))),
+            "--gomod", r8p("go12.mod", "module x\n\nrequire golang.org/x/net v0.33.0\n"),
+            "--vex-new", r8p("n12.json", json.dumps(new_doc)), "--next-notes", r8p("nn12.md", "# Notes\n"),
+            "--published", r8p("pub12.txt", ""), "--out", out_]
+    if old_doc is not None:
+        argv += ["--vex-old", r8p("o12.json", json.dumps(old_doc))]
+    rc_, err_, sout_ = cli(argv)
+    return rc_, err_, (open(out_).read() if os.path.exists(out_) else None), sout_
+# R12-1 B's exact reproducer: two statements of CVE-1 with @id '<redacted>' and '(redacted)'; the first one's status changes
+import copy
+old_ = {"statements": [{"@id": "<redacted>", "vulnerability": {"name": "CVE-1"}, "status": "affected"},
+                       {"@id": "(redacted)", "vulnerability": {"name": "CVE-1"}, "status": "fixed"}]}
+new_ = copy.deepcopy(old_)
+new_["statements"][0]["status"] = "fixed"
+r_ = refused(P.vex_changes, old_, new_)
+check("r12 R12-1 (B item 2 reproducer): vex_changes refuses @id '<redacted>' / '(redacted)', naming the statement and @id",
+      is_ve(r_) and "statement 1" in r_ and "@id" in r_ and "marker" in r_, r_)
+rc_, err_, out_, sout_ = vex_cli(old_, new_)
+check("r12 R12-1: notes with B's reproducer exits 2, nothing written, nothing on stdout, the statement and field named",
+      rc_ == 2 and out_ is None and sout_ == "" and "statement 1" in err_ and "@id" in err_ and "no notes, no patch" in err_,
+      (rc_, err_, out_))
+for nm_ in ("<redacted>", "(redacted)"):
+    d_ = {"statements": [{"vulnerability": {"name": nm_}, "status": "affected"}, {"vulnerability": {"name": "CVE-2"}, "status": "fixed"}]}
+    rc_, err_, out_, sout_ = vex_cli(None, d_)
+    check("r12 R12-1: a vulnerability name %r is refused (exit 2, nothing written, statement 1 and vulnerability.name named)" % nm_,
+          rc_ == 2 and out_ is None and "statement 1" in err_ and "vulnerability.name" in err_, (rc_, err_))
+# R12-2 every marker form in every field (both documents), named by statement and field; the printer refuses it too
+def put_(form, field):
+    """a document holding form in field (statement 2 for a statement field; the document itself for a document field)"""
+    s_ = {"vulnerability": {"name": "CVE-3"}, "status": "fixed", "products": [{"@id": "pkg:a"}]}
+    if field == "vulnerability.name":
+        s_["vulnerability"]["name"] = form
+    elif field == "@id":
+        s_["@id"] = form
+    elif field == "products[1].@id":
+        s_["products"] = [{"@id": form}]
+    elif field == "products[1].subcomponents[1].@id":
+        s_["products"] = [{"@id": "pkg:a", "subcomponents": [{"@id": form}]}]
+    elif field.startswith("products[1].identifiers."):
+        s_["products"] = [{"identifiers": {field.rsplit(".", 1)[1]: form}}]
+    elif field == "a field name":
+        s_[form] = 1
+    d_ = {"statements": [{"vulnerability": {"name": "CVE-2"}, "status": "fixed"}, s_]}
+    if field == "a document field name":
+        d_[form] = 1
+    return d_
+FIELDS_ = ["vulnerability.name", "@id", "products[1].@id", "products[1].subcomponents[1].@id", "products[1].identifiers.purl",
+           "products[1].identifiers.cpe23", "products[1].identifiers.cpe22", "a field name", "a document field name"]
+bad_, n_ = [], 0
+for f_ in FORMS_:
+    for emb_ in ("%s", "pkg:x%sy", "%sgpt", "CVE-1 %s"):
+        v_ = emb_ % f_
+        for fl_ in FIELDS_:
+            for side_ in ("new", "old"):
+                n_ += 1
+                d_ = put_(v_, fl_)
+                r_ = refused(P.vex_changes, d_, put_("ok", fl_)) if side_ == "old" else refused(P.vex_changes, None, d_)
+                want_ = ("VEX %s document: " % side_) + ("a document field name" if fl_ == "a document field name"
+                                                         else "statement 2: %s" % fl_)
+                if not (is_ve(r_) and want_ in r_ and "marker" in r_):
+                    bad_.append((v_, fl_, side_, r_))
+        r_ = refused(P._lit, v_)
+        if not is_ve(r_):
+            bad_.append((v_, "_lit", r_))
+        for vc_ in ([{"cve": v_, "status": "fixed", "change": "added"}], [{"document": [v_]}]):
+            r_ = refused(P.notes, "v0.2.3", [], vc_)
+            if not is_ve(r_):
+                bad_.append((v_, "notes", r_))
+check("r12 R12-2: every marker form (%d forms, 4 embeddings) in every field (%d) of either document is refused, naming the "
+      "document, the statement and the field (%d cases); the printer (_lit) and notes() refuse it too"
+      % (len(FORMS_), len(FIELDS_), n_), bad_ == [] and n_ == len(FORMS_) * 4 * len(FIELDS_) * 2, bad_[:3])
+for f_ in FORMS_[:6]:
+    rc_, err_, out_, sout_ = vex_cli(None, put_(f_, "products[1].subcomponents[1].@id"))
+    check("r12 R12-2: notes with %r as a subcomponent @id exits 2, nothing written, named" % f_,
+          rc_ == 2 and out_ is None and sout_ == "" and "statement 2: products[1].subcomponents[1].@id" in err_, (rc_, err_))
+# R12-3 the deleted conversion: no VEX value is ever rewritten into the marker by the printer except where the code writes
+# the redaction of a vendor or model name; values that are not marker forms print exactly as before (the pre-cut printer)
+def old_lit_(v, before_colon=False):
+    v = str(v)
+    if P.BARE.match(v) and not P.NOT_BARE.search(v + (":" if before_colon else "")):
+        return v
+    return span_of(v)
+TOK_ = ["gpt", "google", "aws", "o1", "Claude", "<", ">", "(", ")", "redacted", "redact", "ed", "&", ";", "lt", "\\", "u003c",
+        "-", "a", "é", " ", "`", "%", "3C", "#", "x", ".", "/", ":"]
+rng12_ = random.Random(1212)
+bad_, acc_, ref_ = [], 0, 0
+for _ in range(4000):
+    v_ = "".join(rng12_.choice(TOK_) for _ in range(rng12_.randint(0, 7)))
+    if rng12_.random() < 0.15:
+        i_ = rng12_.randint(0, len(v_))
+        v_ = v_[:i_] + rng12_.choice(FORMS_) + v_[i_:]
+    for bc_ in (False, True):
+        r_ = refused(P._lit, v_, before_colon=bc_)
+        if is_ve(r_):
+            ref_ += 1
+            continue
+        acc_ += 1
+        if r_ != old_lit_(v_, bc_) or any(m_ in v_.lower() for m_ in ("<redacted>", "(redacted)")):
+            bad_.append((v_, bc_, r_, old_lit_(v_, bc_)))
+check("r12 R12-3: 4000 random values (%d printed, %d refused): every printed value is byte-identical to the pre-cut printer "
+      "(vendor and model names redacted as before), and none holding a literal marker is printed" % (acc_, ref_),
+      bad_ == [] and acc_ > 4000 and ref_ > 600, bad_[:3])
+check("r12 R12-3: a vendor name is still redacted to the visible marker in a quoted value ('<google' -> \"\\u003c(redacted)\")",
+      P._lit("<google") == '`"\\u003c(redacted)"`' and P._lit("x gpt") == '`"x (redacted)"`', (P._lit("<google"), P._lit("x gpt")))
+check("r12 R12-3: 'redacted' alone, 'redacted>' and '<redacted' are not marker forms: printed as before",
+      all(P._lit(v_) == old_lit_(v_) for v_ in ("redacted", "redacted>", "<redacted", "(redacted", "redacted)", "<redacted)")),
+      [P._lit(v_) for v_ in ("redacted", "<redacted)")])
+# R12-4 the real .vex document: the notes are byte-identical to the pre-cut printer's in every scenario
+REAL12_ = json.load(open(os.path.join(os.path.dirname(sys.argv[1]), "..", ".vex", "fosterstack-cache.openvex.json")))
+def real_scenarios_():
+    out_ = [P.notes("v0.2.3", [], P.vex_changes(None, REAL12_))]
+    for i_ in range(len(REAL12_["statements"])):
+        o_ = copy.deepcopy(REAL12_); s_ = o_["statements"][i_]
+        s_["status"] = "affected" if s_["status"] != "affected" else "fixed"
+        out_.append(P.notes("v0.2.3", [], P.vex_changes(o_, REAL12_)))
+        o_ = copy.deepcopy(REAL12_); del o_["statements"][i_]
+        out_.append(P.notes("v0.2.3", [], P.vex_changes(o_, REAL12_)))
+        o_ = copy.deepcopy(REAL12_); o_["statements"][i_]["impact_statement"] = "x"; o_["version"] = 0
+        out_.append(P.notes("v0.2.3", [], P.vex_changes(o_, REAL12_)))
+    return out_
+now_ = refused(real_scenarios_)
+real_lit_ = P._lit
+P._lit = old_lit_
+try:
+    was_ = refused(real_scenarios_)
+finally:
+    P._lit = real_lit_
+check("r12 R12-4: the real .vex document's notes (%d scenarios) are byte-identical to the pre-cut printer's"
+      % (len(now_) if isinstance(now_, list) else 0), isinstance(now_, list) and now_ == was_ and len(now_) > 4, (now_, was_))
+# R12-5 the round trip property with marker forms: random documents whose printed values sometimes hold a marker form are
+# refused exactly then (naming the statement or document field); every other one prints and reads back as before
+rng13_ = random.Random(1313)
+def rn12_(hit_):
+    v_ = rng13_.choice(PREF_) + "".join(rng13_.choice(ALPH_) for _ in range(rng13_.randint(0, 6)))
+    if rng13_.random() < 0.06:
+        i_ = rng13_.randint(0, len(v_))
+        v_ = v_[:i_] + rng13_.choice(FORMS_) + v_[i_:]
+        hit_.append(v_)
+    return v_
+def rs12_(hit_):
+    s_ = {"vulnerability": {"name": rn12_(hit_)}, "status": rng13_.choice(P.VEX_STATUS)}
+    if rng13_.random() < 0.5:
+        s_["products"] = [{"@id": rn12_(hit_)} if rng13_.random() < 0.7 else {"identifiers": {"purl": rn12_(hit_)}}
+                          for _ in range(rng13_.randint(1, 2))]
+    if rng13_.random() < 0.3:
+        s_["@id"] = rn12_(hit_)
+    if rng13_.random() < 0.3:
+        s_[rn12_(hit_) or "x"] = "v"
+    return s_
+bad_, made_, refd_ = [], 0, 0
+for it_ in range(500):
+    hit_ = []
+    new_ = {"statements": [rs12_(hit_) for _ in range(rng13_.randint(1, 3))]}
+    old_ = None if rng13_.random() < 0.3 else {"statements": [rs12_(hit_) for _ in range(rng13_.randint(0, 2))] + new_["statements"][:1]}
+    vc_ = refused(P.vex_changes, old_, new_)
+    if hit_:
+        refd_ += 1
+        if not (is_ve(vc_) and "marker" in vc_ and re.search(r"VEX (old|new) document: statement \d+: ", vc_)):
+            bad_.append((it_, "a marker form not refused", hit_, vc_))
+        continue
+    if is_ve(vc_):
+        continue
+    t_ = refused(P.notes, "v0.2.3", [], vc_)
+    if is_ve(t_):
+        bad_.append((it_, "notes refused its own lines", t_)); continue
+    made_ += 1
+    tn_, cl_ = refused(P.tag_notes, mktag("v0.2.3", t_)), refused(P.changelog, t_, None, "")
+    if tn_ != t_ or is_ve(cl_):
+        bad_.append((it_, tn_, cl_))
+check("r12 R12-5: 500 random VEX documents (%d holding a marker form, %d printed): a marker form in any printed value is "
+      "refused naming its statement; every other document prints and reads back as the tag's notes and changelog"
+      % (refd_, made_), bad_ == [] and refd_ > 50 and made_ > 200, bad_[:2])
 shutil.rmtree(r8_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
