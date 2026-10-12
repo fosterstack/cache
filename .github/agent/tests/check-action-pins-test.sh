@@ -15,6 +15,9 @@ DIG=sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 # case_ <name> <expect ok|bad> <workflow text> [setup commands, run in the fixture root]
 case_() {
   local name=$1 expect=$2 d="$work/$1"
+  # an empty workflow is no fixture: a helper that failed to run (or a command substitution that printed nothing) would
+  # otherwise be judged "ok" and make an `ok` case pass without testing anything
+  if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
   mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"  # the gate's committed programs
