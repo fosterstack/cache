@@ -529,7 +529,7 @@ def linux_only_ok(text):
 check("0390 the Linux-only entry, while present, cites advisor 0390", real_err is None and linux_only_ok(real_nrn), real_ents)
 # Codex #293 r4 B2: after the entry is published, the release flow's changelog step removes it from the notes; the
 # cleared notes still pass the validator and the Linux-only assertion (it applies to the entry only while present)
-LO_ENTRY = ("No macOS or Windows binaries are shipped; use the container image. The release archives are fscache and fscache-fips "
+LO_ENTRY = ("No macOS or Windows binaries are shipped; use the container image. The release binaries are fscache and fscache-fips "
             "for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).")
 LO_NRN = NRN + "- " + LO_ENTRY[:60] + "\n  " + LO_ENTRY[60:] + "\n"
 lo_pub = "## v0.3.1 — patch release\n\n### Behavior changes\n- " + LO_ENTRY + "\n"

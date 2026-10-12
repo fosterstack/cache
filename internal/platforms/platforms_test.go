@@ -2032,9 +2032,8 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"The version is pinned for all four archives. <!-- pinned: upstream -->",
 		"The version is pinned for all four archives.\n<!-- pinned: historical -->",
 		"   ```sh\n   kubectl exec -it POD_NAME -- sh\n   ```",
-		// Round-7 precision: the allowed "no archive for this machine" (docs/install.md:57's whole clause, exactly) and an escaped
-		// parenthesis in a destination pass.
-		"If it prints anything else, there is no archive for this machine; run the container.",
+		// Round-7 precision: an escaped parenthesis in a destination passes. (The round-7 precision case for "no archive
+		// for this machine" is refused since the exception cut: see formerlyExcepted.)
 		"Every release ships [four](https://example.com/a\\(b) archives.",
 		// Round-8 precision: a parenthesized title without a nested "(" is read. (The round-8 precision cases for a
 		// defined reference label and a "+" between words are refused since the post-9 round: see the mutants.)
@@ -2053,43 +2052,57 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 			t.Errorf("%q is refused: %v", ok, ps)
 		}
 	}
-	// Final verification after the advisor decision (a): an allowedCountClaims exception applies only when the whole
-	// clause the count reader examines equals the allowed text exactly, so no exception survives any edit to the clause
-	// (A's post-9 P2: "(stages A + B)" inserted before "verifies each archive" in RELEASING.md kept the zero/no
-	// exceptions); each edit below, anywhere in an excepted clause, is refused naming a claim.
-	edited := func(file, old, new string) string {
-		text := read(t, file)
-		if strings.Count(text, old) != 1 {
-			t.Fatalf("%s: mutant anchor not found exactly once: %q", file, old)
-		}
-		return strings.Replace(text, old, new, 1)
-	}
-	for _, c := range []struct{ name, file, text, want string }{
-		{"A10 a math sign before the excepted claims (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "**Image assembly** verifies each archive", "**Image assembly** (stages A + B) verifies each archive"), "a bound"},
-		{"X10 words before the excepted claims (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "**Image assembly** verifies each archive", "**Image assembly** (stage C) verifies each archive"), "claims"},
-		{"X10 the clause's label changed (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "**Image assembly** verifies each archive", "**Image build** verifies each archive"), "claims"},
-		{"X10 a code span removed in the clause (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "zero `RUN`)", "zero RUN)"), "claims"},
-		{"X10 emphasis added in the clause (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "with a COPY-only Dockerfile\n", "with a **COPY-only** Dockerfile\n"), "claims"},
-		{"X10 a word before the hash's count (RELEASING.md:191)", "RELEASING.md", edited("RELEASING.md", "`checksums.txt` is signed, and it", "`checksums.txt` is unsigned, and it"), "claims"},
-		{"X10 the verb before the hash changed (RELEASING.md:191)", "RELEASING.md", edited("RELEASING.md", "pins every archive by SHA-256", "lists every archive by SHA-256"), "claims"},
-		{"X10 words after the excepted two (RELEASING.md:192)", "RELEASING.md", edited("RELEASING.md", "not two half-measures.", "not two half-measures at all."), "claims"},
-		{"X10 the condition before no archive changed (install.md:57)", "docs/install.md", edited("docs/install.md", "If it prints anything else, there is no archive", "If it prints nothing, there is no archive"), "claims"},
-		{"X10 a plus before no archive (install.md:57)", "docs/install.md", edited("docs/install.md", "If it prints anything else, there is no archive", "If it prints a + b, there is no archive"), "a bound"},
-		{"X10 the excepted clause alone (install.md:57)", "docs/install.md", edited("docs/install.md", "If it prints anything else, there is no archive for this machine;", "There is no archive for this machine;"), "claims"},
-		{"X10 a tilde in the excepted clause (RELEASING.md:33)", "RELEASING.md", edited("RELEASING.md", "zero `RUN`)", "~zero `RUN`)"), "a bound"},
-	} {
-		ps, _ := checkDoc(c.file, c.text, allowedLines, archives)
-		found := false
-		for _, p := range ps {
-			found = found || (strings.HasPrefix(p, c.file+":") && strings.Contains(p, c.want))
-		}
-		if !found {
-			t.Errorf("%s: not refused with %q: %v", c.name, c.want, ps)
+	// The exception cut (advisor, after the micro-verification at cb244c5: A12 and B12, cutting an exact excepted clause
+	// joined its neighbours, so "http://a|<clause>|six archives" became "http://a||six archives" and the bare-URL filter
+	// hid the neighbouring count): the count reader has no exceptions. Every clause that reads as a count claim is judged
+	// by the ordinary rules, so the four clauses once excepted are refused as written, each edit of them is refused, and
+	// the reviewers' shapes are refused naming the neighbouring count.
+	refusedWith := func(name, file, text string, wants ...string) {
+		t.Helper()
+		ps, _ := checkDoc(file, text, allowedLines, archives)
+		for _, want := range wants {
+			found := false
+			for _, p := range ps {
+				found = found || (strings.HasPrefix(p, file+":") && strings.Contains(p, want))
+			}
+			if !found {
+				t.Errorf("%s: not refused with %q: %v", name, want, ps)
+			}
 		}
 	}
-	// The advisor decision (a), the order: the bound check runs before any exception lookup, so an exception can never
-	// mask a bound. Each clause below is given an exact allowedCountClaims entry for the test and is still refused as a
-	// bound; the control (a clause with no bound, given an entry) passes, so the entry is the whole clause, applied.
+	for _, c := range formerlyExcepted {
+		refusedWith(c.name+" as written", f, install+"\n"+c.clause+c.end, c.claims...)
+		// each edit of the clause is refused naming a claim (the round-10 edits, kept as refusals)
+		for _, e := range c.edits {
+			if !strings.Contains(c.clause, e[0]) {
+				t.Fatalf("%s: edit anchor %q not in the clause", c.name, e[0])
+			}
+			refusedWith(fmt.Sprintf("%s edited %q -> %q", c.name, e[0], e[1]), f, install+"\n"+strings.Replace(c.clause, e[0], e[1], 1)+c.end, e[2])
+		}
+		// a mark inserted at any character boundary, or a space doubled or made a tab, is refused naming a claim
+		for i := 0; i <= len(c.clause); i++ {
+			if i < len(c.clause) && !utf8.RuneStart(c.clause[i]) {
+				continue
+			}
+			for _, m := range []string{"**", "*", "_", "`", "~"} {
+				refusedWith(fmt.Sprintf("%s: %q inserted at byte %d", c.name, m, i), f, install+"\n"+c.clause[:i]+m+c.clause[i:]+c.end, "claims")
+			}
+		}
+		for i := 0; i < len(c.clause); i++ {
+			if c.clause[i] != ' ' {
+				continue
+			}
+			for _, ws := range []string{"  ", "\t"} {
+				refusedWith(fmt.Sprintf("%s: the space at byte %d made %q", c.name, i, ws), f, install+"\n"+c.clause[:i]+ws+c.clause[i+1:]+c.end, "claims")
+			}
+		}
+	}
+	const noArchive = "If it prints anything else, there is no archive for this machine"
+	refusedWith("A12 a URL before the cut clause in a bar-separated line", f, install+"\nhttp://a|"+noArchive+"|six archives\n", `"six archives"`)
+	refusedWith("B12 a URL cell before the cut clause in a table row", f, install+"\n| Reference | Condition | Release artifacts |\n|---|---|---|\n|https://example.test|"+noArchive+"|six archives|\n", `"six archives"`)
+	refusedWith("A12 a URL before the cut clause in a sentence", f, install+"\nhttp://a; "+noArchive+"; six archives.\n", `"six archives"`)
+	refusedWith("micro-verification shape (n**o**)", f, install+"\nIf it prints anything else, there is n**o** archive for this machine.\n", "claims")
+	// The bound check: each clause below is refused as a bound (no exception exists to mask one).
 	for _, clause := range []string{
 		"- **Image assembly** (stages A + B) verifies each archive, zero `RUN`, no tags, nothing public",
 		"The release ships 4+ archives",
@@ -2104,19 +2117,10 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"The release ships ~fo**ur** archives",
 		"The release ships zero archives = none",
 	} {
-		allowedCountClaims[clause] = "test entry"
 		ps, _ := checkDoc(f, install+"\n"+clause+".\n", allowedLines, archives)
-		delete(allowedCountClaims, clause)
 		if !strings.Contains(strings.Join(ps, "\n"), "a bound") {
-			t.Errorf("an exact exception masks the bound in %q: %v", clause, ps)
+			t.Errorf("%q is not refused as a bound: %v", clause, ps)
 		}
-	}
-	const control = "The release ships **six** `RUN` archives"
-	allowedCountClaims[control] = "test entry"
-	cps, _ := checkDoc(f, install+"\n"+control+".\n", allowedLines, archives)
-	delete(allowedCountClaims, control)
-	if len(cps) > 0 {
-		t.Errorf("an exact whole-clause exception is not applied to %q: %v", control, cps)
 	}
 	// The advisor decision (c), B's post-9 second finding: a tilde before a count split by inline marks is a bound in a
 	// reading that keeps the sign and removes the marks (the plain reading removes the tilde too, so "~fo**ur**" read
@@ -2150,60 +2154,6 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 			}
 		}
 	}
-	// Micro-verification after the final verification at 5c226f4 (A and B, one P2 each): an allowedCountClaims exception
-	// is compared with the raw clause, as written in the file byte for byte after the same clause segmentation, never
-	// with a reading that removes marks ("there is n**o** archive" kept the install.md exception: the as-written reading
-	// saw no count, the mark-stripped readings rejoined "no" and matched the entry). Each of the four clauses as written
-	// is accepted; each with a mark inserted at any character boundary, or a space doubled or turned into a tab, is
-	// refused naming a claim.
-	allowedIn := func(file string) []allowedLine {
-		if file == notesFile {
-			return []allowedLine{{notesFile, notesSentence, "the REQ-PLAT-001 release-notes line", false}}
-		}
-		return allowedLines
-	}
-	refusedClaim := func(name, file, text string) {
-		t.Helper()
-		ps, _ := checkDoc(file, text, allowedIn(file), archives)
-		for _, p := range ps {
-			if strings.HasPrefix(p, file+":") && strings.Contains(p, "claims") {
-				return
-			}
-		}
-		t.Errorf("%s: not refused naming a claim: %v", name, ps)
-	}
-	refusedClaim("the reviewers' shape (install.md:57)", "docs/install.md", edited("docs/install.md", "there is no archive for this machine", "there is n**o** archive for this machine"))
-	if len(allowedCountClaims) != 4 {
-		t.Errorf("want the four reviewed allowedCountClaims entries, found %d", len(allowedCountClaims))
-	}
-	for entry, why := range allowedCountClaims {
-		file, _, _ := strings.Cut(why, ":")
-		text := read(t, file)
-		if strings.Count(text, entry) != 1 {
-			t.Errorf("%s: the allowedCountClaims entry is not its clause as written, exactly once: %q", file, entry)
-			continue
-		}
-		if ps, _ := checkDoc(file, text, allowedIn(file), archives); len(ps) > 0 {
-			t.Errorf("%s: the excepted clause as written is refused: %v", file, ps)
-		}
-		at := strings.Index(text, entry)
-		for i := 0; i <= len(entry); i++ {
-			if i < len(entry) && !utf8.RuneStart(entry[i]) {
-				continue
-			}
-			for _, m := range []string{"**", "*", "_", "`", "~"} {
-				refusedClaim(fmt.Sprintf("%s: %q inserted at byte %d of %q", file, m, i, entry), file, text[:at+i]+m+text[at+i:])
-			}
-		}
-		for i := 0; i < len(entry); i++ {
-			if entry[i] != ' ' {
-				continue
-			}
-			for _, ws := range []string{"  ", "\t"} {
-				refusedClaim(fmt.Sprintf("%s: the space at byte %d of %q made %q", file, i, entry, ws), file, text[:at+i]+ws+text[at+i+1:])
-			}
-		}
-	}
 	var without []allowedLine
 	for _, a := range allowedLines {
 		if a.file != f || !strings.Contains(a.text, "Apple Silicon") {
@@ -2217,6 +2167,64 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 	if !strings.Contains(strings.Join(ps, "\n"), "Apple Silicon") {
 		t.Errorf("%s: without its exception the wrapped Apple Silicon mention is not flagged: %v", f, ps)
 	}
+}
+
+// formerlyExcepted are the four clauses the removed allowedCountClaims table excepted (RELEASING.md:33, RELEASING.md:190-192,
+// docs/install.md:57 and the release-notes entry), as they were written; since the exception cut each is refused by the
+// ordinary count rules, as is each edit of it. end closes the paragraph after the clause; claims are refusals it must
+// draw; each edit is {old, new, want}.
+var formerlyExcepted = []struct {
+	name, clause, end string
+	claims            []string
+	edits             [][3]string
+}{
+	{
+		"RELEASING.md:33 (stages/verifies)",
+		"- **Image assembly** verifies each archive against that signed predicate\n  before opening it, assembles each variant with a COPY-only Dockerfile\n  (digest-pinned distroless base, zero `RUN`), and pushes by digest only\n  to a private candidates package — no tags, nothing public",
+		".\n",
+		[]string{`zero"`, `nothing public"`},
+		[][3]string{
+			{"**Image assembly** verifies each archive", "**Image assembly** (stages A + B) verifies each archive", "a bound"},
+			{"**Image assembly** verifies each archive", "**Image assembly** (stage C) verifies each archive", "claims"},
+			{"**Image assembly** verifies each archive", "**Image build** verifies each archive", "claims"},
+			{"zero `RUN`)", "zero RUN)", "claims"},
+			{"with a COPY-only Dockerfile\n", "with a **COPY-only** Dockerfile\n", "claims"},
+			{"zero `RUN`)", "~zero `RUN`)", "a bound"},
+		},
+	},
+	{
+		"RELEASING.md:190-192 (SHA-256)",
+		"`checksums.txt` is signed, and it\npins every archive by SHA-256 — so verifying the checksums file and then\nchecking an archive against it is a complete chain, not two half-measures",
+		".\n",
+		[]string{`256"`, `two"`},
+		[][3]string{
+			{"`checksums.txt` is signed, and it", "`checksums.txt` is unsigned, and it", "claims"},
+			{"pins every archive by SHA-256", "lists every archive by SHA-256", "claims"},
+			{"not two half-measures", "not two half-measures at all", "claims"},
+		},
+	},
+	{
+		"docs/install.md:57 (no archive for this machine)",
+		"If it prints anything else, there is no archive for this machine",
+		"; run the\ncontainer image instead ([docker-deploy.md](docker-deploy.md)).\n",
+		[]string{`no archive for this machine"`},
+		[][3]string{
+			{"If it prints anything else, there is no archive", "If it prints nothing, there is no archive", "claims"},
+			{"If it prints anything else, there is no archive", "If it prints a + b, there is no archive", "a bound"},
+			{"If it prints anything else, there is no archive for this machine", "There is no archive for this machine", "claims"},
+		},
+	},
+	{
+		"docs/next-release-notes.md (the Linux-only entry's archives sentence)",
+		"The release archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9",
+		"; advisor 0390).\n",
+		[]string{`9"`},
+		[][3]string{
+			{"The release archives are fscache", "These release archives are fscache", "claims"},
+			{"The release archives are fscache", "The release's archives are fscache", "claims"},
+			{"The release archives are fscache", "The release archives are + fscache", "a bound"},
+		},
+	},
 }
 
 // notesFile is the next release's notes; notesSentence is the one platform mention they may carry, and only as
@@ -2313,7 +2321,7 @@ func TestNextReleaseNotesSayLinuxOnly(t *testing.T) {
 // and clears it from the notes.
 const notesFixture = "# Notes for the next release\n\nBehavior changes since the last release, carried into its notes. Each entry ends by\n" +
 	"citing that handoff (advisor 0130).\n\n- Go 1.27: a request with more than 500 header values is rejected with 431\n" +
-	"  before it reaches the cache (owner accepted; advisor 0115).\n- " + notesSentence + " The release archives are fscache and\n" +
+	"  before it reaches the cache (owner accepted; advisor 0115).\n- " + notesSentence + " The release binaries are fscache and\n" +
 	"  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).\n"
 
 // proves: REQ-PLAT-001-AC1
@@ -2354,7 +2362,7 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 		// Round-5 regressions (B5, B2, A2): the sentence counts only as the start of a notes entry that ends with
 		// the 0390 citation; anywhere else (a paragraph, a prefixed or emphasized bullet, another citation) it is
 		// refused. A nested link destination splitting a name, and invisible characters, are refused.
-		"sentence as an uncited paragraph":  strings.Replace(notes, "- "+notesSentence+" The release archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).\n", "\n"+notesSentence+"\n", 1),
+		"sentence as an uncited paragraph":  strings.Replace(notes, "- "+notesSentence+" The release binaries are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0390).\n", "\n"+notesSentence+"\n", 1),
 		"sentence in a prefixed bullet":     strings.Replace(notes, "- "+notesSentence, "- Note: "+notesSentence, 1),
 		"sentence in an emphasized bullet":  strings.Replace(notes, "- "+notesSentence, "- **"+notesSentence+"**", 1),
 		"sentence with another citation":    strings.Replace(notes, "(owner decision, Oct 9; advisor 0390)", "(advisor 0130)", 1),
@@ -2475,15 +2483,16 @@ func TestNextReleaseNotesCheckRefusesMutants(t *testing.T) {
 			t.Errorf("the cleared notes are refused with %s: %v", name, ps)
 		}
 	}
-	// Final verification after the advisor decision: (a) the notes' excepted count clause is excepted only as written,
-	// so an edit anywhere in it is refused; (c) a tilde before a count split by marks is a bound; (b) a CR byte and
-	// every other line break the pinned YAML decoder reads are refused outright in the notes and in the changelog
-	// fallback, naming file:line.
+	// Final verification after the advisor decision: (c) a tilde before a count split by marks is a bound; (b) a CR byte
+	// and every other line break the pinned YAML decoder reads are refused outright in the notes and in the changelog
+	// fallback, naming file:line. The exception cut: the notes clause once excepted ("The release archives are ... Oct 9"),
+	// as written and edited, is refused in the notes by the ordinary count rules.
 	for name, text := range map[string]string{
-		"X10 a word before the excepted notes clause":   strings.Replace(notes, "The release archives are fscache", "These release archives are fscache", 1),
-		"X10 a possessive in the excepted notes clause": strings.Replace(notes, "The release archives are fscache", "The release's archives are fscache", 1),
-		"X10 a plus in the excepted notes clause":       strings.Replace(notes, "The release archives are fscache", "The release archives are + fscache", 1),
-		"B10 a tilde before a split count in the notes": notes + "- The release ships ~fo**ur** archives (advisor 0130).\n",
+		"C12 the formerly excepted notes clause":           notes + "- Packaging changed. The release archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0130).\n",
+		"X10 a word before the formerly excepted clause":   notes + "- Packaging changed. These release archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0130).\n",
+		"X10 a possessive in the formerly excepted clause": notes + "- Packaging changed. The release's archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0130).\n",
+		"X10 a plus in the formerly excepted clause":       notes + "- Packaging changed. The release archives are + fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9; advisor 0130).\n",
+		"B10 a tilde before a split count in the notes":    notes + "- The release ships ~fo**ur** archives (advisor 0130).\n",
 	} {
 		if text == notes {
 			t.Fatalf("mutant %q does not change the notes", name)
