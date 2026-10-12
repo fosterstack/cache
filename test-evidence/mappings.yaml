@@ -432,8 +432,8 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestNothingHidesFromTheScan" }
   - ac: REQ-REL-007-AC3
     evidence:
-      - { type: go-test, ref: "tools/requirements:TestGoTestExistsAppliesTheBuildRules" }
-      - { type: go-test, ref: "tools/requirements:TestGoTestExistsFollowsTheToolchainHeaderAndPackageRules" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsAsksTheToolchain" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsFailsClosedWithoutAModule" }
   - ac: REQ-DEP-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }

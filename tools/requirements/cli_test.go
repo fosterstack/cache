@@ -563,6 +563,7 @@ func TestFreezeFailsWhenOutputPathUnwritable(t *testing.T) {
 
 func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	chdirTemp(t)
+	writeFixtureModule(t)
 	dir := "pkg"
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -1007,79 +1008,20 @@ func TestVerifyFreezeRejectsMalformedFrozenFile(t *testing.T) {
 	}
 }
 
-// ── goTestExists under the build rules (REQ-REL-007-AC3) ─────────────
+// ── goTestExists asks the toolchain (REQ-REL-007-AC3) ────────────────
 
-// A mapped Go test counts only when its file is selected on BOTH linux/amd64 and linux/arm64.
-func TestGoTestExistsAppliesTheBuildRules(t *testing.T) {
-	chdirTemp(t)
-	dir := "pkg"
-	if err := os.Mkdir(dir, 0o755); err != nil {
+func writeFixtureModule(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile("go.mod", []byte("module fixture\n\ngo 1.21\n"), 0o644); err != nil {
 		t.Fatal(err)
-	}
-	body := func(name, constraint string) string {
-		return constraint + "package p\n\nimport \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n"
-	}
-	files := map[string]string{
-		"plain_test.go":           body("TestPlain", ""),
-		"ignore_test.go":          body("TestIgnored", "//go:build ignore\n\n"),
-		"oldtag_test.go":          body("TestOldTagWindows", "// +build windows\n\n"),
-		"oldlinux_test.go":        body("TestOldTagLinux", "// +build linux\n\n"),
-		"linux_amd64_test.go":     body("TestLinuxAmd64Suffix", ""),
-		"win_windows_test.go":     body("TestWindowsByName", ""),
-		"mac_darwin_test.go":      body("TestDarwinByName", ""),
-		"only_amd64_test.go":      body("TestAmd64Only", ""),
-		"only_arm64_test.go":      body("TestArm64Only", ""),
-		"notlinux_test.go":        body("TestNotLinux", "//go:build !linux\n\n"),
-		"either_test.go":          body("TestEitherArch", "//go:build linux && (amd64 || arm64)\n\n"),
-		"linuxname_linux_test.go": body("TestLinuxName", ""),
-		// a constraint that names an architecture on its own cannot select both platforms
-		"onlyamd_expr_test.go":       body("TestAmd64Expr", "//go:build linux && amd64\n\n"),
-		"onlyarm_expr_test.go":       body("TestArm64Expr", "//go:build linux && arm64\n\n"),
-		"comb_windows_amd64_test.go": body("TestCombinedSuffix", ""),
-		// tags whose value depends on how the tests are invoked are not resolved: the file is not counted
-		"cgo_test.go":       body("TestNeedsCgo", "//go:build cgo\n\n"),
-		"nocgo_test.go":     body("TestNeedsNoCgo", "//go:build !cgo\n\n"),
-		"feat_test.go":      body("TestFeatureTag", "//go:build !amd64.v1\n\n"),
-		"feat2_test.go":     body("TestFeatureTagArm", "//go:build !arm64.v8.0\n\n"),
-		"race_test.go":      body("TestRaceTag", "//go:build !race\n\n"),
-		"exp_test.go":       body("TestExperimentTag", "//go:build !goexperiment.swissmap\n\n"),
-		"custom_test.go":    body("TestCustomTag", "//go:build !integration\n\n"),
-		"oldcustom_test.go": body("TestOldCustomTag", "// +build !integration\n\n"),
-		"release_test.go":   body("TestReleaseTag", "//go:build go1.1\n\n"),
-		"unix_test.go":      body("TestUnixTag", "//go:build unix\n\n"),
-		"generic_test.go":   "package p\n\nimport \"testing\"\n\nfunc TestGeneric[P any](t *testing.T) {}\n",
-	}
-	for n, src := range files {
-		if err := os.WriteFile(filepath.Join(dir, n), []byte(src), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// a malformed constraint is an error to Go: it keeps its package from loading, so no test beside it counts
-	if err := os.Mkdir("pkgmalformed", 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join("pkgmalformed", "m_test.go"), []byte(body("TestMalformed", "//go:build &&\n\n")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if goTestExists("pkgmalformed", "TestMalformed") {
-		t.Error("TestMalformed is in a file whose constraint does not parse but was accepted")
-	}
-	for _, name := range []string{"TestPlain", "TestOldTagLinux", "TestEitherArch", "TestLinuxName", "TestReleaseTag", "TestUnixTag"} {
-		if !goTestExists(dir, name) {
-			t.Errorf("%s is selected on linux/amd64 and linux/arm64 but was not found", name)
-		}
-	}
-	for _, name := range []string{"TestIgnored", "TestOldTagWindows", "TestLinuxAmd64Suffix", "TestWindowsByName", "TestDarwinByName", "TestAmd64Only", "TestArm64Only", "TestNotLinux", "TestAmd64Expr", "TestArm64Expr", "TestCombinedSuffix", "TestNeedsCgo", "TestNeedsNoCgo", "TestFeatureTag", "TestFeatureTagArm", "TestRaceTag", "TestExperimentTag", "TestCustomTag", "TestOldCustomTag", "TestGeneric"} {
-		if goTestExists(dir, name) {
-			t.Errorf("%s is excluded by the build rules, names an unresolved tag, or has type parameters, but was accepted", name)
-		}
 	}
 }
 
-// The file header is read as the Go toolchain reads it (REQ-REL-007-AC3): only a line Go treats as a constraint can
-// make a tag unresolved; the package must load; the name must be one `go test` registers.
-func TestGoTestExistsFollowsTheToolchainHeaderAndPackageRules(t *testing.T) {
+// A mapped Go test counts only when `go list -e -test`, run for linux/amd64 and linux/arm64 with cgo off and on, lists
+// its file as a test file of the package with no error in all four runs; the tool reads no constraint itself.
+func TestGoTestExistsAsksTheToolchain(t *testing.T) {
 	chdirTemp(t)
+	writeFixtureModule(t)
 	write := func(dir, file, src string) {
 		t.Helper()
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1090,103 +1032,87 @@ func TestGoTestExistsFollowsTheToolchainHeaderAndPackageRules(t *testing.T) {
 		}
 	}
 	fn := func(name string) string { return "import \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n" }
-	// a +build line inside the package documentation (no blank line before the package clause) is a comment to Go
-	write("hdr", "doc_test.go", "// Package p documents a flag.\n// +build integration\npackage p\n\n"+fn("TestDocBuildLine"))
-	// a legacy line followed by a blank line is a constraint
-	write("hdr", "legacy_test.go", "// +build integration\n\npackage p\n\n"+fn("TestLegacyCustom"))
-	// when a //go:build line is present Go ignores the // +build lines
-	write("hdr", "both_test.go", "//go:build linux\n// +build integration\n\npackage p\n\n"+fn("TestGoBuildWins"))
-	// a constraint written after the package clause selects nothing and names nothing
-	write("hdr", "after_test.go", "package p\n\n//go:build integration\n\n"+fn("TestAfterPackage"))
-	// a directive inside a block comment is text
-	write("hdr", "block_test.go", "/*\n//go:build integration\n*/\n\npackage p\n\n"+fn("TestInBlockComment"))
-	for _, c := range []struct {
-		name string
-		want bool
-	}{{"TestDocBuildLine", true}, {"TestLegacyCustom", false}, {"TestGoBuildWins", true}, {"TestAfterPackage", true}, {"TestInBlockComment", true}} {
-		if got := goTestExists("hdr", c.name); got != c.want {
-			t.Errorf("%s: counted=%v, want %v", c.name, got, c.want)
-		}
-	}
-	// a file the package loader ignores or rejects does not run
-	write("doc", "mapped_test.go", "package documentation\n\n"+fn("TestInDocumentationPackage"))
-	write("mixed", "a.go", "package a\n")
-	write("mixed", "b_test.go", "package b\n\n"+fn("TestMixedPackages"))
-	write("ok", "a.go", "package a\n")
-	write("ok", "x_test.go", "package a_test\n\n"+fn("TestExternal"))
-	write("ok", "y_test.go", "package a\n\n"+fn("TestInternal"))
-	for _, c := range []struct {
+	body := func(name, constraint string) string { return constraint + "package p\n\n" + fn(name) }
+	type c struct {
 		dir, name string
 		want      bool
-	}{{"doc", "TestInDocumentationPackage", false}, {"mixed", "TestMixedPackages", false}, {"ok", "TestExternal", true}, {"ok", "TestInternal", true}} {
-		if got := goTestExists(c.dir, c.name); got != c.want {
-			t.Errorf("%s/%s: counted=%v, want %v", c.dir, c.name, got, c.want)
+	}
+	var cases []c
+	// one package, many files: each file is judged by the toolchain alone
+	for name, f := range map[string]struct {
+		file, constraint string
+		want             bool
+	}{
+		"TestPlain":          {"plain_test.go", "", true},
+		"TestLinuxSuffix":    {"a_linux_test.go", "", true},
+		"TestBothArch":       {"b_test.go", "//go:build linux && (amd64 || arm64)\n\n", true},
+		"TestUnix":           {"unix_test.go", "//go:build unix\n\n", true},
+		"TestRelease":        {"rel_test.go", "//go:build go1.1\n\n", true},
+		"TestNotRace":        {"race_test.go", "//go:build !race\n\n", true},
+		"TestNotIntegration": {"integ_test.go", "//go:build !integration\n\n", true},
+		"TestLegacyLinux":    {"leg_test.go", "// +build linux\n\n", true},
+		"TestDocBuildLine":   {"doc_test.go", "// Package p documents a flag.\n// +build integration\n", true},
+		"TestBom":            {"bom_test.go", "\ufeff//go:build linux\n\n", true},
+		"TestWindowsSuffix":  {"w_windows_test.go", "", false},
+		"TestIgnore":         {"ign_test.go", "//go:build ignore\n\n", false},
+		"TestNotLinux":       {"nl_test.go", "//go:build !linux\n\n", false},
+		"TestAmd64Only":      {"am_test.go", "//go:build linux && amd64\n\n", false},
+		"TestArm64Only":      {"ar_test.go", "//go:build linux && arm64\n\n", false},
+		"TestNeedsCgo":       {"cgo_test.go", "//go:build cgo\n\n", false},
+		"TestNeedsNoCgo":     {"nocgo_test.go", "//go:build !cgo\n\n", false},
+		"TestCustomTag":      {"cust_test.go", "//go:build integration\n\n", false},
+		"TestNoFeature":      {"feat_test.go", "//go:build !amd64.v1\n\n", false},
+		"TestBomCgo":         {"bomcgo_test.go", "\ufeff//go:build !cgo\n\n", false},
+		"TestOldWindows":     {"oldw_test.go", "// +build windows\n\n", false},
+	} {
+		src := f.constraint + "package p\n\n" + fn(name)
+		if strings.HasPrefix(f.constraint, "// Package p") {
+			src = f.constraint + "package p\n\n" + fn(name)
+		}
+		write("sel", f.file, src)
+		cases = append(cases, c{"sel", name, f.want})
+	}
+	// a test in package documentation is not a test file of the package; the external test package is
+	write("pkgs", "a.go", "package p\n")
+	write("pkgs", "doc_test.go", "package documentation\n\n"+fn("TestDocumentationPkg"))
+	write("pkgs", "x_test.go", "package p_test\n\n"+fn("TestExternal"))
+	write("pkgs", "y_test.go", "package p\n\n"+fn("TestInternal"))
+	write("pkgs", "generic_test.go", "package p\n\nimport \"testing\"\n\nfunc TestGeneric[P any](t *testing.T) {}\n")
+	write("pkgs", "n_test.go", "package p\n\nimport \"testing\"\n\nfunc Testé(t *testing.T) {}\nfunc TestÉ(t *testing.T) {}\n")
+	cases = append(cases, c{"pkgs", "TestDocumentationPkg", false}, c{"pkgs", "TestExternal", true}, c{"pkgs", "TestInternal", true},
+		c{"pkgs", "TestGeneric", false}, c{"pkgs", "Testé", false}, c{"pkgs", "TestÉ", true})
+	// whatever the toolchain reports an error for keeps the package from counting
+	write("badcon", "a.go", "package p\n")
+	write("badcon", "p_test.go", body("TestBadConstraint", "")+"\n")
+	write("badcon", "bad.go", "//go:build &&\n\npackage p\n")
+	write("mixed", "a.go", "package a\n")
+	write("mixed", "p_test.go", "package b\n\n"+fn("TestMixed"))
+	write("embed", "a.go", "package p\n\nimport _ \"embed\"\n\n//go:embed missing.txt\nvar s string\n")
+	write("embed", "p_test.go", body("TestEmbedMissing", ""))
+	write("badimp", "p_test.go", "package p\n\nimport (\n\t\"testing\"\n\t_ \"fixture/does/not/exist\"\n)\n\nfunc TestMissingImport(t *testing.T) {}\n")
+	cases = append(cases, c{"badcon", "TestBadConstraint", false}, c{"mixed", "TestMixed", false}, c{"embed", "TestEmbedMissing", false},
+		c{"badimp", "TestMissingImport", false})
+	for _, k := range cases {
+		if got := goTestExists(k.dir, k.name); got != k.want {
+			t.Errorf("%s/%s: counted=%v, want %v", k.dir, k.name, got, k.want)
 		}
 	}
-	// a selected sibling that does not parse means the package does not load
-	write("broken", "a.go", "package p\n")
-	write("broken", "b.go", "package p\n\nfunc {\n")
-	write("broken", "p_test.go", "package p\n\n"+fn("TestBrokenSibling"))
-	// ... but a sibling both platforms exclude is not part of the package
-	write("brokenoff", "a.go", "package p\n")
-	write("brokenoff", "b.go", "//go:build ignore\n\npackage p\n\nfunc {\n")
-	write("brokenoff", "p_test.go", "package p\n\n"+fn("TestExcludedBrokenSibling"))
-	for name, dir := range map[string]string{"TestBrokenSibling": "broken", "TestExcludedBrokenSibling": "brokenoff"} {
-		if got, want := goTestExists(dir, name), dir == "brokenoff"; got != want {
-			t.Errorf("%s/%s: counted=%v, want %v", dir, name, got, want)
-		}
+	// no module around the directory, no such directory: the toolchain cannot answer, the check fails
+	if goTestExists("absentdir", "TestPlain") {
+		t.Error("a missing directory counted")
 	}
-	// a leading byte-order mark does not hide a constraint from the tag check (Go strips it)
-	write("bom", "m_test.go", "\ufeff//go:build !cgo\n\npackage p\n\n"+fn("TestBomModern"))
-	write("bom", "o_test.go", "\ufeff// +build !cgo\n\npackage p\n\n"+fn("TestBomLegacy"))
-	write("bom", "k_test.go", "\ufeff//go:build linux\n\npackage p\n\n"+fn("TestBomResolved"))
-	for name, want := range map[string]bool{"TestBomModern": false, "TestBomLegacy": false, "TestBomResolved": true} {
-		if got := goTestExists("bom", name); got != want {
-			t.Errorf("bom/%s: counted=%v, want %v", name, got, want)
-		}
-	}
-	// _test is stripped only from a _test.go file's package name
-	write("ext", "a.go", "package p\n")
-	write("ext", "b.go", "package p_test\n")
-	write("ext", "p_test.go", "package p\n\n"+fn("TestMixedOrdinary"))
-	write("ext2", "a.go", "package p_test\n")
-	write("ext2", "z_test.go", "package p_test_test\n\n"+fn("TestExternalOfSuffixed"))
-	// a sibling Go reports an error for (bad constraint, symlink source, cgo, embed, odd import path) keeps the package from loading
-	write("sibcon", "a.go", "//go:build &&\n\npackage p\n")
-	write("sibcon", "p_test.go", "package p\n\n"+fn("TestBadConstraintSibling"))
-	write("sibcgo", "a.go", "package p\n\nimport \"C\"\n")
-	write("sibcgo", "p_test.go", "package p\n\n"+fn("TestCgoSibling"))
-	write("sibembed", "a.go", "package p\n\nimport _ \"embed\"\n\n//go:embed missing.txt\nvar s string\n")
-	write("sibembed", "p_test.go", "package p\n\n"+fn("TestEmbedSibling"))
-	write("sibpath", "a.go", "package p\n\nimport _ \"bad path\"\n")
-	write("sibpath", "p_test.go", "package p\n\n"+fn("TestBadImportPathSibling"))
-	write("sibbin", "a.go", "//go:binary-only-package\n\npackage p\n")
-	write("sibbin", "p_test.go", "package p\n\n"+fn("TestBinaryOnlySibling"))
-	write("testcgo", "p_test.go", "package p\n\nimport \"C\"\n\n"+fn("TestImportsC"))
-	write("symlink", "p_test.go", "package p\n\n"+fn("TestSymlinkSibling"))
-	write("symlink", "real_src", "package other\n")
-	if err := os.Symlink("real_src", filepath.Join("symlink", "link.go")); err != nil {
+}
+
+// With no module the toolchain cannot list the package: nothing counts (fail closed).
+func TestGoTestExistsFailsClosedWithoutAModule(t *testing.T) {
+	chdirTemp(t)
+	if err := os.MkdirAll("p", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// ... and what Go ignores does not: a package documentation sibling, or a cgo-only sibling, with a body this tool cannot parse
-	write("docsib", "a.go", "package documentation\n\nfunc {\n")
-	write("docsib", "p_test.go", "package p\n\n"+fn("TestDocumentationSibling"))
-	for _, c := range []struct {
-		dir, name string
-		want      bool
-	}{{"ext", "TestMixedOrdinary", false}, {"ext2", "TestExternalOfSuffixed", true}, {"sibcon", "TestBadConstraintSibling", false},
-		{"sibcgo", "TestCgoSibling", false}, {"sibembed", "TestEmbedSibling", false}, {"sibpath", "TestBadImportPathSibling", false},
-		{"sibbin", "TestBinaryOnlySibling", false}, {"testcgo", "TestImportsC", false}, {"symlink", "TestSymlinkSibling", false},
-		{"docsib", "TestDocumentationSibling", true}} {
-		if got := goTestExists(c.dir, c.name); got != c.want {
-			t.Errorf("%s/%s: counted=%v, want %v", c.dir, c.name, got, c.want)
-		}
+	if err := os.WriteFile(filepath.Join("p", "p_test.go"), []byte("package p\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	// the registered-name rule is Go's: the rune after Test must not be a lower-case letter (any script)
-	write("names", "n_test.go", "package n\n\n"+fn("Testé")+"\n"+"func TestÉ(t *testing.T) {}\nfunc Test_u(t *testing.T) {}\nfunc Test(t *testing.T) {}\nfunc Test9(t *testing.T) {}\n")
-	for name, want := range map[string]bool{"Testé": false, "TestÉ": true, "Test_u": true, "Test": true, "Test9": true} {
-		if got := goTestExists("names", name); got != want {
-			t.Errorf("name %q: counted=%v, want %v", name, got, want)
-		}
+	if goTestExists("p", "TestX") {
+		t.Error("counted although go list could not list the package")
 	}
 }
