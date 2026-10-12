@@ -119,7 +119,7 @@
    "id": "KR-CUTOVER",
    "suite": "bin/chain-build-wiring-test.sh",
    "case": "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case",
-   "reason": "the cutover pull request (chain-v030 to main) needs this list empty; the case is red while any entry exists, and listed itself until then",
+   "reason": "the cutover pull request (chain-v030 to main) needs this list empty AND every hosted check green on hosted runners, not only the suite cases: build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; the case is red while any entry exists, and listed itself until then",
    "green_by": "cutover (the last entry removed)"
   }
  ]
