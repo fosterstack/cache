@@ -2739,6 +2739,181 @@ for f_ in FORGE_:
           refused(P.behavior_entries, f_))
 check("r10 cut: the exemption code is gone (no _vex_flags, _vex_stmt, _vex_head)",
       not any(hasattr(P, n_) for n_ in ("_vex_flags", "_vex_stmt", "_vex_head")))
+# ===== r11 (final verification at ac7e9b0, advisor micro-verification; Codex #300 r10: A 1 Medium + 2 Low, B 4 Medium)
+# R11-1 (A Medium / B Medium 2): the duplicate check reads the CLEANED, PUBLISHED line (_clean_free), the source line numbers
+# kept: two bullets of one release block that publish the same line once cleaned are refused before anything is written
+for what_, body_, n1_, n2_ in (
+        ("'- gpt' and '- claude'", GEN_B.replace("- x (advisor 0130).\n", "- gpt\n- claude\n"), 10, 11),
+        ("'- CVE-1: fixed (changed: (redacted))' and its escaped spelling",
+         GEN_B.replace("- no change\n", "- CVE-1: fixed (changed: (redacted))\n- CVE\\-1\\: fixed \\(changed\\: \\(redacted\\)\\)\n"), 7, 8),
+        ("two differently named behavior bullets", GEN_B.replace("- x (advisor 0130).\n", "- gpt (advisor 0130).\n- claude (advisor 0130).\n"), 10, 11)):
+    rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", body_))
+    check("r11 R11-1: a generated tag's notes with %s in one release block: exit 2, lines %d and %d named, nothing printed"
+          % (what_, n1_, n2_), rc_ == 2 and sout_ == "" and "tag message:%d:" % n1_ in err_ and "tag message:%d:" % n2_ in err_,
+          (rc_, err_, sout_))
+    NNP_ = "# Notes\n\n- gpt (advisor 0130).\n"
+    rc_, err_, cl_, nnout_, p_ = changelog_cli(body_, HIST6, NNP_)
+    check("r11 R11-1: the changelog's notes with %s: exit 2, both lines named, CHANGELOG.md and the pending entry unchanged"
+          % what_, rc_ == 2 and LAST_STDOUT[0] == "" and cl_ == HIST6 and nnout_ == NNP_
+          and p_["notes"] + ":%d:" % n1_ in err_ and p_["notes"] + ":%d:" % n2_ in err_, (rc_, err_))
+    H_ = "# Changelog\n\n" + body_
+    rc_, err_, cl_, nnout_, p_ = changelog_cli(P.notes("v0.2.4", [], []), H_, NN6)
+    check("r11 R11-1: the history with %s: exit 2, both lines named, nothing written" % what_,
+          rc_ == 2 and cl_ == H_ and nnout_ == NN6 and p_["cl"] + ":%d:" % (n1_ + 2) in err_ and p_["cl"] + ":%d:" % (n2_ + 2) in err_,
+          (rc_, err_))
+OKB_ = GEN_B.replace("- x (advisor 0130).\n", "- gpt x (advisor 0130).\n- gpt y (advisor 0130).\n")
+rc_, err_, sout_ = cli(["tag-notes"], stdin=mktag("v0.2.3", OKB_))
+check("r11 R11-1 control: two bullets that publish different lines once cleaned are read (exit 0)", rc_ == 0, (rc_, err_))
+check("r11 R11-1 control: a raw refused form is still refused on the raw bullet (raw check kept)",
+      is_ve(refused(P.tag_notes, mktag("v0.2.3", GEN_B.replace("- x (advisor 0130).", "- <b>gpt (advisor 0130).")))))
+# R11-2 (B Medium 1): a document value is redacted BEFORE its JSON encoding: a name right after a character the quoted form
+# escapes ('<' -> <, '&' -> &, '`' -> `, '\n' -> \n, a control or non-ASCII character -> \uXXXX) is still
+# redacted, and a statement whose name redaction changes is named by its position. Oracle: every value the redactor
+# changes when read decoded (that is, as plain text) must lose the name in the printed line
+NAMES_ = ("google", "gemini", "claude", "gpt", "openai", "anthropic", "o1", "aws", "Meta", "copilot")
+PRE_ = ("<", "&", "`", "\n", "\t", "\x00", "é", " ", "\"", "\\", "-----")
+bad_, seen_ = [], 0
+for nm_ in NAMES_:
+    for pre_ in PRE_:
+        v_ = pre_ + nm_
+        if P._clean(v_) == v_:
+            continue                # not a name as plain text either ('éo1' is one word): nothing to redact
+        seen_ += 1
+        t_ = refused(P.notes, "v0.2.3", [], P.vex_changes(None, {"statements": [{"vulnerability": {"name": v_}, "status": "fixed"}]}))
+        vl_ = [l_ for l_ in str(t_).splitlines() if "fixed" in l_]
+        if is_ve(t_) or len(vl_) != 1 or nm_.lower() in vl_[0].lower() or not vl_[0].endswith("statement 1 of the new document"):
+            bad_.append((v_, t_))
+            continue
+        tn_ = refused(P.tag_notes, mktag("v0.2.3", t_))
+        cl_ = refused(P.changelog, t_, None, "")
+        if tn_ != t_ or is_ve(cl_) or is_ve(refused(P.changelog, P.notes("v0.2.4", [], []), cl_[0], "")):
+            bad_.append((v_, "round trip", tn_, cl_))
+check("r11 R11-2: a vendor or model name right after an escaped character (%d cases) is redacted in the printed VEX line, "
+      "the statement named by its position, and the notes read back as tag, changelog notes and history" % seen_,
+      bad_ == [] and seen_ >= len(NAMES_) * len(PRE_) - 1, bad_[:3])
+two_ = {"statements": [{"@id": "<google", "vulnerability": {"name": "CVE-5"}, "status": "fixed", "products": [{"@id": "&aws"}]},
+                       {"@id": "&o1", "vulnerability": {"name": "CVE-5"}, "status": "affected", "products": [{"@id": "pkg:a"}]}]}
+t_ = refused(P.notes, "v0.2.3", [], P.vex_changes(None, two_))
+vl_ = [l_ for l_ in str(t_).splitlines() if "CVE" in l_]
+check("r11 R11-2: @id labels '<google' / '&o1' and a product '&aws' are redacted; the two statements are named by "
+      "position, on distinct lines", not is_ve(t_) and len(vl_) == 2 and len(set(vl_)) == 2
+      and not any(w_ in t_.lower() for w_ in ("google", "o1", "aws"))
+      and all(re.search(r"statement [12] of the new document$", l_) for l_ in vl_), t_)
+od_ = {"statements": [{"vulnerability": {"name": "CVE-6"}, "status": "fixed", "<Google": 1}], "&o2": 1}
+nd_ = {"statements": [{"vulnerability": {"name": "CVE-6"}, "status": "fixed", "<Google": 2}], "&o2": 2}
+t_ = refused(P.notes, "v0.2.3", [], P.vex_changes(od_, nd_))
+check("r11 R11-2: field names '<Google' (statement) and '&o2' (document) are redacted in the printed lines",
+      not is_ve(t_) and "google" not in t_.lower() and "o2" not in t_.lower() and P.tag_notes(mktag("v0.2.3", t_)) == t_, t_)
+check("r11 R11-2 control: a value without a name still prints its exact JSON string",
+      json.loads(P._lit("<b>&x", before_colon=True)[1:-1]) == "<b>&x", P._lit("<b>&x"))
+# R11-3 (B Medium 3 / A Low 2): go.mod versions validated as Go validates them (golang.org/x/mod/semver; the go directive
+# per modfile's GoVersionRE); supported directives checked; anything else refused naming go.mod:line
+pg_ = getattr(P, "parse_gomod")
+def gm_refused(text_, n_):
+    r_ = refused(pg_, text_, "go.mod")
+    return is_ve(r_) and ("go.mod:%d:" % n_) in r_
+for v_ in ("v0.34.0-..", "v0.34.0-", "v0.34.0-a..b", "v0.34.0-a.", "v0.34.0-01", "v0.34.0-1.02", "v0.34.0+", "v0.34.0+a..b",
+           "v01.2.3", "v1.02.3", "v1.2.03", "v1.2", "v1", "v1.2.3-α", "v1.2.3-a_b", "v١.2.3", "v1.2.3-١",
+           "V1.2.3", "v1.2.3.4"):
+    check("r11 R11-3: require with version %r is refused, naming go.mod:2" % v_,
+          gm_refused("module x\nrequire golang.org/x/net %s\n" % v_, 2), refused(pg_, "module x\nrequire golang.org/x/net %s\n" % v_))
+for v_ in ("v1.2.3", "v0.0.0", "v1.2.3-0", "v1.2.3-rc.1", "v0.0.0-20191010083416-a7dc8b61c822", "v1.2.3-x.01a", "v2.0.0+incompatible",
+           "v1.2.3-a-b", "v1.2.3+build.5", "v10.20.30"):
+    r_ = refused(pg_, "module x\nrequire golang.org/x/net %s\n" % v_)
+    check("r11 R11-3: require with version %r is read" % v_, not is_ve(r_) and r_["require"]["golang.org/x/net"] == (v_, 2), r_)
+for gv_ in ("0.1", "1", "1.", "1.21.", "01.21", "1.021", "1.21.01", "1.21rc", "1.21-rc1", "v1.21", "go1.21", "1.2١", "1.21RC1", "1.21.0.0"):
+    check("r11 R11-3: 'go %s' is refused, naming go.mod:2" % gv_, gm_refused("module x\ngo %s\n" % gv_, 2), refused(pg_, "module x\ngo %s\n" % gv_))
+for gv_ in ("1.21", "1.21.0", "1.21rc1", "1.27.2", "1.0", "2.0.1"):
+    r_ = refused(pg_, "module x\ngo %s\n" % gv_)
+    check("r11 R11-3: 'go %s' is read" % gv_, not is_ve(r_) and r_["go"] == (gv_, 2), r_)
+for txt_, n_, why_ in (
+        ("module x\ntoolchain 1.21.0\n", 2, "a toolchain without 'go'"), ("module x\ntoolchain go0.1\n", 2, "toolchain go0.1"),
+        ("module x\ntoolchain\n", 2, "toolchain with no name"), ("module x\ntoolchain go1.21.0 x\n", 2, "toolchain with two words"),
+        ("module x\ntoolchain go1.21.0\ntoolchain go1.21.1\n", 3, "toolchain twice"),
+        ("module\n", 1, "module with no path"), ("module a b\n", 1, "module with two words"), ("module a\nmodule b\n", 2, "module twice"),
+        ("module (\n\ta\n)\n", 1, "a module block"),
+        ("module x\nreplace nonsense\n", 2, "replace nonsense"), ("module x\nreplace a =>\n", 2, "replace with no new path"),
+        ("module x\nreplace => ./b\n", 2, "replace with no old path"), ("module x\nreplace a b => ./c\n", 2, "replace old version not a version"),
+        ("module x\nreplace a => b.example/c\n", 2, "a module replacement without a version"),
+        ("module x\nreplace a v1.0.0 => b.example/c v1\n", 2, "a replacement version not a version"),
+        ("module x\nreplace a => ./x v1.0.0\n", 2, "a directory replacement with a version"),
+        ("module x\nreplace a => ./x => ./y\n", 2, "replace with two arrows"),
+        ("module x\nreplace (\n\tnonsense\n)\n", 3, "replace nonsense in a block"),
+        ("module x\nexclude a\n", 2, "exclude without a version"), ("module x\nexclude a 1.0.0\n", 2, "exclude with a bad version"),
+        ("module x\nretract\n", 2, "retract with nothing"), ("module x\nretract x\n", 2, "retract a non-version"),
+        ("module x\nretract [v1.0.0 v1.0.5]\n", 2, "retract an interval without a comma"),
+        ("module x\nretract [v1.0.0, x]\n", 2, "retract an interval with a non-version"),
+        ("module x\nretract v1.0.0, v1.0.1\n", 2, "retract with a comma outside an interval"),
+        ("module x\ngodebug panicnil\n", 2, "godebug without '='"), ("module x\ngodebug a=1 b=2\n", 2, "godebug with two words"),
+        ("module x\ntool\n", 2, "tool with no path"), ("module x\ntool a b\n", 2, "tool with two words"),
+        ("module x\nignore\n", 2, "ignore with no path"), ("module x\nfrobnicate a\n", 2, "an unknown directive"),
+        ("module x\nfrobnicate (\n)\n", 2, "an unknown block")):
+    check("r11 R11-3: %s is refused, naming go.mod:%d" % (why_, n_), gm_refused(txt_, n_), refused(pg_, txt_))
+for txt_, why_ in (
+        ("module x\ntoolchain go1.21.0\n", "toolchain go1.21.0"), ("module x\ntoolchain default\n", "toolchain default"),
+        ("module x\ntoolchain go1.21rc1\n", "toolchain go1.21rc1"),
+        ("module x\nreplace a => ./x\n", "a directory replacement"), ("module x\nreplace a v1.0.0 => ../x\n", "a versioned directory replacement"),
+        ("module x\nreplace a => /abs/x\n", "a rooted directory replacement"),
+        ("module x\nreplace a => b.example/c v1.0.0\n", "a module replacement"),
+        ("module x\nreplace a v1.0.0 => b.example/c v1.2.0\n", "a versioned module replacement"),
+        ("module x\nreplace (\n\ta => ./x\n\tb v1.0.0 => c.example/d v1.0.1\n)\n", "a replace block"),
+        ("module x\nexclude a v1.0.0\n", "exclude"), ("module x\nexclude (\n\ta v1.0.0\n)\n", "an exclude block"),
+        ("module x\nretract v1.0.0\n", "retract a version"), ("module x\nretract [v1.0.0, v1.0.5]\n", "retract an interval"),
+        ("module x\nretract (\n\tv1.0.0 // why\n\t[v1.1.0, v1.2.0]\n)\n", "a retract block"),
+        ("module x\ngodebug panicnil=1\n", "godebug"), ("module x\ngodebug (\n\tdefault=go1.21\n\tpanicnil=1\n)\n", "a godebug block"),
+        ("module x\ntool golang.org/x/tools/cmd/stringer\n", "tool"), ("module x\nignore ./node_modules\n", "ignore")):
+    r_ = refused(pg_, txt_)
+    check("r11 R11-3: %s is read" % why_, not is_ve(r_), r_)
+GM_BAD_ = "module example.org/test\nrequire golang.org/x/net v0.34.0-..// indirect\n"
+rm_out_ = r8p("rm-r11.json")
+if os.path.exists(rm_out_):
+    os.remove(rm_out_)
+rc_, err_, sout_ = cli(["removed", "--release-grype", r8p("rel-r11.json", json.dumps(gr(R8_FIND))), "--gomod", r8p("bad11.mod", GM_BAD_),
+                        "--out", rm_out_])
+check("r11 R11-3: removed with 'v0.34.0-..// indirect' exits 2 naming go.mod:2, no output written",
+      rc_ == 2 and r8p("bad11.mod") + ":2:" in err_ and not os.path.exists(rm_out_), (rc_, err_))
+if os.path.exists(rm_out_):
+    os.remove(rm_out_)
+rc_, err_, out_, p_ = notes_cli(gomod=GM_BAD_)
+check("r11 R11-3: notes with 'v0.34.0-..// indirect' exits 2 naming go.mod:2, nothing written",
+      refused_at(rc_, err_, out_, p_["gomod"] + ":2:"), (rc_, err_))
+fx_ = [{"cve": "CVE-2099-1", "package": "golang.org/x/net", "old": "v0.30.0", "new": "v0.34.0-..", "severity": "High", "variants": ["default"]}]
+r_ = refused(P.check_fix_sources, fx_, {"": ("scan.json", gr(R8_FIND))}, "go.mod", GM_BAD_, {"go": {"golang.org/x/net": "v0.34.0-.."}})
+check("r11 R11-3: check_fix_sources refuses that go.mod, naming go.mod:2", is_ve(r_) and "go.mod:2:" in r_, r_)
+for txt_, n_ in (("module x\ngo 0.1\n", 2), ("module x\nreplace nonsense\n", 2)):
+    rc_, err_, sout_ = cli(["removed", "--release-grype", r8p("rel-r11.json"), "--gomod", r8p("bad11b.mod", txt_), "--out", rm_out_])
+    check("r11 R11-3: removed with %r exits 2 naming go.mod:%d, no output" % (txt_, n_),
+          rc_ == 2 and r8p("bad11b.mod") + ":%d:" % n_ in err_ and not os.path.exists(rm_out_), (rc_, err_))
+    if os.path.exists(rm_out_):
+        os.remove(rm_out_)
+# R11-4 (B Medium 4 / A Low 3): 'stdlib' is reserved for the toolchain: a require (or any module path) named stdlib is
+# refused naming its line; check_fix_sources compares the stdlib fix with the go directive it names
+STD_ = "module x\ngo 1.27rc1\nrequire stdlib v1.28.0 // <b>\nreplace stdlib => ./local\n"
+check("r11 R11-4: 'require stdlib v1.28.0' is refused, naming go.mod:3", gm_refused(STD_, 3), refused(pg_, STD_))
+check("r11 R11-4: 'require stdlib v1.28.0' alone is refused, naming go.mod:2", gm_refused("module x\nrequire stdlib v1.28.0\n", 2))
+check("r11 R11-4: 'require (\\n\\tstdlib v1.28.0\\n)' is refused, naming go.mod:3", gm_refused("module x\nrequire (\n\tstdlib v1.28.0\n)\n", 3))
+for txt_, n_ in (("module x\nreplace stdlib => ./local\n", 2), ("module x\nexclude stdlib v1.0.0\n", 2), ("module stdlib\n", 1)):
+    check("r11 R11-4: the reserved name in %r is refused, naming go.mod:%d" % (txt_, n_), gm_refused(txt_, n_), refused(pg_, txt_))
+STDF_ = [{"id": "CVE-2099-7", "package": "stdlib", "installed": "go1.27.0", "fixed": "1.27.1", "severity": "High", "type": "go-module"}]
+rc_, err_, sout_ = cli(["removed", "--release-grype", r8p("rel-std.json", json.dumps(gr(STDF_))), "--gomod", r8p("std.mod", STD_),
+                        "--out", rm_out_])
+check("r11 R11-4: removed with the stdlib requirement exits 2 naming go.mod:3, no output",
+      rc_ == 2 and r8p("std.mod") + ":3:" in err_ and not os.path.exists(rm_out_), (rc_, err_))
+if os.path.exists(rm_out_):
+    os.remove(rm_out_)
+rc_, err_, out_, p_ = notes_cli(gomod=STD_, finds=STDF_)
+check("r11 R11-4: notes with the stdlib requirement exits 2 naming go.mod:3, nothing written",
+      refused_at(rc_, err_, out_, p_["gomod"] + ":3:"), (rc_, err_))
+sfx_ = [{"cve": "CVE-2099-7", "package": "stdlib", "old": "go1.27.0", "new": "go1.27.2", "severity": "High", "variants": ["default"]}]
+r_ = refused(P.check_fix_sources, sfx_, {"": ("scan.json", gr(STDF_))}, "go.mod", "module x\ngo 1.26.0\n", {"go": {"stdlib": "go1.27.2"}})
+check("r11 R11-4: check_fix_sources refuses a stdlib fix go1.27.2 against 'go 1.26.0' (the direct-call invariant)", is_ve(r_), r_)
+r_ = refused(P.check_fix_sources, sfx_, {"": ("scan.json", gr(STDF_))}, "go.mod", "module x\ngo 1.27.2\n", {"go": {"stdlib": "go1.27.2"}})
+check("r11 R11-4 control: a stdlib fix go1.27.2 against 'go 1.27.2' is judged on go.mod:2", r_ == ["scan.json:matches[0]: go.mod:2:"], r_)
+# R11-5 (A compat risk; advisor: keep refusing, a documented limit): a quoted module path stays refused (fail closed)
+rc_, err_, sout_ = cli(["removed", "--release-grype", r8p("rel-r11.json"), "--gomod", r8p("q.mod", 'module x\nrequire "golang.org/x/net" v0.33.0\n'),
+                        "--out", rm_out_])
+check("r11 R11-5: a quoted require path is refused by removed (exit 2, go.mod:2, no output): a documented limit",
+      rc_ == 2 and r8p("q.mod") + ":2:" in err_ and not os.path.exists(rm_out_), (rc_, err_))
 shutil.rmtree(r8_)
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
