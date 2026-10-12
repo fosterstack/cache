@@ -27,10 +27,13 @@ Every diagnostic is plain ASCII and bounded: a value from the record and a path 
 string escaped, then cut to SHOW_CHARS written characters, a list or object by its kind and size, never rendered, an
 integer of more than 64 bits by its size), at most MAX_PROBLEMS problems are written in all (every added record and the
 record under judgement together, every problem of a seat entry added to the one shared count; past that, the rest are
-counted exactly and no further added record is read), every line is
-written with every control character and every non-ASCII character escaped (one line, never a forged second one) and
-then cut to SAY_CHARS (the bound applies after escaping, which writes one character as up to ten), and a failure to
-judge is a named refusal (exit 1), never a pass.
+counted exactly and no further added record is read; when a record is selected, one line is kept for its own refusal,
+round 7), every line is written with every control character and every non-ASCII character escaped (one line, never a
+forged second one) and then, when longer than SAY_CHARS, shortened in the middle (the bound applies after escaping, which
+writes one character as up to ten; round 7: the front and the last SAY_TAIL characters are kept, so no refusal loses its
+requirement tag or the statement that no substitute is accepted), a git failure looking up or reading a record path is
+refused naming the path, and a failure to judge is a named refusal (exit 1) that says no substitute is accepted, never a
+pass.
 
 A record clears the gate (REQ-AUD-018 AC5, AC6) when its schema is auditor-review-record/v2, it binds <tree>, and
 it holds only the permitted fields at every level: the record RECORD_REQUIRED (+ RECORD_OPTIONAL), every round
@@ -132,6 +135,7 @@ _HEX40 = re.compile(r"[0-9a-f]{40}")
 _SUBSTITUTE = re.compile(r"substitut", re.I)
 SHOW_CHARS = 80
 SAY_CHARS = 2000
+SAY_TAIL = 300      # a longer line keeps its last SAY_TAIL characters, the required ending among them (round 7)
 MAX_PROBLEMS = 100
 _KEY = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
@@ -172,11 +176,13 @@ class _Problems(list):
     def __init__(self, ps=()):
         super().__init__()
         self.more = 0
-        self.unread = 0      # added records not read once MAX_PROBLEMS problems are kept (the command line only)
+        self.unread = 0      # added records not read once `limit` problems are kept (the command line only)
+        self.limit = MAX_PROBLEMS      # the command line lowers it by one while added records are judged (round 7)
+        self.read_limit = MAX_PROBLEMS      # the limit at which the command line stopped reading added records
         self.extend(ps)
 
     def append(self, p):
-        if len(self) < MAX_PROBLEMS:
+        if len(self) < self.limit:
             super().append(p)
         else:
             self.more += 1
@@ -551,9 +557,9 @@ def added_record_problems(head, touched, skip, probs):
     judged as the selected record is, even when the PR changes nothing else (round 4): it must be a regular file, read
     strictly, of schema v2, and clear by _judge for the tree its own file name names; so no PR can introduce an
     old-schema record, a record with a missing or extra field, or a substitute. Adds to `probs` its failing lines;
-    once `probs` holds MAX_PROBLEMS, the rest are counted, and no further record is read."""
+    once `probs` holds its limit, the rest are counted, and no further record is read."""
     for path in sorted(p for p, present in touched.items() if present and p != skip):
-        if len(probs) >= MAX_PROBLEMS:
+        if len(probs) >= probs.limit:
             probs.unread += 1
             continue
         at = "::error file=%s::review gate (REQ-AUD-18 %%s): record %s is added or changed by this pull request and " % (
@@ -579,11 +585,13 @@ _NAMED = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
 def _say(line, err=False):
     """Write one line of plain ASCII: every control character escaped (so no value or path can start a second line or an
     escape sequence) and every non-ASCII character escaped (so nothing can make the output raise), THEN cut to
-    SAY_CHARS (round 4: an escape writes one character as up to ten, so the bound applies to the escaped line)."""
+    SAY_CHARS (round 4: an escape writes one character as up to ten, so the bound applies to the escaped line). A longer
+    line is shortened in the MIDDLE (round 7): its front (the requirement tag, the record path) and its last SAY_TAIL
+    characters (the required ending: no refusal loses the statement that no substitute is accepted) are written."""
     line = _CONTROL.sub(lambda m: _NAMED.get(m.group(), "\\x%02x" % ord(m.group())), line)
     line = line.encode("ascii", "backslashreplace").decode("ascii")
     if len(line) > SAY_CHARS:
-        line = line[:SAY_CHARS] + "... (%d characters)" % len(line)
+        line = line[:SAY_CHARS - SAY_TAIL] + "... (%d characters) ..." % len(line) + line[-SAY_TAIL:]
     print(line, file=sys.stderr if err else sys.stdout)
 
 
@@ -593,12 +601,17 @@ def _emit(report):
         _say(line)
     if report.more or report.unread:
         _say("::error::review gate: ... and %d more problem(s) not shown%s" % (report.more, (
-            "; %d more added record(s) not read (the gate stops reading at %d problems)" % (report.unread, MAX_PROBLEMS)
+            "; %d more added record(s) not read (the gate stops reading at %d problems)" % (report.unread, report.read_limit)
             if report.unread else "")))
     return 1
 
 
 ABSENT = "no regular file there"      # the one cause _no_record states plainly
+
+
+def _git_failure(e):
+    """The cause a git failure reading a record path gives _no_record (round 7): it ends saying no substitute is accepted."""
+    return "git could not read it (%s)" % (str(e).splitlines() or [type(e).__name__])[0]
 
 
 def _no_record(report, changed, path, why):
@@ -628,8 +641,8 @@ def main(argv):
     try:
         return _main(argv)
     except Exception as e:      # any failure to judge (git, memory, an unforeseen value) refuses, naming it
-        _say("::error::review gate: the change could not be judged (%s: %s): it does not clear (REQ-AUD-18 AC3)"
-             % (type(e).__name__, _show((str(e).splitlines() or [""])[0])))
+        _say(_no_substitute("::error::review gate (REQ-AUD-18 AC3): the change could not be judged (%s: %s), so it does "
+                            "not clear" % (type(e).__name__, _show((str(e).splitlines() or [""])[0]))))
         return 1
 
 
@@ -667,59 +680,65 @@ def _main(argv):
     path = REVIEWS + tree + ".json"
     touched = touched_records(base, head)
     report = _Problems()      # every problem line written, bounded in all
+    # round 7: when a record is selected, one line is kept for its own refusal, however many added records fail
+    report.limit = report.read_limit = MAX_PROBLEMS - 1 if changed else MAX_PROBLEMS
     added_record_problems(head, touched, path if changed else None, report)
+    report.limit = MAX_PROBLEMS
     if not changed:
         if report:
             return _emit(report)
         _say("review gate: no change under %s: nothing to clear" % AGENT)
         return 0
     rec, where, probs = None, path, []
-    here = _blob(head, path)
-    if here is NOT_REGULAR:      # refused before any legacy record is looked at (AC7: never taken for an absent file)
-        return _no_record(report, changed, path, NON_REGULAR)
-    merged = _merged_blob(base, head, trusted, path, touched)
-    if merged:      # the identity check passed: read the TRUSTED revision's copy (by its blob id), never the head's
-        kind, got = classify_merged(_git("cat-file", "blob", merged, raw=True))
-        if kind == "v2":
-            rec = got
+    try:      # round 7: a git failure looking up or reading a record path is refused naming the path
+        here = _blob(head, path)
+        if here is NOT_REGULAR:      # refused before any legacy record is looked at (AC7: never taken for an absent file)
+            return _no_record(report, changed, path, NON_REGULAR)
+        merged = _merged_blob(base, head, trusted, path, touched)
+        if merged:      # the identity check passed: read the TRUSTED revision's copy (by its blob id), never the head's
+            kind, got = classify_merged(_git("cat-file", "blob", merged, raw=True))
+            if kind == "v2":
+                rec = got
+            else:
+                probs = ["record %s is the merged file (the same at the merge base and on the trusted revision %s) but %s"
+                         % (path, _show(trusted), got if kind == "refused" else _no_substitute(
+                             "it is an old-schema record at the path the tree hash names (an old-schema record is named by "
+                             "the legacy tree hash)", V2_REQUIRED))]
+        elif here is None:      # nothing at the tree's path: an old record merged for this content?
+            legacy = legacy_tree_hash(head)
+            where = REVIEWS + legacy + ".json" if legacy else path
+            old = _merged_blob(base, head, trusted, where, touched) if legacy else None
+            if old:
+                kind, got = classify_merged(_git("cat-file", "blob", old, raw=True))
+                if kind == "old" and not report:
+                    _say("review gate: %d auditor path(s) changed; %s is the old-schema record already at the merge base "
+                         "and on the trusted revision %s (the same file, unchanged): honoured as merged, not re-judged"
+                         % (len(changed), where, _show(trusted)))
+                    return 0
+                probs = [] if kind == "old" else [
+                    "record %s is the merged file (the same at the merge base and on the trusted revision %s) but %s" % (
+                        where, _show(trusted), got if kind == "refused" else _no_substitute(
+                            "it is a schema v2 record at the path the legacy tree hash names (a schema v2 record is named "
+                            "by the tree hash, %s)" % path, V2_REQUIRED))]
+            elif legacy and _blob(head, where) is NOT_REGULAR:
+                return _no_record(report, changed, where, NON_REGULAR)
+            elif legacy and _blob(head, where) is not None:
+                probs = [_no_substitute("record %s, named by the legacy tree hash, is not the same file, unchanged by this "
+                                        "pull request, at the merge base %s and on the trusted revision %s"
+                                        % (where, _show(base), _show(trusted)), V2_REQUIRED)]
+            else:
+                return _no_record(report, changed, path, ABSENT)
         else:
-            probs = ["record %s is the merged file (the same at the merge base and on the trusted revision %s) but %s"
-                     % (path, _show(trusted), got if kind == "refused" else _no_substitute(
-                         "it is an old-schema record at the path the tree hash names (an old-schema record is named by "
-                         "the legacy tree hash)", V2_REQUIRED))]
-    elif here is None:      # nothing at the tree's path: an old record merged for this content?
-        legacy = legacy_tree_hash(head)
-        where = REVIEWS + legacy + ".json" if legacy else path
-        old = _merged_blob(base, head, trusted, where, touched) if legacy else None
-        if old:
-            kind, got = classify_merged(_git("cat-file", "blob", old, raw=True))
-            if kind == "old" and not report:
-                _say("review gate: %d auditor path(s) changed; %s is the old-schema record already at the merge base "
-                     "and on the trusted revision %s (the same file, unchanged): honoured as merged, not re-judged"
-                     % (len(changed), where, _show(trusted)))
-                return 0
-            probs = [] if kind == "old" else [
-                "record %s is the merged file (the same at the merge base and on the trusted revision %s) but %s" % (
-                    where, _show(trusted), got if kind == "refused" else _no_substitute(
-                        "it is a schema v2 record at the path the legacy tree hash names (a schema v2 record is named "
-                        "by the tree hash, %s)" % path, V2_REQUIRED))]
-        elif legacy and _blob(head, where) is NOT_REGULAR:
-            return _no_record(report, changed, where, NON_REGULAR)
-        elif legacy and _blob(head, where) is not None:
-            probs = [_no_substitute("record %s, named by the legacy tree hash, is not the same file, unchanged by this "
-                                    "pull request, at the merge base %s and on the trusted revision %s"
-                                    % (where, _show(base), _show(trusted)), V2_REQUIRED)]
-        else:
-            return _no_record(report, changed, path, ABSENT)
-    else:
-        try:
-            rec = _read_record(head, path)
-        except (RuntimeError, ValueError) as e:
-            return _no_record(report, changed, path, (str(e).splitlines() or [type(e).__name__])[0])
-        if not (isinstance(rec, dict) and rec.get("schema") == SCHEMA):
-            probs = [_no_substitute("record %s has schema %s, not %s" % (
-                path, _show(rec.get("schema") if isinstance(rec, dict) else None), SCHEMA), V2_REQUIRED)]
-            rec = None
+            try:
+                rec = _read_record(head, path)
+            except (RuntimeError, ValueError) as e:
+                return _no_record(report, changed, path, (str(e).splitlines() or [type(e).__name__])[0])
+            if not (isinstance(rec, dict) and rec.get("schema") == SCHEMA):
+                probs = [_no_substitute("record %s has schema %s, not %s" % (
+                    path, _show(rec.get("schema") if isinstance(rec, dict) else None), SCHEMA), V2_REQUIRED)]
+                rec = None
+    except RuntimeError as e:
+        return _no_record(report, changed, where, _git_failure(e))
     if rec is not None:
         judged = _judge(rec, tree)
         probs = list(judged)
