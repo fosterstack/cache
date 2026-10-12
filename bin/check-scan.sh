@@ -138,7 +138,16 @@ for s in "${scanners[@]}"; do
     fi
     [[ "$packages" =~ ^[0-9]+$ ]] || packages=0
     echo "check-scan: $s $name ($digest): $packages packages, exit $rc"
-    sv=pass
+    sv=pass vexn=0
+    if [ "$rc" = 1 ] && [ "$s" = osv-scanner ]; then
+      # grype read the VEX itself (--vex); osv-scanner cannot, so its findings are held to the same published document here (round 1 F3): exit 1 stands
+      # unless the report holds findings and every one is excepted by a statement (the rescan's product-and-alias-scoped decision)
+      vv=""; case "$name" in production|fips) vv=$name ;; esac
+      if python3 bin/check-osv-vex.py --vex "$VEX" --report "$tmp/out.json" --variant "$vv" > "$tmp/vex-out.json"; then
+        vexn=$(jq -r '.excepted' "$tmp/vex-out.json"); rc=0
+        echo "check-scan: osv-scanner: all $vexn findings in $name ($digest) are excepted by the published VEX document"
+      fi
+    fi
     if [ "$rc" = 1 ]; then
       echo "check-scan: $s found vulnerabilities in $name ($digest) that the VEX document does not except" >&2; sv=fail
     elif [ "$rc" != 0 ]; then
@@ -167,7 +176,8 @@ for s in "${scanners[@]}"; do
       fi
     fi
     [ "$sv" = pass ] || verdict=fail
-    subjects=$(jq -c --arg n "$name" --arg d "$digest" --argjson p "$packages" --arg sv "$sv" '. + [{name: $n, digest: $d, packages: $p, verdict: $sv}]' <<< "$subjects")
+    subjects=$(jq -c --arg n "$name" --arg d "$digest" --argjson p "$packages" --arg sv "$sv" --argjson vx "$vexn" \
+      '. + [{name: $n, digest: $d, packages: $p, verdict: $sv} + (if $vx > 0 then {vex_suppressed: $vx} else {} end)]' <<< "$subjects")
   done
   dbs="[]"
   if [ "$s" = osv-scanner ]; then   # the databases the scans used, read from the downloaded files (REQ-CHAIN-006-AC15)

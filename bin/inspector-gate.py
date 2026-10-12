@@ -49,7 +49,7 @@ def name_version(purl_or_id):
 
 def same_pkg(a, b):
     """Names match exactly, or — when one side carries no namespace (busybox
-    vs alpine/busybox) — by last path segment. Versions must be equal."""
+    vs the busybox of another namespace) — by last path segment. Versions must be equal."""
     (an, av), (bn, bv) = a, b
     if av != bv:
         return False

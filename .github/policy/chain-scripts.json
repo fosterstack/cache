@@ -394,7 +394,7 @@
     },
     {
       "path": "bin/check-scan.sh",
-      "sha256": "fb073225b382e837a0de19f85c3b4877f8b02f1715446c7c1aa725209368cd36",
+      "sha256": "0d5c879f6dab11af9933667ee0e36d210cdc89a59140b8b6902d100cf1f38b13",
       "tools": [
         "find",
         "python3",
@@ -406,7 +406,8 @@
       ],
       "runs": [
         "bin/check-osv-db.py",
-        "bin/check-bind.py"
+        "bin/check-bind.py",
+        "bin/check-osv-vex.py"
       ],
       "signs": false,
       "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)"
@@ -934,6 +935,70 @@
       ],
       "signs": false,
       "reason": "binds the image layouts and archives Check downloads to the digests Build recorded (round 1 F1); reads and hashes files, signs nothing"
+    },
+    {
+      "path": "bin/check-osv-vex.py",
+      "sha256": "10f8ea45340cf5fb1f14b39a0a269e75c5c81c6497c66a00166f48f4ed382c30",
+      "tools": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
+      "signs": false,
+      "reason": "applies the published VEX to osv-scanner findings with the daily rescan filter"
+    },
+    {
+      "path": "bin/rescan-statement.py",
+      "sha256": "b330cafa126bf35cf00ba797c736a5319a0128b4c41c7699c157c2e5486787c6",
+      "tools": [
+        "at",
+        "gh",
+        "go",
+        "make",
+        "python3",
+        "source"
+      ],
+      "runs": [
+        "bin/inspector-gate.py"
+      ],
+      "signs": false,
+      "reason": "the daily rescan statement; Check imports its VEX matcher",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "    # osv-scanner scan image/source : 0 clean, 1 findings, 127/128 (and any",
+          "line_sha256": "be19a58831171af0732e5fe3ad055aa91363be3a19a1d7c5a38dc330ebeb29a2",
+          "count": 1,
+          "why": "a comment naming osv-scanner's `scan image/source` subcommands; prose, not a path run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "    busybox is not alpine/busybox or evil/busybox, and @scope/pkg is not pkg.\"\"\"",
+          "line_sha256": "bfba9fa0e1ca1350beb7bce6a46ff3726a9d14604f70b9758f3eb5fcb31375fd",
+          "count": 1,
+          "why": "a docstring's examples of package namespaces (alpine/busybox is not busybox); prose, not a command"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/rescan-statement-test.sh",
+          "why": "a comment naming the suite that exercises this file; never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "inspector-gate.py",
+          "why": "joins the file name to its own directory to load the PR gate's VEX matcher, which is the listed row bin/inspector-gate.py (one definition of a covered finding)"
+        }
+      ]
+    },
+    {
+      "path": "bin/inspector-gate.py",
+      "sha256": "25a0cdba9df3466d04296a8da3e3883961f280fbc8a8f6ea3b90be48eeb828d1",
+      "tools": [
+        "at",
+        "python3"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
     }
   ],
   "ambient_env": [
