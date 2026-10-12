@@ -164,6 +164,30 @@ ARM_LINE = "bash bin/check-artifacts.sh --arch arm64 --digests witness-build/dig
 ARM_DOWNLOADS = [("witness-build", "witness-build"), ("digests", "witness-build"), ("dist", "dist"), ("images", "images")]   # the same inputs as check-stage.sh verifies
 
 
+def exact_steps(label, steps, want, what):
+    """The exact ordered step list of a job (PR 3 round 1 F6): a digest-pinned checkout with persist-credentials: false only, a run step exactly its
+    line, a digest-pinned download or upload of exactly its artifact name and path, each ONCE (a missing, a repeated, a reordered or a re-pathed step is a
+    fault), and no other key in any step (an if, env or shell would change what runs)."""
+    bad = []
+    if len(steps) != len(want):
+        bad.append("%s must have exactly its %d listed steps (%s), found %d" % (label, len(want), what, len(steps)))
+    for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
+        if not isinstance(s, dict) or set(s) - {"name", "uses", "with", "run"}:
+            bad.append("%s step %d: keys not allowed (an if, env or shell would change what runs): %s" % (label, i, sorted(s) if isinstance(s, dict) else s)); continue
+        u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
+        if kind == "checkout":
+            if not u.startswith("actions/checkout@") or not PIN.match(u.split(" ")[0]) or w != {"persist-credentials": "false"} or "run" in s:
+                bad.append("%s step %d must be a digest-pinned checkout with persist-credentials: false only" % (label, i))
+        elif kind == "run":
+            if u or r != arg:
+                bad.append("%s step %d must be exactly `run: %s`, found %r" % (label, i, arg, (r or u)[:80]))
+        elif kind in ("down", "up"):
+            action = "actions/%s-artifact@" % ("download" if kind == "down" else "upload")
+            if not u.startswith(action) or not PIN.match(u.split(" ")[0]) or set(w) != {"name", "path"} or w["name"] != arg[0] or (w["path"] or "").strip() != arg[1] or "run" in s:
+                bad.append("%s step %d must be a digest-pinned %s of %s %s %s only" % (label, i, "download" if kind == "down" else "upload", arg[0], "into" if kind == "down" else "carrying", arg[1].replace("\n", " ")))
+    return bad
+
+
 def arm_job(j):
     """REQ-CHAIN-006-AC1 (advisor 0385): the one second job, check-arm64: runs-on the literal ubuntu-24.04-arm, permissions exactly contents read +
     id-token write, no other key (no if, needs, env, strategy, container), and EXACTLY these steps in this order: a digest-pinned checkout without
@@ -181,24 +205,7 @@ def arm_job(j):
     steps = j.get("steps") or []
     want = [("checkout", None), ("run", "bash bin/install-scanner.sh witness")] + [("down", x) for x in ARM_DOWNLOADS] + \
            [("run", "bash bin/witnessed.sh %s %s" % (ARM_STEP, ARM_TARGET)), ("up", ("witness-check-arm64", "witness-arm64"))]
-    if len(steps) != len(want):
-        bad.append("check-arm64 must have exactly its %d listed steps (checkout, Witness install, five downloads, the arm64 witnessed step, the upload), found %d" % (len(want), len(steps)))
-    for i, (s, (kind, arg)) in enumerate(zip(steps, want), 1):
-        if not isinstance(s, dict) or set(s) - {"name", "uses", "with", "run"}:
-            bad.append("check-arm64 step %d: keys not allowed (an if, env or shell would change what runs): %s" % (i, sorted(s) if isinstance(s, dict) else s)); continue
-        u, w, r = (s.get("uses") or ""), s.get("with") or {}, (s.get("run") or "").strip()
-        if kind == "checkout":
-            if not u.startswith("actions/checkout@") or not PIN.match(u.split(" ")[0]) or w != {"persist-credentials": "false"} or "run" in s:
-                bad.append("check-arm64 step %d must be a digest-pinned checkout with persist-credentials: false only" % i)
-        elif kind == "run":
-            if u or r != arg:
-                bad.append("check-arm64 step %d must be exactly `run: %s`, found %r" % (i, arg, (r or u)[:80]))
-        elif kind == "down":
-            if not u.startswith("actions/download-artifact@") or not PIN.match(u.split(" ")[0]) or w != {"name": arg[0], "path": arg[1]} or "run" in s:
-                bad.append("check-arm64 step %d must be a digest-pinned download of %s into %s only" % (i, arg[0], arg[1]))
-        elif kind == "up":
-            if not u.startswith("actions/upload-artifact@") or not PIN.match(u.split(" ")[0]) or w != {"name": arg[0], "path": arg[1]} or "run" in s:
-                bad.append("check-arm64 step %d must be a digest-pinned upload of %s carrying %s only" % (i, arg[0], arg[1]))
+    bad += exact_steps("check-arm64", steps, want, "checkout, Witness install, five downloads, the arm64 witnessed step, the upload")
     return bad
 
 
@@ -266,6 +273,9 @@ def stage(path):
         bad.append("steps must be checkout, install Witness, install kind (bash bin/install-kind.sh), downloads, THREE witnessed steps, uploads (in that order); got %s" % kinds)
     if "kind" in kinds and "down" in kinds and kinds.index("down") < kinds.index("kind"):
         bad.append("the downloads come after the installs")
+    want_c = [("checkout", None), ("run", "bash bin/install-scanner.sh witness"), ("run", KIND_STEP)] + [("down", x) for x in ARM_DOWNLOADS] + \
+             [("run", "bash bin/witnessed.sh %s %s" % (n, PHASE_TARGET[n])) for n in STEPS] + [("up", ("witness-check", RECORD_DIRS)), ("up", ("check-results", "check-results"))]
+    bad += exact_steps("check", steps, want_c, "checkout, Witness install, kind install, four downloads, the three witnessed steps, the two uploads")
     imgs = [s for s in steps if (s.get("uses") or "").startswith("actions/download-artifact@") and (s.get("with") or {}).get("name") == "images"]
     if len(imgs) != 1 or (imgs[0].get("with") or {}).get("path") != "images":
         bad.append("exactly one download of the images artifact, into images/, is required; found %d" % len(imgs))
