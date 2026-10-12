@@ -1095,6 +1095,19 @@ func TestGoTestExistsFollowsTheToolchainHeaderAndPackageRules(t *testing.T) {
 			t.Errorf("%s/%s: counted=%v, want %v", c.dir, c.name, got, c.want)
 		}
 	}
+	// a selected sibling that does not parse means the package does not load
+	write("broken", "a.go", "package p\n")
+	write("broken", "b.go", "package p\n\nfunc {\n")
+	write("broken", "p_test.go", "package p\n\n"+fn("TestBrokenSibling"))
+	// ... but a sibling both platforms exclude is not part of the package
+	write("brokenoff", "a.go", "package p\n")
+	write("brokenoff", "b.go", "//go:build ignore\n\npackage p\n\nfunc {\n")
+	write("brokenoff", "p_test.go", "package p\n\n"+fn("TestExcludedBrokenSibling"))
+	for name, dir := range map[string]string{"TestBrokenSibling": "broken", "TestExcludedBrokenSibling": "brokenoff"} {
+		if got, want := goTestExists(dir, name), dir == "brokenoff"; got != want {
+			t.Errorf("%s/%s: counted=%v, want %v", dir, name, got, want)
+		}
+	}
 	// the registered-name rule is Go's: the rune after Test must not be a lower-case letter (any script)
 	write("names", "n_test.go", "package n\n\n"+fn("Testé")+"\n"+"func TestÉ(t *testing.T) {}\nfunc Test_u(t *testing.T) {}\nfunc Test(t *testing.T) {}\nfunc Test9(t *testing.T) {}\n")
 	for name, want := range map[string]bool{"Testé": false, "TestÉ": true, "Test_u": true, "Test": true, "Test9": true} {
