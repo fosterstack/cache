@@ -263,12 +263,16 @@ def same_as(a):
             refuse("%s is stored by the release but was not staged" % n)
 
 
+PROVENANCE = ("provenance.json", "provenance.rekor.json", "provenance.bundle.json")      # Sign's three files: the record the Sign stage signed; the bundle carries its signature (AC9, AC19)
+
+
 def cmd_gate(a):
     """GATE (REQ-CHAIN-007-AC13): the directory holds checksums.txt with its bundle and release-files.sha256 with its bundle, and the four
     metadata files; checksums.txt lists existing files with their hashes; release-files.sha256 lists exactly the four metadata files with theirs;
     and every asset is covered: it is in checksums.txt or in release-files.sha256, or it is a bundle whose signed file is an asset, or it has its
     own bundle, or it is an apk (signed by the release key inside the file), a Witness record (`*-collection.json`, a signed envelope the stages
-    verified) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record). A symlink, a directory, or anything else is refused by name."""
+    verified) or Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and
+    provenance.bundle.json (the record the Sign stage signed; all three are required). A symlink, a directory, or anything else is refused by name."""
     names = sorted(os.listdir(a.dir))
     for n in names:
         p = os.path.join(a.dir, n)
@@ -280,6 +284,9 @@ def cmd_gate(a):
     for need in ("checksums.txt", "checksums.txt.bundle", "release-files.sha256", "release-files.sha256.bundle"):
         if need not in have:
             refuse("%s is missing (a release is not published without it)" % need)
+    for need in PROVENANCE:
+        if need not in have:
+            refuse("%s is missing (Sign's provenance is part of every release)" % need)
     covered = set()
     for n, h in parse_sums(os.path.join(a.dir, "checksums.txt"), "checksums.txt"):
         if n not in have:
@@ -312,7 +319,7 @@ def cmd_gate(a):
             if signed_by(n) not in have:
                 refuse("%s signs %s, which is not an asset" % (n, signed_by(n)))
             continue
-        if bundle_of(n) in have or n.endswith(".apk") or n.endswith("-collection.json") or n in ("digests.json", "items.json", "admission-baseline.json"):
+        if bundle_of(n) in have or n.endswith(".apk") or n.endswith("-collection.json") or n in ("digests.json", "items.json", "admission-baseline.json") + PROVENANCE:
             continue
         refuse("%s is covered by nothing: not in checksums.txt, not in release-files.sha256, and no bundle signs it" % n)
     if a.same_as:
