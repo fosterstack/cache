@@ -395,6 +395,22 @@ resetf; rm -f "$work/fakedir/removed"; st fips '{"fips140":false,"fips140_note":
 if [ "$rc" = 1 ] && [ -f "$work/fakedir/removed" ]; then ok "AC6 the containers are removed even when the check fails"; else bad "AC6 cleanup after a failure (rc=$rc, removed file present: $([ -f "$work/fakedir/removed" ] && echo yes || echo no))"; fi
 resetf; st fips '{"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
 want_fail "AC6 a status without the fips140 field fails" fips "${FIPS[@]}"
+# round 1 F5 (Codex A4, B5): the note is compared whole, with the boolean, for both postures; "v1.0.01" is not v1.0.0
+for bad_note in "active (Go validated module v1.0.01, CMVP cert #5247)" "active (Go validated module v1.0.0-other, CMVP cert #5247)" "active (Go validated module v1.0.0)" \
+                "active (Go validated module v1.0.0, CMVP cert #5247) and more" "active (Go validated module v1.0.0, CMVP cert #5248)" "off (validated module v1.0.0 linked, mode disabled at runtime)"; do
+  resetf; st fips "$(jq -nc --arg n "$bad_note" '{fips140: true, fips140_note: $n}')"
+  want_fail "AC6 F5 a -fips note that is not exactly the validated-module line fails naming fips: $bad_note" fips "${FIPS[@]}"
+done
+resetf; st fips '{"fips140":false,"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
+want_fail "AC6 F5 the exact -fips note with fips140 false (a contradictory status) fails naming fips" fips "${FIPS[@]}"
+resetf; st production '{"fips140":false,"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
+want_fail "AC6 F5 production reporting fips140 false but an active validated-module note (contradictory) fails naming production" production "${FIPS[@]}"
+resetf; st production '{"fips140":true,"fips140_note":"off"}'
+want_fail "AC6 F5 production reporting fips140 true with the note off (contradictory) fails naming production" production "${FIPS[@]}"
+resetf; st production '{"fips140":false,"fips140_note":"off (validated module v1.0.0 linked, mode disabled at runtime)"}'
+want_fail "AC6 F5 production whose note is not exactly off (the validated module is linked: crossed variants) fails naming production" production "${FIPS[@]}"
+resetf; st fips '{"fips140":true,"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'; rm -f "$fx/out/fips-result.json"; run "${FIPS[@]}"
+if [ "$rc" = 0 ] && jq -e '[.images[] | select(.name == "fips")][0] | .fips140 == true and .validated_module == "v1.0.0"' "$fx/out/fips-result.json" > /dev/null 2>&1 && ! grep -q 5247 "$fx/out/fips-result.json"; then ok "AC6 F5 the exact line passes and the result names the module version and no certificate number"; else bad "AC6 F5 exact -fips line -> rc=$rc: ${out:0:140}"; fi
 # round 1 F1: the candidate image is the one Build recorded, checked before it is loaded or started
 for v in fips production; do
   resetf; rm -rf "$work/keep-$v"; cp -R "$fx/images/$v" "$work/keep-$v"; rm -rf "$fx/images/$v"; python3 "$work/mkoci.py" "$fx/images/$v" other > /dev/null
@@ -424,11 +440,11 @@ class H(http.server.BaseHTTPRequestHandler):
         if self.path == "/statusz":
             forced = "fips140=on" in os.environ.get("GODEBUG", "")
             if name.endswith("fips") or kind == "fips":
-                note = os.environ.get("FAKE_FIPS_NOTE", "active (Go validated module v1.0.0, CMVP cert #5247)"); on = True
+                note = os.environ.get("FAKE_FIPS_NOTE", "active (Go validated module v1.0.0, CMVP cert #5247)"); on = os.environ.get("FAKE_FIPS_BOOL", "true") == "true"
             elif forced:
-                note = os.environ.get("FAKE_FORCED_NOTE", "active (fips140 mode forced at runtime; not the validated-module build)"); on = True
+                note = os.environ.get("FAKE_FORCED_NOTE", "active (fips140 mode forced at runtime; not the validated-module build)"); on = os.environ.get("FAKE_FORCED_BOOL", "true") == "true"
             else:
-                note = os.environ.get("FAKE_STD_NOTE", "off"); on = False
+                note = os.environ.get("FAKE_STD_NOTE", "off"); on = os.environ.get("FAKE_STD_BOOL", "false") == "true"
             return self._send(200, json.dumps({"fips140": on, "fips140_note": note}).encode())
         self._send(200 if self.path in store else 404, store.get(self.path, b""))
     def do_PUT(self):
@@ -533,6 +549,15 @@ afail "FIPS-001-AC1 the fips binary embeds no module selection fails" GOFIPS140 
 afail "FIPS-001-AC1 another module version than v1.0.0 fails" v1.0.0 FAKE_GOFIPS_FIPS=v1.26.0 -- "${ART[@]}"
 afail "FIPS-001-AC1 the standard binary embedding a selection (crossed variants) fails" crossed FAKE_GOFIPS_STD=v1.0.0 -- "${ART[@]}"
 afail "FIPS-002-AC1 the fips binary reporting off fails" "fips build" FAKE_FIPS_NOTE=off -- "${ART[@]}"
+# round 1 F5: every posture is compared whole and together with its boolean; "v1.0.01" is not v1.0.0
+afail "FIPS-002-AC1 F5 a -fips note with the module version v1.0.01 (a prefix match accepted it) fails" "fips build" FAKE_FIPS_NOTE='active (Go validated module v1.0.01, CMVP cert #5247)' -- "${ART[@]}"
+afail "FIPS-002-AC1 F5 a -fips note with the module v1.0.0-other fails" "fips build" FAKE_FIPS_NOTE='active (Go validated module v1.0.0-other, CMVP cert #5247)' -- "${ART[@]}"
+afail "FIPS-002-AC1 F5 a -fips note without the certificate line fails" "fips build" FAKE_FIPS_NOTE='active (Go validated module v1.0.0)' -- "${ART[@]}"
+afail "FIPS-002-AC1 F5 the exact -fips note with fips140 false (a contradictory status) fails" "fips build" FAKE_FIPS_BOOL=false -- "${ART[@]}"
+afail "FIPS-002-AC1 F5 the standard build with the note off but fips140 true (contradictory) fails" "standard" FAKE_STD_BOOL=true -- "${ART[@]}"
+afail "FIPS-002-AC1 F5 the standard build whose note is not exactly off fails" "standard" FAKE_STD_NOTE='off (validated module v1.0.0 linked, mode disabled at runtime)' -- "${ART[@]}"
+afail "FIPS-002-AC1 F5 the forced build reporting fips140 false with the forced note (contradictory) fails" "forced" FAKE_FORCED_BOOL=false -- "${ART[@]}"
+afail "FIPS-002-AC1 F5 the forced build whose note only starts like the forced line fails" "forced" FAKE_FORCED_NOTE='active (fips140 mode forced at runtime; not the validated-module build) and more' -- "${ART[@]}"
 afail "FIPS-002-AC1 the standard default reporting active fails" "standard" FAKE_STD_NOTE='active (x)' -- "${ART[@]}"
 afail "FIPS-001-AC2 the forced-standard build claiming the validated module fails" "forced" FAKE_FORCED_NOTE='active (Go validated module v1.0.0, CMVP cert #5247)' -- "${ART[@]}"
 afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" FAKE_FORCED_NOTE=off -- "${ART[@]}"
@@ -775,7 +800,7 @@ drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=173
+EXPECT=192
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
