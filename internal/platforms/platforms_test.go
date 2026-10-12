@@ -1321,52 +1321,8 @@ var countToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[./][A-Za-z0-9]+)*|[.!?;](?:
 
 var digits = regexp.MustCompile(`^[0-9]+$`)
 
-// allowedCountClaims are whole clauses, raw: exactly as written in the file, byte for byte (every mark, sign, line
-// break and indentation kept), whose count claims are not counts of the release's archives, each with its reason
-// (naming its file). An entry excepts the counts of a clause only while that clause of the raw paragraph, cut at the
-// count reader's boundaries (countToken), equals it byte for byte (exceptCountClaims): no reading that removes or
-// collapses anything is compared, so no exception survives any edit to its clause, and none masks a bound (the bound
-// check runs first). A new entry is reviewed.
-var allowedCountClaims = map[string]string{
-	"`checksums.txt` is signed, and it\npins every archive by SHA-256 — so verifying the checksums file and then\nchecking an archive against it is a complete chain, not two half-measures":                                                                                                   "RELEASING.md: the 256 of SHA-256 (the hyphen splits the hash name) and not two half-measures, not counts of archives",
-	"The release archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9":                                                                                                                                                                              "docs/next-release-notes.md: the 9 of the citation's date (Oct 9), not a count",
-	"- **Image assembly** verifies each archive against that signed predicate\n  before opening it, assembles each variant with a COPY-only Dockerfile\n  (digest-pinned distroless base, zero `RUN`), and pushes by digest only\n  to a private candidates package — no tags, nothing public": "RELEASING.md: zero RUN instructions in the Dockerfile and no tags on the private candidates package, not counts of archives",
-	"If it prints anything else, there is no archive for this machine": "docs/install.md: the architecture check's failure branch (no archive for this machine's architecture), not a count of the release's archives",
-}
-
-// boundClaim is the refusal of a count that is a bound; exceptCountClaims keeps it for an excepted clause.
+// boundClaim is the refusal of a count that is a bound.
 const boundClaim = "a bound (a comparison word or phrase, or a math sign in its clause) this check does not resolve"
-
-// exceptCountClaims returns raw (a paragraph as written) with each clause that equals an allowedCountClaims entry byte
-// for byte cut out, its boundaries kept, and the bound refusals of each clause cut out. The clauses are cut at the
-// boundaries the count reader reads (countToken: . ! ? ; before a whitespace or the end, a table bar), each running from
-// the end of the boundary before it to the start of the one after, untrimmed. The bound check runs on a cut clause's
-// readings first, so an exception never masks a bound.
-func exceptCountClaims(raw string, archives int) (rest string, bounds []string) {
-	var b strings.Builder
-	from, kept := 0, 0
-	ends := append(countToken.FindAllStringIndex(raw, -1), []int{len(raw), len(raw)})
-	for k, l := range ends {
-		w := strings.TrimSpace(raw[l[0]:l[1]])
-		if k < len(ends)-1 && (len(w) != 1 || !strings.ContainsAny(w, ".!?;|")) {
-			continue
-		}
-		if _, ok := allowedCountClaims[raw[from:l[0]]]; ok {
-			for _, r := range countReadings(raw[from:l[0]]) {
-				for _, p := range archiveCountProblems(r, archives) {
-					if strings.Contains(p, boundClaim) {
-						bounds = append(bounds, p)
-					}
-				}
-			}
-			b.WriteString(raw[kept:from])
-			kept = l[0]
-		}
-		from = l[1]
-	}
-	b.WriteString(raw[kept:])
-	return b.String(), bounds
-}
 
 // archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Every
 // count word or number is validated on its own against its whole clause (up to a boundary: . ! ? ; before
@@ -1382,10 +1338,8 @@ func exceptCountClaims(raw string, archives int) (rest string, bounds []string) 
 //   - a plain count must equal the archives; a plain count with another count between it and "archive(s)"
 //     ("six or four archives") cannot be resolved and is refused;
 //   - "a" or "an" after "only", "just" or "solely" is a count of one; "none" and "zero" are counts of zero, and so is
-//     "no" with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end (only an exact
-//     allowedCountClaims entry, the whole install.md clause "If it prints anything else, there is no archive for this
-//     machine" as written, cut out by exceptCountClaims before any reading, excepts one), or with "archive(s)" before it in its
-//     clause ("Release archives: no"), whose claim runs from the noun to the clause end; a count of zero is a total
+//     "no" with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end, or with
+//     "archive(s)" before it in its clause ("Release archives: no"), whose claim runs from the noun to the clause end; a count of zero is a total
 //     in any clause ("none of the archives exist"), so it must equal the archives;
 //   - a count after a comparison word, also across "the" or "of" ("more than the four", "over", "about", ...), in a
 //     clause holding a comparison phrase anywhere ("four or more", "at least", "or fewer", "up to"), followed by
@@ -1394,8 +1348,7 @@ func exceptCountClaims(raw string, archives int) (rest string, bounds []string) 
 //   - a compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of", "some of the
 //     archives") cannot be resolved and are refused.
 //
-// No exception is looked up here: an excepted clause is cut out of the raw paragraph (exceptCountClaims) before it is
-// read, its bounds still refused.
+// There are no exceptions: every clause that reads as a count claim is judged by these rules.
 func archiveCountProblems(text string, archives int) (problems []string) {
 	var toks []string
 	locs := countToken.FindAllStringIndex(text, -1)
@@ -1478,8 +1431,7 @@ func archiveCountProblems(text string, archives int) (problems []string) {
 		}
 		// "no" is a count of zero wherever an archive follows it in its clause ("ships no archive", "has no
 		// archive", "no archive exists"), or stands before it ("Release archives: no"); its claim runs to the clause
-		// end, so only an allowedCountClaims entry equal byte for byte to its whole raw clause excepts it (install.md's
-		// "If it prints anything else, there is no archive for this machine"; exceptCountClaims).
+		// end.
 		if zeroNo && nounAt < 0 && nounBefore < 0 {
 			continue
 		}
@@ -1589,21 +1541,20 @@ func releaseArchiveCount(t *testing.T) int {
 
 // unit is a run of text read as one piece: a paragraph, the consecutive non-blank lines between blank lines, so a
 // sentence wrapped across a soft line break is one unit. No Markdown structure is read (a fence line is a line of
-// text). text has its whitespace collapsed to single spaces; raw is its lines exactly as written, joined by LF (the
-// clauses allowedCountClaims are compared with); line is its first physical line.
+// text). text has its whitespace collapsed to single spaces; line is its first physical line.
 type unit struct {
-	line      int
-	text, raw string
+	line int
+	text string
 }
 
 func units(text string) []unit {
 	var out []unit
-	var para, raw []string
+	var para []string
 	start := 0
 	flush := func() {
 		if len(para) > 0 {
-			out = append(out, unit{start, strings.Join(strings.Fields(strings.Join(para, " ")), " "), strings.Join(raw, "\n")})
-			para, raw = nil, nil
+			out = append(out, unit{start, strings.Join(strings.Fields(strings.Join(para, " ")), " ")})
+			para = nil
 		}
 	}
 	for n, line := range strings.Split(text, "\n") {
@@ -1615,7 +1566,7 @@ func units(text string) []unit {
 		if len(para) == 0 {
 			start = n + 1
 		}
-		para, raw = append(para, l), append(raw, line)
+		para = append(para, l)
 	}
 	flush()
 	return out
@@ -1655,12 +1606,10 @@ func checkDoc(file, text string, allowed []allowedLine, archives int) (problems 
 			report(fmt.Sprintf("%s:%d names a non-Linux platform (%q) in a link destination or title: %s", file, u.line, hidden[loc[0]:loc[1]], u.text))
 		}
 		plain := plainText(u.text)
-		rest, bounds := exceptCountClaims(u.raw, archives)
-		for _, r := range countReadings(collapse(rest)) {
-			bounds = append(bounds, archiveCountProblems(r, archives)...)
-		}
-		for _, p := range bounds {
-			report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
+		for _, r := range countReadings(u.text) {
+			for _, p := range archiveCountProblems(r, archives) {
+				report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
+			}
 		}
 		var spans [][2]int
 		for _, a := range allowed {
@@ -1870,8 +1819,8 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 		"up to four archives":                      install + "\nThe release ships up to four archives.\n",
 		"over four archives":                       install + "\nThe release ships over four archives.\n",
 		"about four archives":                      install + "\nThe release ships about four archives.\n",
-		// Round-7 regressions (A7-5, B7-3, B7-5): "no" before an archive is a count of zero in any clause (only the
-		// exact allowedCountClaims entry is excepted); a comparison is found across a determiner and after the count;
+		// Round-7 regressions (A7-5, B7-3, B7-5): "no" before an archive is a count of zero in any clause (no
+		// exception since the exception cut); a comparison is found across a determiner and after the count;
 		// a link destination with a backslash before a character it cannot escape is refused.
 		"A7-5 release has no archive":            install + "\nThis release has no archive.\n",
 		"A7-5 no archive exists":                 install + "\nNo archive exists for a release.\n",
@@ -2169,7 +2118,7 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 	}
 }
 
-// formerlyExcepted are the four clauses the removed allowedCountClaims table excepted (RELEASING.md:33, RELEASING.md:190-192,
+// formerlyExcepted are the four clauses the removed exception table excepted (RELEASING.md:33, RELEASING.md:190-192,
 // docs/install.md:57 and the release-notes entry), as they were written; since the exception cut each is refused by the
 // ordinary count rules, as is each edit of it. end closes the paragraph after the clause; claims are refusals it must
 // draw; each edit is {old, new, want}.
@@ -2196,7 +2145,7 @@ var formerlyExcepted = []struct {
 		"RELEASING.md:190-192 (SHA-256)",
 		"`checksums.txt` is signed, and it\npins every archive by SHA-256 — so verifying the checksums file and then\nchecking an archive against it is a complete chain, not two half-measures",
 		".\n",
-		[]string{`256"`, `two"`},
+		[]string{`claims "256 `, `two"`},
 		[][3]string{
 			{"`checksums.txt` is signed, and it", "`checksums.txt` is unsigned, and it", "claims"},
 			{"pins every archive by SHA-256", "lists every archive by SHA-256", "claims"},
