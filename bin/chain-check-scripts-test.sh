@@ -401,6 +401,11 @@ for bad_note in "active (Go validated module v1.0.01, CMVP cert #5247)" "active 
   resetf; st fips "$(jq -nc --arg n "$bad_note" '{fips140: true, fips140_note: $n}')"
   want_fail "AC6 F5 a -fips note that is not exactly the validated-module line fails naming fips: $bad_note" fips "${FIPS[@]}"
 done
+# round 2 (Codex B): a trailing newline in a note is part of the note (command substitution must not drop it)
+resetf; st fips "$(jq -nc '{fips140: true, fips140_note: "active (Go validated module v1.0.0, CMVP cert #5247)\n"}')"
+want_fail "AC6 round 2 the exact -fips note plus a trailing newline fails naming fips" fips "${FIPS[@]}"
+resetf; st production "$(jq -nc '{fips140: false, fips140_note: "off\n"}')"
+want_fail "AC6 round 2 the production note off plus a trailing newline fails naming production" production "${FIPS[@]}"
 resetf; st fips '{"fips140":false,"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
 want_fail "AC6 F5 the exact -fips note with fips140 false (a contradictory status) fails naming fips" fips "${FIPS[@]}"
 resetf; st production '{"fips140":false,"fips140_note":"active (Go validated module v1.0.0, CMVP cert #5247)"}'
@@ -558,6 +563,8 @@ afail "FIPS-002-AC1 F5 the standard build with the note off but fips140 true (co
 afail "FIPS-002-AC1 F5 the standard build whose note is not exactly off fails" "standard" FAKE_STD_NOTE='off (validated module v1.0.0 linked, mode disabled at runtime)' -- "${ART[@]}"
 afail "FIPS-002-AC1 F5 the forced build reporting fips140 false with the forced note (contradictory) fails" "forced" FAKE_FORCED_BOOL=false -- "${ART[@]}"
 afail "FIPS-002-AC1 F5 the forced build whose note only starts like the forced line fails" "forced" FAKE_FORCED_NOTE='active (fips140 mode forced at runtime; not the validated-module build) and more' -- "${ART[@]}"
+afail "FIPS-002-AC1 round 2 the -fips note plus a trailing newline fails" "fips build" FAKE_FIPS_NOTE=$'active (Go validated module v1.0.0, CMVP cert #5247)\n' -- "${ART[@]}"
+afail "FIPS-002-AC1 round 2 the standard note off plus a trailing newline fails" "standard" FAKE_STD_NOTE=$'off\n' -- "${ART[@]}"
 afail "FIPS-002-AC1 the standard default reporting active fails" "standard" FAKE_STD_NOTE='active (x)' -- "${ART[@]}"
 afail "FIPS-001-AC2 the forced-standard build claiming the validated module fails" "forced" FAKE_FORCED_NOTE='active (Go validated module v1.0.0, CMVP cert #5247)' -- "${ART[@]}"
 afail "FIPS-002-AC1 the forced-standard build reporting off (not its true state) fails" "forced" FAKE_FORCED_NOTE=off -- "${ART[@]}"
@@ -750,6 +757,10 @@ g "$(blk "$L2" "$R4")"
 gwant_fail "AC7 a command outside the runnable set fails when the cannot-run list does not name it" "not runnable"
 printf '[{"command": "%s", "reason": "needs the published GitHub release, which exists only after Release"}]\n' "$R4" > "$fx/guide.cannot-run.json"
 gwant_fail "AC7 a cannot-run entry that is not one of the verify forms fails (Release runs only verify forms from this list; the list is the one exact-text list)" "not a verify form"
+# round 2 (Codex B): a backslash-escaped quote is a literal character, so a $ after it is outside single quotes and is refused
+for c in "cosign verify <IMAGE_REF> --certificate-identity \\'x\${HOME}y\\' --certificate-oidc-issuer $ISS" "jq -n \\'\$TAG\\'"; do
+  g "$(blk "$c")"; lst "$c"; gwant_fail "AC7 round 2 an escaped quote does not open a quoted region: a \$ after it is refused: ${c:0:70}" "shell syntax"
+done
 for c in "cosign verify-evil x" "cosign verifyx y" "gh attestation verify-evil z" "jqx ."; do
   g "$(blk "$L2" "$c")"; printf '[{"command": "%s", "reason": "x"}]\n' "$c" > "$fx/guide.cannot-run.json"
   gwant_fail "AC7 round 2 a cannot-run entry whose first words only START with a verify form is not a verify form (the form is compared by whole words): $c" "not a verify form"
