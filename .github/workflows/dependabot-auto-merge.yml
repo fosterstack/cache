@@ -140,12 +140,14 @@ jobs:
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           set -euo pipefail
-          # the pinned tool module (go.mod and go.sum under tools/govulncheck/) is a human's: its version is also written by hand in ci.yml, which Dependabot cannot change,
-          # so nothing is armed for a PR that touches it (the hourly reviewer turns off an arm made earlier; a person pushes the ci.yml line and merges)
+          # held out of auto-merge and handled as a normal lane PR (a lane reviews it with both Codex seats and merges it): the pinned tool module (go.mod and go.sum under
+          # tools/govulncheck/), whose version is also written by hand in ci.yml, which Dependabot cannot change; and any PR whose file list is at the API's cap of 100 (it
+          # may be cut, so it cannot be judged). The hourly reviewer turns off an arm made earlier.
           held=$(gh pr view "$PR_URL" --json files --jq '[.files[].path | select(startswith("tools/govulncheck/"))] | length')
-          if [ "$held" != 0 ]; then
-            echo "### Held for a person" >> "$GITHUB_STEP_SUMMARY"
-            echo "This PR touches tools/govulncheck/: the pinned tool's version is also written in ci.yml, so it is not armed here." >> "$GITHUB_STEP_SUMMARY"
+          total=$(gh pr view "$PR_URL" --json files --jq '.files | length')
+          if [ "$held" != 0 ] || [ "$total" -ge 100 ]; then
+            echo "### Held out of auto-merge" >> "$GITHUB_STEP_SUMMARY"
+            echo "This PR touches tools/govulncheck/ (the pinned tool's version is also written in ci.yml) or lists 100 or more files (too many to judge): it is not armed here and is handled as a normal lane PR." >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           gh pr merge --auto --squash "$PR_URL"
