@@ -600,7 +600,21 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	if err := os.WriteFile(filepath.Join("pkgbroken", "broken_test.go"), []byte("func TestBroken(t *testing.T) {\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	src := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc helper() {}\nfunc Testhelper(t *testing.T) {}\nfunc TestTwo(a, b *testing.T) {}\nfunc TestB(b *testing.B) {}\nfunc TestRet(t *testing.T) error { return nil }\nfunc TestVal(t testing.T) {}\ntype T struct{}\nfunc TestLocal(t *T) {}\n"
+	// a function the toolchain does not register (helper, Testhelper) is not a test; one it rejects (wrong signature) fails
+	// its whole package, so it sits in a directory of its own
+	if err := os.Mkdir("pkgsig", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sig := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc TestTwo(a, b *testing.T) {}\nfunc TestB(b *testing.B) {}\nfunc TestRet(t *testing.T) error { return nil }\nfunc TestVal(t testing.T) {}\ntype T struct{}\nfunc TestLocal(t *T) {}\n"
+	if err := os.WriteFile(filepath.Join("pkgsig", "sig_test.go"), []byte(sig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"TestReal", "TestTwo", "TestB", "TestRet", "TestVal", "TestLocal"} {
+		if goTestExists("pkgsig", name) {
+			t.Errorf("%s is in a package the toolchain rejects but was accepted", name)
+		}
+	}
+	src := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc helper() {}\nfunc Testhelper(t *testing.T) {}\n"
 	if err := os.WriteFile(filepath.Join(dir, "real_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -611,7 +625,7 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 		t.Error("a name in an unparsable or non-test file was accepted")
 	}
 	// residual 3 (step 8 r3): only a function `go test` runs is a test
-	for _, name := range []string{"helper", "Testhelper", "TestTwo", "TestB", "TestRet", "TestVal", "TestLocal"} {
+	for _, name := range []string{"helper", "Testhelper"} {
 		if goTestExists(dir, name) {
 			t.Errorf("%s is not a runnable test but was accepted", name)
 		}
@@ -1077,10 +1091,11 @@ func TestGoTestExistsAsksTheToolchain(t *testing.T) {
 	write("pkgs", "doc_test.go", "package documentation\n\n"+fn("TestDocumentationPkg"))
 	write("pkgs", "x_test.go", "package p_test\n\n"+fn("TestExternal"))
 	write("pkgs", "y_test.go", "package p\n\n"+fn("TestInternal"))
-	write("pkgs", "generic_test.go", "package p\n\nimport \"testing\"\n\nfunc TestGeneric[P any](t *testing.T) {}\n")
+	// the toolchain rejects a test function with type parameters: its package does not count
+	write("generic", "generic_test.go", "package p\n\nimport \"testing\"\n\nfunc TestGeneric[P any](t *testing.T) {}\nfunc TestSibling(t *testing.T) {}\n")
 	write("pkgs", "n_test.go", "package p\n\nimport \"testing\"\n\nfunc Testé(t *testing.T) {}\nfunc TestÉ(t *testing.T) {}\n")
 	cases = append(cases, c{"pkgs", "TestDocumentationPkg", false}, c{"pkgs", "TestExternal", true}, c{"pkgs", "TestInternal", true},
-		c{"pkgs", "TestGeneric", false}, c{"pkgs", "Testé", false}, c{"pkgs", "TestÉ", true})
+		c{"generic", "TestGeneric", false}, c{"generic", "TestSibling", false}, c{"pkgs", "Testé", false}, c{"pkgs", "TestÉ", true})
 	// whatever the toolchain reports an error for keeps the package from counting
 	write("badcon", "a.go", "package p\n")
 	write("badcon", "p_test.go", body("TestBadConstraint", "")+"\n")

@@ -16,11 +16,10 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
-	"go/build"
-	"go/build/constraint"
 	"go/parser"
 	"go/token"
 	"io"
@@ -29,7 +28,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -363,10 +361,11 @@ func freeze(args []string) {
 	fmt.Printf("wrote %s (%d release-blocking ACs, fixed at %s, UNAPPROVED)\n", path, len(blocking), head)
 }
 
-// goTestExists reports whether dir — a package directory inside this repository, reached through no
-// symlink — declares, at the top level of a _test.go file, a test named name with the signature
-// `func TestX(t *testing.T)`. The files are parsed, so a name inside a string or a comment never counts,
-// and a helper function is not a test.
+// goTestExists reports whether the Go test function name is declared in a test file of the package in dir that the Go
+// toolchain itself lists (REQ-REL-007-AC3): `go list -e -test` run in dir for linux/amd64 and linux/arm64, each with cgo
+// off and on, no -tags and no GOFLAGS, must report no error and must list the file among the package's test files in
+// all four runs. The tool reads no build constraint, file header or package rule of its own; a go list that fails, or an
+// answer it cannot read, means the name does not count.
 func goTestExists(dir, name string) bool {
 	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || !goTestName(name) {
 		return false
@@ -374,23 +373,37 @@ func goTestExists(dir, name string) bool {
 	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
 		return false
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || !packageLoads(dir, entries) {
-		return false
+	var files map[string]bool
+	for _, arch := range []string{"amd64", "arm64"} {
+		for _, cgo := range []string{"0", "1"} {
+			got, ok := listTestFiles(dir, arch, cgo)
+			if !ok {
+				return false
+			}
+			if files == nil {
+				files = got
+				continue
+			}
+			for f := range files {
+				if !got[f] {
+					delete(files, f)
+				}
+			}
+		}
 	}
-	for _, e := range entries {
-		if !e.Type().IsRegular() || !strings.HasSuffix(e.Name(), "_test.go") {
+	names := make([]string, 0, len(files))
+	for f := range files {
+		names = append(names, f)
+	}
+	sort.Strings(names)
+	for _, n := range names {
+		path := filepath.Join(dir, n)
+		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
 			continue
 		}
-		if !buildSelected(dir, e.Name()) {
-			continue
-		}
-		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
+		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			continue
-		}
-		if f.Name.Name == "documentation" {
-			continue // go/build ignores a file in package documentation
 		}
 		for _, d := range f.Decls {
 			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name && isTestingT(fn) {
@@ -401,136 +414,86 @@ func goTestExists(dir, name string) bool {
 	return false
 }
 
-// buildSelected reports whether the Go build rules (file-name GOOS/GOARCH suffixes, //go:build and // +build lines)
-// select the file on BOTH linux/amd64 and linux/arm64, the two platforms this project ships (REQ-REL-007-AC3); a test
-// in a file either platform excludes does not run there and does not count. Fail closed: a file whose constraints
-// cannot be read, or that names any tag other than a GOOS, a GOARCH, unix or a go1.N release tag (cgo, race, a CPU
-// feature tag, a goexperiment tag, a tag given with -tags), is not counted: whether the toolchain selects it depends
-// on how the tests are invoked, which this tool does not know.
-func buildSelected(dir, name string) bool {
-	if !constraintsResolvable(filepath.Join(dir, name)) {
-		return false
-	}
-	for _, arch := range []string{"amd64", "arm64"} {
-		ctx := build.Default
-		ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled, ctx.BuildTags, ctx.ToolTags = "linux", arch, false, nil, nil
-		if ok, err := ctx.MatchFile(dir, name); err != nil || !ok {
-			return false
-		}
-	}
-	return true
+// goListPackage is the part of `go list -json` this tool reads.
+type goListPackage struct {
+	ImportPath   string
+	ForTest      string
+	Dir          string
+	TestGoFiles  []string
+	XTestGoFiles []string
+	Incomplete   bool
+	Error        *struct{ Err string }
+	DepsErrors   []struct{ Err string }
 }
 
-var (
-	knownGOOS = map[string]bool{"aix": true, "android": true, "darwin": true, "dragonfly": true, "freebsd": true, "hurd": true,
-		"illumos": true, "ios": true, "js": true, "linux": true, "nacl": true, "netbsd": true, "openbsd": true, "plan9": true,
-		"solaris": true, "wasip1": true, "windows": true, "zos": true}
-	knownGOARCH = map[string]bool{"386": true, "amd64": true, "amd64p32": true, "arm": true, "armbe": true, "arm64": true,
-		"arm64be": true, "loong64": true, "mips": true, "mipsle": true, "mips64": true, "mips64le": true, "mips64p32": true,
-		"mips64p32le": true, "ppc": true, "ppc64": true, "ppc64le": true, "riscv": true, "riscv64": true, "s390": true,
-		"s390x": true, "sparc": true, "sparc64": true, "wasm": true}
-	goReleaseTag = regexp.MustCompile(`^go1\.[0-9]+$`)
-)
+var goListCache = map[string]map[string]bool{}
 
-// constraintsResolvable reports whether the build constraint Go itself would apply to the file names only tags whose value
-// does not depend on how the tests are invoked: a GOOS, a GOARCH, unix or a go1.N release tag. The constraint lines are
-// found by the toolchain's own header rules (go/build's parseFileHeader): a //go:build line in the header wins and the
-// // +build lines are then ignored; otherwise // +build lines count only above the last blank line of the header. A line
-// that is documentation, a block comment's text or after the package clause is not a constraint.
-func constraintsResolvable(path string) bool {
-	src, err := os.ReadFile(path)
+// listTestFiles returns the test files (_test.go, in-package and external) that `go list` reports for the package in dir
+// on linux/<arch> with CGO_ENABLED=cgo, and false when go list fails or reports any error for the package, its test
+// variants or their dependencies. Answers are cached for one run, keyed by the directory's file names, sizes and times.
+func listTestFiles(dir, arch, cgo string) (map[string]bool, bool) {
+	ents, err := os.ReadDir(dir)
 	if err != nil {
-		return false
+		return nil, false
 	}
-	src = bytes.TrimPrefix(src, []byte("\xef\xbb\xbf")) // Go's reader strips one leading byte-order mark
-	trimmed, goBuild, ok := fileHeader(src)
-	if !ok {
-		return false
-	}
-	var lines []string
-	if goBuild != "" {
-		lines = []string{goBuild}
-	} else {
-		for _, l := range strings.Split(string(trimmed), "\n") {
-			if l = strings.TrimSpace(l); constraint.IsPlusBuild(l) {
-				lines = append(lines, l)
-			}
+	key := arch + cgo + "\x00" + dir
+	for _, e := range ents {
+		info, err := e.Info()
+		if err != nil {
+			return nil, false
 		}
+		key += fmt.Sprintf("\x00%s|%d|%d|%v", e.Name(), info.Size(), info.ModTime().UnixNano(), info.Mode())
 	}
-	for _, l := range lines {
-		e, err := constraint.Parse(l)
-		if err != nil || !stableTags(e) {
-			return false
-		}
+	if got, ok := goListCache[key]; ok {
+		return got, got != nil
 	}
-	return true
+	got := runGoList(dir, arch, cgo)
+	goListCache[key] = got
+	return got, got != nil
 }
 
-// fileHeader mirrors go/build's parseFileHeader: it returns the part of the file in which a // +build line may appear
-// (up to the last blank line before the first non-comment text), and the //go:build line if there is exactly one;
-// ok is false for a second //go:build line.
-func fileHeader(content []byte) (trimmed []byte, goBuild string, ok bool) {
-	end := 0
-	p := content
-	ended, inSlashStar := false, false
-Lines:
-	for len(p) > 0 {
-		line := p
-		if i := strings.IndexByte(string(line), '\n'); i >= 0 {
-			line, p = line[:i], p[i+1:]
-		} else {
-			p = p[len(p):]
+func runGoList(dir, arch, cgo string) map[string]bool {
+	goBin, err := exec.LookPath("go")
+	if err != nil {
+		return nil
+	}
+	cmd := exec.Command(goBin, "list", "-e", "-test", "-json", ".")
+	cmd.Dir = dir
+	env := []string{}
+	for _, kv := range os.Environ() {
+		if k, _, _ := strings.Cut(kv, "="); k == "GOOS" || k == "GOARCH" || k == "CGO_ENABLED" || k == "GOFLAGS" {
+			continue
 		}
-		l := strings.TrimSpace(string(line))
-		if l == "" && !ended {
-			end = len(content) - len(p)
-			continue Lines
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED="+cgo, "GOFLAGS=")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	files := map[string]bool{}
+	seen := false
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for dec.More() {
+		var p goListPackage
+		if err := dec.Decode(&p); err != nil {
+			return nil
 		}
-		if !strings.HasPrefix(l, "//") {
-			ended = true
+		if p.Error != nil || p.Incomplete || len(p.DepsErrors) > 0 {
+			return nil
 		}
-		if !inSlashStar && constraint.IsGoBuild(l) {
-			if goBuild != "" {
-				return nil, "", false
-			}
-			goBuild = l
+		if p.ForTest != "" || strings.Contains(p.ImportPath, " [") || strings.HasSuffix(p.ImportPath, ".test") {
+			continue // a test variant or the generated test main: errors were checked above, files come from the package
 		}
-	Comments:
-		for len(l) > 0 {
-			if inSlashStar {
-				if i := strings.Index(l, "*/"); i >= 0 {
-					inSlashStar = false
-					l = strings.TrimSpace(l[i+2:])
-					continue Comments
-				}
-				continue Lines
-			}
-			if strings.HasPrefix(l, "//") {
-				continue Lines
-			}
-			if strings.HasPrefix(l, "/*") {
-				inSlashStar = true
-				l = strings.TrimSpace(l[2:])
-				continue Comments
-			}
-			break Lines
+		seen = true
+		for _, f := range append(append([]string{}, p.TestGoFiles...), p.XTestGoFiles...) {
+			files[f] = true
 		}
 	}
-	return content[:end], goBuild, true
-}
-
-func stableTags(e constraint.Expr) bool {
-	switch x := e.(type) {
-	case *constraint.AndExpr:
-		return stableTags(x.X) && stableTags(x.Y)
-	case *constraint.OrExpr:
-		return stableTags(x.X) && stableTags(x.Y)
-	case *constraint.NotExpr:
-		return stableTags(x.X)
-	case *constraint.TagExpr:
-		return knownGOOS[x.Tag] || knownGOARCH[x.Tag] || x.Tag == "unix" || goReleaseTag.MatchString(x.Tag)
+	if !seen {
+		return nil
 	}
-	return false
+	return files
 }
 
 // goTestName is what `go test` registers (its isTest rule): Test, then nothing or a rune that is not a lower-case
@@ -544,82 +507,6 @@ func goTestName(name string) bool {
 	}
 	r, _ := utf8.DecodeRuneInString(name[len("Test"):])
 	return !unicode.IsLower(r)
-}
-
-// importPathChars is the import-path alphabet this tool accepts in a selected Go file: anything else is refused, not
-// resolved (fail closed: the Go loader's own path rules are wider).
-var importPathChars = regexp.MustCompile(`^[A-Za-z0-9._~/+-]+$`)
-
-// packageLoads reports whether the Go files of the directory that the build rules select on linux/amd64 or linux/arm64
-// load as one package, as far as this tool can tell, and refuses what it cannot tell: every selected file parses; none
-// is a symlink (the loader follows one, this tool does not), has a constraint the matcher cannot read, imports "C" or
-// a path outside importPathChars, or carries a //go:embed or //go:binary-only-package directive; and the files belong
-// to one package (a file in package documentation is ignored without being parsed further, and an external test
-// package is the package name plus _test, recognised only in a _test.go file).
-func packageLoads(dir string, entries []os.DirEntry) bool {
-	names := map[string]bool{}
-	for _, e := range entries {
-		n := e.Name()
-		if !strings.HasSuffix(n, ".go") {
-			continue
-		}
-		if e.Type()&os.ModeSymlink != 0 {
-			return false
-		}
-		if !e.Type().IsRegular() {
-			continue
-		}
-		selected := false
-		for _, arch := range []string{"amd64", "arm64"} {
-			ctx := build.Default
-			ctx.GOOS, ctx.GOARCH, ctx.CgoEnabled, ctx.BuildTags, ctx.ToolTags = "linux", arch, false, nil, nil
-			ok, err := ctx.MatchFile(dir, n)
-			if err != nil {
-				return false
-			}
-			selected = selected || ok
-		}
-		if !selected {
-			continue
-		}
-		path := filepath.Join(dir, n)
-		head, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.PackageClauseOnly)
-		if err != nil {
-			return false
-		}
-		if head.Name.Name == "documentation" {
-			continue
-		}
-		f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution|parser.ParseComments)
-		if err != nil || !loaderPlain(f) {
-			return false
-		}
-		pkg := f.Name.Name
-		if strings.HasSuffix(n, "_test.go") {
-			pkg = strings.TrimSuffix(pkg, "_test")
-		}
-		names[pkg] = true
-	}
-	return len(names) <= 1
-}
-
-// loaderPlain reports whether a parsed file uses nothing the Go loader checks beyond syntax that this tool does not
-// check: no cgo, no embed directive, no binary-only package, only plain import paths.
-func loaderPlain(f *ast.File) bool {
-	for _, im := range f.Imports {
-		p, err := strconv.Unquote(im.Path.Value)
-		if err != nil || p == "C" || !importPathChars.MatchString(p) {
-			return false
-		}
-	}
-	for _, cg := range f.Comments {
-		for _, c := range cg.List {
-			if strings.HasPrefix(c.Text, "//go:embed") || strings.HasPrefix(c.Text, "//go:binary-only-package") {
-				return false
-			}
-		}
-	}
-	return true
 }
 
 // isTestingT reports whether fn takes exactly one parameter of type *testing.T, returns nothing and has no type parameters.
