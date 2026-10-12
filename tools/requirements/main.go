@@ -381,7 +381,10 @@ func goTestExists(dir, name string) bool {
 				return false
 			}
 			if files == nil {
-				files = got
+				files = map[string]bool{}
+				for f := range got {
+					files[f] = true
+				}
 				continue
 			}
 			for f := range files {
@@ -436,7 +439,11 @@ func listTestFiles(dir, arch, cgo string) (map[string]bool, bool) {
 	if err != nil {
 		return nil, false
 	}
-	key := arch + cgo + "\x00" + dir
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, false
+	}
+	key := arch + cgo + "\x00" + abs
 	for _, e := range ents {
 		info, err := e.Info()
 		if err != nil {
@@ -457,41 +464,53 @@ func runGoList(dir, arch, cgo string) map[string]bool {
 	if err != nil {
 		return nil
 	}
-	cmd := exec.Command(goBin, "list", "-e", "-test", "-json", ".")
-	cmd.Dir = dir
 	env := []string{}
 	for _, kv := range os.Environ() {
-		if k, _, _ := strings.Cut(kv, "="); k == "GOOS" || k == "GOARCH" || k == "CGO_ENABLED" || k == "GOFLAGS" {
+		if k, _, _ := strings.Cut(kv, "="); k == "GOOS" || k == "GOARCH" || k == "CGO_ENABLED" || k == "GOFLAGS" || k == "GOENV" {
 			continue
 		}
 		env = append(env, kv)
 	}
-	cmd.Env = append(env, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED="+cgo, "GOFLAGS=")
-	out, err := cmd.Output()
-	if err != nil {
+	// GOENV=off: a persisted `go env -w` (GOFLAGS, tags, overlays) is not read; GOFLAGS is set to an empty list
+	env = append(env, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED="+cgo, "GOFLAGS= ", "GOENV=off")
+	list := func(args ...string) []goListPackage {
+		cmd := exec.Command(goBin, append([]string{"list", "-e", "-json"}, args...)...)
+		cmd.Dir = dir
+		cmd.Env = env
+		out, err := cmd.Output()
+		if err != nil {
+			return nil
+		}
+		var pkgs []goListPackage
+		dec := json.NewDecoder(bytes.NewReader(out))
+		for dec.More() {
+			var p goListPackage
+			if err := dec.Decode(&p); err != nil {
+				return nil
+			}
+			pkgs = append(pkgs, p)
+		}
+		return pkgs
+	}
+	bad := func(p goListPackage) bool { return p.Error != nil || p.Incomplete || len(p.DepsErrors) > 0 }
+	// the package itself: exactly one object, so the file list is its own and a test variant cannot supply a file
+	self := list(".")
+	if len(self) != 1 || bad(self[0]) {
 		return nil
+	}
+	// its test packages and the generated test main: an error in any of them fails the package
+	all := list("-test", ".")
+	if len(all) == 0 {
+		return nil
+	}
+	for _, p := range all {
+		if bad(p) {
+			return nil
+		}
 	}
 	files := map[string]bool{}
-	seen := false
-	dec := json.NewDecoder(bytes.NewReader(out))
-	for dec.More() {
-		var p goListPackage
-		if err := dec.Decode(&p); err != nil {
-			return nil
-		}
-		if p.Error != nil || p.Incomplete || len(p.DepsErrors) > 0 {
-			return nil
-		}
-		if p.ForTest != "" || strings.Contains(p.ImportPath, " [") || strings.HasSuffix(p.ImportPath, ".test") {
-			continue // a test variant or the generated test main: errors were checked above, files come from the package
-		}
-		seen = true
-		for _, f := range append(append([]string{}, p.TestGoFiles...), p.XTestGoFiles...) {
-			files[f] = true
-		}
-	}
-	if !seen {
-		return nil
+	for _, f := range append(append([]string{}, self[0].TestGoFiles...), self[0].XTestGoFiles...) {
+		files[f] = true
 	}
 	return files
 }
