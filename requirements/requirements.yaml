@@ -936,6 +936,11 @@ requirements:
       is refused). Documents may not contain inline HTML or invisible or
       non-printing characters, and the check refuses them outright;
       findings that depend on such content are information, not blockers.
+      The forms refused outright, never interpreted, are: inline HTML,
+      character references, invisible or non-printing characters,
+      strikethrough (~~), reference-style links and definitions, nested
+      links, a math sign in an archive-count clause, and any "!" or "%"
+      directive in .goreleaser.yaml and test-evidence/mappings.yaml.
     acceptance_criteria:
       - id: REQ-PLAT-001-AC1
         given: a release's artifact set
