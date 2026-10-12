@@ -1248,13 +1248,6 @@ func visibleText(s string) string {
 	return visible
 }
 
-// countReading is one text the archive-count check reads, and form, which turns an allowedCountClaims entry (a clause
-// of the visible text as written) into this reading's text of that clause.
-type countReading struct {
-	text string
-	form func(clause string) string
-}
-
 // signMarks are markdownMarks but the tilde, the one math sign among them: removed, a "~" before a count split by a
 // mark ("~fo**ur**") vanished from the plain reading, and the count lost its bound.
 var signMarks = strings.NewReplacer("*", "", "_", "", "`", "", "[", "", "]", "", "\\", "")
@@ -1264,14 +1257,12 @@ var signMarks = strings.NewReplacer("*", "", "_", "", "`", "", "[", "", "]", "",
 // (plainText: the inline marks removed, so a count split by a mark, "si**x**", is read whole) and the plain text with
 // its math signs kept (signMarks: the marks removed but the tilde, so "~fo**ur**" reads "~four", a bound). No sign or
 // mark is ever rewritten into a word; a count any reading refuses is refused.
-func countReadings(s string) []countReading {
+func countReadings(s string) []string {
 	v := visibleText(s)
-	plain := func(c string) string { return collapse(markdownMarks.Replace(c)) }
-	signs := func(c string) string { return collapse(signMarks.Replace(c)) }
-	return []countReading{
-		{bareURL.ReplaceAllString(collapse(v), " "), collapse},
-		{bareURL.ReplaceAllString(plain(v), " "), plain},
-		{bareURL.ReplaceAllString(signs(v), " "), signs},
+	return []string{
+		bareURL.ReplaceAllString(collapse(v), " "),
+		bareURL.ReplaceAllString(collapse(markdownMarks.Replace(v)), " "),
+		bareURL.ReplaceAllString(collapse(signMarks.Replace(v)), " "),
 	}
 }
 
@@ -1330,16 +1321,51 @@ var countToken = regexp.MustCompile(`[A-Za-z0-9]+(?:[./][A-Za-z0-9]+)*|[.!?;](?:
 
 var digits = regexp.MustCompile(`^[0-9]+$`)
 
-// allowedCountClaims are whole clauses, exactly as written in the visible text (link destinations hidden, every mark
-// and sign kept, whitespace collapsed; each reading compares its own form of the entry, countReading.form), whose count
-// claims are not counts of the release's archives, each with its reason. An entry excepts the counts of its clause
-// only while the whole clause the count reader examines equals it exactly: no exception survives any edit to its
-// clause, and none masks a bound (the bound check runs first). A new entry is reviewed.
+// allowedCountClaims are whole clauses, raw: exactly as written in the file, byte for byte (every mark, sign, line
+// break and indentation kept), whose count claims are not counts of the release's archives, each with its reason
+// (naming its file). An entry excepts the counts of a clause only while that clause of the raw paragraph, cut at the
+// count reader's boundaries (countToken), equals it byte for byte (exceptCountClaims): no reading that removes or
+// collapses anything is compared, so no exception survives any edit to its clause, and none masks a bound (the bound
+// check runs first). A new entry is reviewed.
 var allowedCountClaims = map[string]string{
-	"`checksums.txt` is signed, and it pins every archive by SHA-256 — so verifying the checksums file and then checking an archive against it is a complete chain, not two half-measures":                                                                                            "RELEASING.md: the 256 of SHA-256 (the hyphen splits the hash name) and not two half-measures, not counts of archives",
-	"The release archives are fscache and fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9":                                                                                                                                                                        "docs/next-release-notes.md: the 9 of the citation's date (Oct 9), not a count",
-	"- **Image assembly** verifies each archive against that signed predicate before opening it, assembles each variant with a COPY-only Dockerfile (digest-pinned distroless base, zero `RUN`), and pushes by digest only to a private candidates package — no tags, nothing public": "RELEASING.md: zero RUN instructions in the Dockerfile and no tags on the private candidates package, not counts of archives",
+	"`checksums.txt` is signed, and it\npins every archive by SHA-256 — so verifying the checksums file and then\nchecking an archive against it is a complete chain, not two half-measures":                                                                                                   "RELEASING.md: the 256 of SHA-256 (the hyphen splits the hash name) and not two half-measures, not counts of archives",
+	"The release archives are fscache and\n  fscache-fips for linux/amd64 and linux/arm64 (owner decision, Oct 9":                                                                                                                                                                              "docs/next-release-notes.md: the 9 of the citation's date (Oct 9), not a count",
+	"- **Image assembly** verifies each archive against that signed predicate\n  before opening it, assembles each variant with a COPY-only Dockerfile\n  (digest-pinned distroless base, zero `RUN`), and pushes by digest only\n  to a private candidates package — no tags, nothing public": "RELEASING.md: zero RUN instructions in the Dockerfile and no tags on the private candidates package, not counts of archives",
 	"If it prints anything else, there is no archive for this machine": "docs/install.md: the architecture check's failure branch (no archive for this machine's architecture), not a count of the release's archives",
+}
+
+// boundClaim is the refusal of a count that is a bound; exceptCountClaims keeps it for an excepted clause.
+const boundClaim = "a bound (a comparison word or phrase, or a math sign in its clause) this check does not resolve"
+
+// exceptCountClaims returns raw (a paragraph as written) with each clause that equals an allowedCountClaims entry byte
+// for byte cut out, its boundaries kept, and the bound refusals of each clause cut out. The clauses are cut at the
+// boundaries the count reader reads (countToken: . ! ? ; before a whitespace or the end, a table bar), each running from
+// the end of the boundary before it to the start of the one after, untrimmed. The bound check runs on a cut clause's
+// readings first, so an exception never masks a bound.
+func exceptCountClaims(raw string, archives int) (rest string, bounds []string) {
+	var b strings.Builder
+	from, kept := 0, 0
+	ends := append(countToken.FindAllStringIndex(raw, -1), []int{len(raw), len(raw)})
+	for k, l := range ends {
+		w := strings.TrimSpace(raw[l[0]:l[1]])
+		if k < len(ends)-1 && (len(w) != 1 || !strings.ContainsAny(w, ".!?;|")) {
+			continue
+		}
+		if _, ok := allowedCountClaims[raw[from:l[0]]]; ok {
+			for _, r := range countReadings(raw[from:l[0]]) {
+				for _, p := range archiveCountProblems(r, archives) {
+					if strings.Contains(p, boundClaim) {
+						bounds = append(bounds, p)
+					}
+				}
+			}
+			b.WriteString(raw[kept:from])
+			kept = l[0]
+		}
+		from = l[1]
+	}
+	b.WriteString(raw[kept:])
+	return b.String(), bounds
 }
 
 // archiveCountProblems returns every archive-count claim in plain text whose count is not archives. Every
@@ -1358,7 +1384,7 @@ var allowedCountClaims = map[string]string{
 //   - "a" or "an" after "only", "just" or "solely" is a count of one; "none" and "zero" are counts of zero, and so is
 //     "no" with "archive(s)" after it in its clause, whose claim runs from "no" to the clause end (only an exact
 //     allowedCountClaims entry, the whole install.md clause "If it prints anything else, there is no archive for this
-//     machine", excepts one), or with "archive(s)" before it in its
+//     machine" as written, cut out by exceptCountClaims before any reading, excepts one), or with "archive(s)" before it in its
 //     clause ("Release archives: no"), whose claim runs from the noun to the clause end; a count of zero is a total
 //     in any clause ("none of the archives exist"), so it must equal the archives;
 //   - a count after a comparison word, also across "the" or "of" ("more than the four", "over", "about", ...), in a
@@ -1368,9 +1394,9 @@ var allowedCountClaims = map[string]string{
 //   - a compound count ("twenty-four", "one hundred") and a vague one ("several", "a couple of", "some of the
 //     archives") cannot be resolved and are refused.
 //
-// A bound is refused first; a claim this reading gets wrong otherwise is excepted only when its whole clause, as this
-// reading reads it, equals form(entry) for an allowedCountClaims entry.
-func archiveCountProblems(text string, archives int, form func(clause string) string) (problems []string) {
+// No exception is looked up here: an excepted clause is cut out of the raw paragraph (exceptCountClaims) before it is
+// read, its bounds still refused.
+func archiveCountProblems(text string, archives int) (problems []string) {
 	var toks []string
 	locs := countToken.FindAllStringIndex(text, -1)
 	for _, l := range locs {
@@ -1452,8 +1478,8 @@ func archiveCountProblems(text string, archives int, form func(clause string) st
 		}
 		// "no" is a count of zero wherever an archive follows it in its clause ("ships no archive", "has no
 		// archive", "no archive exists"), or stands before it ("Release archives: no"); its claim runs to the clause
-		// end, so only an allowedCountClaims entry equal to its whole clause excepts it (install.md's "If it prints
-		// anything else, there is no archive for this machine").
+		// end, so only an allowedCountClaims entry equal byte for byte to its whole raw clause excepts it (install.md's
+		// "If it prints anything else, there is no archive for this machine"; exceptCountClaims).
 		if zeroNo && nounAt < 0 && nounBefore < 0 {
 			continue
 		}
@@ -1480,24 +1506,7 @@ func archiveCountProblems(text string, archives int, form func(clause string) st
 			continue // no archive in its clause
 		}
 		if comparison {
-			// the bound check runs before any exception lookup: no exception masks a bound
-			problems = append(problems, fmt.Sprintf("claims %q, a bound (a comparison word or phrase, or a math sign in its clause) this check does not resolve", claim))
-			continue
-		}
-		// the whole clause as this reading reads it: from the end of the boundary before it to the start of the one after
-		from, to := 0, len(text)
-		if cs > 0 {
-			from = locs[cs-1][1]
-		}
-		if ce < len(toks) {
-			to = locs[ce][0]
-		}
-		clause := strings.TrimSpace(text[from:to])
-		excepted := false
-		for entry := range allowedCountClaims {
-			excepted = excepted || form(entry) == clause
-		}
-		if excepted {
+			problems = append(problems, fmt.Sprintf("claims %q, %s", claim, boundClaim))
 			continue
 		}
 		switch {
@@ -1580,20 +1589,21 @@ func releaseArchiveCount(t *testing.T) int {
 
 // unit is a run of text read as one piece: a paragraph, the consecutive non-blank lines between blank lines, so a
 // sentence wrapped across a soft line break is one unit. No Markdown structure is read (a fence line is a line of
-// text). text has its whitespace collapsed to single spaces; line is its first physical line.
+// text). text has its whitespace collapsed to single spaces; raw is its lines exactly as written, joined by LF (the
+// clauses allowedCountClaims are compared with); line is its first physical line.
 type unit struct {
-	line int
-	text string
+	line      int
+	text, raw string
 }
 
 func units(text string) []unit {
 	var out []unit
-	var para []string
+	var para, raw []string
 	start := 0
 	flush := func() {
 		if len(para) > 0 {
-			out = append(out, unit{start, strings.Join(strings.Fields(strings.Join(para, " ")), " ")})
-			para = nil
+			out = append(out, unit{start, strings.Join(strings.Fields(strings.Join(para, " ")), " "), strings.Join(raw, "\n")})
+			para, raw = nil, nil
 		}
 	}
 	for n, line := range strings.Split(text, "\n") {
@@ -1605,7 +1615,7 @@ func units(text string) []unit {
 		if len(para) == 0 {
 			start = n + 1
 		}
-		para = append(para, l)
+		para, raw = append(para, l), append(raw, line)
 	}
 	flush()
 	return out
@@ -1645,10 +1655,12 @@ func checkDoc(file, text string, allowed []allowedLine, archives int) (problems 
 			report(fmt.Sprintf("%s:%d names a non-Linux platform (%q) in a link destination or title: %s", file, u.line, hidden[loc[0]:loc[1]], u.text))
 		}
 		plain := plainText(u.text)
-		for _, r := range countReadings(u.text) {
-			for _, p := range archiveCountProblems(r.text, archives, r.form) {
-				report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
-			}
+		rest, bounds := exceptCountClaims(u.raw, archives)
+		for _, r := range countReadings(collapse(rest)) {
+			bounds = append(bounds, archiveCountProblems(r, archives)...)
+		}
+		for _, p := range bounds {
+			report(fmt.Sprintf("%s:%d %s: %s", file, u.line, p, u.text))
 		}
 		var spans [][2]int
 		for _, a := range allowed {
@@ -2144,9 +2156,15 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 	// saw no count, the mark-stripped readings rejoined "no" and matched the entry). Each of the four clauses as written
 	// is accepted; each with a mark inserted at any character boundary, or a space doubled or turned into a tab, is
 	// refused naming a claim.
+	allowedIn := func(file string) []allowedLine {
+		if file == notesFile {
+			return []allowedLine{{notesFile, notesSentence, "the REQ-PLAT-001 release-notes line", false}}
+		}
+		return allowedLines
+	}
 	refusedClaim := func(name, file, text string) {
 		t.Helper()
-		ps, _ := checkDoc(file, text, allowedLines, archives)
+		ps, _ := checkDoc(file, text, allowedIn(file), archives)
 		for _, p := range ps {
 			if strings.HasPrefix(p, file+":") && strings.Contains(p, "claims") {
 				return
@@ -2165,7 +2183,7 @@ func TestDocsCheckRefusesMutants(t *testing.T) {
 			t.Errorf("%s: the allowedCountClaims entry is not its clause as written, exactly once: %q", file, entry)
 			continue
 		}
-		if ps, _ := checkDoc(file, text, allowedLines, archives); len(ps) > 0 {
+		if ps, _ := checkDoc(file, text, allowedIn(file), archives); len(ps) > 0 {
 			t.Errorf("%s: the excepted clause as written is refused: %v", file, ps)
 		}
 		at := strings.Index(text, entry)
