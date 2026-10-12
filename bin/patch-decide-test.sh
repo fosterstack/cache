@@ -963,8 +963,9 @@ def field_diff(a, b):
 def span_of(v):
     """the documented quoted form of a value: its JSON string (ASCII, backtick escaped; r6, B F4: a hyphen followed by four
     more written \\u002d, so no run of five hyphens — a signature-block delimiter — is ever printed; r10, advisor decision
-    Oct 11: '<' and '&' written \\u003c and \\u0026, so no printed value holds a refused form) in a code span"""
-    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(v, ensure_ascii=True).replace("`", "\\u0060")
+    Oct 11: '<' and '&' written \\u003c and \\u0026, so no printed value holds a refused form) in a code span; r11
+    (Codex #300 r10, B 1): the value is redacted as text (_clean_md) BEFORE it is encoded, so an escape never hides a name"""
+    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(P._clean_md(v), ensure_ascii=True).replace("`", "\\u0060")
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 def bare_ok(v, before_colon=False):
     """the oracle's own bare-form rule (r6, A (c)): a letter, then letters, digits and - . _ / only, after at most one

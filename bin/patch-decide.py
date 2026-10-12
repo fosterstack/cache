@@ -363,14 +363,17 @@ def _refuse_text(text, name):
 def _no_dup_bullets(text, name):
     """refuse (ValueError naming both name:line) two '- ' lines of one release block (from one '## ' heading to the next)
     that publish the same line, trailing whitespace ignored (REQ-REL-009-AC14 (5) in the readers: a tag's notes, the
-    changelog's notes, the history; Codex #300 r9, B 4). The same line in two release blocks is a repetition across
-    releases, not a collision."""
+    changelog's notes, the history; Codex #300 r9, B 4). Each line is compared as it is published, cleaned by _clean_free
+    ('- gpt' and '- claude' publish the same line; so do a marker line and its escaped spelling: Codex #300 r10, A medium /
+    B 2), and named by its source line; the raw lines are checked for the refused forms by _refuse_text. The same line in
+    two release blocks is a repetition across releases, not a collision."""
     seen = {}
     for n, ln in enumerate(str(text).splitlines(), 1):
-        if ln.startswith("## "):
+        c = _clean_free(ln)                 # the line as published: compared cleaned, named by its source line (r10, A / B 2)
+        if c.startswith("## "):
             seen = {}
-        elif ln.startswith("- "):
-            k = ln.rstrip()
+        elif c.startswith("- "):
+            k = c.rstrip()
             if k in seen:
                 raise ValueError("%s:%d: %s:%d: two entries publish the same line" % (name, seen[k], name, n))
             seen[k] = n
@@ -448,11 +451,16 @@ def _lit(v, before_colon=False):
     five hyphens, a signature-block delimiter, is ever printed, so the tag of the notes stays readable (r6, B F4). In the
     quoted form '<' and '&' are written \\u003c and \\u0026 (the same JSON string; advisor decision Oct 11, option A): no
     printed value holds a refused form of REQ-REL-009-AC14, so the notes' own VEX lines pass every reader with no
-    exemption. A reader sees the JSON string: a statement named <b>x shows as "\\u003cb\\u003ex" in its code span."""
+    exemption. A reader sees the JSON string: a statement named <b>x shows as "\\u003cb\\u003ex" in its code span. The
+    quoted value is redacted (_clean_md) before it is encoded, so a vendor or model name right after an escaped character is
+    redacted as it would be in plain text (Codex #300 r10, B 1); vex_changes names a statement whose name or @id redaction
+    changes by its position."""
     v = str(v)
     if BARE.match(v) and not NOT_BARE.search(v + (":" if before_colon else "")):
         return v
-    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(v, ensure_ascii=True).replace("`", "\\u0060")
+    # the value is redacted as text BEFORE it is encoded: an escape ('<' -> \u003c) ends in a letter or digit and would
+    # erase the word boundary the redactor reads ('<google', '&o1'; Codex #300 r10, B 1)
+    return "`%s`" % re.sub(r"-(?=----)", r"\\u002d", json.dumps(_clean_md(v), ensure_ascii=True).replace("`", "\\u0060")
                            .replace("<", "\\u003c").replace("&", "\\u0026"))
 
 
@@ -849,6 +857,8 @@ def vex_changes(old_doc, new_doc):
                 e["products"], e["products_shown"] = prod[0], prod[2]
             if several or cve == "":
                 sid = own_id(s_, side) if cve != "" else None
+                if sid is not None and _clean(sid) != sid:     # redaction changes the @id: named by position (r10, B 1)
+                    sid = None
                 e["statement"] = ("statement %s" % _lit(sid) if sid is not None
                                   else "statement %d of the %s document" % (pos, side))
             return (e.get("products", []), "products_unreadable" in e, raw, e["status"], canon(s_)), (e, pos, side)
@@ -887,7 +897,8 @@ def vex_changes(old_doc, new_doc):
         return fin.startswith(name + ": ") or fin.startswith(name + " [")
     for r in recs:
         name = _lit(r[0]["cve"], before_colon=True)
-        if _clean_md(name) != name or not names_one(r[0]):
+        # redaction changes the CVE name as text (the value _lit redacts before encoding it) or as printed: by position
+        if _clean(r[0]["cve"]) != r[0]["cve"] or _clean_md(name) != name or not names_one(r[0]):
             by_position(r)
     while True:
         seen = {}
@@ -1153,9 +1164,12 @@ def check_fix_sources(fixes, docs, gomod_path, gomod_text, head):
         where = ""
         if go:
             # the line the version came from: the parsed require (or the go directive for stdlib), never a text search
-            src = parsed["go"] if f["package"] == "stdlib" else parsed["require"].get(f["package"])
-            if src is None or (f["package"] != "stdlib" and src[0] != f["new"]):
-                raise ValueError("%s:matches[%d]: %s: no require line in %s gives %s" % (path, i, f["package"], gomod_path, f["new"]))
+            # (stdlib: the go directive's version, compared as go1.X.Y; r10, A low 3 / B 4)
+            std = f["package"] == "stdlib"
+            src = parsed["go"] if std else parsed["require"].get(f["package"])
+            if src is None or ("go" + src[0] if std else src[0]) != f["new"]:
+                raise ValueError("%s:matches[%d]: %s: no %s in %s gives %s" % (
+                    path, i, f["package"], "go directive" if std else "require line", gomod_path, f["new"]))
             n = src[1]
             where = " %s:%d:" % (gomod_path, n)
             why = _refused_value(f["new"]) or _refused_form(glines[n - 1])
@@ -1173,15 +1187,75 @@ def check_fix_sources(fixes, docs, gomod_path, gomod_text, head):
 # lexer (golang.org/x/mod/modfile): '//' starts a comment anywhere outside a quoted string and runs to the line end; ( )
 # [ ] { } , are tokens of their own; a directive is one line 'verb args...' or a block 'verb (' ... ')'. Fail closed: what
 # this reader does not read is refused (ValueError naming name:line), never guessed — a '/* */' comment (Go refuses it), a
-# quoted string, a character other than a printable one, space or tab (a CR only at the line end), a block opened on a
-# line with anything after '(', a ')' outside a block, a block never closed, an unknown directive, a 'require' that is
-# not exactly a path and a semantic version, a module required twice, a 'go' directive twice or inside a block, and
-# [ ] { } , outside a 'retract' line. Go itself is not on the decide job's PATH (release.yml installs no Go toolchain),
-# so the parser is this code, not `go mod edit -json`.
+# quoted string (Go accepts one in place of a path; the repository's go.mod files use none, so it is refused: a documented
+# limit, r10 A), a character other than a printable one, space or tab (a CR only at the line end), a block opened on a
+# line with anything after '(', a ')' outside a block, a block never closed, an unknown directive, a 'go' or 'toolchain'
+# or 'module' directive twice or inside a block, [ ] { } , outside a 'retract' line, and each directive's arguments in any
+# shape but its own (Codex #300 r10, A low 2 / B 3): module PATH; go a Go release version (modfile's GoVersionRE: 1.21,
+# 1.21.0, 1.21rc1); toolchain 'default' or go + a Go release version; require / exclude PATH VERSION; replace
+# PATH [VERSION] => DIR or => PATH VERSION; retract VERSION or [VERSION, VERSION]; godebug KEY=VALUE; tool / ignore PATH.
+# A VERSION is a semantic version as golang.org/x/mod/semver reads it: vMAJOR.MINOR.PATCH[-PRERELEASE][+BUILD], ASCII
+# digits only, no leading zero in a number or a numeric prerelease identifier, no empty identifier ('v0.34.0-..' is
+# refused). The module name 'stdlib' is reserved for the toolchain (the go directive): any directive naming it is refused
+# (r10, A low 3 / B 4). Go itself is not on the decide job's PATH (release.yml installs no Go toolchain), so the parser is
+# this code, not `go mod edit -json`.
 GO_DIRECTIVES = {"module", "go", "toolchain", "require", "replace", "exclude", "retract", "tool", "ignore", "godebug"}
-GO_BLOCKS = GO_DIRECTIVES - {"go", "toolchain"}
-GO_SEMVER = re.compile(r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\Z")
+GO_BLOCKS = GO_DIRECTIVES - {"go", "toolchain", "module"}
+_N = r"(?:0|[1-9][0-9]*)"
+_PRE = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+_BUILD = r"[0-9A-Za-z-]+"
+GO_SEMVER = re.compile(r"v%s\.%s\.%s(?:-%s(?:\.%s)*)?(?:\+%s(?:\.%s)*)?" % (_N, _N, _N, _PRE, _PRE, _BUILD, _BUILD))
+GO_RELEASE = re.compile(r"[1-9][0-9]*\.(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*))?(?:[a-z]+[0-9]+)?")
+GO_TOOLCHAIN = re.compile(r"default|go" + GO_RELEASE.pattern)
+GO_GODEBUG = re.compile(r"[A-Za-z0-9_.-]+=[A-Za-z0-9_.+-]*")
 GO_TOKEN = re.compile(r"[()\[\]{},]|[^ \t()\[\]{},]+")
+GO_RESERVED = "stdlib"
+
+
+def _go_dir(p):
+    """a replacement that is a directory path (modfile.IsDirectoryPath, the forms this reader takes: ., .., ./, ../, /)"""
+    return p in (".", "..") or p.startswith(("./", "../", "/"))
+
+
+def _gomod_args(verb, args):
+    """why a directive's arguments are not in its own shape, or None"""
+    ver = GO_SEMVER.fullmatch
+    paths = []
+    if verb in ("module", "tool", "ignore"):
+        if len(args) != 1:
+            return "a %s that is not exactly one path" % verb
+        paths = args
+    elif verb == "go":
+        if len(args) != 1 or not GO_RELEASE.fullmatch(args[0]):
+            return "a go directive that is not one Go release version (1.21, 1.21.0, 1.21rc1)"
+    elif verb == "toolchain":
+        if len(args) != 1 or not GO_TOOLCHAIN.fullmatch(args[0]):
+            return "a toolchain that is not 'default' or go and a Go release version"
+    elif verb in ("require", "exclude"):
+        if len(args) != 2 or not ver(args[1]):
+            return "a %s that is not a module path and a semantic version" % verb
+        paths = args[:1]
+    elif verb == "replace":
+        if args.count("=>") != 1:
+            return "a replace that is not 'path [version] => replacement'"
+        i = args.index("=>")
+        old, new = args[:i], args[i + 1:]
+        if (len(old) not in (1, 2) or (len(old) == 2 and not ver(old[1])) or len(new) not in (1, 2)
+                or (len(new) == 1 and not _go_dir(new[0])) or (len(new) == 2 and (_go_dir(new[0]) or not ver(new[1])))):
+            return "a replace that is not 'path [version] => directory' or 'path [version] => path version'"
+        paths = [old[0], new[0]]
+    elif verb == "retract":
+        if not ((len(args) == 1 and ver(args[0])) or (len(args) == 5 and args[0] == "[" and ver(args[1]) and args[2] == ","
+                                                       and ver(args[3]) and args[4] == "]")):
+            return "a retract that is not a version or [version, version]"
+    elif verb == "godebug":
+        if len(args) != 1 or not GO_GODEBUG.fullmatch(args[0]):
+            return "a godebug that is not one key=value"
+    if any(p in GO_DIRECTIVES or p in ("=>", "[", "]", ",") for p in paths):
+        return "a %s whose path is a keyword or a token" % verb
+    if GO_RESERVED in paths:
+        return "the module name 'stdlib' (reserved for the toolchain: the go directive)"
+    return None
 
 
 def _gomod_tokens(line, name, n):
@@ -1200,7 +1274,7 @@ def _gomod_tokens(line, name, n):
 def parse_gomod(text, name="go.mod"):
     """{"require": {module: (version, line)}, "go": (version, line) or None} of a go.mod text, lines numbered from 1;
     ValueError naming name:line for anything the strict reader refuses (see above)"""
-    req, go, block = {}, None, None
+    req, go, block, once = {}, None, None, {}
     for n, line in enumerate(str(text).split("\n"), 1):
         toks = _gomod_tokens(line, name, n)
         if not toks:
@@ -1212,7 +1286,7 @@ def parse_gomod(text, name="go.mod"):
             verb, args = block[0], toks
         elif len(toks) == 2 and toks[1] == "(":
             if toks[0] not in GO_BLOCKS:
-                raise ValueError("%s:%d: a block of an unknown directive %r" % (name, n, toks[0]))
+                raise ValueError("%s:%d: a block of a directive the reader does not read as a block %r" % (name, n, toks[0]))
             block = (toks[0], n)
             continue
         else:
@@ -1221,15 +1295,18 @@ def parse_gomod(text, name="go.mod"):
                 raise ValueError("%s:%d: not a go.mod directive the reader knows" % (name, n))
         if "(" in args or ")" in args or (verb != "retract" and any(t in ("[", "]", ",") for t in args)) or "{" in args or "}" in args:
             raise ValueError("%s:%d: a block opened or closed where the reader does not read one" % (name, n))
+        why = _gomod_args(verb, args)
+        if why:
+            raise ValueError("%s:%d: %s" % (name, n, why))
+        if verb in ("go", "toolchain", "module"):
+            if verb in once:
+                raise ValueError("%s:%d: a %s directive twice (also line %d)" % (name, n, verb, once[verb]))
+            once[verb] = n
         if verb == "require":
-            if len(args) != 2 or not GO_SEMVER.match(args[1]) or args[0] in GO_DIRECTIVES:
-                raise ValueError("%s:%d: a require that is not a module path and a version" % (name, n))
             if args[0] in req:
                 raise ValueError("%s:%d: %s required twice (also line %d)" % (name, n, args[0], req[args[0]][1]))
             req[args[0]] = (args[1], n)
         elif verb == "go":
-            if block is not None or len(args) != 1 or go is not None:
-                raise ValueError("%s:%d: a go directive the reader does not read" % (name, n))
             go = (args[0], n)
     if block is not None:
         raise ValueError("%s:%d: a %s block never closed" % (name, block[1], block[0]))
