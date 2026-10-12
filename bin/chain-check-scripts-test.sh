@@ -237,7 +237,7 @@ cat > "$fake/docker" <<'EOF'
 #!/usr/bin/env bash
 echo "docker $*" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
 case "$1" in
-  load) tar -tf "${3:-x}" 2> /dev/null | grep -q 'index.json' || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
+  load) [ "$(tar -tf "${3:-x}" 2> /dev/null | grep -c 'index.json')" -ge 1 ] || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
         img=$(basename "${3:-x}" .tar); echo "Loaded image: fscache:$img";;
   run) for a in "$@"; do case "$a" in fscache:production|*production*) v=production;; fscache:fips|*fips*) v=fips;; esac; done
        [ -f "$FAKE_DIR/run-fails" ] && { echo "docker: start failed" >&2; exit 125; }
@@ -361,7 +361,7 @@ cat > "$fake2/docker" <<'DKEOF'
 # fake docker for the artifact checks: load names fscache:VARIANT; `run -d` starts a real fake server; a shell probe fails unless FAKE_SHELL names VARIANT:PATH
 echo "docker $*" >> "$FAKE_LOG"; mkdir -p "$FAKE_DIR"
 case "$1" in
-  load) tar -tf "${3:-x}" 2> /dev/null | grep -q 'index.json' || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
+  load) [ "$(tar -tf "${3:-x}" 2> /dev/null | grep -c 'index.json')" -ge 1 ] || { echo "docker: load: not an OCI layout archive" >&2; exit 1; }
         echo "Loaded image: fscache:$(basename "${3:-x}" .tar)";;
   run)
     ep=""; img=""; detach=0; nm=""
