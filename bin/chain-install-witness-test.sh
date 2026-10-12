@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1 — Witness is installed pinned by checksum before it starts, and the same install in Rebuild
+# proves: REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1, REQ-CHAIN-006-AC4, REQ-SUP-001-AC1 — Witness is installed pinned by checksum before it starts, and the same install in Rebuild
 # Written before bin/install-scanner.sh knew `witness` (tests before implementation, step 4).
 #
 # The failure-path suite for `./bin/install-scanner.sh witness [dest-dir]`, in the style of bin/install-scanner-test.sh (which this file does not edit):

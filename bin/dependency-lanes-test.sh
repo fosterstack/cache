@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-002-AC1, REQ-DEP-003-AC1
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
 # evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
