@@ -1131,3 +1131,42 @@ func TestGoTestExistsFailsClosedWithoutAModule(t *testing.T) {
 		t.Error("counted although go list could not list the package")
 	}
 }
+
+// A persisted `go env -w GOFLAGS=-tags=...` does not change the answer: the toolchain is asked with a clean
+// configuration, so a file that only a custom tag selects does not count.
+func TestGoTestExistsIgnoresPersistedGoFlags(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	cfg := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(cfg, []byte("GOFLAGS=-tags=integration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", cfg)
+	t.Setenv("GOFLAGS", "")
+	if err := os.MkdirAll("p", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "//go:build integration\n\npackage p\n\nimport \"testing\"\n\nfunc TestOnlyWithTag(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join("p", "tag_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("p", "TestOnlyWithTag") {
+		t.Error("a test selected only by a persisted GOFLAGS tag was counted")
+	}
+}
+
+// A package whose directory (and so import path) ends in .test is an ordinary package, not the generated test main.
+func TestGoTestExistsAcceptsAPackagePathEndingInTest(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	if err := os.MkdirAll("widget.test", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "package widget\n\nimport \"testing\"\n\nfunc TestWidget(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join("widget.test", "w_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !goTestExists("widget.test", "TestWidget") {
+		t.Error("a test in a package directory ending in .test was not found")
+	}
+}
