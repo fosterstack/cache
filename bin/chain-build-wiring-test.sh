@@ -1612,7 +1612,8 @@ krx 0 "empty-except KR-CUTOVER passes when KR-CUTOVER alone is listed (rc proof 
 krx 0 "empty-except KR-CUTOVER passes on an empty list" "$work/kr/empty.json" empty-except KR-CUTOVER
 krx 1 "empty-except KR-CUTOVER fails while another entry is listed" "$work/kr/cutover-other.json" empty-except KR-CUTOVER
 krx 1 "empty-except KR-CUTOVER fails when another entry alone is listed" "$work/kr/other.json" empty-except KR-CUTOVER
-python3 "$KR" empty-except KR-CUTOVER --list "$work/kr/cutover-other.json" 2>&1 | grep -F -q KR-OTHER && ok "known-red cutover prep: the refusal names the entry that is still listed" || bad "known-red cutover prep: the refusal does not name KR-OTHER"
+python3 "$KR" empty-except KR-CUTOVER --list "$work/kr/cutover-other.json" > "$work/kr/x.out" 2>&1 || true
+grep -F -q KR-OTHER "$work/kr/x.out" && ok "known-red cutover prep: the refusal names the entry that is still listed" || bad "known-red cutover prep: the refusal does not name KR-OTHER"
 krx 1 "empty (the marker PR) still fails while KR-CUTOVER alone is listed: the list must be fully empty" "$work/kr/only-cutover.json" empty
 krx 2 "empty-except with no entry id is a usage error" "$work/kr/only-cutover.json" empty-except
 krx 2 "empty-except with two ids is a usage error" "$work/kr/only-cutover.json" empty-except KR-CUTOVER KR-OTHER

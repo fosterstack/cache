@@ -10,7 +10,9 @@ build scripts P4/P5). They are listed here by case and reason, so a red CI run m
                                            an entry added or changed since the merge base (the COMPLETE entry is compared, findings included) fails unless the PR body names it with a line `known-red-add: <id>`
                                            (the body is read from the GitHub event file, GITHUB_EVENT_PATH; --event overrides;
                                            locally, with no event file, the environment variable KNOWN_RED_ADD='id id ...' names them; a push event is not compared)
-  empty [--list FILE]                      exit 1 while the list has entries (the cutover condition)
+  empty [--list FILE]                      exit 1 while the list has entries (the marker PR's condition: KR-CUTOVER goes with the marker, REQ-CHAIN-001-AC6)
+  empty-except ID [--list FILE]            exit 1 while the list has an entry other than ID (the cutover PR's condition, with ID = KR-CUTOVER: every other entry is
+                                           gone, ID alone means "rc proof pending"); ID is exactly one argument; an unreadable list fails
 
 An entry is {id, suite, case, reason, green_by}. `case` is the text after `FAIL ` up to ` -> ` or `: ` of the suite's FAIL line (a prefix match: the line must
 start with FAIL and the case, followed by the end, ` -> ` or `: `).
@@ -194,11 +196,29 @@ def cmd_empty(args):
     print("known-red: the list is empty")
 
 
+def cmd_empty_except(args):
+    rest = list(args)
+    path = DEFAULT_LIST
+    if "--list" in rest:
+        i = rest.index("--list")
+        if i + 1 >= len(rest):
+            usage_fail("--list needs a file")
+        path = rest[i + 1]
+        del rest[i:i + 2]
+    if len(rest) != 1 or rest[0].startswith("-"):
+        usage_fail("empty-except takes exactly one entry id (the entry that may remain)")
+    keep = rest[0]
+    others = [e["id"] for e in load(path) if e["id"] != keep]
+    if others:
+        fail("the list still has %d entr(ies) besides %s: %s (the cutover needs every other entry gone)" % (len(others), keep, " ".join(others)))
+    print("known-red: no entry besides %s" % keep)
+
+
 def main(argv):
-    if not argv or argv[0] not in ("judge", "base-check", "empty"):
-        print("usage: chain-known-red.py judge --suite S [--list F] | base-check [--list F] [--base R] [--event F] | empty [--list F]", file=sys.stderr)
+    if not argv or argv[0] not in ("judge", "base-check", "empty", "empty-except"):
+        print("usage: chain-known-red.py judge --suite S [--list F] | base-check [--list F] [--base R] [--event F] | empty [--list F] | empty-except ID [--list F]", file=sys.stderr)
         return 2
-    {"judge": cmd_judge, "base-check": cmd_base_check, "empty": cmd_empty}[argv[0]](argv[1:])
+    {"judge": cmd_judge, "base-check": cmd_base_check, "empty": cmd_empty, "empty-except": cmd_empty_except}[argv[0]](argv[1:])
     return 0
 
 
