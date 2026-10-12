@@ -1233,3 +1233,32 @@ func TestGoTestExistsEdgesOfTheAnswer(t *testing.T) {
 		t.Error("counted although go list printed something unreadable")
 	}
 }
+
+// A test function must be spelled func TestX(t *testing.T) under the file's own name for the testing import: the
+// toolchain's scanner accepts *T by name, and TestMain is a runner hook.
+func TestGoTestExistsChecksTheSignatureTheToolchainDoesNot(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	if err := os.MkdirAll("sig", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"alias_test.go":   "package p\n\nimport tt \"testing\"\n\nfunc TestAliased(t *tt.T) {}\n",
+		"empty_test.go":   "package p\n\nimport \"testing\"\n\nfunc TestEmptyResults(t *testing.T) () {}\n",
+		"unnamed_test.go": "package p\n\nimport \"testing\"\n\nfunc TestUnnamed(*testing.T) {}\n",
+		"main_test.go":    "package p\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n",
+		"local_test.go":   "package p\n\nimport \"testing\"\n\ntype T struct{}\n\nfunc TestLocalType(t *T) {}\n\nvar _ = testing.Short\n",
+		"dot_test.go":     "package p\n\nimport . \"testing\"\n\nfunc TestDot(t *T) {}\n",
+	}
+	for n, src := range files {
+		if err := os.WriteFile(filepath.Join("sig", n), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]bool{"TestAliased": true, "TestEmptyResults": true, "TestUnnamed": true,
+		"TestMain": false, "TestLocalType": false, "TestDot": false} {
+		if got := goTestExists("sig", name); got != want {
+			t.Errorf("%s: counted=%v, want %v", name, got, want)
+		}
+	}
+}

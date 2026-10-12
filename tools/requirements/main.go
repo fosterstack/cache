@@ -22,6 +22,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"io"
 	"os"
 	"os/exec"
@@ -367,7 +368,7 @@ func freeze(args []string) {
 // all four runs. The tool reads no build constraint, file header or package rule of its own; a go list that fails, or an
 // answer it cannot read, means the name does not count.
 func goTestExists(dir, name string) bool {
-	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || !goTestName(name) {
+	if dir != filepath.Clean(dir) || filepath.IsAbs(dir) || dir == ".." || strings.HasPrefix(dir, "../") || name == "TestMain" || !goTestName(name) {
 		return false
 	}
 	if real, err := filepath.EvalSymlinks(dir); err != nil || real != dir {
@@ -411,16 +412,36 @@ func goTestExists(dir, name string) bool {
 	return false
 }
 
-// declaresFunc reports whether the Go file declares a top-level function (not a method) called name.
+// declaresFunc reports whether the Go file declares, at top level, a test function called name: no receiver, no type
+// parameters, no results, one parameter of type *testing.T under the file's own name for the testing import (an alias
+// is fine; a dot import or a local type T is not). go list refuses most wrong signatures itself, but it checks the
+// parameter by spelling (*T), not by type, and TestMain is a runner hook, not a test.
 func declaresFunc(path, name string) bool {
 	if f, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.SkipObjectResolution); err == nil {
+		want := "*" + testingName(f) + ".T"
 		for _, d := range f.Decls {
-			if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv == nil && fn.Name.Name == name {
+			fn, ok := d.(*ast.FuncDecl)
+			if ok && fn.Recv == nil && fn.Name.Name == name && fn.Type.TypeParams == nil && fn.Type.Results.NumFields() == 0 &&
+				len(fn.Type.Params.List) == 1 && len(fn.Type.Params.List[0].Names) <= 1 && types.ExprString(fn.Type.Params.List[0].Type) == want {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// testingName is the name the file gives the "testing" import (testing unless aliased); a file that does not import it
+// gets a name no expression can have, so nothing in it is a test.
+func testingName(f *ast.File) string {
+	for _, im := range f.Imports {
+		if im.Path.Value == `"testing"` {
+			if im.Name != nil {
+				return im.Name.Name
+			}
+			return "testing"
+		}
+	}
+	return "?"
 }
 
 // goListPackage is the part of `go list -json` this tool reads.
