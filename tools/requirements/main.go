@@ -544,7 +544,7 @@ func goTestName(name string) bool {
 }
 
 // packageLoads reports whether the Go files of the directory that the build rules select on linux/amd64 or linux/arm64
-// belong to one package (a file in package documentation is ignored, and an external test package is the package name
+// parse and belong to one package (a file in package documentation is ignored, and an external test package is the package name
 // plus _test): a directory with two package names does not load, so no test in it runs.
 func packageLoads(dir string, entries []os.DirEntry) bool {
 	names := map[string]bool{}
@@ -563,8 +563,11 @@ func packageLoads(dir string, entries []os.DirEntry) bool {
 		if !selected {
 			continue
 		}
-		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.PackageClauseOnly)
-		if err != nil || f.Name.Name == "documentation" {
+		f, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, e.Name()), nil, parser.SkipObjectResolution)
+		if err != nil {
+			return false // a selected file that does not parse: the package does not load
+		}
+		if f.Name.Name == "documentation" {
 			continue
 		}
 		names[strings.TrimSuffix(f.Name.Name, "_test")] = true

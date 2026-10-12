@@ -571,16 +571,23 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "aaa_dir_test.go"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A non-test file mentioning the needle must not count.
-	if err := os.WriteFile(filepath.Join(dir, "notatest.go"), []byte("func TestReal(t *testing.T) {}\n"), 0o644); err != nil {
+	// A non-test file mentioning the needle must not count (it has no package clause: it is in its own directory, since a
+	// selected file that does not parse keeps its whole package from loading).
+	if err := os.Mkdir("pkgnotatest", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("pkgnotatest", "notatest.go"), []byte("func TestReal(t *testing.T) {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// A dangling symlink with the suffix is not a regular file and is skipped.
 	if err := os.Symlink("missing", filepath.Join(dir, "dangling_test.go")); err != nil {
 		t.Fatal(err)
 	}
-	// An unparsable test file is skipped, never searched as text.
-	if err := os.WriteFile(filepath.Join(dir, "broken_test.go"), []byte("func TestBroken(t *testing.T) {\n"), 0o644); err != nil {
+	// An unparsable test file is never searched as text, and it keeps its package from loading (own directory).
+	if err := os.Mkdir("pkgbroken", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("pkgbroken", "broken_test.go"), []byte("func TestBroken(t *testing.T) {\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	src := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc helper() {}\nfunc Testhelper(t *testing.T) {}\nfunc TestTwo(a, b *testing.T) {}\nfunc TestB(b *testing.B) {}\nfunc TestRet(t *testing.T) error { return nil }\nfunc TestVal(t testing.T) {}\ntype T struct{}\nfunc TestLocal(t *T) {}\n"
@@ -590,8 +597,11 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	if !goTestExists(dir, "TestReal") {
 		t.Error("TestReal exists in real_test.go but was not found")
 	}
+	if goTestExists("pkgbroken", "TestBroken") || goTestExists("pkgnotatest", "TestReal") {
+		t.Error("a name in an unparsable or non-test file was accepted")
+	}
 	// residual 3 (step 8 r3): only a function `go test` runs is a test
-	for _, name := range []string{"helper", "Testhelper", "TestTwo", "TestB", "TestRet", "TestVal", "TestLocal", "TestBroken", "TestOnlyInNonTestFile"} {
+	for _, name := range []string{"helper", "Testhelper", "TestTwo", "TestB", "TestRet", "TestVal", "TestLocal"} {
 		if goTestExists(dir, name) {
 			t.Errorf("%s is not a runnable test but was accepted", name)
 		}
