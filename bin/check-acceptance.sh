@@ -29,6 +29,8 @@ done
 d=$(jq -r '."image-production" // empty' "$digests")
 [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-production digest"
 [ -d "$images/production" ] && [ -f "$images/production/oci-layout" ] && [ -f "$images/production/index.json" ] || fail "the production image $images/production is missing or not an OCI layout directory (oci-layout and index.json)"
+# Round 1 F1: the image is the one Build recorded, bound to digests.json before anything is loaded or run.
+python3 bin/check-bind.py --digests "$digests" --images "$images" || exit 1
 [ -f "bin/acceptance-$suite.sh" ] || fail "the $suite suite script is not in the tree"
 mkdir -p "$out"
 tmp=$(mktemp -d)

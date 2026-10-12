@@ -62,6 +62,9 @@ for n in fscache fscache-fips; do
   tar -xzf "${sel[0]}" -C "$tmp/bin" "$n" || fail "the $arch archive of $n holds no binary named $n"
 done
 
+# Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed.
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
+
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image
 FSCACHE_ADDR=":19101" FSCACHE_DATA_DIR="$tmp/data-std" "$tmp/bin/fscache" > "$tmp/log-std" 2>&1 &
 pids+=("$!")

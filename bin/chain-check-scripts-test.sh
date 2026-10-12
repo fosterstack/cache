@@ -251,15 +251,15 @@ if grep -Eq '^grype oci-dir:images/(production|fips) ' "$work/log" && ! grep -q 
 # stage-start authenticates digests.json; the layouts and archives it downloads must be bound to it before any scan, load or run (an index.json that
 # merely exists is no binding): the layout is re-derived from the digest (index, child manifests, every blob re-hashed) and each archive re-hashed.
 nothing_ran() { ! grep -Eq '^(grype|osv-scanner) (oci-dir|scan|file)|^docker (load|run)' "$work/log"; }
-keep="$work/keep-fips"; rm -rf "$keep"; cp -R "$fx/images/fips" "$keep"
+keep="$work/keep-fips"; rm -rf "$keep"; cp -R "$fx/images/fips" "$keep"; cp "$fx/images/fips.map" "$work/keep-fips.map"   # (the .map written by mkoci.py names the blobs by role)
 rm -rf "$fx/images/fips"; python3 "$work/mkoci.py" "$fx/images/fips" other > /dev/null
 want_fail "AC4 F1 a valid OCI layout that is not the image Build recorded (digests.json intact) is refused naming the image" image-fips "${SCAN[@]}"
 if nothing_ran; then ok "AC4 F1 nothing was scanned behind the refused layout"; else bad "AC4 F1 a scanner ran on a layout that is not Build's: $(grep -E '^(grype|osv)' "$work/log" | head -2 | cut -c1-100 | tr '\n' '|')"; fi
 rm -rf "$fx/images/fips"; cp -R "$keep" "$fx/images/fips"
-printf 'tampered\n' > "$fx/images/fips/blobs/sha256/$(jq -r .arm64.layer "$fx/images/fips.map")"
+printf 'tampered\n' > "$fx/images/fips/blobs/sha256/$(jq -r .arm64.layer "$work/keep-fips.map")"
 want_fail "AC4 F1 a layer blob that no longer hashes to its name (every manifest and index blob intact) is refused" image-fips "${SCAN[@]}"
 rm -rf "$fx/images/fips"; cp -R "$keep" "$fx/images/fips"
-rm -f "$fx/images/fips/blobs/sha256/$(jq -r .arm64.manifest "$fx/images/fips.map")"
+rm -f "$fx/images/fips/blobs/sha256/$(jq -r .arm64.manifest "$work/keep-fips.map")"
 want_fail "AC4 F1 a child manifest blob that is missing from the layout is refused" image-fips "${SCAN[@]}"
 rm -rf "$fx/images/fips"; cp -R "$keep" "$fx/images/fips"
 rm -rf "$fx/images/production"; python3 "$work/mkoci.py" "$fx/images/production" other > /dev/null
@@ -451,7 +451,7 @@ ART=(check-artifacts.sh --digests digests.json --images images --archives dist -
 arun() { # arun [VAR=val ...] -- SCRIPT ARGS : the artifact check in its own tree with the artifact fakes first on PATH
   local envs=(FAKE_NONE=1); while [ "$1" != "--" ]; do envs+=("$1"); shift; done; shift
   rm -rf "$work/fakedir"; mkdir -p "$work/fakedir"; cp "$fa/server.py" "$work/fakedir/server.py"; : > "$work/log"; rc=0
-  cp "$root"/bin/check-artifacts.sh "$root"/bin/check-image-platforms.py "$fa/bin/" 2> /dev/null || true
+  cp "$root"/bin/check-artifacts.sh "$root"/bin/check-image-platforms.py "$root"/bin/check-bind.py "$root"/bin/chain_items.py "$root"/bin/chain_common.py "$fa/bin/" 2> /dev/null || true
   out=$( (cd "$fa" && env "${envs[@]}" PATH="$fake2:$PATH" FAKE_LOG="$work/log" FAKE_DIR="$work/fakedir" bash "bin/$1" "${@:2}") 2>&1) || rc=$?
 }
 aok() { local l=$1; shift; arun "$@"; if [ "$rc" = 0 ]; then ok "$l"; else bad "$l -> rc=$rc: ${out:0:200}"; fi; }
@@ -475,12 +475,12 @@ arun -- "${ART[@]}"; if ! grep -Fq -- '--platform' "$work/log"; then ok "AC17 th
 mkarch "$fa/dist"
 rm -rf "$work/keep-fa"; cp -R "$fa/images/fips" "$work/keep-fa"; rm -rf "$fa/images/fips"; python3 "$work/mkoci.py" "$fa/images/fips" other > /dev/null
 afail "ART F1 a valid OCI layout that is not Build's -fips image (digests.json intact) is refused naming the image" image-fips -- "${ART[@]}"
-if ! grep -q '^docker' "$work/log"; then ok "ART F1 nothing was loaded or started behind the refused layout"; else bad "ART F1 docker ran on a layout that is not Build's"; fi
+if ! grep -Eq '^docker (load|run)' "$work/log"; then ok "ART F1 nothing was loaded or started behind the refused layout"; else bad "ART F1 docker ran on a layout that is not Build's"; fi
 rm -rf "$fa/images/fips"; cp -R "$work/keep-fa" "$fa/images/fips"
 mkdir -p "$fa/real2"; { cat "$fa/real/fscache"; echo '# not the binary Build recorded'; } > "$fa/real2/fscache"; chmod +x "$fa/real2/fscache"
 tar -czf "$fa/dist/fscache_0.3.0_linux_amd64.tar.gz" -C "$fa/real2" fscache
 afail "ART F1 an archive that is not the one Build recorded (a runnable binary, digests.json intact) is refused naming the file" fscache_0.3.0_linux_amd64.tar.gz -- "${ART[@]}"
-if ! grep -q '^docker' "$work/log" && ! ls "$work"/fakedir/srv-* > /dev/null 2>&1; then ok "ART F1 the foreign archive's binary was not executed"; else bad "ART F1 something ran behind the refused archive"; fi
+if ! grep -Eq '^docker (load|run)' "$work/log" && ! ls "$work"/fakedir/srv-* > /dev/null 2>&1; then ok "ART F1 the foreign archive's binary was not executed"; else bad "ART F1 something ran behind the refused archive"; fi
 mkarch "$fa/dist"
 mkarch "$fa/dist"; rm "$fa/dist/fscache-fips_0.3.0_linux_arm64.tar.gz"
 afail "AC17 --arch arm64 with the arm64 -fips archive missing fails naming it" fscache-fips -- "${ART[@]}" --arch arm64

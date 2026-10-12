@@ -64,6 +64,8 @@ ver=$(basename "${tars[0]:-x}" | sed -n 's/^fscache[a-z-]*_\([^_]*\)_linux_.*/\1
 got=$(for f in "$archives"/*; do basename "$f"; done | sort)
 [ -n "$ver" ] && [ "$got" = "$(sed "s/VER/$ver/" <<< "$want" | sort)" ] \
   || fail "the archive set in $archives is not exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64, of one version): found $(tr '\n' ' ' <<< "$got")"
+# Round 1 F1: the layouts and archives are the ones Build recorded (re-derived from digests.json, every blob and archive re-hashed), before any scan.
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
 mods=(go.mod tools/requirements/go.mod)
 for m in "${mods[@]}"; do [ -f "$m" ] || fail "the Go module file $m is missing"; done
 mkdir -p "$out"

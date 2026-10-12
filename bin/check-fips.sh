@@ -29,6 +29,8 @@ for v in production fips; do
   [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "the digest list has no image-$v digest"
   is_layout "$images/$v" || fail "the $v image $images/$v is missing or not an OCI layout directory (oci-layout and index.json)"
 done
+# Round 1 F1: the images are the ones Build recorded, bound to digests.json before anything is loaded or started.
+python3 bin/check-bind.py --digests "$digests" --images "$images" || exit 1
 mkdir -p "$out"
 tmp=$(mktemp -d)
 cleanup() { rm -rf "$tmp"; for v in production fips; do docker rm -f "fscache-check-$v" > /dev/null 2>&1 || true; done; }
