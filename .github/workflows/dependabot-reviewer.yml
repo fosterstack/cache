@@ -113,11 +113,22 @@ jobs:
           set +e -uo pipefail
           mkdir -p "$RUNNER_TEMP/work"; lookup_failed=0
           gh pr list --base main --state open --author 'app/dependabot' --limit 100 \
-            --json number,title,body,headRefOid > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
+            --json number,title,body,headRefOid,files > "$RUNNER_TEMP/work/prs.json" || { echo "::error::cannot list PRs"; exit 1; }
           : > "$RUNNER_TEMP/work/candidates.txt"
           while read -r pr; do
             n=$(jq -r .number <<<"$pr"); sha=$(jq -r .headRefOid <<<"$pr")
             [ -z "$ONLY_PR" ] || [ "$ONLY_PR" = "$n" ] || continue
+            # the pinned tool module (go.mod and go.sum under tools/govulncheck/, whose version ci.yml repeats by hand, so a Dependabot bump alone cannot be right) is a
+            # human's: never reviewed, never armed here, and an arm made earlier (the patch/minor lane) is turned off; a lookup or a disarm that fails skips it and fails the step
+            if [ "$(jq '[.files[]?.path | select(startswith("tools/govulncheck/"))] | length' <<<"$pr")" != 0 ]; then
+              if ! armed=$(gh pr view "$n" --json autoMergeRequest --jq '.autoMergeRequest != null'); then
+                echo "::error::PR #$n: could not read its auto-merge state — skipped this hour"; lookup_failed=1; continue
+              fi
+              if [ "$armed" != false ] && ! GH_TOKEN="$MERGE_TOKEN" gh pr merge --disable-auto "$n" >/dev/null; then
+                echo "::error::PR #$n: held for a human and could not be disarmed — skipped this hour"; lookup_failed=1; continue
+              fi
+              echo "PR #$n: touches tools/govulncheck/ — a human's, never reviewed or armed here"; continue
+            fi
             jq -r '.body // ""' <<<"$pr" > "$RUNNER_TEMP/work/body-$n.txt"
             if ! python3 bin/dependabot-reviewer.py updates --title "$(jq -r .title <<<"$pr")" \
                    --body-file "$RUNNER_TEMP/work/body-$n.txt" > "$RUNNER_TEMP/work/updates-$n.json"; then
