@@ -100,6 +100,8 @@ stage = ("name: 'Stage: check'\non:\n  workflow_call:\npermissions:\n  contents:
          "    permissions:\n      contents: read\n      id-token: write\n    steps:\n"
          f"      - uses: {CHK}\n        with:\n          persist-credentials: false\n"
          "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
+         "      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n"
+         "      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n"
          "      - name: install kind and kubectl (pinned by sha256)\n        run: bash bin/install-kind.sh\n"
          + dn("witness-build", "witness-build") + dn("digests", "witness-build") + dn("dist", "dist")
          + dn("images", "images")
@@ -140,7 +142,7 @@ exec witness run --step "$step" \\
   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY \\
   --env-add-sensitive-key DOCKERHUB_USERNAME \\
   --env-add-sensitive-key DOCKERHUB_TOKEN \\
-  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"
+  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"
 """)
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]
 PH = [("scanners", ["bash bin/check-scan.sh --scanners .github/policy/scanners.json --digests witness-build/digests.json --images images --archives dist --out check-results"]),
@@ -219,6 +221,12 @@ for n in ("check-stage", "check-phase-scanners", "check-phase-acceptance", "chec
 PY
 expect ok "fixture: the known-good stage-verify.yml passes the stage judge" "" stage "$work/stage.yml"
 expect ok "fixture: the known-good bin/check-stage.sh passes the script judge" "" script "$work/script.sh"
+printf '{"scanners": ["grype", "osv-scanner"], "pr_gate": ["grype", "inspector"]}\n' > "$work/scanners.json"
+printf '{"scanners": ["grype", "osv-scanner", "trivy"]}\n' > "$work/scanners3.json"
+printf '{"scanners": ["grype"]}\n' > "$work/scanners1.json"
+expect ok "fixture: the known-good stage installs every scanner scanners.json lists (round 1 F2)" "" installs "$work/stage.yml" "$work/scanners.json"
+expect caught "AC4 round 1 F2: a listed scanner the stage does not install (trivy added to scanners.json)" "install-scanner.sh trivy" installs "$work/stage.yml" "$work/scanners3.json"
+expect caught "AC4 round 1 F2: the stage installs a scanner scanners.json does not list" "install-scanner.sh osv-scanner" installs "$work/stage.yml" "$work/scanners1.json"
 expect ok "fixture: the known-good bin/witnessed.sh passes the helper judge (rule 68 seam)" "" helper "$work/witnessed.sh"
 # ---- the thin phase targets (ruling 0384): bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a one-line target ------------------
 for s in scanners acceptance runtime; do printf '#!/usr/bin/env bash\nbash bin/check-stage.sh %s\n' "$s" > "$work/ph_$s.sh"; done
@@ -301,6 +309,10 @@ m s_imgno  '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8
 m s_imgother 'name: images\n          path: images' 'name: image-cache\n          path: images' 'download-artifact' "AC1 another artifact name in place of images (Q4)"
 m s_kindact '        run: bash bin/install-kind.sh\n' '        uses: helm/kind-action@06c1ae10762d3b9c1644e7fe69596ae519e015a2 # v1.15.0\n' 'uses not allowed' "AC14 helm/kind-action in place of the pinned install"
 m s_kindform 'run: bash bin/install-kind.sh' 'run: bash bin/install-kind.sh \&\& kind create cluster' 'witnessed.sh' "AC14 the install step in another form"
+m s_xnogr  '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '' 'exactly its' "AC4 round 1 F2: Check without the grype install (check-scan.sh needs it)"
+m s_xnoosv '      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '' 'exactly its' "AC4 round 1 F2: Check without the osv-scanner install"
+m s_xinsord '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n      - name: install osv-scanner \(pinned by checksum\)\n        run: bash bin/install-scanner.sh osv-scanner\n' '      - name: install osv-scanner (pinned by checksum)\n        run: bash bin/install-scanner.sh osv-scanner\n      - name: install grype (pinned by checksum)\n        run: bash bin/install-scanner.sh grype\n' 'check step' "AC4 round 1 F2: the scanner installs out of the listed order"
+m s_xinsdir '      - name: install grype \(pinned by checksum\)\n        run: bash bin/install-scanner.sh grype\n' '      - name: install grype\n        run: bash bin/install-scanner.sh grype /tmp\n' 'check step' "AC4 round 1 F2: grype installed into another directory"
 # the arm64 job (advisor 0385): exactly this job, this label, these steps, and nothing else
 m a_name   '  check-arm64:'                                    '  check-arm:'                                              'two jobs'          "AC1 the second job under another name"
 m a_label  'runs-on: ubuntu-24.04-arm'                         'runs-on: ubuntu-24.04'                                  'ubuntu-24.04-arm'  "AC1 the arm64 job on the amd64 label"
@@ -324,10 +336,26 @@ m a_uppath 'path: witness-arm64'                               'path: witness-sc
 m a_dlimg  'name: images\n          path: images\n      - name: arm64' 'name: images\n          path: images\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: image-cache\n          path: image-cache\n      - name: arm64' 'check-arm64' "AC1 an extra download in the arm64 job"
 m a_unpin  'name: install Witness \(pinned by checksum\)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build' 'name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n      - uses: actions/download-artifact@v8\n        with:\n          name: digests' 'check-arm64' "AC1 an unpinned download in the arm64 job"
 m s_kindno '      - name: install kind and kubectl \(pinned by sha256\)\n        run: bash bin/install-kind.sh\n' '' 'install kind' "AC14 no kind install step"
+# PR 3 round 1, F6 (Codex B3, A extra): the amd64 job is judged as exactly as the arm64 job: its listed steps in order, each download by name and
+# path and once, the witness-check upload by name and path. Each of these was accepted before.
+m s_xnowb '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of witness-build (the record Check verifies)"
+m s_xnodig '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n' '' 'exactly its' "AC1 round 1 F6: no download of the digests"
+m s_xnodist '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' '' 'exactly its' "AC1 round 1 F6: no download of dist (the archives the scan and the artifact checks need)"
+m s_xdup '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' 'exactly its' "AC1 round 1 F6: witness-build downloaded twice"
+m s_xdupd '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' 'exactly its' "AC1 round 1 F6: dist downloaded twice"
+m s_xwbpath '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: witness-build\n          path: elsewhere\n' 'check step' "AC1 round 1 F6: witness-build downloaded into another directory"
+m s_xdigpath '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: dist\n' 'check step' "AC1 round 1 F6: the digests downloaded into dist/, not beside the record"
+m s_xorder '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n' '      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: dist\n          path: dist\n      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1\n        with:\n          name: digests\n          path: witness-build\n' 'check step' "AC1 round 1 F6: the dist download ahead of the digests (the order is the list)"
+m s_xnoup '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: witness-check\n          path: \|\n            witness-scanners\n            witness-acceptance\n            witness-runtime\n' '' 'exactly its' "AC1 round 1 F6: no witness-check upload (Release verifies Check's records from it)"
+m s_xupdup '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: check-results\n          path: check-results\n' '      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: check-results\n          path: check-results\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1\n        with:\n          name: check-results\n          path: check-results\n' 'exactly its' "AC1 round 1 F6: check-results uploaded twice"
+m s_xrec 'witness-runtime\n' 'witness-runtime\n            witness-extra\n' 'check step' "AC1 round 1 F6: the witness-check upload holds an extra record directory"
 # ---- AC11: the helper (the rule 68 seam) -----------------------------------------------------------------------------
 hm() { if mutate "$work/witnessed.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" helper "$work/$1.sh"; fi; }
-hm h_notmo   ' -- timeout 540 bash "\$@"'                      ' -- bash "$@"'                                          'the helper'        "AC11 no timeout around the wrapped command"
-hm h_600     'timeout 540'                                      'timeout 600'                                            'the helper'        "AC11 a cap of 10 minutes (the certificate lifetime)"
+hm h_notmo   ' -- timeout -k 20 540 bash "\$@"'                      ' -- bash "$@"'                                          'the helper'        "AC11 no timeout around the wrapped command"
+hm h_600     'timeout -k 20 540'                                'timeout -k 20 600'                                            'the helper'        "AC11 a cap of 10 minutes (the certificate lifetime)"
+hm h_nok     'timeout -k 20 540'                                'timeout 540'                                            'the helper'        "AC11 round 1: the timeout without its kill-after (a command that ignores TERM would hold the job)"
+hm h_k30     'timeout -k 20 540'                                'timeout -k 30 540'                                      'the helper'        "AC11 round 1: another kill-after"
+hm h_k0      'timeout -k 20 540'                                'timeout -k 0 540'                                       'the helper'        "AC11 round 1: a kill-after of zero"
 hm h_two     'echo "::add-mask'                                 'timeout 540 true\necho "::add-mask'                      'the helper'        "AC11 timeout stated twice"
 hm h_twowit  'unset ACTIONS_RUNTIME_TOKEN'                      'witness run --step x -- true\nunset ACTIONS_RUNTIME_TOKEN' 'the helper'     "AC11 a second witness run"
 hm h_dflag   '  -o "witness-'                                   '  -d out -o "witness-'                                   'the helper'        "AC9 the working-directory flag"
@@ -487,6 +515,7 @@ cp -r "$work/r" "$work/r6"; mkdir -p "$work/r6/.github/workflows"; printf 'jobs:
 expect caught "AC10 ci.yml still runs the custom authorization verifier's test (rule 65)" "ci.yml" removed "$work/r6"
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
+expect ok "AC4 round 1 F2: the real stage-verify.yml installs every scanner .github/policy/scanners.json lists (check-scan.sh runs them)" "" installs "$root/.github/workflows/stage-verify.yml" "$root/.github/policy/scanners.json"
 expect ok "the real bin/check-stage.sh verifies, then dispatches scanners / acceptance / runtime" "" script "$root/bin/check-stage.sh"
 for s in scanners acceptance runtime arm64; do expect ok "the real bin/check-phase-$s.sh is the one line of its phase (AC1, AC3)" "" phase "$root/bin/check-phase-$s.sh" "$s"; done
 expect ok "the real bin/witnessed.sh is the one helper with the Witness flags and the 9-minute cap (rule 68)" "" helper "$root/bin/witnessed.sh"
@@ -499,7 +528,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=193
+EXPECT=215
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

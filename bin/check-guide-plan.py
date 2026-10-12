@@ -69,38 +69,39 @@ def image_ref(word):
 
 
 def classify(c):
-    """("run", "") | ("registry", why) | ("no", why): the command runs, needs a registry, or cannot run on a candidate."""
+    """("run", "") | ("registry", why) | ("no", why) | ("syntax", why): the command runs, needs a registry, cannot run on a candidate, or has shell syntax no
+    command of the guide may have (judged before the cannot-run list is consulted, so a listed command is never excused for its syntax)."""
     if "`" in c:
-        return "no", "shell syntax: a backquote"
+        return "syntax", "shell syntax: a backquote"
     quote = None
     for ch in c:
         if quote:
             if ch == quote:
                 quote = None
             elif ch == "$" and quote == '"':
-                return "no", "shell syntax: an expansion ($) inside double quotes"
+                return "syntax", "shell syntax: an expansion ($) inside double quotes"
         elif ch in "'\"":
             quote = ch
         elif ch == "$":
-            return "no", "shell syntax: an expansion ($) outside single quotes"
+            return "syntax", "shell syntax: an expansion ($) outside single quotes"
     lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
     lx.whitespace_split = True
     try:
         toks = [PH_BACK.sub(lambda m: "<%s>" % m.group(1), w) for w in lx]
     except ValueError as e:
-        return "no", "unparseable: %s" % e
+        return "syntax", "shell syntax: unparseable (%s)" % e
     segs = [[]]
     for w in toks:
         if w == "|":
             segs.append([])
         elif w and all(ch in "();<>|&" for ch in w):
-            return "no", "shell syntax other than a pipe: %s" % w
+            return "syntax", "shell syntax other than a pipe: %s" % w
         else:
             segs[-1].append(w)
     registry, nonlocal_ = [], []
     for s in segs:
         if not s:
-            return "no", "shell syntax: an empty pipe segment"
+            return "syntax", "shell syntax: an empty pipe segment"
         if s[0] == "jq":
             words, i, filt = s[1:], 0, False
             while i < len(words):
@@ -181,6 +182,12 @@ for c in cmds:
         if u not in defined:
             fail("the command `%s` uses <%s>, which the guide does not define (undefined placeholder)" % (c, u))
     kind, why = classify(c)
+    if kind == "syntax":
+        fail("the command `%s` has %s: no command of the guide may, listed as not-run or not (Release runs the listed commands unattended)" % (c, why))
+    for u in sorted(set(PH.findall(c))):
+        if u not in LOCAL and u not in IMAGE:
+            fail("the command `%s` uses <%s>, a defined placeholder that neither Check nor Release can substitute (unsupported placeholder; "
+                 "unsubstituted placeholder): listed as not-run or not, it is refused" % (c, u))
     if c in excused:
         if kind == "run":
             fail("the cannot-run entry `%s` is runnable: a runnable command is run, never excused" % c)

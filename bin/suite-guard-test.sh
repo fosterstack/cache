@@ -87,6 +87,13 @@ expect 0 "all --count-only: every suite runs, prints its count and passes its fl
 printf '{"a-test.sh": 50, "gone-test.sh": 5}\n' > "$work/all/floors2.json"
 expect 1 "all: a suite named in the floors file that is not there fails" "gone-test.sh" -- all --count-only "$work/all/floors2.json" "$work/all"
 
+# round 1 F7 (Codex B4): `all` runs each suite in an `||` context, where `set -e` is off; a suite below its floor must still fail the run
+printf '{"a-test.sh": 70}\n' > "$work/all/floors3.json"
+expect 1 "all: a suite that passes with fewer cases than its floor fails the run (the floor check is not swallowed by the || context)" "below its floor" -- all "$work/all/floors3.json" "$work/all"
+expect 1 "all --count-only: a suite below its floor fails the run" "below its floor" -- all --count-only "$work/all/floors3.json" "$work/all"
+printf '#!/usr/bin/env bash\necho "all done"\n' > "$work/all/bin/c-test.sh"; printf '{"a-test.sh": 50, "c-test.sh": 1}\n' > "$work/all/floors4.json"
+expect 1 "all: a suite that prints no count fails the run" "no case count" -- all "$work/all/floors4.json" "$work/all"
+
 # ---- floors-vs-base: floors only rise ----------------------------------------------------------------------------------------------
 cd "$repo"; mkdir -p test-evidence; printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json; git add -A; git commit -qm floors
 base=$(git rev-parse HEAD)
@@ -101,9 +108,18 @@ expect 1 "vs-base: a dropped suite fails" "suite-b" -- floors-vs-base "$base" te
 printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
 expect 0 "vs-base: an unchanged file passes" "" -- floors-vs-base "$base" test-evidence/suite-floors.json
 expect 0 "vs-base: a base without a floors file passes (the first PR that adds it)" "" -- floors-vs-base "$(git rev-list --max-parents=0 HEAD)" test-evidence/suite-floors.json
+# round 1 F7: a base revision that cannot be read is not "no floors file": the guard fails closed; only a readable base without the file passes
+expect 1 "vs-base: a base revision that does not exist fails (it is not 'no floors file')" "base" -- floors-vs-base 0123456789012345678901234567890123456789 test-evidence/suite-floors.json
+expect 1 "vs-base: an empty base revision fails" "base" -- floors-vs-base "" test-evidence/suite-floors.json
+printf 'not json\n' > test-evidence/suite-floors.json; git add -A; git commit -qm broken
+brk=$(git rev-parse HEAD); printf '{"suite-a": 50, "suite-b": 10}\n' > test-evidence/suite-floors.json
+expect 1 "vs-base: a floors file at the base that is not valid JSON fails" "base" -- floors-vs-base "$brk" test-evidence/suite-floors.json
+expect 0 "vs-base: a readable base without the floors file still passes" "no floors file" -- floors-vs-base "$(git rev-list --max-parents=0 HEAD)" test-evidence/suite-floors.json
 cd "$root"
+# round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.sh all), not only the floors file against the base
+if grep -Eq 'run: bash bin/suite-guard-run\.sh all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.sh all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
-EXPECT=41
+EXPECT=49
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]

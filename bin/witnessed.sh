@@ -8,7 +8,8 @@
 # and the snapshot marker is the step name inside the signed collection (every verifier refuses a snapshot- name, REQ-CHAIN-004-AC13).
 #  - The job's identity token goes into a shell variable (masked in the log), then the request variables are unset, so the wrapped script
 #    cannot ask for a second certificate; Witness gets the token through a one-read process substitution, so no file holds it.
-#  - The command runs under `timeout 540`: Fulcio's keyless certificate lives ten minutes and Witness checks it at the timestamp's time.
+#  - The command runs under `timeout -k 20 540`: Fulcio's keyless certificate lives ten minutes and Witness checks it at the timestamp's time; a command that
+#    ignores the TERM at 540 seconds is killed 20 seconds later, so it cannot hold the job past the certificate.
 #  - Attestors: environment, git, material and product only (never github, whose record embeds the raw token, and never slsa: Sign's alone).
 #  - The sensitive-key list keeps out of the record the identity-token variables, the job token and Release's three credential names (REQ-CHAIN-007-AC12).
 #  - Witness runs from the repository root (no working-directory flag), so product subjects are named relative to it.
@@ -37,4 +38,4 @@ exec witness run --step "$step" \
   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY \
   --env-add-sensitive-key DOCKERHUB_USERNAME \
   --env-add-sensitive-key DOCKERHUB_TOKEN \
-  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"
+  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"

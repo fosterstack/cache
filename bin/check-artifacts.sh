@@ -49,7 +49,8 @@ checks="[]"
 passed() { checks=$(jq -c --arg ac "$1" --arg s "$2" '. + [{ac: $ac, subject: $s, result: "pass"}]' <<< "$checks"); }
 healthy() { for _ in $(seq 20); do curl -sf --max-time 2 "http://127.0.0.1:$1/healthz" > /dev/null && return 0; sleep 0.5; done; return 1; }
 roundtrip() { curl -sf ${3:+-u "$3"} -X PUT --data-binary "$2" "http://127.0.0.1:$1/acckey" > /dev/null && [ "$(curl -sf ${3:+-u "$3"} "http://127.0.0.1:$1/acckey")" = "$2" ]; }
-note() { curl -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r '.fips140_note // empty'; }
+# the posture as one string, boolean first: it is compared whole, so the boolean and the note are checked together (round 1 F5)
+posture() { curl -sf --max-time 5 "http://127.0.0.1:$1/statusz" | jq -r 'if type == "object" and (.fips140 | type) == "boolean" and (.fips140_note | type) == "string" then "\(.fips140)|\(.fips140_note)" else "unreadable" end'; }
 stop_last() { kill "${pids[${#pids[@]}-1]}" > /dev/null 2>&1 || true; }
 
 # the binaries of this architecture out of the archives (REQ-PLAT-001-AC1: each of the four archives must exist; this architecture's are executed)
@@ -62,21 +63,24 @@ for n in fscache fscache-fips; do
   tar -xzf "${sel[0]}" -C "$tmp/bin" "$n" || fail "the $arch archive of $n holds no binary named $n"
 done
 
+# Round 1 F1: the images and archives are the ones Build recorded (re-derived from digests.json), before anything is loaded or executed.
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
+
 # REQ-PLAT-001-AC1: the binaries execute (they start, answer /healthz and round-trip a key); the fips one runs with the credentials of its image
 FSCACHE_ADDR=":19101" FSCACHE_DATA_DIR="$tmp/data-std" "$tmp/bin/fscache" > "$tmp/log-std" 2>&1 &
 pids+=("$!")
 healthy 19101 || fail "fscache (linux/$arch) never answered /healthz: it does not execute"
 roundtrip 19101 std-bytes || fail "fscache (linux/$arch) answered /healthz but did not round-trip a key"
-note_std=$(note 19101) || note_std=""
+note_std=$(posture 19101) || note_std=""
 FSCACHE_ADDR=":19102" FSCACHE_DATA_DIR="$tmp/data-fips" "$tmp/bin/fscache-fips" > "$tmp/log-fips" 2>&1 &
 pids+=("$!")
 healthy 19102 || fail "fscache-fips (linux/$arch) never answered /healthz: it does not execute"
 roundtrip 19102 fips-bytes || fail "fscache-fips (linux/$arch) answered /healthz but did not round-trip a key"
-note_fips=$(note 19102) || note_fips=""
+note_fips=$(posture 19102) || note_fips=""
 FSCACHE_ADDR=":19103" FSCACHE_DATA_DIR="$tmp/data-forced" GODEBUG=fips140=on "$tmp/bin/fscache" > "$tmp/log-forced" 2>&1 &
 pids+=("$!")
 healthy 19103 || fail "fscache (linux/$arch, GODEBUG=fips140=on) never answered /healthz"
-note_forced=$(note 19103) || note_forced=""
+note_forced=$(posture 19103) || note_forced=""
 passed REQ-PLAT-001-AC1 "linux/$arch fscache and fscache-fips"
 
 # REQ-FIPS-001-AC1: the module selection is read from the binaries' build info, not from a runtime self-report
@@ -87,10 +91,11 @@ if grep -Eq 'build[[:space:]]+GOFIPS140=' <<< "$info_std"; then fail "the standa
 passed REQ-FIPS-001-AC1 "fscache-fips"
 
 # REQ-FIPS-002-AC1 and REQ-FIPS-001-AC2: each posture tells the truth, and the forced-standard build is not the validated-module build
-[[ "$note_fips" == "active (Go validated module v1.0.0"* ]] || fail "fips build posture is '$note_fips', want the validated-module line"
-[ "$note_std" = off ] || fail "standard build reports '$note_std', want off"
-[[ "$note_forced" == "active (fips140 mode forced at runtime"* ]] || fail "forced-standard posture is '$note_forced', want the mode-forced line"
+# each posture is exactly its boolean and its note (the -fips note is the documented mapping of v1.0.0 to its certificate line; the version is compared whole)
+[ "$note_fips" = "true|active (Go validated module v1.0.0, CMVP cert #5247)" ] || fail "fips build posture is '$note_fips', want the validated-module line, exactly, with fips140 true"
+[ "$note_std" = "false|off" ] || fail "standard build reports '$note_std', want fips140 false and the note off, exactly"
 case "$note_forced" in *"validated module"*|*cert*) fail "forced-standard build claims the validated module or a certificate: '$note_forced'" ;; esac
+[ "$note_forced" = "true|active (fips140 mode forced at runtime; not the validated-module build)" ] || fail "forced-standard posture is '$note_forced', want the mode-forced line, exactly, with fips140 true"
 passed REQ-FIPS-002-AC1 "fscache-fips, fscache, fscache with GODEBUG=fips140=on"
 passed REQ-FIPS-001-AC2 "fscache with GODEBUG=fips140=on"
 

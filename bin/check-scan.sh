@@ -11,8 +11,8 @@
 # Vulnerability databases (REQ-CHAIN-006-AC15): grype fetches its database fresh (grype db update) before the first scan, and every scan
 # is then held to that database (no auto-update, a 48-hour built-age limit); the database each scan used is read from its own output
 # (descriptor.db.status, the shape recorded in the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json) and must come from grype.anchore.io, carry
-# its sha256 in the download URL's checksum and be built less than 48 hours before now (CHECK_SCAN_NOW, epoch seconds, default the
-# clock). osv-scanner runs in its documented offline mode (v2.6.0 docs/offline-mode.md): --offline-vulnerabilities
+# its sha256 in the download URL's checksum and be built less than 48 hours before now (the runner's clock, `date +%s`; a CHECK_SCAN_NOW in
+# the environment is refused: no variable sets it). osv-scanner runs in its documented offline mode (v2.6.0 docs/offline-mode.md): --offline-vulnerabilities
 # --download-offline-databases with OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY an empty directory (made fresh for this run, or, when the
 # variable is already set, refused unless empty: "cache directory not empty"), so every database is downloaded in this job as
 # <ecosystem>/all.zip from osv-vulnerabilities.storage.googleapis.com; the evidence is read from those files (the zip's sha256, the newest
@@ -64,12 +64,17 @@ ver=$(basename "${tars[0]:-x}" | sed -n 's/^fscache[a-z-]*_\([^_]*\)_linux_.*/\1
 got=$(for f in "$archives"/*; do basename "$f"; done | sort)
 [ -n "$ver" ] && [ "$got" = "$(sed "s/VER/$ver/" <<< "$want" | sort)" ] \
   || fail "the archive set in $archives is not exactly the four Linux archives (fscache and fscache-fips, amd64 and arm64, of one version): found $(tr '\n' ' ' <<< "$got")"
+# Round 1 F1: the layouts and archives are the ones Build recorded (re-derived from digests.json, every blob and archive re-hashed), before any scan.
+python3 bin/check-bind.py --digests "$digests" --images "$images" --archives "$archives" || exit 1
 mods=(go.mod tools/requirements/go.mod)
 for m in "${mods[@]}"; do [ -f "$m" ] || fail "the Go module file $m is missing"; done
 mkdir -p "$out"
 VEX=.vex/fosterstack-cache.openvex.json
-now=${CHECK_SCAN_NOW:-$(date +%s)}
-[[ "$now" =~ ^[0-9]+$ ]] || fail "CHECK_SCAN_NOW must be epoch seconds: $now"
+# The clock is the runner's (round 1 F4): the age of a database is judged against `date +%s` and nothing the environment says. A CHECK_SCAN_NOW in the
+# environment (an older `now` would pass any database as fresh) is refused, set or empty, never read; the tests give the clock by a fake date command.
+[ -z "${CHECK_SCAN_NOW+x}" ] || fail "CHECK_SCAN_NOW is set in the environment: the database age is judged by the runner's clock, which no variable can set"
+now=$(date +%s)
+[[ "$now" =~ ^[0-9]+$ ]] || fail "the runner's clock did not give epoch seconds: $now"
 GRYPE_HOST=grype.anchore.io   # the host in grype's recorded database status (the scanner fixtures of the auditor directory (fixtures/scanners)/grype.json)
 MAX_AGE=172800                # 48 hours
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
@@ -136,7 +141,16 @@ for s in "${scanners[@]}"; do
     fi
     [[ "$packages" =~ ^[0-9]+$ ]] || packages=0
     echo "check-scan: $s $name ($digest): $packages packages, exit $rc"
-    sv=pass
+    sv=pass vexn=0
+    if [ "$rc" = 1 ] && [ "$s" = osv-scanner ]; then
+      # grype read the VEX itself (--vex); osv-scanner cannot, so its findings are held to the same published document here (round 1 F3): exit 1 stands
+      # unless the report holds findings and every one is excepted by a statement (the rescan's product-and-alias-scoped decision)
+      vv=""; case "$name" in production|fips) vv=$name ;; esac
+      if python3 bin/check-osv-vex.py --vex "$VEX" --report "$tmp/out.json" --variant "$vv" > "$tmp/vex-out.json"; then
+        vexn=$(jq -r '.excepted' "$tmp/vex-out.json"); rc=0
+        echo "check-scan: osv-scanner: all $vexn findings in $name ($digest) are excepted by the published VEX document"
+      fi
+    fi
     if [ "$rc" = 1 ]; then
       echo "check-scan: $s found vulnerabilities in $name ($digest) that the VEX document does not except" >&2; sv=fail
     elif [ "$rc" != 0 ]; then
@@ -165,7 +179,8 @@ for s in "${scanners[@]}"; do
       fi
     fi
     [ "$sv" = pass ] || verdict=fail
-    subjects=$(jq -c --arg n "$name" --arg d "$digest" --argjson p "$packages" --arg sv "$sv" '. + [{name: $n, digest: $d, packages: $p, verdict: $sv}]' <<< "$subjects")
+    subjects=$(jq -c --arg n "$name" --arg d "$digest" --argjson p "$packages" --arg sv "$sv" --argjson vx "$vexn" \
+      '. + [{name: $n, digest: $d, packages: $p, verdict: $sv} + (if $vx > 0 then {vex_suppressed: $vx} else {} end)]' <<< "$subjects")
   done
   dbs="[]"
   if [ "$s" = osv-scanner ]; then   # the databases the scans used, read from the downloaded files (REQ-CHAIN-006-AC15)

@@ -479,10 +479,12 @@ expect caught "AC1 stage-admission.yml still present" "still exists" workflows "
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
 hm() { replace "$work/witnessed.sh" "$work/h_$1.sh" "$3" "$4" && expect caught "$2" "helper command" helper "$work/h_$1.sh"; return 0; }
-hm tnone   "AC2 no timeout (a build could outlive Fulcio's 10-minute certificate)" '-- timeout 540 bash "$@"' '-- bash "$@"'
-hm t600    "AC2 timeout 600 (past the certificate's life)" '-- timeout 540' '-- timeout 600'
-hm t0      "AC2 timeout 0 (no limit)" '-- timeout 540' '-- timeout 0'
-hm tvar    "AC2 the limit from a variable" '-- timeout 540' '-- timeout "$T"'
+hm tnone   "AC2 no timeout (a build could outlive Fulcio's 10-minute certificate)" '-- timeout -k 20 540 bash "$@"' '-- bash "$@"'
+hm t600    "AC2 timeout 600 (past the certificate's life)" '-- timeout -k 20 540' '-- timeout -k 20 600'
+hm t0      "AC2 timeout 0 (no limit)" '-- timeout -k 20 540' '-- timeout -k 20 0'
+hm tvar    "AC2 the limit from a variable" '-- timeout -k 20 540' '-- timeout -k 20 "$T"'
+hm tnok    "AC2 round 1: no kill-after (a command that ignores TERM would hold the job)" '-- timeout -k 20 540' '-- timeout 540'
+hm tk30    "AC2 round 1: another kill-after" '-- timeout -k 20 540' '-- timeout -k 30 540'
 hm tbefore "AC2 the timeout around Witness instead of the command (the certificate is requested before it starts)" 'exec witness run' \
        'exec timeout 540 witness run'
 hm furl    "AC2 another Fulcio address" 'https://fulcio.sigstore.dev' 'http://fulcio.evil.example'
@@ -505,7 +507,7 @@ hm ffileb "AC2 the token written to a file before the exec" 'echo "::add-mask::$
 hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
 hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
 hm fcat    "AC2 the token read through a second process substitution" '<(printf %s "$tok")' '<(cat <(printf %s "$tok"))'
-hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout 540 bash "$@"' '-- timeout 540 bash "$@" || true'
+hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout -k 20 540 bash "$@"' '-- timeout -k 20 540 bash "$@" || true'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
 hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
@@ -917,8 +919,7 @@ printf '{"value":"FAKE-JWT-TOKEN-VALUE"}\n'
 EOF
   cat > "$1/fake/timeout" <<'EOF'
 #!/usr/bin/env bash
-echo "timeout $1" >> calls.log
-shift
+if [ "$1" = -k ]; then echo "timeout -k $2 $3" >> calls.log; shift 3; else echo "timeout $1" >> calls.log; shift; fi
 "$@" & pid=$!
 ( sleep "${FAKE_TIMEOUT_SECONDS:-2}"; kill "$pid" 2> /dev/null ) & killer=$!
 wait "$pid"; status=$?; kill "$killer" 2> /dev/null; exit $status
@@ -950,8 +951,8 @@ for tag in fixture real; do
   fi
   d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 0 ] && [ -f "$d/witness-apk/apk-collection.json" ] && grep -Fq -- '--step apk' <<< "$calls" \
-     && grep -Fq -- '-- timeout 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout 540' <<< "$calls"; then
-    ok "AC2 $tag helper: the command runs through witness with timeout 540 and the record is written"
+     && grep -Fq -- '-- timeout -k 20 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout -k 20 540' <<< "$calls"; then
+    ok "AC2 $tag helper: the command runs through witness with timeout -k 20 540 and the record is written"
   else
     bad "AC2 $tag helper: rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
@@ -1934,7 +1935,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=654
+EXPECT=656
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

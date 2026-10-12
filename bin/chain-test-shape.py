@@ -8,7 +8,7 @@ DESIGN RULE (PR 1's ten lost rounds): NO denylists, NO shell analysis, NO subseq
 GRAMMAR over an allowlist: a stage file is exactly the steps in JOBS, a stage script is exactly the lines of expected_lines(KIND),
 the job graph is exactly the keys and targets in CHAIN. Anything else is a fault by construction.
 
-  helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, `timeout 540` included
+  helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, `timeout -k 20 540` included
   directwitness FILE...                     REQ-CHAIN-004-AC2: no `witness run` in any stage file or stage script (every call goes through the helper)
   stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
@@ -438,7 +438,7 @@ def witnessed_lines():
             "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
             "--signer-fulcio-token-path %s -t https://timestamp.sigstore.dev/api/v1/timestamp "
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"' % (TOKEN_PATH, keys)]
+            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"' % (TOKEN_PATH, keys)]
 
 
 def witness_seam(run, spec, family):

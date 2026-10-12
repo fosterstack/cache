@@ -66,10 +66,20 @@ cmd_floor() {
 cmd_vs_base() {
   local allow=""; [ "${1:-}" != --allow-lowered ] || { allow=$2; shift 2; }
   local ref=$1 file=$2 old
-  old=$(git show "$ref:$file" 2> /dev/null) || { echo "suite-guard: no floors file at $ref: nothing to hold"; return 0; }
+  # An absent file at a base that can be read is the first PR that adds it; a base that cannot be read (no such revision, an empty or odd name) or a floors
+  # file there that cannot be read is NOT "no floors file": the guard fails closed (a floors check that silently passes is no check).
+  [ -n "$ref" ] && git rev-parse --verify --quiet "$ref^{commit}" > /dev/null 2>&1 || die "the base revision '$ref' cannot be read: the floors cannot be compared with it"
+  if ! git cat-file -e "$ref:$file" 2> /dev/null; then echo "suite-guard: no floors file at $ref: nothing to hold"; return 0; fi
+  old=$(git show "$ref:$file" 2> /dev/null) || die "the floors file $file at $ref cannot be read"
   python3 - "$file" "$allow" "$old" <<'PY'
 import json, sys
-new = json.load(open(sys.argv[1])); old = json.loads(sys.argv[3]); allow = set(x for x in sys.argv[2].split(",") if x)
+try:
+    new = json.load(open(sys.argv[1])); old = json.loads(sys.argv[3])
+    if not isinstance(new, dict) or not isinstance(old, dict):
+        raise ValueError("a floors file is a JSON object")
+except (OSError, ValueError) as e:
+    print("suite-guard: the floors file or its base version cannot be read as JSON (%s)" % e, file=sys.stderr); sys.exit(1)
+allow = set(x for x in sys.argv[2].split(",") if x)
 bad = []
 for k, v in old.items():
     if k not in new: bad.append("%s was dropped (floor %s)" % (k, v))

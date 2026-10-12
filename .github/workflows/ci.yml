@@ -462,6 +462,14 @@ jobs:
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
 
+      # Round 1 F7: the floors of test-evidence/suite-floors.json are held at REAL counts. Every suite the file names runs again through the guard (stdin closed,
+      # its case count read from its own output, at or above its floor); --count-only because suites with known reds (known-red.json) exit non-zero by design:
+      # their reds are judged by their own steps above, here only that they still run and still count.
+      - name: every suite runs at or above its committed floor (real counts)
+        env:
+          CHAIN_TEST_REQUIRE_NETCUT: '1'
+        run: bash bin/suite-guard-run.sh all --count-only test-evidence/suite-floors.json .
+
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
   # match exactly — contexts and integration IDs — on EVERY PR and every push to

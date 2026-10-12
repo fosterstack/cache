@@ -2997,7 +2997,7 @@ requirements:
       - id: REQ-CHAIN-006-AC6
         given: "the production and the -fips candidate images"
         when: "bin/check-fips.sh starts each and reads /statusz"
-        then: "the -fips image reports the FIPS mode active with the validated module at version v1.0.0 and the production image reports it off; an image that reports the opposite, active without the validated module, any other module version, or no readable status fails the script naming the image, and the certificate number appears only in the documented mapping, never as something a binary reports"
+        then: "the -fips image reports the FIPS mode active with the validated module at version v1.0.0 and the production image reports it off; an image that reports the opposite, active without the validated module, any other module version (the version is compared whole: v1.0.0 and nothing that merely starts with it), or no readable status fails the script naming the image, and the -fips image's note must be exactly the note of the documented mapping, \"active (Go validated module v1.0.0, CMVP cert #5247)\", so the script asserts the exact module identity and that certificate line together; the certificate number is otherwise stated only in the documented mapping and never in the script's own result file"
         verification: { method: acceptance-container, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC7
@@ -3027,7 +3027,7 @@ requirements:
       - id: REQ-CHAIN-006-AC11
         given: "the helper bin/witnessed.sh and every Witness call of the Check stage (rule 68 as amended by the owner, Oct 9)"
         when: "the stage file, the helper and a run of the helper with a command that outlives the limit are read"
-        then: "every command run under Witness goes through the one helper and is wrapped in exactly one timeout of 540 seconds written in the helper alone (no stage repeats it, none calls witness directly), the helper holds all the Witness flags and the identity-token fetch, a step name outside a plain lower-case word is refused before anything runs, and a command that outlives the limit or fails makes the helper fail and leaves no record, so a command that could outlive the ten-minute certificate fails the build instead of yielding a record that can never be verified"
+        then: "every command run under Witness goes through the one helper and is wrapped in exactly one timeout of 540 seconds, with a kill-after of 20 seconds (`timeout -k 20 540`), written in the helper alone (no stage repeats it, none calls witness directly), the helper holds all the Witness flags and the identity-token fetch, a step name outside a plain lower-case word is refused before anything runs, and a command that outlives the limit or fails makes the helper fail and leaves no record, so a command that could outlive the ten-minute certificate fails the build instead of yielding a record that can never be verified"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-006-AC12
