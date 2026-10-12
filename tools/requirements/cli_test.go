@@ -571,12 +571,11 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "aaa_dir_test.go"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A non-test file mentioning the needle must not count (it has no package clause: it is in its own directory, since a
-	// selected file that does not parse keeps its whole package from loading).
+	// A non-test file mentioning the needle must not count (own directory: it is the only file there).
 	if err := os.Mkdir("pkgnotatest", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join("pkgnotatest", "notatest.go"), []byte("func TestReal(t *testing.T) {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join("pkgnotatest", "notatest.go"), []byte("package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	// A dangling symlink with the suffix is not a regular file and is skipped.
@@ -1116,6 +1115,52 @@ func TestGoTestExistsFollowsTheToolchainHeaderAndPackageRules(t *testing.T) {
 	for name, dir := range map[string]string{"TestBrokenSibling": "broken", "TestExcludedBrokenSibling": "brokenoff"} {
 		if got, want := goTestExists(dir, name), dir == "brokenoff"; got != want {
 			t.Errorf("%s/%s: counted=%v, want %v", dir, name, got, want)
+		}
+	}
+	// a leading byte-order mark does not hide a constraint from the tag check (Go strips it)
+	write("bom", "m_test.go", "\ufeff//go:build !cgo\n\npackage p\n\n"+fn("TestBomModern"))
+	write("bom", "o_test.go", "\ufeff// +build !cgo\n\npackage p\n\n"+fn("TestBomLegacy"))
+	write("bom", "k_test.go", "\ufeff//go:build linux\n\npackage p\n\n"+fn("TestBomResolved"))
+	for name, want := range map[string]bool{"TestBomModern": false, "TestBomLegacy": false, "TestBomResolved": true} {
+		if got := goTestExists("bom", name); got != want {
+			t.Errorf("bom/%s: counted=%v, want %v", name, got, want)
+		}
+	}
+	// _test is stripped only from a _test.go file's package name
+	write("ext", "a.go", "package p\n")
+	write("ext", "b.go", "package p_test\n")
+	write("ext", "p_test.go", "package p\n\n"+fn("TestMixedOrdinary"))
+	write("ext2", "a.go", "package p_test\n")
+	write("ext2", "z_test.go", "package p_test_test\n\n"+fn("TestExternalOfSuffixed"))
+	// a sibling Go reports an error for (bad constraint, symlink source, cgo, embed, odd import path) keeps the package from loading
+	write("sibcon", "a.go", "//go:build &&\n\npackage p\n")
+	write("sibcon", "p_test.go", "package p\n\n"+fn("TestBadConstraintSibling"))
+	write("sibcgo", "a.go", "package p\n\nimport \"C\"\n")
+	write("sibcgo", "p_test.go", "package p\n\n"+fn("TestCgoSibling"))
+	write("sibembed", "a.go", "package p\n\nimport _ \"embed\"\n\n//go:embed missing.txt\nvar s string\n")
+	write("sibembed", "p_test.go", "package p\n\n"+fn("TestEmbedSibling"))
+	write("sibpath", "a.go", "package p\n\nimport _ \"bad path\"\n")
+	write("sibpath", "p_test.go", "package p\n\n"+fn("TestBadImportPathSibling"))
+	write("sibbin", "a.go", "//go:binary-only-package\n\npackage p\n")
+	write("sibbin", "p_test.go", "package p\n\n"+fn("TestBinaryOnlySibling"))
+	write("testcgo", "p_test.go", "package p\n\nimport \"C\"\n\n"+fn("TestImportsC"))
+	write("symlink", "p_test.go", "package p\n\n"+fn("TestSymlinkSibling"))
+	write("symlink", "real_src", "package other\n")
+	if err := os.Symlink("real_src", filepath.Join("symlink", "link.go")); err != nil {
+		t.Fatal(err)
+	}
+	// ... and what Go ignores does not: a package documentation sibling, or a cgo-only sibling, with a body this tool cannot parse
+	write("docsib", "a.go", "package documentation\n\nfunc {\n")
+	write("docsib", "p_test.go", "package p\n\n"+fn("TestDocumentationSibling"))
+	for _, c := range []struct {
+		dir, name string
+		want      bool
+	}{{"ext", "TestMixedOrdinary", false}, {"ext2", "TestExternalOfSuffixed", true}, {"sibcon", "TestBadConstraintSibling", false},
+		{"sibcgo", "TestCgoSibling", false}, {"sibembed", "TestEmbedSibling", false}, {"sibpath", "TestBadImportPathSibling", false},
+		{"sibbin", "TestBinaryOnlySibling", false}, {"testcgo", "TestImportsC", false}, {"symlink", "TestSymlinkSibling", false},
+		{"docsib", "TestDocumentationSibling", true}} {
+		if got := goTestExists(c.dir, c.name); got != c.want {
+			t.Errorf("%s/%s: counted=%v, want %v", c.dir, c.name, got, c.want)
 		}
 	}
 	// the registered-name rule is Go's: the rune after Test must not be a lower-case letter (any script)
