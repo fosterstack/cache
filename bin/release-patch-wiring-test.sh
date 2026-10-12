@@ -4,7 +4,8 @@
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
 # - decide runs on main only, in the main-only agent environment, with its own token read-only plus id-token (gitsign)
-#   and issues (the standing "not patch-clean" issue); the critical/high comparison scans the release and the new base;
+#   and issues (the standing "not patch-clean" issue); the critical/high comparison scans the release (no base image exists: rules 61, 62)
+#   and the base-input-changed signal is read from the committed base-input list (.github/policy/base-inputs.json);
 # - the tag is signed keylessly by gitsign (pinned by checksum, no key) under release.yml's identity and pushed with the
 #   auditor App's token (exactly the auditor's scope), which reaches only the push step;
 # - a failed patch-tag run opens one issue and is never retried;
@@ -69,7 +70,7 @@ users = [s.get("name") for s in steps if "steps.app-token.outputs.token" in str(
 if users != ["push the signed tag (the App transports it)"]:
     bad.append("the App token reaches a step other than the tag push: %s" % users)
 if "patch-decide.py removed" not in text or "grype" not in text:
-    bad.append("the critical/high comparison does not scan the release and the new base image")
+    bad.append("the critical/high comparison does not scan the release")
 # advisor 0063: before signing, wait (bounded) for the tagged commit's push-scoped required checks, judged as admission
 # judges them; sign, mint and push only when they are ready
 names = [s.get("name") for s in steps]
@@ -147,8 +148,15 @@ elif wait[0]["run"].index("git show origin/main:") < wait[0]["run"].index("while
     bad.append("ready reads the policy once, not on each pass of the wait (a change on main during the wait is missed)")
 # Codex #159 r2: each scan file goes to the decision on its own (no jq aggregation that hides a malformed one); a base
 # scan failure is the base's alone (NEW-1)
-if scan and ("jq -s" in scan[0]["run"] or "base_ok" not in scan[0]["run"] or "--release-grype" not in scan[0]["run"]):
-    bad.append("the scans are aggregated before validation, or a base failure is read as a release failure")
+if scan and ("jq -s" in scan[0]["run"] or "--release-grype" not in scan[0]["run"]):
+    bad.append("the scans are aggregated before validation, or a release scan is not handed to the decision on its own")
+# rules 61 and 65 (advisor Oct 12): no base image exists (no image recipe file; apko assembles from committed locks), so nothing is scanned as a base. The decide job
+# reads the ONE committed list of base inputs (the apko base locks, the melange lock, the archive records, the fips module record) for the signal "a base input
+# changed since the release"; bin/patch-decide.py classifies a commit from the same list
+if not scan or 'python3 bin/patch-decide.py base-moved --base-inputs .github/policy/base-inputs.json --since "$SINCE"' not in scan[0]["run"]:
+    bad.append("decide does not read the committed list of base inputs for the base-input-changed signal (patch-decide.py base-moved)")
+if re.search(r"build/docker|(?i:dockerfile)|\bFROM\b|--base-grype|base_ok|base-ok|buildx|base_arg", yaml.safe_dump(dec)):
+    bad.append("the decide job still reads an image recipe or scans a base image (none exists: rules 61, 62)")
 # AC8 wired (advisor 0135)
 nstep = [s for s in steps if "patch-decide.py notes" in (s.get("run") or "")]
 sign = [s for s in steps if "tag -s" in (s.get("run") or "")]
@@ -373,7 +381,11 @@ case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ no-schedule             bad "d['on'].pop('schedule')"
-case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('base_ok', 'ok')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('--release-grype', 'jq -s . --release-grype')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-list-unread        bad "[s.__setitem__('run', s['run'].replace('base-moved', 'base-moved-x')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-list-other-file    bad "[s.__setitem__('run', s['run'].replace('.github/policy/base-inputs.json', 'build/base-inputs.json')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-image-scan-back    bad "[s.__setitem__('run', s['run'] + '\\nfor b in \$(grep -h FROM build/docker/Dockerfile.*); do grype \$b -o json; done') for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ base-grype-passed       bad "[s.__setitem__('run', s['run'].replace('--out \"\$RUNNER_TEMP/removed.json\"', '--base-grype x --out \"\$RUNNER_TEMP/removed.json\"')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ policy-read-once        bad "[s.__setitem__('run', 'git show origin/main:.github/policy/required-checks.json > x\n' + s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ fail-no-repo            bad "[s['env'].pop('GH_REPO') for s in $J['patch-failed']['steps']]"
 case_ baseline-latest-tag     bad "[s.__setitem__('run', s['run'].replace('--released ', '--x ')) for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"

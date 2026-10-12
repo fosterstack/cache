@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-009-AC1, REQ-REL-009-AC2, REQ-REL-009-AC3, REQ-REL-009-AC4, REQ-REL-009-AC8, REQ-REL-009-AC11, REQ-CHAIN-001-AC6
+# Rules 61 and 65 (advisor Oct 12): there is no Dockerfile; the base inputs are the committed apko base locks, the melange lock and the archive records listed in
+# .github/policy/base-inputs.json (one list, read by the decide job and by this script); a change in them is the "base input changed" signal, fix-class.
 # The automatic patch-release decision (owner RATIFIED Oct 2; advisor read-backs 0051/0055/0056), offline: commits are
 # classified fix-class / neutral / not patch-clean by the files they change (a patch-fix label admits a source change);
 # the next tag is vX.Y.(Z+1); the daily rule cuts at most once a day; release notes list each fix and name no vendor or
@@ -22,14 +24,17 @@ def c(sha, files, labels=(), diffs=None):
 BUMP = {"go.mod": " require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys v0.47.0\n )\n",
         "go.sum": "-golang.org/x/sys v0.46.0 h1:a=\n+golang.org/x/sys v0.47.0 h1:b=\n"}
 NEWMOD = {"go.mod": "+\tgithub.com/evil/new v1.0.0\n"}
-DIGEST = {"build/docker/Dockerfile.production": "-FROM gcr.io/distroless/static@sha256:" + "a" * 64 + "\n+FROM gcr.io/distroless/static@sha256:" + "b" * 64 + "\n"}
-RUNLINE = {"build/docker/Dockerfile.production": "+RUN echo hi\n"}
+LOCK = {"build/locks/apko.base.lock.json": '-    "version": "1.2.3-r0"\n+    "version": "1.2.4-r0"\n'}
+BASE_INPUTS = ["build/locks/apko.base.lock.json", "build/locks/apko-fips.base.lock.json", "build/locks/melange.lock", "build/locks/archive-keys.sha256",
+               "build/locks/archive-index.sha256", "build/locks/fips-module.txt"]
 # --- AC1: classification by changed files
 for files, diff, want in [
     (["go.mod", "go.sum"], BUMP, "fix"),
     (["go.mod"], NEWMOD, "dirty"),                           # a new module is not a version-pin fix
-    (["build/docker/Dockerfile.production"], DIGEST, "fix"), # the base-image digest pin only
-    (["build/docker/Dockerfile.production"], RUNLINE, "dirty"),
+    (["build/locks/apko.base.lock.json"], LOCK, "fix"),      # a base lock moved: the "base input changed" signal (rules 61, 65)
+    (BASE_INPUTS, {}, "fix"),                                # the daily refresh PR changes exactly these
+    (["build/apko.yaml"], {}, "dirty"),                      # a recipe is a build input, not a base signal
+    (["build/docker/Dockerfile.production"], {}, "dirty"),   # there is no Dockerfile any more: a file by that name is shipped configuration, not a base signal
     ([".vex/fosterstack-cache.openvex.json"], {}, "fix"),
     ([".snyk", "osv-scanner.toml", ".auditor/accepted-items.json"], {}, "fix"),
     ([".github/workflows/ci.yml", "docs/x.md", "requirements/requirements.yaml", "test-evidence/mappings.yaml"], {}, "neutral"),
@@ -76,7 +81,7 @@ A64, B64 = "a" * 64, "b" * 64
 # B01: a changed go.mod or Dockerfile without diff evidence is never fix-class
 check("B01 go.mod without a diff -> not patch-clean", P.classify(c("x", ["go.mod"]))[0] == "dirty")
 check("B01 go.mod with an empty diff -> not patch-clean", P.classify(c("x", ["go.mod"], diffs={"go.mod": ""}))[0] == "dirty")
-check("B01 Dockerfile without a diff -> not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"]))[0] == "dirty")
+check("B01 a base lock without a diff is fix-class (the whole file is the signal; no line parsing)", P.classify(c("x", ["build/locks/melange.lock"]))[0] == "fix")
 # B02: only require-version changes (with context) and the go/toolchain line; never replace, exclude or a checksum rewrite
 REQ_CTX = {"go.mod": " module x\n \n require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys v0.47.0\n )\n"}
 check("B02 a require-block version bump with context is a fix", P.classify(c("x", ["go.mod"], diffs=REQ_CTX))[0] == "fix")
@@ -92,19 +97,18 @@ SUMONLY = {"go.sum": "-example.org/m v1.0.0 h1:" + "a" * 43 + "=\n+example.org/m
 check("B02 a go.sum checksum rewrite of the same version is not patch-clean", P.classify(c("x", ["go.sum"], diffs=SUMONLY))[0] == "dirty")
 BUMP_CTX = {"go.mod": REQ_CTX["go.mod"], "go.sum": "-golang.org/x/sys v0.46.0 h1:a=\n-golang.org/x/sys v0.46.0/go.mod h1:b=\n+golang.org/x/sys v0.47.0 h1:c=\n+golang.org/x/sys v0.47.0/go.mod h1:d=\n"}
 check("B02 go.mod + go.sum moving one module's version together is a fix", P.classify(c("x", ["go.mod", "go.sum"], diffs=BUMP_CTX))[0] == "fix")
-# B03: a Dockerfile change is fix-class only when each FROM keeps its image, tag, alias and flags and only the digest moves
-def df(old, new):
-    return {"build/docker/Dockerfile.production": "-" + old + "\n+" + new + "\n"}
-ok_df = df("FROM gcr.io/distroless/static:nonroot@sha256:%s AS runtime" % A64, "FROM gcr.io/distroless/static:nonroot@sha256:%s AS runtime" % B64)
-check("B03 the same image, tag and alias with a new digest is a fix", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=ok_df))[0] == "fix")
-for name, old, new in [
-    ("a different image", "FROM gcr.io/distroless/static@sha256:" + A64, "FROM example.org/different-os@sha256:" + B64),
-    ("a renamed stage", "FROM gcr.io/distroless/static@sha256:%s AS runtime" % A64, "FROM gcr.io/distroless/static@sha256:%s AS replaced" % B64),
-    ("a changed tag", "FROM gcr.io/distroless/static:nonroot@sha256:" + A64, "FROM gcr.io/distroless/static:debug@sha256:" + B64),
-]:
-    check("B03 %s is not patch-clean" % name, P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=df(old, new)))[0] == "dirty")
-added = {"build/docker/Dockerfile.production": "+FROM example.org/new-final@sha256:" + B64 + "\n"}
-check("B03 an added stage is not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs=added))[0] == "dirty")
+# B03 (rules 61, 65): the base inputs are the committed locks and records of .github/policy/base-inputs.json and nothing else
+for f in BASE_INPUTS:
+    check("B03 %s alone is a fix (a base input moved)" % f, P.classify(c("x", [f], diffs={f: "-a\n+b\n"}))[0] == "fix")
+for name, f in [("a backup of a lock", "build/locks/apko.base.lock.json.bak"), ("another file of the directory", "build/locks/other.json"),
+                ("a lock of another directory", "locks/apko.base.lock.json"), ("a recipe", "build/melange.yaml"), ("the fips recipe", "build/apko-fips.yaml"),
+                ("the melange template", "build/melange.yaml.tmpl")]:
+    check("B03 %s (%s) is no base signal: not patch-clean" % (f, name), P.classify(c("x", [f], diffs={f: "-a\n+b\n"}))[0] == "dirty")
+for mode, what in (("100755", "executable"), ("120000", "a symlink"), ("000000", "deleted")):
+    cm = {"sha": "x", "files": [BASE_INPUTS[0]], "labels": [], "diffs": {BASE_INPUTS[0]: "-a\n+b\n"}, "modes": {BASE_INPUTS[0]: mode}}
+    check("B03 a base lock that is %s is not a refresh: not patch-clean" % what, P.classify(cm)[0] == "dirty")
+check("B03 the list itself is read by the release chain: changing it is not patch-clean (a patch cannot widen its own signal)",
+      P.classify(c("x", [".github/policy/base-inputs.json"], diffs={".github/policy/base-inputs.json": "+x\n"}))[0] == "dirty")
 # B04: the release chain's build workflows shape the shipped image: never neutral
 for f in (".github/workflows/stage-image.yml", ".github/workflows/stage-build.yml", ".github/workflows/release.yml",
           ".goreleaser.yaml"):
@@ -138,7 +142,7 @@ OTHER_MOD = {"go.mod": REQ_CTX["go.mod"], "go.sum": "-golang.org/x/sys v0.46.0 h
 check("B02 go.sum lines for a module whose version did not move are not patch-clean", P.classify(c("x", ["go.mod", "go.sum"], diffs=OTHER_MOD))[0] == "dirty")
 MOVED = ("@@ -1,4 +1,4 @@\n FROM example.org/base:stable@sha256:%s AS build\n-FROM example.org/base:stable@sha256:%s AS runtime\n"
          " USER 65532\n+FROM example.org/base:stable@sha256:%s AS runtime\n COPY fscache /usr/local/bin/fscache\n") % (A64, A64, B64)
-check("B03 a FROM moved past another instruction is not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs={"build/docker/Dockerfile.production": MOVED}))[0] == "dirty")
+check("B03 a file named like the removed Dockerfile with a moved FROM is not a base signal: not patch-clean", P.classify(c("x", ["build/docker/Dockerfile.production"], diffs={"build/docker/Dockerfile.production": MOVED}))[0] == "dirty")
 for f in (".github/agent/bin/auditor-release-authz.py", ".github/policy/scanners.json", ".github/policy/allowed_signers",
           ".github/actions/x/action.yml"):
     check("B04 %s (read by the release chain, or not reviewed) is not neutral" % f, P.classify(c("x", [f]))[0] == "dirty")
@@ -266,6 +270,62 @@ with contextlib.redirect_stdout(io.StringIO()):
     P.main(["decide", "--event", "schedule", "--repo", repo, "--cut-today", "false", "--released", RL, "--out", out])
 raw = open(out).read()
 check("decision.json names no vendor or model (the issue body reads it)", "openai" not in raw.lower() and "<redacted>" in raw, raw)
+# --- rules 61 and 65: the base inputs are ONE committed list, read by the decide job and by this script (advisor Oct 12)
+real_list = os.path.join(os.path.dirname(os.path.abspath(sys.argv[1])), "..", ".github", "policy", "base-inputs.json")
+check("the committed list names exactly the base locks, the melange lock, the archive records and the fips module record (cache-ce's names)",
+      sorted(P.load_base_inputs(real_list)) == sorted(BASE_INPUTS), P.load_base_inputs(real_list) if os.path.exists(real_list) else "no file")
+bi = tempfile.mkdtemp()
+def bil(obj, raw=None):
+    f = os.path.join(bi, "l%d.json" % len(os.listdir(bi)))
+    open(f, "w").write(raw if raw is not None else json.dumps(obj))
+    return f
+def refused(f):
+    try:
+        P.load_base_inputs(f)
+    except ValueError:
+        return True
+    return False
+check("B07 a list file that is not there is refused (no patch decision on an unreadable list)", refused(os.path.join(bi, "absent.json")))
+for what, f in [("not JSON", bil(None, raw="{")), ("no base_inputs key", bil({"x": []})), ("an empty list", bil({"base_inputs": []})),
+                ("a duplicate", bil({"base_inputs": ["a/b", "a/b"]})), ("an absolute path", bil({"base_inputs": ["/etc/passwd"]})),
+                ("a parent segment", bil({"base_inputs": ["build/../x"]})), ("a glob", bil({"base_inputs": ["build/locks/*"]})),
+                ("a directory", bil({"base_inputs": ["build/locks/"]})), ("a non-string", bil({"base_inputs": [1]})),
+                ("a backslash", bil({"base_inputs": ["build\\locks"]})), ("a leading dot segment", bil({"base_inputs": ["./build/locks/a"]}))]:
+    check("B07 a list with %s is refused (fail closed)" % what, refused(f))
+check("B07 a well-formed list is read", P.load_base_inputs(bil({"base_inputs": ["build/locks/a.lock"]})) == ["build/locks/a.lock"])
+# classification follows the list handed in, not a copy kept in the code
+L2 = P.load_base_inputs(bil({"base_inputs": ["locks/only.txt"]}))
+check("B07 the classifier reads the list it is given (a path in it is fix-class, a real lock not in it is not)",
+      P.classify(c("x", ["locks/only.txt"]), base_inputs=L2)[0] == "fix" and P.classify(c("x", ["build/locks/melange.lock"]), base_inputs=L2)[0] == "dirty")
+# base-moved: the decide job's read of the same list since the latest release
+bm = tempfile.mkdtemp(); g(bm, "init", "-q", "-b", "main")
+os.makedirs(os.path.join(bm, "build", "locks")); open(os.path.join(bm, "build/locks/melange.lock"), "w").write("1\n"); open(os.path.join(bm, "build/locks/apko.base.lock.json"), "w").write("1\n")
+g(bm, "add", "build"); g(bm, "commit", "-q", "-m", "locks"); g(bm, "tag", "v0.2.1")
+lst = bil({"base_inputs": ["build/locks/apko.base.lock.json", "build/locks/melange.lock", "build/locks/not-there.txt"]})
+def bmoved(*extra):
+    r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", lst, "--since", "v0.2.1", "--repo", bm] + list(extra), capture_output=True, text=True)
+    return r.returncode, r.stdout, r.stderr
+rc_, so_, se_ = bmoved()
+check("base-moved: nothing moved since the release is said so", rc_ == 0 and "no base input moved since v0.2.1" in so_, (rc_, so_, se_))
+open(os.path.join(bm, "build/locks/melange.lock"), "w").write("2\n"); os.makedirs(os.path.join(bm, "docs")); open(os.path.join(bm, "docs/x.md"), "w").write("x\n")
+g(bm, "add", "build", "docs"); g(bm, "commit", "-q", "-m", "refresh")
+rc_, so_, se_ = bmoved()
+check("base-moved: a moved lock is named, an unrelated file is not", rc_ == 0 and "build/locks/melange.lock" in so_ and "docs/x.md" not in so_ and "apko.base" not in so_, (rc_, so_, se_))
+rc_, so_, se_ = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", os.path.join(bi, "absent.json"), "--since", "v0.2.1", "--repo", bm],
+                               capture_output=True, text=True).returncode, "", ""
+check("base-moved: an unreadable list is exit 2 (the job stops; no fallback)", rc_ == 2, rc_)
+rc_ = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", lst, "--since", "v9.9.9", "--repo", bm], capture_output=True, text=True).returncode
+check("base-moved: a release that is not a tag here is exit 2, never 'nothing moved'", rc_ == 2, rc_)
+dd = tempfile.mkdtemp(); outd = os.path.join(dd, "d.json")
+RLd = os.path.join(dd, "rel.json"); json.dump(["v0.2.1"], open(RLd, "w"))
+rc_ = subprocess.run([sys.executable, sys.argv[1], "decide", "--event", "schedule", "--repo", bm, "--cut-today", "false", "--released", RLd,
+                      "--base-inputs", lst, "--out", outd], capture_output=True, text=True)
+dec_ = json.load(open(outd)) if os.path.exists(outd) else {}
+check("decide: a moved base lock (and a neutral file) is a patch-clean fix that cuts v0.2.2", rc_.returncode == 0 and dec_.get("cut") and dec_.get("version") == "v0.2.2" and dec_.get("not_clean") == [], (rc_.returncode, rc_.stdout, rc_.stderr, dec_))
+os.remove(outd)
+rc_ = subprocess.run([sys.executable, sys.argv[1], "decide", "--event", "schedule", "--repo", bm, "--cut-today", "false", "--released", RLd,
+                      "--base-inputs", os.path.join(bi, "absent.json"), "--out", outd], capture_output=True, text=True)
+check("decide: an unreadable base list is exit 2 and no decision file", rc_.returncode == 2 and not os.path.exists(outd), (rc_.returncode, rc_.stderr))
 # --- `removed`: from grype's JSON for the release and the new base image, and HEAD's go.mod
 def gm(id_, name, ver, fix, sev, typ):
     return {"vulnerability": {"id": id_, "severity": sev, "fix": {"versions": [fix] if fix else []}},
