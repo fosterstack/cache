@@ -5,15 +5,12 @@
    "id": "KR-SIGN-1",
    "suite": "bin/chain-sign-wiring-test.sh",
    "case": "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)",
-   "reason": "the real-tree judge still finds the missing cache files (bin/build-apk.sh, bin/assemble-image.sh, bin/apk-tool.py, archive/): the build-stage scripts run them and `runs` entries must be listed rows; PR 4 adds the three cache scripts its release steps run (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py): the rows cannot list them in `runs` until they are listed rows (cache P4/P5 and the vendoring PR)",
+   "reason": "the real-tree judge still finds the missing cache files (bin/build-apk.sh, bin/assemble-image.sh, bin/apk-tool.py, archive/): the build-stage scripts run them and `runs` entries must be listed rows; PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
    "green_by": "cache P4/P5",
    "findings": [
-    "AC1: bin/release-apks.sh: names the script 'bin/release-sign-apks.sh', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-apks.sh: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-apks.sh: 'python3' is handed 'bin/apk-tool.py', not an exact listed path of this script's `runs` (no option, -c, stdin or other file)",
-    "AC1: bin/release-apks.sh: 'bash' is handed 'bin/release-sign-apks.sh', not an exact listed path of this script's `runs` (no option, -c, stdin or other file)",
-    "AC1: bin/release-sign.sh: names the script 'bin/vendor-provenance.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-sign.sh: 'python3' is handed 'bin/vendor-provenance.py', not an exact listed path of this script's `runs` (no option, -c, stdin or other file)",
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
+    "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
     "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
     "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
     "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
@@ -39,15 +36,12 @@
    "id": "KR-SIGN-3",
    "suite": "bin/chain-sign-wiring-test.sh",
    "case": "an UNTRACKED file holding a signer is not in the tracked copy CI judges",
-   "reason": "the same real-tree findings (missing cache scripts); PR 4 adds the three cache scripts its release steps run (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py): the rows cannot list them in `runs` until they are listed rows (cache P4/P5 and the vendoring PR)",
+   "reason": "the same real-tree findings (missing cache scripts); PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
    "green_by": "cache P4/P5",
    "findings": [
-    "AC1: bin/release-apks.sh: names the script 'bin/release-sign-apks.sh', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-apks.sh: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-apks.sh: 'python3' is handed 'bin/apk-tool.py', not an exact listed path of this script's `runs` (no option, -c, stdin or other file)",
-    "AC1: bin/release-apks.sh: 'bash' is handed 'bin/release-sign-apks.sh', not an exact listed path of this script's `runs` (no option, -c, stdin or other file)",
-    "AC1: bin/release-sign.sh: names the script 'bin/vendor-provenance.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/release-sign.sh: 'python3' is handed 'bin/vendor-provenance.py', not an exact listed path of this script's `runs` (no option, -c, stdin or other file)",
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
+    "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
     "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
     "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
     "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
@@ -85,6 +79,18 @@
    "case": "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case",
    "reason": "the cutover pull request (chain-v030 to main) needs this list empty AND every hosted check green on hosted runners, not only the suite cases: build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; the case is red while any entry exists, and listed itself until then",
    "green_by": "cutover (the last entry removed)"
+  },
+  {
+   "id": "KR-RECORDS-1",
+   "suite": "bin/chain-records-test.sh",
+   "case": "the real repository: every produced record type has a row with a claim and a stage consumer",
+   "reason": "the same three cache scripts: Release's rows list bin/apk-tool.py, bin/release-sign-apks.sh and bin/vendor-provenance.py in `runs`, and they are not listed rows of chain-scripts.json until cache lands them; the entry shrinks by one finding as each lands",
+   "green_by": "cache P4/P5 (bin/apk-tool.py, bin/release-sign-apks.sh) and the vendoring PR (bin/vendor-provenance.py)",
+   "findings": [
+    "chain-scripts.json: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
+    "chain-scripts.json: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
+    "chain-scripts.json: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed"
+   ]
   }
  ]
 }
