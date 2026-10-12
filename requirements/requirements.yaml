@@ -939,8 +939,14 @@ requirements:
       The forms refused outright, never interpreted, are: inline HTML,
       character references, invisible or non-printing characters,
       strikethrough (~~), reference-style links and definitions, nested
-      links, a math sign in an archive-count clause, and any "!" or "%"
-      directive in .goreleaser.yaml and test-evidence/mappings.yaml.
+      links, a math sign in an archive-count clause, a CR byte or any other
+      line break than LF (CR, NEL, LS, PS: the YAML decoder reads each as a
+      line break) in .goreleaser.yaml, test-evidence/mappings.yaml, the
+      docs, the notes and the changelog fallback, and any "!" or "%"
+      directive in .goreleaser.yaml and test-evidence/mappings.yaml. An
+      archive-count exception applies only while the whole clause equals
+      its allowed text exactly, so no exception survives an edit to the
+      clause, and a bound is refused before any exception is looked up.
     acceptance_criteria:
       - id: REQ-PLAT-001-AC1
         given: a release's artifact set
