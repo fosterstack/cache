@@ -69,7 +69,7 @@ echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL:-}" ] || { echo "gh failed" >&2; exit 1; }
 [ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
 [ -z "${GH_VIEW_ERR:-}" ] || [ "$1 $2" != "release view" ] || { echo "$GH_VIEW_ERR" >&2; exit 1; }
-if [ "$1 $2" = "release create" ]; then a=("$@"); for i in "${!a[@]}"; do
+if [ "$1 $2" = "release create" ] || [ "$1 $2" = "release edit" ]; then a=("$@"); for i in "${!a[@]}"; do
   [ "${a[$i]}" = --notes-file ] && cp "${a[$((i+1))]}" "$LOG.notes"; [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"; done; fi
 pub="$LOG.published"
 if [ "$1 $2" = "release upload" ]; then shift 3; mkdir -p "$pub"; for f in "$@"; do cp "$f" "$pub/"; done
@@ -373,6 +373,11 @@ def login_gone(t, what):
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG); login_gone(t, "release-publish (success)")
 t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"}); login_gone(t, "release-publish (a registry mismatch stops it)")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG); login_gone(t, "release-sign")
+# round 3 (Codex A): a failed mktemp stops the step before any login (an empty DOCKER_CONFIG would fall back to ~/.docker)
+for s_ in ("release-publish", "release-sign"):
+    t = tree(); fb = os.path.join(t, ".fakebin"); open(os.path.join(fb, "mktemp"), "w").write("#!/usr/bin/env bash\nexit 1\n"); os.chmod(os.path.join(fb, "mktemp"), 0o755)
+    rc, so, se = run(t, s_, creds=REG)
+    check(rc != 0 and not [l for l in log(t) if "auth login" in l or l.startswith("cosign login") or "push" in l or l.startswith("cosign sign")], "AC10 F2b %s: a failed mktemp stops the step before any login or push" % s_, "rc=%s %s" % (rc, first(se)))
 # round 1 (Codex A B4): the layout's CONTENT is the attested image before anything is logged in or pushed
 def layout_refused(t, what, word):
     rc, so, se = run(t, "release-publish", creds=REG)
@@ -460,6 +465,13 @@ check(notes_of(t2) == FIXED, "AC9 R-notes an owner's tag (no readable generated 
 GEN = ("object 0123\ntype commit\ntag v0.3.0\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
        "## v0.3.0 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
        "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+t6 = full_assets(); open(os.path.join(t6, "tagobj"), "w").write(GEN)
+rc6, so6, se6 = run(t6, "release-assets", creds=["GH_TOKEN"], env={"TAG_OBJECT": os.path.join(t6, "tagobj")})
+ed = [l for l in log(t6) if l.startswith("gh release edit")]
+check(rc6 == 0 and len(ed) == 1 and "--notes-file" in ed[0] and (notes_of(t6) or "").startswith("## v0.3.0") and not [l for l in log(t6) if l.startswith("gh release create")],
+      "AC8 an existing release gets the generated patch tag's notes too (one edit, no creation)", "rc=%s %s notes=%r" % (rc6, ed, notes_of(t6)))
+t6 = full_assets(); rc6, so6, se6 = run(t6, "release-assets", creds=["GH_TOKEN"])
+check(rc6 == 0 and not [l for l in log(t6) if l.startswith("gh release edit")], "AC8 an existing release of a tag with no generated notes is not edited")
 t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN)
 rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
 n3 = notes_of(t3)
@@ -506,6 +518,9 @@ t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/x86_64")); refuse
 t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check")); refused_before_upload(t, "no Check record to attach", "witness-check")
 # F4 (Codex A): an explicit evidence inventory; a second file under a release name, or a name outside the inventory, stops before anything is staged
 t5 = full_assets(); open(os.path.join(t5, "witness-build/policy.json"), "w").write("REPLACED POLICY"); refused_before_upload(t5, "an extra witness-build/policy.json (it would replace the signed policy)", "policy.json")
+t5 = full_assets(); open(os.path.join(t5, "witness-rebuild/verdict.json"), "w").write("{}")
+rc5, so5, se5 = run(t5, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"})
+check(rc5 == 0 and not os.path.exists(os.path.join(t5, "release-upload/verdict.json")), "AC9 R3b Rebuild's own verdict.json beside its record is allowed and is not attached (the inventory names what is attached)", "rc=%s %s" % (rc5, first(se5)))
 t5 = full_assets(); open(os.path.join(t5, "witness-rebuild/extra.json"), "w").write("{}"); refused_before_upload(t5, "a file of Rebuild's record directory outside the inventory", "extra.json")
 t5 = full_assets(); open(os.path.join(t5, "release-evidence/build-collection.json"), "w").write("{}"); refused_before_upload(t5, "a second source for the release name build-collection.json", "build-collection.json")
 t5 = full_assets(); open(os.path.join(t5, "witness-check/witness-scanners/stray.json"), "w").write("{}"); refused_before_upload(t5, "a stray file beside a Check record", "stray.json")
@@ -600,7 +615,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "273"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "278"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

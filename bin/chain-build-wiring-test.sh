@@ -999,6 +999,18 @@ for tag in fixture real; do
   else
     bad "AC15 $tag helper: release-sign -> rc=$rc env=$(grep -c 'SIGSTORE\|ACTIONS' "$d/wrapped-env.txt" 2> /dev/null) printed=$(grep -c FAKE <<< "$printed")"
   fi
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-assets SIGSTORE_ID_TOKEN=INHERITED-SENTINEL)
+  if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|INHERITED-SENTINEL' "$d/wrapped-env.txt"; then
+    ok "AC15 $tag helper: a SIGSTORE_ID_TOKEN already in the environment is cleared for every step (only the helper's own minted token reaches release-sign)"
+  else
+    bad "AC15 $tag helper: an inherited SIGSTORE_ID_TOKEN reached a step that is not release-sign (rc=$rc)"
+  fi
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign SIGSTORE_ID_TOKEN=INHERITED-SENTINEL)
+  if [ "$rc" = 0 ] && grep -qx 'SIGSTORE_ID_TOKEN=FAKE-JWT-TOKEN-VALUE' "$d/wrapped-env.txt" && ! grep -q INHERITED-SENTINEL "$d/wrapped-env.txt"; then
+    ok "AC15 $tag helper: an inherited SIGSTORE_ID_TOKEN is replaced by the helper's own for release-sign"
+  else
+    bad "AC15 $tag helper: release-sign kept an inherited SIGSTORE_ID_TOKEN (rc=$rc)"
+  fi
   for other in release-publish release-assets apk; do
     helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
     if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
@@ -1968,7 +1980,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=673
+EXPECT=677
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
