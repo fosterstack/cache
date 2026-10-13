@@ -915,6 +915,10 @@ EOF
   cat > "$1/fake/curl" <<'EOF'
 #!/usr/bin/env bash
 echo curl >> calls.log
+n=$(grep -c '^curl$' calls.log)
+[ "${CURL_FAIL_AT:-0}" != "$n" ] || exit 22
+[ "${CURL_EMPTY_AT:-0}" != "$n" ] || { printf '{"value":""}\n'; exit 0; }
+[ "${CURL_NULL_AT:-0}" != "$n" ] || { printf '{"value":null}\n'; exit 0; }
 printf '{"value":"FAKE-JWT-TOKEN-VALUE"}\n'
 EOF
   cat > "$1/fake/timeout" <<'EOF'
@@ -982,6 +986,32 @@ for tag in fixture real; do
   else
     bad "AC12 $tag helper: snapshot-evil -> rc=$rc calls=$calls"
   fi
+  # round 1 (Codex A F1, B B2; advisor ruling 3): release-sign alone receives one masked sigstore token as SIGSTORE_ID_TOKEN; nothing else does
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && grep -qx 'SIGSTORE_ID_TOKEN=FAKE-JWT-TOKEN-VALUE' "$d/wrapped-env.txt" \
+     && ! grep -q '^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt" \
+     && [ "$(grep -c '^::add-mask::FAKE-JWT-TOKEN-VALUE$' <<< "$printed" || true)" = 2 ] \
+     && [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 2 ]; then
+    ok "AC15 $tag helper: release-sign's command receives SIGSTORE_ID_TOKEN, no request variable, and every printed copy of a token is an add-mask line"
+  else
+    bad "AC15 $tag helper: release-sign -> rc=$rc env=$(grep -c 'SIGSTORE\|ACTIONS' "$d/wrapped-env.txt" 2> /dev/null) printed=$(grep -c FAKE <<< "$printed")"
+  fi
+  for other in release-publish release-assets apk; do
+    helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
+    if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
+      ok "AC15 $tag helper: the step $other has no identity token and no request variable in its environment"
+    else
+      bad "AC15 $tag helper: $other's environment holds an identity token variable (rc=$rc)"
+    fi
+  done
+  for what in "CURL_FAIL_AT=2" "CURL_EMPTY_AT=2" "CURL_NULL_AT=2"; do
+    helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign "$what"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+    if [ "$rc" != 0 ] && ! grep -q '^wrapped ' <<< "$calls" && ! grep -q '^witness ' <<< "$calls"; then
+      ok "AC15 $tag helper: release-sign stops (nothing runs, nothing exported) when its sigstore token fetch fails or is empty ($what)"
+    else
+      bad "AC15 $tag helper: $what -> rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-160)"
+    fi
+  done
   helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" evil); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
     ok "AC2 $tag helper: an unknown step name exits 2 before witness is called"
@@ -1935,7 +1965,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=656
+EXPECT=670
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
