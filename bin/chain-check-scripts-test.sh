@@ -891,8 +891,11 @@ printf 'module example.com/a\n' > "$gvt/go.mod"
 printf '{"scanners":["grype","osv-scanner"],"source_scanners":["govulncheck"],"pr_gate":["grype","inspector"]}\n' > "$gvt/.github/policy/scanners.json"
 cat > "$gvt/fake/govulncheck" <<'EOF'
 #!/usr/bin/env bash
+# the scan runs with an explicit environment (the caller's variables do not reach it), so the case settings come from a file next to this fake
+[ ! -f "$(dirname "$0")/env" ] || . "$(dirname "$0")/env"
 echo "govulncheck $*" >> "$GV_LOG"
 echo "env GOFLAGS=${GOFLAGS:-} GOTOOLCHAIN=${GOTOOLCHAIN:-} GOPROXY=${GOPROXY:-} PATH1=${PATH%%:*}" >> "$GV_LOG"
+echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset}" >> "$GV_LOG"
 case "$1" in -version) printf 'Go: go1.27.2\nScanner: govulncheck@v1.7.0\nDB: https://vuln.go.dev\nDB updated: 2026-10-10 00:00:00 +0000 UTC\n'; exit 0 ;; esac
 [ "${GV_RC:-0}" = 0 ] || { echo "govulncheck: boom" >&2; exit "$GV_RC"; }
 case "${GV_OUT:-clean}" in
@@ -912,19 +915,25 @@ EOF
 chmod +x "$gvt/fake/govulncheck"
 gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tree with the fake first on PATH
   local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
-  rc=0; : > "$work/gvlog"; rm -rf "$gvt/out"; out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" GV_LOG="$work/gvlog" python3 -I -B bin/check-govulncheck.py "$@") 2>&1) || rc=$?; }
+  rc=0; : > "$work/gvlog"; rm -rf "$gvt/out"
+  { printf 'export GV_LOG=%q\n' "$work/gvlog"; local e; for e in "${envs[@]}"; do case "$e" in GV_*) printf 'export %s=%q\n' "${e%%=*}" "${e#*=}" ;; esac; done; } > "$gvt/fake/env"
+  out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" python3 -I -B bin/check-govulncheck.py "$@") 2>&1) || rc=$?; }
 GVARGS=(--scanners .github/policy/scanners.json --out out)
 gvrun GV_OUT=clean -- "${GVARGS[@]}"
-if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && grep -q '^govulncheck -json ./\.\.\.$' "$work/gvlog" && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 2 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as `govulncheck -json ./...`"
+if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && grep -q '^govulncheck -json ./\.\.\.$' "$work/gvlog" && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 2 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as govulncheck -json ./..."
 else bad "G a clean source scan -> rc=$rc $out | $(tr '\n' '|' < "$work/gvlog" | cut -c1-200)"; fi
-if [ -f "$gvt/out/govulncheck.json" ] && [ "$(jq -c . "$gvt/out/govulncheck.json" | head -1)" = "$(GV_LOG=/dev/null GV_OUT=clean "$gvt/fake/govulncheck" -json ./... | head -1 | jq -c .)" ] \
-   && [ "$(wc -l < "$gvt/out/govulncheck.json" | tr -d ' ')" = 2 ]; then ok "G the file is the tool's own output, unchanged (two lines: config, progress)"
+( cd "$gvt/fake" && : > env && GV_LOG=/dev/null GV_OUT=clean ./govulncheck -json ./... > "$work/gv-expected.bin" ) 2> /dev/null
+if [ -f "$gvt/out/govulncheck.json" ] && cmp -s "$gvt/out/govulncheck.json" "$work/gv-expected.bin" && [ -s "$work/gv-expected.bin" ] \
+   && [ "$(wc -l < "$gvt/out/govulncheck.json" | tr -d ' ')" = 2 ]; then ok "G the file is the tool's own output, byte for byte (the whole stream, whitespace included; two lines: config, progress)"
 else bad "G the written file is not the tool's output"; fi
 if grep -q 'GOFLAGS=-mod=readonly GOTOOLCHAIN=local' "$work/gvlog" && grep -q 'PATH1=/usr/local/bin/fscache-go/bin$' "$work/gvlog"; then ok "G the scan runs with GOFLAGS=-mod=readonly, GOTOOLCHAIN=local and the pinned Go first on PATH"
 else bad "G the scan environment is not the pinned one: $(grep '^env' "$work/gvlog" | head -1)"; fi
 gvrun GOFLAGS=-toolexec=/tmp/evil GOTOOLCHAIN=auto GOPROXY=https://evil.example GV_OUT=clean -- "${GVARGS[@]}"
 if [ "$rc" = 0 ] && grep -q 'GOFLAGS=-mod=readonly GOTOOLCHAIN=local' "$work/gvlog" && ! grep -q 'evil' "$work/gvlog"; then ok "G a GOFLAGS, GOTOOLCHAIN or GOPROXY of the caller's environment never reaches the scan"
 else bad "G the caller's Go environment reached the scan: $(grep '^env' "$work/gvlog" | head -1) rc=$rc"; fi
+gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && grep -q '^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog"; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV) reaches the scan and persisted Go configuration is off (GOENV=off)"
+else bad "G the caller's platform or cache settings reached the scan: $(grep '^goenv' "$work/gvlog" | head -1) rc=$rc"; fi
 gvrun GV_OUT=called -- "${GVARGS[@]}"
 if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && [ -f "$gvt/out/govulncheck.json" ]; then ok "G a finding that reaches a called symbol fails the scan, naming the advisory, and the file is still written"
 else bad "G a called finding -> rc=$rc $out"; fi
@@ -955,7 +964,7 @@ if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G no go.mod in the working direc
 printf 'module example.com/a\n' > "$gvt/go.mod"
 if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
 else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
-EXPECT=300
+EXPECT=301
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

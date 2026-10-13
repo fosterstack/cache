@@ -9,6 +9,7 @@ set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
+work_am=$work/am.out
 
 judge() { python3 - "$1" "$2" <<'PY'
 import re, sys, yaml
@@ -268,5 +269,45 @@ case_ reviewer  $R reviewer-cap-widened    bad "[s.__setitem__('run', s['run'].r
 case_ reviewer  $R reviewer-cap-removed    bad "[s.__setitem__('run', s['run'].replace('(.files | length) >= 100', 'false')) for s in $rs if s.get('id') == 'candidates']"
 case_ reviewer  $R reviewer-hold-no-disarm bad "[s.__setitem__('run', s['run'].replace('--disable-auto', '--help')) for s in $rs if s.get('id') == 'candidates']"
 
+# Codex 4b-5 r1 (A B4, B B3): the arming step is EXECUTED against a double of gh, not only read: held paths and the cap arm nothing, a lookalike directory and 99 files
+# arm against the head that was read, an unreadable PR stops the step, and the arm always carries --match-head-commit
+python3 - "$root/.github/workflows/$A" > "$work_am" 2>&1 <<'PY' && { pass=$((pass+1)); echo "PASS the arming step, executed against a gh double: held, lookalike, 99, 100, unreadable and head-bound cases"; } || { failn=$((failn+1)); echo "FAIL the arming step executed against a gh double: $(head -c 400 "$work_am")"; }
+import json, os, stat, subprocess, sys, tempfile, yaml
+d = yaml.safe_load(open(sys.argv[1]))
+step = [s for s in d["jobs"]["auto-merge"]["steps"] if s.get("name") == "enable auto-merge"]
+assert len(step) == 1, "no single `enable auto-merge` step"
+run = step[0]["run"]
+HEAD = "a" * 40
+def case(files, view_rc=0, head=HEAD):
+    t = tempfile.mkdtemp()
+    os.makedirs(t + "/bin")
+    open(t + "/snap.json", "w").write(json.dumps({"files": [{"path": f} for f in files], "headRefOid": head}))
+    open(t + "/bin/gh", "w").write('#!/bin/sh\necho "gh $*" >> "$LOGF"\ncase "$1 $2" in\n  "pr view") [ "${VIEW_RC:-0}" = 0 ] || exit 1; cat "$SNAP" ;;\n  "pr merge") exit 0 ;;\n  *) exit 3 ;;\nesac\n')
+    os.chmod(t + "/bin/gh", 0o755)
+    open(t + "/step.sh", "w").write(run)
+    env = dict(os.environ, PATH=t + "/bin:" + os.environ["PATH"], LOGF=t + "/log", SNAP=t + "/snap.json", VIEW_RC=str(view_rc),
+               PR_URL="https://github.com/o/r/pull/7", GITHUB_STEP_SUMMARY=t + "/summary", GH_TOKEN="x")
+    r = subprocess.run(["bash", t + "/step.sh"], env=env, capture_output=True, text=True)
+    log = open(t + "/log").read().splitlines() if os.path.exists(t + "/log") else []
+    return r.returncode, [l for l in log if l.startswith("gh pr merge")]
+bad = []
+rc, m = case(["tools/govulncheck/go.mod"])
+if rc != 0 or m: bad.append("a PR that touches tools/govulncheck/ was armed or the step failed: %s %s" % (rc, m))
+rc, m = case(["docs/a.md", "tools/govulncheck/go.sum", "go.mod"])
+if rc != 0 or m: bad.append("a mixed PR that touches tools/govulncheck/ was armed: %s %s" % (rc, m))
+rc, m = case(["tools/govulncheck-extra/a.go", "go.mod", "go.sum"])
+if rc != 0 or len(m) != 1 or "--match-head-commit " + HEAD not in m[0] or "--auto" not in m[0] or "--squash" not in m[0]:
+    bad.append("a lookalike directory was held, or the arm is not bound to the head that was read: %s %s" % (rc, m))
+rc, m = case(["f%d.md" % i for i in range(99)])
+if rc != 0 or len(m) != 1 or "--match-head-commit " + HEAD not in m[0]: bad.append("99 files were not armed against the head: %s %s" % (rc, m))
+rc, m = case(["f%d.md" % i for i in range(100)])
+if rc != 0 or m: bad.append("a list of 100 files was armed (it cannot be judged): %s %s" % (rc, m))
+rc, m = case(["go.mod"], view_rc=1)
+if rc == 0 or m: bad.append("an unreadable PR did not stop the step or was armed: %s %s" % (rc, m))
+rc, m = case(["go.mod"], head="")
+if rc == 0 or m: bad.append("a PR with no readable head was armed: %s %s" % (rc, m))
+print("; ".join(bad) or "ok")
+sys.exit(1 if bad else 0)
+PY
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

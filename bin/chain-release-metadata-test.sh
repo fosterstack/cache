@@ -203,6 +203,9 @@ n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
 check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in n4 and "with timeout -k 20 540 inside it" in n7 and "with timeout 540 inside it" not in n7
       and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
       "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps (E item B)")
+t1 = ac("REQ-CHAIN-007", 1)["then"]
+check("and nothing else in the step except an `env` block of exactly the credential names AC2 and AC15 give that step and, for every step after release-verify, the one condition" in t1,
+      "text: REQ-CHAIN-007-AC1 says the witnessed steps carry an env block of the credentials AC2 and AC15 name (accepted Oct 13)")
 check("the release notes are posted here only from the notes carried in the generated patch tag's message (REQ-REL-009-AC8; the changelog is the patch-notes job's)" in t7 and "release notes are not posted here" not in t7,
       "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 (the notes are posted by release-assets from the generated tag's message; Codex 4b-2 r1 B2)")
 check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
@@ -211,7 +214,7 @@ check("Build's digests.json, items.json or admission-baseline.json (products of 
       and "Build's admission-baseline.json" in t19 and "never a version Release chooses itself" in t19 and "the baseline admission chose for a CI patch)" not in t19,
       "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance and takes the baseline from Build's verified file (rulings B and C)")
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "85"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "86"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

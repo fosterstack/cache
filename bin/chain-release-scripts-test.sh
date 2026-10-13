@@ -434,7 +434,9 @@ check(gl == ["git log -1 --format=%ct " + "c" * 40], "G the date is `git log -1 
 for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, "check-results/govulncheck.json")), {}),
                            ("is a symlink", lambda t: (os.remove(os.path.join(t, "check-results/govulncheck.json")), os.symlink("/etc/hosts", os.path.join(t, "check-results/govulncheck.json"))), {}),
                            ("is empty", lambda t: open(os.path.join(t, "check-results/govulncheck.json"), "w").close(), {}),
-                           ("(dependency-provenance.json) is missing", lambda t: os.remove(os.path.join(t, "dependency-provenance.json")), {})):
+                           ("(dependency-provenance.json) is missing", lambda t: os.remove(os.path.join(t, "dependency-provenance.json")), {}),
+                           ("(dependency-provenance.json) is empty", lambda t: open(os.path.join(t, "dependency-provenance.json"), "w").close(), {}),
+                           ("(dependency-provenance.json) is a symlink", lambda t: (os.remove(os.path.join(t, "dependency-provenance.json")), os.symlink("/etc/hosts", os.path.join(t, "dependency-provenance.json"))), {})):
     tg = tree(); mutate(tg); rc, so, se = run(tg, "release-sign", creds=REG)
     check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G the file Release hands the evidence step %s: nothing is produced or signed" % label, "rc=%s %s" % (rc, first(se)))
 for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT_EPOCH": ""}), ("negative", {"GIT_EPOCH": "-5"}), ("git failing", {"GIT_FAIL": "1"}), ("two lines", {"GIT_EPOCH": "1760000000\n1760000001"})):
@@ -698,7 +700,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "320"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "322"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

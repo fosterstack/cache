@@ -147,7 +147,10 @@ gvpin_ok() { # gvpin_ok GOMOD GOSUM CIYML: the module pins golang.org/x/vuln at 
   [ -f "$gm" ] && [ -f "$gs" ] && [ -f "$ci" ] || return 1
   pin=$(sed -n 's/^[[:space:]]*golang.org\/x\/vuln \(v[0-9][0-9.]*\).*/\1/p' "$gm" | head -1)
   [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
-  grep -q "golang.org/x/vuln $pin h1:" "$gs" && grep -q "govulncheck@$pin" "$ci" && ! grep -Eq '^[[:space:]]*(replace|exclude|retract)\b' "$gm"
+  # the install token must be exactly govulncheck@<pin> as a command word's argument (not a prefix of a longer version, not inside a comment)
+  local code; code=$(mktemp); grep -v '^[[:space:]]*#' "$ci" > "$code" || true
+  if grep -q "golang.org/x/vuln $pin h1:" "$gs" && grep -Eq "(^|[/[:space:]\"'])govulncheck@$pin([[:space:]\"';]|\$)" "$code" && ! grep -Eq '^[[:space:]]*(replace|exclude|retract)\b' "$gm"; then rm -f "$code"; return 0; fi
+  rm -f "$code"; return 1
 }
 if gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$root/.github/workflows/ci.yml"; then
   ok "govulncheck: the module pins golang.org/x/vuln $GV_PIN with an h1 hash in go.sum, the version ci.yml's govulncheck job installs, and has no replace or exclude"
@@ -162,10 +165,17 @@ else bad "govulncheck: a bumped ci.yml alone was accepted"; fi
 sed "s/golang.org\/x\/vuln $GV_PIN h1:/golang.org\/x\/vuln v9.9.9 h1:/" "$root/tools/govulncheck/go.sum" > "$gv/eq/go.sum"
 if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$gv/eq/go.sum" "$root/.github/workflows/ci.yml"; then ok "govulncheck: a go.mod whose go.sum holds no h1 for the pin is red"
 else bad "govulncheck: a go.sum without the pin's hash was accepted"; fi
+# Codex 4b-5 r1 (B B5): the equality is exact: a longer version token (a prerelease suffix) and a version only inside a comment do not satisfy it
+sed "s/govulncheck@$GV_PIN/govulncheck@$GV_PIN-rc1/" "$root/.github/workflows/ci.yml" > "$gv/eq/ci-suffix.yml"
+if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/eq/ci-suffix.yml"; then ok "govulncheck: a ci.yml that installs $GV_PIN-rc1 while the module pins $GV_PIN is red (the version token is compared whole)"
+else bad "govulncheck: a prerelease suffix on the install token was accepted"; fi
+{ printf '# go install golang.org/x/vuln/cmd/govulncheck@%s\n' "$GV_PIN"; sed "s/govulncheck@$GV_PIN/govulncheck@v9.9.9/" "$root/.github/workflows/ci.yml"; } > "$gv/eq/ci-comment.yml"
+if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/eq/ci-comment.yml"; then ok "govulncheck: the pinned version only in a comment while the install runs another is red"
+else bad "govulncheck: a comment holding the version satisfied the equality"; fi
 if ! grep -Eq '\$\{(GOPROXY|GOFLAGS|GOTOOLCHAIN|GOSUMDB|GONOSUMDB|GOPRIVATE|GOWORK)' "$sut" && [ "$(grep -c 'GOPROXY=https://proxy.golang.org' "$sut")" = 1 ] && ! grep -q 'GOSUMDB=off' "$sut"; then
   ok "govulncheck: the proxy is one literal in the script, no Go environment variable is read from the caller, and the checksum database stays on"
 else bad "govulncheck: the installer reads the Go environment from the caller, names another proxy or turns the checksum database off"; fi
-EXPECT=34
+EXPECT=36
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

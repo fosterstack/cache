@@ -29,8 +29,10 @@ def usage():
 
 def pinned_env():
     """(the environment of the tool, the search path it gets): the caller's other Go settings are dropped, the pinned ones set, the pinned Go first."""
-    tool_env = {k: v for k, v in os.environ.items() if k not in UNSET}
-    tool_env.update({"GOFLAGS": "-mod=readonly", "GOTOOLCHAIN": "local", "GOPROXY": PROXY, "GOWORK": "off"})
+    # an EXPLICIT environment (Codex 4b-5 r1): nothing Go-related is inherited (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV... all dropped)
+    # and persisted Go configuration is switched off; only the neutral process settings and the pinned values below reach the tool
+    tool_env = {k: v for k, v in os.environ.items() if k in ("HOME", "TMPDIR", "LANG", "LC_ALL", "TERM", "USER", "SSL_CERT_FILE", "SSL_CERT_DIR") and v}
+    tool_env.update({"GOFLAGS": "-mod=readonly", "GOTOOLCHAIN": "local", "GOPROXY": PROXY, "GOWORK": "off", "GOENV": "off"})
     search = GO_DIR + os.pathsep + os.environ.get("PATH", "")
     tool_env["PATH"] = search
     return tool_env, search

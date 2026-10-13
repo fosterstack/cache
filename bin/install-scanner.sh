@@ -239,8 +239,8 @@ case "$TOOL" in
     [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pipeline_fail "tools/govulncheck/go.mod does not require golang.org/x/vuln at a version"
     mkdir -p "$tmp/home" "$tmp/gocache" "$tmp/gomod"
     # nothing Go-related from the caller's environment reaches the build: those names are unset, the pinned ones exported, in a subshell
-    ( unset GOROOT GOENV GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG
-      export HOME="$tmp/home" TMPDIR="$tmp" GOCACHE="$tmp/gocache" GOMODCACHE="$tmp/gomod" GOFLAGS=-mod=readonly GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org CGO_ENABLED=0 GOWORK=off
+    ( unset GOROOT GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG GOOS GOARCH GOAMD64 GOARM GO386 GOMIPS GOPPC64 GORISCV64 GOWASM CC CXX CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS
+      export HOME="$tmp/home" TMPDIR="$tmp" GOCACHE="$tmp/gocache" GOMODCACHE="$tmp/gomod" GOFLAGS=-mod=readonly GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org CGO_ENABLED=0 GOWORK=off GOENV=off
       cd tools/govulncheck && "$gobin" build -trimpath -o "$tmp/govulncheck" golang.org/x/vuln/cmd/govulncheck ) || pipeline_fail "go build of govulncheck ${pin} failed"
     "$tmp/govulncheck" -version 2>/dev/null | grep -qx "Scanner: govulncheck@${pin}" || pipeline_fail "the built govulncheck does not report version ${pin} (the module's pin)"
     install -m 0755 "$tmp/govulncheck" "${DEST}/govulncheck" || pipeline_fail "install failed for govulncheck"

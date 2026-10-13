@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "e24830f0657f0f4337085ca1a41e0a65840085eaf9d14639d495a7ad10ffd8ef",
+      "sha256": "cc8f953863cc6e290a599dccaea3b144ed73dab9a2b2d9e3899131a318f965a6",
       "tools": [
         "at",
         "curl",
@@ -448,7 +448,7 @@
     },
     {
       "path": "bin/check-govulncheck.py",
-      "sha256": "4e8ce86fd87f4bf71a9856f8f5b9eeff500ed8a382d95b28d42702ddc31e7180",
+      "sha256": "f5f9bf18a882b22eee3c242489976c2197a9d2452ac220694a4c07f16e223e0b",
       "tools": [
         "env",
         "source"
@@ -987,7 +987,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "764b2919176f3dbf6e67a4e5494d2d665d6e759d0b594fec4b779f390bd2411a",
+      "sha256": "91d4cee0ebb15b8db3a25fd3d0eade9f31ef18bc7dcc0cb1f832d55e2f5d1599",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
