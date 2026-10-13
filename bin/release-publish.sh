@@ -39,7 +39,9 @@ digest_of() {
 
 # The logins live in a private DOCKER_CONFIG of this step, removed when it ends (round 1 F2): crane saves credentials in the runner's shared
 # ~/.docker/config.json, where a later step without the secret could still use them.
-export DOCKER_CONFIG="$(mktemp -d)"
+DOCKER_CONFIG=$(mktemp -d)
+[ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || { echo "release-publish: no private credential directory: refusing to log in" >&2; exit 1; }
+export DOCKER_CONFIG
 trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 crane auth login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"
 crane auth login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"

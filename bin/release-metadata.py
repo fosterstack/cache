@@ -319,15 +319,15 @@ def cmd_bind_archives(a):
             refuse("%s (%s) is %s, Build's digests.json records %s: refusing to attach it" % (name, item, got, digests.get(item)))
 
 
-RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's git identity (release.yml): the one tagger of a generated patch tag
+RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's tagger identity (release.yml): the one tagger of a generated patch tag
 PATCH_HEAD = re.compile(r"^## (v[0-9]+\.[0-9]+\.[0-9]+) \u2014 patch release$")
 
 
 def cmd_tag_notes(a):
-    """TAG-NOTES (REQ-REL-009-AC8; round 1 F5): --object is a file holding `git cat-file tag` of the release tag; stdout is the notes a generated patch tag carries, else exit 1
-    with nothing on stdout (the release then keeps the fixed evidence text). Only the release workflow's own patch tag counts: its tagger, a gitsign (x509)
+    """TAG-NOTES (REQ-REL-009-AC8; round 1 F5): --object is a file holding the release tag's object text; stdout is the notes a generated patch tag carries, else exit 1
+    with nothing on stdout (the release then keeps the fixed evidence text). Only the release workflow's own patch tag counts: its tagger, an x509
     signature as the message's one and last signature block, and a first line `## <this tag> \u2014 patch release`. The notes were already cleaned of vendor
-    and model names when decide made the tag (bin/patch-decide.py tag-notes applies the same rule), and the signature block is dropped."""
+    and model names when decide made the tag (the decide step applies the same rule when it reads the tag), and the signature block is dropped."""
     try:
         with open(a.object) as f:
             raw = f.read()

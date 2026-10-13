@@ -21,7 +21,9 @@ python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json --images 
 python3 bin/release-metadata.py manifest --digests witness-build/digests.json --images-dir images --items witness-build/items.json --vex-dir release-metadata --baseline-version "$GITHUB_REF_NAME" --repo-root . --version "$GITHUB_REF_NAME" --commit "$GITHUB_SHA" --ci-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" --workflow "$GITHUB_WORKFLOW_REF" --out release-metadata/release-manifest.json
 python3 bin/release-metadata.py list --version "$GITHUB_REF_NAME" --dir release-metadata --out release-metadata/release-files.sha256
 # The logins live in a private DOCKER_CONFIG of this step, removed when it ends (round 1 F2).
-export DOCKER_CONFIG="$(mktemp -d)"
+DOCKER_CONFIG=$(mktemp -d)
+[ -n "$DOCKER_CONFIG" ] && [ -d "$DOCKER_CONFIG" ] || { echo "release-sign: no private credential directory: refusing to log in" >&2; exit 1; }
+export DOCKER_CONFIG
 trap 'rm -rf "$DOCKER_CONFIG"' EXIT
 cosign login ghcr.io -u "${GITHUB_ACTOR:-fosterstack}" --password-stdin <<< "$GH_TOKEN"
 cosign login docker.io -u "$DOCKERHUB_USERNAME" --password-stdin <<< "$DOCKERHUB_TOKEN"

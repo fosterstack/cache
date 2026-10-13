@@ -51,7 +51,7 @@ for v in production fips; do
   done
 done
 only witness-build build-collection.json digests.json items.json
-only witness-rebuild rebuild-collection.json
+only witness-rebuild rebuild-collection.json verdict.json
 for n in scanners acceptance runtime arm64; do only "witness-check/witness-$n" "$n-collection.json"; done
 for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
 for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json \
@@ -64,7 +64,7 @@ for f in release-upload/*.apk release-upload/*.json release-upload/*.txt release
   files+=("$f")
 done
 if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; exit 1; fi
-# The release's notes: a generated patch tag's notes (REQ-REL-009-AC8; release-metadata.py tag-notes accepts only the release workflow's own patch tag), else
+# The release's notes: a generated patch tag's notes (REQ-REL-009-AC8; bin/release-metadata.py tag-notes accepts only the release workflow's own patch tag), else
 # the fixed evidence text. Only a definite "release not found" creates a release; any other failure of the view stops here (round 1 R3).
 notes=(--notes "Evidence: see docs/verify-release.md for the verification commands of this release.")
 if git cat-file tag "$rel" > release-tag.txt 2> /dev/null && python3 bin/release-metadata.py tag-notes --tag "$rel" --object release-tag.txt > release-notes.md 2> /dev/null && [ -s release-notes.md ]; then
@@ -74,6 +74,8 @@ rm -f release-tag.txt
 if ! view_err=$(gh release view "$rel" 2>&1 > /dev/null); then
   [[ "$view_err" == *"release not found"* ]] || { echo "release-assets: cannot tell whether release $rel exists: $view_err" >&2; exit 1; }
   gh release create "$rel" --title "fscache $rel" "${notes[@]}" --verify-tag
+elif [ "${notes[0]}" = --notes-file ]; then
+  gh release edit "$rel" "${notes[@]}"      # the release exists already: a generated patch tag's notes are still the release's notes
 fi
 gh release upload "$rel" "${files[@]}"
 gh release download "$rel" -D release-published
