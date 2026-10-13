@@ -124,6 +124,11 @@ if not dstep or '--released "$RUNNER_TEMP/released.json"' not in dstep[0]["run"]
         "gh release list --exclude-drafts" not in facts[0]["run"] or "released.json" not in facts[0]["run"]:
     bad.append("decide's baseline is not the latest published release")
 scan = [s for s in steps if "patch-decide.py removed" in (s.get("run") or "")]
+# REQ-REL-009-AC3 (advisor 0389): the immediate cut scans the images that exist for the latest release's version (patch-decide.py variants: v0.3.0 dropped
+# the debug variant), never a literal -debug tag, and the notes read a variant's scan only when that scan was made
+_note = [s for s in steps if "patch-decide.py notes" in (s.get("run") or "")]
+if not scan or "patch-decide.py variants" not in scan[0]["run"] or "-debug" in scan[0]["run"] or not _note or "patch-decide.py variants" not in _note[0]["run"] or "-debug" in _note[0]["run"]:
+    bad.append("the immediate cut does not scan exactly the images that exist for the latest release (patch-decide.py variants), or names a -debug tag")
 if not scan or "&& rel+=" in scan[0]["run"] or "removed-unknown" not in scan[0]["run"] or \
         not dstep or "--removed-unknown" not in dstep[0]["run"]:
     bad.append("an unscannable release image is not reported as unknown")
@@ -290,18 +295,16 @@ for st in psteps:
 pco = [s for s in psteps if str(s.get("uses", "")).startswith("actions/checkout@")]
 if not pco or (pco[0].get("with") or {}).get("persist-credentials") != "false" or (pco[0].get("with") or {}).get("ref") != "main":
     bad.append("the notes PR job's checkout is not main without a credential")
+# REQ-REL-009-AC8 (PR 4): the notes are posted by the patch-notes job (above: tag-notes, then the changelog PR); Release creates the release without notes
 sp = yaml.load(open(sys.argv[2]), Loader=yaml.BaseLoader)
-create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "gh release create" in (st.get("run") or "")]
-if len(create) != 1 or "patch-decide.py tag-notes" not in create[0]["run"] or "--notes-file" not in create[0]["run"]:
-    bad.append("stage-promote does not post a patch tag's notes")
+create = [st for j in sp["jobs"].values() for st in j.get("steps") or [] if "--notes-file" in (st.get("run") or "") or "tag-notes" in (st.get("run") or "")]
+if create:
+    bad.append("stage-promote.yml posts patch notes: the patch-notes job does (REQ-REL-009-AC8)")
 # REQ-REL-009-AC13 downstream (found while wiring rule 10): admission's chosen baseline reaches every stage that reads a
 # baseline — the release manifest — instead of assuming requirements/releases/<tag>.yaml. PR 3 removed the acceptance predicate and the authorization
 # stage (REQ-CHAIN-006-AC10; the baseline checks of those two went with them); PR 2 moved admission into Build, so the OLD promotion job no longer NEEDs an
 # admission job; it keeps the baseline expression until PR 4 (Release) replaces it and reads the baseline from Build's admission evidence.
-for job in ("promotion",):
-    j = jobs.get(job) or {}
-    if (j.get("with") or {}).get("baseline-version") != "${{ needs.admission.outputs.baseline }}":
-        bad.append("%s does not receive admission's baseline" % job)
+# REQ-REL-009-AC13 (PR 4): the baseline is recorded by admission in Build; it travels with the manifest generation of Release (REQ-CHAIN-007-AC19); no stage input carries it
 # Codex #163 pin pass B03: decide's pre-check refuses what admission refuses — the checkout's copy of
 # the chosen baseline must equal the owner tag's, as admission's cmp requires
 if pre and ("cmp -s" not in prun or 'git show "${base}:requirements/releases/${base}.yaml"' not in prun):
@@ -343,6 +346,9 @@ case_ precheck-own-files     bad "[s.__setitem__('run', s['run'].replace('owner-
 case_ precheck-local-signers bad "[s.__setitem__('run', s['run'].replace('git show origin/main:.github/policy/allowed_signers', 'cat .github/policy/allowed_signers')) for s in $D['steps'] if s.get('id') == 'basecheck']"
 case_ no-baseline-check       bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'basecheck']"
 case_ wait-ignores-baseline   bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if s.get('id') == 'checks']"
+case_ scan-debug-literal       bad "[s.__setitem__('run', s['run'].replace('\$(python3 bin/patch-decide.py variants --version \"\$ver\")', '\"\$ver\" \"\$ver-debug\" \"\$ver-fips\"')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ scan-no-variants         bad "[s.__setitem__('run', s['run'].replace('patch-decide.py variants', 'patch-decide.py ready')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
+case_ notes-debug-literal      bad "[s.__setitem__('run', s['run'].replace('patch-decide.py notes', 'echo -debug; python3 bin/patch-decide.py notes')) for s in $D['steps'] if 'patch-decide.py notes' in (s.get('run') or '')]"
 case_ no-check-wait           bad "$D['steps'] = [s for s in $D['steps'] if s.get('id') != 'checks']"
 case_ wait-other-query        bad "[s.__setitem__('run', s['run'].replace('filter=latest', 'filter=all')) for s in $D['steps'] if s.get('id') == 'checks']"
 case_ wait-unbounded          bad "[s.pop('timeout-minutes') for s in $D['steps'] if s.get('id') == 'checks']"
@@ -350,7 +356,6 @@ case_ sign-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outp
 case_ push-not-ready          bad "[s.__setitem__('if', \"\${{ steps.decide.outputs.cut == 'true' }}\") for s in $D['steps'] if 'git push' in (s.get('run') or '')]"
 case_ workflow-concurrency    bad "d['concurrency'] = {'group': 'release', 'cancel-in-progress': 'false'}"
 case_ shallow-checkout        bad "[s['with'].pop('fetch-depth') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
-case_ promotion-own-baseline  bad "$J['promotion']['with']['baseline-version'] = '\${{ github.ref_name }}'"
 case_ no-schedule             bad "d['on'].pop('schedule')"
 case_ scan-aggregated         bad "[s.__setitem__('run', s['run'].replace('base_ok', 'ok')) for s in $D['steps'] if 'patch-decide.py removed' in (s.get('run') or '')]"
 case_ policy-read-once        bad "[s.__setitem__('run', 'git show origin/main:.github/policy/required-checks.json > x\n' + s['run'].replace('git show origin/main:', 'git show HEAD:')) for s in $D['steps'] if s.get('id') == 'checks']"
@@ -487,25 +492,46 @@ case_ ctx-checkout-persist    bad "[s['with'].__setitem__('persist-credentials',
 case_ ctx-wf-env              bad "d['env'] = {'BASH_ENV': 'bin/prep.sh'}"
 case_ ctx-wf-defaults         bad "d['defaults'] = {'run': {'shell': 'bash -c \"x; bash {0}\"'}}"
 case_ notes-job-always        bad "$N.__setitem__('if', '\${{ always() }}')"
-sp="$work/sp.yml"; sed 's/patch-decide.py tag-notes/true/' "$root/.github/workflows/stage-promote.yml" > "$sp"
-if out=$(judge "$root/.github/workflows/release.yml" "$sp"); then failn=$((failn+1)); echo "FAIL stage-promote-fixed-notes → ok, want bad"
-else pass=$((pass+1)); echo "PASS stage-promote-fixed-notes → bad ($out)"; fi
-# the stages themselves read the baseline they are given (empty = the tag's own baseline, as for owner-signed tags)
-stages_out=$(python3 - "$root" <<'PY'
-import os, sys, yaml
+# ---- REQ-REL-009-AC14 (cache #300; advisor): patch-decide.py refuses tag-like notes sources with exit 2 in EVERY sub-command. The two jobs that call it must
+# FAIL on a non-zero exit and post nothing: no `|| true`, no empty-notes fallback. Run the real step texts with a FAKE patch-decide.py that exits 2.
+behav_out=$(python3 - "$root" <<'PY'
+import os, re, stat, subprocess, sys, tempfile, yaml
 root = sys.argv[1]
+d = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)
+def step(job, needle):
+    return next(s for s in d["jobs"][job]["steps"] if needle in (s.get("name") or ""))
 bad = []
-if "baseline_version" not in open(os.path.join(root, "bin/build-admit.py")).read():
-    bad.append("bin/build-admit.py does not write the baseline it used into the admission evidence")
-for f, needle in (("stage-promote.yml", '--arg baseline "requirements/releases/${base}.yaml"'),):
-    d = yaml.load(open(os.path.join(root, ".github/workflows", f)), Loader=yaml.BaseLoader)
-    inp = d["on"]["workflow_call"]["inputs"].get("baseline-version") or {}
-    text = open(os.path.join(root, ".github/workflows", f)).read()
-    if inp.get("default") != "" or needle not in text or "inputs.baseline-version" not in text:
-        bad.append("%s does not read the baseline it is given" % f)
+def run(label, job, needle, calls_ok):
+    t = tempfile.mkdtemp(); os.makedirs(t + "/bin"); os.makedirs(t + "/fake"); os.makedirs(t + "/tmp"); os.makedirs(t + "/docs")
+    open(t + "/bin/patch-decide.py", "w").write("import sys, os\nopen(os.environ['LOG'], 'a').write('patch-decide ' + ' '.join(sys.argv[1:2]) + '\\n')\nsys.stderr.write('patch-decide: refused\\n'); sys.exit(2)\n")
+    open(t + "/bin/auditor-signed-commit.py", "w").write("import os\nopen(os.environ['LOG'], 'a').write('signed-commit\\n')\n")
+    for n in ("gh", "git", "grype"):
+        open(t + "/fake/" + n, "w").write("#!/usr/bin/env bash\necho \"%s $*\" >> \"$LOG\"\ncase \"$1 $2\" in 'cat-file tag') echo tagobject;; esac\nexit 0\n" % n)
+        os.chmod(t + "/fake/" + n, 0o755)
+    e = dict(os.environ, PATH=t + "/fake:" + os.environ["PATH"], LOG=t + "/log", RUNNER_TEMP=t + "/tmp", VERSION="v0.3.1", SINCE="v0.3.0",
+             GITHUB_STEP_SUMMARY=t + "/summary", GITHUB_REPOSITORY="o/r", GH_TOKEN="x", GITHUB_OUTPUT=t + "/out")
+    open(t + "/tmp/removed.json", "w").write("[]"); open(t + "/tmp/rel-0.3.0.json", "w").write("{}")
+    run_text = step(job, needle)["run"]
+    r = subprocess.run(["bash", "-c", run_text], cwd=t, env=e, capture_output=True, text=True)
+    log = open(t + "/log").read() if os.path.exists(t + "/log") else ""
+    if r.returncode == 0:
+        bad.append("%s: exit 0 although patch-decide.py exited 2 (a fallback swallowed it)" % label)
+    if "gh pr" in log or "signed-commit" in log or "gh release" in log:
+        bad.append("%s: posted or committed something after the refusal: %s" % (label, log.replace("\n", " | ")[:200]))
+    if os.path.exists(t + "/tmp/notes.md") and os.path.getsize(t + "/tmp/notes.md") == 0 and r.returncode == 0:
+        bad.append("%s: an empty notes file was accepted" % label)
+run("patch-notes job (tag-notes then changelog)", "patch-notes", "changelog-and-clear", None)
+run("decide job (the patch notes step)", "decide", "the patch notes", None)
+# the published list is never an input of a BEGIN check: it is built with %(contents) in the decide job only; the patch-notes job passes no --published
+txt = open(os.path.join(root, ".github/workflows/release.yml")).read()
+pn = d["jobs"]["patch-notes"]
+if "--published" in yaml.safe_dump(pn):
+    bad.append("the patch-notes job passes --published (tag signature blocks would reach cache's BEGIN check)")
+if re.search(r"tag-notes[^\n]*\|\|", txt) or re.search(r"patch-decide\.py (notes|changelog)[^\n]*\|\| *(true|:)", txt):
+    bad.append("a patch-decide.py call is followed by a fallback")
 print("; ".join(bad) or "ok")
 PY
 )
-if [ "$stages_out" = ok ]; then pass=$((pass+1)); echo "PASS stages-read-baseline → ok"; else failn=$((failn+1)); echo "FAIL stages-read-baseline ($stages_out)"; fi
+if [ "$behav_out" = ok ]; then pass=$((pass+1)); echo "PASS patch-decide exit 2 fails both jobs and posts nothing (no fallback)"; else failn=$((failn+1)); echo "FAIL patch-decide exit 2 handling ($behav_out)"; fi
 echo "release-patch-wiring: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

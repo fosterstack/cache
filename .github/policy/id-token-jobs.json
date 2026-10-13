@@ -53,8 +53,8 @@
   },
   {
    "workflow": "release.yml",
-   "job": "promotion",
-   "reason": "calls stage-promote.yml (legacy, frozen)"
+   "job": "release",
+   "reason": "calls stage-promote.yml: Release, whose Witness steps and keyless cosign signatures mint the signing identity (REQ-CHAIN-007)"
   },
   {
    "workflow": "release.yml",
@@ -93,8 +93,8 @@
   },
   {
    "workflow": "stage-promote.yml",
-   "job": "promote",
-   "reason": "legacy stage (frozen): cosign sign/attest of the published images and actions/attest; rewritten in PR 4"
+   "job": "release",
+   "reason": "Release (REQ-CHAIN-007): Witness steps and the keyless cosign signatures of release-sign.sh mint the signing identity; the one job with a registry credential, the apk signing key and packages: write"
   },
   {
    "workflow": "stage-reproducibility.yml",

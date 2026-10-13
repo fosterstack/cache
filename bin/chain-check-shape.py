@@ -51,8 +51,8 @@ KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
-STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64"   # PR 2's + PR 3's three
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # PR 2's; never github or slsa
+STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # PR 2's + PR 3's three
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"]   # PR 2's; never github or slsa
 
 
 def witnessed_lines():

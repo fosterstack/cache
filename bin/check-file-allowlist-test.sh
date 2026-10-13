@@ -111,7 +111,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 165, 6   # 165 = 164 + the known-red pattern line of PR 2; 164 = 162 + the suite guard's two patterns; 162 = 161 + the check-phase targets (ruling 0384); 161 = 163 - the 2 patterns of the removed authorization verifier (PR 3); 163 = 156 + the 7 PR 3 patterns (check scripts and helpers, acceptance suites, kind installer, Check suites and shape judge); 156: main's 140 + the 9 release-chain PR 1 patterns (chain-* scripts and tests, the Sigstore public trust files, results/.gitkeep) + the 7 PR 2 patterns (Witness wrapper, Build/Rebuild stage scripts, admission, items and archive helpers, suites)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 169, 6   # 169 = 165 (PR 3 and PR 2: phase targets, the suite guard's two patterns, the known-red pattern line) + the 4 PR 4 patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); the earlier count 166 = 165 + ... ; 161 + the 4 PR 4 patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 161 = 163 - the 2 patterns of the removed authorization verifier (PR 3); 163 = 156 + the 7 PR 3 patterns (check scripts and helpers, acceptance suites, kind installer, Check suites and shape judge); 156: main's 140 + the 9 release-chain PR 1 patterns (chain-* scripts and tests, the Sigstore public trust files, results/.gitkeep) + the 7 PR 2 patterns (Witness wrapper, Build/Rebuild stage scripts, admission, items and archive helpers, suites)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -158,7 +158,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "c4653c2f9387e32426ef7cd9350809faf0aca89ec4c0c34fbe84ea63b5c5875d"
+PINNED_SHA256 = "5b7e481a9b3c12c6e881b4290118714a1445be78bb3cdc3dfaa91aaec5d8d592"
 if rstart and rend:
     import hashlib
     _b = _rawlines

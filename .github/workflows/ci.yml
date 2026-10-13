@@ -365,8 +365,16 @@ jobs:
         run: bash bin/chain-install-witness-test.sh
       - name: "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)"
         run: bash bin/chain-check-scripts-test.sh
-      - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the release job until PR 4 and the guide until cache-3f, known-red.json)"
+      - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the guide until cache-3f, known-red.json)"
         run: bash bin/chain-check-wiring-test.sh
+      - name: "the pinned crane install (REQ-CHAIN-007-AC7)"
+        run: bash bin/chain-install-crane-test.sh
+      - name: "Release's wiring: the stage grammar, credentials, graph, verify order, release candidates, named records (REQ-CHAIN-007)"
+        run: bash bin/chain-release-wiring-test.sh
+      - name: "Release's scripts: verify, apks, publish, sign, assets, post-publish verification (REQ-CHAIN-007, REQ-REL-009-AC11, REQ-CHAIN-006-AC7)"
+        run: bash bin/chain-release-scripts-test.sh
+      - name: "Release's metadata: the vex-forms input, the manifest, release-files.sha256 and the coverage gate (REQ-CHAIN-007-AC19)"
+        run: bash bin/chain-release-metadata-test.sh
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: bash bin/dependabot-reviewer-test.sh

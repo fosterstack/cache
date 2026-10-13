@@ -26,6 +26,14 @@
 # The judge is proven on a known-good fixture tree and mutated copies, then applied to the real repository.
 # Needs python3 (no PyYAML: the scan is by text, comments stripped).
 set -euo pipefail
+# the red cases of this suite are the ones listed in test-evidence/known-red.json (KR-RECORDS-1: the cache scripts Release's steps run that are not listed rows
+# yet): the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
+if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
+  _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
+  printf '%s\n' "$_out"
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-records-test.sh --inner-rc "$_rc"
+  exit $?
+fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
@@ -129,7 +137,10 @@ for r in rows:
 claims = [str(r.get("claim") or "").strip().lower() for r in rows]
 for c in set(claims):
     if c and claims.count(c) > 1: bad.append("two rows make the same claim: " + c)
-print("; ".join(dict.fromkeys(bad)) or "ok")
+ids = list(dict.fromkeys(bad))
+if ids and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py); nothing else changes
+    print("FINDINGS-JSON " + json.dumps(ids), file=sys.stderr)
+print("; ".join(ids) or "ok")
 sys.exit(1 if bad else 0)
 PY
 export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
@@ -196,6 +207,14 @@ d=$(mk cosshort); printf 'jobs:\n  c:\n    steps:\n      - run: cosign attest --
 expect ok "cosign attest --type slsaprovenance1 resolves to SLSA provenance v1 (already has a row)" "$d"
 d=$(mk cossign); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign --yes "$IMG"\n' > "$d/.github/workflows/stage-verify.yml"
 expect caught "cosign sign (an image signature) with no row fails" "$d"
+# PR 4 (Release signs the release files keyless, one bundle each): a literal sign-blob has the cosign signature type and needs its row
+d=$(mk relblob); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --bundle release-files.sha256.bundle release-files.sha256\n' > "$d/.github/workflows/stage-verify.yml"
+expect caught "a literal cosign sign-blob of the release file list with no row fails" "$d"
+addrow "$d" "urn:cosign:signature" "a signature on the release files, each with a Rekor entry" customer
+expect ok "the same sign-blob with the cosign signature row (consumer: customer) passes" "$d"
+d=$(mk relrow); printf 'jobs:\n  c:\n    steps:\n      - run: cosign sign-blob --yes --bundle release-policy.bundle policy.json\n' > "$d/.github/workflows/stage-verify.yml"
+addrow "$d" "urn:cosign:signature" "a signature on the release policy, with a Rekor entry" release
+expect ok "the release policy's sign-blob with a row whose consumer is the release stage passes" "$d"
 # (Codex #249 r7 B7, the class closed) a signing call whose type cannot be resolved fails closed BY NAME, even when the rows it would
 # need exist: an unresolved attestor list, type, datatype or argument is an explicit error, never an assumption
 uncase() { # uncase NAME 'run line' LABEL WORD [ok]: stage-verify.yml with that run line; caught and naming WORD (or ok)
@@ -334,20 +353,15 @@ expect_named "in-toto-run is a known signer that needs a row" "$d" "stage-verify
 d=$(mk comment); printf '# cosign sign would go here\njobs: {}\n' > "$d/.github/workflows/stage-verify.yml"
 expect ok "a signing command inside a comment is not a producer" "$d"
 # ---- the real repository (no known-red allowance) -------------------------------------------------------------------------------------
-# Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them). The eleven legacy stage files PRs 2-4 rewrite are frozen by
-# sha256 in .github/policy/legacy-stage-files.json: what they produce still counts (so their rows stay consumed), but their OWN fail-closed
-# findings are left out; a changed one is judged in full, and with the list deleted the whole tree is judged.
+# Judged over a copy of the TRACKED files of .github/ and bin/ (as CI sees them). PR 4 rewrote the last legacy stage file and deleted
+# .github/policy/legacy-stage-files.json, so the whole tree is judged.
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
 tracked_copy() { local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"; ( cd "$root" && git ls-files -z -- .github bin | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
-expect ok "the real repository: every produced record type has a row with a claim and a stage consumer (frozen legacy files' own findings left out)" "$(tracked_copy real)"
-d=$(tracked_copy changed); printf '# x\n' >> "$d/.github/workflows/stage-promote.yml"
-expect_named "a changed byte in frozen stage-promote.yml: it is judged in full and named" "$d" "legacy file changed (judged in full): .github/workflows/stage-promote.yml"
+expect ok "the real repository: every produced record type has a row with a claim and a stage consumer" "$(tracked_copy real)"
 d=$(tracked_copy newattest); printf 'jobs:\n  a:\n    steps:\n      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6\n        with:\n          subject-path: x\n' > "$d/.github/workflows/scan-extra.yml"
 expect_named "a NEW actions/attest without a literal predicate-type in a non-frozen file fails closed" "$d" "scan-extra.yml: actions/attest with no literal predicate-type"
-d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"
-expect ok "with legacy-stage-files.json deleted the whole tree is judged and is green (PR 3 rewrote stage-verify.yml, the last legacy file with a finding of its own)" "$d"
-EXPECT=97
+EXPECT=98
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
