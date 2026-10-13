@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
 # proves: REQ-CHAIN-001-AC5
-# The hostile Build step (v0.3.0 rules 52a, 59; owner RATIFIED Oct 9; advisor 0328), static half. The runtime half is the
-# GitHub dry run, which must be green and linked in the PR before it merges (the AC says so; no script can check that).
+# The hostile Build step (v0.3.0 rules 52a, 59; owner RATIFIED Oct 9; advisor 0328), static and offline half. The runtime half is the signed
+# release-candidate (rc) tag run on main, cut after the cutover pull request has merged: it must be green and its run linked before any final
+# or patch tag is cut (REQ-CHAIN-001-AC5, accepted Oct 12); no script here can check that, and the marker of REQ-CHAIN-001-AC6 records it.
 #
 # The shape this test assumes (the implementer matches it; anything else is a change to this header first):
 #   stage-build.yml: a step `run: bash bin/chain-hostile-step.sh`, gated by `if:` mentioning inputs.hostile, in the Build job,
-#       followed by an upload of the artifact `hostile-attempts`. The script makes six attempts as six functions
-#       (the five of rule 52a plus the advisor's 0334 case): attempt_mint_sign_cert, attempt_read_sign_token,
-#       attempt_read_sign_key, attempt_hand_sign_code, attempt_forge_provenance, attempt_call_sign_from_other_workflow
-#       (a second workflow calls stage-sign.yml at the tag: it gets Sign's SAN but its Build Config URI is not release.yml;
-#       harness spike (b)). The runtime half of that last case needs a second caller workflow, which must NOT be merged
-#       (no workflow sprawl; the AC1 test allows only stage-sign.yml as new): it lives in a throwaway commit on the PR branch
-#       (.github/workflows/hostile-caller.yml), its record is uploaded as the artifact the script reads, and the commit is
-#       removed before the merge. The unit half is chain-verify-test.sh (sign_othercaller). It writes only the RAW MATERIAL of each attempt (a file) under attempts/, and never
+#       followed by an upload of the artifact `hostile-attempts`. The script makes exactly five attempts as five functions
+#       (the five runtime cases of rule 52a as accepted Oct 12): attempt_mint_sign_cert, attempt_read_sign_token,
+#       attempt_read_sign_key, attempt_hand_sign_code, attempt_forge_provenance. The sixth case of the older text (a second workflow
+#       calls stage-sign.yml at the tag: it gets Sign's SAN but its Build Config URI is not release.yml; harness spike (b)) is not a
+#       runtime case: no second workflow file exists (no workflow sprawl; the AC1 test allows only stage-sign.yml as new). It is
+#       judged by Sign's caller check in the static judge and by the offline unit half, chain-verify-test.sh (sign_othercaller), a
+#       stated limit of the proof. The script writes only the RAW MATERIAL of each attempt (a file) under attempts/, and never
 #       writes an outcome: the words refused/accepted/outcome do not appear in its code, so it cannot grade itself.
 #   DRY-RUN REF (round 5, decided here): production `sign --check` makes the per-tag policy from the template only when
 #       GITHUB_REF is refs/tags/vX.Y.Z (not -rc1, not refs/tags/x, not a branch): chain-verify-test.sh pins those refusals.
@@ -37,7 +37,7 @@
 #       `hostile-attempts` into attempts (the raw material each attempt made: without it every verify would read a missing file);
 #       `witness-build` into witness-build (Build's verified record, the --build-record of hand_sign_code, NOT a file the hostile
 #       step supplied); `provenance` into provenance (THIS run's genuine Sign output, for the positive control); the pinned
-#       `policy make` line above; then one step per attempt (six) and one POSITIVE CONTROL step (verify --stage sign --record
+#       `policy make` line above; then one step per attempt (five) and one POSITIVE CONTROL step (verify --stage sign --record
 #       provenance/provenance.json --policy policy.json --rekor-stub provenance/provenance.rekor.json, must exit 0, recorded as its own row positive_control that
 #       the verdict requires to be ACCEPTED: a policy that refuses everything, e.g. made for the wrong ref, is caught here), each
 #       exactly three lines:
@@ -57,11 +57,10 @@
 #                           the stub is the tlogEntry Sign extracted from its own cosign bundle into the provenance artifact; a verify
 #                           without the stub is refused 'rekor' (chain-verify-test.sh), so the control cannot pass by a shortcut)
 #         forge_provenance  verify --stage sign --record attempts/forge_provenance.json --policy policy.json
-#         call_sign_from_other_workflow  verify --stage sign --record attempts/call_sign_from_other_workflow.json --policy policy.json
 #       A refusal only counts when its stage and cause fit the attempt (the verdict checks): mint_sign_cert -> stage sign|release,
 #       cause names the identity or stage-sign.yml; read_sign_token / read_sign_key -> stage runner, `nothing usable`;
 #       hand_sign_code -> stage sign, cause digest|format; forge_provenance -> stage sign|release, cause identity|stage-sign.yml|
-#       signature|root (NOT the bare word `provenance`: it fits every Sign-stage refusal, round 6); call_sign_from_other_workflow -> stage sign|release, cause release.yml|build config. A refusal whose
+#       signature|root (NOT the bare word `provenance`: it fits every Sign-stage refusal, round 6). A refusal whose
 #       reason says the material was missing or unreadable NEVER counts (an attempt that never ran must not read as isolation).
 #       ERROR vs REFUSAL: a missing, unreadable or TRANSCRIPT-LESS material file is an ERROR (the token and key files must start with
 #       a line `# transcript: <what the attempt tried and how>` of at least 20 characters AND at least one more line (the attempt's
@@ -73,11 +72,8 @@
 #       hostile-results/hostile-results.json`. No hostile-results*.json may be a file of the repository tree (it must come from
 #       the run). Every dry-run-gated job (the release caller, the `decide` tag job) has an `if:` that has the conjunct
 #       `!inputs.dry-run` and no `||`, so a dry run neither tags nor publishes.
-#   The runtime half of the sixth case runs from a throwaway commit on a ref matching `hostile-proof/*` (a branch that is
-#       never a pull request and never merged); this test makes no exception for it and has no environment-variable bypass.
-#       N3 (round 6): the throwaway hostile-caller.yml and the release.yml dry run MUST run on the SAME ref (the policy is made for
-#       the run's own ref); a caller on another ref is refused for its IDENTITY, not for its Build Config URI, and the sixth row
-#       would not count.
+#   No throwaway caller workflow exists any more (the sixth case is not a runtime case); this test makes no exception for one and has no
+#       environment-variable bypass: a hostile step that reads a record named hostile-caller is a finding of the wiring judge.
 #   Token grading (round 6): hostile-material --kind token reads the JWT's payload claims. A token whose job_workflow_ref
 #       names stage-sign.yml means the attempt really obtained Sign's identity (exit 0, graded accepted); a token whose
 #       job_workflow_ref names any other file (Build's own token) is `refused at runner: nothing usable for Sign`; a JWT with no
@@ -92,13 +88,13 @@
 #           writes {"attempt","outcome","stage","reason","judged_by":"verifier","exit_code"}: outcome refused when N != 0 and
 #           FILE's first line is `refused at <stage>: <reason>` (stage one of runner|build|sign|rebuild|check|release); outcome
 #           accepted when N == 0; exit 1 (no row) for a traceback, an empty or unparsable stderr with N != 0, or an unknown attempt.
-#       chain-verify.py hostile-collect DIR --out F      merges the seven rows (six attempts + positive_control); exit 1 naming a missing, duplicate or extra one.
+#       chain-verify.py hostile-collect DIR --out F      merges the six rows (five attempts + positive_control); exit 1 naming a missing, duplicate or extra one.
 #       chain-verify.py hostile-material --kind token|key --file F [--sign-record provenance.json]
 #           exit 0 when F holds a transcript line and usable material (a token whose claims line says job_workflow_ref is stage-sign.yml; a key file whose public key is the key of Sign's certificate: the step lists `pubkey-sha256: <hex>` per key file found and `searched: <N> files`, N above zero), exit 1 with
 #           `refused at runner: nothing usable` when F has the transcript line and no material (the runner VM was isolated, the
 #           attempt got nothing); exit 2 with `error: ...` when F is missing, unreadable, empty or has no transcript line (no
 #           row); an unknown kind exits 2.
-#   chain-verify.py hostile-verdict RESULTS.json   (the REAL script is run here; there is no inline copy of it): the six attempts
+#   chain-verify.py hostile-verdict RESULTS.json   (the REAL script is run here; there is no inline copy of it): the five attempts
 #       must be refused with their own stage and cause, AND positive_control must be accepted. The hostile step's two material
 #       functions write the transcript line (the code contains `transcript:` twice).
 # Modelled on: this repo's bin/release-patch-wiring-test.sh (YAML-parsing wiring judge); in-toto-witness cmd/verify.go:211 (a
