@@ -958,6 +958,8 @@ dj("rc-hostile-accepted.json", {"attempts": [_hrow(a, outcome="accepted", exit_c
 dj("rc-hostile-missing.json", {"attempts": [_hrow(a) for a in _HF if a != "read_sign_key"] + [_CTL]})
 dj("rc-hostile-exit2.json", {"attempts": [_hrow(a, exit_code=2) for a in _HF] + [_CTL]})
 dj("rc-hostile-null.json", {"attempts": [None] + [_hrow(a) for a in _HF] + [_CTL]})
+dj("rc-hostile-floatexit.json", {"attempts": [_hrow(a, exit_code=1.0) for a in _HF] + [_CTL]})
+dj("rc-hostile-floatctl.json", {"attempts": [_hrow(a) for a in _HF] + [dict(_CTL, exit_code=0.0)]})
 dj("rc-hostile-boolexit.json", {"attempts": [_hrow(a, exit_code=True) for a in _HF] + [_CTL]})
 dj("rc-hostile-reworded.json", {"attempts": [_hrow(a, reason=_HF[a][1] + " ") for a in _HF] + [_CTL]})      # still a green verdict, other bytes
 def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", rekor="rc-rekor.json", hostile="rc-hostile", check=None, digests="digests.json"):
@@ -985,6 +987,8 @@ rcdir("rc_hostile_reworded", hostile="rc-hostile-reworded")
 rcdir("rc_hostile_exit2", hostile="rc-hostile-exit2")
 rcdir("rc_hostile_null", hostile="rc-hostile-null")
 rcdir("rc_hostile_boolexit", hostile="rc-hostile-boolexit")
+rcdir("rc_hostile_floatexit", hostile="rc-hostile-floatexit")
+rcdir("rc_hostile_floatctl", hostile="rc-hostile-floatctl")
 print("fixtures ok")
 PY
 python3 "$work/fx.py" "$work" > "$work/fx.log" 2>&1 || { cat "$work/fx.log"; echo "FAIL fixture generation"; exit 1; }
@@ -2026,22 +2030,26 @@ AG=".github/ag"ent      # assembled: the layout check refuses a file outside the
 # Codex 4b-1 r1 (B B1): the set closes over every file the chain files name or import (a script the workflow runs that no row lists, a file under the agent folder a sibling module)
 rcg checkout -q -b closure "$C1"; mkdir -p "$RG/$AG/bin"
 printf "name: release\njobs:\n  d:\n    steps:\n      - run: python3 bin/decide.py go\n      - run: python3 $AG/bin/sig.py\n      # see bin/x-test.sh\n" > "$RG/.github/workflows/release.yml"
-printf 'import helper\nfrom pathlib import Path\nprint(1)\n' > "$RG/$AG/bin/sig.py"; printf 'X = 1\n' > "$RG/$AG/bin/helper.py"
+mkdir -p "$RG/$AG/bin/pkg/sub" "$RG/$AG/bin/other"
+printf 'import helper\nfrom pathlib import Path\nfrom pkg import mod\nimport other.thing as t\nprint(1)\n' > "$RG/$AG/bin/sig.py"; printf 'X = 1\n' > "$RG/$AG/bin/helper.py"
+printf '' > "$RG/$AG/bin/pkg/__init__.py"; printf 'from .sub import deep\nfrom . import sibling\n' > "$RG/$AG/bin/pkg/mod.py"
+printf 'Z = 1\n' > "$RG/$AG/bin/pkg/sibling.py"; printf '' > "$RG/$AG/bin/pkg/sub/__init__.py"; printf 'D = 1\n' > "$RG/$AG/bin/pkg/sub/deep.py"
+printf '' > "$RG/$AG/bin/other/__init__.py"; printf 'T = 1\n' > "$RG/$AG/bin/other/thing.py"
 printf 'import deepmod\nimport os\n' > "$RG/bin/decide.py"; printf 'Y = 1\n' > "$RG/bin/deepmod.py"; printf '#!/bin/sh\nbash bin/viab.sh\n' > "$RG/bin/b.sh"; printf '#!/bin/sh\necho v\n' > "$RG/bin/viab.sh"
 printf '#!/bin/sh\n' > "$RG/bin/x-test.sh"
 rcg add -A > /dev/null; rcg commit -q -m closure; CCL=$(rcg rev-parse HEAD); rcg checkout -q main
 cbx list --commit "$CCL" --repo "$RG" || true; cl=$(cat "$work/cb.out")
-miss=0; for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.sh; do grep -F -q "  $f" <<< "$cl" || { miss=1; echo "closure: $f missing" >&2; }; done
+miss=0; for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.sh $AG/bin/pkg/__init__.py $AG/bin/pkg/mod.py $AG/bin/pkg/sibling.py $AG/bin/pkg/sub/__init__.py $AG/bin/pkg/sub/deep.py $AG/bin/other/__init__.py $AG/bin/other/thing.py; do grep -F -q "  $f" <<< "$cl" || { miss=1; echo "closure: $f missing" >&2; }; done
 [ "$miss" = 0 ] && ok "AC6 bytes: a script a chain workflow runs, a file under the agent folder's bin, a module a chain script imports and a script a listed script names are all in the set" || bad "AC6 bytes: the closure is missing a file the chain runs"
 ! grep -E -q 'x-test\.sh|other\.sh' <<< "$cl" && ok "AC6 bytes: a test file named in a comment and an unnamed script stay outside the set" || bad "AC6 bytes: a test or unrelated file is in the set"
 Scl=$(shaof "$CCL")
-for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.sh; do
+for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.sh $AG/bin/pkg/__init__.py $AG/bin/pkg/mod.py $AG/bin/pkg/sibling.py $AG/bin/pkg/sub/deep.py $AG/bin/other/thing.py; do
   rcg checkout -q -b "cl-$(basename "$f")" "$CCL"; printf '# changed\n' >> "$RG/$f"; rcg add -A > /dev/null; rcg commit -q -m cl; c=$(rcg rev-parse HEAD); rcg checkout -q main
   [ "$(shaof "$c")" != "$Scl" ] && [[ "$(shaof "$c")" =~ ^[0-9a-f]{64}$ ]] && ok "AC6 bytes: a changed $f changes the sha" || bad "AC6 bytes: a changed $f did not change the sha"
 done
 # the real tree: the scripts the real release workflow runs are in its set
 cbx list --commit HEAD --repo "$root" || true; rl=$(cat "$work/cb.out")
-for f in bin/patch-decide.py $AG/bin/auditor-signed-commit.py bin/chain-verify.py bin/chain-bytes-sha.py; do
+for f in bin/patch-decide.py $AG/bin/auditor-signed-commit.py $AG/bin/auditorlib/__init__.py $AG/bin/auditorlib/signed_commit.py bin/chain-verify.py bin/chain-bytes-sha.py; do
   grep -F -q "  $f" <<< "$rl" && ok "AC6 bytes: the real chain set holds $f" || bad "AC6 bytes: the real chain set lacks $f"
 done
 rcg checkout -q -b gone "$C1"; printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"},{"path":"bin/gone.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
@@ -2139,6 +2147,8 @@ expect_refuse "AC6 rc-proof: a hostile verdict whose bytes are not the ones the 
 expect_refuse "AC6 rc-proof: hostile rows whose exit code is 2 (not the verifier's refusal status 1) are refused" "hostile|exit" $(RCP rc_hostile_exit2)
 expect_refuse "AC6 rc-proof: a null attempt row is a refusal naming the hostile verdict, not a traceback" "hostile|row" $(RCP rc_hostile_null)
 expect_refuse "AC6 rc-proof: an exit code of true is not an integer exit status and is refused" "hostile|exit" $(RCP rc_hostile_boolexit)
+expect_refuse "AC6 rc-proof: an exit code of 1.0 on a refused row is not an integer exit status and is refused" "hostile|exit" $(RCP rc_hostile_floatexit)
+expect_refuse "AC6 rc-proof: the positive control's exit code 0.0 is not an integer exit status and is refused" "hostile|control" $(RCP rc_hostile_floatctl)
 python3 - "$work/marker-ok.json" "$work" <<'PY'
 import json, sys
 m = json.load(open(sys.argv[1])); r = dict(m["records"]); r["sign"] = "f" * 64
