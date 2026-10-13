@@ -161,7 +161,7 @@ ALLOW_PATTERNS=(
   '^bin/chain-check-shape\.py$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
   '^bin/release-(verify|apks|publish|sign|assets|postverify)\.sh$'
-  '^bin/release-(postverify|metadata)\.py$'
+  '^bin/release-(postverify|metadata|layout)\.py$'
   '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
   '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the

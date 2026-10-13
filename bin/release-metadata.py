@@ -62,6 +62,10 @@ def digests_of(path):
     for k, v in d.items():
         if not isinstance(v, str) or not DIGEST.fullmatch(v):
             refuse("%s: the value of %s is not sha256:<64 lower-case hex>" % (path, k))
+    table = re.compile(r"image-(production|fips)|apk-(standard|fips)-(amd64|arm64)|archive-(fips-)?linux-(amd64|arm64)")
+    for k in sorted(d):
+        if not table.fullmatch(k):
+            refuse("%s: the name %s is not in Build's digest table (image-production, image-fips, apk-VARIANT-ARCH, archive-linux-ARCH, archive-fips-linux-ARCH)" % (path, k))
     images = sorted(k for k in d if k.startswith("image-"))
     if images != sorted("image-" + v for v in VARIANTS):
         extra = [k for k in images if k not in ("image-" + v for v in VARIANTS)]

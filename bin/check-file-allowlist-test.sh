@@ -158,7 +158,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "5b7e481a9b3c12c6e881b4290118714a1445be78bb3cdc3dfaa91aaec5d8d592"
+PINNED_SHA256 = "fed3d011b329a98a4836b0a0571b76182aecbc48acadc6fb5835b0eebe9697df"
 if rstart and rend:
     import hashlib
     _b = _rawlines
