@@ -300,7 +300,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "45432c40a33b77f5f3bffd5938912faf09e68d078526753d77f8446371132af9"
+      "sha256": "71bc8a9603ce00882e5563cf256a1c4b9b609339fdfbe43510ce28e0924706dd"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -998,7 +998,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "f6641664ca1718f63ae65fe594bb30b2dd0325839fefa827cb2c4810828c83c8"
+      "sha256": "11fe5a78b03035f4631a80618d6781761938c232758451a3ccfb14d2dd3e13b0"
     },
     {
       "path": "bin/vex-forms.py",

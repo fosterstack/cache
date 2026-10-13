@@ -539,10 +539,18 @@ for label, ver, path in (("a version that is not vX.Y.Z", "0.3.0", "requirements
                          ("a release candidate version", "v0.3.0-rc1", "requirements/releases/v0.3.0-rc1.yaml"), ("a path that is not the version's file", "v0.3.0", "requirements/releases/v0.2.0.yaml"),
                          ("an absolute path", "v0.3.0", "/etc/passwd")):
     adm("admission-baseline: %s is refused (baseline)" % label, adm_tree("adm14", dict(ADM, baseline_version=ver, baseline=path), dict(ADM, baseline_version=ver, baseline=path)), 1, "baseline")
+# Codex 4b-2 r1 (A B1): a release candidate tag is admitted with its OWN baseline (version = tag, rc spelling) and the transfer must accept exactly that
+RCA = dict(ADM, tag="v0.3.0-rc1", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml")
+adm("admission-baseline: a release candidate tag's own baseline (version = the rc tag) is accepted", adm_tree("adm20", RCA, dict(RCA, run={"id": 2, "attempt": 1})), 0, tag="v0.3.0-rc1")
+adm("admission-baseline: a release candidate tag with a baseline that is not its own (v0.3.0) is refused (baseline)", adm_tree("adm21", dict(RCA, baseline_version="v0.3.0", baseline="requirements/releases/v0.3.0.yaml"), dict(RCA, baseline_version="v0.3.0", baseline="requirements/releases/v0.3.0.yaml")), 1, "baseline", tag="v0.3.0-rc1")
+adm("admission-baseline: a release candidate tag with another rc's baseline (v0.3.0-rc2) is refused (baseline)", adm_tree("adm22", dict(RCA, baseline_version="v0.3.0-rc2", baseline="requirements/releases/v0.3.0-rc2.yaml"), dict(RCA, baseline_version="v0.3.0-rc2", baseline="requirements/releases/v0.3.0-rc2.yaml")), 1, "baseline", tag="v0.3.0-rc1")
+adm("admission-baseline: a final tag with a release candidate baseline stays refused (baseline)", adm_tree("adm23", dict(ADM, tag="v0.3.0", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml"), dict(ADM, tag="v0.3.0", baseline_version="v0.3.0-rc1", baseline="requirements/releases/v0.3.0-rc1.yaml")), 1, "baseline", tag="v0.3.0")
+for label, ver in (("v0.3.0-rc", "v0.3.0-rc"), ("v0.3.0-RC1", "v0.3.0-RC1"), ("v0.3.0-rc.1", "v0.3.0-rc.1")):
+    adm("admission-baseline: the malformed candidate spelling %s is refused (baseline)" % label, adm_tree("adm24", dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver), dict(RCA, tag=ver, baseline_version=ver, baseline="requirements/releases/%s.yaml" % ver)), 1, "baseline", tag=ver)
 rc, out, err = run(["admission-baseline", "--admission", "a.json", "--admission", "b.json", "--tag", "v0.3.1", "--out", "out.json"], adm_tree("adm15"))
 check("admission-baseline: a missing --sha is a usage error (exit 2)", rc == 2 and "Traceback" not in err, "exit %s" % rc)
 shutil.rmtree(work, ignore_errors=True)
-EXPECT = 90
+EXPECT = 97
 print("pass=%d fail=%d" % (passed, failed))
 if passed + failed != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))

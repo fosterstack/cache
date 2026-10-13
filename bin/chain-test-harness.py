@@ -304,11 +304,8 @@ if cmd == "policy":
 if cmd in ("verify", "stage-start"):
     if rc: sys.stderr.write("refused at build: identity (fake)\\n")
     sys.exit(rc)
-if cmd == "admission-baseline":     # REQ-CHAIN-007-AC19: the baseline admission chose, from both legs, as a file of Build's own record (the real one is bin/chain_items.py)
-    legs = [json.load(open(a[i + 1])) for i, x in enumerate(a) if x == "--admission"]
-    if len(legs) != 2 or legs[0] != legs[1]: sys.stderr.write("refused at build: admission-baseline: the two legs disagree\\n"); sys.exit(1)
-    json.dump({k: legs[0][k] for k in ("tag", "sha", "baseline_version", "baseline")}, open(arg("--out"), "w"), sort_keys=True, indent=1)
-    sys.exit(0)
+if cmd == "admission-baseline":     # REQ-CHAIN-007-AC19: the REAL command (bin/chain_items.py) runs, so a refusal of an admitted tag shows up in the integration cases (Codex 4b-2 r1)
+    os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
 if cmd == "bind":       # every file under --dir must be a product of the record: the harness wrote the table .bind/<path with / as _>
     bad = []
     for root, _, files in os.walk(arg("--dir")):
@@ -376,7 +373,7 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
             files = out_files(arch, tag)
             files["items-apk.json"] = json.dumps(fragment(arch, tag)).encode()
             if kind == "assemble":      # each release apk leg copies its admission.json into out/ (REQ-CHAIN-007-AC19)
-                files["admission.json"] = json.dumps({"tag": tag, "sha": "0" * 40, "baseline_version": tag, "baseline": "requirements/releases/%s.yaml" % tag}).encode()
+                files["admission.json"] = json.dumps({"tag": tag, "sha": "0123456789abcdef0123456789abcdef01234567", "baseline_version": tag, "baseline": "requirements/releases/%s.yaml" % tag}).encode()
             for rel, b in files.items():
                 write("%s/%s/%s/%s" % (d, pre, r, rel), b)
                 write("%s/.bind/%s" % (d, ("%s/%s/%s" % (pre, r, rel)).replace("/", "_")), sha(b))

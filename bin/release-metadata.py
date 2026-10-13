@@ -236,9 +236,12 @@ def parse_sums(path, what):
         text = open(path).read()
     except OSError:
         refuse("%s is missing" % what)
-    for l in text.split("\n"):
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()                      # the one final newline; a second one is a blank line
+    for l in lines:
         if not l:
-            continue
+            refuse("%s: a blank line (the list is exactly one `<sha256>  <name>` line per file)" % what)
         m = re.fullmatch(r"([0-9a-f]{64})  ([^/\s]+)", l)
         if not m:
             refuse("%s: a line that is not `<sha256>  <name>`: %r" % (what, l))

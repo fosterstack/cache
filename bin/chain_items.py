@@ -524,8 +524,13 @@ def cmd_admission_baseline(a):
         refuse("build", "tag: admission was for %s, this run is %s" % (got["tag"], a.tag))
     if got["sha"] != a.sha:
         refuse("build", "sha: admission was for %s, this run is %s" % (got["sha"], a.sha))
-    if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", got["baseline_version"]) or got["baseline"] != "requirements/releases/%s.yaml" % got["baseline_version"]:
-        refuse("build", "baseline: %r at %r is not a vX.Y.Z baseline at requirements/releases/<version>.yaml" % (got["baseline_version"], got["baseline"]))
+    # a release candidate tag (vX.Y.Z-rcN) is admitted with its OWN baseline: the version is the tag itself; every other tag carries a vX.Y.Z baseline
+    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+", a.tag):
+        version_ok = got["baseline_version"] == a.tag
+    else:
+        version_ok = re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", got["baseline_version"]) is not None
+    if not version_ok or got["baseline"] != "requirements/releases/%s.yaml" % got["baseline_version"]:
+        refuse("build", "baseline: %r at %r is not the baseline of tag %s at requirements/releases/<version>.yaml (vX.Y.Z, or the release candidate's own version)" % (got["baseline_version"], got["baseline"], a.tag))
     with open(a.out, "w") as f:
         f.write(json.dumps(got, sort_keys=True, indent=1) + "\n")
     print("ok")
