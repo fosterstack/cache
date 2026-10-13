@@ -25,6 +25,9 @@ for pair in "production:$prod" "fips:$fips"; do
   fi
   own=$(cat "images/${pair%%:*}.digest")
   if [ "$own" != "${pair#*:}" ]; then echo "release-publish: images/${pair%%:*} is $own, Build attested ${pair#*:}: refusing to publish it" >&2; exit 1; fi
+  # The sidecar is a name, not a proof: the layout's own bytes are the attested image (round 1 B4). index.json holds exactly one descriptor, the attested
+  # digest; every blob hashes to its name; the index blob and every manifest, config and layer it reaches are present. Checked before any login or push.
+  python3 bin/release-layout.py "images/$v" "${pair#*:}"
 done
 
 digest_of() {

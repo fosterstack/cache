@@ -10,6 +10,14 @@ if [ -z "${GH_TOKEN:-}" ]; then echo "release-assets: GH_TOKEN is not set" >&2; 
 rel="$GITHUB_REF_NAME"
 # Everything is staged under its release name in release-upload/. The apks of the two architectures, and the SBOMs and lock files of the two images,
 # have the same file names, so each is staged under its architecture's or variant's name.
+# Round 1 B3: what is attached is what Build recorded and the set is complete, checked before a release is created or anything is staged. The four
+# Linux archives are exactly Build's (digests.json item archive-linux-ARCH / archive-fips-linux-ARCH names the sha256 of fscache_VER_linux_ARCH.tar.gz /
+# fscache-fips_VER_linux_ARCH.tar.gz); both architectures have an apk; the Check records are there to attach.
+for arch in x86_64 aarch64; do
+  compgen -G "release-apks/$arch/*.apk" > /dev/null || { echo "release-assets: no apk of the $arch architecture in release-apks/$arch: the set is incomplete" >&2; exit 1; }
+done
+compgen -G "witness-check/*/*.json" > /dev/null || { echo "release-assets: no Check record in witness-check/: the set is incomplete" >&2; exit 1; }
+python3 bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
 rm -rf release-upload release-published
 mkdir release-upload
 for f in release-apks/*/*.apk; do

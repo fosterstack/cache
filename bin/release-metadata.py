@@ -288,6 +288,33 @@ def cmd_gate(a):
         same_as(a)
 
 
+def cmd_bind_archives(a):
+    """BIND (REQ-CHAIN-007-AC9, round 1 B3): DIST holds exactly the four Linux archives Build recorded, each hashing to the digest of Build's digests.json
+    (item archive-linux-ARCH / archive-fips-linux-ARCH for fscache_VER_linux_ARCH.tar.gz / fscache-fips_VER_linux_ARCH.tar.gz). Nothing is written."""
+    ver = a.version
+    try:
+        with open(a.digests) as f:
+            digests = json.load(f)
+    except (OSError, ValueError):
+        refuse("%s is not readable JSON" % a.digests)
+    want = {}
+    for arch in ("amd64", "arm64"):
+        want["archive-linux-" + arch] = "fscache_%s_linux_%s.tar.gz" % (ver, arch)
+        want["archive-fips-linux-" + arch] = "fscache-fips_%s_linux_%s.tar.gz" % (ver, arch)
+    have = sorted(n for n in os.listdir(a.dist) if n.endswith(".tar.gz"))
+    if have != sorted(want.values()):
+        gone = sorted(i for i, n in want.items() if n not in have)
+        extra = sorted(n for n in have if n not in want.values())
+        refuse("%s does not hold exactly the four archives Build recorded (missing: %s; not recorded: %s)" % (a.dist, ", ".join(gone) or "none", ", ".join(extra) or "none"))
+    for item, name in sorted(want.items()):
+        p = os.path.join(a.dist, name)
+        if os.path.islink(p) or not os.path.isfile(p):
+            refuse("%s is not a regular file" % p)
+        got = "sha256:" + sha256_file(p)
+        if digests.get(item) != got:
+            refuse("%s (%s) is %s, Build's digests.json records %s: refusing to attach it" % (name, item, got, digests.get(item)))
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -297,8 +324,9 @@ def main(argv):
         m.add_argument("--" + k, required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
+    b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate}[a.cmd](a)
+    {"images": cmd_images, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives}[a.cmd](a)
 
 
 if __name__ == "__main__":

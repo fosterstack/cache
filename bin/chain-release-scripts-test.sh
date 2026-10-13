@@ -160,7 +160,7 @@ def tree(extra_env=None):
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("release-postverify.py", "release-metadata.py"):
+    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
     os.makedirs(os.path.join(t, "requirements/releases")); os.makedirs(os.path.join(t, "test-evidence"))

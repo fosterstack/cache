@@ -892,12 +892,15 @@
       "path": "bin/release-publish.sh",
       "tools": [
         "crane",
-        "jq"
+        "jq",
+        "python3"
       ],
-      "runs": [],
+      "runs": [
+        "bin/release-layout.py"
+      ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "ca99650272b7ea8b12a54d99e9791ec0e3d1382a38edc543e7608b6f0fe0ed54",
+      "sha256": "1a7e52e30c1c55531e04d00e8d3f167c93b8c1d8b70a17f454c4ba936d4db7dc",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -936,7 +939,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "e19c3cbdb77863cf32b5c171aa38589e82a82e6e7d0392d30a05ae67fd159b63",
+      "sha256": "ebd9961db5e216b5474ea01518471ebae7efdd26bce1c8e300a78e2b51694715",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -980,7 +983,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "79cfe26b36291e995480edd515a7713bf42df5e9e8367a99c5b679373723d328"
+      "sha256": "54231a761d64342732d74e6a7d0800f66649fe7c8bbb6e508dfa6c5f8a49b129"
     },
     {
       "path": "bin/vex-forms.py",
@@ -1170,6 +1173,15 @@
       "runs": [],
       "signs": false,
       "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
+    },
+    {
+      "path": "bin/release-layout.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-publish: the OCI layout directory is the image Build attested (index.json holds the one attested descriptor, every blob hashes to its name, the index, manifests, configs and layers are present), checked before any login or push (REQ-CHAIN-007-AC7)",
+      "sha256": "0d4ac3dab902f39eb07661617882b0b184dca61403ed91e29d4950c948908662",
+      "reads_env": []
     }
   ],
   "ambient_env": [
