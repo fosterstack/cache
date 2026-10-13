@@ -560,6 +560,9 @@ vsw = P.vex_changes(adoc({"P": ["A"], "Q": ["B"]}), adoc({"P": ["B"], "Q": ["A"]
 check("R2 VEX: moving subcomponents between products is a scope change (the product and its subcomponents stay associated)", vsw != [], vsw)
 vco = P.vex_changes(adoc({"P": ["urn:a,urn:b"]}), adoc({"P": ["urn:a", "urn:b"]}))
 check("R2 VEX: one component id that contains a comma is not two components", vco != [], vco)
+vdual = P.vex_changes({"statements": adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]},
+                      {"statements": [dict(s_, status="not_affected") for s_ in adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]]})
+check("R2 VEX: two scopes that differ only by how ids are split are displayed as two different scopes", len(vdual) == 2 and vdual[0]["scope"] != vdual[1]["scope"], vdual)
 vu = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", A_, {})))
 check("R2 VEX: an identical statement is no change", vu == [], vu)
 pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
