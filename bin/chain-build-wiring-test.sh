@@ -1691,6 +1691,17 @@ want = ("the cutover pull request (chain-v030 to main) needs every other entry o
         "'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, which changes exactly the marker file and the removal of this one entry, and until then no final or patch tag runs the chain")
 sys.exit(0 if e["reason"] == want and e["case"].startswith("KNOWN-RED cutover:") else 1)
 PY
+# REQ-CHAIN-004-AC3, REQ-CHAIN-005-AC1 and REQ-CHAIN-004-AC11 say what the stage files do (advisor T62 text, Oct 12; Codex 4b-3 r1): the installs, and the one apko exception
+python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "004-AC3/AC11, 005-AC1 text: each job installs only its tool by the pinned installer line, and AC11's names-apko clause carries exactly that exception" || bad "004-AC3/AC11, 005-AC1 text: the installer wording or AC11's exception is missing"
+import sys, yaml
+R = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
+def then(rid, n): return next(a for a in R[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))["then"]
+t3, t11, t5 = then("REQ-CHAIN-004", 3), then("REQ-CHAIN-004", 11), then("REQ-CHAIN-005", 1)
+assert "the apk job installs melange only and the assemble job apko only, each by the pinned installer line (`bash bin/install-build-tools.sh melange` or `bash bin/install-build-tools.sh apko`) as one step right after the Witness (and Go) install and so before admission, with no env and no secret" in t3
+assert "its apk job installs melange only and its assemble job apko only, as REQ-CHAIN-004-AC3 says of Build" in t5
+assert "no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock," in t11
+assert "no stage file or stage script names apko, passes a lock," not in t11
+PY
 # an entry added since the merge base is refused unless the PR body names it
 kg="$work/kr/repo"; rm -rf "$kg"; mkdir -p "$kg/test-evidence"
 ( cd "$kg" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
@@ -2028,7 +2039,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=699
+EXPECT=700
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

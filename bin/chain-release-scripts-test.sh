@@ -436,7 +436,7 @@ check("witness-build" not in blobs and "witness-rebuild" not in blobs and "witne
 for f in ("policy.json", "vendor-evidence.json", "production.sbom.json", "fips.sbom.json", "production.full.lock.json", "fips.full.lock.json", "dependency-list.json", "checksums.txt", "release-files.sha256"):
     name = {"policy.json": "release-policy.bundle"}.get(f, f + ".bundle")
     t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_NOREKOR": name})
-    check(rc != 0 and "rekor" in se.lower() and name.split(".bundle")[0].split(".")[0] in se, "AC8 a bundle with no Rekor entry (%s) fails the script, naming the file" % name, "rc=%s %s" % (rc, first(se)))
+    check(rc != 0 and "rekor" in se.lower() and name in se, "AC8 a bundle with no Rekor entry (%s) fails the script, naming the file" % name, "rc=%s %s" % (rc, first(se)))
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"EVIDENCE_FAIL": "1"}); check(rc != 0 and not signs(t), "AC8 failing evidence stops everything before anything is signed")
 t = tree(); rc, so, se = run(t, "release-sign", creds=REG, env={"COSIGN_FAIL": "1"}); check(rc != 0 and len(signs(t)) == 1, "AC8 a failing cosign (it fails at login, the first call) stops at the first call")
 # the signature itself fails (the login passes): the failing `cosign sign` is the only one made, and no attestation and no blob signature follows it

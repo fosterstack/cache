@@ -503,7 +503,7 @@ def lockflow(files):
             d = yaml.load(open(f).read(), Loader=yaml.BaseLoader)
         except FileNotFoundError:
             bad.append("missing file: %s" % f); continue
-        # the one exception (advisor 0393 item 1): the pinned installer line `bash bin/install-build-tools.sh apko` as a step of its own (a name and a run, nothing else)
+        # the one exception (advisor 0393 item 1; REQ-CHAIN-004-AC11 says so): the pinned installer line `bash bin/install-build-tools.sh apko` as a step of its own (a name and a run, nothing else)
         for j in ((d or {}).get("jobs") or {}).values():
             if isinstance(j, dict) and isinstance(j.get("steps"), list):
                 j["steps"] = [s for s in j["steps"] if not (isinstance(s, dict) and set(s) <= {"name", "run"} and str(s.get("run") or "").strip() == INSTALL_APKO)]
