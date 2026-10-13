@@ -16,6 +16,9 @@ DIG=sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
 # case_ <name> <expect ok|bad> <workflow text> [setup commands, run in the fixture root]
 case_() {
   local name=$1 expect=$2 d="$work/$1"
+  # an empty workflow is no fixture: a helper that failed to run (or a command substitution that printed nothing) would
+  # otherwise be judged "ok" and make an `ok` case pass without testing anything
+  if [ -z "${3//[[:space:]]/}" ]; then failn=$((failn+1)); echo "FAIL $name → empty fixture (the helper that builds it produced nothing)"; return; fi
   mkdir -p "$d/.github/workflows"; printf '%s\n' "$3" > "$d/.github/workflows/w.yml"
   cp "$gate" "$d/.github/workflows/agent-review-gate.yml"   # every tree must carry the pinned gate
   mkdir -p "$d/.github/agent/bin"; : > "$d/.github/agent/bin/auditor-review-gate.py"; : > "$d/.github/agent/bin/check-action-pins.py"; mkdir -p "$d/bin" "$d/.github/agent/tests"; : > "$d/bin/check-file-allowlist.sh"; : > "$d/.github/agent/tests/pin-wiring-test.sh"  # the gate's committed programs
@@ -629,6 +632,7 @@ gitcase symlink  bad "$head
 #     a fix or a documented exclusion with a reason). A LITERAL image a script runs or pulls must be a digest; an image
 #     through a shell variable stays with the review pass; a local name the same job made is our own bytes.
 r() { printf '%s\n    steps:\n      - run: %s' "$head" "$1"; }
+rb() { printf '%s\n    steps:\n      - run: |\n          %s' "$head" "$1"; }   # block scalar: quotes and ": " stay shell text
 case_ run-literal-tag          bad "$(r 'docker run --rm alpine:latest true')"
 case_ run-bare-name            bad "$(r 'docker run alpine true')"
 case_ run-registry-tag         bad "$(r 'docker pull ghcr.io/x/y:1.0')"
@@ -658,7 +662,7 @@ case_ run-local-tag-localtrust-removed-bad bad  "$head
     steps:
       - run: docker tag \"\$src\" fa-production
       - run: docker run --rm fa-production"
-case_ run-local-build          ok  "$(rb 'docker build -t localimg .
+case_ run-local-build-localtrust-removed-bad bad "$(rb 'docker build -t localimg .
           docker run localimg')" "printf 'FROM alpine@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667\\n' > Dockerfile"
 case_ run-local-skopeo         bad "$(r 'skopeo copy oci-archive:/tmp/a.oci docker-daemon:fa-debug:latest && docker run fa-debug:latest')"
 case_ run-comment              ok  "$(r 'true # docker run alpine')"
@@ -693,7 +697,6 @@ case_ run-other-job-local      bad "$head
     steps:
       - run: docker run fa-production"
 
-rb() { printf '%s\n    steps:\n      - run: |\n          %s' "$head" "$1"; }   # block scalar: quotes and ": " stay shell text
 # --- package installs a run: script makes (handoff 0070; owner Sep 30, handoff 0023). A Python install is pinned only
 #     when every package comes from a -r file pip checks with --require-hashes; pipx / uv tool / uvx cannot take hashes;
 #     npm, gem, yarn and pnpm installs are flagged too (none in the workflows today; a future one must not pass silently).
