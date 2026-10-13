@@ -37,7 +37,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         check-scan/fips/acceptance/guide; bin/check-stage.sh is judged by `script` alone (its pinned lines name Build's
                         witness-build/ directory, advisor ruling Q3).
   listed JSON ROOT      REQ-CHAIN-006-AC8: each check script is a row of .github/policy/chain-scripts.json with the sha256 the file has.
-  removed ROOT          REQ-CHAIN-006-AC10 (rules 61, 65): the old acceptance stages and the custom authorization verifier are gone and
+  removed ROOT          REQ-CHAIN-006-AC10 (rules 61, 65): the Dockerfile, buildx and goreleaser, their Dependabot entry and every reader are gone; the old acceptance stages and the custom authorization verifier are gone and
                         neither release.yml nor ci.yml calls them.
 Modelled on: in-toto-witness docs/attestors/environment.md and docs/commands.md (the flags), docs/tutorials/artifact-policy.md:58-70 (what a
 collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the same token-fetch lines)."""
@@ -563,6 +563,51 @@ def removed(root):
         for f in OLD + ["acceptance.yml"]:
             if re.search(r"uses:\s*\./\.github/workflows/" + re.escape(f), t):
                 bad.append("release.yml still calls %s" % f)
+    bad += removed_rule61(root)
+    return bad
+
+
+# Rule 61 (REQ-CHAIN-006-AC10; advisor Oct 12): once the new chain works, the Dockerfile, buildx and goreleaser and their Dependabot entries are removed, and nothing
+# reads them. Under apko there is no base image: the base inputs are the committed locks (.github/policy/base-inputs.json), and a candidate image is read by crane, by digest.
+RULE61_WORDS = re.compile(r"(?i)\bdockerfile|\bbuildx\b|goreleaser|\bimagetools\b|build/docker")
+# the judges and the deny lists that NAME these tools in order to refuse them are not readers of them
+RULE61_NAMING = {"bin/chain-release-shape.py", "bin/chain-test-shape.py", "bin/chain-check-shape.py"}
+
+
+def removed_rule61(root):
+    bad = []
+    for f in (".goreleaser.yaml", ".goreleaser.yml"):
+        if os.path.exists(os.path.join(root, f)):
+            bad.append("%s still exists (rule 61: goreleaser is removed)" % f)
+    if os.path.isdir(os.path.join(root, "build/docker")):
+        bad.append("build/docker still exists (rule 61: the Dockerfiles are removed; the image is assembled by apko from committed locks)")
+    for dp, dn, fn in os.walk(root):
+        dn[:] = [d for d in dn if d not in (".git", "node_modules") and os.path.join(dp, d) != os.path.join(root, ".github/agent")]
+        for f in fn:
+            if f.startswith("Dockerfile"):
+                bad.append("%s exists (rule 61: no Dockerfile)" % os.path.relpath(os.path.join(dp, f), root))
+    dp_ = os.path.join(root, ".github/dependabot.yml")
+    if os.path.exists(dp_) and re.search(r"package-ecosystem:\s*[\"']?docker[\"']?\s*$", open(dp_).read(), re.M):
+        bad.append(".github/dependabot.yml still has the docker ecosystem entry (rule 61: its Dependabot entry is removed with the Dockerfiles)")
+    readers = []
+    for sub, ext in ((".github/workflows", (".yml", ".yaml")), (".github/policy", (".json",)), ("bin", (".sh", ".py"))):
+        d = os.path.join(root, sub)
+        if os.path.isdir(d):
+            for f in sorted(os.listdir(d)):
+                rel = sub + "/" + f
+                if f.endswith(ext) and not re.search(r"(-test\.(sh|py)|_test\.py)$", f) and rel not in RULE61_NAMING and os.path.isfile(os.path.join(d, f)):
+                    readers.append(rel)
+    if os.path.exists(dp_):
+        readers.append(".github/dependabot.yml")
+    for rel in readers:
+        m = RULE61_WORDS.search(open(os.path.join(root, rel), errors="replace").read())
+        if m:
+            bad.append("%s names %r (rule 61: no Dockerfile, buildx or goreleaser is read or kept; a candidate image is read by crane, by digest)" % (rel, m.group(0)))
+    rs = os.path.join(root, ".github/workflows/main-candidate-rescan.yml")
+    if os.path.exists(rs):
+        t = open(rs).read()
+        if "crane manifest" not in t or "bin/install-scanner.sh crane" not in t:
+            bad.append("main-candidate-rescan.yml does not read the candidate index with crane (the pinned install, `crane manifest` by digest)")
     return bad
 
 

@@ -145,8 +145,8 @@ jobs:
       - name: install ${{ matrix.scanner }} (pinned by checksum; a scanner that can't run is a pipeline failure, not a finding)
         run: ./bin/install-scanner.sh '${{ matrix.scanner == 'inspector' && 'inspector-sbomgen' || matrix.scanner }}'
 
-      # Load every (variant, platform) child into the docker daemon. buildx
-      # writes an OCI-layout tar the scanners do not read directly, so each
+      # Load every (variant, platform) child into the docker daemon. The
+      # candidate is an OCI layout the scanners do not read directly, so each
       # single-arch child is loaded by ref. Both gate scanners scan these
       # four children by ref.
       - name: load every variant/platform child into the docker daemon

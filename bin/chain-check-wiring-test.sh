@@ -525,6 +525,30 @@ cp -r "$work/r" "$work/r5"; mkdir -p "$work/r5/bin"; : > "$work/r5/bin/authorize
 expect caught "AC10 the custom authorization verifier still exists (rule 65)" "authorize-acceptance-check.py" removed "$work/r5"
 cp -r "$work/r" "$work/r6"; mkdir -p "$work/r6/.github/workflows"; printf 'jobs:\n  t:\n    steps:\n      - run: bash bin/authorize-acceptance-check-test.sh\n' > "$work/r6/.github/workflows/ci.yml"
 expect caught "AC10 ci.yml still runs the custom authorization verifier's test (rule 65)" "ci.yml" removed "$work/r6"
+# rule 61 (advisor Oct 12): the Dockerfile, buildx and goreleaser, their Dependabot entry and every reader
+mkr() { rm -rf "$work/$1"; cp -r "$work/r" "$work/$1"; mkdir -p "$work/$1/bin" "$work/$1/.github/policy"; }
+mkr q1; : > "$work/q1/.goreleaser.yaml"
+expect caught "AC10 rule 61: .goreleaser.yaml still exists" ".goreleaser.yaml" removed "$work/q1"
+mkr q2; mkdir -p "$work/q2/build/docker"; : > "$work/q2/build/docker/Dockerfile.production"
+expect caught "AC10 rule 61: build/docker still exists" "build/docker" removed "$work/q2"
+mkr q3; mkdir -p "$work/q3/tools/x"; : > "$work/q3/tools/x/Dockerfile"
+expect caught "AC10 rule 61: a Dockerfile anywhere is refused" "tools/x/Dockerfile" removed "$work/q3"
+mkr q4; printf 'updates:\n  - package-ecosystem: "docker"\n    directory: "/build/docker"\n' > "$work/q4/.github/dependabot.yml"
+expect caught "AC10 rule 61: the Dependabot docker entry is still there" "docker ecosystem" removed "$work/q4"
+mkr q5; printf '          grep -h FROM build/docker/Dockerfile.* | sort -u\n' >> "$work/q5/.github/workflows/release.yml"
+expect caught "AC10 rule 61: release.yml still reads a Dockerfile" "release.yml names" removed "$work/q5"
+mkr q6; printf 'jobs:\n  r:\n    steps:\n      - run: docker buildx imagetools inspect --raw "$ref"\n' > "$work/q6/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a workflow still reads an image with buildx imagetools" "main-candidate-rescan.yml names" removed "$work/q6"
+mkr q7; printf '#!/usr/bin/env bash\ndocker buildx imagetools create --tag x y\n' > "$work/q7/bin/scout-root-cause.sh"
+expect caught "AC10 rule 61: a script still builds an index with buildx imagetools" "scout-root-cause.sh names" removed "$work/q7"
+mkr q8; printf '  {"path": ".goreleaser.yaml", "sha256": "0"}\n' > "$work/q8/.github/policy/build-config-files.json"
+expect caught "AC10 rule 61: the build-config list still pins .goreleaser.yaml" "build-config-files.json names" removed "$work/q8"
+mkr q9; printf 'jobs:\n  r:\n    steps:\n      - run: docker login ghcr.io\n' > "$work/q9/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the rescan does not read the candidate index with crane by digest" "crane" removed "$work/q9"
+mkr q10; printf 'jobs:\n  r:\n    steps:\n      - run: ./bin/install-scanner.sh crane\n      - run: crane manifest "$ref" > /tmp/index.json\n' > "$work/q10/.github/workflows/main-candidate-rescan.yml"
+expect ok "fixture: a rescan that reads the candidate index with the pinned crane passes" "" removed "$work/q10"
+mkr q11; printf 'DENY = "docker buildx goreleaser"\n' > "$work/q11/bin/chain-release-shape.py"
+expect ok "fixture: the deny list of a judge may name the removed tools (it refuses them)" "" removed "$work/q11"
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
 expect ok "AC4 round 1 F2: the real stage-verify.yml installs every scanner .github/policy/scanners.json lists (check-scan.sh runs them)" "" installs "$root/.github/workflows/stage-verify.yml" "$root/.github/policy/scanners.json"
@@ -540,7 +564,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=217
+EXPECT=228
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

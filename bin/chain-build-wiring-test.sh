@@ -1848,6 +1848,23 @@ out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/release-
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
+# rules 61 and 62 (advisor Oct 12; REQ-REL-009, the base-input-changed signal): every base input .github/policy/base-inputs.json names is a file of origin/main (the cache lane's
+# locks and records). Expected red until the cache lane lands them: KR-BASE-LOCKS lists each one that is not there, so the entry shrinks as they land. A ref that cannot be read
+# counts every path as absent (never a pass).
+absent=$(python3 - "$root" <<'PY'
+import json, subprocess, sys
+root = sys.argv[1]
+paths = json.load(open(root + "/.github/policy/base-inputs.json"))["base_inputs"]
+r = subprocess.run(["git", "-C", root, "ls-tree", "-r", "--name-only", "origin/main", "--"] + paths, capture_output=True, text=True)
+have = set(r.stdout.split()) if r.returncode == 0 else set()
+print("\n".join(p for p in paths if p not in have))
+PY
+)
+if [ -z "$absent" ]; then ok "KNOWN-RED base locks: every path .github/policy/base-inputs.json lists is a file of origin/main"
+else
+  printf '%s\n' "$absent" | jq -R '"the base input " + . + " is not on origin/main"' | jq -sc '.' | sed 's/^/FINDINGS-JSON /'
+  bad "KNOWN-RED base locks: every path .github/policy/base-inputs.json lists is a file of origin/main"
+fi
 # the harness itself can fail: (1) a script that ignores a refused admission is visible; (2) a script without its stage-start line fails its cases and the
 # summary still prints (a wrong implementation must not abort the test: every counting command above is safe under set -e)
 mk "$work/ctl" apk "$work/s-apk.sh" oracle v0.3.0
@@ -2039,7 +2056,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=700
+EXPECT=701
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

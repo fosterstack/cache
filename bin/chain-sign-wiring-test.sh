@@ -30,8 +30,8 @@
 #               script scanned as raw text, signing only as its row says; only bin/chain-verify.py `sign` may sign provenance). Three CLOSED
 #               lists keep this from being a text scan: id_token_jobs (.github/policy/id-token-jobs.json: the only jobs that may hold
 #               id-token: write, which keyless signing needs; a << merge key in permissions or an unparsable workflow fails closed),
-#               build_config (.github/policy/build-config-files.json: the build configuration outside bin/ and .github/ pinned by sha256,
-#               and .goreleaser.yaml held to a closed key set), frozen_files (.github/policy/legacy-stage-files.json: the eleven legacy
+#               build_config (.github/policy/build-config-files.json: the build configuration outside bin/ and .github/ pinned by sha256),
+#               frozen_files (.github/policy/legacy-stage-files.json: the eleven legacy
 #               stage files PRs 2-4 rewrite, pinned by sha256; their own findings are left out; the LISTED scripts they run are still
 #               followed, an UNLISTED file they run is never scanned). stdlib_shadows refuses a file or directory under bin/ or .github/
 #               named after a standard-library module; the Sign step and every python3 line of a stage file run isolated (python3 -I).
@@ -211,22 +211,10 @@ def frozen_files(base, bad):
     return frozen
 
 # BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): pinned by sha256
-BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".goreleaser.yaml", ".grype.yaml", ".ko.yaml", ".gremlins.yaml", "build/docker/*", ".githooks/*")
-# .goreleaser.yaml as a CLOSED key set (Opus r3, Sonnet r3): the keys, and the values that can run a command, are exactly today's; in
-# particular no signs, docker_signs, binary_signs, dockers, nfpms, includes, universal_binaries, upx, publishers, build hooks or gobinary
-GORELEASER_KEYS = {"": {"version", "project_name", "before", "builds", "archives", "checksum", "sboms", "release", "changelog"},
-                   "before": {"hooks"}, "builds": {"binary", "env", "flags", "goarch", "goos", "id", "ldflags", "main", "mod_timestamp"},
-                   "archives": {"formats", "id", "ids", "name_template"}, "checksum": {"name_template"}, "sboms": {"artifacts"},
-                   "release": {"draft", "github"}, "changelog": {"filters", "sort"}}
-GORELEASER_HOOKS = ["go mod verify", "git diff --exit-code go.mod go.sum"]      # the only before.hooks
-# each build's env, flags and ldflags EXACTLY as today (GOFLAGS=-toolexec, -toolexec, or -linkmode=external -extld=... would run a tool)
-GORELEASER_BUILDS = {"fscache": {"env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "ldflags": ["-s -w"]},
-                     "fscache-fips": {"env": ["CGO_ENABLED=0", "GOFIPS140=v1.0.0"], "flags": ["-trimpath"], "ldflags": ["-s -w"]}}
-
+BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".grype.yaml", ".ko.yaml", ".gremlins.yaml", ".githooks/*")
 def build_config(base, bad):
     """Every build configuration file is listed with its sha256 in .github/policy/build-config-files.json; a changed, missing or unlisted
-    one is a finding. .goreleaser.yaml (run with id-token: write by stage-build.yml) may not sign: no signs/docker_signs/binary_signs/notarize/
-    publishers/after, no hooks but GORELEASER_HOOKS, no per-build hooks, no custom sboms command."""
+    one is a finding (rule 61: goreleaser and the Dockerfiles are removed, so there is no file whose keys need a closed set)."""
     p = os.path.join(base, ".github/policy/build-config-files.json")
     try: listed = {r["path"]: r["sha256"] for r in (_cts.jload(p)["files"] if os.path.exists(p) else [])}
     except Exception as ex: bad.append("AC1: build-config-files.json is malformed (%s)" % ex); return
@@ -235,7 +223,6 @@ def build_config(base, bad):
         if x not in listed: bad.append("AC1: build config file not listed: %s: add it to build-config-files.json with its sha256" % x)
         elif sha256_of(os.path.join(base, x)) != listed[x]: bad.append("AC1: build config file changed: %s: update build-config-files.json or delete it" % x)
     for x in sorted(set(listed) - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
-    goreleaser_keys(base, bad)
 
 COMPILED = (".pyc", ".pyo", ".so", ".pyd", ".dll")
 
@@ -262,32 +249,6 @@ def stdlib_shadows(base, bad):
                 stem = x.split(".")[0].lower()
                 if x.lower().endswith((".py", ".pyc")) and stem in names:
                     bad.append("AC1: %s is named after the standard-library module %s (it would shadow it)" % (os.path.relpath(os.path.join(dp, x), base), stem))
-
-def goreleaser_keys(base, bad):
-    """.goreleaser.yaml (run with id-token: write by stage-build.yml's build job) holds only GORELEASER_KEYS, the two hooks, and build
-    env/flags from the closed sets: no signs, docker_signs, binary_signs, universal_binaries, upx, nfpms, publishers, gobinary, tool..."""
-    g = os.path.join(base, ".goreleaser.yaml")
-    if not os.path.exists(g): return
-    try: d = yload(open(g).read())
-    except Exception as ex: bad.append("AC1: .goreleaser.yaml does not parse (%s)" % ex); return
-    if not isinstance(d, dict): bad.append("AC1: .goreleaser.yaml is not a mapping"); return
-    for k in sorted(set(d) - GORELEASER_KEYS[""]): bad.append("AC1: .goreleaser.yaml has key `%s`, outside its closed key set" % k)
-    def entries(sec):
-        v = d.get(sec)
-        return v if isinstance(v, list) else [v] if isinstance(v, dict) else []
-    for sec in sorted(set(GORELEASER_KEYS) - {""}):
-        if d.get(sec) is not None and not entries(sec): bad.append("AC1: .goreleaser.yaml %s has an unexpected shape" % sec)
-        for e in entries(sec):
-            if not isinstance(e, dict): bad.append("AC1: .goreleaser.yaml %s entry is not a mapping" % sec); continue
-            for k in sorted(set(e) - GORELEASER_KEYS[sec]): bad.append("AC1: .goreleaser.yaml %s has key `%s`, outside its closed key set" % (sec, k))
-            if sec == "builds":
-                if [x.get("id") for x in entries("builds") if isinstance(x, dict)].count(e.get("id")) > 1:
-                    bad.append("AC1: .goreleaser.yaml build id %r is repeated" % e.get("id")); continue
-                want = GORELEASER_BUILDS.get(e.get("id"))
-                if want is None: bad.append("AC1: .goreleaser.yaml build id %r is not one of %s" % (e.get("id"), sorted(GORELEASER_BUILDS))); continue
-                for k in ("env", "flags", "ldflags"):
-                    if e.get(k) != want[k]: bad.append("AC1: .goreleaser.yaml build %s %s is %s, not exactly %s" % (e.get("id"), k, e.get(k), want[k]))
-    if (d.get("before") or {}).get("hooks") != GORELEASER_HOOKS: bad.append("AC1: .goreleaser.yaml before.hooks are not exactly %s" % GORELEASER_HOOKS)
 
 MERGE_TAG = "tag:yaml.org,2002:merge"
 
@@ -2287,7 +2248,7 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .github/ and bin/ of REPO (default: the real tree)
   local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
   # .github/ and bin/, plus the build configuration the build tooling reads outside them (pinned in .github/policy/build-config-files.json)
-  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .goreleaser.yaml .grype.yaml .ko.yaml .gremlins.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .grype.yaml .ko.yaml .gremlins.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
 # a tracked file deleted in the working tree would make the copy silently partial: fail clearly instead (CI checks out every tracked file)
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
@@ -2404,12 +2365,9 @@ probe mytool "./mytool" "the real bin/chain-hostile-step.sh running ./mytool (an
 probe bashlib "mylib" "the real bin/chain-hostile-step.sh running bash mylib, its sha256 updated (Sonnet 3)" \
   "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 # ---- Opus #249 r-final: the signer rule is a CLOSED ALLOW-LIST, not a scan ----
-# (B1) build configuration outside bin/ and .github/ is pinned by sha256, and .goreleaser.yaml may not sign or grow hooks
-probe gorel     .goreleaser.yaml "a before.hooks entry in .goreleaser.yaml that signs provenance (stage-build.yml's build job has id-token: write)" \
-  "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    - git diff --exit-code go.mod go.sum\n\",\"    - git diff --exit-code go.mod go.sum\n    - cosign attest-blob --yes --type slsaprovenance --predicate p.json x\n\",1);open(p,\"w\").write(t)'"
-probe gorelsigns .goreleaser.yaml "a signs: block in .goreleaser.yaml (cmd cosign, an args array)" "printf 'signs:\n  - cmd: cosign\n    args: [\"sign-blob\", \"--yes\", \"--bundle\", \"x\"]\n' >> .goreleaser.yaml"
-probe cfgchanged build/docker/Dockerfile.production "a byte change in a pinned build file (Dockerfile.production)" "printf '# x\n' >> build/docker/Dockerfile.production"
-probe cfgnew    build/docker/Dockerfile.evil "a new, unlisted build file (build/docker/Dockerfile.evil)" "printf 'FROM scratch\n' > build/docker/Dockerfile.evil"
+# (B1) build configuration outside bin/ and .github/ is pinned by sha256 (rule 61: .goreleaser.yaml and the Dockerfiles are gone; their key-set and hook probes went with them)
+probe cfgchanged .golangci.yml "a byte change in a pinned build file (.golangci.yml)" "printf '# x\n' >> .golangci.yml"
+probe cfgnew    .ko.yaml "a new, unlisted build file (.ko.yaml)" "printf 'defaultBaseImage: scratch\n' > .ko.yaml"
 # (B2) a job may hold id-token: write only if .github/policy/id-token-jobs.json lists it (workflow, job): remote reusable-workflow signers and
 # in-process libraries need the token, so the list covers them structurally
 IDJ='  probe-job:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      contents: read\n'
@@ -2432,15 +2390,6 @@ probe otherrepo "ci.yml job probe-job" "a ci.yml job with id-token: write callin
 GHS='      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n        with:\n          script: require(\x27@actions/attest\x27).attestProvenance()\n'
 probe listedjob "scorecard.yml signs provenance" "actions/github-script calling attestProvenance added to scorecard.yml's listed analysis job" \
   "python3 -c 'import sys;p=\".github/workflows/scorecard.yml\";t=open(p).read();i=t.index(\"    steps:\n\")+len(\"    steps:\n\");t=t[:i]+sys.argv[1].encode().decode(\"unicode_escape\")+t[i:];open(p,\"w\").write(t)' '$GHS'"
-# Opus r3 M1: .goreleaser.yaml is a CLOSED key set; each probe re-edits the file's sha256 so only the key rule can catch it
-rehash_cfg() { python3 -c 'import hashlib,json,sys; p=".github/policy/build-config-files.json"; d=json.load(open(p))
-for r in d["files"]:
-    if r["path"] == sys.argv[1]: r["sha256"] = hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()
-json.dump(d, open(p,"w"), indent=1)' "$1"; }
-probe gorelub   "universal_binaries" "universal_binaries with hooks in .goreleaser.yaml (hash re-edited)" "printf 'universal_binaries:\n  - hooks:\n      post: cosign attest-blob x\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
-probe gorelgob  "gobinary" "a build's gobinary set in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    main: ./cmd/fscache\n\",\"    main: ./cmd/fscache\n    gobinary: ./evil-go\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelupx  "upx" "an upx section in .goreleaser.yaml (hash re-edited)" "printf 'upx:\n  - enabled: true\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
-probe gorelnfpm "nfpms" "nfpms with scripts in .goreleaser.yaml (hash re-edited)" "printf 'nfpms:\n  - scripts:\n      postinstall: x.sh\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 # Sonnet r3 G1: the same signer step in another listed job (scan.yml's scanner)
 probe listedjob2 "scan.yml signs provenance" "actions/github-script calling attestProvenance added to scan.yml's listed scanner job" \
   "python3 -c 'import sys;p=\".github/workflows/scan.yml\";t=open(p).read();i=t.index(\"  scanner:\");i=t.index(\"    steps:\n\",i)+len(\"    steps:\n\");t=t[:i]+sys.argv[1].encode().decode(\"unicode_escape\")+t[i:];open(p,\"w\").write(t)' '$GHS'"
@@ -2504,13 +2453,6 @@ PYT
 case "$bout" in *TIMEOUT*) failn=$((failn + 1)); echo "FAIL an alias bomb hung the merge-key walk";;
   rc=1*"merge key"*) pass=$((pass + 1)); echo "ok   an alias bomb with a merge key at its base is walked once per node, finishes, and is refused";;
   *) failn=$((failn + 1)); echo "FAIL an alias bomb was not refused: ${bout:0:200}";; esac
-probe goreldup   "repeated" "two goreleaser builds with the same id (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"id: fscache-fips\",\"id: fscache\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelenv0  "env" "a build with env: [] in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    env:\n      - CGO_ENABLED=0\n    goos\",\"    env: []\n    goos\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelld   "ldflags" "ldflags -s -w -linkmode=external -extld=./bin/x.sh in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"- -s -w\",\"- -s -w -linkmode=external -extld=./bin/x.sh\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe goreldock "dockers" "a dockers section in .goreleaser.yaml (hash re-edited)" "printf 'dockers:\n  - image_templates: [x]\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
-probe gorelinc  "includes" "an includes section in .goreleaser.yaml (hash re-edited)" "printf 'includes:\n  - from_file:\n      path: evil.yaml\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
 probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
@@ -3409,7 +3351,7 @@ hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
 hostjudge "an absolute path after an interpreter" 'python3 $ABS'
 hostjudge "an absolute path inside an assignment" 'x=$ABS'
 
-EXPECT=1342
+EXPECT=1329
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
