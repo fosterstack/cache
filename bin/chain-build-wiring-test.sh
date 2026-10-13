@@ -1702,6 +1702,16 @@ assert "its apk job installs melange only and its assemble job apko only, as REQ
 assert "no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock," in t11
 assert "no stage file or stage script names apko, passes a lock," not in t11
 PY
+# REQ-CHAIN-006-AC10, REQ-REL-009-AC1 and REQ-SUP-001-AC1 say what rules 61 and 65 removed and what replaced it (advisor R61 text, Oct 12; the base inputs are one committed list)
+python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "006-AC10, REL-009-AC1, SUP-001-AC1 text: no Dockerfile, buildx, goreleaser or Dependabot docker entry; the base inputs are one committed list the decide job prints" || bad "006-AC10, REL-009-AC1, SUP-001-AC1 text: the rule 61 wording is missing"
+import sys, yaml
+R = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
+def then(rid, n): return next(a for a in R[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))["then"]
+t10, t9, ts = then("REQ-CHAIN-006", 10), then("REQ-REL-009", 1), then("REQ-SUP-001", 1)
+assert "and no .goreleaser.yaml, no build/docker directory or file named Dockerfile and no Dependabot docker entry exists" in t10 and "a candidate image is read by crane, by digest" in t10
+assert "a change of a base input listed in .github/policy/base-inputs.json" in t9 and "bin/patch-decide.py base-moved" in t9 and "base-image digest pins" not in t9
+assert "no docker entry exists (rule 61: there is no Dockerfile)" in ts and "docker entries are unchanged" not in ts
+PY
 # an entry added since the merge base is refused unless the PR body names it
 kg="$work/kr/repo"; rm -rf "$kg"; mkdir -p "$kg/test-evidence"
 ( cd "$kg" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
@@ -2056,7 +2066,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=701
+EXPECT=702
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

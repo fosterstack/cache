@@ -1581,7 +1581,7 @@ requirements:
       - id: REQ-REL-009-AC1
         given: "the commits on main since the latest release tag"
         when: "release.yml's decide job classifies them"
-        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, base-image digest pins, or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why"
+        then: "each commit is fix-class (only dependency version pins in go.mod/go.sum with no new module, a change of a base input listed in .github/policy/base-inputs.json (the apko base locks, the melange lock and the archive records of the image build; an executable, symlinked or deleted one never counts), or the VEX and suppression files), neutral (non-executable data only: docs/, requirements/ and test-evidence/ data and the reviewed .github files; an executable test never counts — owner Oct 3) or not patch-clean (anything else, unless its merged PR carries the label patch-fix); a patch is cut only when no commit is not patch-clean; otherwise nothing is cut and the standing issue \"auditor: main is not patch-clean\" is opened or updated with the commits and why; the decide job prints the listed base inputs that changed since the latest release (bin/patch-decide.py base-moved); no base image is scanned (none exists), so no distribution-package finding counts as removed"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC2
@@ -2151,7 +2151,7 @@ requirements:
       - id: REQ-SUP-001-AC1
         given: "Dependabot's configuration"
         when: "it is read"
-        then: "the github-actions and pip entries wait 7 days (a 7-day cooldown), and the gomod and docker entries are unchanged"
+        then: "the github-actions and pip entries wait 7 days (a 7-day cooldown), the gomod entry is unchanged, and no docker entry exists (rule 61: there is no Dockerfile)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-SUP-001-AC2
@@ -3027,7 +3027,7 @@ requirements:
       - id: REQ-CHAIN-006-AC10
         given: "the repository on the integration branch"
         when: "the old acceptance stages are looked for"
-        then: "stage-acceptance-artifacts.yml, stage-acceptance-egress.yml, stage-acceptance-k8s.yml, stage-acceptance-predicate.yml and stage-authorize.yml no longer exist and no job of release.yml calls them or acceptance.yml; their useful commands live on as listed plain scripts; the custom authorization verifier (bin/authorize-acceptance-check.py and its test) no longer exists and ci.yml no longer runs it, each removed file being named in the pull request (rule 65)"
+        then: "stage-acceptance-artifacts.yml, stage-acceptance-egress.yml, stage-acceptance-k8s.yml, stage-acceptance-predicate.yml and stage-authorize.yml no longer exist and no job of release.yml calls them or acceptance.yml; their useful commands live on as listed plain scripts; the custom authorization verifier (bin/authorize-acceptance-check.py and its test) no longer exists and ci.yml no longer runs it, each removed file being named in the pull request (rule 65); and no .goreleaser.yaml, no build/docker directory or file named Dockerfile and no Dependabot docker entry exists, and no workflow, policy file or script (a judge's list of tools to refuse excepted) names Dockerfile, buildx, goreleaser or imagetools: a candidate image is read by crane, by digest (main-candidate-rescan.yml: the pinned install and `crane manifest` of the digest reference; the Scout probe appends the attestation manifest with `crane index append`, both sources by digest)"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
       - id: REQ-CHAIN-006-AC11
