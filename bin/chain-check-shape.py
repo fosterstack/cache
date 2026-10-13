@@ -595,12 +595,12 @@ def _judge_starts_tool(root, rel):
     except (SyntaxError, ValueError) as ex:
         return ["%s does not parse (%s): a judge that cannot be read cannot be shown not to start a removed tool" % (rel, type(ex).__name__)]
     out = []
-    runs = {"run", "call", "check_call", "check_output", "Popen", "system", "popen", "spawn", "spawnv", "execv", "execvp", "execve", "exec", "eval", "getoutput", "getstatusoutput"}
+    runs = re.compile(r"^(run|call|check_\w+|Popen|system|popen\w*|spawn\w*|posix_spawn\w*|exec\w*|eval|getoutput|getstatusoutput|startfile|fork\w*|forkpty|__import__|import_module)$")
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             f = node.func
             name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
-            if name in runs or name.startswith("exec"):
+            if runs.match(name):
                 seg = ast.get_source_segment(text, node) or ""
                 if RULE61_WORDS.search(seg):
                     out.append("%s:%d starts a program with a removed tool in its arguments (a judge's table names tools; it never starts them)" % (rel, node.lineno))
@@ -642,7 +642,13 @@ def removed_rule61(root):
                 if rel in RULE61_NAMING:
                     bad += _judge_starts_tool(root, rel)
                     continue
-                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f) or RULE61_REVIEW_RECORD.match(rel):
+                if RULE61_REVIEW_RECORD.match(rel):
+                    continue
+                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f):
+                    # a test names the removed tools in its fixtures and in what it expects to be refused; it never RUNS one: a line whose first command word is the tool is a finding
+                    for n_, ln in enumerate(open(full, errors="replace").read().splitlines(), 1):
+                        if re.match(r"^\s*(?:goreleaser|buildx|docker\s+buildx)\b", ln):
+                            bad.append("%s:%d runs a removed tool (a test names tools in its fixtures; it never starts one): %s" % (rel, n_, ln.strip()[:100]))
                     continue
                 if rel in RULE61_JUDGE_FILES:
                     bad += _judge_starts_tool(root, rel)
@@ -665,9 +671,9 @@ def removed_rule61(root):
     def exec_lines(text):
         return [ln.strip() for ln in str(text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
 
-    def crane_forbidden(l):
+    def crane_forbidden(l, context):
         """True when the line names crane in a form that is not the install, the manifest read, the append, or a message that only prints the name."""
-        if not CRANE.search(l) or INSTALL.match(l) or MANIFEST.match(l) or APPEND.match(l):
+        if not CRANE.search(l) or INSTALL.match(l) or (context == "workflow" and MANIFEST.match(l)) or (context == "script" and APPEND.match(l)):
             return False
         if re.match(r"(echo|printf)\b", l):
             inner = re.findall(r"\$\([^)]*\)|`[^`]*`", l)      # a command substitution inside a message would run
@@ -682,7 +688,9 @@ def removed_rule61(root):
         n = 0
         for l in lines:
             try:
-                words = shlex.split(l, comments=True, posix=True)
+                words = []
+                for part in re.split(r"[;&|(){}]+", l):      # a command list `true;ref=x` is its words, not one
+                    words += shlex.split(part, comments=True, posix=True)
             except ValueError:
                 n += 1 if re.search(r"\b%s\+?=" % re.escape(var), l) else 0
                 continue
@@ -722,7 +730,7 @@ def removed_rule61(root):
                         depth += 0 if closes_here else 1
                     elif first in ("fi", "done", "esac") or l == "}" or l.startswith(") "):
                         depth = max(0, depth - 1)
-                    if crane_forbidden(l):
+                    if crane_forbidden(l, "workflow"):
                         bad.append("main-candidate-rescan.yml job %s: a line names crane in a form other than the pinned install or `if ! crane manifest \"$ref\" > /tmp/index.json 2>/tmp/inspect.err; then`: %s" % (jn, l[:120]))
                     elif MANIFEST.match(l):
                         saw_manifest = True
@@ -739,7 +747,7 @@ def removed_rule61(root):
     if os.path.exists(sc):
         ls = exec_lines(open(sc, errors="replace").read())
         for l in ls:
-            if crane_forbidden(l):
+            if crane_forbidden(l, "script"):
                 bad.append("bin/scout-root-cause.sh: a line names crane in a form other than the one index append: %s" % l[:120])
         napp = sum(1 for l in ls if APPEND.match(l))
         if any(re.search(r"(?<![\w`])crane index append", l) for l in ls) and napp != 1:

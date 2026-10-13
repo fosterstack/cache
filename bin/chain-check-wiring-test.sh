@@ -583,6 +583,16 @@ mkr q26; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/instal
 expect caught "AC10 rule 61: a redirected tag-based manifest read is an unrecognised crane form" "other than the pinned install" removed "$work/q26"
 mkr q27; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$PROBE_REPO:latest" -m "$att_ref" -t "$built_ref"\n' > "$work/q27/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q27/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: an index append from a literal tag is refused (the one approved append names the variables)" "other than the one index append" removed "$work/q27"
+mkr q39; printf '#!/bin/sh\ngoreleaser release --clean\n' > "$work/q39/bin/retired-test.sh"
+expect caught "AC10 rule 61: a test file whose line starts goreleaser is a finding (tests name the tools in fixtures; none starts one)" "runs a removed tool" removed "$work/q39"
+mkr q35; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          true;ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q35/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a reference reset inside a command list (true;ref=...) is counted as a second assignment" "assigned exactly once" removed "$work/q35"
+mkr q36; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          built_idx="ghcr.io/o/cache:latest"; att_ref="ghcr.io/o/cache:latest"; built_ref=x\n          crane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q36/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the index append is not a form of the rescan workflow (only of the Scout script)" "other than the pinned install" removed "$work/q36"
+mkr q37; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\nref="x:latest"\nif ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then exit 1; fi\n' > "$work/q37/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q37/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a crane manifest in the Scout script is not a form of that script" "other than the one index append" removed "$work/q37"
+mkr q38; mkdir -p "$work/q38/$AG/supply-chain"; printf 'import os\nos.spawnlp(os.P_WAIT, "goreleaser", "goreleaser", "build")\n' > "$work/q38/$AG/supply-chain/pin-age-check.py"
+expect caught "AC10 rule 61: a judge file that starts a removed tool through the spawn family is a finding" "starts a program with a removed tool" removed "$work/q38"
 mkr q28; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          echo checking; crane manifest "ghcr.io/o/cache:latest" > /tmp/x.json\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q28/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a tag read after an echo on the same line is refused" "other than the pinned install" removed "$work/q28"
 mkr q29; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          /usr/local/bin/crane manifest "ghcr.io/o/cache:latest" > /tmp/x.json\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q29/.github/workflows/main-candidate-rescan.yml"
@@ -614,7 +624,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=251
+EXPECT=256
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
