@@ -844,6 +844,7 @@ def _envrec(var):
 add("build_env_custom", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_ID_TOKEN_REQUEST_CUSTOM"))
 add("build_env_gh", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("GH_TOKEN"))
 add("build_env_runtime", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_RUNTIME_URL"))
+add("build_env_sigstore", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("SIGSTORE_ID_TOKEN"))   # round 1 F1: the one sigstore token release-sign holds
 add("build_env_clean", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("HOSTNAME"))
 # ---- Codex security round 3 ----
 # (X2) every envelope field has its JSON type; a wrong one is a refusal ("envelope"), never a traceback
@@ -1218,6 +1219,7 @@ expect_refuse "002-AC3 a Witness record is checked for the timestamp instead" "t
 expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_ID_TOKEN_REQUEST_CUSTOM (the whole prefix, not a fixed list)" "build|actions_id_token_request_custom" verify $(V) --stage build $(rec build_env_custom)
 expect_refuse "004-AC8 verify refuses a signed Build record whose environment names GH_TOKEN" "build|gh_token" verify $(V) --stage build $(rec build_env_gh)
 expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_RUNTIME_URL" "build|actions_runtime_url" verify $(V) --stage build $(rec build_env_runtime)
+expect_refuse "007-AC15 verify refuses a signed record whose environment names SIGSTORE_ID_TOKEN (the token release-sign alone holds)" "build|sigstore_id_token" verify $(V) --stage build $(rec build_env_sigstore)
 expect_ok "004-AC8 control: a signed Build record with an ordinary environment variable passes verify" verify $(V) --stage build $(rec build_env_clean)
 expect_refuse "004-AC8 stage-start refuses the same record as the previous stage's" "build|actions_id_token_request_custom" $(ST rebuild build) $(rec build_env_custom) --digests "$work/digests.json"
 expect_ok     "003-AC2 the Witness collection type (Statement v0.1, as Witness writes it) is allowed" verify $(V) --stage build $(rec build_coll)
@@ -1925,7 +1927,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=707
+EXPECT=708
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
