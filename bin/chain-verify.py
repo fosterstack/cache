@@ -2,7 +2,7 @@
 """The plain verifier of the v0.3.0 release chain (rules 52, 53, 53b, 57 verify side, 58, 63, 67).
 
 Subcommands: policy make, verify, sign --check, check-build-record, stage-start, actions, hostile-row, hostile-collect,
-hostile-material, hostile-verdict. The CLI contract is the header of the verify test; the hostile
+hostile-material, hostile-verdict, rc-proof. The CLI contract is the header of the verify test; the hostile
 subcommands are specified in the header of the hostile test.
 
 Every refusal exits 1 and prints, as its FIRST stderr line, `refused at <stage>: <reason>`. Anything else
@@ -964,6 +964,64 @@ def cmd_check_list(a):
     print("ok")
 
 
+# ---- rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12): the rc run's records, verified under the rc tag's identities, against the committed marker -------------------
+# Run by the pull request that writes .github/policy/rc-proof.json, on the records the rc run uploaded (laid out as Release's own step finds them). It adds no new
+# trust: every record goes through the verifiers Release itself runs (stage-start, bind-items, check-list) under the policy made for the marker's rc tag, the
+# hostile verdict through hostile-verdict, and the marker's digests are compared with the sha256 of each record file.
+RC_RECORDS = (
+    ("build", "witness-build/build-collection.json"),
+    ("sign", "provenance/provenance.json"),
+    ("rekor", "provenance/provenance.rekor.json"),
+    ("rebuild", "witness-rebuild/rebuild-collection.json"),
+    ("scanners", "witness-check/witness-scanners/scanners-collection.json"),
+    ("acceptance", "witness-check/witness-acceptance/acceptance-collection.json"),
+    ("runtime", "witness-check/witness-runtime/runtime-collection.json"),
+    ("arm64", "witness-check/witness-arm64/arm64-collection.json"),
+    ("hostile_verdict", "hostile-results/hostile-results.json"),
+)
+
+
+def cmd_rc_proof(a):
+    import contextlib
+    import io
+    bs = load_sibling("chain-bytes-sha")      # loaded here only: Sign's own run of this file never needs the marker helper
+    try:
+        marker = bs.check_marker(a.marker, a.commit, a.repo)
+    except bs.Refusal as r:
+        refuse("marker", str(r))
+    rec = lambda rel: os.path.join(a.records, rel)
+    with tempfile.TemporaryDirectory() as tmp:
+        pol_path = os.path.join(tmp, "policy.json")
+        ns = argparse.Namespace(template=a.template, tag=marker["rc_tag"], ref=None, trust=a.trust, fulcio_chain=a.fulcio_chain,
+                                tsa_chain=a.tsa_chain, rekor_key=a.rekor_key, out=pol_path)
+        policy_make(ns)
+        now = a.now
+        quiet = io.StringIO()
+        with contextlib.redirect_stdout(quiet):
+            digests = rec("witness-build/digests.json")
+            cmd_stage_start(argparse.Namespace(stage="release", previous="build", record=rec("witness-build/build-collection.json"),
+                                               digests=digests, policy=pol_path, now=now, rekor_stub=None))
+            cmd_bind_items(argparse.Namespace(policy=pol_path, record=rec("witness-build/build-collection.json"),
+                                              items=rec("witness-build/items.json"), now=now))
+            cmd_stage_start(argparse.Namespace(stage="release", previous="sign", record=rec("provenance/provenance.json"), digests=digests,
+                                               policy=pol_path, now=now, rekor_stub=rec("provenance/provenance.rekor.json")))
+            cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", record=rec("witness-rebuild/rebuild-collection.json"),
+                                               digests=digests, policy=pol_path, now=now, rekor_stub=None))
+            cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check"), now=now))
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(quiet):
+                chain_hostile.cmd_hostile_verdict(argparse.Namespace(results=rec("hostile-results/hostile-results.json")))
+        except SystemExit as ex:
+            if ex.code not in (0, None):
+                refuse("hostile", "the hostile verdict of the rc run is not green: %s" % " ".join(err.getvalue().split())[:400])
+    for name, rel in RC_RECORDS:
+        have = _sha256_bytes_of(rec(rel), "marker", "the %s record %s" % (name, rel))
+        if have != marker["records"][name]:
+            refuse("marker", "digest: the %s record %s is not the file the marker names (sha256 %s, marker %s)" % (name, rel, have, marker["records"][name]))
+    print("ok")
+
+
 def make_policy_from_template(a, tpl_path):
     ref = os.environ.get("GITHUB_REF", "")
     ev = os.environ.get("GITHUB_EVENT_NAME", "")
@@ -1422,6 +1480,14 @@ def build_parser():
     hm.add_argument("--sign-record")
     hv = sub.add_parser("hostile-verdict")
     hv.add_argument("results")
+    rp = sub.add_parser("rc-proof")
+    rp.add_argument("--marker", required=True)
+    rp.add_argument("--commit", required=True)
+    rp.add_argument("--repo", default=".")
+    rp.add_argument("--records", required=True)
+    rp.add_argument("--template", required=True)
+    for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key", "now"):
+        rp.add_argument("--" + n)
     chain_items.add_parsers(sub)
     return p
 
@@ -1455,6 +1521,8 @@ def main(argv):
             chain_hostile.cmd_hostile_material(a)
         elif a.cmd == "hostile-verdict":
             chain_hostile.cmd_hostile_verdict(a)
+        elif a.cmd == "rc-proof":
+            cmd_rc_proof(a)
     except Refuse as r:
         print("refused at %s: %s" % (r.stage, r.reason), file=sys.stderr)
         sys.exit(1)

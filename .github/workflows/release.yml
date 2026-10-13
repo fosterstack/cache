@@ -60,6 +60,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # REQ-CHAIN-001-AC6: no patch decision proceeds unless the committed marker names a recorded green rc-tag run of exactly these chain files (a missing marker
+      # fails this step, so the job ends before anything is decided, scanned or tagged)
+      - name: the rc-proof marker validates for this commit
+        run: python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"
+
       - name: install the pinned tools (gitsign; grype)
         run: |
           set -euo pipefail
@@ -449,11 +454,6 @@ jobs:
           rc=0
           python3 bin/chain-verify.py verify --stage sign --record attempts/forge_provenance.json --policy policy.json 2> /tmp/forge_provenance.err || rc=$?
           python3 bin/chain-verify.py hostile-row --attempt forge_provenance --exit-code "$rc" --stderr /tmp/forge_provenance.err --out results/forge_provenance.json
-      - name: attempt call_sign_from_other_workflow
-        run: |
-          rc=0
-          python3 bin/chain-verify.py verify --stage sign --record attempts/call_sign_from_other_workflow.json --policy policy.json 2> /tmp/call_sign_from_other_workflow.err || rc=$?
-          python3 bin/chain-verify.py hostile-row --attempt call_sign_from_other_workflow --exit-code "$rc" --stderr /tmp/call_sign_from_other_workflow.err --out results/call_sign_from_other_workflow.json
       - name: positive control (this run's genuine Sign output must be accepted)
         run: |
           rc=0

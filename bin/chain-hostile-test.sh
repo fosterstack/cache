@@ -113,14 +113,13 @@ pass=0 failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
 bad() { failn=$((failn + 1)); echo "FAIL $1"; }
 python3 -c 'import yaml' 2> /dev/null || { echo "FAIL python3 needs PyYAML (apt install python3-yaml)"; exit 1; }
-attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_provenance call_sign_from_other_workflow"
+attempts="mint_sign_cert read_sign_token read_sign_key hand_sign_code forge_provenance"
 python3 - "$work" $attempts <<'PY'
 import copy, json, sys
 w, att = sys.argv[1], sys.argv[2:]
 DEF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
        "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
-       "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml"),
-       "call_sign_from_other_workflow": ("release", "build config URI is scan.yml; release.yml required")}
+       "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml")}
 def row(a, **k):
     r = {"attempt": a, "outcome": "refused", "stage": DEF.get(a, ("release", "x"))[0], "reason": DEF.get(a, ("release", "identity is stage-build.yml"))[1], "judged_by": "verifier", "exit_code": 1}
     r.update(k); return r
@@ -132,24 +131,19 @@ def mut(n, i, **k):
     m = copy.deepcopy(good); m["attempts"][i].update(k); save(n, m)
 mut("accepted_forge", 4, outcome="accepted")
 mut("accepted_mint", 0, outcome="accepted")
-mut("accepted_call", 5, outcome="accepted")
 mut("selfreport", 4, judged_by="hostile-step")
 mut("exit0", 1, exit_code=0)
 mut("noreason", 0, reason="")
 mut("vague", 0, reason="x")
 mut("badstage", 2, stage="x")
-mut("wrongcause_call", 5, reason="attempt material is missing: attempts/call_sign_from_other_workflow.json (no such file)")
-mut("wrongcause_call2", 5, reason="something unrelated went wrong")
 mut("wrongcause_forge", 4, reason="digest mismatch")
 mut("wrongstage_token", 1, stage="sign")
 mut("wrongcause_hand", 3, reason="identity is stage-build.yml")
 mut("wrongcause_key", 2, reason="no such file attempts/read_sign_key.txt")
 mut("wrongcause_mint", 0, reason="digest mismatch")
 mut("nostage", 3, stage="")
-mut("ctl_refused", 6, outcome="refused", stage="sign", reason="identity is stage-build.yml", exit_code=1)
+mut("ctl_refused", 5, outcome="refused", stage="sign", reason="identity is stage-build.yml", exit_code=1)
 mut("stage_sign_forge", 4, stage="sign", reason="provenance signed by stage-build.yml, not stage-sign.yml")
-mut("stage_sign_call", 5, stage="sign", reason="build config URI is scan.yml; release.yml required")
-mut("cross_call_identity", 5, reason="identity is stage-build.yml, not stage-sign.yml")
 mut("cross_mint_buildconfig", 0, reason="build config URI is scan.yml; release.yml required")
 mut("forge_provdigest", 4, reason="provenance digest mismatch")
 mut("forge_provrekor", 4, reason="provenance: rekor entry missing")
@@ -157,11 +151,19 @@ mut("forge_sig", 4, reason="signature does not verify")
 mut("forge_root", 4, reason="certificate does not chain to the policy root")
 mut("missing_and_cause", 0, reason="no such file attempts/mint_sign_cert.json (expected identity stage-sign.yml)")
 mut("unreadable_and_cause", 4, reason="cannot read attempts/forge_provenance.json: provenance identity")
-m = copy.deepcopy(good); del m["attempts"][6]; save("nocontrol", m)
+m = copy.deepcopy(good); del m["attempts"][5]; save("nocontrol", m)
 m = copy.deepcopy(good); del m["attempts"][1]; save("missing", m)
 m = copy.deepcopy(good); m["attempts"].append(row("mint_sign_cert")); save("duplicate", m)
 m = copy.deepcopy(good); m["attempts"].append(row("alter_output")); save("extra", m)
 m = copy.deepcopy(good); m["attempts"][2]["attempt"] = "read_sign_token"; save("renamed", m)
+# G2 (REQ-CHAIN-001-AC5, advisor Oct 12): the case list is exactly five names; the sixth, call_sign_from_other_workflow, is not a runtime case
+m = copy.deepcopy(good); m["attempts"].insert(5, row("call_sign_from_other_workflow")); save("sixth_row", m)
+m = copy.deepcopy(good); del m["attempts"][4]; save("missing_forge", m)
+m = copy.deepcopy(good); del m["attempts"][3]; save("missing_hand", m)
+m = copy.deepcopy(good); del m["attempts"][0]; save("missing_mint", m)
+m = copy.deepcopy(good); del m["attempts"][2]; save("missing_key", m)
+m = copy.deepcopy(good); m["attempts"].append(row("hand_sign_code2")); save("added_other", m)
+m = copy.deepcopy(good); m["attempts"][4]["attempt"] = "call_sign_from_other_workflow"; save("forge_renamed_sixth", m)
 save("empty", {"attempts": []})
 open(w + "/notjson.json", "w").write("{not json")
 PY
@@ -175,29 +177,31 @@ expect() { # ok|refuse LABEL FILE [word]
   fi
 }
 [ -f "$cv" ] && ok "bin/chain-verify.py exists" || bad "bin/chain-verify.py does not exist (RED: not implemented yet)"
-expect ok     "verdict: all six attempts refused by the verifier, each with a stage and a reason, and the positive control accepted" good
+expect ok     "verdict: all five attempts refused by the verifier, each with a stage and a reason, and the positive control accepted" good
 expect ok     "verdict: forge_provenance refused AT STAGE sign (the pinned command is 'verify --stage sign', so its first line is 'refused at sign:') counts" stage_sign_forge
-expect ok     "verdict: call_sign_from_other_workflow refused AT STAGE sign counts" stage_sign_call
 expect refuse "verdict: a forged provenance refused with only the bare word 'provenance' (digest mismatch) does not count (round 6)" forge_provdigest "cause"
 expect refuse "verdict: a forged provenance refused 'provenance: rekor entry missing' does not count" forge_provrekor "cause"
 expect ok     "verdict: a forged provenance refused for its signature is a fine reason for forge_provenance" forge_sig
 expect ok     "verdict: a forged provenance refused for its root is a fine reason for forge_provenance" forge_root
 expect refuse "verdict: the positive control REFUSED (a policy that refuses everything proves nothing) fails the test" ctl_refused "positive_control"
 expect refuse "verdict: no positive control row" nocontrol "positive_control"
-expect refuse "verdict: call_sign_from_other_workflow refused with an identity / stage-sign.yml-only reason does not count" cross_call_identity "cause"
 expect refuse "verdict: mint_sign_cert refused with a 'build config'-only reason does not count" cross_mint_buildconfig "cause"
 expect refuse "verdict: a reason that says the file is missing AND names a cause word still does not count (mint)" missing_and_cause "missing"
 expect refuse "verdict: a reason that says unreadable AND names a cause word still does not count (forge)" unreadable_and_cause "unreadable"
 expect refuse "verdict: a forged provenance that was ACCEPTED fails the test" accepted_forge "forge_provenance"
 expect refuse "verdict: an accepted certificate mint fails the test" accepted_mint "mint_sign_cert"
-expect refuse "verdict: a second workflow calling stage-sign.yml that was ACCEPTED fails the test" accepted_call "call_sign_from_other_workflow"
+expect refuse "verdict: a row for call_sign_from_other_workflow (the dropped sixth case) is an extra row, refused by name (G2)" sixth_row "call_sign_from_other_workflow"
+expect refuse "verdict: a missing record for forge_provenance stays an error, not a skip (G2)" missing_forge "forge_provenance"
+expect refuse "verdict: a missing record for hand_sign_code stays an error, not a skip (G2)" missing_hand "hand_sign_code"
+expect refuse "verdict: a missing record for mint_sign_cert stays an error, not a skip (G2)" missing_mint "mint_sign_cert"
+expect refuse "verdict: a missing record for read_sign_key stays an error, not a skip (G2)" missing_key "read_sign_key"
+expect refuse "verdict: a row for any other added case name is refused (the list is exactly the five)" added_other "hand_sign_code2"
+expect refuse "verdict: the sixth name in place of forge_provenance is refused, and forge_provenance is missing" forge_renamed_sixth "forge_provenance"
 expect refuse "verdict: an outcome the hostile step graded itself is not evidence" selfreport "verifier"
 expect refuse "verdict: a 'refused' outcome with exit code 0 is a contradiction" exit0 "read_sign_token"
 expect refuse "verdict: a refusal with no reason" noreason "reason"
 expect refuse "verdict: a one-character reason" vague "reason"
 expect refuse "verdict: a stage that is not a stage" badstage "stage"
-expect refuse "verdict: the sixth case refused only because its material was missing does not count" wrongcause_call "cause"
-expect refuse "verdict: the sixth case refused for an unrelated reason (not release.yml / build config) does not count" wrongcause_call2 "cause"
 expect refuse "verdict: a forged provenance refused for a digest mismatch (not its identity) does not count" wrongcause_forge "cause"
 expect refuse "verdict: a token attempt graded at stage sign instead of runner does not count" wrongstage_token "stage"
 expect refuse "verdict: hand_sign_code refused for an identity reason (not digest/format) does not count" wrongcause_hand "cause"
@@ -206,7 +210,7 @@ expect refuse "verdict: a certificate mint refused for a digest mismatch does no
 expect refuse "verdict: an empty stage" nostage "stage"
 expect refuse "verdict: a missing attempt (read_sign_token)" missing "read_sign_token"
 expect refuse "verdict: a duplicated attempt" duplicate "mint_sign_cert"
-expect refuse "verdict: an attempt that is not one of the six" extra "alter_output"
+expect refuse "verdict: an attempt that is not one of the five" extra "alter_output"
 expect refuse "verdict: two rows for one attempt and none for another" renamed "read_sign_key"
 expect refuse "verdict: no attempts at all" empty "attempt"
 expect refuse "verdict: a file that is not JSON" notjson "json"
@@ -232,15 +236,19 @@ xexpect ok "hostile-row: exit 0 (the system accepted the attempt) becomes an acc
 python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))["outcome"]=="accepted" else 1)' "$work/rows/mint_sign_cert.json" && ok "hostile-row: the accepted row says accepted" || bad "hostile-row: accepted row content"
 xexpect refuse "hostile-row: a Python traceback is a crash, not a refusal" traceback -- hostile-row --attempt hand_sign_code --exit-code 1 --stderr "$work/e_tb.txt" --out "$work/rows/x1.json"
 xexpect refuse "hostile-row: exit 1 with an empty stderr is not a refusal that names a stage and reason" stage -- hostile-row --attempt hand_sign_code --exit-code 1 --stderr "$work/e_empty.txt" --out "$work/rows/x2.json"
-xexpect refuse "hostile-row: an attempt that is not one of the six" attempt -- hostile-row --attempt alter_output --exit-code 1 --stderr "$work/e_ref.txt" --out "$work/rows/x3.json"
+xexpect refuse "hostile-row: an attempt that is not one of the five" attempt -- hostile-row --attempt alter_output --exit-code 1 --stderr "$work/e_ref.txt" --out "$work/rows/x3.json"
+xexpect refuse "hostile-row: call_sign_from_other_workflow is not an attempt any more (G2)" attempt -- hostile-row --attempt call_sign_from_other_workflow --exit-code 1 --stderr "$work/e_ref.txt" --out "$work/rows/x3b.json"
 for a in $attempts; do [ -f "$work/rows/$a.json" ] || python3 "$cv" hostile-row --attempt "$a" --exit-code 1 --stderr "$work/e_ref.txt" --out "$work/rows/$a.json" 2> /dev/null || true; done
 python3 "$cv" hostile-row --attempt positive_control --exit-code 0 --stderr "$work/e_empty.txt" --out "$work/rows/positive_control.json" 2> /dev/null || true
-xexpect ok "hostile-collect: seven rows (six attempts and the positive control) are merged into one results file" - -- hostile-collect "$work/rows" --out "$work/collected.json"
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sorted(r["attempt"] for r in d["attempts"])==sorted(sys.argv[2:]) else 1)' "$work/collected.json" $attempts positive_control && ok "hostile-collect: the merged file has each of the six attempts and the positive control exactly once" || bad "hostile-collect: content"
+xexpect ok "hostile-collect: six rows (five attempts and the positive control) are merged into one results file" - -- hostile-collect "$work/rows" --out "$work/collected.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sorted(r["attempt"] for r in d["attempts"])==sorted(sys.argv[2:]) else 1)' "$work/collected.json" $attempts positive_control && ok "hostile-collect: the merged file has each of the five attempts and the positive control exactly once" || bad "hostile-collect: content"
 mkdir -p "$work/rows5"; cp "$work"/rows/*.json "$work/rows5/" 2> /dev/null || true; rm -f "$work/rows5/read_sign_key.json"
 xexpect refuse "hostile-collect: a missing row is named" read_sign_key -- hostile-collect "$work/rows5" --out "$work/c5.json"
 mkdir -p "$work/rows7"; cp "$work"/rows/*.json "$work/rows7/" 2> /dev/null || true; cp "$work/rows/mint_sign_cert.json" "$work/rows7/zz-dup.json" 2> /dev/null || true
 xexpect refuse "hostile-collect: a duplicate row is named" mint_sign_cert -- hostile-collect "$work/rows7" --out "$work/c7.json"
+mkdir -p "$work/rows8"; cp "$work"/rows/*.json "$work/rows8/" 2> /dev/null || true
+printf '{"attempt":"call_sign_from_other_workflow","outcome":"refused","stage":"release","reason":"build config","judged_by":"verifier","exit_code":1}' > "$work/rows8/call_sign_from_other_workflow.json"
+xexpect refuse "hostile-collect: a row for the dropped sixth case is an extra row, named (G2)" call_sign_from_other_workflow -- hostile-collect "$work/rows8" --out "$work/c8.json"
 b64u() { printf '%s' "$1" | base64 | tr -d '=\n' | tr '+/' '-_'; }
 JH=$(b64u '{"alg":"RS256"}')
 TS=$JH.$(b64u '{"sub":"repo","job_workflow_ref":"fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v0.3.0"}').c2ln
@@ -329,7 +337,7 @@ rm -f "$work"/rows/m*.json
 cat > "$work/wiring.py" <<'PY'
 import glob, os, re, sys, yaml
 root = sys.argv[1]; bad = []
-ATT = ["mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance", "call_sign_from_other_workflow"]
+ATT = ["mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance"]   # exactly five (G2, advisor Oct 12)
 PIN = {
  "mint_sign_cert": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/mint_sign_cert\.json --policy policy\.json',
  "read_sign_token": r'python3 bin/chain-verify\.py hostile-material --kind token --file attempts/read_sign_token\.txt',
@@ -337,7 +345,6 @@ PIN = {
  "hand_sign_code": r'python3 bin/chain-verify\.py check-build-record --digests attempts/hand_sign_code\.json --build-record witness-build/build-collection\.json --policy policy\.json',
  "positive_control": r'python3 bin/chain-verify\.py verify --stage sign --record provenance/provenance\.json --policy policy\.json --rekor-stub provenance/provenance\.rekor\.json',
  "forge_provenance": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/forge_provenance\.json --policy policy\.json',
- "call_sign_from_other_workflow": r'python3 bin/chain-verify\.py verify --stage sign --record attempts/call_sign_from_other_workflow\.json --policy policy\.json',
 }
 TAGCONJ = "startsWith(github.ref, 'refs/tags/v')"
 # the hostile proof runs on a PUSH of a release-candidate tag only (advisor 0383: the signed rc-tag run is the proof of REQ-CHAIN-001-AC5): never on a final tag, never on a branch
@@ -481,6 +488,8 @@ else:
             if not ok: bad.append("hostile-verify step for %s is not the pinned three-line shape (rc=0; the pinned verifier invocation for this attempt 2> FILE || rc=$?; hostile-row ... --exit-code \"$rc\")" % a)
             if run.count(errf) != 2: bad.append("hostile-verify step for %s: the verifier must write, and hostile-row read, exactly %s" % (a, errf))
             if re.search(r"\|\|\s*(true|:|echo|exit\s+0)\b|\becho\b|\bprintf\b|\bcat\b|\btee\b|>\s*results|set \+e", run): bad.append("hostile-verify step for %s swallows or writes the outcome by hand" % a)
+        for a in sorted(set(seen) - set(ATT) - {"positive_control"}):
+            bad.append("hostile-verify has a step for %s, which is not one of the five runtime cases (the sixth, call_sign_from_other_workflow, is judged by Sign's caller check and the offline test, never by a runtime step)" % a)
         for a in ATT + ["positive_control"]:
             if seen.get(a, 0) != 1: bad.append("hostile-verify has %d steps for %s (need exactly one)" % (seen.get(a, 0), a))
         runs = [(s.get("run") or "").strip() for s in hv.get("steps") or []]
@@ -547,6 +556,10 @@ sc = os.path.join(root, "bin/chain-hostile-step.sh")
 if not os.path.exists(sc): bad.append("bin/chain-hostile-step.sh missing")
 else:
     code = "\n".join(re.sub(r"(?<=\s)#.*$", "", l) for l in open(sc).read().splitlines() if not l.lstrip().startswith("#"))
+    defined = re.findall(r"^attempt_(\w+)\(\)\s*\{", code, re.M)
+    for a in sorted(set(defined) - set(ATT)): bad.append("attempt_%s() is defined: the hostile step makes exactly the five cases" % a)
+    for a in sorted(set(re.findall(r"^\s*attempt_(\w+)\s*$", code, re.M)) - set(ATT)): bad.append("attempt_%s is called: the hostile step makes exactly the five cases" % a)
+    if re.search(r"hostile-caller", code): bad.append("the hostile step reads a throwaway caller's record (hostile-caller): no second workflow exists")
     for a in ATT:
         if not re.search(r"^attempt_%s\(\)\s*\{" % a, code, re.M): bad.append("attempt_%s() is not defined" % a)
         if len(re.findall(r"^\s*attempt_%s\s*$" % a, code, re.M)) != 1: bad.append("attempt_%s is not called exactly once" % a)
@@ -605,7 +618,7 @@ jobs:
         with: {name: provenance, path: provenance}
       - run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --ref "\$GITHUB_REF" --out policy.json
 EOF
-    for a in mint_sign_cert forge_provenance call_sign_from_other_workflow; do
+    for a in mint_sign_cert forge_provenance; do
       cat <<EOF
       - run: |
           rc=0
@@ -653,7 +666,7 @@ EOF
     uses: ./.github/workflows/stage-promote.yml
 EOF
   } > "$d/.github/workflows/release.yml"
-  { echo "# makes six attempts; writes raw material only"; for a in $attempts; do case $a in read_sign_token|read_sign_key) printf "attempt_%s() { printf '# transcript: tried %s by reading the runner environment and the usual paths\\\\ncurl: (6) could not resolve host\\\\n' > attempts/%s.txt; }\\n" "$a" "$a" "$a" ;; *) printf 'attempt_%s() { :; }\n' "$a" ;; esac; done; for a in $attempts; do printf 'attempt_%s\n' "$a"; done; } > "$d/bin/chain-hostile-step.sh"
+  { echo "# makes five attempts; writes raw material only"; for a in $attempts; do case $a in read_sign_token|read_sign_key) printf "attempt_%s() { printf '# transcript: tried %s by reading the runner environment and the usual paths\\\\ncurl: (6) could not resolve host\\\\n' > attempts/%s.txt; }\\n" "$a" "$a" "$a" ;; *) printf 'attempt_%s() { :; }\n' "$a" ;; esac; done; for a in $attempts; do printf 'attempt_%s\n' "$a"; done; } > "$d/bin/chain-hostile-step.sh"
   printf 'on: {workflow_call: {}}\njobs:\n  promote:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json\n' > "$d/.github/workflows/stage-promote.yml"
   echo "$d"
 }
@@ -1035,7 +1048,27 @@ d=$(mk w_hostilepush); pymut "$(rel "$d")" "github.event_name == 'push' && start
 d=$(mk w_nosignrec); pymut "$(rel "$d")" " --sign-record provenance/provenance.json" ""; wexpect caught "wiring: the key attempt is graded without Sign's record (a key found on the runner would be judged by its text)" "$d"
 d=$(mk w_handsign); pymut "$(rel "$d")" "check-build-record --digests" "sign --check --signer cosign --digests"; wexpect caught "wiring: the hand-code attempt runs sign --check again (a signer in a job that must hold no signing right)" "$d"
 d=$(mk w_pinstage); pymut "$(rel "$d")" "--stage sign --record attempts/forge_provenance" "--stage build --record attempts/forge_provenance"; wexpect caught "wiring: the forge attempt is verified as stage build, not as the Sign stage (pinned invocation)" "$d"
-d=$(mk w_pinrec); pymut "$(rel "$d")" "--record attempts/call_sign_from_other_workflow.json --policy" "--record attempts/forge_provenance.json --policy"; wexpect caught "wiring: the sixth case verifies another attempt's material (pinned --record)" "$d"
+d=$(mk w_pinrec); pymut "$(rel "$d")" "--record attempts/mint_sign_cert.json --policy" "--record attempts/forge_provenance.json --policy"; wexpect caught "wiring: a case verifies another attempt's material (pinned --record)" "$d"
+dupstep() { python3 - "$1" "$2" <<'PY2'
+import sys
+t = open(sys.argv[1]).read()
+i = t.index("      - run: |\n          rc=0\n          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json")
+j = t.index("      - run: |", i + 10)
+open(sys.argv[1], "w").write(t[:j] + t[i:j].replace("mint_sign_cert", sys.argv[2]) + t[j:])
+PY2
+}
+d=$(mk w_sixthstep); dupstep "$(rel "$d")" call_sign_from_other_workflow; wexpect caught "wiring: a sixth runtime case step (call_sign_from_other_workflow) in the verify job is refused: the list is exactly the five (G2)" "$d"
+d=$(mk w_sixthfn); printf 'attempt_call_sign_from_other_workflow() { :; }\nattempt_call_sign_from_other_workflow\n' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step defines and calls a sixth attempt (G2)" "$d"
+d=$(mk w_othersixth); printf 'attempt_sneak() { :; }\nattempt_sneak\n' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step defines and calls any other added attempt" "$d"
+d=$(mk w_othersteps); dupstep "$(rel "$d")" extra_case; wexpect caught "wiring: any other added case step in the verify job is refused" "$d"
+d=$(mk w_dropmint); python3 - "$(rel "$d")" <<'PY2'
+import sys,re
+t=open(sys.argv[1]).read()
+i=t.index("      - run: |\n          rc=0\n          python3 bin/chain-verify.py verify --stage sign --record attempts/mint_sign_cert.json")
+j=t.index("      - run: |",i+10)
+open(sys.argv[1],"w").write(t[:i]+t[j:])
+PY2
+wexpect caught "wiring: dropping the mint_sign_cert step from the verify job is refused (only the sixth may go, by name)" "$d"
 d=$(mk w_pinpol); pymut "$(rel "$d")" "--stage sign --record attempts/mint_sign_cert.json --policy policy.json" "--stage sign --record attempts/mint_sign_cert.json --policy /dev/null"; wexpect caught "wiring: an attempt is verified against a different policy than the tag's" "$d"
 d=$(mk w_pinkind); pymut "$(rel "$d")" "--kind key --file attempts/read_sign_key.txt --sign-record provenance/provenance.json" "--kind token --file attempts/read_sign_key.txt"; wexpect caught "wiring: the key attempt is judged with the token kind (pinned hostile-material)" "$d"
 d=$(mk w_stderr); pymut "$(rel "$d")" "--stderr /tmp/mint_sign_cert.err" "--stderr /tmp/other.err"; wexpect caught "wiring: hostile-row reads a different stderr file than the verifier wrote" "$d"
@@ -1057,7 +1090,7 @@ d=$(mk w_nodrydecide); sed -i.bak "s/ \&\& !inputs.dry-run//" "$(rel "$d")"; wex
 d=$(mk w_orgate); sed -i.bak "s/!inputs.dry-run }}/!inputs.dry-run || true }}/" "$(rel "$d")"; wexpect caught "wiring: a dry-run gate with || true" "$d"
 d=$(mk w_noscript); rm "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile script is missing" "$d"
 d=$(mk w_missatt); sed -i.bak '/^attempt_read_sign_key$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: one of the attempts is never called" "$d"
-d=$(mk w_missother); sed -i.bak '/^attempt_call_sign_from_other_workflow$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the second-workflow-calls-Sign attempt is never made" "$d"
+d=$(mk w_missother); sed -i.bak '/^attempt_forge_provenance$/d' "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the forge attempt is never made" "$d"
 d=$(mk w_selfgrade); echo 'echo "{\"outcome\": \"refused\"}" > results.json' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step grades itself" "$d"
 d=$(mk w_callsverifier); echo 'python3 bin/chain-verify.py verify --record x' >> "$d/bin/chain-hostile-step.sh"; wexpect caught "wiring: the hostile step runs the verifier itself" "$d"
 d=$(mk w_comment); echo '# a refused attempt is written by the verifier, not here' >> "$d/bin/chain-hostile-step.sh"; wexpect ok "wiring: the word refused in a comment is fine (comments are not code)" "$d"
@@ -1182,16 +1215,30 @@ r = reqs["REQ-CHAIN-001"]
 then = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["then"]
 given = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["given"]
 assert "a run on GitHub of the chain on a signed release-candidate tag (v0.3.0-rcN)" in given, "AC5 given does not name the signed rc-tag run"
-for words in ("before the cutover pull request merges chain-v030 to main",
-              "no v0.3.0 tag may be pushed unless an rc-tag run of that same commit's chain files", "a branch dry run does not satisfy this AC",
+when = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC5")["when"]
+# the accepted text of Oct 12 (cutover prep, advisor): five runtime cases; the rc-tag run is cut on main AFTER the cutover merge; the marker of AC6 gates every final or patch tag
+for words in ("as five separate cases each on its own", "and to forge provenance that Release would accept (the sixth case, getting provenance accepted from a second workflow that calls stage-sign.yml, is not a runtime case: no second workflow file exists; it is judged by Sign's caller check in the static judge and by the offline hostile test, which is a stated limit of this proof)"):
+    assert words in when, "AC5 when lacks: " + words
+assert "six separate cases" not in when and "throwaway commit" not in when, "AC5 when still has the six-case wording"
+for words in ("is cut on main after the cutover pull request has merged, must be green and its run linked before any final or patch tag is cut on main",
+              "until a recorded green rc-tag run of those same chain files (the workflows, bin/ and .github/policy/ files the chain uses, identical bytes) exists as the committed marker of REQ-CHAIN-001-AC6, no patch decision and no admission of a final or patch tag proceeds",
+              "each of the five runtime cases is judged by the verifier invocation pinned for it", "a branch dry run does not satisfy this AC",
               "bin/chain-hostile-test.sh", "the wiring tests judge the files"):
     assert words in then, "AC5 lacks: " + words
+assert "before the cutover pull request merges chain-v030 to main" not in then and "each of the six cases" not in then, "AC5 then still has the old order or six cases"
+a6 = next(a for a in r["acceptance_criteria"] if a["id"] == "REQ-CHAIN-001-AC6")
+assert a6["given"] == "a final (v0.3.0) or patch tag, or the patch automation's decide job, on main", "AC6 given"
+assert a6["when"] == "admission and decide read .github/policy/rc-proof.json (the marker)", "AC6 when"
+for words in ("both refuse (naming the marker) unless the marker names an rc tag, the run id of its green chain run, and the sha256 over the exact bytes of the chain files at the tag's commit (the same file set as AC5)",
+              "bin/chain-verify.py against the rc tag's own identities", "an rc tag that is not an ancestor of the commit, an unreadable marker, or a missing one is refused, never skipped"):
+    assert words in a6["then"], "AC6 lacks: " + words
+assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
 assert "green rc-tag run of the same commit's chain files, linked" in r["notes"], "REQ-CHAIN-001 notes lack the rc-tag cutover checklist line (advisor 0383)"
 assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
 PY
-EXPECT=242
+EXPECT=251
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
