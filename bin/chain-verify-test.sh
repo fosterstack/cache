@@ -940,12 +940,18 @@ sh("openssl", "ts", "-verify", "-digest", hashlib.sha256(base64.b64decode(e["sig
 # items.json products), Sign's provenance with its Rekor stub, Rebuild's collection, the four Check records, and the hostile verdict's results file.
 TRC = "refs/tags/v0.3.0-rc1"
 add("rc_build", STAGES["build"], TRC, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
-add("rc_sign", STAGES["sign"], TRC, PROV, D)
+_RCC = os.environ.get("RC_COMMIT") or ("f" * 40)
+def _src(commit): return {"buildDefinition": dict(SLSA_OK["buildDefinition"], resolvedDependencies=[{"uri": "git+https://github.com/fosterstack/cache@" + TRC, "digest": {"gitCommit": commit}}])}
+add("rc_sign", STAGES["sign"], TRC, PROV, D, predicate=_src(_RCC))
+add("rc_sign_othersrc", STAGES["sign"], TRC, PROV, D, predicate=_src("e" * 40))
+add("rc_sign_nosrc", STAGES["sign"], TRC, PROV, D, predicate={"buildDefinition": dict(SLSA_OK["buildDefinition"], resolvedDependencies=[])})
 add("rc_rebuild", STAGES["rebuild"], TRC, COLL, None, stmt="v0.1", coll_file="digests.json")
 add("rc_rebuild_other", STAGES["rebuild"], TRC, COLL, None, stmt="v0.1", coll_file="digests-other.json")
 for _sn in ("scanners", "acceptance", "runtime", "arm64"): _chk("rc_c_" + _sn, _sn, ref=TRC)
 _chk("rc_c_scanners_tag", "scanners", ref=T)                       # a Check record of the FINAL tag's identity, not the rc tag's
 dj("rc-rekor.json", {"entries": [entry("rc_sign", 7)]})
+dj("rc-rekor-othersrc.json", {"entries": [entry("rc_sign_othersrc", 7)]})
+dj("rc-rekor-nosrc.json", {"entries": [entry("rc_sign_nosrc", 7)]})
 _HF = {"mint_sign_cert": ("sign", "identity is stage-build.yml, not stage-sign.yml"), "read_sign_token": ("runner", "nothing usable"),
        "read_sign_key": ("runner", "nothing usable"), "hand_sign_code": ("sign", "digest list is not sha256 digests (format)"),
        "forge_provenance": ("release", "provenance signed by stage-build.yml, not stage-sign.yml")}
@@ -976,6 +982,8 @@ def rcdir(name, build="rc_build", sign="rc_sign", rebuild="rc_rebuild", rekor="r
         shutil.copy(p(src), os.path.join(d, rel))
 rcdir("rc_ok")
 rcdir("rc_badsign", sign="sign_othertag")
+rcdir("rc_othersrc", sign="rc_sign_othersrc", rekor="rc-rekor-othersrc.json")
+rcdir("rc_nosrc", sign="rc_sign_nosrc", rekor="rc-rekor-nosrc.json")
 rcdir("rc_norekor", rekor="rekor-empty.json")
 rcdir("rc_build_final", build="build_coll")
 rcdir("rc_check_missing", check={"arm64": None})
@@ -991,6 +999,21 @@ rcdir("rc_hostile_floatexit", hostile="rc-hostile-floatexit")
 rcdir("rc_hostile_floatctl", hostile="rc-hostile-floatctl")
 print("fixtures ok")
 PY
+# the rc repository comes first: Sign's rc provenance names the rc tag's commit as its source (REQ-CHAIN-001-AC6)
+CB="$root/bin/chain-bytes-sha.py"
+RG="$work/rcrepo"
+rcg() { git -C "$RG" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
+mkdir -p "$RG/.github/workflows" "$RG/.github/policy" "$RG/bin"
+git -C "$RG" init -q -b main
+for f in release stage-build stage-sign stage-verify; do printf 'name: %s\n' "$f" > "$RG/.github/workflows/$f.yml"; done
+printf 'name: ci\n' > "$RG/.github/workflows/ci.yml"
+cp "$CB" "$RG/bin/chain-bytes-sha.py" 2> /dev/null || printf 'x\n' > "$RG/bin/chain-bytes-sha.py"
+printf '#!/bin/sh\necho b\n' > "$RG/bin/b.sh"; printf '#!/bin/sh\necho other\n' > "$RG/bin/other.sh"
+printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
+printf '{"a":1}\n' > "$RG/.github/policy/x.json"; printf 'readme\n' > "$RG/README.md"
+rcg add -A > /dev/null; rcg commit -q -m c1; rcg tag v0.3.0-rc1
+C1=$(rcg rev-parse HEAD)
+export RC_COMMIT=$C1
 python3 "$work/fx.py" "$work" > "$work/fx.log" 2>&1 || { cat "$work/fx.log"; echo "FAIL fixture generation"; exit 1; }
 NOW=$(cat "$work/now.txt"); NOWIN=$(cat "$work/now-in.txt"); NOWMID=$(cat "$work/now-mid.txt")
 
@@ -1974,19 +1997,6 @@ expect_refuse "PR4 check-list: an empty directory is refused" "check|missing" $(
 # of .github/policy/ except the marker itself; its sha256 is taken over `<sha256>  <path>` lines sorted by path, read from the commit's objects. `check-marker` is what
 # admission and the patch decide job run: the marker is the closed object {rc_tag, run_id, chain_sha256, records}, the rc tag exists and is an ancestor of the commit, and
 # the chain files of the commit AND of the rc tag's commit hash to chain_sha256. `chain-verify.py rc-proof` adds the records of the rc run, verified under the rc tag's identities.
-CB="$root/bin/chain-bytes-sha.py"
-RG="$work/rcrepo"
-rcg() { git -C "$RG" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c tag.gpgsign=false "$@"; }
-mkdir -p "$RG/.github/workflows" "$RG/.github/policy" "$RG/bin"
-git -C "$RG" init -q -b main
-for f in release stage-build stage-sign stage-verify; do printf 'name: %s\n' "$f" > "$RG/.github/workflows/$f.yml"; done
-printf 'name: ci\n' > "$RG/.github/workflows/ci.yml"
-cp "$CB" "$RG/bin/chain-bytes-sha.py" 2> /dev/null || printf 'x\n' > "$RG/bin/chain-bytes-sha.py"
-printf '#!/bin/sh\necho b\n' > "$RG/bin/b.sh"; printf '#!/bin/sh\necho other\n' > "$RG/bin/other.sh"
-printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
-printf '{"a":1}\n' > "$RG/.github/policy/x.json"; printf 'readme\n' > "$RG/README.md"
-rcg add -A > /dev/null; rcg commit -q -m c1; rcg tag v0.3.0-rc1
-C1=$(rcg rev-parse HEAD)
 cat > "$work/mkmarker.py" <<'PY'
 import hashlib, json, sys
 out, rc_tag, run_id, chain, d = sys.argv[1:6]
@@ -2135,6 +2145,8 @@ expect_refuse "AC6 rc-proof: a marker for other bytes is refused before any reco
 expect_refuse "AC6 rc-proof: a missing marker file is refused" "marker|missing" $(RCP rc_ok "$C2" "$work/no-such-marker.json")
 expect_refuse "AC6 rc-proof: an rc tag that is not an ancestor of the commit is refused" "marker|ancestor" $(RCP rc_ok "$C2" "$work/marker-rc2.json")
 expect_refuse "AC6 rc-proof: a final tag in the marker is refused" "marker|rc_tag" $(RCP rc_ok "$C2" "$work/marker-final.json")
+expect_refuse "AC6 rc-proof: Sign's provenance whose source commit is not the rc tag's commit (a moved or recreated tag) is refused naming the commit" "marker|source|commit" $(RCP rc_othersrc)
+expect_refuse "AC6 rc-proof: Sign's provenance that names no source commit is refused" "marker|source|commit" $(RCP rc_nosrc)
 expect_refuse "AC6 rc-proof: Sign's provenance made for another tag is refused (the rc tag's identity)" "sign|v0.3.1" $(RCP rc_badsign)
 expect_refuse "AC6 rc-proof: no Rekor entry for Sign's provenance is refused" "sign|rekor" $(RCP rc_norekor)
 expect_refuse "AC6 rc-proof: Build's record of the FINAL tag's identity is refused under the rc tag's policy" "build|v0.3.0" $(RCP rc_build_final)
