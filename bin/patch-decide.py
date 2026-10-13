@@ -609,14 +609,14 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
-        files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
+        files = [f for f in _git("show", "--format=", "--name-only", "--no-renames", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
-        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
+        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--no-renames", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
         # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
         modes = {}
-        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "-M", sha, cwd=cwd).splitlines():
+        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd).splitlines():
             meta, _, paths = ln.partition("\t")
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]
@@ -725,7 +725,7 @@ def main(argv=None):
         try:
             listed = load_base_inputs(a.base_inputs)
             _git("rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % a.since, cwd=a.repo)       # a release that is not a tag here is an error, never "nothing moved"
-            moved = [f for f in _git("diff", "--name-only", "%s..HEAD" % a.since, "--", *listed, cwd=a.repo).splitlines() if f in listed]
+            moved = [f for f in _git("diff", "--name-only", "--no-renames", "%s..HEAD" % a.since, "--", *listed, cwd=a.repo).splitlines() if f in listed]
         except (ValueError, subprocess.CalledProcessError) as e:
             print("base-moved: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
             return 2

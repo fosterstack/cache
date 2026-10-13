@@ -754,6 +754,25 @@ check("B01 gather_commits records each file's new mode; a mode-only chmod +x is 
 for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
     got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
     check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
+# Codex 4b-4 r1 (A B3, B B2): a rename of a listed base input is the deletion of its source and the addition of a destination; rename detection must not hide the
+# deletion (the classifier and base-moved both read the history without it)
+rn = tempfile.mkdtemp(); g(rn, "init", "-q", "-b", "main"); os.makedirs(os.path.join(rn, "build/locks")); os.makedirs(os.path.join(rn, "docs"))
+open(os.path.join(rn, "build/locks/melange.lock"), "w").write("lock content that is long enough to be recognised as a rename %s\n" % ("x" * 200))
+open(os.path.join(rn, "build/locks/apko.base.lock.json"), "w").write("1\n")
+g(rn, "add", "-A"); g(rn, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "locks"); g(rn, "tag", "v0.2.1")
+g(rn, "mv", "build/locks/melange.lock", "docs/retired-lock.json"); g(rn, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename a base input away")
+rlist = bil({"base_inputs": ["build/locks/apko.base.lock.json", "build/locks/melange.lock"]})
+gcr = P.gather_commits("v0.2.1", cwd=rn)
+got = P.classify(gcr[0], base_inputs=P.load_base_inputs(rlist)) if gcr else None
+check("B3 a listed base input renamed to a data file is a deletion: the commit is not patch-clean", gcr and gcr[0].get("modes", {}).get("build/locks/melange.lock") == "000000" and got and got[0] == "dirty", (gcr, got))
+r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", rlist, "--since", "v0.2.1", "--repo", rn], capture_output=True, text=True)
+check("B3 base-moved names the listed source of a rename away, not only a destination", r.returncode == 0 and "build/locks/melange.lock" in r.stdout, (r.returncode, r.stdout, r.stderr))
+rn2 = tempfile.mkdtemp(); g(rn2, "init", "-q", "-b", "main"); os.makedirs(os.path.join(rn2, "build/locks"))
+open(os.path.join(rn2, "build/locks/melange.lock"), "w").write("lock content that is long enough to be recognised as a rename %s\n" % ("y" * 200))
+g(rn2, "add", "-A"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "locks"); g(rn2, "tag", "v0.2.1")
+g(rn2, "mv", "build/locks/melange.lock", "build/locks/apko.base.lock.json"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename between two listed inputs")
+r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", rlist, "--since", "v0.2.1", "--repo", rn2], capture_output=True, text=True)
+check("B3 a rename between two listed base inputs names both the source and the destination in base-moved", r.returncode == 0 and "build/locks/melange.lock" in r.stdout and "build/locks/apko.base.lock.json" in r.stdout, (r.returncode, r.stdout, r.stderr))
 # --- AC3 (immediate cut): the images of the latest release are the ones that exist for its version (v0.3.0 dropped the debug variant)
 import subprocess
 def variants(ver):

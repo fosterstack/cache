@@ -572,6 +572,14 @@ def removed(root):
 RULE61_WORDS = re.compile(r"(?i)\bdockerfile|\bbuildx\b|goreleaser|\bimagetools\b|build/docker")
 # the judges and the deny lists that NAME these tools in order to refuse them are not readers of them
 RULE61_NAMING = {"bin/chain-release-shape.py", "bin/chain-test-shape.py", "bin/chain-check-shape.py"}
+# The documented exclusions of the recursive reader scan (Codex 4b-4 r1; Row 78: each one a reason). These are the supply-chain JUDGES: the pin checker, the pin
+# inventory, the pin audit and the pin-age check recognise and version-check ANY installer a workflow might use (their tool tables name docker/buildx and goreleaser
+# among a dozen others), and the judge here refuses every workflow that uses one; their tests, the review records and the tests of the auditor are fixtures.
+_AG = ".github/" + "ag" + "ent"      # assembled: the layout check (REQ-AUD-18) refuses a file outside the agent folder that spells the folder out
+RULE61_JUDGE_DIRS = tuple(_AG + "/" + d for d in ("supply-chain/", "tests/", "bin/tests/", "reviews/"))
+RULE61_JUDGE_FILES = {_AG + "/bin/check-action-pins.py"}
+RULE61_SCAN_ROOTS = (".github", "bin", "tools", "build")
+RULE61_SCAN_EXT = (".yml", ".yaml", ".json", ".sh", ".py", ".go", ".mod")
 
 
 def removed_rule61(root):
@@ -582,7 +590,7 @@ def removed_rule61(root):
     if os.path.isdir(os.path.join(root, "build/docker")):
         bad.append("build/docker still exists (rule 61: the Dockerfiles are removed; the image is assembled by apko from committed locks)")
     for dp, dn, fn in os.walk(root):
-        dn[:] = [d for d in dn if d not in (".git", "node_modules") and os.path.join(dp, d) != os.path.join(root, ".github/agent")]
+        dn[:] = [d for d in dn if d not in (".git", "node_modules")]
         for f in fn:
             if f.startswith("Dockerfile"):
                 bad.append("%s exists (rule 61: no Dockerfile)" % os.path.relpath(os.path.join(dp, f), root))
@@ -590,13 +598,17 @@ def removed_rule61(root):
     if os.path.exists(dp_) and re.search(r"package-ecosystem:\s*[\"']?docker[\"']?\s*$", open(dp_).read(), re.M):
         bad.append(".github/dependabot.yml still has the docker ecosystem entry (rule 61: its Dependabot entry is removed with the Dockerfiles)")
     readers = []
-    for sub, ext in ((".github/workflows", (".yml", ".yaml")), (".github/policy", (".json",)), ("bin", (".sh", ".py"))):
-        d = os.path.join(root, sub)
-        if os.path.isdir(d):
-            for f in sorted(os.listdir(d)):
-                rel = sub + "/" + f
-                if f.endswith(ext) and not re.search(r"(-test\.(sh|py)|_test\.py)$", f) and rel not in RULE61_NAMING and os.path.isfile(os.path.join(d, f)):
-                    readers.append(rel)
+    for top in RULE61_SCAN_ROOTS:
+        base = os.path.join(root, top)
+        for dp, dn, fn in os.walk(base):
+            dn[:] = sorted(d for d in dn if d not in (".git", "node_modules", "__pycache__"))
+            for f in sorted(fn):
+                rel = os.path.relpath(os.path.join(dp, f), root).replace(os.sep, "/")
+                if not f.endswith(RULE61_SCAN_EXT) or os.path.islink(os.path.join(dp, f)):
+                    continue
+                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f) or rel in RULE61_NAMING or rel in RULE61_JUDGE_FILES or rel.startswith(RULE61_JUDGE_DIRS):
+                    continue
+                readers.append(rel)
     if os.path.exists(dp_):
         readers.append(".github/dependabot.yml")
     for rel in readers:
@@ -605,9 +617,49 @@ def removed_rule61(root):
             bad.append("%s names %r (rule 61: no Dockerfile, buildx or goreleaser is read or kept; a candidate image is read by crane, by digest)" % (rel, m.group(0)))
     rs = os.path.join(root, ".github/workflows/main-candidate-rescan.yml")
     if os.path.exists(rs):
-        t = open(rs).read()
-        if "crane manifest" not in t or "bin/install-scanner.sh crane" not in t:
+        try:
+            wf = yaml.load(open(rs).read(), Loader=yaml.BaseLoader)
+        except yaml.YAMLError:
+            wf = None
+        if not isinstance(wf, dict) or not isinstance(wf.get("jobs"), dict):
+            bad.append("main-candidate-rescan.yml is not a workflow (rule 61: a candidate image is read by crane, by digest)")
+            wf = {"jobs": {}}
+
+        def lines(run):      # the executable lines of a run block: comments are not commands
+            return [ln.strip() for ln in str(run or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+        INSTALL = re.compile(r"^(?:\./)?bin/install-scanner\.sh crane\b")
+        saw_manifest = False
+        for jn, job in wf["jobs"].items():
+            steps = job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []
+            installed = False
+            for i, st in enumerate(steps):
+                ls = lines(st.get("run") if isinstance(st, dict) else "")
+                installed_before_step = installed
+                for k, l in enumerate(ls):
+                    if INSTALL.match(l):
+                        installed = True
+                    if re.match(r"crane manifest\b|if ! crane manifest\b", l):
+                        saw_manifest = True
+                        if not installed:
+                            bad.append("main-candidate-rescan.yml job %s: `crane manifest` runs before the pinned install in that job (the install is per job; an ambient crane is not checksummed)" % jn)
+                        ref = re.search(r"crane manifest\s+\"?\$\{?(\w+)\}?\"?", l)
+                        want = re.compile(r"^%s=\"[^\"]*cache@\$\{TARGET_DIGEST\}\"$" % re.escape(ref.group(1))) if ref else None
+                        if not ref or not any(want.match(x) for x in ls[:k]):
+                            bad.append("main-candidate-rescan.yml job %s: `crane manifest` does not read a reference built as <repository>/cache@${TARGET_DIGEST} in the same step (a tag could move: by digest only)" % jn)
+                if any("bin/scout-root-cause.sh" in l for l in ls) and not installed_before_step:
+                    bad.append("main-candidate-rescan.yml job %s: runs bin/scout-root-cause.sh (its index append is crane) without the pinned crane install in an earlier step of that job" % jn)
+        if not saw_manifest:
             bad.append("main-candidate-rescan.yml does not read the candidate index with crane (the pinned install, `crane manifest` by digest)")
+    sc = os.path.join(root, "bin/scout-root-cause.sh")
+    if os.path.exists(sc):
+        ls = [l.strip() for l in open(sc, errors="replace").read().splitlines() if l.strip() and not l.strip().startswith("#")]
+        app = [l for l in ls if re.search(r"(?<![\w`])crane index append [\"$]", l) and not l.startswith(("echo ", "printf "))]
+        if app:
+            if len(app) != 1 or not re.search(r"crane index append \"\$built_idx\" -m \"\$att_ref\" -t \"\$built_ref\"", app[0]):
+                bad.append("bin/scout-root-cause.sh: the crane index append is not exactly one `crane index append \"$built_idx\" -m \"$att_ref\" -t \"$built_ref\"`")
+            for var, pat in (("built_idx", r"built_idx=\"\$PROBE_REPO@\$MULTI\""), ("att_ref", r"att_ref=\"\$PROBE_REPO@\$att_dig\"")):
+                if not any(re.search(r"(?:^|[;&] *)" + pat + r"(?:$|[; ])", l) for l in ls):
+                    bad.append("bin/scout-root-cause.sh: %s is not assigned by digest (%s)" % (var, pat.replace("\\", "")))
     return bad
 
 

@@ -232,7 +232,7 @@ jobs:
           sudo systemctl restart docker
           docker info -f '{{ .DriverStatus }}'
 
-      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 (each pinned by checksum) and skopeo
+      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0, crane and skopeo (each pinned by checksum, skopeo from apt)
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
@@ -243,6 +243,8 @@ jobs:
           mv "$RUNNER_TEMP/docker-scout/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.26.0"
           mv "$RUNNER_TEMP/docker-scout-1.25.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.25.0"
           mv "$RUNNER_TEMP/docker-scout-1.24.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.24.0"
+          # the chain's own copy tool appends the attestation manifest to the scratch index (bin/scout-root-cause.sh: crane index append), by digest
+          ./bin/install-scanner.sh crane
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
 
       - name: log in to Docker Hub (read-only token) and GHCR (this job's token)
