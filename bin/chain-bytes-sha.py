@@ -36,7 +36,6 @@ RC_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RUN_ID = re.compile(r"[0-9]{1,20}")
 SCRIPT_PATH = re.compile(r"bin/[A-Za-z0-9._-]+")
-IMPORT = re.compile(r"(?m)^[ \t]*(?:import[ \t]+([A-Za-z_][A-Za-z0-9_., \t]*)|from[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+import\b)")
 SIBLING = re.compile(r"load_sibling\(\s*[\"']([A-Za-z0-9_.-]+)[\"']\s*\)")
 # the two extensions are assembled from parts: a literal one reads to the stage judge as the name of a program (REQ-CHAIN-001-AC1)
 EXT_SH, EXT_PY = "." + "s" + "h", "." + "p" + "y"
@@ -128,7 +127,7 @@ def chain_paths(repo, commit):
 
 
 def code_files(repo, commit):
-    """The regular files directly under bin/ and the agent folder's bin/ of the commit (what a chain file can name)."""
+    """The regular files under bin/ and the agent folder's bin/ of the commit, at any depth (what a chain file can name or import)."""
     rc, out = git(repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--", *CODE_DIRS)
     if rc != 0:
         refuse("cannot list the files of commit %s" % commit)
@@ -139,30 +138,67 @@ def code_files(repo, commit):
         meta, _, name = ent.partition(b"\t")
         mode, kind = meta.split(b" ")[0:2]
         n = name.decode("utf-8", "surrogateescape")
-        if kind == b"blob" and mode in (b"100644", b"100755") and os.path.dirname(n) in CODE_DIRS:
+        if kind == b"blob" and mode in (b"100644", b"100755") and any(n.startswith(d + "/") for d in CODE_DIRS):
             have.add(n)
     return have
 
 
+FROM_IMPORT = re.compile(r"(?m)^[ \t]*from[ \t]+(\.*)([A-Za-z_][A-Za-z0-9_.]*)?[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)")
+PLAIN_IMPORT = re.compile(r"(?m)^[ \t]*import[ \t]+([^\n#]*)")
+
+
+def _module_files(base, dotted, have):
+    """The files a dotted module name can be under `base`: the module, or the package initialiser, and every parent package's initialiser."""
+    parts = [x for x in dotted.split(".") if x]
+    found = set()
+    for k in range(1, len(parts) + 1):
+        stem = "/".join([base] + parts[:k])
+        for cand in (stem + EXT_PY, stem + "/__init__" + EXT_PY):
+            if cand in have:
+                found.add(cand)
+    return found
+
+
+def _python_names(path, text, have):
+    out = set()
+    here = os.path.dirname(path)
+    bases = [here] + [d for d in CODE_DIRS if d != here]
+    for m in PLAIN_IMPORT.finditer(text):
+        for part in m.group(1).split(","):
+            name = part.strip().split(" ")[0]
+            for b in bases:
+                out |= _module_files(b, name, have)
+    for m in FROM_IMPORT.finditer(text):
+        dots, mod, names = m.group(1), m.group(2) or "", m.group(3)
+        names = [x.strip().split(" ")[0] for x in re.sub(r"#[^\n]*", "", names).strip("() \t\n").replace("\n", " ").split(",") if x.strip()]
+        if dots:
+            base = here
+            for _ in range(len(dots) - 1):
+                base = os.path.dirname(base)
+            roots = [base]
+        else:
+            roots = bases
+        for b in roots:
+            if mod:
+                out |= _module_files(b, mod, have)
+            for n in names:                                  # `from pkg import name`: name may itself be a module of the package
+                out |= _module_files(b, (mod + "." + n) if mod else n, have)
+    for m in SIBLING.finditer(text):
+        n = m.group(1)
+        for cand in (here + "/" + n + EXT_PY, here + "/" + n.replace("_", "-") + EXT_PY):
+            if cand in have:
+                out.add(cand)
+    return out
+
+
 def named_by(path, text, have):
-    """The code files `text` (the content of the chain file `path`) names: paths under bin/ or the agent folder's bin/, and for Python the sibling modules."""
+    """The code files `text` (the content of the chain file `path`) names: paths under bin/ or the agent folder's bin/, and for Python the modules it imports."""
     out = set()
     for m in MENTION.finditer(text):
         if m.group(1) in have:
             out.add(m.group(1))
     if path.endswith(EXT_PY):
-        here = os.path.dirname(path)
-        names = []
-        for m in IMPORT.finditer(text):
-            if m.group(1):
-                names += [x.strip().split(" ")[0].split(".")[0] for x in m.group(1).split(",") if x.strip()]
-            else:
-                names.append(m.group(2))
-        names += [m.group(1) for m in SIBLING.finditer(text)]
-        for n in names:
-            for cand in (here + "/" + n + EXT_PY, here + "/" + n.replace("_", "-") + EXT_PY):
-                if cand in have:
-                    out.add(cand)
+        out |= _python_names(path, text, have)
     return {n for n in out if not n.endswith(TEST_SUFFIXES)}
 
 

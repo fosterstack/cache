@@ -20,7 +20,7 @@
  "chain-release-wiring-test.sh": 181,
  "chain-sign-wiring-test.sh": 1342,
  "chain-snapshot-test.sh": 160,
- "chain-verify-test.sh": 781,
+ "chain-verify-test.sh": 790,
  "check-action-pins-test.sh": 882,
  "check-file-allowlist-test.sh": 670,
  "dependabot-reviewer-gather-test.sh": 20,

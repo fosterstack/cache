@@ -71,7 +71,7 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "c39fe2f795452ee57fb5e7891c22518b84fe297f00f0dfd8e3681ea85140f0ca",
+      "sha256": "726e3016604e4971aec8e5e69f266cc200e5aed19df11bf567b349c483b94750",
       "tools": [
         "at"
       ],
@@ -81,7 +81,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "a6d01ec11fcfa757c452ea65d3666800f077c42e2337e2f5fb8fc6b2a47ef7ff",
+      "sha256": "84eb8e74283d38156ac5ee91be1edec89bc4f86adba8935030a6b181b60165dc",
       "tools": [
         "at",
         "git"

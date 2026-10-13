@@ -229,13 +229,13 @@ def cmd_hostile_verdict(a):
             errs.append("error: %s: the outcome was not judged by the verifier (judged_by %r)" % (n, r.get("judged_by")))
             continue
         if n == "positive_control":
-            if r.get("outcome") != "accepted" or r.get("exit_code") != 0 or isinstance(r.get("exit_code"), bool):
+            if r.get("outcome") != "accepted" or type(r.get("exit_code")) is not int or r.get("exit_code") != 0:
                 errs.append("error: positive_control must be accepted (exit 0) by the same policy: %s" % r.get("reason"))
             continue
         if r.get("outcome") != "refused":
             errs.append("error: %s was %s: the system accepted a hostile attempt" % (n, r.get("outcome")))
             continue
-        if r.get("exit_code") != 1 or isinstance(r.get("exit_code"), bool):
+        if type(r.get("exit_code")) is not int or r.get("exit_code") != 1:
             errs.append("error: %s: outcome refused needs the verifier's refusal exit status 1, not %r (exit)" % (n, r.get("exit_code")))
             continue
         stage, reason = r.get("stage"), str(r.get("reason") or "")
