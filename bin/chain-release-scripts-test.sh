@@ -169,7 +169,7 @@ def tree(extra_env=None):
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py", "patch-decide.py"):
+    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
     os.makedirs(os.path.join(t, "requirements/releases")); os.makedirs(os.path.join(t, "test-evidence"))
@@ -484,7 +484,7 @@ t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], env
 check(rc != 0 and "release-manifest.json" in se, "AC13 the gate after publishing catches a stored file that differs from the staged one", "rc=%s %s" % (rc, first(se)))
 for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
     t3 = tree(); rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], tag=tag); check(rc3 != 0 and "tag" in se3 and not log(t3), "AC14 release-assets refuses the tag %r" % tag, "rc=%s %s" % (rc3, first(se3)))
-check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git |tag ", l)], "AC9 no release is created without --verify-tag and no tag is made")
+check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git (?!cat-file tag )", l)], "AC9 no release is created without --verify-tag and no tag is made")
 check(SENT["GH_TOKEN"] not in L + so + se, "AC9 the token is never on a command line or in output")
 # round 1 (Codex A B3): the archives are Build's bytes and the set is complete before anything is uploaded
 def refused_before_upload(t, what, word, **kw):

@@ -125,8 +125,8 @@ BODY = {
  "release-assets": 'set -euo pipefail\ngh release upload "$GITHUB_REF_NAME" apks/* dist/* --clobber\ngh release create "$GITHUB_REF_NAME" --verify-tag --draft\n',
 }
 ROWS = {"release-verify": (["python3"], False, ["bin/chain-verify.py"]), "release-apks": (["bash", "jq", "python3", "trap"], "other", ["bin/apk-tool.py", "bin/release-sign-apks.sh"]),
-        "release-publish": (["crane", "jq", "python3"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "jq", "python3"], "other", ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
-        "release-assets": (["gh", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
+        "release-publish": (["crane", "jq", "python3", "trap"], False, ["bin/release-layout.py"]), "release-sign": (["cosign", "jq", "python3", "trap"], "other", ["bin/release-metadata.py", "bin/vendor-provenance.py", "bin/vex-forms.py"]),
+        "release-assets": (["gh", "git", "python3"], False, ["bin/release-metadata.py"]), "release-postverify": (["python3"], False, ["bin/release-postverify.py"])}
 rows = []
 for n, b in BODY.items():
     open(f"{w}/s/bin/{n}.sh", "w").write("#!/usr/bin/env bash\n" + b)
@@ -318,7 +318,7 @@ sm x_xtrace  release-publish 'set -x'                                           
 sm x_other   release-sign    'bash bin/release-publish.sh'                       "starts another script" "AC10 one release script starting another"
 sm x_oth2    release-sign    'python3 bin/other.py'                              "starts another script" "AC10 a script that is not in the row's runs list"
 sm x_eval    release-sign    'eval "$CMD"'                                       "'eval'"            "AC10 eval"
-sm x_trap    release-sign    "trap 'curl evil' EXIT"                             "'trap'"            "AC10 trap"
+sm x_trap    release-assets  "trap 'curl evil' EXIT"                             "'trap'"            "AC10 trap"
 sm x_tlog    release-sign    'cosign sign-blob --yes --tlog-upload=false x'      "transparency log"  "AC8 the transparency log turned off"
 sm x_ignore  release-sign    'cosign verify --insecure-ignore-tlog x'            "transparency log"  "AC8 the log ignored on verify"
 sm x_tool    release-assets  'crane digest x'                                    "'crane'"           "AC10 a tool the row does not list"

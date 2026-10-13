@@ -893,14 +893,15 @@
       "tools": [
         "crane",
         "jq",
-        "python3"
+        "python3",
+        "trap"
       ],
       "runs": [
         "bin/release-layout.py"
       ],
       "signs": false,
       "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
-      "sha256": "1a7e52e30c1c55531e04d00e8d3f167c93b8c1d8b70a17f454c4ba936d4db7dc",
+      "sha256": "285101dfc139a738c1436d089110deb94b1432716a2267c11302000ffa5996f8",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -912,7 +913,8 @@
       "tools": [
         "cosign",
         "jq",
-        "python3"
+        "python3",
+        "trap"
       ],
       "runs": [
         "bin/release-metadata.py",
@@ -921,7 +923,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "1e4cf8a5538d1180a277ca404f61e78814e2e71b774f5203f9a265c5f2f220b9",
+      "sha256": "fbb014a040ea89c225b48011e6a4f8d020afdb74de9d30a1ede08c4a4931ec12",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",
@@ -932,6 +934,7 @@
       "path": "bin/release-assets.sh",
       "tools": [
         "gh",
+        "git",
         "python3"
       ],
       "runs": [
@@ -939,7 +942,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
-      "sha256": "bfb784e9fdeee2564743ec80d1d1237e8afe34f0bdbcb095a471c1eb0bb8fbcc",
+      "sha256": "2114a6a0a6135c5e6230ab05caa06f2d985368f49b7ef4769dfb21caf7d79629",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -983,7 +986,7 @@
       "runs": [],
       "signs": false,
       "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
-      "sha256": "54231a761d64342732d74e6a7d0800f66649fe7c8bbb6e508dfa6c5f8a49b129"
+      "sha256": "99e22fea81c764f1ab12e100070cfe470b697f1881a484516fec176d46b9cf13"
     },
     {
       "path": "bin/vex-forms.py",

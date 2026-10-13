@@ -1623,7 +1623,7 @@ requirements:
       - id: REQ-REL-009-AC8
         given: "a patch release"
         when: "its notes are generated"
-        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release by the patch-notes job and in the changelog, and name no vendor or model"
+        then: "they list per fix the CVE, package, old and new version, severity and affected image variants, each VEX statement added or changed, and a no-behavior-change line — or, when docs/next-release-notes.md lists changes the owner or the advisor judged unable to affect supported clients (each citing that handoff; advisor 0130), those changes under Behavior changes; they are posted on the GitHub release by Release's release-assets step, from the notes carried in the generated patch tag's message (patch-decide.py tag-notes; any other tag keeps the fixed evidence text), and in the changelog by the patch-notes job, and name no vendor or model"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REL-009-AC9
@@ -3091,7 +3091,7 @@ requirements:
       - id: REQ-CHAIN-007-AC2
         given: "the steps of the release job"
         when: "the credentials they name are read"
-        then: "no step up to and including release-verify has an env key or names a secret, a token or an environment credential; afterwards each credential reaches only the steps that need it, as a whole read of a secret or of the job token and nothing else: the apk signing key (APK_RELEASE_SIGNING_KEY) only in release-apks, the registry credentials (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) only in release-publish and release-sign, the GitHub token (GH_TOKEN) only in release-publish, release-sign and release-assets; any other name, a second use, or a name read in part is refused"
+        then: "no step up to and including release-verify has an env key or names a secret, a token or an environment credential; afterwards each credential reaches only the steps that need it, as a whole read of a secret or of the job token and nothing else: the apk signing key (APK_RELEASE_SIGNING_KEY) only in release-apks, the registry credentials (DOCKERHUB_USERNAME, DOCKERHUB_TOKEN) only in release-publish and release-sign, the GitHub token (GH_TOKEN) only in release-publish, release-sign, release-assets and release-postverify (which uses it read-only, for gh attestation verify); any other name, a second use, or a name read in part is refused"
         verification: { method: ci-workflow, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC3
@@ -3169,7 +3169,7 @@ requirements:
       - id: REQ-CHAIN-007-AC15
         given: "bin/witnessed.sh"
         when: "its Witness call is read"
-        then: "it keeps out of every record, through --env-add-sensitive-key, the identity-token variables (ACTIONS_ID_TOKEN_REQUEST*, ACTIONS_RUNTIME_TOKEN), GH_TOKEN, GITHUB_TOKEN and Release's three credential names APK_RELEASE_SIGNING_KEY, DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, and the judge of the helper's exact text pins the list; a record that names one of them is refused (AC12)"
+        then: "it keeps out of every record, through --env-add-sensitive-key, the identity-token variables (ACTIONS_ID_TOKEN_REQUEST*, ACTIONS_RUNTIME_TOKEN, SIGSTORE_ID_TOKEN), GH_TOKEN, GITHUB_TOKEN and Release's three credential names APK_RELEASE_SIGNING_KEY, DOCKERHUB_USERNAME and DOCKERHUB_TOKEN, and only the step release-sign receives an identity token in its environment (SIGSTORE_ID_TOKEN, minted by the helper with audience sigstore and masked; a failed or empty fetch stops the helper before anything runs), every other step none; the judge of the helper's exact text pins the list and the release-sign-only branch; a record that names one of them is refused (AC12)"
         verification: { method: unit, release_blocking: true }
         status: approved
       - id: REQ-CHAIN-007-AC16

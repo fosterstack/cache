@@ -157,8 +157,27 @@ gate("a missing checksums.txt.bundle is refused", lambda a: os.remove(a + "/chec
 gate("a file with its own bundle (the SBOM) is covered by it", lambda a: None)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
+# ---- tag-notes: the release tag's generated notes (REQ-REL-009-AC8), the same decision as bin/patch-decide.py tag_notes ----------------------------
+import importlib.util
+spec = importlib.util.spec_from_file_location("patch_decide", os.path.join(BIN, "patch-decide.py")); PD = importlib.util.module_from_spec(spec); spec.loader.exec_module(PD)
+GEN = ("object 0123\ntype commit\ntag v0.3.1\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
+       "## v0.3.1 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+       "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+cases = [("a generated patch tag", GEN, "v0.3.1"),
+         ("an owner's tag", "object 1\ntype commit\ntag v0.3.1\ntagger o <o@x> 1 +0000\n\nv0.3.1\n", "v0.3.1"),
+         ("another tagger", GEN.replace("fosterstack release <release@users.noreply.github.com>", "Someone <s@x>"), "v0.3.1"),
+         ("a heading for another version", GEN.replace("## v0.3.1 \u2014", "## v0.3.2 \u2014"), "v0.3.1"),
+         ("an ssh signature, not gitsign", GEN.replace("SIGNED MESSAGE-----", "SSH SIGNATURE-----"), "v0.3.1"),
+         ("two signature blocks", GEN + "-----BEGIN SIGNED MESSAGE-----\nfake\n-----END SIGNED MESSAGE-----\n", "v0.3.1"),
+         ("no signature block", GEN.split("-----BEGIN")[0], "v0.3.1"),
+         ("the right tag object for another release tag", GEN, "v0.3.2")]
+for what, raw, tag in cases:
+    r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag], input=raw, capture_output=True, text=True)
+    pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
+    same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
+    check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "65"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "73"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

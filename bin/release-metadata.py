@@ -319,6 +319,31 @@ def cmd_bind_archives(a):
             refuse("%s (%s) is %s, Build's digests.json records %s: refusing to attach it" % (name, item, got, digests.get(item)))
 
 
+RELEASE_TAGGER = "fosterstack release <release@users.noreply.github.com>"     # decide's git identity (release.yml): the one tagger of a generated patch tag
+PATCH_HEAD = re.compile(r"^## (v[0-9]+\.[0-9]+\.[0-9]+) \u2014 patch release$")
+
+
+def cmd_tag_notes(a):
+    """TAG-NOTES (REQ-REL-009-AC8; round 1 F5): stdin is `git cat-file tag` of the release tag; stdout is the notes a generated patch tag carries, else exit 1
+    with nothing on stdout (the release then keeps the fixed evidence text). Only the release workflow's own patch tag counts: its tagger, a gitsign (x509)
+    signature as the message's one and last signature block, and a first line `## <this tag> \u2014 patch release`. The notes were already cleaned of vendor
+    and model names when decide made the tag (bin/patch-decide.py tag-notes applies the same rule), and the signature block is dropped."""
+    raw = sys.stdin.read()
+    head, _, body = raw.partition("\n\n")
+    tag = next((ln[4:] for ln in head.splitlines() if ln.startswith("tag ")), None)
+    tagger = next((ln[7:] for ln in head.splitlines() if ln.startswith("tagger ")), "")
+    if body.count("-----BEGIN ") == 1:
+        body, _, sig = body.partition("-----BEGIN ")
+    else:
+        sig = ""
+    if not tagger.startswith(RELEASE_TAGGER + " ") or not sig.startswith("SIGNED MESSAGE-----"):
+        sys.exit(1)
+    m = PATCH_HEAD.match(body.split("\n", 1)[0])
+    if not m or m.group(1) != tag or m.group(1) != a.tag:
+        sys.exit(1)
+    sys.stdout.write(body.strip() + "\n")
+
+
 def main(argv):
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -328,9 +353,10 @@ def main(argv):
         m.add_argument("--" + k, required=True)
     l = sub.add_parser("list"); l.add_argument("--version", required=True); l.add_argument("--dir", required=True); l.add_argument("--out", required=True)
     g = sub.add_parser("gate"); g.add_argument("--dir", required=True); g.add_argument("--same-as")
+    n = sub.add_parser("tag-notes"); n.add_argument("--tag", required=True)
     b = sub.add_parser("bind-archives"); b.add_argument("--version", required=True); b.add_argument("--digests", required=True); b.add_argument("--dist", required=True)
     a = p.parse_args(argv)
-    {"images": cmd_images, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives}[a.cmd](a)
+    {"images": cmd_images, "manifest": cmd_manifest, "list": cmd_list, "gate": cmd_gate, "bind-archives": cmd_bind_archives, "tag-notes": cmd_tag_notes}[a.cmd](a)
 
 
 if __name__ == "__main__":

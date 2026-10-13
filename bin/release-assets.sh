@@ -25,19 +25,38 @@ done
 python3 bin/release-metadata.py bind-archives --version "${rel#v}" --digests witness-build/digests.json --dist dist
 rm -rf release-upload release-published
 mkdir release-upload
+# Everything attached comes from an explicit inventory, and a release name has exactly one origin (round 1 F4): a second file under a name already
+# staged, or a file in a record directory that is not named below, stops the step before anything is created or uploaded.
+stage() { # stage SRC NAME
+  [ -f "$1" ] && [ ! -L "$1" ] || { echo "release-assets: $1 is not a regular file" >&2; exit 1; }
+  [ ! -e "release-upload/$2" ] || { echo "release-assets: $1 would replace $2, which an earlier file already staged: a release name has one origin" >&2; exit 1; }
+  cp "$1" "release-upload/$2"
+}
+only() { # only DIR NAME...: DIR holds no json file besides these
+  local dir="$1" f n ok; shift
+  for f in "$dir"/*.json; do
+    ok=0; for n in "$@"; do [ "${f##*/}" = "$n" ] && ok=1; done
+    [ "$ok" = 1 ] || { echo "release-assets: $f is not in the inventory of $dir ($*)" >&2; exit 1; }
+  done
+}
 for f in release-apks/*/*.apk; do
   arch="${f#release-apks/}"
   arch="${arch%%/*}"
   case "$arch" in x86_64) short=amd64 ;; aarch64) short=arm64 ;; *) echo "release-assets: the apk architecture $arch is not in the table" >&2; exit 1 ;; esac
-  cp "$f" "release-upload/$short-${f##*/}"
+  stage "$f" "$short-${f##*/}"
 done
 for v in production fips; do
   for kind in "$v.full.lock.json:images/$v.full.lock.json" "$v.sbom.json:images/$v-sbom/sbom.json"; do
-    if [ -f "${kind#*:}" ]; then cp "${kind#*:}" "release-upload/${kind%%:*}"; fi
+    if [ -f "${kind#*:}" ]; then stage "${kind#*:}" "${kind%%:*}"; fi
   done
 done
-for f in dist/*.tar.gz dist/*.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json witness-build/*.json witness-rebuild/*.json witness-check/*.json witness-check/*/*.json; do
-  cp "$f" "release-upload/${f##*/}"
+only witness-build build-collection.json digests.json items.json
+only witness-rebuild rebuild-collection.json
+for n in scanners acceptance runtime arm64; do only "witness-check/witness-$n" "$n-collection.json"; done
+for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
+for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json \
+         witness-build/build-collection.json witness-build/digests.json witness-build/items.json witness-rebuild/rebuild-collection.json witness-check/witness-*/*-collection.json; do
+  stage "$f" "${f##*/}"
 done
 python3 bin/release-metadata.py gate --dir release-upload
 files=()
@@ -45,8 +64,16 @@ for f in release-upload/*.apk release-upload/*.json release-upload/*.txt release
   files+=("$f")
 done
 if [ "${#files[@]}" = 0 ]; then echo "release-assets: nothing to attach" >&2; exit 1; fi
-if ! gh release view "$rel" > /dev/null 2>&1; then
-  gh release create "$rel" --title "fscache $rel" --notes "Evidence: see docs/verify-release.md for the verification commands of this release." --verify-tag
+# The release's notes: a generated patch tag's notes (REQ-REL-009-AC8; release-metadata.py tag-notes accepts only the release workflow's own patch tag), else
+# the fixed evidence text. Only a definite "release not found" creates a release; any other failure of the view stops here (round 1 R3).
+notes=(--notes "Evidence: see docs/verify-release.md for the verification commands of this release.")
+if git cat-file tag "$rel" > release-tag.txt 2> /dev/null && python3 bin/release-metadata.py tag-notes --tag "$rel" < release-tag.txt > release-notes.md 2> /dev/null && [ -s release-notes.md ]; then
+  notes=(--notes-file release-notes.md)
+fi
+rm -f release-tag.txt
+if ! view_err=$(gh release view "$rel" 2>&1 > /dev/null); then
+  [[ "$view_err" == *"release not found"* ]] || { echo "release-assets: cannot tell whether release $rel exists: $view_err" >&2; exit 1; }
+  gh release create "$rel" --title "fscache $rel" "${notes[@]}" --verify-tag
 fi
 gh release upload "$rel" "${files[@]}"
 gh release download "$rel" -D release-published
