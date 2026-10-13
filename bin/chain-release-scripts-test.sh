@@ -127,7 +127,25 @@ prev = a[a.index("--previous") + 1]; rec = a[a.index("--record") + 1]
 if not os.path.exists(rec): print("refused at %s: missing record %s" % (prev, rec), file=sys.stderr); sys.exit(1)
 if os.environ.get("FAIL_STAGE") == prev: print("refused at %s: the record is invalid" % prev, file=sys.stderr); sys.exit(1)''',
 }
-DIG = {"image-production": "sha256:" + "a" * 64, "image-fips": "sha256:" + "b" * 64}
+def make_layout(root, variant):
+    """A real OCI image layout directory (round 1, Codex A B4): every blob is named by its sha256, the index blob holds the two linux child
+    manifests, index.json holds the one descriptor. Returns the index digest."""
+    blobs = os.path.join(root, "blobs", "sha256"); os.makedirs(blobs)
+    def put(data):
+        h = hashlib.sha256(data).hexdigest(); open(os.path.join(blobs, h), "wb").write(data); return {"digest": "sha256:" + h, "size": len(data)}
+    kids = []
+    for arch in ("amd64", "arm64"):
+        cfg = put(("config %s %s" % (variant, arch)).encode()); lay = put(("layer %s %s" % (variant, arch)).encode())
+        m = put(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                            "config": dict(cfg, mediaType="application/vnd.oci.image.config.v1+json"),
+                            "layers": [dict(lay, mediaType="application/vnd.oci.image.layer.v1.tar+gzip")]}, sort_keys=True).encode())
+        kids.append(dict(m, mediaType="application/vnd.oci.image.manifest.v1+json", platform={"architecture": arch, "os": "linux"}))
+    idx = put(json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": kids}, sort_keys=True).encode())
+    open(os.path.join(root, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}')
+    json.dump({"schemaVersion": 2, "manifests": [dict(idx, mediaType="application/vnd.oci.image.index.v1+json")]}, open(os.path.join(root, "index.json"), "w"))
+    return idx["digest"]
+LAYOUTS = tempfile.mkdtemp()
+DIG = {"image-" + v: make_layout(os.path.join(LAYOUTS, v), v) for v in ("production", "fips")}
 def apk_data(variant, arch): return "data-%s-%s" % (variant, arch)
 # REQ-CHAIN-007-AC17, the fixed Build interface table: artifact (runner) -> apk architecture directory -> short name; variant -> file name
 RUNNERS = (("ubuntu-24.04", "x86_64", "amd64"), ("ubuntu-24.04-arm", "aarch64", "arm64"))
@@ -157,7 +175,7 @@ def tree(extra_env=None):
                 digs["apk-%s-%s" % (variant, short)] = "sha256:" + hashlib.sha256(apk_data(variant, short).encode()).hexdigest()
     for v in ("production", "fips"):
         os.makedirs(os.path.join(t, "images", v + "-sbom"), exist_ok=True)
-        os.makedirs(os.path.join(t, "images", v)); open(os.path.join(t, "images", v, "oci-layout"), "w").write('{"imageLayoutVersion":"1.0.0"}'); open(os.path.join(t, "images", v, "index.json"), "w").write("{}")
+        shutil.copytree(os.path.join(LAYOUTS, v), os.path.join(t, "images", v))
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
         open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
         open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("lock " + v); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("sbom " + v)
@@ -332,6 +350,21 @@ t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.star
 check(L and all(re.search(r" images/(production|fips) ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
 t = tree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
 rc, so, se = run(t, "release-publish", creds=REG); check(rc != 0 and "production" in se and not pushes(t), "AC7 an image that is not an OCI layout directory (a tarball) is refused before any push, naming it", "rc=%s %s" % (rc, first(se)))
+# round 1 (Codex A B4): the layout's CONTENT is the attested image before anything is logged in or pushed
+def layout_refused(t, what, word):
+    rc, so, se = run(t, "release-publish", creds=REG)
+    check(rc != 0 and word in se and not pushes(t) and not [l for l in log(t) if "auth login" in l], "AC7 B4 " + what + " is refused before any login or push", "rc=%s %s pushes=%s" % (rc, first(se), pushes(t)))
+def blobs_of(t, v): d = os.path.join(t, "images", v, "blobs/sha256"); return d, sorted(os.listdir(d))
+t = tree(); d, bl = blobs_of(t, "production"); open(os.path.join(d, bl[0]), "ab").write(b"x")
+layout_refused(t, "a layout blob whose bytes no longer hash to its name", "production")
+t = tree(); d, bl = blobs_of(t, "fips"); os.remove(os.path.join(d, bl[0])); layout_refused(t, "a layout with a blob missing", "fips")
+t = tree(); ix = os.path.join(t, "images/fips/index.json"); j = json.load(open(ix)); j["manifests"][0]["digest"] = "sha256:" + "d" * 64; json.dump(j, open(ix, "w"))
+layout_refused(t, "an index.json whose descriptor is not the attested digest (the sidecar still says it is)", "fips")
+t = tree(); ix = os.path.join(t, "images/production/index.json"); j = json.load(open(ix)); j["manifests"].append(dict(j["manifests"][0])); json.dump(j, open(ix, "w"))
+layout_refused(t, "an index.json with two descriptors", "production")
+t = tree(); d, bl = blobs_of(t, "production"); idx_hex = DIG["image-production"].split(":")[1]
+kid = [b for b in bl if b != idx_hex][0]; os.remove(os.path.join(d, kid)); open(os.path.join(d, kid), "wb").write(b"swapped")
+layout_refused(t, "a child blob replaced under its name", "production")
 t = tree(); os.remove(os.path.join(t, "images/fips/index.json")); rc, so, se = run(t, "release-publish", creds=REG)
 check(rc != 0 and "fips" in se and not pushes(t), "AC7 a layout directory without index.json is refused before any push", "rc=%s %s" % (rc, first(se)))
 # ---- AC8: release-sign.sh -------------------------------------------------------------------------------------------------------------------
@@ -382,8 +415,11 @@ def full_assets():
     t = tree(); rc_, so_, se_ = run(t, "release-sign", creds=REG)
     os.makedirs(os.path.join(t, "release-apks/x86_64")); os.makedirs(os.path.join(t, "release-apks/aarch64"))
     open(os.path.join(t, "release-apks/x86_64/a.apk"), "w").write("x"); open(os.path.join(t, "release-apks/aarch64/a.apk"), "w").write("y")
-    for n, c in (("fscache_0.3.0_linux_amd64.tar.gz", b"A"), ("fscache_0.3.0_linux_arm64.tar.gz", b"B")): open(os.path.join(t, "dist", n), "wb").write(c)
-    open(os.path.join(t, "dist/checksums.txt"), "w").write("".join("%s  %s\n" % (hashlib.sha256(c).hexdigest(), n) for n, c in (("fscache_0.3.0_linux_amd64.tar.gz", b"A"), ("fscache_0.3.0_linux_arm64.tar.gz", b"B"))))
+    # the four Linux archives Build recorded (its digests.json holds sha256 of the item name as each archive's bytes)
+    arcs = (("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
+            ("fscache-fips_0.3.0_linux_amd64.tar.gz", b"archive-fips-linux-amd64"), ("fscache-fips_0.3.0_linux_arm64.tar.gz", b"archive-fips-linux-arm64"))
+    for n, c in arcs: open(os.path.join(t, "dist", n), "wb").write(c)
+    open(os.path.join(t, "dist/checksums.txt"), "w").write("".join("%s  %s\n" % (hashlib.sha256(c).hexdigest(), n) for n, c in arcs))
     return t
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
@@ -407,6 +443,20 @@ for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
     t3 = tree(); rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], tag=tag); check(rc3 != 0 and "tag" in se3 and not log(t3), "AC14 release-assets refuses the tag %r" % tag, "rc=%s %s" % (rc3, first(se3)))
 check(not [l for l in log(t) if re.search(r"release create(?!.*--verify-tag)|git |tag ", l)], "AC9 no release is created without --verify-tag and no tag is made")
 check(SENT["GH_TOKEN"] not in L + so + se, "AC9 the token is never on a command line or in output")
+# round 1 (Codex A B3): the archives are Build's bytes and the set is complete before anything is uploaded
+def refused_before_upload(t, what, word, **kw):
+    rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"], **kw)
+    check(rc != 0 and word in se and not any(l.startswith("gh release") for l in log(t)), "AC9 B3 " + what + " is refused before any release is created or uploaded", "rc=%s %s calls=%s" % (rc, first(se), [l for l in log(t) if l.startswith("gh")][:2]))
+def resum(t):      # checksums.txt of whatever archives dist holds (a replaced archive is "covered" by a list that agrees with it)
+    ds = os.path.join(t, "dist"); open(os.path.join(ds, "checksums.txt"), "w").write("".join(
+        "%s  %s\n" % (hashlib.sha256(open(os.path.join(ds, n), "rb").read()).hexdigest(), n) for n in sorted(os.listdir(ds)) if n.endswith(".tar.gz")))
+t = full_assets(); open(os.path.join(t, "dist/fscache_0.3.0_linux_amd64.tar.gz"), "wb").write(b"replacement archive"); resum(t)
+refused_before_upload(t, "an archive whose bytes are not Build's (its checksums.txt agrees with the replacement)", "archive-linux-amd64")
+t = full_assets(); os.remove(os.path.join(t, "dist/fscache-fips_0.3.0_linux_arm64.tar.gz")); resum(t); refused_before_upload(t, "a missing -fips arm64 archive", "archive-fips-linux-arm64")
+t = full_assets(); open(os.path.join(t, "dist/fscache_0.3.0_linux_ppc64.tar.gz"), "wb").write(b"x"); resum(t); refused_before_upload(t, "a fifth archive Build did not record", "ppc64")
+t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/aarch64")); refused_before_upload(t, "no apk of the arm64 architecture", "aarch64")
+t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/x86_64")); refused_before_upload(t, "no apk of the amd64 architecture", "x86_64")
+t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check")); refused_before_upload(t, "no Check record to attach", "witness-check")
 t = tree(); rc, so, se = run(t, "release-assets"); check(rc == 2 and "GH_TOKEN" in se and not log(t), "AC9 a missing GH_TOKEN is refused with exit 2, naming it")
 # ---- REQ-CHAIN-006-AC7 (rule 79 amended, owner Oct 10): the post-publish verification, release-postverify.sh -----------------------------------
 # PROPOSED interface: it reads docs/verify-release.cannot-run.json ([{command, reason}], the one exact-text list Check also reads), runs each
@@ -497,7 +547,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "236"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "247"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
