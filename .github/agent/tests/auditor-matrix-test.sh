@@ -3265,32 +3265,95 @@ RQ
 )"
 eq "$rq" "OK" && ok || no "requirements resolve step in the required job + pydantic group" "$rq"
 
-begin "req18-ac3-review-loop-before-merge" "a change under .github/agent/ passes the review gate ONLY with a record bound to its exact content where both vendors are clear; no record, a stale record (content changed after review) or an open blocker fails; a change outside .github/agent/ needs none"
-RG="$repo/$BIN/auditor-review-gate.py"; rg="$WORK/req18-ac3"; rm -rf "$rg"; mkdir -p "$rg/.github/agent/bin" "$rg/src"
-gt(){ git -C "$rg" -c user.name=t -c user.email=t@t -c commit.gpgsign=false "$@" >/dev/null 2>&1; }
-gate(){ ( cd "$rg" && "$PY" "$RG" --base "$1" >/dev/null 2>&1 ); echo $?; }
-mkrec(){ ( cd "$rg" && t="$("$PY" "$RG" --print-tree)" && mkdir -p .github/agent/reviews && "$PY" - "$t" "$1" <<'RR'
-import json,sys
-t,blk=sys.argv[1],int(sys.argv[2]); ev="ab"*32
-rv={"codex":{"vendor":"openai","blockers_open":0,"evidence_sha256":ev},
-    "sonnet":{"vendor":"anthropic","blockers_open":blk,"evidence_sha256":ev}}
-json.dump({"schema":"auditor-review-record/v1","tree":t,"change":"test","rounds":[{"round":1,"reviewers":rv}],
-           "stop":{"codex":"clear","sonnet":"clear" if blk==0 else "blocked"}},open(".github/agent/reviews/%s.json"%t,"w"))
-RR
-) && gt add -A && gt commit -qm rec; }
-echo a > "$rg/.github/agent/bin/x.py"; echo s > "$rg/src/y"; gt init -q; gt add -A; gt commit -qm base; base="$(git -C "$rg" rev-parse HEAD)"
-echo b > "$rg/src/y"; gt commit -qam outside; outside="$(gate "$base")"
-echo b > "$rg/.github/agent/bin/x.py"; gt commit -qam change; norec="$(gate "$base")"
-mkrec 1; blocked="$(gate "$base")"
-mkrec 0; clear="$(gate "$base")"
-echo c > "$rg/.github/agent/bin/x.py"; gt commit -qam fixup; stale="$(gate "$base")"
-# an unchanged-content rename OUT of .github/agent/ is still an auditor change (rename detection
-# would otherwise report only the new, outside path)
-mkrec 0; base2="$(git -C "$rg" rev-parse HEAD)"; gt mv .github/agent/bin/x.py src/x.py; gt commit -qm moveout; moved="$(gate "$base2")"
-mkrec 0; base3="$(git -C "$rg" rev-parse HEAD)"; mkdir -p "$rg/.github/agent/reviews"; echo "print(1)" > "$rg/.github/agent/reviews/not-a-record.py"; gt add -A; gt commit -qm smuggle; smuggled="$(gate "$base3")"
-{ eq "$outside" "0" && eq "$norec" "1" && eq "$blocked" "1" && eq "$clear" "0" && eq "$stale" "1" && eq "$moved" "1" && eq "$smuggled" "1"; } \
-  && ok || no "gate: outside=0 no-record=1 open-blocker=1 clear=0 stale=1 moved-out=1 non-record-under-reviews=1" "outside=$outside no_record=$norec blocked=$blocked clear=$clear stale=$stale moved_out=$moved smuggled=$smuggled"
+begin "req18-ac3-no-record-requirement" "no change needs a review record in this repository: the record-judging script is gone, and the trusted verdict (judge and sweep) runs the action-pin checker, the allowlist guard and the pin-wiring judge and nothing else over the head"
+nr="$(python3 - <<'NR'
+import os,re
+gate=".github/agent/bin/auditor-review-gate.py"
+src=open(".github/workflows/agent-review-gate.yml").read()
+tools=("check-action-pins.py --verify-tags --git","bin/check-file-allowlist.sh","pin-wiring-test.sh")
+code="\n".join(l for l in src.splitlines() if not l.lstrip().startswith("#"))
+ok=(not os.path.exists(gate) and "auditor-review-gate.py" not in src and "--subs-rev" not in src
+    and all(code.count(t)==2 for t in tools) and "reviews/" not in src)
+print("OK" if ok else "BAD")
+NR
+)"
+eq "$nr" "OK" && ok || no "no review-record script; the verdict runs the three checks in judge and sweep" "state=$nr"
 
+begin "req18-ac3-verdict-runs-and-propagates" "the judge and the sweep, run as written with recording stand-ins for the three checks, publish success only when the pin checker, the allowlist guard and the pin-wiring judge ALL exit 0, call each check, and fail when any one fails"
+vp="$(python3 - <<'VP'
+import sys, os, subprocess, tempfile, itertools, shutil
+sys.path.insert(0, ".github/agent/fixtures/testlib")
+import pyyaml as yaml
+d = yaml.safe_load(open(".github/workflows/agent-review-gate.yml"))
+def step(job, key):
+    r = [x for x in d["jobs"][job]["steps"] if key in x.get("name", "")]
+    return r[0]["run"] if len(r) == 1 else None
+judge_run = step("judge", "review gate and pin check")
+sweep_run = step("sweep", "judge and publish every open PR")
+if not judge_run or not sweep_run:
+    print("BAD missing step"); sys.exit()
+def sh(*a, **k): return subprocess.run(a, check=True, capture_output=True, text=True, **k).stdout.strip()
+gitenv = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t", GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t",
+              GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_SYSTEM="/dev/null")
+root = tempfile.mkdtemp(prefix="verdict-")
+try:
+    src = os.path.join(root, "src"); fx = os.path.join(root, "fx")
+    os.makedirs(src)
+    sh("git", "-C", src, "init", "-q"); open(os.path.join(src, "f"), "w").write("x")
+    subprocess.run(["git", "-C", src, "add", "-A"], check=True, env=gitenv)
+    subprocess.run(["git", "-C", src, "commit", "-qm", "c", "--no-gpg-sign"], check=True, env=gitenv, capture_output=True)
+    sha = sh("git", "-C", src, "rev-parse", "HEAD")
+    sh("git", "-C", src, "update-ref", "refs/pull/7/head", sha)
+    sh("git", "clone", "-q", src, fx)
+    for rel, body in {
+        ".github/agent/bin/check-action-pins.py": "import os,sys\nopen(os.environ['CALLS'],'a').write('pins\\n')\nsys.exit(int(os.environ['STUB_PINS']))\n",
+        "bin/check-file-allowlist.sh": "cat >/dev/null\necho allow >> \"$CALLS\"\nexit \"$STUB_ALLOW\"\n",
+        ".github/agent/tests/pin-wiring-test.sh": "echo wiring >> \"$CALLS\"\nexit \"$STUB_WIRING\"\n",
+    }.items():
+        f = os.path.join(fx, rel); os.makedirs(os.path.dirname(f), exist_ok=True); open(f, "w").write(body)
+    os.makedirs(os.path.join(fx, ".github/agent/fixtures/testlib/pyyaml"), exist_ok=True)
+    stubbin = os.path.join(root, "stubbin"); os.makedirs(stubbin)
+    gh = os.path.join(stubbin, "gh")
+    open(gh, "w").write('#!/bin/sh\n'
+        'case "$1 $2" in\n'
+        '"pr list") echo "7 %s feature owner/repo" ;;\n'
+        '"api repos/o/r/commits/%s/check-runs?check_name=auditor-review-gate") echo none ;;\n'
+        '"api repos/o/r/check-runs") for a in "$@"; do case "$a" in conclusion=*) echo "$a" >> "$CALLS" ;; esac; done ;;\n'
+        '*) echo "unexpected gh $*" >> "$CALLS"; exit 9 ;;\n'
+        'esac\n' % (sha, sha))
+    os.chmod(gh, 0o755)
+    bad = []
+    for pins, allow, wiring in itertools.product((0, 1), repeat=3):
+        allpass = (pins, allow, wiring) == (0, 0, 0)
+        for which, run in (("judge", judge_run), ("sweep", sweep_run)):
+            calls = os.path.join(root, "calls"); out = os.path.join(root, "out"); tmp = os.path.join(root, "tmp")
+            for f in (calls, out): open(f, "w").close()
+            os.makedirs(tmp, exist_ok=True)
+            env = dict(os.environ, CALLS=calls, GITHUB_OUTPUT=out, RUNNER_TEMP=tmp, HEAD_SHA=sha,
+                       GITHUB_HEAD_REF="feature", GITHUB_BASE_REF="main", GITHUB_HEAD_REPO="owner/repo",
+                       GITHUB_REPOSITORY="o/r", LIST_TOKEN="t", APP_TOKEN="t", APP_SLUG="app", DEFAULT="main", RUN_URL="u",
+                       STUB_PINS=str(pins), STUB_ALLOW=str(allow), STUB_WIRING=str(wiring),
+                       PATH=stubbin + ":" + os.environ["PATH"])
+            r = subprocess.run(["bash", "-c", run], cwd=fx, env=env, capture_output=True, text=True)
+            c = open(calls).read().split()
+            tag = "%s pins=%d allow=%d wiring=%d" % (which, pins, allow, wiring)
+            if which == "judge":
+                v = open(out).read().strip()
+                if sorted(c) != ["allow", "pins", "wiring"]: bad.append(tag + " calls=%s" % c)
+                if v != ("verdict=success" if allpass else "verdict=failure"): bad.append(tag + " out=%s" % v)
+                if (r.returncode == 0) != allpass: bad.append(tag + " rc=%d" % r.returncode)
+            else:
+                pub = [x for x in c if x.startswith("conclusion=")]
+                if pub != ["conclusion=success" if allpass else "conclusion=failure"]: bad.append(tag + " published=%s" % pub)
+                if "pins" not in c or (allpass and sorted(x for x in c if not x.startswith("conclusion=")) != ["allow", "pins", "wiring"]):
+                    bad.append(tag + " calls=%s" % c)
+                if any("unexpected" in x for x in c): bad.append(tag + " unexpected gh call")
+    print("OK" if not bad else "BAD " + "; ".join(bad[:4]))
+finally:
+    shutil.rmtree(root, ignore_errors=True)
+VP
+)"
+eq "$vp" "OK" && ok || no "judge and sweep run as written publish success only when all three checks exit 0" "$vp"
 
 begin "req18-ac3-gate-runs-from-base-on-pull-request-target" "the review gate runs on pull_request_target (default-branch workflow) incl. retargets; a secret-free JUDGE reads the PR head as data only against the checked-out default branch and rejects a moved head; a PUBLISHER holds only a checks:write token of the automation App (agent environment) and never touches PR data; a scheduled SWEEP covers PRs whose run had no App credentials (Dependabot); the auditor's own App token cannot write checks"
 wg="$(python3 - <<'WG'
@@ -3312,8 +3375,9 @@ ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited"
     and j.get("permissions")=={"contents":"read"} and "secrets." not in yaml.safe_dump(j) and main_only in str(j.get("if"))
     and len(co)==1 and (co[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (co[0].get("with") or {})
     and "refs/pull/${PR}/head:refs/remotes/pr/head" in jr and '[ "$got" = "$HEAD_SHA" ] ||' in jr
-    and 'git merge-base HEAD "$HEAD_SHA"' in jr and "base.sha" not in yaml.safe_dump(j)
-    and "python3 -I .github/agent/bin/auditor-review-gate.py --base" in jr and "--head \"$HEAD_SHA\" --pr \"$PR\" --subs-rev HEAD" in jr and "checkout" not in jr and "pip install" not in jr
+    and "base.sha" not in yaml.safe_dump(j) and "auditor-review-gate.py" not in jr
+    and 'check-action-pins.py --verify-tags --git "$HEAD_SHA"' in jr and "PIN_WIRING_JUDGE_GIT=\"$HEAD_SHA\"" in jr
+    and "checkout" not in jr and "pip install" not in jr
     # publisher: agent-env App token (checks only), no PR data, not on cancellation
     and p.get("needs")=="judge" and p.get("environment")=="agent" and p.get("permissions")=={}
     and "!cancelled()" in str(p.get("if")) and main_only in str(p.get("if")) and scoped(tok(p))
@@ -3323,8 +3387,9 @@ ok=(set(on)=={"pull_request_target","schedule","workflow_dispatch"} and "edited"
     and w.get("environment")=="agent" and "pull_request_target" not in str(w.get("if")) and "schedule" in str(w.get("if"))
     and len(wco)==1 and (wco[0].get("with") or {}).get("persist-credentials") is False and "ref" not in (wco[0].get("with") or {})
     and scoped(tok(w)) and 'refs/remotes/pr/${n}' in wr and '= "$sha" ] || continue' in wr
-    and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and 'git merge-base HEAD "$sha"' in wr
-    and "python3 -I .github/agent/bin/auditor-review-gate.py --base" in wr and "--head \"$sha\" --pr \"$n\" --subs-rev HEAD" in wr and "checkout" not in wr and "statuses" not in src)
+    and 'select(.app.slug == \\"${APP_SLUG}\\")' in wr and "auditor-review-gate.py" not in wr
+    and 'check-action-pins.py --verify-tags --git "$sha"' in wr and "PIN_WIRING_JUDGE_GIT=\"$sha\"" in wr
+    and "checkout" not in wr and "statuses" not in src)
 # the auditor's own mint of the same App never includes checks
 a=yaml.safe_load(open(".github/workflows/auditor.yml"))
 mints=[x for jb in a["jobs"].values() for x in jb.get("steps",[]) if str(x.get("uses","")).startswith("actions/create-github-app-token@")]
