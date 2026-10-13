@@ -567,6 +567,11 @@ def removed(root):
     return bad
 
 
+# PLAIN FORM, the closed definition this judge enforces (orchestrator, Oct 13, from the owner's Oct 3 scope rule for the pin checker: "a simple parse ... deliberately
+# hidden forms are out of scope; reviewers judge intent"): (a) the named files, directories or the Dependabot docker entry exist, or (b) a workflow run line or a script
+# line whose command word, after splitting on ; && || | and newlines and stripping a leading NAME=value word and a path, is one of the removed tools (and, for crane,
+# the closed list of forms below). Everything else (assembled names, variables, dead branches, program-running API argument tricks, games with exempt files) is
+# information: this is a tripwire against reintroducing a Dockerfile or goreleaser by habit, not a wall against an insider.
 # Rule 61 (REQ-CHAIN-006-AC10; advisor Oct 12): once the new chain works, the Dockerfile, buildx and goreleaser and their Dependabot entries are removed, and nothing
 # reads them. Under apko there is no base image: the base inputs are the committed locks (.github/policy/base-inputs.json), and a candidate image is read by crane, by digest.
 RULE61_WORDS = re.compile(r"(?i)\bdockerfile|\bbuildx\b|goreleaser|\bimagetools\b|build/docker")
@@ -583,6 +588,23 @@ RULE61_REVIEW_RECORD = re.compile(r"^" + re.escape(_AG) + r"/reviews/[0-9a-f]{64
 RULE61_RUNS = re.compile(r"subprocess|os\.system|os\.exec|os\.popen|\bPopen\b|check_output|check_call|shell=True|\bexec\(|\beval\(")
 RULE61_SCAN_ROOTS = (".github", "bin", "tools", "build")
 RULE61_SCAN_EXT = (".yml", ".yaml", ".json", ".sh", ".py", ".go", ".mod")
+
+
+def _plain_command_is_removed_tool(line):
+    """The closed definition of a plain form for a script line (orchestrator, Oct 13): split on ; && || | (a newline ends the line), strip leading NAME=value words and a
+    leading path, and the command word is goreleaser or buildx, or `docker buildx`. Everything else (an assembled name, a variable, a dead branch, an argument of a
+    program-running API) is information, not a finding of this judge."""
+    line = re.sub(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", '""', line)       # a quoted string is an argument or a message, never the command word
+    for seg in re.split(r"&&|\|\||;|\|", line):
+        words = seg.split()
+        while words and re.fullmatch(r"[A-Za-z_]\w*=\S*", words[0]):
+            words.pop(0)
+        if not words:
+            continue
+        cmd = words[0].rsplit("/", 1)[-1]
+        if cmd in ("goreleaser", "buildx") or (cmd == "docker" and len(words) > 1 and words[1] == "buildx"):
+            return True
+    return False
 
 
 def _judge_starts_tool(root, rel):
@@ -647,7 +669,7 @@ def removed_rule61(root):
                 if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f):
                     # a test names the removed tools in its fixtures and in what it expects to be refused; it never RUNS one: a line whose first command word is the tool is a finding
                     for n_, ln in enumerate(open(full, errors="replace").read().splitlines(), 1):
-                        if re.match(r"^\s*(?:goreleaser|buildx|docker\s+buildx)\b", ln):
+                        if _plain_command_is_removed_tool(ln):
                             bad.append("%s:%d runs a removed tool (a test names tools in its fixtures; it never starts one): %s" % (rel, n_, ln.strip()[:100]))
                     continue
                 if rel in RULE61_JUDGE_FILES:

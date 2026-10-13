@@ -585,6 +585,12 @@ mkr q27; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$
 expect caught "AC10 rule 61: an index append from a literal tag is refused (the one approved append names the variables)" "other than the one index append" removed "$work/q27"
 mkr q39; printf '#!/bin/sh\ngoreleaser release --clean\n' > "$work/q39/bin/retired-test.sh"
 expect caught "AC10 rule 61: a test file whose line starts goreleaser is a finding (tests name the tools in fixtures; none starts one)" "runs a removed tool" removed "$work/q39"
+mkr q40; printf '#!/bin/sh\nFOO=1 goreleaser release --clean\n' > "$work/q40/bin/retired-test.sh"
+expect caught "AC10 rule 61: a test line whose command word follows a NAME=value word is a plain form (goreleaser)" "runs a removed tool" removed "$work/q40"
+mkr q41; printf '#!/bin/sh\ncd x && /usr/local/bin/goreleaser build\n' > "$work/q41/bin/retired-test.sh"
+expect caught "AC10 rule 61: a test line whose command word after && is a path-qualified goreleaser is a plain form" "runs a removed tool" removed "$work/q41"
+mkr q42; printf '#!/bin/sh\necho "goreleaser is gone"; printf "docker buildx\\n"\n' > "$work/q42/bin/retired-test.sh"
+expect ok "fixture: a test that only names the removed tools in a message (the command words are echo and printf) passes" "" removed "$work/q42"
 mkr q35; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          true;ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q35/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a reference reset inside a command list (true;ref=...) is counted as a second assignment" "assigned exactly once" removed "$work/q35"
 mkr q36; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          built_idx="ghcr.io/o/cache:latest"; att_ref="ghcr.io/o/cache:latest"; built_ref=x\n          crane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q36/.github/workflows/main-candidate-rescan.yml"
@@ -624,7 +630,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=256
+EXPECT=259
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
