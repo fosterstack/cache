@@ -538,6 +538,23 @@ check("AC8w VEX: added, changed and removed statements, unchanged ones left out"
     {"cve": "CVE-9", "status": "not_affected", "change": "removed"}], vc)
 check("AC8w VEX: no old document (first patch) lists every statement as added",
       [v["change"] for v in P.vex_changes(None, vdoc(("CVE-1", "affected")))] == ["added"])
+# round 1 (Codex A, R2): the statement's scope and fields are compared, not only the CVE's status
+def sdoc(*st):
+    return {"statements": [dict({"vulnerability": {"name": n}, "status": stt, "products": [{"@id": pid}]}, **extra) for n, stt, pid, extra in st]}
+A_ = "pkg:oci/cache@sha256:" + "a" * 64; B_ = "pkg:oci/cache@sha256:" + "b" * 64
+vs = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: the same CVE and status for another product is a removed and an added statement, naming the scope",
+      sorted((v["change"], v.get("scope")) for v in vs) == [("added", B_), ("removed", A_)], vs)
+vj = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"justification": "vulnerable_code_not_present"})),
+                   sdoc(("CVE-1", "not_affected", A_, {"justification": "component_not_present"})))
+check("R2 VEX: a changed justification is a change", [v["change"] for v in vj] == ["changed justification"], vj)
+vi = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "x"})), sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "y"})))
+check("R2 VEX: a changed impact statement is a change", [v["change"] for v in vi] == ["changed impact statement"], vi)
+vm = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "affected", B_, {})), sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: two statements for one CVE are both kept (one does not overwrite the other)",
+      [(v["change"], v.get("scope")) for v in vm] == [("changed from affected", B_)], vm)
+vu = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", A_, {})))
+check("R2 VEX: an identical statement is no change", vu == [], vu)
 pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
