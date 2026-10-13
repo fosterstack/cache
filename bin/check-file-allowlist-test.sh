@@ -111,7 +111,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 171, 6   # 171 = 169 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum); 169 = 170 - the Dockerfile pattern (rule 61); 170 = 169 + bin/chain-bytes-sha.py (the rc-proof helper, 4b-1)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 172, 6   # 171 = 169 + the 2 patterns of Check's source scan (bin/check-govulncheck.py, tools/govulncheck/go.mod|sum); 169 = 170 - the Dockerfile pattern (rule 61); 170 = 169 + bin/chain-bytes-sha.py (the rc-proof helper, 4b-1)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -158,7 +158,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "d7aa049eeda80e5cef2b6a97b2d9e614b03030c54f97d76da54bb01917c81ecc"
+PINNED_SHA256 = "67559d68ac11c0cfc5bfde88b3e1569f70f69c095ec7721af8f7e3f1b284a837"
 if rstart and rend:
     import hashlib
     _b = _rawlines
