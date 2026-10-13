@@ -350,6 +350,11 @@ t, rc, so, se = float_run("v0.3.0", ["0.2.2"]); L = [l for l in log(t) if l.star
 check(L and all(re.search(r" images/(production|fips) ", l + " ") for l in L) and not [l for l in log(t) if l.startswith("crane tag")], "AC11 floating tags are pushed from the same attested bytes, nothing is retagged from a registry")
 t = tree(); import shutil as _sh; _sh.rmtree(os.path.join(t, "images/production")); open(os.path.join(t, "images/production"), "w").write("a tarball, not a layout directory")
 rc, so, se = run(t, "release-publish", creds=REG); check(rc != 0 and "production" in se and not pushes(t), "AC7 an image that is not an OCI layout directory (a tarball) is refused before any push, naming it", "rc=%s %s" % (rc, first(se)))
+# round 1 (Codex B R1): a signing run that leaves one of the four apks of the attested list missing is refused (no empty glob skips validation)
+for top in ("apks", "rapks"):
+    t = tree(); os.remove(os.path.join(t, top, "ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"))
+    rc, so, se = run(t, "release-apks", creds=KEY)
+    check(rc != 0 and "fips" in se and "aarch64" in se, "AC6 R1 the %s tree missing the arm64 -fips apk is refused naming the apk (an empty glob does not skip it)" % top, "rc=%s %s" % (rc, first(se)))
 # round 1 (Codex A B4): the layout's CONTENT is the attested image before anything is logged in or pushed
 def layout_refused(t, what, word):
     rc, so, se = run(t, "release-publish", creds=REG)
@@ -414,7 +419,8 @@ for tag in ("v0.3.0-rc1", "v0.3.0-rc.1", "main"):
 def full_assets():
     t = tree(); rc_, so_, se_ = run(t, "release-sign", creds=REG)
     os.makedirs(os.path.join(t, "release-apks/x86_64")); os.makedirs(os.path.join(t, "release-apks/aarch64"))
-    open(os.path.join(t, "release-apks/x86_64/a.apk"), "w").write("x"); open(os.path.join(t, "release-apks/aarch64/a.apk"), "w").write("y")
+    for arch in ("x86_64", "aarch64"):
+        for name in ("fscache-0.3.0-r0.apk", "fscache-fips-0.3.0-r0.apk"): open(os.path.join(t, "release-apks", arch, name), "w").write(arch + name)
     # the four Linux archives Build recorded (its digests.json holds sha256 of the item name as each archive's bytes)
     arcs = (("fscache_0.3.0_linux_amd64.tar.gz", b"archive-linux-amd64"), ("fscache_0.3.0_linux_arm64.tar.gz", b"archive-linux-arm64"),
             ("fscache-fips_0.3.0_linux_amd64.tar.gz", b"archive-fips-linux-amd64"), ("fscache-fips_0.3.0_linux_arm64.tar.gz", b"archive-fips-linux-arm64"))
@@ -423,7 +429,7 @@ def full_assets():
     return t
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0, "AC9 a good run attaches the assets", se)
-for what in ("release upload v0.3.0", "release-upload/amd64-a.apk", "release-upload/arm64-a.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
+for what in ("release upload v0.3.0", "release-upload/amd64-fscache-0.3.0-r0.apk", "release-upload/arm64-fscache-fips-0.3.0-r0.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
              "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json"):
     check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
 t2 = full_assets(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_FAIL_ON": "release view"})
@@ -455,6 +461,10 @@ refused_before_upload(t, "an archive whose bytes are not Build's (its checksums.
 t = full_assets(); os.remove(os.path.join(t, "dist/fscache-fips_0.3.0_linux_arm64.tar.gz")); resum(t); refused_before_upload(t, "a missing -fips arm64 archive", "archive-fips-linux-arm64")
 t = full_assets(); open(os.path.join(t, "dist/fscache_0.3.0_linux_ppc64.tar.gz"), "wb").write(b"x"); resum(t); refused_before_upload(t, "a fifth archive Build did not record", "ppc64")
 t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/aarch64")); refused_before_upload(t, "no apk of the arm64 architecture", "aarch64")
+t = full_assets(); os.remove(os.path.join(t, "release-apks/aarch64/fscache-fips-0.3.0-r0.apk")); refused_before_upload(t, "no -fips apk of the arm64 architecture (one apk of four is missing)", "fips")
+t = full_assets(); os.remove(os.path.join(t, "release-apks/x86_64/fscache-0.3.0-r0.apk")); refused_before_upload(t, "no standard apk of the amd64 architecture (one apk of four is missing)", "x86_64")
+for n in ("scanners", "acceptance", "runtime", "arm64"):
+    t = full_assets(); os.remove(os.path.join(t, "witness-check/witness-%s/%s-collection.json" % (n, n))); refused_before_upload(t, "the Check record %s missing (the four named records are attached)" % n, n)
 t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/x86_64")); refused_before_upload(t, "no apk of the amd64 architecture", "x86_64")
 t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check")); refused_before_upload(t, "no Check record to attach", "witness-check")
 t = tree(); rc, so, se = run(t, "release-assets"); check(rc == 2 and "GH_TOKEN" in se and not log(t), "AC9 a missing GH_TOKEN is refused with exit 2, naming it")
@@ -514,7 +524,8 @@ for bad_cmd, what in (("curl -sS https://example.com/x", "curl"), ("cosign sign 
                       ("cosign verify <IMAGE_REF> $(id)", "a command substitution"), ("cosign verify <IMAGE_REF> `id`", "a backquote"), ("cosign verify <IMAGE_REF> > /tmp/x", "a redirect"),
                       ("rm -rf .", "rm"), ("gh release delete v0.3.0", "gh release delete"), ("gh api -X DELETE repos/x/y", "gh api"), ("jq -n 1", "jq alone"), ("cosign verify --key $COSIGN_KEY <IMAGE_REF>", "a $ outside single quotes"),
                       ("cosign verify <IMAGE_REF>\nprintf LOCAL_MARKER", "a newline after a verify (bash runs it as a second command)"), ("cosign verify <IMAGE_REF>\rprintf LOCAL_MARKER", "a carriage return after a verify"),
-                      ("cosign verify <IMAGE_REF> --certificate-identity \\'x${HOME}y\\'", "a backslash-escaped quote before a $")):
+                      ("cosign verify <IMAGE_REF> --certificate-identity \\'x${HOME}y\\'", "a backslash-escaped quote before a $"),
+                      ("cosign verify <IMAGE_REF> # '\nprintf LOCAL_MARKER", "a comment holding a quote, then a newline and a second command"), ("cosign verify <IMAGE_REF> #\nprintf LOCAL_MARKER", "a comment, then a newline and a second command")):
     t, rc, so, se = pv([PV1, bad_cmd, PV2]); check(rc != 0 and "not an allowed verify form" in se and not calls(t), "AC7 post-publish: %s is refused (not an allowed verify form) and NOTHING runs, not even the good commands before it" % what, "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
 t, rc, so, se = pv([PV1, "cosign verify <IMAGE_REF> --certificate-identity <DIGEST> --certificate-oidc-issuer " + ISS]); check(rc != 0 and "<DIGEST>" in se and not calls(t), "AC7 post-publish: a command with a placeholder the step cannot fill is refused, never run literally, and nothing runs")
 t, rc, so, se = pv([PV1 + " --extra <TAGS>"]); check(rc != 0 and "<TAGS>" in se and not calls(t), "AC7 post-publish: a misspelt placeholder is refused, never run literally")
@@ -547,7 +558,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "247"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "257"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
