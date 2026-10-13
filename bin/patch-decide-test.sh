@@ -791,8 +791,12 @@ g(mg, "checkout", "-q", "-b", "side"); open(os.path.join(mg, "build/locks/melang
 g(mg, "checkout", "-q", "main"); open(os.path.join(mg, "docs.md"), "w").write("d\n"); g(mg, "add", "-A"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
 g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge side", "side")
 gm = P.gather_commits("v0.2.1", cwd=mg)
-mc = [x for x in gm if "build/locks/melange.lock" in x["files"] and x["modes"].get("build/locks/melange.lock")]
-check("M1 a merge commit's changed files carry their modes (read against the first parent)", len(mc) >= 1 and all(x["modes"].get("build/locks/melange.lock") == "100644" for x in mc), gm)
+msha = subprocess.run(["git", "-C", mg, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+mrec = [x for x in gm if x["sha"] == msha]
+# the merge's own record: it changes the lock relative to its first parent? no: the first parent (main) did not have the side branch's refresh, so the merge brings it in
+check("M1 the merge commit is its own record, with its changed path, its mode and its classification (read against the first parent)",
+      len(mrec) == 1 and mrec[0]["files"] == ["build/locks/melange.lock"] and mrec[0]["modes"] == {"build/locks/melange.lock": "100644"}
+      and P.classify(mrec[0], base_inputs=P.load_base_inputs(rlist))[0] == "fix", (msha, mrec))
 # --- AC3 (immediate cut): the images of the latest release are the ones that exist for its version (v0.3.0 dropped the debug variant)
 import subprocess
 def variants(ver):

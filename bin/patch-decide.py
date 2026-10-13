@@ -204,8 +204,8 @@ def classify(commit, base_inputs=None):
             kinds.add("dirty"); hard = True; why.append("%s has no mode evidence: a base input is a refresh only with its file mode known" % f)
         elif f in base and modes.get(f) == "000000":
             kinds.add("dirty"); hard = True; why.append("%s is deleted: a base input removed is not a refresh" % f)
-        elif f in base and modes.get(f) in ("100755", "120000"):
-            kinds.add("dirty"); hard = True; why.append("%s is executable or a symlink (mode %s): a base input is data, never a refresh when it is not" % (f, modes.get(f)))
+        elif f in base and modes.get(f) != "100644":
+            kinds.add("dirty"); hard = True; why.append("%s has mode %s: a base input is a regular non-executable file (100644), never a refresh when it is not" % (f, modes.get(f)))
         elif modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
             # data is not executable: Git's executable bit, a symlink, or a script's #! line (Codex #159 AC1(h), B01)
             kinds.add("dirty"); why.append("%s is executable (mode %s or a #! line), never data" % (f, modes.get(f, "?")))
@@ -621,7 +621,11 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
                  for f in files}
         # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
         modes = {}
-        for ln in _git("diff-tree", "-r", "-m", "--first-parent", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd).splitlines():
+        try:       # against the FIRST parent (a merge is read the same way as the name list and the diffs above); a root commit has none
+            raw = _git("diff", "--raw", "-r", "--no-renames", sha + "^1", sha, cwd=cwd)
+        except subprocess.CalledProcessError:
+            raw = _git("diff-tree", "--root", "-r", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd)
+        for ln in raw.splitlines():
             meta, _, paths = ln.partition("\t")
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]

@@ -573,7 +573,7 @@ expect ok "fixture: the supply-chain judges' own tool tables (a documented exclu
 mkr q22; mkdir -p "$work/q22/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(["goreleaser", "build"])\n' > "$work/q22/$AG/supply-chain/helper.py"
 expect caught "AC10 rule 61: a NEW file in the supply-chain judges' directory that names goreleaser is scanned like any other" "supply-chain/helper.py names" removed "$work/q22"
 mkr q23; mkdir -p "$work/q23/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(["docker", "buildx", "build", "."])\n' > "$work/q23/$AG/supply-chain/pin-age-check.py"
-expect caught "AC10 rule 61: a judge file that names buildx beside a way to run a program is a finding (its tables name tools, they never start them)" "beside a way to run a program" removed "$work/q23"
+expect caught "AC10 rule 61: a judge file that names buildx beside a way to run a program is a finding (its tables name tools, they never start them)" "starts a program with a removed tool" removed "$work/q23"
 RSX='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then exit 1; fi\n'
 mkr q24; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          command crane manifest "ghcr.io/o/cache:latest" || true\n' > "$work/q24/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a second crane form beside the approved manifest read (command crane manifest ... :latest) is refused" "other than the pinned install" removed "$work/q24"
@@ -583,6 +583,20 @@ mkr q26; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/instal
 expect caught "AC10 rule 61: a redirected tag-based manifest read is an unrecognised crane form" "other than the pinned install" removed "$work/q26"
 mkr q27; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$PROBE_REPO:latest" -m "$att_ref" -t "$built_ref"\n' > "$work/q27/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q27/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: an index append from a literal tag is refused (the one approved append names the variables)" "other than the one index append" removed "$work/q27"
+mkr q28; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          echo checking; crane manifest "ghcr.io/o/cache:latest" > /tmp/x.json\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q28/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a tag read after an echo on the same line is refused" "other than the pinned install" removed "$work/q28"
+mkr q29; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          /usr/local/bin/crane manifest "ghcr.io/o/cache:latest" > /tmp/x.json\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q29/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a path-qualified crane reading a tag is refused" "other than the pinned install" removed "$work/q29"
+mkr q30; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          if false; then\n            ./bin/install-scanner.sh crane\n          fi\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q30/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the pinned install inside a conditional never counts as the install" "inside a conditional or loop" removed "$work/q30"
+mkr q31; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          unused=ok ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q31/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: an assignment list that sets the reference to a tag is counted as a second assignment" "assigned exactly once" removed "$work/q31"
+mkr q32; mkdir -p "$work/q32/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(\n    ["goreleaser", "build"]\n)\n' > "$work/q32/$AG/supply-chain/pin-age-check.py"
+expect caught "AC10 rule 61: a judge file that starts a removed tool over several lines is a finding" "starts a program with a removed tool" removed "$work/q32"
+mkr q33; printf 'import subprocess\nsubprocess.run(["goreleaser", "build"])\n' > "$work/q33/bin/chain-release-shape.py"
+expect caught "AC10 rule 61: a shape judge that starts a removed tool is a finding (its deny list may name them)" "starts a program with a removed tool" removed "$work/q33"
+mkr q34; printf '#!/bin/sh\ndocker buildx version\n' > "$work/q34/bin/retired-build"
+expect caught "AC10 rule 61: an extensionless script that names buildx is a reader" "bin/retired-build names" removed "$work/q34"
 mkr q11; printf 'DENY = "docker buildx goreleaser"\n' > "$work/q11/bin/chain-release-shape.py"
 expect ok "fixture: the deny list of a judge may name the removed tools (it refuses them)" "" removed "$work/q11"
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
@@ -600,7 +614,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=244
+EXPECT=251
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

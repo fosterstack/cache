@@ -585,6 +585,28 @@ RULE61_SCAN_ROOTS = (".github", "bin", "tools", "build")
 RULE61_SCAN_EXT = (".yml", ".yaml", ".json", ".sh", ".py", ".go", ".mod")
 
 
+def _judge_starts_tool(root, rel):
+    """A judge's tables and refusal lists name the removed tools; a judge never STARTS one: no call of a program-running API (subprocess, os.system, exec, eval...)
+    whose arguments, over however many lines, name one. A judge that does not parse is a finding (fail closed)."""
+    import ast
+    try:
+        text = open(os.path.join(root, rel), errors="replace").read()
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError) as ex:
+        return ["%s does not parse (%s): a judge that cannot be read cannot be shown not to start a removed tool" % (rel, type(ex).__name__)]
+    out = []
+    runs = {"run", "call", "check_call", "check_output", "Popen", "system", "popen", "spawn", "spawnv", "execv", "execvp", "execve", "exec", "eval", "getoutput", "getstatusoutput"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+            if name in runs or name.startswith("exec"):
+                seg = ast.get_source_segment(text, node) or ""
+                if RULE61_WORDS.search(seg):
+                    out.append("%s:%d starts a program with a removed tool in its arguments (a judge's table names tools; it never starts them)" % (rel, node.lineno))
+    return out
+
+
 def removed_rule61(root):
     bad = []
     for f in (".goreleaser.yaml", ".goreleaser.yml"):
@@ -607,14 +629,23 @@ def removed_rule61(root):
             dn[:] = sorted(d for d in dn if d not in (".git", "node_modules", "__pycache__"))
             for f in sorted(fn):
                 rel = os.path.relpath(os.path.join(dp, f), root).replace(os.sep, "/")
-                if not f.endswith(RULE61_SCAN_EXT) or os.path.islink(os.path.join(dp, f)):
+                full = os.path.join(dp, f)
+                if os.path.islink(full):
                     continue
-                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f) or rel in RULE61_NAMING or RULE61_REVIEW_RECORD.match(rel):
+                try:
+                    with open(full, "rb") as fh:
+                        head = fh.read(4096)
+                except OSError:
+                    continue
+                if b"\0" in head:      # a binary file is not a reader of a text name
+                    continue
+                if rel in RULE61_NAMING:
+                    bad += _judge_starts_tool(root, rel)
+                    continue
+                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f) or RULE61_REVIEW_RECORD.match(rel):
                     continue
                 if rel in RULE61_JUDGE_FILES:
-                    for n_, ln in enumerate(open(os.path.join(root, rel), errors="replace").read().splitlines(), 1):
-                        if RULE61_WORDS.search(ln) and RULE61_RUNS.search(ln):
-                            bad.append("%s:%d names a removed tool beside a way to run a program (a judge's table names tools; it never starts them): %s" % (rel, n_, ln.strip()[:100]))
+                    bad += _judge_starts_tool(root, rel)
                     continue
                 readers.append(rel)
     if os.path.exists(dp_):
@@ -626,7 +657,7 @@ def removed_rule61(root):
     # crane (the chain's own copy tool) is the ONLY reader of a candidate image now, so every executable line that names it is one of a short closed list of forms
     # (Codex 4b-4 r2): the pinned install, the one manifest read of the rescan, the one index append of the Scout probe (and messages that only print its name);
     # any other line naming crane is refused, and the variables those two forms read are assigned exactly once, by digest, in the same step or file.
-    CRANE = re.compile(r"(?<![\w./-])crane(?![\w./-])")
+    CRANE = re.compile(r"(?<![\w-])crane(?![\w-])")      # also a path-qualified crane (/usr/local/bin/crane, ./crane) and crane.<anything>
     INSTALL = re.compile(r"^(?:\./)?bin/install-scanner\.sh crane(?:\s+#.*)?$")
     MANIFEST = re.compile(r"^if ! crane manifest \"\$ref\" > /tmp/index\.json 2>/tmp/inspect\.err; then$")
     APPEND = re.compile(r"^(?:> \"\$a/built-create\.log\" 2>&1 )?crane index append \"\$built_idx\" -m \"\$att_ref\" -t \"\$built_ref\"$")
@@ -640,12 +671,23 @@ def removed_rule61(root):
             return False
         if re.match(r"(echo|printf)\b", l):
             inner = re.findall(r"\$\([^)]*\)|`[^`]*`", l)      # a command substitution inside a message would run
-            return any(CRANE.search(x) for x in inner)
+            if any(CRANE.search(x) for x in inner):
+                return True
+            outside = re.sub(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", "", l)       # what is left outside the quotes must be one command: no ; & | or substitution
+            return bool(re.search(r"[;&|`]|\$\(", outside)) and bool(CRANE.search(l))
         return True
 
     def assigned(lines, var):
-        pat = re.compile(r"(?:^|[;&|(]\s*|\b(?:do|then|else)\s+)(?:(?:export|declare|local|readonly|typeset)\s+(?:-\w+\s+)*)?%s\+?=" % re.escape(var))
-        n = sum(len(pat.findall(l)) for l in lines)
+        # every shell word of every line (split like a shell would, so an assignment list `a=1 ref=x` counts) that assigns the variable; a line that cannot be split counts as one
+        n = 0
+        for l in lines:
+            try:
+                words = shlex.split(l, comments=True, posix=True)
+            except ValueError:
+                n += 1 if re.search(r"\b%s\+?=" % re.escape(var), l) else 0
+                continue
+            n += sum(1 for w in words if w.startswith(var + "=") or w.startswith(var + "+="))
+            n += sum(1 for w in words if re.fullmatch(r"[;&|(]*%s\+?=.*" % re.escape(var), w) and not (w.startswith(var + "=") or w.startswith(var + "+=")))
         n += sum(1 for l in lines if re.search(r"\bread\s+(?:-\w+\s+)*%s\b" % re.escape(var), l) or re.search(r"\bfor\s+%s\s+in\b" % re.escape(var), l)
                  or re.search(r"\b(?:printf|mapfile|readarray)\b[^\n]*-v\s*%s\b" % re.escape(var), l))
         return n
@@ -666,10 +708,21 @@ def removed_rule61(root):
             for st in steps:
                 ls = exec_lines(st.get("run") if isinstance(st, dict) else "")
                 installed_before_step = installed
+                depth = 0
                 for k, l in enumerate(ls):
                     if INSTALL.match(l):
-                        installed = True
-                    elif crane_forbidden(l):
+                        if depth == 0:
+                            installed = True
+                        else:
+                            bad.append("main-candidate-rescan.yml job %s: the pinned crane install is inside a conditional or loop (it must run unconditionally)" % jn)
+                        continue
+                    first = l.split()[0] if l.split() else ""
+                    closes_here = bool(re.search(r"(?:;|\bthen\b.*|\bdo\b.*)\b(?:fi|done|esac)\s*$", l))
+                    if first in ("if", "for", "while", "until", "case", "select") or l == "{" or l.startswith("{ ") or l.startswith("("):
+                        depth += 0 if closes_here else 1
+                    elif first in ("fi", "done", "esac") or l == "}" or l.startswith(") "):
+                        depth = max(0, depth - 1)
+                    if crane_forbidden(l):
                         bad.append("main-candidate-rescan.yml job %s: a line names crane in a form other than the pinned install or `if ! crane manifest \"$ref\" > /tmp/index.json 2>/tmp/inspect.err; then`: %s" % (jn, l[:120]))
                     elif MANIFEST.match(l):
                         saw_manifest = True
