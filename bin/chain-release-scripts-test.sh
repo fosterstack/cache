@@ -37,7 +37,8 @@ FAKES = {
  "crane": r'''#!/usr/bin/env bash
 echo "crane $*" >> "$LOG"
 case "$1" in
-  auth) cat > /dev/null; mkdir -p "$REG/.login"; : > "$REG/.login/$3" ;;
+  auth) cat > /dev/null; mkdir -p "$REG/.login"; : > "$REG/.login/$3"
+        d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $3" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg" ;;
   push) host=${3%%/*}; [ -e "$REG/.login/$host" ] || { echo "UNAUTHORIZED $host" >&2; exit 1; }
         # PROPOSED/UNVERIFIED layout (cache-3f / #299): images/<variant>/ is an OCI image layout DIRECTORY. MEASURED with crane 0.22.1: pushing a
         # docker-format tarball re-creates the manifest (the digest changes), pushing an OCI layout directory keeps the digest. A tarball is refused here.
@@ -53,15 +54,23 @@ esac''',
 echo "cosign $*" >> "$LOG"
 [ -z "${COSIGN_FAIL:-}" ] || { echo "cosign failed" >&2; exit 1; }
 [ -z "${COSIGN_FAIL_ON:-}" ] || case "$*" in *"$COSIGN_FAIL_ON"*) echo "cosign failed" >&2; exit 1;; esac
+if [ "$1" = login ]; then cat > /dev/null; d="${DOCKER_CONFIG:-$HOME/.docker}"; mkdir -p "$d"; echo "login $*" >> "$d/config.json"; echo "$d" >> "$LOG.dockercfg"; fi
 if [ "$1" = sign-blob ]; then
   while [ $# -gt 0 ]; do [ "$1" = --bundle ] && b=$2; shift; done
   if [ -n "${COSIGN_NOREKOR:-}" ] && [ "$(basename "$b")" = "${COSIGN_NOREKOR}" ]; then echo '{"verificationMaterial":{"tlogEntries":[]}}' > "$b"
   else echo '{"verificationMaterial":{"tlogEntries":[{"logIndex":"1"}]}}' > "$b"; fi
 fi''',
+ "git": r'''#!/usr/bin/env bash
+echo "git $*" >> "$LOG"
+# the tag object of the release tag: TAG_OBJECT names a file; no such file = the tag cannot be read
+if [ "$1 $2" = "cat-file tag" ] && [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; else echo "fatal: not a valid tag" >&2; exit 128; fi''',
  "gh": r'''#!/usr/bin/env bash
 echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL:-}" ] || { echo "gh failed" >&2; exit 1; }
 [ -z "${GH_FAIL_ON:-}" ] || case "$*" in *"$GH_FAIL_ON"*) echo "gh failed" >&2; exit 1;; esac
+[ -z "${GH_VIEW_ERR:-}" ] || [ "$1 $2" != "release view" ] || { echo "$GH_VIEW_ERR" >&2; exit 1; }
+if [ "$1 $2" = "release create" ]; then a=("$@"); for i in "${!a[@]}"; do
+  [ "${a[$i]}" = --notes-file ] && cp "${a[$((i+1))]}" "$LOG.notes"; [ "${a[$i]}" = --notes ] && printf %s "${a[$((i+1))]}" > "$LOG.notes"; done; fi
 pub="$LOG.published"
 if [ "$1 $2" = "release upload" ]; then shift 3; mkdir -p "$pub"; for f in "$@"; do cp "$f" "$pub/"; done
 elif [ "$1 $2" = "release download" ]; then d=; while [ $# -gt 0 ]; do [ "$1" = -D ] && d=$2; shift; done; mkdir -p "$d"; cp "$pub"/* "$d"/ 2>/dev/null || true
@@ -160,7 +169,7 @@ def tree(extra_env=None):
     for s in ("release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify"):
         src = os.path.join(BIN, s + ".sh")
         if os.path.exists(src): shutil.copy(src, os.path.join(t, "bin", s + ".sh"))
-    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py"):
+    for extra in ("release-postverify.py", "release-metadata.py", "release-layout.py", "patch-decide.py"):
         if os.path.exists(os.path.join(BIN, extra)): shutil.copy(os.path.join(BIN, extra), os.path.join(t, "bin", extra))
     os.makedirs(os.path.join(t, ".vex")); open(os.path.join(t, ".vex/fosterstack-cache.openvex.json"), "w").write("{}")
     os.makedirs(os.path.join(t, "requirements/releases")); os.makedirs(os.path.join(t, "test-evidence"))
@@ -355,6 +364,15 @@ for top in ("apks", "rapks"):
     t = tree(); os.remove(os.path.join(t, top, "ubuntu-24.04-arm/aarch64/fscache-fips-0.3.0-r0.apk"))
     rc, so, se = run(t, "release-apks", creds=KEY)
     check(rc != 0 and "fips" in se and "aarch64" in se, "AC6 R1 the %s tree missing the arm64 -fips apk is refused naming the apk (an empty glob does not skip it)" % top, "rc=%s %s" % (rc, first(se)))
+# round 1 (Codex A F2): a registry login lives in a private DOCKER_CONFIG of the step and is gone when the step ends, success or failure
+def login_gone(t, what):
+    home_cfg = os.path.join(t, ".docker")
+    f = os.path.join(t, "calls.log.dockercfg"); used = open(f).read().split() if os.path.exists(f) else []
+    check(bool(used) and home_cfg not in used and not os.path.exists(home_cfg), "AC10 F2 %s: the login is not in the runner's shared ~/.docker" % what, "used=%s" % used)
+    check(all(not os.path.exists(d) for d in used) and bool(used), "AC10 F2 %s: the private configuration directory is removed when the step ends" % what, "left=%s" % [d for d in used if os.path.exists(d)])
+t = tree(); rc, so, se = run(t, "release-publish", creds=REG); login_gone(t, "release-publish (success)")
+t = tree(); rc, so, se = run(t, "release-publish", creds=REG, env={"REG_CORRUPT": "docker.io"}); login_gone(t, "release-publish (a registry mismatch stops it)")
+t = tree(); rc, so, se = run(t, "release-sign", creds=REG); login_gone(t, "release-sign")
 # round 1 (Codex A B4): the layout's CONTENT is the attested image before anything is logged in or pushed
 def layout_refused(t, what, word):
     rc, so, se = run(t, "release-publish", creds=REG)
@@ -432,9 +450,28 @@ check(rc == 0, "AC9 a good run attaches the assets", se)
 for what in ("release upload v0.3.0", "release-upload/amd64-fscache-0.3.0-r0.apk", "release-upload/arm64-fscache-fips-0.3.0-r0.apk", "release-upload/production.sbom.json ", "release-upload/fips.sbom.json ", "release-upload/production.full.lock.json ", "release-upload/fips.full.lock.json ",
              "release-upload/fscache_0.3.0_linux_amd64.tar.gz", "release-upload/checksums.txt ", "release-upload/checksums.txt.bundle", "release-upload/release-policy.bundle", "release-upload/policy.json", "release-upload/vendor-evidence.json", "release-upload/build-collection.json", "release-upload/rebuild-collection.json", "release-upload/scanners-collection.json", "release-upload/acceptance-collection.json", "release-upload/runtime-collection.json", "release-upload/arm64-collection.json"):
     check(what in L + " ", "AC9 %s is attached to the release (the apks under their architecture, the sboms and locks under their variant: names that differ)" % what.strip())
-t2 = full_assets(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_FAIL_ON": "release view"})
+t2 = full_assets(); rc2, so2, se2 = run(t2, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found"})
 check(rc2 == 0 and [l for l in log(t2) if l.startswith("gh release create")] and all(l.endswith("--verify-tag") for l in log(t2) if l.startswith("gh release create")), "AC9 a missing release is created, public, only with --verify-tag", se2)
-check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-file" in l or "--notes-from-tag" in l], "AC9 no undraft and no tag notes here (REQ-REL-009-AC8 is the patch-notes job's)")
+check(not [l for l in log(t2) if "--draft" in l or "release edit" in l or "--notes-from-tag" in l], "AC9 no undraft and no gh-generated notes")
+# round 1 (Codex A F5, B B4; advisor ruling 2): a patch tag's generated notes are the release's notes; any other tag keeps the fixed evidence text
+FIXED = "Evidence: see docs/verify-release.md for the verification commands of this release."
+def notes_of(t): p = os.path.join(t, "calls.log.notes"); return open(p).read() if os.path.exists(p) else None
+check(notes_of(t2) == FIXED, "AC9 R-notes an owner's tag (no readable generated notes) is released with the fixed evidence text", repr(notes_of(t2)))
+GEN = ("object 0123\ntype commit\ntag v0.3.0\ntagger fosterstack release <release@users.noreply.github.com> 1 +0000\n\n"
+       "## v0.3.0 \u2014 patch release\n\n### Fixes\n- none (dependency or VEX maintenance only)\n\n### VEX\n- no change\n"
+       "-----BEGIN SIGNED MESSAGE-----\nMIIabc\n-----END SIGNED MESSAGE-----\n")
+t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN)
+rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
+n3 = notes_of(t3)
+check(rc3 == 0 and n3 is not None and n3.startswith("## v0.3.0") and "### VEX" in n3 and "MIIabc" not in n3 and "BEGIN" not in n3, "AC8 the generated patch tag's notes are the release's notes (signature block dropped)", "rc=%s %r %s" % (rc3, n3, first(se3)))
+t3 = full_assets(); open(os.path.join(t3, "tagobj"), "w").write(GEN.replace("tagger fosterstack release <release@users.noreply.github.com>", "tagger Someone Else <x@example.com>"))
+rc3, so3, se3 = run(t3, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": "release not found", "TAG_OBJECT": os.path.join(t3, "tagobj")})
+check(rc3 == 0 and notes_of(t3) == FIXED, "AC8 a tag message from another tagger is not taken as notes: the fixed text", repr(notes_of(t3)))
+# R3 (Codex B): only a definite 'release not found' creates; any other failure of the view stops before creation and upload
+for err in ("HTTP 401: Bad credentials", "HTTP 502: Bad Gateway", "dial tcp: connection refused"):
+    t4 = full_assets(); rc4, so4, se4 = run(t4, "release-assets", creds=["GH_TOKEN"], env={"GH_VIEW_ERR": err})
+    check(rc4 != 0 and not [l for l in log(t4) if l.startswith("gh release create") or l.startswith("gh release upload")], "AC9 R3 a failed release view (%s) is not 'no release': nothing is created or uploaded" % err, "rc=%s %s" % (rc4, first(se4)))
+
 t = full_assets(); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"]); L = " ".join(log(t))
 check(rc == 0 and "release-upload/release-files.sha256 " in L + " " and "release-upload/release-manifest.json" in L and "release-upload/release-files.sha256.bundle" in L, "AC13 the four metadata files, release-files.sha256 and its bundle are attached", "rc=%s %s" % (rc, first(se)))
 t = full_assets(); os.remove(os.path.join(t, "release-evidence/release-files.sha256.bundle")); rc, so, se = run(t, "release-assets", creds=["GH_TOKEN"])
@@ -467,6 +504,11 @@ for n in ("scanners", "acceptance", "runtime", "arm64"):
     t = full_assets(); os.remove(os.path.join(t, "witness-check/witness-%s/%s-collection.json" % (n, n))); refused_before_upload(t, "the Check record %s missing (the four named records are attached)" % n, n)
 t = full_assets(); shutil.rmtree(os.path.join(t, "release-apks/x86_64")); refused_before_upload(t, "no apk of the amd64 architecture", "x86_64")
 t = full_assets(); shutil.rmtree(os.path.join(t, "witness-check")); refused_before_upload(t, "no Check record to attach", "witness-check")
+# F4 (Codex A): an explicit evidence inventory; a second file under a release name, or a name outside the inventory, stops before anything is staged
+t5 = full_assets(); open(os.path.join(t5, "witness-build/policy.json"), "w").write("REPLACED POLICY"); refused_before_upload(t5, "an extra witness-build/policy.json (it would replace the signed policy)", "policy.json")
+t5 = full_assets(); open(os.path.join(t5, "witness-rebuild/extra.json"), "w").write("{}"); refused_before_upload(t5, "a file of Rebuild's record directory outside the inventory", "extra.json")
+t5 = full_assets(); open(os.path.join(t5, "release-evidence/build-collection.json"), "w").write("{}"); refused_before_upload(t5, "a second source for the release name build-collection.json", "build-collection.json")
+t5 = full_assets(); open(os.path.join(t5, "witness-check/witness-scanners/stray.json"), "w").write("{}"); refused_before_upload(t5, "a stray file beside a Check record", "stray.json")
 t = tree(); rc, so, se = run(t, "release-assets"); check(rc == 2 and "GH_TOKEN" in se and not log(t), "AC9 a missing GH_TOKEN is refused with exit 2, naming it")
 # ---- REQ-CHAIN-006-AC7 (rule 79 amended, owner Oct 10): the post-publish verification, release-postverify.sh -----------------------------------
 # PROPOSED interface: it reads docs/verify-release.cannot-run.json ([{command, reason}], the one exact-text list Check also reads), runs each
@@ -558,7 +600,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "257"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "273"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
