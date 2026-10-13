@@ -225,7 +225,7 @@ DOCKER_ACTIONS = {"ossf/scorecard-action"}
 RETIRED_COMPOSITE = {"ossf/scorecard-action"}   # refused outright (advisor 0140); DOCKER_ACTIONS kept for docstring/test
                                                  # continuity, never reached since RETIRED_COMPOSITE returns first
 GATE_WORKFLOW = ".github/workflows/agent-review-gate.yml"
-GATE_WORKFLOW_SHA256 = "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d"
+GATE_WORKFLOW_SHA256 = "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533"
 # executor actions (owner/repo, lower case) -> the only input names they may be given (positively
 # classified; anything else fails closed)
 EXECUTOR_ALLOWED = {
