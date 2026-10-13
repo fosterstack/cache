@@ -172,7 +172,8 @@ cases = [("a generated patch tag", GEN, "v0.3.1"),
          ("no signature block", GEN.split("-----BEGIN")[0], "v0.3.1"),
          ("the right tag object for another release tag", GEN, "v0.3.2")]
 for what, raw, tag in cases:
-    r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag], input=raw, capture_output=True, text=True)
+    obj = os.path.join(tempfile.mkdtemp(), "tag.txt"); open(obj, "w").write(raw)
+    r = subprocess.run(["python3", os.path.join(BIN, "release-metadata.py"), "tag-notes", "--tag", tag, "--object", obj], capture_output=True, text=True)
     pd = PD.tag_notes(raw) if tag == "v0.3.1" else None
     same = (r.returncode == 0 and pd is not None and r.stdout.strip() == pd.strip()) or (r.returncode == 1 and pd is None and r.stdout == "")
     check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
