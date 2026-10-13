@@ -155,6 +155,9 @@ ALLOW_PATTERNS=(
   '^test-evidence/suite-floors\.json$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
+  # Check's source scan of the product module (ruling G, Oct 12): the script, and the committed tool module whose go.sum pins govulncheck (tools/govulncheck).
+  '^bin/check-govulncheck\.py$'
+  '^tools/govulncheck/go\.(mod|sum)$'
   # The rc-proof marker helper (REQ-CHAIN-001-AC6): the one definition of the chain-file set.
   '^bin/chain-bytes-sha\.py$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.

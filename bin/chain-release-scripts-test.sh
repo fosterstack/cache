@@ -62,9 +62,17 @@ if [ "$1" = sign-blob ]; then
   else echo '{"verificationMaterial":{"tlogEntries":[{"logIndex":"1"}]}}' > "$b"; fi
 fi''',
  "git": r'''#!/usr/bin/env bash
-echo "git $*" >> "$LOG"
-# the tag object of the release tag: TAG_OBJECT names a file; no such file = the tag cannot be read
-if [ "$1 $2" = "cat-file tag" ] && [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; else echo "fatal: not a valid tag" >&2; exit 128; fi''',
+# release-assets reads the release tag's object (cat-file tag); release-sign asks for the admitted commit's committer date (log -1 --format=%ct)
+if [ "$1 $2" = "cat-file tag" ]; then
+  echo "git $*" >> "$LOG"
+  # the tag object of the release tag: TAG_OBJECT names a file; no such file = the tag cannot be read
+  if [ -n "${TAG_OBJECT:-}" ] && [ -f "$TAG_OBJECT" ]; then cat "$TAG_OBJECT"; else echo "fatal: not a valid tag" >&2; exit 128; fi
+  exit 0
+fi
+echo "git $*" >> "$LOG.git"
+[ "$1 $2 $3" = "log -1 --format=%ct" ] || { echo "git: unexpected $*" >&2; exit 2; }
+[ -z "${GIT_FAIL:-}" ] || { echo "fatal: bad object $4" >&2; exit 128; }
+printf '%s\n' "${GIT_EPOCH-1760000000}"''',
  "gh": r'''#!/usr/bin/env bash
 echo "gh $*" >> "$LOG"
 [ -z "${GH_FAIL:-}" ] || { echo "gh failed" >&2; exit 1; }
@@ -127,6 +135,12 @@ if a[0] == "bind-items":     # items.json (and, with --product, admission-baseli
     if os.environ.get("FAIL_STAGE") == prev: print("refused at build: %s: %s is not the file Build's record holds" % (prev, prev), file=sys.stderr); sys.exit(1)
     for f in (a[a.index("--record") + 1], a[a.index("--items") + 1]):
         if not os.path.exists(f): print("refused at build: missing %s" % f, file=sys.stderr); sys.exit(1)
+    sys.exit(0)
+if a[0] == "bind-check":     # ruling G: check-results/govulncheck.json must be a product of Check's verified scanners record: modelled as the files existing
+    if os.environ.get("FAIL_STAGE") == "govulncheck": print("refused at check: govulncheck.json: it is not the file Check's record holds", file=sys.stderr); sys.exit(1)
+    for f in (a[a.index("--record") + 1], a[a.index("--file") + 1], a[a.index("--digests") + 1]):
+        if not os.path.exists(f): print("refused at check: missing %s" % f, file=sys.stderr); sys.exit(1)
+    if a[a.index("--product") + 1] != "check-results/govulncheck.json": print("refused at check: product: only check-results/govulncheck.json", file=sys.stderr); sys.exit(1)
     sys.exit(0)
 if a[0] == "check-list":     # exactly four records, one per slot
     d = a[a.index("--dir") + 1]
@@ -195,8 +209,9 @@ def tree(extra_env=None):
         open(os.path.join(t, "images", v + ".digest"), "w").write(DIG["image-" + v] + "\n")
         open(os.path.join(t, "images", v + ".manifests"), "w").write("amd64 sha256:" + "1" * 64 + "\narm64 sha256:" + "2" * 64 + "\n")
         open(os.path.join(t, "images", v + ".full.lock.json"), "w").write("lock " + v); open(os.path.join(t, "images", v + "-sbom", "sbom.json"), "w").write("sbom " + v)
-    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist"):
+    for d in ("witness-build", "witness-rebuild", "witness-check", "provenance", "dist", "check-results"):
         os.makedirs(os.path.join(t, d), exist_ok=True)
+    open(os.path.join(t, "check-results/govulncheck.json"), "w").write('{"config":{"scanner_name":"govulncheck"}}\n')   # Check's product (ruling G), bound by release-verify
     for k in ("archive-linux-amd64", "archive-linux-arm64", "archive-fips-linux-amd64", "archive-fips-linux-arm64"): digs[k] = "sha256:" + hashlib.sha256(k.encode()).hexdigest()
     json.dump(digs, open(os.path.join(t, "witness-build/digests.json"), "w"))
     items = {}
@@ -233,8 +248,8 @@ def tree_text(t):
     return out
 def first(s): return s.strip().split("\n")[0] if s.strip() else ""
 # ---- AC4/AC5: release-verify.sh ------------------------------------------------------------------------------------------------------
-STAGES = ["build", "items", "baseline", "sign", "rebuild", "check"]     # items: bind-items (REQ-CHAIN-007-AC16); baseline: bind-items --product admission-baseline.json (AC19, ruling B); check: the list verifier of the four Check records
-def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else (("baseline" if "--product admission-baseline.json" in c else "items") if c.startswith("chain-verify bind-items") else "check" if c.startswith("chain-verify check-list") else None)
+STAGES = ["build", "items", "baseline", "sign", "rebuild", "check", "govulncheck"]     # items: bind-items (REQ-CHAIN-007-AC16); baseline: bind-items --product admission-baseline.json (AC19, ruling B); check: the list verifier of the four Check records
+def stage_of(c): return c.split("--previous ")[1].split()[0] if "--previous" in c else (("baseline" if "--product admission-baseline.json" in c else "items") if c.startswith("chain-verify bind-items") else "govulncheck" if c.startswith("chain-verify bind-check") else "check" if c.startswith("chain-verify check-list") else None)
 t = tree(); rc, so, se = run(t, "release-verify")
 calls = [l for l in log(t) if l.startswith("chain-verify")]
 check(rc == 0, "AC5 a good v0.3.0 passes", se)
@@ -250,10 +265,10 @@ for s in STAGES:
     t = tree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": s})
     after = STAGES[STAGES.index(s) + 1:]
     seen = " ".join(l for l in log(t) if l.startswith("chain-verify"))
-    check(rc != 0 and first(se).startswith("refused at " + ("build" if s in ("items", "baseline") else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "baseline" and "--product" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
-    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/witness-arm64/arm64-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json"}[s]
+    check(rc != 0 and first(se).startswith("refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else s) + ":") and not any(("--previous " + a in seen) or (a == "check" and "check-list" in seen) or (a == "items" and "bind-items" in seen) or (a == "baseline" and "--product admission-baseline.json" in seen) or (a == "govulncheck" and "bind-check" in seen) for a in after), "AC5 an invalid %s record stops release at %s and no later record is checked" % (s, s), "rc=%s %s" % (rc, first(se)))
+    t = tree(); rec = {"build": "witness-build/build-collection.json", "sign": "provenance/provenance.json", "rebuild": "witness-rebuild/rebuild-collection.json", "check": "witness-check/witness-arm64/arm64-collection.json", "items": "witness-build/items.json", "baseline": "witness-build/admission-baseline.json", "govulncheck": "check-results/govulncheck.json"}[s]
     os.remove(os.path.join(t, rec)); rc, so, se = run(t, "release-verify")
-    check(rc != 0 and "refused at " + ("build" if s in ("items", "baseline") else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
+    check(rc != 0 and "refused at " + ("build" if s in ("items", "baseline") else "check" if s == "govulncheck" else s) in first(se) and "missing" in first(se), "AC5 a missing %s record stops release, naming it" % s, "rc=%s %s" % (rc, first(se)))
 # rule 58 (PR 3 made Check verify Build's record only): Release does not rely on Check having verified Sign; it verifies Sign's provenance itself, whatever Check's four records say
 t = tree(); rc, so, se = run(t, "release-verify", env={"FAIL_STAGE": "sign"}); seen = [l for l in log(t) if "--previous sign" in l]
 check(rc != 0 and first(se).startswith("refused at sign:") and len(seen) == 1 and "provenance/provenance.json" in seen[0] and "--rekor-stub provenance/provenance.rekor.json" in seen[0], "AC4 (rule 58) Release verifies Sign's provenance and its Rekor entry itself; four valid Check records do not stand in for it", "rc=%s %s" % (rc, first(se)))
@@ -410,6 +425,21 @@ def signs(t): return [l for l in log(t) if l.startswith("cosign")]
 t = tree(); os.makedirs(os.path.join(t, "reg"), exist_ok=True); rc, so, se = run(t, "release-sign", creds=REG); L = log(t)
 check(rc == 0, "AC8 a good run signs", se)
 check(L and L[0].startswith("vendor-provenance evidence --out"), "AC8 the dependency evidence is produced first (bin/vendor-provenance.py evidence --out DIR)", str(L[:1]))
+# ruling G (advisor Oct 12; cache-ce's PROPOSED interface `evidence --out DIR --provenance FILE --govulncheck FILE --date EPOCH`): the dependency list is the tag checkout's own
+# file, the govulncheck stream is Check's product (bound by release-verify), the date is the admitted commit's committer date from git; each one in the one fixed call
+EV = "vendor-provenance evidence --out release-evidence --provenance dependency-provenance.json --govulncheck check-results/govulncheck.json --date 1760000000"
+check(L and L[0] == EV, "G the evidence call is exactly `evidence --out release-evidence --provenance dependency-provenance.json --govulncheck check-results/govulncheck.json --date EPOCH`", str(L[:1]))
+gl = open(os.path.join(t, "calls.log.git")).read().strip().split("\n") if os.path.exists(os.path.join(t, "calls.log.git")) else []
+check(gl == ["git log -1 --format=%ct " + "c" * 40], "G the date is `git log -1 --format=%ct $GITHUB_SHA` (the admitted tag commit's committer date) and git is used for nothing else", str(gl))
+for label, mutate, env in (("is missing", lambda t: os.remove(os.path.join(t, "check-results/govulncheck.json")), {}),
+                           ("is a symlink", lambda t: (os.remove(os.path.join(t, "check-results/govulncheck.json")), os.symlink("/etc/hosts", os.path.join(t, "check-results/govulncheck.json"))), {}),
+                           ("is empty", lambda t: open(os.path.join(t, "check-results/govulncheck.json"), "w").close(), {}),
+                           ("(dependency-provenance.json) is missing", lambda t: os.remove(os.path.join(t, "dependency-provenance.json")), {})):
+    tg = tree(); mutate(tg); rc, so, se = run(tg, "release-sign", creds=REG)
+    check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G the file Release hands the evidence step %s: nothing is produced or signed" % label, "rc=%s %s" % (rc, first(se)))
+for label, env in (("not a number", {"GIT_EPOCH": "yesterday"}), ("empty", {"GIT_EPOCH": ""}), ("negative", {"GIT_EPOCH": "-5"}), ("git failing", {"GIT_FAIL": "1"}), ("two lines", {"GIT_EPOCH": "1760000000\n1760000001"})):
+    tg = tree(); rc, so, se = run(tg, "release-sign", creds=REG, env=env)
+    check(rc != 0 and not [l for l in log(tg) if l.startswith(("vendor-provenance", "cosign"))], "G a commit date that is %s stops before the evidence step and any signature" % label, "rc=%s %s" % (rc, first(se)))
 imgs = [l for l in L if l.startswith("cosign sign ")]
 check({(re.search(r"(ghcr\.io|docker\.io)/fosterstack/cache@(sha256:\w+)", l).groups()) for l in imgs} == {(h, d) for h in ("ghcr.io", "docker.io") for d in DIG.values()}, "AC8 each published image digest is signed in BOTH registries", str(imgs))
 # REQ-CHAIN-007-AC8 (advisor ruling H, Oct 12): the release manifest stays attached to each public image digest as an OCI referrer (as on v0.2.x), type
@@ -668,7 +698,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "307"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "320"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)

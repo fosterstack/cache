@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-002-AC1, REQ-DEP-003-AC1
+# proves: REQ-DEP-001-AC1, REQ-DEP-001-AC3, REQ-DEP-001-AC5, REQ-DEP-001-AC6, REQ-DEP-001-AC8, REQ-DEP-001-AC9, REQ-DEP-002-AC1, REQ-DEP-003-AC1, REQ-DEP-003-AC2
 # The dependency lanes' wiring (register rows 75, 80): the reviewer runs hourly from main and never on a PR
 # event, one run at a time; it arms or holds and posts its check but opens no PR and edits nothing; its
 # evidence upload can never fail a run; the required-check guard runs on every PR and push to main; the
@@ -49,6 +49,15 @@ if kind == "reviewer":
             bad.append(f"{k} does not come from its environment secret")
     if re.search(r"\bclaude-[a-z0-9]|ANTHROPIC_API_KEY", open(path).read()):
         bad.append("a model id or an API key is written into the workflow")
+    # advisor Oct 12: the pinned tool module tools/govulncheck is held out of auto-merge and handled as a normal lane PR (both Codex seats review it, a lane merges it): a bump there is never armed, because its version is also written in ci.yml, which
+    # Dependabot cannot change (the PR's own files are read, so the hold does not depend on a metadata output)
+    cand = [s for s in job.get("steps", []) if s.get("id") == "candidates"]
+    cr = cand[0].get("run") or "" if cand else ""
+    hold = cr.find('startswith("tools/govulncheck/")')
+    if "(.files | length) >= 100" not in cr:
+        bad.append("a PR whose file list is at the API's cap of 100 is not held (it cannot be judged: the candidates step must hold >= 100 files)")
+    if hold < 0 or "--json number,title,body,headRefOid,files" not in cr or hold > cr.find("dependabot-reviewer.py updates") or "pr merge --disable-auto" not in cr[hold:cr.find("dependabot-reviewer.py updates")]:
+        bad.append("a PR that touches tools/govulncheck/ is not held (the candidates step must read the PR's files first, disarm it and skip it, never review or arm it)")
     # AC9: auto-merge is armed only for the reviewed head
     arms = re.findall(r"gh pr merge --auto[^\n]*", text)
     if not arms or any('--match-head-commit "$sha"' not in a for a in arms):
@@ -149,6 +158,13 @@ elif kind == "automerge":
         bad.append("no single squash auto-merge step")
     elif steps[arm[0]].get("if") != nonmajor or "continue-on-error" in steps[arm[0]]:
         bad.append("auto-merge is not limited to non-majors, or can fail silently")
+    else:
+        ar = steps[arm[0]].get("run") or ""
+        hold, merge = ar.find('startswith("tools/govulncheck/")'), ar.find("gh pr merge --auto --squash")
+        if '-ge 100' not in ar[:merge]:
+            bad.append("auto-merge is armed for a PR whose file list is at the API's cap of 100 (it cannot be judged: the arming step must hold >= 100 files)")
+        if hold < 0 or hold > merge or "--json files" not in ar[:merge] or "exit 0" not in ar[hold:merge]:
+            bad.append("auto-merge is armed for a PR that touches tools/govulncheck/ (the arming step must read the PR's files and leave the PR out of auto-merge before it merges: a normal lane PR)")
     major = "steps.meta.outputs.update-type == 'version-update:semver-major'"
     disarm = [(s, r) for s, r in runs(job) if "gh pr merge --disable-auto" in r]
     if len(disarm) != 1 or disarm[0][0].get("if") != major or "continue-on-error" in disarm[0][0]:
@@ -240,6 +256,17 @@ case_ automerge $A automerge-event-head    bad "[s.__setitem__('run', s['run'].r
 case_ automerge $A automerge-disarm-blind  bad "[s.__setitem__('run', 'gh pr merge --disable-auto \"\$PR_URL\"') for s in $as_ if 'gh pr merge --disable-auto' in (s.get('run') or '')]"
 case_ reviewer $R reviewer-mask-fails-run  bad "[s.pop('continue-on-error', None) for s in $rs if s.get('id') == 'mask']"
 case_ automerge $A automerge-checkout      bad "$as_.insert(0, {'uses': 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'})"
+
+# the pinned tool module is held out of auto-merge, a normal lane PR (advisor Oct 12); a list at the API's cap of 100 files cannot be judged and is held too
+case_ automerge $A automerge-hold-removed  bad "[s.__setitem__('run', s['run'].replace('startswith(\"tools/govulncheck/\")', 'startswith(\"tools/other/\")')) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ automerge $A automerge-hold-after    bad "[s.__setitem__('run', 'gh pr merge --auto --squash \"\$PR_URL\"\\n' + s['run']) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ reviewer  $R reviewer-hold-removed   bad "[s.__setitem__('run', s['run'].replace('startswith(\"tools/govulncheck/\")', 'startswith(\"tools/other/\")')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer  $R reviewer-hold-no-files  bad "[s.__setitem__('run', s['run'].replace('number,title,body,headRefOid,files', 'number,title,body,headRefOid')) for s in $rs if s.get('id') == 'candidates']"
+case_ automerge $A automerge-cap-widened   bad "[s.__setitem__('run', s['run'].replace('-ge 100', '-ge 101')) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ automerge $A automerge-cap-removed   bad "[s.__setitem__('run', s['run'].replace('-ge 100', '-ge 0 -a 1 -eq 2')) for s in $as_ if 'gh pr merge --auto --squash' in (s.get('run') or '')]"
+case_ reviewer  $R reviewer-cap-widened    bad "[s.__setitem__('run', s['run'].replace('>= 100', '>= 101')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer  $R reviewer-cap-removed    bad "[s.__setitem__('run', s['run'].replace('(.files | length) >= 100', 'false')) for s in $rs if s.get('id') == 'candidates']"
+case_ reviewer  $R reviewer-hold-no-disarm bad "[s.__setitem__('run', s['run'].replace('--disable-auto', '--help')) for s in $rs if s.get('id') == 'candidates']"
 
 echo "dependency-lanes: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

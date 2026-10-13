@@ -6,9 +6,11 @@
 # branch (the old approach) both broke - trivy v0.66.0 was not a real
 # release - and was unpinned. This verifies the exact bytes.
 #
-# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go|crane> [dest-dir]
+# Usage: install-scanner.sh <trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go|crane|govulncheck> [dest-dir]
 # `go` installs the Go toolchain of the working directory's go.mod (its `toolchain` line, else its `go` line) into <dest-dir>/fscache-go, only when that
 # version is the pinned one (GO_VER); admission's freeze check runs it from there (the runner's own Go may be older than go.mod).
+# `govulncheck` (the Go source scan of Check, ruling G of Oct 12) is a Go MODULE, not release archives (golang/vuln publishes none): it is built from the committed module
+# tools/govulncheck, whose go.sum h1 hashes are the pin, with the pinned toolchain `go` installed (<dest-dir>/fscache-go/bin/go), and installed as <dest-dir>/govulncheck.
 # inspector-sbomgen is Amazon Inspector's SBOM generator (the PR gate's
 # second scanner sends its SBOM to inspector-scan:ScanSbom). It is pinned
 # here rather than downloaded by the vendor action at run time, so its
@@ -46,7 +48,7 @@ CRANE_VER=0.22.1
 
 pipeline_fail() { echo "::error::scanner installer: $*  (PIPELINE failure - not a scan finding)" >&2; exit 1; }
 
-case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|cosign|witness|go|crane) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
+case "$TOOL" in trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|docker-scout-1.25.0|docker-scout-1.24.0|gitsign|cosign|witness|go|crane|govulncheck) ;; *) pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign)" ;; esac
 
 arch="${INSTALL_SCANNER_ARCH:-$(uname -m)}"
 case "$arch" in
@@ -83,6 +85,7 @@ case "${TOOL}:${arch}" in
   crane:aarch64|crane:arm64) SUM=898c0cff975f898a33e8c4580bdafb0e7c02c7faa33374e946762f97c4ab7110 ;;
   go:x86_64|go:amd64) SUM=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5 ;;
   go:aarch64|go:arm64) SUM=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8 ;;
+  govulncheck:*) SUM="" ;;   # a module: pinned by go.sum (tools/govulncheck), not by the sum of a download
   *) pipeline_fail "no pinned checksum for ${TOOL} on ${arch}" ;;
 esac
 
@@ -100,7 +103,7 @@ CRANE_BASE="${CRANE_BASE_URL:-https://github.com/google/go-containerregistry/rel
 GO_BASE="${GO_BASE_URL:-https://go.dev/dl}"
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'chmod -R u+w "$tmp" 2>/dev/null; rm -rf "$tmp"' EXIT   # a Go module cache is read-only: it is writable again before it is removed
 
 verify() { # file
   local got
@@ -220,8 +223,30 @@ case "$TOOL" in
     rm -rf "${DEST}/fscache-go" && mkdir -p "${DEST}" && mv "$tmp/x/go" "${DEST}/fscache-go" || pipeline_fail "install failed for go"
     "${DEST}/fscache-go/bin/go" version | grep -q "go${GO_VER} " || pipeline_fail "the installed go is not go${GO_VER}"
     ;;
+  govulncheck)
+    # built with the pinned toolchain of `install-scanner.sh go`, in a clean environment: read-only modules (go.sum is the pin), a local toolchain, no cgo, no
+    # workspace, fresh caches, the one module proxy named below and nothing Go-related from the caller; the checksum database stays on
+    gobin="${DEST}/fscache-go/bin/go"
+    [ -x "$gobin" ] || pipeline_fail "no pinned Go toolchain at ${DEST}/fscache-go (run install-scanner.sh go first): govulncheck is built with it"
+    "$gobin" version | grep -q "go${GO_VER} " || pipeline_fail "the Go toolchain at ${DEST}/fscache-go is not go${GO_VER}"
+    [ -f tools/govulncheck/go.mod ] || pipeline_fail "tools/govulncheck/go.mod is missing: it holds the govulncheck pin"
+    [ -s tools/govulncheck/go.sum ] || pipeline_fail "tools/govulncheck/go.sum is missing: its h1 hashes are the govulncheck pin"
+    pin=""
+    while read -r key val rest; do
+      [ "$key" != require ] || { key=$val; val=${rest%% *}; }
+      [ "$key" != golang.org/x/vuln ] || { pin=$val; break; }
+    done < tools/govulncheck/go.mod
+    [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || pipeline_fail "tools/govulncheck/go.mod does not require golang.org/x/vuln at a version"
+    mkdir -p "$tmp/home" "$tmp/gocache" "$tmp/gomod"
+    # nothing Go-related from the caller's environment reaches the build: those names are unset, the pinned ones exported, in a subshell
+    ( unset GOROOT GOENV GOPATH GOPRIVATE GONOPROXY GONOSUMDB GONOSUMCHECK GOSUMDB GOINSECURE GOVCS GOEXPERIMENT GODEBUG GOCACHEPROG GOAUTH GOTOOLDIR GOBIN GOTMPDIR GOMODCACHEPROG
+      export HOME="$tmp/home" TMPDIR="$tmp" GOCACHE="$tmp/gocache" GOMODCACHE="$tmp/gomod" GOFLAGS=-mod=readonly GOTOOLCHAIN=local GOPROXY=https://proxy.golang.org CGO_ENABLED=0 GOWORK=off
+      cd tools/govulncheck && "$gobin" build -trimpath -o "$tmp/govulncheck" golang.org/x/vuln/cmd/govulncheck ) || pipeline_fail "go build of govulncheck ${pin} failed"
+    "$tmp/govulncheck" -version 2>/dev/null | grep -qx "Scanner: govulncheck@${pin}" || pipeline_fail "the built govulncheck does not report version ${pin} (the module's pin)"
+    install -m 0755 "$tmp/govulncheck" "${DEST}/govulncheck" || pipeline_fail "install failed for govulncheck"
+    ;;
   *)
-    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go)"
+    pipeline_fail "unknown scanner '${TOOL}' (want trivy|grype|syft|snyk|osv-scanner|inspector-sbomgen|docker-scout|gitsign|cosign|witness|go|crane|govulncheck)"
     ;;
 esac
 echo "installed ${TOOL} (pinned, checksum-verified) to ${DEST}"

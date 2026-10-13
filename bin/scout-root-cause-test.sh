@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SCAN-004-AC2
+# proves: REQ-SCAN-004-AC2, REQ-CHAIN-006-AC10
 # The Docker Scout root-cause round (advisor 0120/0121/0122): the documents are vexctl's shape; the matrix holds Docker's
 # documented control and changes one field at a time (author flag, directory vs file, *.vex.json vs our file name,
 # subcomponent), then our forms, on Scout 1.26.0 and the two previous minors; the judge needs the target finding in the

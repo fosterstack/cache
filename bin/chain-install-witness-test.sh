@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1 — Witness is installed pinned by checksum before it starts, and the same install in Rebuild
+# proves: REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1, REQ-CHAIN-006-AC4, REQ-SUP-001-AC1 — Witness is installed pinned by checksum before it starts, and the same install in Rebuild
 # Written before bin/install-scanner.sh knew `witness` (tests before implementation, step 4).
 #
 # The failure-path suite for `./bin/install-scanner.sh witness [dest-dir]`, in the style of bin/install-scanner-test.sh (which this file does not edit):
@@ -94,7 +94,78 @@ else
   [ ! -e "$gwork/bin/fscache-go" ] && ok "go: a failed install leaves no toolchain" || bad "go: a failed install left $gwork/bin/fscache-go"
   if grep -Eq 'GO_(SHA256|SUM|CHECKSUM)[^=]*[:-]|\$\{GO_(SHA256|SUM|CHECKSUM|VER|VERSION):?[-=]|GOVERSION=|GOTOOLCHAIN=auto' "$sut"; then bad "go: the script lets the environment override the checksum or the version"; else ok "go: there is no environment override of a checksum or of the version (the only hook is GO_BASE_URL)"; fi
 fi
-EXPECT=19
+# ---- govulncheck (advisor Oct 12, ruling G): `bash bin/install-scanner.sh govulncheck [dest-dir]` --------------------------------------------------------------
+# golang/vuln publishes no release binaries (its tags carry no assets), so the tool is a Go MODULE pinned by go.sum h1 hashes in the committed module
+# tools/govulncheck (go.mod + go.sum), built with the repo's pinned Go (<dest-dir>/fscache-go/bin/go, which `install-scanner.sh go` made) under
+# GOFLAGS=-mod=readonly, GOTOOLCHAIN=local, CGO_ENABLED=0 and the module proxy named in the script (never one from the caller's environment). Offline: a fake go.
+gv="$work/gv"; mkdir -p "$gv/dest/fscache-go/bin" "$gv/repo/tools/govulncheck" "$gv/nogo" "$gv/repo-nosum/tools/govulncheck" "$gv/repo-nomod/tools"
+cp "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/repo/tools/govulncheck/" 2> /dev/null || { printf 'module x\n' > "$gv/repo/tools/govulncheck/go.mod"; printf 'x\n' > "$gv/repo/tools/govulncheck/go.sum"; }
+cp "$gv/repo/tools/govulncheck/go.mod" "$gv/repo-nosum/tools/govulncheck/"
+cat > "$gv/dest/fscache-go/bin/go" <<'EOF'
+#!/usr/bin/env bash
+. "$(dirname "$0")/.env"      # the installer runs the build in a clean environment (env -i): the test's own settings come from this file
+echo "go $* [pwd=${PWD##*/}] [GOFLAGS=${GOFLAGS:-}] [GOTOOLCHAIN=${GOTOOLCHAIN:-}] [GOPROXY=${GOPROXY:-}] [CGO_ENABLED=${CGO_ENABLED:-}] [GOWORK=${GOWORK:-}]" >> "$GV_LOG"
+case "$1" in
+  version) echo "go version ${GV_GOVER:-go1.27.2} linux/amd64"; exit 0 ;;
+  build) [ -z "${GV_BUILD_RC:-}" ] || { echo "build failed" >&2; exit "$GV_BUILD_RC"; }
+         while [ $# -gt 0 ]; do [ "$1" = -o ] && o=$2; shift; done
+         printf '#!/usr/bin/env bash\n[ "$1" = -version ] && printf "Go: go1.27.2\\nScanner: govulncheck@%s\\nDB: https://vuln.go.dev\\n" "%s"\n' "${GV_REPORTS:-$GV_PIN}" "x" > "$o"; chmod +x "$o" ;;
+esac
+EOF
+chmod +x "$gv/dest/fscache-go/bin/go"
+GV_PIN=$(sed -n 's/^[[:space:]]*golang.org\/x\/vuln \(v[0-9][0-9.]*\).*/\1/p' "$root/tools/govulncheck/go.mod" 2> /dev/null | head -1)
+gvins() { # gvins LABEL REPO DEST REGEX ENV...: the installer run in REPO; a failure must be a labelled pipeline failure matching REGEX
+  local label=$1 repo=$2 dest=$3 re=$4; shift 4; local out rc=0 a envs=()
+  : > "$work/gvlog"; { printf 'GV_LOG=%q\nGV_PIN=%q\nGV_GOVER=%q\n' "$work/gvlog" "${GV_PIN:-v0.0.0}" "go${GOVER:-0}"; for a in "$@"; do case "$a" in GV_*) printf '%s\n' "$a" ;; esac; done; } > "$gv/dest/fscache-go/bin/.env"
+  for a in "$@"; do case "$a" in GV_*) ;; *) envs+=("$a") ;; esac; done
+  out=$(cd "$repo" && env "${envs[@]+"${envs[@]}"}" bash "$sut" govulncheck "$dest" 2>&1) || rc=$?
+  if [ "$re" = OK ]; then
+    if [ "$rc" = 0 ] && [ -x "$dest/govulncheck" ]; then ok "$label"; else bad "$label: exit $rc: ${out:0:170}"; fi
+  elif [ "$rc" -ne 0 ] && grep -qiE "$re" <<< "$out" && [ ! -e "$dest/govulncheck" ]; then ok "$label"; else bad "$label: exit $rc: ${out:0:170}"; fi
+}
+gvins "govulncheck: built from tools/govulncheck with the pinned Go, readonly modules, a local toolchain and no cgo, and installed" "$gv/repo" "$gv/dest" OK
+if grep -q 'build .* golang.org/x/vuln/cmd/govulncheck \[pwd=govulncheck\] \[GOFLAGS=-mod=readonly\] \[GOTOOLCHAIN=local\] \[GOPROXY=https://proxy.golang.org\] \[CGO_ENABLED=0\]' "$work/gvlog" \
+   && grep -q -- '-trimpath' "$work/gvlog"; then ok "govulncheck: the build line is go build -trimpath -o FILE golang.org/x/vuln/cmd/govulncheck in tools/govulncheck with that environment"
+else bad "govulncheck: the build call is not the pinned one: $(grep '^go build' "$work/gvlog" | head -1)"; fi
+rm -f "$gv/dest/govulncheck"
+gvins "govulncheck: a GOFLAGS, GOTOOLCHAIN, GOPROXY, GOWORK or CGO_ENABLED of the caller's environment never reaches the build" "$gv/repo" "$gv/dest" OK \
+  GOFLAGS=-mod=mod GOTOOLCHAIN=auto GOPROXY=https://evil.example GOWORK=/tmp/go.work CGO_ENABLED=1
+gb=$(grep '^go build' "$work/gvlog" || true)
+if grep -q 'GOFLAGS=-mod=readonly\] \[GOTOOLCHAIN=local\] \[GOPROXY=https://proxy.golang.org\] \[CGO_ENABLED=0\] \[GOWORK=off\]' <<< "$gb"; then ok "govulncheck: the environment is fixed, workspace mode off"
+else bad "govulncheck: the caller's Go environment reached the build: ${gb%%$'\n'*}"; fi
+rm -f "$gv/dest/govulncheck"
+gvins "govulncheck: no Go toolchain at <dest>/fscache-go is a pipeline failure and installs nothing" "$gv/repo" "$gv/nogo" "fscache-go.*PIPELINE failure|PIPELINE failure.*(go|toolchain)"
+gvins "govulncheck: a toolchain that is not the pinned Go version is refused" "$gv/repo" "$gv/dest" "go.*PIPELINE failure|PIPELINE failure.*go" GV_GOVER=go1.26.0
+gvins "govulncheck: a missing tools/govulncheck/go.sum is refused (the h1 hashes are the pin)" "$gv/repo-nosum" "$gv/dest" "go\\.sum.*PIPELINE failure|PIPELINE failure.*go\\.sum"
+gvins "govulncheck: no tools/govulncheck module at all is refused" "$gv/repo-nomod" "$gv/dest" "tools/govulncheck.*PIPELINE failure|PIPELINE failure.*tools/govulncheck"
+gvins "govulncheck: a failing build is a pipeline failure and installs nothing" "$gv/repo" "$gv/dest" "build.*PIPELINE failure|PIPELINE failure.*build" GV_BUILD_RC=1
+gvins "govulncheck: a built binary that reports another version than the module pins is refused" "$gv/repo" "$gv/dest" "version.*PIPELINE failure|PIPELINE failure.*version" GV_REPORTS=v9.9.9
+# the pin is ONE version in two places that Dependabot moves separately (it bumps tools/govulncheck/go.mod and go.sum; ci.yml's `go install ...@vX` is by hand): the
+# equality is a test, so a bump of either one alone is red (ruling G; the module has its own Dependabot entry)
+gvpin_ok() { # gvpin_ok GOMOD GOSUM CIYML: the module pins golang.org/x/vuln at a version, go.sum holds its h1, ci.yml installs that same version, no replace/exclude
+  local gm=$1 gs=$2 ci=$3 pin
+  [ -f "$gm" ] && [ -f "$gs" ] && [ -f "$ci" ] || return 1
+  pin=$(sed -n 's/^[[:space:]]*golang.org\/x\/vuln \(v[0-9][0-9.]*\).*/\1/p' "$gm" | head -1)
+  [[ "$pin" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  grep -q "golang.org/x/vuln $pin h1:" "$gs" && grep -q "govulncheck@$pin" "$ci" && ! grep -Eq '^[[:space:]]*(replace|exclude|retract)\b' "$gm"
+}
+if gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$root/.github/workflows/ci.yml"; then
+  ok "govulncheck: the module pins golang.org/x/vuln $GV_PIN with an h1 hash in go.sum, the version ci.yml's govulncheck job installs, and has no replace or exclude"
+else bad "govulncheck: tools/govulncheck is missing or does not pin the version ci.yml installs ($GV_PIN)"; fi
+mkdir -p "$gv/eq"
+sed 's/golang.org\/x\/vuln v[0-9.]*/golang.org\/x\/vuln v9.9.9/' "$root/tools/govulncheck/go.mod" > "$gv/eq/go.mod"
+if ! gvpin_ok "$gv/eq/go.mod" "$root/tools/govulncheck/go.sum" "$root/.github/workflows/ci.yml"; then ok "govulncheck: a go.mod bumped without ci.yml (what Dependabot does alone) is red"
+else bad "govulncheck: a bumped go.mod alone was accepted"; fi
+sed 's/govulncheck@v[0-9.]*/govulncheck@v9.9.9/' "$root/.github/workflows/ci.yml" > "$gv/eq/ci.yml"
+if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$gv/eq/ci.yml"; then ok "govulncheck: a ci.yml bumped without the module is red"
+else bad "govulncheck: a bumped ci.yml alone was accepted"; fi
+sed "s/golang.org\/x\/vuln $GV_PIN h1:/golang.org\/x\/vuln v9.9.9 h1:/" "$root/tools/govulncheck/go.sum" > "$gv/eq/go.sum"
+if ! gvpin_ok "$root/tools/govulncheck/go.mod" "$gv/eq/go.sum" "$root/.github/workflows/ci.yml"; then ok "govulncheck: a go.mod whose go.sum holds no h1 for the pin is red"
+else bad "govulncheck: a go.sum without the pin's hash was accepted"; fi
+if ! grep -Eq '\$\{(GOPROXY|GOFLAGS|GOTOOLCHAIN|GOSUMDB|GONOSUMDB|GOPRIVATE|GOWORK)' "$sut" && [ "$(grep -c 'GOPROXY=https://proxy.golang.org' "$sut")" = 1 ] && ! grep -q 'GOSUMDB=off' "$sut"; then
+  ok "govulncheck: the proxy is one literal in the script, no Go environment variable is read from the caller, and the checksum database stays on"
+else bad "govulncheck: the installer reads the Go environment from the caller, names another proxy or turns the checksum database off"; fi
+EXPECT=34
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
