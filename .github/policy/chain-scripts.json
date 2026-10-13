@@ -970,7 +970,7 @@
       "runs": [],
       "signs": false,
       "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
-      "sha256": "99b919f96d33623412d09f008243a9112d310b8fa1d5b33abb1c0f304d216c7a"
+      "sha256": "6c9b8ac7d380d37466299799d2cdd1e4cf2268f183d00ef8fc7fec245661be9e"
     },
     {
       "path": "bin/release-metadata.py",

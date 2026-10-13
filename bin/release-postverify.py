@@ -29,8 +29,14 @@ def form_error(c):
     """None when the command is a pipe of verify forms and jq with at least one verify form, else why not."""
     if "`" in c:
         return "a backquote"
-    quote = None
-    for ch in c:
+    quote, i = None, 0
+    while i < len(c):
+        ch = c[i]
+        if ch == "\\" and quote != "'":
+            # a backslash outside single quotes makes the next character literal: it never opens or closes a quoted region (a $ stays refused)
+            if i + 1 < len(c) and c[i + 1] != "$":
+                i += 2
+                continue
         if quote:
             if ch == quote:
                 quote = None
@@ -40,6 +46,9 @@ def form_error(c):
             quote = ch
         elif ch == "$":
             return "an expansion ($) outside single quotes"
+        elif ch in "\n\r":
+            return "a newline outside quotes (bash runs what follows as another command)"
+        i += 1
     lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
     lx.whitespace_split = True
     try:
