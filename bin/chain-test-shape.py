@@ -235,6 +235,12 @@ ADMISSION_COPY = "cp admission.json out/admission.json"
 ADMISSION_BASELINE = ('python3 bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json --admission apk/ubuntu-24.04-arm/admission.json '
                       '--tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --out admission-baseline.json')
 INSTALL_GO = "bash bin/install-scanner.sh go"
+# REQ-CHAIN-004-AC3 (rule 62, advisor 0393 item 1; advisor Oct 12 item 4): the VM runs melange and apko, each in the job that uses it: an apk job of Build and Rebuild installs
+# melange ONLY and an assemble job apko ONLY, from cache's bin/install-build-tools.sh, the pinned and checksummed installer (version and sha256 per tool and architecture, fixed
+# destination /usr/local/bin), one step, right after the Witness (and Go) install and so before admission; no secret, the same way as Witness and Go
+INSTALL_MELANGE = "bash bin/install-build-tools.sh melange"
+INSTALL_APKO = "bash bin/install-build-tools.sh apko"
+PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO)
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -247,15 +253,15 @@ HOSTILE_RUN = "bash bin/chain-hostile-step.sh"
 HOSTILE_UP = {"name": "hostile-attempts", "path": "attempts", "if-no-files-found": "error"}
 EXPOSE = 'echo "digests=$(jq -c . digests.json)" >> "$GITHUB_OUTPUT"'
 JOBS = {  # (family, job) -> spec; every step list is EXACT and in this order. An upload names ONE path (the artifact is rooted at it).
-    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True,
+    ("build", "apk"): dict(kind="apk", step="apk", perm=PERM_ADMIT, gh=True, matrix=True, down=[], mode=True, setup_go=True, tools=(INSTALL_MELANGE,),
         up=[("apk-" + MAT, "out"), ("witness-apk-" + MAT, "witness-apk"), ("admission", "admission.json")]),
-    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, expose=True, hostile=True, mode=True,
+    ("build", "assemble"): dict(kind="assemble", step="build", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), expose=True, hostile=True, mode=True,
         down=[("apk-" + r, "apk/" + r) for r, a in RUNNERS] + [("witness-apk-" + r, "rec-apk/" + r) for r, a in RUNNERS],
         up=[("witness-build", "witness-build"), ("digests", "digests.json"), ("items", "items.json"), ("admission-baseline", "admission-baseline.json"), ("dist", "dist"), ("images", "out")]),
-    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, mode=True,
+    ("rebuild", "apk"): dict(kind="rebuild-apk", step="rapk", perm=PERM_PLAIN, gh=False, matrix=True, tools=(INSTALL_MELANGE,), mode=True,
         down=[("witness-build", "witness-build"), ("digests", "build-in")],
         up=[("rapk-" + MAT, "out"), ("witness-rapk-" + MAT, "witness-rapk")]),
-    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, mode=True,
+    ("rebuild", "assemble"): dict(kind="rebuild-assemble", step="rebuild", perm=PERM_PLAIN, gh=False, matrix=False, tools=(INSTALL_APKO,), mode=True,
         down=[("witness-build", "witness-build"), ("digests", "build-in"), ("items", "build-in")]
               + [("rapk-" + r, "rapk/" + r) for r, a in RUNNERS] + [("witness-rapk-" + r, "rec-rapk/" + r) for r, a in RUNNERS],
         up=[("witness-rebuild", "witness-rebuild")]),
@@ -345,7 +351,7 @@ def job(j, family, name, allowed):
             run_ = str(x.get("run", "")).strip()
             kind = ("checkout" if k == 0 and set(x) <= {"uses", "with", "name"} and pinned(x.get("uses"), "actions/checkout", allowed) and (x.get("with") or {}) == CHECKOUT_WITH
                     else "guard" if set(x) == {"name", "env", "run"} and x.get("env") == MODE_GUARD_ENV and run_ == MODE_GUARD_RUN
-                    else "install" if set(x) <= {"name", "run"} and run_ in ("bash bin/install-scanner.sh witness", INSTALL_GO) else None)
+                    else "install" if set(x) <= {"name", "run"} and run_ in PRE_INSTALLS else None)
             if kind is None:
                 bad.append("step %d runs before admission (the first step that runs bin/witnessed.sh) and is not the checkout, the mode guard or a checksum-pinned "
                            "install line: %s (nothing with an env, a token, a secret, a build command, a download or an upload may come before admission)"
@@ -365,6 +371,10 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != INSTALL_GO:
             bad.append("step %d must be exactly: run %s (the checksum-pinned Go toolchain of admission's verify-freeze, right after Witness)" % (i, INSTALL_GO))
+    for cmd in spec["tools"]:       # an apk job installs melange only, an assemble job apko only (advisor Oct 12, item 4)
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
+            bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
@@ -493,6 +503,10 @@ def lockflow(files):
             d = yaml.load(open(f).read(), Loader=yaml.BaseLoader)
         except FileNotFoundError:
             bad.append("missing file: %s" % f); continue
+        # the one exception (advisor 0393 item 1): the pinned installer line `bash bin/install-build-tools.sh apko` as a step of its own (a name and a run, nothing else)
+        for j in ((d or {}).get("jobs") or {}).values():
+            if isinstance(j, dict) and isinstance(j.get("steps"), list):
+                j["steps"] = [s for s in j["steps"] if not (isinstance(s, dict) and set(s) <= {"name", "run"} and str(s.get("run") or "").strip() == INSTALL_APKO)]
         if re.search(r"\bapko\b", json.dumps(d)):
             bad.append("%s: names apko (only bin/assemble-image.sh may run it, always with the lock)" % f)
     return bad
