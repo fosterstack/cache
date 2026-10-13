@@ -46,6 +46,8 @@ def form_error(c):
             quote = ch
         elif ch == "$":
             return "an expansion ($) outside single quotes"
+        elif ch == "#":
+            return "a # outside quotes (a shell comment would hide what follows from this check and not from bash)"
         elif ch in "\n\r":
             return "a newline outside quotes (bash runs what follows as another command)"
         i += 1

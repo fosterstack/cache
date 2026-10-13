@@ -422,11 +422,11 @@ def vex_changes(old_doc, new_doc):
     subcomponents it names); a change is its status, justification or impact statement. A CVE that appears under more than one scope carries the
     scope in every entry that names it (round 1, Codex A R2: a scope change or a second statement is never lost)."""
     def scope(s_):
-        ids = []
-        for p_ in s_.get("products") or []:
-            ids.append(str(p_.get("@id", "")))
-            ids += [str(c.get("@id", "")) for c in p_.get("subcomponents") or []]
-        return " ".join(sorted(ids))
+        # each product stays together with its own subcomponents: moving a subcomponent to another product is a different scope
+        def one(p_):
+            subs = sorted(str(c.get("@id", "")) for c in p_.get("subcomponents") or [])
+            return "%s(%s)" % (p_.get("@id", ""), ",".join(subs)) if subs else str(p_.get("@id", ""))
+        return " ".join(sorted(one(p_) for p_ in s_.get("products") or []))
 
     def by_key(doc):
         out = {}
