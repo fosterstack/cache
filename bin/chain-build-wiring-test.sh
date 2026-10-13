@@ -1665,7 +1665,10 @@ krx 2 "empty-except with two ids is a usage error" "$work/kr/only-cutover.json" 
 krx 1 "an unreadable list fails closed under empty-except" "$work/kr/does-not-exist.json" empty-except KR-CUTOVER
 python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red cutover prep: KR-CUTOVER carries the accepted reason (every OTHER entry gone, this entry alone stays, removed by the marker PR)" || bad "known-red cutover prep: KR-CUTOVER's reason is not the accepted text"
 import json, sys
-e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}["KR-CUTOVER"]
+ents = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
+if "KR-CUTOVER" not in ents:        # the marker PR removes the entry (the list is then empty): that completed state is the one this case allows
+    sys.exit(0 if not ents else 1)
+e = ents["KR-CUTOVER"]
 want = ("the cutover pull request (chain-v030 to main) needs every other entry of this list gone AND every hosted check green on hosted runners, not only the suite cases: "
         "build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; this entry alone stays after the cutover and means "
         "'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, and until then no final or patch tag runs the chain")
