@@ -4,7 +4,7 @@
     marker-pr-gate.py --base-dir DIR --head-dir DIR --files FILE --repository OWNER/NAME
 
 Run by the `marker-gate` job of ci.yml on a pull request, from the BASE branch's checkout (DIR of --base-dir); the head checkout is data. FILE holds the pull request's
-changed paths, one per line (the API's list).
+changed paths, one JSON string per line (the API's list through `--jq '.[] | .filename | @json'`); a name is taken exactly as written, never trimmed.
 
   * A pull request that does not change .github/policy/rc-proof.json is not this gate's business: exit 0, nothing read.
   * One that does must change exactly that file and test-evidence/known-red.json, and the known-red.json of the head must be the base's with the one entry KR-CUTOVER
@@ -40,7 +40,7 @@ ARTIFACTS = (
     ("provenance", "provenance"),
     ("witness-rebuild", "witness-rebuild"),
     ("witness-check", "witness-check"),
-    ("witness-check-arm64", "witness-check"),
+    ("witness-check-arm64", "witness-check/witness-arm64"),
     ("hostile-results", "hostile-results"),
 )
 
@@ -77,32 +77,54 @@ def check_files(files):
         refuse("a marker pull request changes exactly %s and %s: %s" % (MARKER, KNOWN_RED, ("also changes " + ", ".join(extra)) if extra else ("does not change " + ", ".join(missing))))
 
 
-def entries_of(doc, what):
-    ents = doc.get("entries") if isinstance(doc, dict) else None
-    if not isinstance(ents, list) or not all(isinstance(e, dict) and isinstance(e.get("id"), str) for e in ents):
-        refuse("%s has no entries list of objects with an id" % what)
-    ids = [e["id"] for e in ents]
-    if len(set(ids)) != len(ids):
-        refuse("%s lists an id twice" % what)
-    return ents
+def strict_json(path, what):
+    def pairs(items):
+        keys = [k for k, _ in items]
+        if len(set(keys)) != len(keys):
+            raise ValueError("a key twice")
+        return dict(items)
+    try:
+        with open(path, "rb") as f:
+            return json.loads(f.read().decode("utf-8"), object_pairs_hook=pairs, parse_constant=lambda c: (_ for _ in ()).throw(ValueError(c)))
+    except (OSError, ValueError) as ex:
+        refuse("%s is missing or not strict JSON (%s)" % (what, type(ex).__name__))
 
 
 def check_known_red(base_dir, head_dir):
-    b = entries_of(load_json(os.path.join(base_dir, KNOWN_RED), "the base's " + KNOWN_RED), "the base's " + KNOWN_RED)
-    h = entries_of(load_json(os.path.join(head_dir, KNOWN_RED), "the head's " + KNOWN_RED), "the head's " + KNOWN_RED)
-    if ENTRY not in {e["id"] for e in b}:
+    """The head's document is the base's COMPLETE document with the one entry KR-CUTOVER removed: every other top-level field, every other entry, their order."""
+    b = strict_json(os.path.join(base_dir, KNOWN_RED), "the base's " + KNOWN_RED)
+    h = strict_json(os.path.join(head_dir, KNOWN_RED), "the head's " + KNOWN_RED)
+    if not isinstance(b, dict) or not isinstance(b.get("entries"), list) or not all(isinstance(e, dict) and isinstance(e.get("id"), str) for e in b["entries"]):
+        refuse("the base's %s has no entries list of objects with an id" % KNOWN_RED)
+    ids = [e["id"] for e in b["entries"]]
+    if len(set(ids)) != len(ids):
+        refuse("the base's %s lists an id twice" % KNOWN_RED)
+    if ENTRY not in ids:
         refuse("the base's %s has no %s entry to remove" % (KNOWN_RED, ENTRY))
-    if ENTRY in {e["id"] for e in h}:
+    want = dict(b)
+    want["entries"] = [e for e in b["entries"] if e["id"] != ENTRY]
+    if h == want:
+        return
+    if not isinstance(h, dict) or not isinstance(h.get("entries"), list):
+        refuse("the head's %s is not the base's document without %s" % (KNOWN_RED, ENTRY))
+    hid = [e.get("id") if isinstance(e, dict) else None for e in h["entries"]]
+    if ENTRY in hid:
         refuse("the head's %s still lists %s: the marker pull request removes it" % (KNOWN_RED, ENTRY))
-    want = [e for e in b if e["id"] != ENTRY]
-    if h != want:
-        bids, hids = [e["id"] for e in want], [e["id"] for e in h]
-        added = [i for i in hids if i not in bids]
-        gone = [i for i in bids if i not in hids]
-        changed = [i for i in hids if i in bids and h[hids.index(i)] != want[bids.index(i)]]
-        refuse("the head's %s differs from the base's by more than the removal of %s: %s" % (
-            KNOWN_RED, ENTRY, "; ".join(x for x in (("added " + ", ".join(added)) if added else "", ("removed " + ", ".join(gone)) if gone else "",
-                                                    ("changed " + ", ".join(changed)) if changed else "", "reordered" if not (added or gone or changed) else "") if x)))
+    wid = [e["id"] for e in want["entries"]]
+    bits = []
+    for k in sorted(set(list(want) + list(h)) - {"entries"}):
+        if want.get(k, "<absent>") != h.get(k, "<absent>"):
+            bits.append("top-level field %s differs" % k)
+    for i in hid:
+        if i not in wid:
+            bits.append("entry %s added" % i)
+    for i in wid:
+        if i not in hid:
+            bits.append("entry %s removed" % i)
+    for i in hid:
+        if i in wid and h["entries"][hid.index(i)] != want["entries"][wid.index(i)]:
+            bits.append("entry %s changed" % i)
+    refuse("the head's %s differs from the base's by more than the removal of %s: %s" % (KNOWN_RED, ENTRY, "; ".join(bits) or "the order or the whole document"))
 
 
 def read_marker(head_dir):
@@ -170,10 +192,21 @@ def main(argv):
     a = ap.parse_args(argv)
     try:
         try:
-            with open(a.files) as f:
-                files = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
-        except OSError:
+            with open(a.files, "rb") as f:
+                raw = f.read().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
             refuse("the pull request's file list cannot be read")
+        files = []
+        for n_, ln in enumerate(raw.split("\n"), 1):
+            if ln == "" and n_ == len(raw.split("\n")):
+                continue                          # the one final newline
+            try:
+                v = json.loads(ln)
+            except ValueError:
+                refuse("the pull request's file list line %d is not a JSON string" % n_)
+            if not isinstance(v, str) or v == "":
+                refuse("the pull request's file list line %d is not a non-empty JSON string" % n_)
+            files.append(v)
         if not files:
             refuse("the pull request's file list is empty: nothing can be judged (an empty answer is never read as 'no marker')")
         if MARKER not in files:

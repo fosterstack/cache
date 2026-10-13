@@ -20,7 +20,21 @@ mkbase() { # mkbase DIR: a base checkout with a stub verifier that logs its argu
   local d=$1; rm -rf "$d"; mkdir -p "$d/bin" "$d/.github/policy" "$d/test-evidence"
   cat > "$d/bin/chain-verify.py" <<'PY'
 import os, sys
-open(os.environ["MG_LOG"], "a").write("verify " + " ".join(sys.argv[1:]) + "\n")
+a = sys.argv[1:]
+open(os.environ["MG_LOG"], "a").write("verify " + " ".join(a) + "\n")
+rec = a[a.index("--records") + 1]
+need = ["witness-build/build-collection.json", "witness-build/digests.json", "witness-build/items.json", "provenance/provenance.json", "provenance/provenance.rekor.json",
+        "witness-rebuild/rebuild-collection.json", "witness-check/witness-scanners/scanners-collection.json", "witness-check/witness-acceptance/acceptance-collection.json",
+        "witness-check/witness-runtime/runtime-collection.json", "witness-check/witness-arm64/arm64-collection.json", "hostile-results/hostile-results.json"]
+miss = [n for n in need if not os.path.isfile(os.path.join(rec, n))]
+extra = []
+for dp, dn, fn in os.walk(os.path.join(rec, "witness-check")):
+    for f in fn:
+        extra.append(os.path.relpath(os.path.join(dp, f), os.path.join(rec, "witness-check")))
+if miss:
+    sys.stderr.write("refused at marker: missing %s\n" % miss); sys.exit(1)
+if sorted(extra) != ["witness-acceptance/acceptance-collection.json", "witness-arm64/arm64-collection.json", "witness-runtime/runtime-collection.json", "witness-scanners/scanners-collection.json"]:
+    sys.stderr.write("refused at check: an extra or misplaced Check record %s\n" % extra); sys.exit(1)
 sys.exit(int(os.environ.get("MG_VERIFY_RC", "0")))
 PY
   printf '{"x":1}\n' > "$d/.github/policy/release-policy.template.json"
@@ -60,7 +74,17 @@ case "$1 $2" in
     name=""; dir=""
     while [ $# -gt 0 ]; do case "$1" in -n) name=$2; shift ;; -D) dir=$2; shift ;; esac; shift; done
     [ "$name" != "${MG_DL_FAIL:-}" ] || exit 1
-    mkdir -p "$dir"; echo "{}" > "$dir/$name.json" ;;
+    mkdir -p "$dir"
+    case "$name" in
+      witness-build) echo "{}" > "$dir/build-collection.json" ;;
+      digests) echo "{}" > "$dir/digests.json" ;;
+      items) echo "{}" > "$dir/items.json" ;;
+      provenance) echo "{}" > "$dir/provenance.json"; echo "{}" > "$dir/provenance.rekor.json" ;;
+      witness-rebuild) echo "{}" > "$dir/rebuild-collection.json" ;;
+      witness-check) for s in scanners acceptance runtime; do mkdir -p "$dir/witness-$s"; echo "{}" > "$dir/witness-$s/$s-collection.json"; done ;;
+      witness-check-arm64) echo "{}" > "$dir/arm64-collection.json" ;;
+      hostile-results) echo "{}" > "$dir/hostile-results.json" ;;
+    esac ;;
   *) exit 3 ;;
 esac
 SH
@@ -75,7 +99,7 @@ PY
 mkbase "$work/base"; mkhead "$work/head" "$work/base"; mkbin "$work/bin"
 HEADSHA=$(git -C "$work/head" rev-parse "$TAG^{commit}")
 rungood "$work/run.json" "$HEADSHA"
-files() { printf '%s\n' "$@" > "$work/files.txt"; }
+files() { python3 -c 'import json,sys; [print(json.dumps(a)) for a in sys.argv[1:]]' "$@" > "$work/files.txt"; }
 MARK=.github/policy/rc-proof.json; KRF=test-evidence/known-red.json
 gate() { # gate LABEL WANT_RC WORD [ENV=V ...]: run the gate with the fake gh first on PATH; WORD must be in the first line of stderr for a refusal
   local label=$1 want=$2 word=$3; shift 3
@@ -130,6 +154,25 @@ p = sys.argv[1]; d = json.load(open(p)); d["entries"][0]["reason"] = "r2"; d["en
 PY
 gate "the removal with a new entry added is refused" 1 "KR-NEW"
 cp "$work/keep.json" "$work/head/$KRF"
+# ---- the whole document, and the file names exactly as the API gave them ----
+python3 - "$work/head/$KRF" "$work/keep.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[2])); d["_note"] = "edited"; json.dump(d, open(sys.argv[1], "w"))
+PY
+files $MARK $KRF; gate "the removal plus an edited _note is refused" 1 "_note"
+python3 - "$work/head/$KRF" "$work/keep.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[2])); d["extra_field"] = 1; json.dump(d, open(sys.argv[1], "w"))
+PY
+gate "the removal plus a new top-level field is refused" 1 "extra_field"
+cp "$work/keep.json" "$work/head/$KRF"
+files "$MARK" "$KRF" " "; gate "a file whose name is one space is refused" 1 " "
+files "$MARK " "$MARK" "$KRF"; gate "a space-padded marker path is a different file and is refused" 1 "$MARK "
+files "$MARK" "$KRF" "a
+b"; gate "a file name with a newline in it is refused as an extra file" 1 "a"
+printf '%s\n%s\n' ".github/policy/rc-proof.json" '"test-evidence/known-red.json"' > "$work/files.txt"
+gate "a file list line that is not a JSON string is refused" 1 "not a JSON string"
+files $MARK $KRF
 # ---- the run the marker names ----
 runmut() { python3 - "$work/run.json" "$work/run-bad.json" "$1" "$2" <<'PY'
 import json, sys
@@ -176,6 +219,8 @@ def judge(wf):
         return ["no marker-gate job"]
     if set(job) - {"name", "runs-on", "if", "permissions", "steps"}:
         bad.append("job keys beyond name, runs-on, if, permissions, steps: %s" % sorted(set(job) - {"name", "runs-on", "if", "permissions", "steps"}))
+    if job.get("name") != "marker-gate" or job.get("runs-on") != "ubuntu-latest":
+        bad.append("the job's name or runner is not marker-gate on ubuntu-latest: %r %r" % (job.get("name"), job.get("runs-on")))
     if job.get("if") != "github.event_name == 'pull_request'":
         bad.append("the job is not exactly the pull_request job: %r" % job.get("if"))
     if job.get("permissions") != {"contents": "read", "actions": "read", "pull-requests": "read"}:
@@ -195,7 +240,7 @@ def judge(wf):
         bad.append("the gate step's env is not exactly the job token and the PR number: %r" % g.get("env"))
     lines = [l.strip() for l in str(g.get("run") or "").splitlines() if l.strip() and not l.strip().startswith("#")]
     want = ['set -euo pipefail',
-            'gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq \'.[].filename\' > changed.txt',
+            'gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq \'.[] | .filename | @json\' > changed.txt',
             'python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"']
     if lines != want:
         bad.append("the gate step's commands are not exactly the three reviewed lines: %r" % lines)
@@ -214,13 +259,15 @@ mut("cond", lambda c: c["jobs"]["marker-gate"].update({"if": "always()"}), "pull
 mut("headscript", lambda c: c["jobs"]["marker-gate"]["steps"][2].update({"run": c["jobs"]["marker-gate"]["steps"][2]["run"].replace("base/bin/marker-pr-gate.py", "head/bin/marker-pr-gate.py")}), "three reviewed lines")
 mut("nojob", lambda c: c["jobs"].pop("marker-gate"), "no marker-gate job")
 mut("prt", lambda c: c.__setitem__(True, {"pull_request_target": None}), "pull_request_target")
+mut("runner", lambda c: c["jobs"]["marker-gate"].update({"runs-on": "self-hosted"}), "runner")
+mut("rename", lambda c: c["jobs"]["marker-gate"].update({"name": "marker-check"}), "runner")
 mut("secret", lambda c: c["jobs"]["marker-gate"]["steps"][2]["env"].update({"X": "${{ secrets.Y }}"}), "env")
 PY
 if [ "$(cat "$work/judge-real" 2> /dev/null)" = ok ]; then ok "the marker-gate job in ci.yml is exactly the reviewed one (two pinned checkouts, base sha, three reads, three lines)"; else bad "the marker-gate job in ci.yml: $(cat "$work/judge-real" 2> /dev/null | head -c 300)"; fi
-for m in noperm headref swallow coe cond headscript nojob prt secret; do
+for m in noperm headref swallow coe cond headscript nojob prt runner rename secret; do
   case "$(cat "$work/judge-$m" 2> /dev/null)" in caught*) ok "the job judge catches: $m" ;; *) bad "the job judge missed: $m ($(cat "$work/judge-$m" 2> /dev/null | head -c 120))" ;; esac
 done
-EXPECT=43
+EXPECT=51
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
