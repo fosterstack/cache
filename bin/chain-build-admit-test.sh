@@ -790,11 +790,24 @@ sed 's/^version: v0.3.0$/version: v0.3.0-rc2/' "$W/c/repo/requirements/releases/
 G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "rc2 baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
 retag owner; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"; run_admit
 expect_refuse "AC6 control: the same tree with the final tag v0.3.0 is refused at rc-proof (only the tag's kind differs)" rc-proof marker
+# Codex 4b-1 r5 (B): the same refusals for a PATCH tag (v0.3.1), not only the final tag: no marker on main, and a marker for other bytes
+fresh; G checkout -q main; G rm -q .github/policy/rc-proof.json
+sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, no marker"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_refuse "AC6 a PATCH tag with no marker on origin/main is refused at rc-proof, naming the marker" rc-proof marker
+fresh; G checkout -q main; printf '# edited\n' >> "$W/c/repo/.github/workflows/release.yml"
+sed 's/^version: v0.3.0$/version: v0.3.1/' "$W/c/repo/requirements/releases/v0.3.0.yaml" > "$W/c/repo/requirements/releases/v0.3.1.yaml"
+G add -A; G -c user.signingkey="$W/keys/owner" commit -q -S -m "patch baseline, chain file edited after the proof"; G push -q origin main 2> /dev/null; G fetch -q origin 2> /dev/null
+G -c user.signingkey="$W/keys/owner" tag -s -m v0.3.1 v0.3.1; gh_fixtures "$W/c/gh" "$(G rev-parse HEAD)"
+run_admit GITHUB_REF=refs/tags/v0.3.1 GITHUB_REF_NAME=v0.3.1
+expect_refuse "AC6 a PATCH tag whose chain files are not the bytes the marker names is refused, naming the bytes" rc-proof bytes
 # ---- nothing built on a refusal; the script is the only reader of the checks ----------------------------------------------------------------
 TOTAL=$((pass + failn))
 echo "pass=$pass fail=$failn"
 # the case count is fixed by the number of expect_ok/expect_refuse calls plus the unit cases: when the script is missing every case must
 # still be COUNTED (a missing script must not shrink the suite)
-EXPECT_TOTAL=133
+EXPECT_TOTAL=135
 if [ "$TOTAL" != "$EXPECT_TOTAL" ]; then echo "FAIL case count $TOTAL != expected $EXPECT_TOTAL (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

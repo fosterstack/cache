@@ -1671,7 +1671,7 @@ if "KR-CUTOVER" not in ents:        # the marker PR removes the entry (the list 
 e = ents["KR-CUTOVER"]
 want = ("the cutover pull request (chain-v030 to main) needs every other entry of this list gone AND every hosted check green on hosted runners, not only the suite cases: "
         "build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; this entry alone stays after the cutover and means "
-        "'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, and until then no final or patch tag runs the chain")
+        "'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, which changes exactly the marker file and the removal of this one entry, and until then no final or patch tag runs the chain")
 sys.exit(0 if e["reason"] == want and e["case"].startswith("KNOWN-RED cutover:") else 1)
 PY
 # an entry added since the merge base is refused unless the PR body names it

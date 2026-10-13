@@ -1235,10 +1235,40 @@ for words in ("both refuse (naming the marker) unless the marker names an rc tag
 assert a6["verification"] == {"method": "ci-workflow", "release_blocking": True} and a6["status"] == "approved", "AC6 verification/status"
 assert "linked in the pull request before the pull request merges" not in then, "AC5 still ties the proof to this pull request"
 assert "CUTOVER CHECKLIST" in r["notes"] and "advisor accepted Oct 10 (lane AC)" in r["notes"], "REQ-CHAIN-001 notes lack the CUTOVER CHECKLIST line or its provenance"
-assert "green rc-tag run of the same commit's chain files, linked" in r["notes"], "REQ-CHAIN-001 notes lack the rc-tag cutover checklist line (advisor 0383)"
+assert "the signed rc-tag run is then cut on main, its green run is linked, and the rc-proof marker of REQ-CHAIN-001-AC6 is committed before any final or patch tag runs the chain" in r["notes"], "REQ-CHAIN-001 notes lack the cutover checklist line in the accepted order (advisor 0383, Oct 12)"
+assert "does not merge without a green rc-tag run" not in r["notes"], "REQ-CHAIN-001 notes still tie the cutover pull request's merge to the rc run"
 assert "GitHub dry run is green" not in r["notes"], "REQ-CHAIN-001 notes still make a branch dry run the proof"
 PY
-EXPECT=251
+# Codex 4b-1 r5 (B B1): the key attempt is EXECUTED, not only read. The real function is cut out of the hostile step and run in a controlled home and runner
+# temp directory holding one planted private key; its transcript must carry the number of files it searched and the public-key hash of that planted key,
+# and a body that prints a constant transcript (a search that never happens) must be told apart from it.
+kd="$work/keyprobe"; rm -rf "$kd"; mkdir -p "$kd/home" "$kd/rt" "$kd/run"
+if openssl genpkey -algorithm ed25519 -out "$kd/home/planted.pem" > /dev/null 2>&1; then
+  want_h=$(openssl pkey -in "$kd/home/planted.pem" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)
+  printf 'plain text\n' > "$kd/rt/other.txt"
+  fn_of() { awk '/^attempt_read_sign_key\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$1"; }
+  run_key() { # run_key SCRIPT-TEXT-FILE: the function body of that file, run where HOME and RUNNER_TEMP are the probe directories
+    rm -rf "$kd/run/attempts"; mkdir -p "$kd/run/attempts"
+    ( cd "$kd/run" && HOME="$kd/home" RUNNER_TEMP="$kd/rt" bash -c "$(fn_of "$1"); attempt_read_sign_key" > /dev/null 2>&1 ) || true
+    cat "$kd/run/attempts/read_sign_key.txt" 2> /dev/null
+  }
+  kt=$(run_key "$root/bin/chain-hostile-step.sh")
+  n=$(sed -n 's/^searched: \([0-9][0-9]*\) files$/\1/p' <<< "$kt" | head -1)
+  if [ -n "$n" ] && [ "$n" -ge 2 ] && grep -F -q "pubkey-sha256: $want_h" <<< "$kt" && [ "$(head -1 <<< "$kt" | cut -c1-13)" = "# transcript:" ]; then
+    ok "001-AC5 the real read_sign_key attempt, run against a planted key, records the files it searched (>= 2) and the planted key's public hash"
+  else bad "001-AC5 the real read_sign_key attempt did not record the planted key's hash and a real file count: n=$n; $(head -c 200 <<< "$kt" | tr '\n' ' ')"; fi
+  cat > "$kd/mutant.sh" <<'MUT'
+attempt_read_sign_key() {
+  printf "# transcript: claimed search for Sign key material\nsearched: 1 files\n" > attempts/read_sign_key.txt
+}
+MUT
+  mt=$(run_key "$kd/mutant.sh")
+  if ! grep -F -q "pubkey-sha256: $want_h" <<< "$mt"; then ok "001-AC5 a key attempt that prints a constant transcript does not record the planted key's hash (the execution check tells it apart)"
+  else bad "001-AC5 the execution check accepted a constant transcript"; fi
+else
+  bad "001-AC5 the key attempt's execution check needs openssl genpkey (ed25519) to plant a key"; bad "001-AC5 the execution check could not plant a key"
+fi
+EXPECT=253
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
