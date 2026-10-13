@@ -572,12 +572,15 @@ def removed(root):
 RULE61_WORDS = re.compile(r"(?i)\bdockerfile|\bbuildx\b|goreleaser|\bimagetools\b|build/docker")
 # the judges and the deny lists that NAME these tools in order to refuse them are not readers of them
 RULE61_NAMING = {"bin/chain-release-shape.py", "bin/chain-test-shape.py", "bin/chain-check-shape.py"}
-# The documented exclusions of the recursive reader scan (Codex 4b-4 r1; Row 78: each one a reason). These are the supply-chain JUDGES: the pin checker, the pin
-# inventory, the pin audit and the pin-age check recognise and version-check ANY installer a workflow might use (their tool tables name docker/buildx and goreleaser
-# among a dozen others), and the judge here refuses every workflow that uses one; their tests, the review records and the tests of the auditor are fixtures.
+# The documented exclusions of the recursive reader scan (Codex 4b-4 r1 and r2; Row 78: each one an exact name and a reason). These four files are the supply-chain
+# JUDGES: the pin checker, the pin inventory, the pin audit and the pin-age check recognise and version-check ANY installer a workflow might use (their tool tables and
+# refusal logic name docker/buildx and goreleaser among a dozen others), and the scan here refuses every workflow that uses one. They are named one by one (a new file
+# in their directories is scanned like any other), the review records are matched by their hash-named form, and a line in a judge file that names the tools next to a
+# way to run a program is a finding (the tables name tools; they never start them). Tests are skipped by name pattern everywhere, as before.
 _AG = ".github/" + "ag" + "ent"      # assembled: the layout check (REQ-AUD-18) refuses a file outside the agent folder that spells the folder out
-RULE61_JUDGE_DIRS = tuple(_AG + "/" + d for d in ("supply-chain/", "tests/", "bin/tests/", "reviews/"))
-RULE61_JUDGE_FILES = {_AG + "/bin/check-action-pins.py"}
+RULE61_JUDGE_FILES = {_AG + "/supply-chain/pin-inventory.py", _AG + "/supply-chain/pin-age-check.py", _AG + "/supply-chain/pin-audit.py", _AG + "/bin/check-action-pins.py"}
+RULE61_REVIEW_RECORD = re.compile(r"^" + re.escape(_AG) + r"/reviews/[0-9a-f]{64}\.json$")
+RULE61_RUNS = re.compile(r"subprocess|os\.system|os\.exec|os\.popen|\bPopen\b|check_output|check_call|shell=True|\bexec\(|\beval\(")
 RULE61_SCAN_ROOTS = (".github", "bin", "tools", "build")
 RULE61_SCAN_EXT = (".yml", ".yaml", ".json", ".sh", ".py", ".go", ".mod")
 
@@ -606,7 +609,12 @@ def removed_rule61(root):
                 rel = os.path.relpath(os.path.join(dp, f), root).replace(os.sep, "/")
                 if not f.endswith(RULE61_SCAN_EXT) or os.path.islink(os.path.join(dp, f)):
                     continue
-                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f) or rel in RULE61_NAMING or rel in RULE61_JUDGE_FILES or rel.startswith(RULE61_JUDGE_DIRS):
+                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f) or rel in RULE61_NAMING or RULE61_REVIEW_RECORD.match(rel):
+                    continue
+                if rel in RULE61_JUDGE_FILES:
+                    for n_, ln in enumerate(open(os.path.join(root, rel), errors="replace").read().splitlines(), 1):
+                        if RULE61_WORDS.search(ln) and RULE61_RUNS.search(ln):
+                            bad.append("%s:%d names a removed tool beside a way to run a program (a judge's table names tools; it never starts them): %s" % (rel, n_, ln.strip()[:100]))
                     continue
                 readers.append(rel)
     if os.path.exists(dp_):
@@ -615,6 +623,33 @@ def removed_rule61(root):
         m = RULE61_WORDS.search(open(os.path.join(root, rel), errors="replace").read())
         if m:
             bad.append("%s names %r (rule 61: no Dockerfile, buildx or goreleaser is read or kept; a candidate image is read by crane, by digest)" % (rel, m.group(0)))
+    # crane (the chain's own copy tool) is the ONLY reader of a candidate image now, so every executable line that names it is one of a short closed list of forms
+    # (Codex 4b-4 r2): the pinned install, the one manifest read of the rescan, the one index append of the Scout probe (and messages that only print its name);
+    # any other line naming crane is refused, and the variables those two forms read are assigned exactly once, by digest, in the same step or file.
+    CRANE = re.compile(r"(?<![\w./-])crane(?![\w./-])")
+    INSTALL = re.compile(r"^(?:\./)?bin/install-scanner\.sh crane(?:\s+#.*)?$")
+    MANIFEST = re.compile(r"^if ! crane manifest \"\$ref\" > /tmp/index\.json 2>/tmp/inspect\.err; then$")
+    APPEND = re.compile(r"^(?:> \"\$a/built-create\.log\" 2>&1 )?crane index append \"\$built_idx\" -m \"\$att_ref\" -t \"\$built_ref\"$")
+
+    def exec_lines(text):
+        return [ln.strip() for ln in str(text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+    def crane_forbidden(l):
+        """True when the line names crane in a form that is not the install, the manifest read, the append, or a message that only prints the name."""
+        if not CRANE.search(l) or INSTALL.match(l) or MANIFEST.match(l) or APPEND.match(l):
+            return False
+        if re.match(r"(echo|printf)\b", l):
+            inner = re.findall(r"\$\([^)]*\)|`[^`]*`", l)      # a command substitution inside a message would run
+            return any(CRANE.search(x) for x in inner)
+        return True
+
+    def assigned(lines, var):
+        pat = re.compile(r"(?:^|[;&|(]\s*|\b(?:do|then|else)\s+)(?:(?:export|declare|local|readonly|typeset)\s+(?:-\w+\s+)*)?%s\+?=" % re.escape(var))
+        n = sum(len(pat.findall(l)) for l in lines)
+        n += sum(1 for l in lines if re.search(r"\bread\s+(?:-\w+\s+)*%s\b" % re.escape(var), l) or re.search(r"\bfor\s+%s\s+in\b" % re.escape(var), l)
+                 or re.search(r"\b(?:printf|mapfile|readarray)\b[^\n]*-v\s*%s\b" % re.escape(var), l))
+        return n
+
     rs = os.path.join(root, ".github/workflows/main-candidate-rescan.yml")
     if os.path.exists(rs):
         try:
@@ -624,42 +659,43 @@ def removed_rule61(root):
         if not isinstance(wf, dict) or not isinstance(wf.get("jobs"), dict):
             bad.append("main-candidate-rescan.yml is not a workflow (rule 61: a candidate image is read by crane, by digest)")
             wf = {"jobs": {}}
-
-        def lines(run):      # the executable lines of a run block: comments are not commands
-            return [ln.strip() for ln in str(run or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
-        INSTALL = re.compile(r"^(?:\./)?bin/install-scanner\.sh crane\b")
         saw_manifest = False
         for jn, job in wf["jobs"].items():
             steps = job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []
             installed = False
-            for i, st in enumerate(steps):
-                ls = lines(st.get("run") if isinstance(st, dict) else "")
+            for st in steps:
+                ls = exec_lines(st.get("run") if isinstance(st, dict) else "")
                 installed_before_step = installed
                 for k, l in enumerate(ls):
                     if INSTALL.match(l):
                         installed = True
-                    if re.match(r"crane manifest\b|if ! crane manifest\b", l):
+                    elif crane_forbidden(l):
+                        bad.append("main-candidate-rescan.yml job %s: a line names crane in a form other than the pinned install or `if ! crane manifest \"$ref\" > /tmp/index.json 2>/tmp/inspect.err; then`: %s" % (jn, l[:120]))
+                    elif MANIFEST.match(l):
                         saw_manifest = True
                         if not installed:
                             bad.append("main-candidate-rescan.yml job %s: `crane manifest` runs before the pinned install in that job (the install is per job; an ambient crane is not checksummed)" % jn)
-                        ref = re.search(r"crane manifest\s+\"?\$\{?(\w+)\}?\"?", l)
-                        want = re.compile(r"^%s=\"[^\"]*cache@\$\{TARGET_DIGEST\}\"$" % re.escape(ref.group(1))) if ref else None
-                        if not ref or not any(want.match(x) for x in ls[:k]):
-                            bad.append("main-candidate-rescan.yml job %s: `crane manifest` does not read a reference built as <repository>/cache@${TARGET_DIGEST} in the same step (a tag could move: by digest only)" % jn)
+                        want = re.compile(r"^ref=\"[^\"]*cache@\$\{TARGET_DIGEST\}\"$")
+                        if assigned(ls, "ref") != 1 or not any(want.match(x) for x in ls[:k]):
+                            bad.append("main-candidate-rescan.yml job %s: `crane manifest` does not read a reference assigned exactly once, before it, as <repository>/cache@${TARGET_DIGEST} in the same step (a tag could move: by digest only)" % jn)
                 if any("bin/scout-root-cause.sh" in l for l in ls) and not installed_before_step:
                     bad.append("main-candidate-rescan.yml job %s: runs bin/scout-root-cause.sh (its index append is crane) without the pinned crane install in an earlier step of that job" % jn)
         if not saw_manifest:
             bad.append("main-candidate-rescan.yml does not read the candidate index with crane (the pinned install, `crane manifest` by digest)")
     sc = os.path.join(root, "bin/scout-root-cause.sh")
     if os.path.exists(sc):
-        ls = [l.strip() for l in open(sc, errors="replace").read().splitlines() if l.strip() and not l.strip().startswith("#")]
-        app = [l for l in ls if re.search(r"(?<![\w`])crane index append [\"$]", l) and not l.startswith(("echo ", "printf "))]
-        if app:
-            if len(app) != 1 or not re.search(r"crane index append \"\$built_idx\" -m \"\$att_ref\" -t \"\$built_ref\"", app[0]):
-                bad.append("bin/scout-root-cause.sh: the crane index append is not exactly one `crane index append \"$built_idx\" -m \"$att_ref\" -t \"$built_ref\"`")
+        ls = exec_lines(open(sc, errors="replace").read())
+        for l in ls:
+            if crane_forbidden(l):
+                bad.append("bin/scout-root-cause.sh: a line names crane in a form other than the one index append: %s" % l[:120])
+        napp = sum(1 for l in ls if APPEND.match(l))
+        if any(re.search(r"(?<![\w`])crane index append", l) for l in ls) and napp != 1:
+            bad.append("bin/scout-root-cause.sh: the crane index append is not exactly one `crane index append \"$built_idx\" -m \"$att_ref\" -t \"$built_ref\"`")
+        if napp:
             for var, pat in (("built_idx", r"built_idx=\"\$PROBE_REPO@\$MULTI\""), ("att_ref", r"att_ref=\"\$PROBE_REPO@\$att_dig\"")):
-                if not any(re.search(r"(?:^|[;&] *)" + pat + r"(?:$|[; ])", l) for l in ls):
-                    bad.append("bin/scout-root-cause.sh: %s is not assigned by digest (%s)" % (var, pat.replace("\\", "")))
+                n_ok = sum(len(re.findall(r"(?:^|[;&] *)" + pat + r"(?:$|[; ])", l)) for l in ls)
+                if n_ok != 1 or assigned(ls, var) != 1:
+                    bad.append("bin/scout-root-cause.sh: %s is not assigned exactly once, by digest (%s)" % (var, pat.replace("\\", "")))
     return bad
 
 

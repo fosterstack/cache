@@ -20,7 +20,7 @@ def check(name, ok, got=""):
 
 def c(sha, files, labels=(), diffs=None):
     """diffs: {path: the commit's changed lines ("-old" / "+new")}"""
-    return {"sha": sha, "files": list(files), "labels": list(labels), "diffs": dict(diffs or {})}
+    return {"sha": sha, "files": list(files), "labels": list(labels), "diffs": dict(diffs or {}), "modes": {f: "100644" for f in files}}   # git always gives a mode
 BUMP = {"go.mod": " require (\n-\tgolang.org/x/sys v0.46.0\n+\tgolang.org/x/sys v0.47.0\n )\n",
         "go.sum": "-golang.org/x/sys v0.46.0 h1:a=\n+golang.org/x/sys v0.47.0 h1:b=\n"}
 NEWMOD = {"go.mod": "+\tgithub.com/evil/new v1.0.0\n"}
@@ -773,6 +773,26 @@ g(rn2, "add", "-A"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit
 g(rn2, "mv", "build/locks/melange.lock", "build/locks/apko.base.lock.json"); g(rn2, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "rename between two listed inputs")
 r = subprocess.run([sys.executable, sys.argv[1], "base-moved", "--base-inputs", rlist, "--since", "v0.2.1", "--repo", rn2], capture_output=True, text=True)
 check("B3 a rename between two listed base inputs names both the source and the destination in base-moved", r.returncode == 0 and "build/locks/melange.lock" in r.stdout and "build/locks/apko.base.lock.json" in r.stdout, (r.returncode, r.stdout, r.stderr))
+# Codex 4b-4 r2 (A M1, B R2): the patch-fix label upgrades a not-clean commit, but it never upgrades a deleted, executable or symlinked base input (a base input
+# removed is an image change, not "no behavior change"), and a base input with no mode evidence is not a refresh
+for mode in ("000000", "100755", "120000"):
+    got = P.classify(dict(c("x", ["build/locks/melange.lock"], labels=["patch-fix"]), modes={"build/locks/melange.lock": mode}), base_inputs=P.load_base_inputs(rlist))
+    check("M1 a labelled commit that makes the base input %s is still dirty" % mode, got[0] == "dirty", got)
+got = P.classify({"sha": "x", "files": ["build/locks/melange.lock"], "labels": [], "diffs": {}, "modes": {}}, base_inputs=P.load_base_inputs(rlist))
+check("M1 a base input with no mode evidence is dirty, never a refresh", got[0] == "dirty" and "mode" in got[1], got)
+got = P.classify(dict(c("x", ["build/locks/melange.lock", "docs/a.md"], labels=["patch-fix"]), modes={"build/locks/melange.lock": "100644", "docs/a.md": "100644"}), base_inputs=P.load_base_inputs(rlist))
+check("M1 an ordinary refresh with its mode stays fix-class", got[0] == "fix", got)
+got = P.classify(dict(c("x", ["bin/x.sh"], labels=["patch-fix"], diffs={"bin/x.sh": "+echo\n"}), modes={"bin/x.sh": "100644"}), base_inputs=P.load_base_inputs(rlist))
+check("M1 the label still upgrades a not-clean commit that touches no base input (the owner's override is unchanged)", got[0] == "fix", got)
+# a merge commit is read against its first parent (the same three reads), so a base input refreshed on a side branch is judged with its mode
+mg = tempfile.mkdtemp(); g(mg, "init", "-q", "-b", "main"); os.makedirs(os.path.join(mg, "build/locks"))
+open(os.path.join(mg, "build/locks/melange.lock"), "w").write("1\n"); g(mg, "add", "-A"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"); g(mg, "tag", "v0.2.1")
+g(mg, "checkout", "-q", "-b", "side"); open(os.path.join(mg, "build/locks/melange.lock"), "w").write("2\n"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "refresh on a side branch")
+g(mg, "checkout", "-q", "main"); open(os.path.join(mg, "docs.md"), "w").write("d\n"); g(mg, "add", "-A"); g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "main moves")
+g(mg, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "merge side", "side")
+gm = P.gather_commits("v0.2.1", cwd=mg)
+mc = [x for x in gm if "build/locks/melange.lock" in x["files"] and x["modes"].get("build/locks/melange.lock")]
+check("M1 a merge commit's changed files carry their modes (read against the first parent)", len(mc) >= 1 and all(x["modes"].get("build/locks/melange.lock") == "100644" for x in mc), gm)
 # --- AC3 (immediate cut): the images of the latest release are the ones that exist for its version (v0.3.0 dropped the debug variant)
 import subprocess
 def variants(ver):

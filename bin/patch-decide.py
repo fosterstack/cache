@@ -198,9 +198,14 @@ def classify(commit, base_inputs=None):
     files, diffs, modes = commit.get("files") or [], commit.get("diffs") or {}, commit.get("modes") or {}
     kinds, why = set(), []
     base = _base_inputs(base_inputs)
+    hard = False      # a base input deleted, made executable or a symlink, or without mode evidence: no label upgrades it (an image change is not "no behavior change")
     for f in files:
-        if f in base and modes.get(f) == "000000":
-            kinds.add("dirty"); why.append("%s is deleted: a base input removed is not a refresh" % f)
+        if f in base and modes.get(f) is None:
+            kinds.add("dirty"); hard = True; why.append("%s has no mode evidence: a base input is a refresh only with its file mode known" % f)
+        elif f in base and modes.get(f) == "000000":
+            kinds.add("dirty"); hard = True; why.append("%s is deleted: a base input removed is not a refresh" % f)
+        elif f in base and modes.get(f) in ("100755", "120000"):
+            kinds.add("dirty"); hard = True; why.append("%s is executable or a symlink (mode %s): a base input is data, never a refresh when it is not" % (f, modes.get(f)))
         elif modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
             # data is not executable: Git's executable bit, a symlink, or a script's #! line (Codex #159 AC1(h), B01)
             kinds.add("dirty"); why.append("%s is executable (mode %s or a #! line), never data" % (f, modes.get(f, "?")))
@@ -236,7 +241,7 @@ def classify(commit, base_inputs=None):
             kinds.add("neutral")
         else:
             kinds.add("dirty"); why.append("%s is shipped source or configuration" % f)
-    if "dirty" in kinds and "patch-fix" in (commit.get("labels") or []):
+    if "dirty" in kinds and not hard and "patch-fix" in (commit.get("labels") or []):
         return "fix", "labelled patch-fix (no behavior change)"
     if "dirty" in kinds:
         return "dirty", "; ".join(why)
@@ -609,14 +614,14 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
-        files = [f for f in _git("show", "--format=", "--name-only", "--no-renames", sha, cwd=cwd).splitlines() if f]
+        files = [f for f in _git("show", "--format=", "--name-only", "--no-renames", "-m", "--first-parent", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
-        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--no-renames", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
+        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--no-renames", "-m", "--first-parent", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
         # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
         modes = {}
-        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd).splitlines():
+        for ln in _git("diff-tree", "-r", "-m", "--first-parent", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd).splitlines():
             meta, _, paths = ln.partition("\t")
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]

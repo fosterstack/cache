@@ -545,13 +545,13 @@ mkr q8; printf '  {"path": ".goreleaser.yaml", "sha256": "0"}\n' > "$work/q8/.gi
 expect caught "AC10 rule 61: the build-config list still pins .goreleaser.yaml" "build-config-files.json names" removed "$work/q8"
 mkr q9; printf 'jobs:\n  r:\n    steps:\n      - run: docker login ghcr.io\n' > "$work/q9/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: the rescan does not read the candidate index with crane by digest" "crane" removed "$work/q9"
-RSOK='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          crane manifest "$ref" > /tmp/index.json\n'
+RSOK='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n'
 mkr q10; printf "$RSOK" > "$work/q10/.github/workflows/main-candidate-rescan.yml"
 expect ok "fixture: a rescan that reads the candidate index with the pinned crane, by digest, passes" "" removed "$work/q10"
 # Codex 4b-4 r1 (B4, B3): the digest reference, the install order, a commented command, and the Scout job's own install
-mkr q12; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache:latest"\n          crane manifest "$ref" > /tmp/index.json\n' > "$work/q12/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: a rescan that reads the candidate by a tag reference is refused" "by digest" removed "$work/q12"
-mkr q13; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          crane manifest "$ref" > /tmp/index.json\n          ./bin/install-scanner.sh crane\n' > "$work/q13/.github/workflows/main-candidate-rescan.yml"
+mkr q12; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q12/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a rescan that reads the candidate by a tag reference is refused" "assigned exactly once" removed "$work/q12"
+mkr q13; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          ./bin/install-scanner.sh crane\n' > "$work/q13/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: crane manifest before the pinned install of that job is refused" "before the pinned install" removed "$work/q13"
 mkr q14; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          # crane manifest "$ref" (commented out)\n          echo nothing\n' > "$work/q14/.github/workflows/main-candidate-rescan.yml"
 expect caught "AC10 rule 61: a commented-out crane manifest is not a read of the candidate" "does not read the candidate index" removed "$work/q14"
@@ -560,9 +560,9 @@ expect caught "AC10 rule 61: the Scout job runs scout-root-cause.sh without inst
 mkr q16; printf "$RSOK"'  s:\n    steps:\n      - run: ./bin/install-scanner.sh crane\n      - run: bash bin/scout-root-cause.sh "$RUNNER_TEMP/rc"\n' > "$work/q16/.github/workflows/main-candidate-rescan.yml"
 expect ok "fixture: the Scout job with crane installed in its own earlier step passes" "" removed "$work/q16"
 mkr q17; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO:multi"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q17/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q17/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: the Scout probe's index append from a tag reference is refused" "built_idx is not assigned by digest" removed "$work/q17"
+expect caught "AC10 rule 61: the Scout probe's index append from a tag reference is refused" "built_idx is not assigned exactly once, by digest" removed "$work/q17"
 mkr q18; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO:att"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q18/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q18/.github/workflows/main-candidate-rescan.yml"
-expect caught "AC10 rule 61: the Scout probe's attestation manifest named by a tag is refused" "att_ref is not assigned by digest" removed "$work/q18"
+expect caught "AC10 rule 61: the Scout probe's attestation manifest named by a tag is refused" "att_ref is not assigned exactly once, by digest" removed "$work/q18"
 mkr q19; mkdir -p "$work/q19/tools/x/y"; printf 'MAP = {"goreleaser": "x"}\n' > "$work/q19/tools/x/y/helper.py"
 expect caught "AC10 rule 61: a nested script anywhere under tools/ that names goreleaser is a reader" "tools/x/y/helper.py names" removed "$work/q19"
 AG=".github/ag"ent      # assembled: the layout check refuses a file outside the agent folder that spells it out
@@ -570,6 +570,19 @@ mkr q20; mkdir -p "$work/q20/$AG/auditor"; printf 'run: docker buildx build .\n'
 expect caught "AC10 rule 61: a script under the agent folder (outside the judges' own directories) that names buildx is a reader" "auditor/step.sh names" removed "$work/q20"
 mkr q21; mkdir -p "$work/q21/$AG/supply-chain"; printf 'MAP = {"buildx": "docker/buildx"}\n' > "$work/q21/$AG/supply-chain/pin-age-check.py"
 expect ok "fixture: the supply-chain judges' own tool tables (a documented exclusion) may name the tools they recognise" "" removed "$work/q21"
+mkr q22; mkdir -p "$work/q22/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(["goreleaser", "build"])\n' > "$work/q22/$AG/supply-chain/helper.py"
+expect caught "AC10 rule 61: a NEW file in the supply-chain judges' directory that names goreleaser is scanned like any other" "supply-chain/helper.py names" removed "$work/q22"
+mkr q23; mkdir -p "$work/q23/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(["docker", "buildx", "build", "."])\n' > "$work/q23/$AG/supply-chain/pin-age-check.py"
+expect caught "AC10 rule 61: a judge file that names buildx beside a way to run a program is a finding (its tables name tools, they never start them)" "beside a way to run a program" removed "$work/q23"
+RSX='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then exit 1; fi\n'
+mkr q24; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          command crane manifest "ghcr.io/o/cache:latest" || true\n' > "$work/q24/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a second crane form beside the approved manifest read (command crane manifest ... :latest) is refused" "other than the pinned install" removed "$work/q24"
+mkr q25; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q25/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the reference reassigned to a tag after the digest assignment is refused" "assigned exactly once" removed "$work/q25"
+mkr q26; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          crane manifest "ghcr.io/o/cache:latest" > /tmp/index.json\n' > "$work/q26/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a redirected tag-based manifest read is an unrecognised crane form" "other than the pinned install" removed "$work/q26"
+mkr q27; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$PROBE_REPO:latest" -m "$att_ref" -t "$built_ref"\n' > "$work/q27/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q27/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: an index append from a literal tag is refused (the one approved append names the variables)" "other than the one index append" removed "$work/q27"
 mkr q11; printf 'DENY = "docker buildx goreleaser"\n' > "$work/q11/bin/chain-release-shape.py"
 expect ok "fixture: the deny list of a judge may name the removed tools (it refuses them)" "" removed "$work/q11"
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
@@ -587,7 +600,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=238
+EXPECT=244
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
