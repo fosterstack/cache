@@ -175,8 +175,10 @@ def expected(d, kind, which, tag):
 
 # ---- the fakes: what the real cache scripts and chain-verify.py would do, reduced to what a stage script can observe ----------------
 FAKE_ADMIT = '''#!/usr/bin/env python3
-import os, subprocess, sys
+import json, os, subprocess, sys
 open("calls.log", "a").write("admit gh=%s\\n" % ("yes" if os.environ.get("GH_TOKEN") else "no"))
+json.dump({"tag": os.environ.get("GITHUB_REF_NAME", "v0.3.0"), "sha": os.environ.get("GITHUB_SHA", "0" * 40), "baseline_version": os.environ.get("GITHUB_REF_NAME", "v0.3.0"),
+           "baseline": "requirements/releases/%s.yaml" % os.environ.get("GITHUB_REF_NAME", "v0.3.0")}, open("admission.json", "w"))      # what the real admission writes at the repository root
 subprocess.run(["gh", "api", "repos/fosterstack/cache/commits/0123/check-runs"])      # the admission reads (GET only); the fake gh logs the call to gh.log
 sys.exit(int(os.environ.get("FAKE_ADMIT_RC", "0")))
 '''
@@ -302,6 +304,11 @@ if cmd == "policy":
 if cmd in ("verify", "stage-start"):
     if rc: sys.stderr.write("refused at build: identity (fake)\\n")
     sys.exit(rc)
+if cmd == "admission-baseline":     # REQ-CHAIN-007-AC19: the baseline admission chose, from both legs, as a file of Build's own record (the real one is bin/chain_items.py)
+    legs = [json.load(open(a[i + 1])) for i, x in enumerate(a) if x == "--admission"]
+    if len(legs) != 2 or legs[0] != legs[1]: sys.stderr.write("refused at build: admission-baseline: the two legs disagree\\n"); sys.exit(1)
+    json.dump({k: legs[0][k] for k in ("tag", "sha", "baseline_version", "baseline")}, open(arg("--out"), "w"), sort_keys=True, indent=1)
+    sys.exit(0)
 if cmd == "bind":       # every file under --dir must be a product of the record: the harness wrote the table .bind/<path with / as _>
     bad = []
     for root, _, files in os.walk(arg("--dir")):
@@ -368,6 +375,8 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
         for r, arch, _ in RUNNERS:                   # the downloaded artifacts, laid out as upload-artifact rooted at `out` lays them out
             files = out_files(arch, tag)
             files["items-apk.json"] = json.dumps(fragment(arch, tag)).encode()
+            if kind == "assemble":      # each release apk leg copies its admission.json into out/ (REQ-CHAIN-007-AC19)
+                files["admission.json"] = json.dumps({"tag": tag, "sha": "0" * 40, "baseline_version": tag, "baseline": "requirements/releases/%s.yaml" % tag}).encode()
             for rel, b in files.items():
                 write("%s/%s/%s/%s" % (d, pre, r, rel), b)
                 write("%s/.bind/%s" % (d, ("%s/%s/%s" % (pre, r, rel)).replace("/", "_")), sha(b))

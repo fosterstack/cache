@@ -15,7 +15,7 @@
 #       stated limit of the proof. The script writes only the RAW MATERIAL of each attempt (a file) under attempts/, and never
 #       writes an outcome: the words refused/accepted/outcome do not appear in its code, so it cannot grade itself.
 #   DRY-RUN REF (round 5, decided here): production `sign --check` makes the per-tag policy from the template only when
-#       GITHUB_REF is refs/tags/vX.Y.Z (not -rc1, not refs/tags/x, not a branch): chain-verify-test.sh pins those refusals.
+#       GITHUB_REF is refs/tags/vX.Y.Z or refs/tags/vX.Y.Z-rcN (not refs/tags/x, not a branch): chain-verify-test.sh pins those refusals.
 #       The dry run is a workflow_dispatch on a BRANCH (or the throwaway hostile-proof/* ref), so `sign --check` has ONE more
 #       behaviour, chosen by the run, not by a flag the workflow can add (a workflow_dispatch on a TAG is refused outright, step-8
 #       SF-4: production tag runs come from a push): when GITHUB_EVENT_NAME is workflow_dispatch and GITHUB_REF is a branch, the policy is made for THAT ref (`policy make --ref "$GITHUB_REF"`), the written provenance carries
@@ -1202,9 +1202,10 @@ d=$(mk w_pmother); printf 'on: {workflow_call: {}}\njobs:\n  x:\n    runs-on: ub
 d=$(mk w_rekorstub); pymut "$(rel "$d")" " --rekor-stub provenance/provenance.rekor.json" ""; wexpect caught "wiring: the positive control runs without the Rekor stub (it would be refused 'rekor', or pass by a shortcut)" "$d"
 d=$(mk w_nowflag); pymut "$(rel "$d")" "--record attempts/forge_provenance.json --policy policy.json" "--record attempts/forge_provenance.json --policy policy.json --now \"\$NOW\""; wexpect caught "wiring: an attempt's verify line takes --now from the environment (the pinned line has none)" "$d"
 wexpect ok "the real repository's hostile wiring (RED until PR 1 implements it)" "$root"
-# AC5's runtime proof has a fixed place (advisor accepted Oct 10, lane AC; moved to a signed rc-tag run, advisor 0383): a green rc-tag run is linked
-# before the cutover pull request merges chain-v030 to main, and no v0.3.0 tag is pushed without one of the same commit's chain files; the REQ-CHAIN-001 notes carry the CUTOVER CHECKLIST line so it cannot be forgotten
-python3 - "$root/requirements/requirements.yaml" <<'PY' 2>&1 && ok "001-AC5 the AC names when its GitHub proof runs (a signed rc-tag run, before the cutover pull request to main) and the notes carry the CUTOVER CHECKLIST line" || bad "001-AC5 the AC text or the CUTOVER CHECKLIST note does not place the GitHub proof"
+# AC5's runtime proof has a fixed place (advisor accepted Oct 10, lane AC; moved to a signed rc-tag run, advisor 0383; order changed Oct 12): the rc-tag run is
+# cut on main after the cutover pull request has merged, its green run is linked, and no final or patch tag is cut before the marker of REQ-CHAIN-001-AC6 records it;
+# the REQ-CHAIN-001 notes carry the CUTOVER CHECKLIST line so it cannot be forgotten
+python3 - "$root/requirements/requirements.yaml" <<'PY' 2>&1 && ok "001-AC5 the AC names when its GitHub proof runs (a signed rc-tag run on main after the cutover pull request, before any final or patch tag) and the notes carry the CUTOVER CHECKLIST line" || bad "001-AC5 the AC text or the CUTOVER CHECKLIST note does not place the GitHub proof"
 import sys, yaml
 reqs = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
 r = reqs["REQ-CHAIN-001"]
@@ -1243,9 +1244,9 @@ if openssl genpkey -algorithm ed25519 -out "$kd/home/planted.pem" > /dev/null 2>
   want_h=$(openssl pkey -in "$kd/home/planted.pem" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)
   printf 'plain text\n' > "$kd/rt/other.txt"
   fn_of() { awk '/^attempt_read_sign_key\(\) \{/{p=1} p{print} p&&/^\}/{exit}' "$1"; }
-  run_key() { # run_key SCRIPT-TEXT-FILE: the function body of that file, run where HOME and RUNNER_TEMP are the probe directories
+  run_key() { # run_key SCRIPT-TEXT-FILE: the function body of that file, run with the probe directories as its search roots
     rm -rf "$kd/run/attempts"; mkdir -p "$kd/run/attempts"
-    ( cd "$kd/run" && HOME="$kd/home" RUNNER_TEMP="$kd/rt" bash -c "$(fn_of "$1"); attempt_read_sign_key" > /dev/null 2>&1 ) || true
+    ( cd "$kd/run" && bash -c "$(fn_of "$1"); attempt_read_sign_key \"$kd/home\" \"$kd/rt\"" > /dev/null 2>&1 ) || true
     cat "$kd/run/attempts/read_sign_key.txt" 2> /dev/null
   }
   kt=$(run_key "$root/bin/chain-hostile-step.sh")

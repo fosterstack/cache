@@ -73,11 +73,13 @@ attempt_read_sign_token() {
 # of files searched (a search of nothing proves nothing); the verifier compares the hashes with Sign's certificate.
 # The workspace is not searched: it holds this repository, whose test files contain key-shaped text.
 attempt_read_sign_key() {
-  local f
+  # the search roots are the arguments; the call below passes none, which means the four runner locations (the offline test passes its own directories)
+  local f roots=("$@")
+  [ "${#roots[@]}" -gt 0 ] || roots=("${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm)
   {
     echo "# transcript: searched HOME, RUNNER_TEMP, /tmp and /dev/shm for private key files and recorded the sha256 of each one's public key"
-    echo "searched: $(grep -rIl '' "${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm 2> /dev/null | wc -l | tr -d ' ') files"
-    for f in $(grep -rIl -e 'BEGIN [A-Z ]*PRIVATE KEY' "${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm 2> /dev/null | head -50); do
+    echo "searched: $(grep -rIl '' "${roots[@]}" 2> /dev/null | wc -l | tr -d ' ') files"
+    for f in $(grep -rIl -e 'BEGIN [A-Z ]*PRIVATE KEY' "${roots[@]}" 2> /dev/null | head -50); do
       printf 'pubkey-sha256: %s\n' "$(openssl pkey -in "$f" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)"
     done
   } > attempts/read_sign_key.txt

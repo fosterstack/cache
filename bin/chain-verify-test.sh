@@ -886,6 +886,13 @@ add("bi_material", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("b
 add("bi_wrongstage", STAGES["check"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
 add("bi_othertag", STAGES["build"], T2, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")))
 add("bi_unsigned", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json")), signed=False)
+# REQ-CHAIN-007-AC19 (advisor ruling B): admission-baseline.json is a second product of Build's record, bound by `bind-items --product admission-baseline.json`
+dj("admission-baseline.json", {"baseline": "requirements/releases/v0.3.0.yaml", "baseline_version": "v0.3.0", "sha": "c" * 40, "tag": "v0.3.1"})
+dj("admission-baseline-other.json", {"baseline": "requirements/releases/v0.2.0.yaml", "baseline_version": "v0.2.0", "sha": "c" * 40, "tag": "v0.3.1"})
+_PADM = {"name": PRD + "admission-baseline.json", "digest": {"sha256": _fsha("admission-baseline.json")}}
+add("bi_adm", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM]))
+add("bi_adm_dup", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [_PADM, dict(_PADM, digest={"sha256": _fsha("admission-baseline-other.json")})]))
+add("bi_adm_material", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_coll("build", _prods("items.json") + [dict(_PADM, name=MAT + "admission-baseline.json")]))
 def _chk(name, step, wf=None, ref=T, digests="digests.json", signed=True, subj=None):
     wf = wf or STAGES["check"]
     add(name, wf, ref, COLL, None, stmt="v0.1", signed=signed,
@@ -1969,6 +1976,16 @@ expect_refuse "PR4 bind-items: a material subject of the same name does not coun
 expect_refuse "PR4 bind-items: a record signed by another stage's file is refused" "build|stage-verify.yml" $(BI bi_wrongstage)
 expect_refuse "PR4 bind-items: a record of another tag is refused" "build|v0.3.1" $(BI bi_othertag)
 expect_refuse "PR4 bind-items: an unsigned record is refused" "build|signature" $(BI bi_unsigned)
+# REQ-CHAIN-007-AC19 (advisor ruling B, Oct 12): the same binding for a second product of Build's record, named by --product (default items.json)
+BP() { echo bind-items --policy "$work/policy.json" --now "$NOW" --record "$work/$1.json" --items "$work/${2:-admission-baseline}.json" --product "${3:-admission-baseline.json}"; }
+expect_ok     "AB bind-items --product: admission-baseline.json equal to its product of Build's verified record is accepted" $(BP bi_adm)
+expect_refuse "AB bind-items --product: a baseline file that is not the one Build's record holds is refused" "build|admission-baseline.json|digest" $(BP bi_adm admission-baseline-other)
+expect_refuse "AB bind-items --product: a record with no admission-baseline.json product (items.json only) is refused" "build|admission-baseline.json" $(BP bi_ok)
+expect_refuse "AB bind-items --product: two products of that name are refused" "build|admission-baseline.json" $(BP bi_adm_dup)
+expect_refuse "AB bind-items --product: a material subject of that name does not count as the product" "build|admission-baseline.json" $(BP bi_adm_material)
+expect_refuse "AB bind-items --product: items.json is still bound under its own name (the default product)" "build|items.json|digest" $(BI bi_adm items-other)
+expect_refuse "AB bind-items --product: a product name with a slash is refused" "build|product" $(BP bi_adm admission-baseline ../items.json)
+expect_refuse "AB bind-items --product: a record signed for another tag is refused for the baseline file too" "build|v0.3.1" $(BP bi_othertag)
 CLS() { echo check-list --policy "$work/policy.json" --now "$NOW" --digests "$work/${2:-digests}.json" --dir "$work/$1"; }
 expect_ok     "PR4 check-list: exactly scanners, acceptance, runtime and arm64, each verified, each for Build's digests, is accepted" $(CLS cl_ok)
 expect_refuse "PR4 check-list: a missing record (arm64) is refused, naming Check and the record" "check|arm64|missing" $(CLS cl_missing)
@@ -2191,7 +2208,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=792
+EXPECT=800
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

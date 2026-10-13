@@ -8,6 +8,8 @@ python3 bin/chain-verify.py verify --stage build --record rec-apk/ubuntu-24.04/a
 python3 bin/chain-verify.py verify --stage build --record rec-apk/ubuntu-24.04-arm/apk-collection.json --policy policy.json
 python3 bin/chain-verify.py bind --step apk --record rec-apk/ubuntu-24.04/apk-collection.json --dir apk/ubuntu-24.04 --as out
 python3 bin/chain-verify.py bind --step apk --record rec-apk/ubuntu-24.04-arm/apk-collection.json --dir apk/ubuntu-24.04-arm --as out
+# the baseline admission chose (both legs, verified by the binds above) becomes a file of Build's own record, which Release verifies (REQ-CHAIN-007-AC19)
+python3 bin/chain-verify.py admission-baseline --admission apk/ubuntu-24.04/admission.json --admission apk/ubuntu-24.04-arm/admission.json --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA" --out admission-baseline.json
 mkdir -p melange-repo
 cp -R apk/ubuntu-24.04/x86_64 melange-repo/x86_64
 cp -R apk/ubuntu-24.04-arm/aarch64 melange-repo/aarch64
