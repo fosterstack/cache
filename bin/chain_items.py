@@ -28,7 +28,7 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 ARCHES = {"x86_64": "amd64", "aarch64": "arm64"}            # the apk architecture name -> the image and archive name
 IMAGES = {"production": "standard", "fips": "fips"}         # image -> apk variant
 TOKEN_NAMES = ("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "ACTIONS_RUNTIME_URL",
-               "GH_TOKEN", "GITHUB_TOKEN")
+               "GH_TOKEN", "GITHUB_TOKEN", "SIGSTORE_ID_TOKEN")
 
 
 # ---- the names a record may carry (REQ-CHAIN-004-AC13 and AC15; REQ-CHAIN-005-AC7) ----------------------------------------------------------

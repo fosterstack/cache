@@ -510,6 +510,9 @@ hm fcat    "AC2 the token read through a second process substitution" '<(printf 
 hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout -k 20 540 bash "$@"' '-- timeout -k 20 540 bash "$@" || true'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
+hm sigall "AC15 a helper that gives the sigstore token to every step but one (not to release-sign alone) is refused" 'if [ "$step" = release-sign ]; then sig=' 'if [ "$step" != apk ]; then sig='
+hm signomask "AC15 a helper that exports the sigstore token without masking it is refused" 'echo "::add-mask::$sig"; export' 'export'
+hm signofail "AC15 a helper that does not stop on an empty sigstore token is refused" '[ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; ' ''
 hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
@@ -1965,7 +1968,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=670
+EXPECT=673
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

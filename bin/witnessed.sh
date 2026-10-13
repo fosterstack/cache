@@ -11,6 +11,8 @@
 #  - The command runs under `timeout -k 20 540`: Fulcio's keyless certificate lives ten minutes and Witness checks it at the timestamp's time; a command that
 #    ignores the TERM at 540 seconds is killed 20 seconds later, so it cannot hold the job past the certificate.
 #  - Attestors: environment, git, material and product only (never github, whose record embeds the raw token, and never slsa: Sign's alone).
+#  - The step release-sign ALONE also gets one more token, audience sigstore, masked, as SIGSTORE_ID_TOKEN (cosign's keyless signing reads it); the request
+#    variables stay unset for every child, and a failed or empty fetch stops the helper before anything runs (REQ-CHAIN-007-AC15).
 #  - The sensitive-key list keeps out of the record the identity-token variables, the job token and Release's three credential names (REQ-CHAIN-007-AC12).
 #  - Witness runs from the repository root (no working-directory flag), so product subjects are named relative to it.
 # The exact text of this file is judged by bin/chain-test-shape.py (helper), whose Check copy follows it; change both together together.
@@ -21,6 +23,7 @@ case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk
 mkdir -p "witness-${step#snapshot-}"
 tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
 echo "::add-mask::$tok"
+if [ "$step" = release-sign ]; then sig=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value); [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; echo "::add-mask::$sig"; export SIGSTORE_ID_TOKEN="$sig"; fi
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 exec witness run --step "$step" \
@@ -38,4 +41,5 @@ exec witness run --step "$step" \
   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY \
   --env-add-sensitive-key DOCKERHUB_USERNAME \
   --env-add-sensitive-key DOCKERHUB_TOKEN \
+  --env-add-sensitive-key SIGSTORE_ID_TOKEN \
   -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"

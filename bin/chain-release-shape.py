@@ -330,7 +330,7 @@ def record(path, values):
         text = raw + "\n" + payload
     except Exception:
         return ["not a DSSE envelope with a base64 payload"]
-    for n in sorted(CREDS | {"ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN"}):
+    for n in sorted(CREDS | {"ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_RUNTIME_TOKEN", "SIGSTORE_ID_TOKEN"}):
         if n in text:
             bad.append("the record names %s" % n)
     for v in values:

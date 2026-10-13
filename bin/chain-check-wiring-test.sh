@@ -125,6 +125,7 @@ case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk
 mkdir -p "witness-${step#snapshot-}"
 tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
 echo "::add-mask::$tok"
+if [ "$step" = release-sign ]; then sig=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value); [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; echo "::add-mask::$sig"; export SIGSTORE_ID_TOKEN="$sig"; fi
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 exec witness run --step "$step" \\
@@ -142,6 +143,7 @@ exec witness run --step "$step" \\
   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY \\
   --env-add-sensitive-key DOCKERHUB_USERNAME \\
   --env-add-sensitive-key DOCKERHUB_TOKEN \\
+  --env-add-sensitive-key SIGSTORE_ID_TOKEN \\
   -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"
 """)
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]

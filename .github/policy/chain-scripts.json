@@ -94,7 +94,7 @@
       "runs": [],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "7f553e309f35b9a7801aad6b3bf8db3f6fa649b05d34ba685f03dd2d9e5b576b",
+      "sha256": "248e328e2196cf0d613db10024e5c2b3525e08278dbab3fce482e820b442f70e",
       "reads_env": [
         "GH_TOKEN",
         "APK_RELEASE_SIGNING_KEY",
@@ -124,7 +124,7 @@
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
           "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
         },
         {
@@ -288,7 +288,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "6d69d9dd3950648f903b53bbbe4ad58dc17effb1f9f8c81924a7a42bb922b6b0"
+      "sha256": "8fcac5942ebdf510b8edd15536cc7e3a90c769d36aad3eb6a58e8e73c6423a01"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
