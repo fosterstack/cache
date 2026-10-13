@@ -612,7 +612,7 @@ mappings:
   - ac: REQ-SCAN-015-AC3
     evidence:
       - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
-      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the default branch's scanner guard over every PR head read as git objects (SCAN_GUARD_JUDGE_GIT); the guard script is review-gated (required check auditor-review-gate)" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the default branch's scanner guard over every PR head read as git objects (SCAN_GUARD_JUDGE_GIT); the second review that a change to the guard script needs is enforced outside this repository by the private review tooling (REQ-AUD-018 note); the required check auditor-review-gate judges no review record" }
   - ac: REQ-SCAN-009-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }

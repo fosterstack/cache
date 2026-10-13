@@ -943,6 +943,8 @@ The two workflow files that carry the scanner cloud identities (scan.yml and mai
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; .github/workflows/main-candidate-rescan.yml; bin/scan-no-workflow-call-test.sh*
 
+> The review record that AC3's last clause names is not judged by this repository's gate: the trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's pin checker, allowlist guard, pin-wiring judge and this scanner guard over the head as git objects and judges no review record (the record mechanism was retired with the gate rewrite, cache#303). The second review that a change to bin/scan-no-workflow-call-test.sh needs is enforced outside this repository by the private review tooling before merge (the same reading as REQ-AUD-018 AC3); that the main branch ruleset REQUIRES the check is not checkable from the repository and is an inspection item for the owner's settings. The guard rejects a repeated mapping key and any file it cannot read as one workflow document (fail closed), because a later key would otherwise hide an earlier declaration.
+
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
 | REQ-SCAN-015-AC1 | Given the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml); when the repository's workflows are read; then neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check | ci-workflow |  | approved | 1 item(s) |

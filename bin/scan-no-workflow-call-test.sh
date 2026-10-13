@@ -26,8 +26,23 @@ GUARDED_STEMS = ("scan", "main-candidate-rescan")
 bad = []
 
 def read(path):
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:   # undecodable bytes raise: an unreadable file fails closed
         return fh.read()
+
+class StrictLoader(yaml.BaseLoader):
+    """BaseLoader that refuses a mapping with a repeated key: the later value would silently replace the earlier
+    one, hiding a declaration (`on: workflow_call` then `on: push`) from every check below."""
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _value in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.YAMLError("duplicate mapping key %r" % (key,))
+            seen.add(key)
+        return super().construct_mapping(node, deep)
+
+def load(text):
+    return yaml.load(text, Loader=StrictLoader) or {}
 
 def triggers(on):
     if isinstance(on, dict):
@@ -43,7 +58,7 @@ def check_guarded(name, text):
             return "%s uses a YAML anchor or alias" % name
         if isinstance(ev, yaml.ScalarEvent) and ev.value == "<<":
             return "%s uses a YAML merge key" % name
-    doc = yaml.load(text, Loader=yaml.BaseLoader) or {}
+    doc = load(text)
     if not isinstance(doc, dict) or "on" not in doc:
         return "%s has no literal top-level `on` key" % name
     found = triggers(doc["on"])
@@ -82,7 +97,10 @@ for name in ALLOWED:
     if not os.path.exists(path):
         bad.append("%s is missing" % name)
         continue
-    problem = check_guarded(name, read(path))
+    try:
+        problem = check_guarded(name, read(path))
+    except Exception as exc:   # unreadable, undecodable, unparsable, several documents, a repeated key: fail closed
+        problem = "%s cannot be read as one workflow document: %s" % (name, str(exc).splitlines()[0] if str(exc) else type(exc).__name__)
     if problem:
         bad.append(problem)
 
@@ -94,7 +112,11 @@ if os.path.isdir(wf_dir):
 for dirpath, _dirs, names in os.walk(os.path.join(tree, ".github", "actions")):
     files += [os.path.join(dirpath, n) for n in names if n.lower() in ("action.yml", "action.yaml")]
 for path in sorted(files):
-    doc = yaml.load(read(path), Loader=yaml.BaseLoader) or {}
+    try:
+        doc = load(read(path))
+    except Exception as exc:
+        bad.append("%s cannot be read as one workflow document: %s" % (os.path.relpath(path, tree), str(exc).splitlines()[0] if str(exc) else type(exc).__name__))
+        continue
     for value in uses_values(doc):
         if calls_guarded(value):
             bad.append("%s calls %s" % (os.path.relpath(path, tree), value.strip()))
@@ -147,11 +169,11 @@ fi
 # self-tests, so a missing git-object mode cannot recurse
 [ -z "${SCAN_GUARD_NESTED:-}" ] || { echo "scan guard: a nested run reached the self-tests (no git-object mode)" >&2; exit 2; }
 
-expect() { # expect ok|caught LABEL TREE
+expect() { # expect ok|caught LABEL TREE ['text the refusal must contain']
   local out rc=0
   out=$(judge "$3") || rc=$?
   if [ "$1" = ok ] && [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   $2"
-  elif [ "$1" = caught ] && [ "$rc" != 0 ]; then pass=$((pass + 1)); echo "ok   $2 (caught: $out)"
+  elif [ "$1" = caught ] && [ "$rc" != 0 ] && [[ "$out" == *"${4:-}"* ]]; then pass=$((pass + 1)); echo "ok   $2 (caught: $out)"
   else failn=$((failn + 1)); echo "FAIL $2 -> $out"; fi
 }
 
@@ -223,6 +245,19 @@ expect caught "scan.yml: empty on:" "$(mutate a8 .github/workflows/scan.yml $'on
 expect caught "scan.yml: an anchor elsewhere in the file" "$(mutate a9 .github/workflows/scan.yml $'on:\n  pull_request:\nenv: &e\n  A: b\njobs:\n  s:\n    runs-on: ubuntu-latest\n    env: *e\n    steps:\n      - run: echo')"
 expect ok "scan.yml: pull_request with a branch filter and push with tags stays allowed" "$(mutate a10 .github/workflows/scan.yml $'on:\n  pull_request:\n  push:\n    branches: [main]\n    tags: [\'v*\']\njobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo')"
 
+# 2d. YAML forms that could hide a declaration from a reader (fail closed, each refusal names its reason)
+GOODJOB=$'jobs:\n  s:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo'
+expect caught "scan.yml: on as a block list holding workflow_call" "$(mutate y1 .github/workflows/scan.yml "on:"$'\n  - push\n  - workflow_call\n'"$GOODJOB")" "workflow_call"
+expect caught "scan.yml: a double-quoted workflow_call key" "$(mutate y2 .github/workflows/scan.yml "on:"$'\n  pull_request:\n  "workflow_call":\n'"$GOODJOB")" "workflow_call"
+expect caught "scan.yml: an escaped workflow_call key (\\x5f for the underscore)" "$(mutate y3 .github/workflows/scan.yml "on:"$'\n  pull_request:\n  "workflow\\x5fcall":\n'"$GOODJOB")" "workflow_call"
+expect caught "scan.yml: on: workflow_call, then on: push (a repeated key)" "$(mutate y4 .github/workflows/scan.yml "on: workflow_call"$'\non: push\n'"$GOODJOB")" "duplicate mapping key"
+expect caught "scan.yml: jobs repeated, the first one calls nothing, the second is clean" "$(mutate y5 .github/workflows/scan.yml "on: push"$'\n'"$GOODJOB"$'\n'"$GOODJOB")" "duplicate mapping key"
+expect caught "other.yml: uses repeated, the later value is clean" "$(mutate y6 .github/workflows/other.yml $'name: o\non: push\njobs:\n  b:\n    uses: ./.github/workflows/scan.yml\n    uses: ./.github/workflows/stage-build.yml')" "duplicate mapping key"
+expect caught "scan.yml: a second document in the file carries workflow_call" "$(mutate y7 .github/workflows/scan.yml "on: push"$'\n'"$GOODJOB"$'\n---\non: workflow_call\n')" "cannot be read as one workflow document"
+expect caught "scan.yml: malformed YAML" "$(mutate y8 .github/workflows/scan.yml $'on: [push\njobs: {')" "cannot be read as one workflow document"
+expect caught "scan.yml: bytes that are not UTF-8" "$(t=$(fixture y9); printf 'on: push\n# \xff\xfe\n' > "$t/.github/workflows/scan.yml"; echo "$t")" "cannot be read as one workflow document"
+expect caught "other.yml: a neighbour workflow that cannot be parsed" "$(mutate y10 .github/workflows/other.yml $'name: o\non: [push\njobs: {')" "other.yml cannot be read"
+
 # 3. the guarded files themselves must exist (a renamed file would silently escape the check)
 expect caught "scan.yml is missing" "$(t=$(fixture r1); rm "$t/.github/workflows/scan.yml"; echo "$t")"
 expect caught "main-candidate-rescan.yml is missing" "$(t=$(fixture r2); rm "$t/.github/workflows/main-candidate-rescan.yml"; echo "$t")"
@@ -289,7 +324,7 @@ gitjudge caught "a blob sha is refused" blobobj ':' '' '' 'git rev-parse HEAD:.g
 gitjudge ok     "a lightweight tag's sha is the commit itself and passes" lighttag ':' "$TAGIT" '' 'git rev-parse lt'
 gitjudge caught "a 64-hex name that is not in the repository is refused" norev64 ':' '' "$(printf '0%.0s' {1..64})" '' 'is not a commit'
 
-EXPECT=63
+EXPECT=73
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
