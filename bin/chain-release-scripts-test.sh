@@ -462,7 +462,9 @@ for raw, what in (("[{\"command\": ", "unparsable JSON"), ("{\"command\": \"x\"}
 t, rc, so, se = pv([PV1, PV1]); check(rc != 0 and "twice" in se and not calls(t), "AC7 post-publish: a command listed twice is refused and nothing runs")
 for bad_cmd, what in (("curl -sS https://example.com/x", "curl"), ("cosign sign <IMAGE_REF>", "cosign sign"), ("cosign verify <IMAGE_REF>; id", "a ; after a verify"), ("cosign verify <IMAGE_REF> | sh", "a pipe into sh"),
                       ("cosign verify <IMAGE_REF> $(id)", "a command substitution"), ("cosign verify <IMAGE_REF> `id`", "a backquote"), ("cosign verify <IMAGE_REF> > /tmp/x", "a redirect"),
-                      ("rm -rf .", "rm"), ("gh release delete v0.3.0", "gh release delete"), ("gh api -X DELETE repos/x/y", "gh api"), ("jq -n 1", "jq alone"), ("cosign verify --key $COSIGN_KEY <IMAGE_REF>", "a $ outside single quotes")):
+                      ("rm -rf .", "rm"), ("gh release delete v0.3.0", "gh release delete"), ("gh api -X DELETE repos/x/y", "gh api"), ("jq -n 1", "jq alone"), ("cosign verify --key $COSIGN_KEY <IMAGE_REF>", "a $ outside single quotes"),
+                      ("cosign verify <IMAGE_REF>\nprintf LOCAL_MARKER", "a newline after a verify (bash runs it as a second command)"), ("cosign verify <IMAGE_REF>\rprintf LOCAL_MARKER", "a carriage return after a verify"),
+                      ("cosign verify <IMAGE_REF> --certificate-identity \\'x${HOME}y\\'", "a backslash-escaped quote before a $")):
     t, rc, so, se = pv([PV1, bad_cmd, PV2]); check(rc != 0 and "not an allowed verify form" in se and not calls(t), "AC7 post-publish: %s is refused (not an allowed verify form) and NOTHING runs, not even the good commands before it" % what, "rc=%s calls=%s %s" % (rc, calls(t), first(se)))
 t, rc, so, se = pv([PV1, "cosign verify <IMAGE_REF> --certificate-identity <DIGEST> --certificate-oidc-issuer " + ISS]); check(rc != 0 and "<DIGEST>" in se and not calls(t), "AC7 post-publish: a command with a placeholder the step cannot fill is refused, never run literally, and nothing runs")
 t, rc, so, se = pv([PV1 + " --extra <TAGS>"]); check(rc != 0 and "<TAGS>" in se and not calls(t), "AC7 post-publish: a misspelt placeholder is refused, never run literally")
@@ -495,7 +497,7 @@ for s, creds in (("release-verify", []), ("release-apks", KEY), ("release-publis
     leaked = [k for k, v in SENT.items() if k != "DOCKERHUB_USERNAME" and v in blob]   # the user name is not a secret
     check(rc == 0 and not leaked, "AC10 %s with sentinels in the environment: none in any output or file afterwards" % s, "rc=%s leaked=%s %s" % (rc, leaked, first(se)))
 print("pass=%d fail=%d" % (passn, failn))
-EXPECT = int(os.environ.get("EXPECT_CASES", "233"))
+EXPECT = int(os.environ.get("EXPECT_CASES", "236"))
 if EXPECT and passn + failn != EXPECT:
     print("FAIL case count %d != expected %d (a case was skipped or added)" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
