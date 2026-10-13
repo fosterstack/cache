@@ -279,7 +279,7 @@ def check_marker(marker_path, rev, repo):
     if at_rc != m["chain_sha256"]:
         refuse("bytes: the rc tag's commit %s holds other chain files (hash %s) than the marker names (%s): the rc run did not run these bytes"
                % (rc_commit, at_rc, m["chain_sha256"]))
-    return m
+    return dict(m, rc_commit=rc_commit)      # the commit the rc tag names now: the verifier binds the commit Sign's provenance was built from to it
 
 
 def main(argv):

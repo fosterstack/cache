@@ -103,6 +103,9 @@ if len(gated) != 3 or ungated:
 if wait and gated and names.index(wait[0].get("name")) > min(names.index(g) for g in gated if g in names):
     bad.append("the wait comes after signing")
 co = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+# the checkout supplies the code the marker gate runs: no other repository, ref or path, no env, nothing beyond the two reviewed inputs
+if len(co) != 1 or set(co[0]) - {"name", "uses", "with"} or set(co[0].get("with") or {}) != {"fetch-depth", "persist-credentials"}:
+    bad.append("decide's checkout has keys or inputs beyond uses and with fetch-depth/persist-credentials (a repository, ref, path or env would change whose code runs): %s" % (co[0] if co else None))
 if not co or (co[0].get("with") or {}).get("fetch-depth") != "0":
     bad.append("decide's checkout is shallow (a queued run must see every tag, including the earlier run's)")
 if not co or (co[0].get("with") or {}).get("persist-credentials") != "false":

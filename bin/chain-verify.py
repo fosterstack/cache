@@ -1017,6 +1017,11 @@ def cmd_rc_proof(a):
         want_run = "https://github.com/%s/actions/runs/%s" % (a.repository, marker["run_id"])
         if inv != want_run:
             refuse("marker", "run: the marker names run %s of the repository %s but Sign's provenance names the run %r" % (marker["run_id"], a.repository, inv))
+        # the commit the provenance was built from is the rc tag's commit as the repository holds it now: a moved or recreated tag cannot borrow the run of its earlier commit
+        deps = (((pstmt.get("predicate") or {}).get("buildDefinition") or {}).get("resolvedDependencies"))
+        srcs = [(d.get("digest") or {}).get("gitCommit") for d in deps if isinstance(d, dict)] if isinstance(deps, list) else []
+        if srcs != [marker["rc_commit"]]:
+            refuse("marker", "built: Sign's provenance names the built commit(s) %r but the rc tag %s is at %s" % (srcs, marker["rc_tag"], marker["rc_commit"]))
         err = io.StringIO()
         try:
             with contextlib.redirect_stderr(err), contextlib.redirect_stdout(quiet):

@@ -2145,8 +2145,8 @@ expect_refuse "AC6 rc-proof: a marker for other bytes is refused before any reco
 expect_refuse "AC6 rc-proof: a missing marker file is refused" "marker|missing" $(RCP rc_ok "$C2" "$work/no-such-marker.json")
 expect_refuse "AC6 rc-proof: an rc tag that is not an ancestor of the commit is refused" "marker|ancestor" $(RCP rc_ok "$C2" "$work/marker-rc2.json")
 expect_refuse "AC6 rc-proof: a final tag in the marker is refused" "marker|rc_tag" $(RCP rc_ok "$C2" "$work/marker-final.json")
-expect_refuse "AC6 rc-proof: Sign's provenance whose source commit is not the rc tag's commit (a moved or recreated tag) is refused naming the commit" "marker|source|commit" $(RCP rc_othersrc)
-expect_refuse "AC6 rc-proof: Sign's provenance that names no source commit is refused" "marker|source|commit" $(RCP rc_nosrc)
+expect_refuse "AC6 rc-proof: Sign's provenance whose built commit is not the rc tag's commit (a moved or recreated tag) is refused naming the commit" "marker|built|commit" $(RCP rc_othersrc)
+expect_refuse "AC6 rc-proof: Sign's provenance that names no built commit is refused" "marker|built|commit" $(RCP rc_nosrc)
 expect_refuse "AC6 rc-proof: Sign's provenance made for another tag is refused (the rc tag's identity)" "sign|v0.3.1" $(RCP rc_badsign)
 expect_refuse "AC6 rc-proof: no Rekor entry for Sign's provenance is refused" "sign|rekor" $(RCP rc_norekor)
 expect_refuse "AC6 rc-proof: Build's record of the FINAL tag's identity is refused under the rc tag's policy" "build|v0.3.0" $(RCP rc_build_final)
@@ -2191,7 +2191,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=790
+EXPECT=792
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
