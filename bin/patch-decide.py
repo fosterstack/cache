@@ -427,7 +427,8 @@ def vex_changes(old_doc, new_doc):
                             for p_ in s_.get("products") or []))
 
     def show(sc):
-        return " ".join("%s(%s)" % (pid, ",".join(subs)) if subs else pid for pid, subs in sc)
+        # unambiguous: the subcomponent ids are a JSON array, so "a,b" (one id) and "a", "b" (two) are displayed differently
+        return " ".join("%s(%s)" % (pid, json.dumps(list(subs))) if subs else pid for pid, subs in sc)
 
     def by_key(doc):
         out = {}
