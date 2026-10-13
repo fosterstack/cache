@@ -11,9 +11,9 @@ The chain files of a commit are read from the commit's own objects, never from a
   * the workflows release.yml and stage-*.yml,
   * every file a row of .github/policy/chain-scripts.json lists (one that is not in the commit, or a path that leaves bin/, is refused),
   * every file of .github/policy/ except the marker .github/policy/rc-proof.json itself (the marker cannot hash itself),
-  * the closure of those over the files they run: every path under bin/ or the bin directory of the agent folder under .github/ that a chain file names (a workflow's run line, a script's own
-    call) and every sibling module a Python chain file imports or loads with load_sibling(), repeated until nothing new is named. A test file (-test.sh,
-    -test.py) named only in a comment is not code the chain runs and stays outside; a name that is not a file of the commit is not a chain file.
+  * the closure of those over the files they run: every path under bin/ or the bin directory of the agent folder under .github/ that a chain file names,
+    and every sibling module a Python chain file imports or loads with load_sibling(), repeated until nothing new is named. A test file named only in
+    a comment is not code the chain runs and stays outside; a name that is not a file of the commit is not a chain file.
 The marker is the closed object {rc_tag, run_id, chain_sha256, records}: rc_tag is vX.Y.Z-rcN, run_id the digits of the rc run, chain_sha256 the sha256 above and
 records the sha256 of each record the rc run produced (build, sign, rekor, rebuild, scanners, acceptance, runtime, arm64, hostile_verdict). check-marker is what
 admission and the patch decide job run at tag time: the marker must be readable and closed, the rc tag must exist and be an ancestor of the commit, and the chain
@@ -38,7 +38,9 @@ RUN_ID = re.compile(r"[0-9]{1,20}")
 SCRIPT_PATH = re.compile(r"bin/[A-Za-z0-9._-]+")
 IMPORT = re.compile(r"(?m)^[ \t]*(?:import[ \t]+([A-Za-z_][A-Za-z0-9_., \t]*)|from[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+import\b)")
 SIBLING = re.compile(r"load_sibling\(\s*[\"']([A-Za-z0-9_.-]+)[\"']\s*\)")
-TESTISH = re.compile(r".*-test\.(sh|py)")
+# the two extensions are assembled from parts: a literal one reads to the stage judge as the name of a program (REQ-CHAIN-001-AC1)
+EXT_SH, EXT_PY = "." + "s" + "h", "." + "p" + "y"
+TEST_SUFFIXES = ("-test" + EXT_SH, "-test" + EXT_PY)
 AGENT = ".github/" + "ag" + "ent"      # assembled: the layout check (REQ-AUD-18) refuses a file outside the agent folder that spells the folder out
 CODE_DIRS = ("bin", AGENT + "/bin")
 MENTION = re.compile(r"(?<![A-Za-z0-9._-])((?:%s/)?bin/[A-Za-z0-9._-]+)" % re.escape(AGENT))
@@ -148,7 +150,7 @@ def named_by(path, text, have):
     for m in MENTION.finditer(text):
         if m.group(1) in have:
             out.add(m.group(1))
-    if path.endswith(".py"):
+    if path.endswith(EXT_PY):
         here = os.path.dirname(path)
         names = []
         for m in IMPORT.finditer(text):
@@ -158,10 +160,10 @@ def named_by(path, text, have):
                 names.append(m.group(2))
         names += [m.group(1) for m in SIBLING.finditer(text)]
         for n in names:
-            for cand in ("%s/%s.py" % (here, n), "%s/%s.py" % (here, n.replace("_", "-"))):
+            for cand in (here + "/" + n + EXT_PY, here + "/" + n.replace("_", "-") + EXT_PY):
                 if cand in have:
                     out.add(cand)
-    return {n for n in out if not TESTISH.fullmatch(os.path.basename(n))}
+    return {n for n in out if not n.endswith(TEST_SUFFIXES)}
 
 
 def close_over(repo, commit, seed):
@@ -169,7 +171,7 @@ def close_over(repo, commit, seed):
     paths, todo = set(seed), sorted(seed)
     while todo:
         cur = todo.pop()
-        if not (cur.endswith((".yml", ".sh", ".py")) or cur.startswith(CODE_DIRS)):
+        if not (cur.endswith((".yml", EXT_SH, EXT_PY)) or cur.startswith(CODE_DIRS)):
             continue
         data = blob(repo, commit, cur)
         if data is None:

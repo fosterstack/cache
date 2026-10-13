@@ -81,7 +81,7 @@
     },
     {
       "path": "bin/chain-bytes-sha.py",
-      "sha256": "70e55c579428fd9dac28845d8b8f51a1c0a2ac77421c05de2bc08865834e3016",
+      "sha256": "a6d01ec11fcfa757c452ea65d3666800f077c42e2337e2f5fb8fc6b2a47ef7ff",
       "tools": [
         "at",
         "git"
