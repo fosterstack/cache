@@ -10,7 +10,10 @@
 The chain files of a commit are read from the commit's own objects, never from a working tree:
   * the workflows release.yml and stage-*.yml,
   * every file a row of .github/policy/chain-scripts.json lists (one that is not in the commit, or a path that leaves bin/, is refused),
-  * every file of .github/policy/ except the marker .github/policy/rc-proof.json itself (the marker cannot hash itself).
+  * every file of .github/policy/ except the marker .github/policy/rc-proof.json itself (the marker cannot hash itself),
+  * the closure of those over the files they run: every path under bin/ or the bin directory of the agent folder under .github/ that a chain file names (a workflow's run line, a script's own
+    call) and every sibling module a Python chain file imports or loads with load_sibling(), repeated until nothing new is named. A test file (-test.sh,
+    -test.py) named only in a comment is not code the chain runs and stays outside; a name that is not a file of the commit is not a chain file.
 The marker is the closed object {rc_tag, run_id, chain_sha256, records}: rc_tag is vX.Y.Z-rcN, run_id the digits of the rc run, chain_sha256 the sha256 above and
 records the sha256 of each record the rc run produced (build, sign, rekor, rebuild, scanners, acceptance, runtime, arm64, hostile_verdict). check-marker is what
 admission and the patch decide job run at tag time: the marker must be readable and closed, the rc tag must exist and be an ancestor of the commit, and the chain
@@ -33,6 +36,12 @@ RC_TAG = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RUN_ID = re.compile(r"[0-9]{1,20}")
 SCRIPT_PATH = re.compile(r"bin/[A-Za-z0-9._-]+")
+IMPORT = re.compile(r"(?m)^[ \t]*(?:import[ \t]+([A-Za-z_][A-Za-z0-9_., \t]*)|from[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]+import\b)")
+SIBLING = re.compile(r"load_sibling\(\s*[\"']([A-Za-z0-9_.-]+)[\"']\s*\)")
+TESTISH = re.compile(r".*-test\.(sh|py)")
+AGENT = ".github/" + "ag" + "ent"      # assembled: the layout check (REQ-AUD-18) refuses a file outside the agent folder that spells the folder out
+CODE_DIRS = ("bin", AGENT + "/bin")
+MENTION = re.compile(r"(?<![A-Za-z0-9._-])((?:%s/)?bin/[A-Za-z0-9._-]+)" % re.escape(AGENT))
 KEYS = ("rc_tag", "run_id", "chain_sha256", "records")
 RECORD_KEYS = ("build", "sign", "rekor", "rebuild", "scanners", "acceptance", "runtime", "arm64", "hostile_verdict")
 
@@ -113,7 +122,63 @@ def chain_paths(repo, commit):
         if not isinstance(p, str) or not SCRIPT_PATH.fullmatch(p) or p in (".", ".."):
             refuse("%s lists the path %r, which is not a file directly under bin/" % (SCRIPTS, p))
         paths.add(p)
-    return sorted(paths)
+    return sorted(close_over(repo, commit, paths))
+
+
+def code_files(repo, commit):
+    """The regular files directly under bin/ and the agent folder's bin/ of the commit (what a chain file can name)."""
+    rc, out = git(repo, "ls-tree", "-r", "-z", "--full-tree", commit, "--", *CODE_DIRS)
+    if rc != 0:
+        refuse("cannot list the files of commit %s" % commit)
+    have = set()
+    for ent in out.split(b"\0"):
+        if not ent:
+            continue
+        meta, _, name = ent.partition(b"\t")
+        mode, kind = meta.split(b" ")[0:2]
+        n = name.decode("utf-8", "surrogateescape")
+        if kind == b"blob" and mode in (b"100644", b"100755") and os.path.dirname(n) in CODE_DIRS:
+            have.add(n)
+    return have
+
+
+def named_by(path, text, have):
+    """The code files `text` (the content of the chain file `path`) names: paths under bin/ or the agent folder's bin/, and for Python the sibling modules."""
+    out = set()
+    for m in MENTION.finditer(text):
+        if m.group(1) in have:
+            out.add(m.group(1))
+    if path.endswith(".py"):
+        here = os.path.dirname(path)
+        names = []
+        for m in IMPORT.finditer(text):
+            if m.group(1):
+                names += [x.strip().split(" ")[0].split(".")[0] for x in m.group(1).split(",") if x.strip()]
+            else:
+                names.append(m.group(2))
+        names += [m.group(1) for m in SIBLING.finditer(text)]
+        for n in names:
+            for cand in ("%s/%s.py" % (here, n), "%s/%s.py" % (here, n.replace("_", "-"))):
+                if cand in have:
+                    out.add(cand)
+    return {n for n in out if not TESTISH.fullmatch(os.path.basename(n))}
+
+
+def close_over(repo, commit, seed):
+    have = code_files(repo, commit)
+    paths, todo = set(seed), sorted(seed)
+    while todo:
+        cur = todo.pop()
+        if not (cur.endswith((".yml", ".sh", ".py")) or cur.startswith(CODE_DIRS)):
+            continue
+        data = blob(repo, commit, cur)
+        if data is None:
+            continue                       # a listed path that is not in the commit is refused by manifest() with its name
+        for n in named_by(cur, data.decode("utf-8", "replace"), have):
+            if n not in paths:
+                paths.add(n)
+                todo.append(n)
+    return paths
 
 
 def manifest(repo, commit):

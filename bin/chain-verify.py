@@ -1008,6 +1008,15 @@ def cmd_rc_proof(a):
             cmd_stage_start(argparse.Namespace(stage="release", previous="rebuild", record=rec("witness-rebuild/rebuild-collection.json"),
                                                digests=digests, policy=pol_path, now=now, rekor_stub=None))
             cmd_check_list(argparse.Namespace(policy=pol_path, digests=digests, dir=rec("witness-check"), now=now))
+        # the marker's run id is the run Sign's provenance came from: the statement (verified above under the rc tag's Sign identity) names its run as
+        # invocationId, and that must be exactly this repository's URL for exactly this run (not a prefix, not another repository)
+        pol = load_json(pol_path, "policy")
+        with tempfile.TemporaryDirectory() as tmp2:
+            pstmt, _pp, _pd = verify_record(pol, "sign", rec("provenance/provenance.json"), rec("provenance/provenance.rekor.json"), parse_now(now), tmp2)
+        inv = (((pstmt.get("predicate") or {}).get("runDetails") or {}).get("metadata") or {}).get("invocationId")
+        want_run = "https://github.com/%s/actions/runs/%s" % (a.repository, marker["run_id"])
+        if inv != want_run:
+            refuse("marker", "run: the marker names run %s of the repository %s but Sign's provenance names the run %r" % (marker["run_id"], a.repository, inv))
         err = io.StringIO()
         try:
             with contextlib.redirect_stderr(err), contextlib.redirect_stdout(quiet):
@@ -1486,6 +1495,7 @@ def build_parser():
     rp.add_argument("--repo", default=".")
     rp.add_argument("--records", required=True)
     rp.add_argument("--template", required=True)
+    rp.add_argument("--repository", required=True)      # owner/name of the repository the rc run ran in (GITHUB_REPOSITORY of the caller)
     for n in ("trust", "fulcio-chain", "tsa-chain", "rekor-key", "now"):
         rp.add_argument("--" + n)
     chain_items.add_parsers(sub)

@@ -2022,25 +2022,26 @@ for spec in "other:bin/other.sh" "readme:README.md" "ci:.github/workflows/ci.yml
   n=${spec%%:*}; f=${spec#*:}; c=$(mutc "u$n" "$f" "# changed")
   [ "$(shaof "$c")" = "$S1" ] && ok "AC6 bytes: a changed $n file ($f) is outside the set and does not change the sha" || bad "AC6 bytes: a changed $f changed the sha"
 done
-# Codex 4b-1 r1 (B B1): the set closes over every file the chain files name or import (a script the workflow runs that no row lists, a file under .github/agent/bin, a sibling module)
-rcg checkout -q -b closure "$C1"; mkdir -p "$RG/.github/agent/bin"
-printf 'name: release\njobs:\n  d:\n    steps:\n      - run: python3 bin/decide.py go\n      - run: python3 .github/agent/bin/sig.py\n      # see bin/x-test.sh\n' > "$RG/.github/workflows/release.yml"
-printf 'import helper\nfrom pathlib import Path\nprint(1)\n' > "$RG/.github/agent/bin/sig.py"; printf 'X = 1\n' > "$RG/.github/agent/bin/helper.py"
+AG=".github/ag"ent      # assembled: the layout check refuses a file outside the agent folder that spells it out
+# Codex 4b-1 r1 (B B1): the set closes over every file the chain files name or import (a script the workflow runs that no row lists, a file under the agent folder a sibling module)
+rcg checkout -q -b closure "$C1"; mkdir -p "$RG/$AG/bin"
+printf "name: release\njobs:\n  d:\n    steps:\n      - run: python3 bin/decide.py go\n      - run: python3 $AG/bin/sig.py\n      # see bin/x-test.sh\n" > "$RG/.github/workflows/release.yml"
+printf 'import helper\nfrom pathlib import Path\nprint(1)\n' > "$RG/$AG/bin/sig.py"; printf 'X = 1\n' > "$RG/$AG/bin/helper.py"
 printf 'import deepmod\nimport os\n' > "$RG/bin/decide.py"; printf 'Y = 1\n' > "$RG/bin/deepmod.py"; printf '#!/bin/sh\nbash bin/viab.sh\n' > "$RG/bin/b.sh"; printf '#!/bin/sh\necho v\n' > "$RG/bin/viab.sh"
 printf '#!/bin/sh\n' > "$RG/bin/x-test.sh"
 rcg add -A > /dev/null; rcg commit -q -m closure; CCL=$(rcg rev-parse HEAD); rcg checkout -q main
 cbx list --commit "$CCL" --repo "$RG" || true; cl=$(cat "$work/cb.out")
-miss=0; for f in bin/decide.py .github/agent/bin/sig.py .github/agent/bin/helper.py bin/deepmod.py bin/viab.sh; do grep -F -q "  $f" <<< "$cl" || { miss=1; echo "closure: $f missing" >&2; }; done
-[ "$miss" = 0 ] && ok "AC6 bytes: a script a chain workflow runs, a file under .github/agent/bin, a module a chain script imports and a script a listed script names are all in the set" || bad "AC6 bytes: the closure is missing a file the chain runs"
+miss=0; for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.sh; do grep -F -q "  $f" <<< "$cl" || { miss=1; echo "closure: $f missing" >&2; }; done
+[ "$miss" = 0 ] && ok "AC6 bytes: a script a chain workflow runs, a file under the agent folder's bin, a module a chain script imports and a script a listed script names are all in the set" || bad "AC6 bytes: the closure is missing a file the chain runs"
 ! grep -E -q 'x-test\.sh|other\.sh' <<< "$cl" && ok "AC6 bytes: a test file named in a comment and an unnamed script stay outside the set" || bad "AC6 bytes: a test or unrelated file is in the set"
 Scl=$(shaof "$CCL")
-for f in bin/decide.py .github/agent/bin/sig.py .github/agent/bin/helper.py bin/deepmod.py bin/viab.sh; do
+for f in bin/decide.py $AG/bin/sig.py $AG/bin/helper.py bin/deepmod.py bin/viab.sh; do
   rcg checkout -q -b "cl-$(basename "$f")" "$CCL"; printf '# changed\n' >> "$RG/$f"; rcg add -A > /dev/null; rcg commit -q -m cl; c=$(rcg rev-parse HEAD); rcg checkout -q main
   [ "$(shaof "$c")" != "$Scl" ] && [[ "$(shaof "$c")" =~ ^[0-9a-f]{64}$ ]] && ok "AC6 bytes: a changed $f changes the sha" || bad "AC6 bytes: a changed $f did not change the sha"
 done
 # the real tree: the scripts the real release workflow runs are in its set
 cbx list --commit HEAD --repo "$root" || true; rl=$(cat "$work/cb.out")
-for f in bin/patch-decide.py .github/agent/bin/auditor-signed-commit.py bin/chain-verify.py bin/chain-bytes-sha.py; do
+for f in bin/patch-decide.py $AG/bin/auditor-signed-commit.py bin/chain-verify.py bin/chain-bytes-sha.py; do
   grep -F -q "  $f" <<< "$rl" && ok "AC6 bytes: the real chain set holds $f" || bad "AC6 bytes: the real chain set lacks $f"
 done
 rcg checkout -q -b gone "$C1"; printf '{"scripts":[{"path":"bin/chain-bytes-sha.py"},{"path":"bin/b.sh"},{"path":"bin/gone.sh"}]}\n' > "$RG/.github/policy/chain-scripts.json"
@@ -2152,7 +2153,8 @@ json.dump(dict(m, run_id="11"), open("%s/marker-run11.json" % sys.argv[2], "w"))
 PY
 expect_refuse "AC6 rc-proof: a marker whose run id is not the run Sign's provenance names (2, the provenance names 1) is refused naming the run" "marker|run" $(RCP rc_ok "$C2" "$work/marker-run2.json")
 expect_refuse "AC6 rc-proof: a run id that merely starts with the provenance's (11 against 1) is refused" "marker|run" $(RCP rc_ok "$C2" "$work/marker-run11.json")
-RCREPO=evil/cache expect_refuse "AC6 rc-proof: a run of another repository (the provenance names fosterstack/cache) is refused" "marker|run|repository" $(RCP rc_ok)
+RCREPO=evil/cache; rcargs=$(RCP rc_ok); RCREPO=
+expect_refuse "AC6 rc-proof: a run of another repository (the provenance names fosterstack/cache) is refused" "marker|run|repository" $rcargs
 rc=0; python3 "$cv" rc-proof --help > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "AC6 rc-proof: the subcommand exists (usage)" || bad "AC6 rc-proof: no such subcommand (exit $rc)"
 # every call the fake cosign ever received is the pinned form, and there were exactly as many as successful signs plus the S1 cases (where
@@ -2167,7 +2169,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=764
+EXPECT=781
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

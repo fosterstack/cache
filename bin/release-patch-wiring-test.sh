@@ -52,6 +52,8 @@ if dec.get("permissions") != {"contents": "read", "checks": "read", "id-token": 
     bad.append("decide's own token is not contents read + checks read + id-token + issues: %s" % dec.get("permissions"))
 if d.get("concurrency"):
     bad.append("a workflow-level concurrency group would serialize the tag chain with decide (it must be decide's own)")
+if set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}:
+    bad.append("decide has keys beyond the reviewed ones (a job-level defaults or env changes how every step runs): %s" % sorted(set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}))
 steps = dec.get("steps") or []
 text = "\n".join(s.get("run") or "" for s in steps)
 if "bin/install-scanner.sh gitsign" not in text:

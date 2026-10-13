@@ -207,7 +207,13 @@ def cmd_hostile_verdict(a):
     errs, by = [], {}
     if not rows:
         errs.append("error: no attempt rows (attempt)")
+    if not isinstance(rows, list):
+        errs.append("error: attempts is not a list (row)")
+        rows = []
     for r in rows:
+        if not isinstance(r, dict):
+            errs.append("error: an attempt row is not an object (row)")
+            continue
         n = r.get("attempt")
         if n not in ALL_ROWS:
             errs.append("error: %r is not one of the five attempts or the positive control" % n)
@@ -223,14 +229,14 @@ def cmd_hostile_verdict(a):
             errs.append("error: %s: the outcome was not judged by the verifier (judged_by %r)" % (n, r.get("judged_by")))
             continue
         if n == "positive_control":
-            if r.get("outcome") != "accepted" or r.get("exit_code") != 0:
+            if r.get("outcome") != "accepted" or r.get("exit_code") != 0 or isinstance(r.get("exit_code"), bool):
                 errs.append("error: positive_control must be accepted (exit 0) by the same policy: %s" % r.get("reason"))
             continue
         if r.get("outcome") != "refused":
             errs.append("error: %s was %s: the system accepted a hostile attempt" % (n, r.get("outcome")))
             continue
-        if r.get("exit_code") in (0, None):
-            errs.append("error: %s: outcome refused contradicts exit code %r" % (n, r.get("exit_code")))
+        if r.get("exit_code") != 1 or isinstance(r.get("exit_code"), bool):
+            errs.append("error: %s: outcome refused needs the verifier's refusal exit status 1, not %r (exit)" % (n, r.get("exit_code")))
             continue
         stage, reason = r.get("stage"), str(r.get("reason") or "")
         if stage not in ROW_STAGES:
