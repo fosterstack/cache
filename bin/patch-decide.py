@@ -308,7 +308,8 @@ def notes(version, fixes, vex_changes, behavior=()):
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
-    lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
+    lines += ["- %s%s: %s (%s)" % (v["cve"], (" [%s]" % v["scope"]) if v.get("scope") else "", v["status"], v["change"])
+              for v in vex_changes] or ["- no change"]
     for b in behavior:
         _check_entry(b)
     if behavior:
@@ -417,18 +418,50 @@ def fixed_findings(release_by_variant, head):
 
 
 def vex_changes(old_doc, new_doc):
-    """AC8: each VEX statement added, changed (its status) or removed since the latest tag, by CVE."""
-    def by_cve(doc):
-        return {s_["vulnerability"]["name"]: s_.get("status", "") for s_ in (doc or {}).get("statements", [])}
-    old, new = by_cve(old_doc), by_cve(new_doc)
+    """AC8: each VEX statement added, removed or changed since the latest tag. A statement is identified by its CVE and its scope (the products and
+    subcomponents it names); a change is its status, justification or impact statement. A CVE that appears under more than one scope carries the
+    scope in every entry that names it (round 1, Codex A R2: a scope change or a second statement is never lost)."""
+    def scope(s_):
+        ids = []
+        for p_ in s_.get("products") or []:
+            ids.append(str(p_.get("@id", "")))
+            ids += [str(c.get("@id", "")) for c in p_.get("subcomponents") or []]
+        return " ".join(sorted(ids))
+
+    def by_key(doc):
+        out = {}
+        for s_ in (doc or {}).get("statements", []):
+            out.setdefault((s_["vulnerability"]["name"], scope(s_)), []).append(
+                (s_.get("status", ""), s_.get("justification", ""), s_.get("impact_statement", "")))
+        return {k: sorted(v) for k, v in out.items()}
+    old, new = by_key(old_doc), by_key(new_doc)
+    scopes = {}
+    for cve, sc in set(old) | set(new):
+        scopes.setdefault(cve, set()).add(sc)
     out = []
-    for cve in sorted(set(old) | set(new)):
-        if cve not in old:
-            out.append({"cve": cve, "status": new[cve], "change": "added"})
-        elif cve not in new:
-            out.append({"cve": cve, "status": old[cve], "change": "removed"})
-        elif old[cve] != new[cve]:
-            out.append({"cve": cve, "status": new[cve], "change": "changed from %s" % old[cve]})
+    for key in sorted(set(old) | set(new)):
+        cve, sc = key
+        o, n = old.get(key), new.get(key)
+        if o is None:
+            status, change = n[0][0], "added"
+        elif n is None:
+            status, change = o[0][0], "removed"
+        elif o == n:
+            continue
+        else:
+            os_, ns_ = [x[0] for x in o], [x[0] for x in n]
+            status = ns_[0]
+            if os_ != ns_:
+                changed = [(a_, b_) for a_, b_ in zip(os_, ns_) if a_ != b_]
+                change = "changed from %s" % (changed[0][0] if changed else os_[0])
+            elif [x[1] for x in o] != [x[1] for x in n]:
+                change = "changed justification"
+            else:
+                change = "changed impact statement"
+        entry = {"cve": cve, "status": status, "change": change}
+        if len(scopes[cve]) > 1:
+            entry["scope"] = sc
+        out.append(entry)
     return out
 
 
