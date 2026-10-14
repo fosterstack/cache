@@ -15,6 +15,7 @@
 # The one pass without a comparison: vendor/ is absent from the tree AND absent from origin/main (no path with a vendor component),
 # the tree holds no vendor path anywhere, and both listings completed. Any other tree is judged in full or fails.
 set -uo pipefail
+export GOAUTH=off   # every Go invocation (go env, go mod verify, go mod vendor) reads no .netrc and runs no auth command
 
 die() { echo "vendor-check.sh: $1" >&2; exit "${2:-2}"; }
 
@@ -123,8 +124,8 @@ BEGIN {
 scratch=$(mktemp -d) || die "no scratch directory" 1
 tree="$scratch/tree"; mkdir "$tree" || die "no scratch tree" 1
 ( cd "$src" && tar -cf - --exclude=./.git --exclude=./vendor . ) | ( cd "$tree" && tar -xf - ) || die "cannot copy $src" 1
-( cd "$tree" && GOAUTH=off go mod verify ) >"$scratch/verify.log" 2>&1 || { cat "$scratch/verify.log" >&2; die "go mod verify failed" 1; }
-( umask 022; export GOAUTH=off; cd "$tree" && go mod vendor ) >"$scratch/vendor.log" 2>&1 || { cat "$scratch/vendor.log" >&2; die "go mod vendor failed" 1; }
+( cd "$tree" && go mod verify ) >"$scratch/verify.log" 2>&1 || { cat "$scratch/verify.log" >&2; die "go mod verify failed" 1; }
+( umask 022; cd "$tree" && go mod vendor ) >"$scratch/vendor.log" 2>&1 || { cat "$scratch/vendor.log" >&2; die "go mod vendor failed" 1; }
 cmp -s "$src/go.mod" "$tree/go.mod" || die "go mod vendor changed go.mod: the committed go.mod is not what the vendored tree was made from" 1
 cmp -s "$src/go.sum" "$tree/go.sum" || die "go mod vendor changed go.sum: the committed go.sum is not what the vendored tree was made from" 1
 
