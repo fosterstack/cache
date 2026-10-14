@@ -704,8 +704,8 @@ for phrase in "bwrap: Operation not permitted" "connect: Connection refused" "co
   sx "rule 40" "build-apk.sh: '$phrase' is an ordinary failure, not a confirmed network attempt (non-zero, not 4): the documented residual" ne4 env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_NETATTEMPT=1 STUB_NETTEXT="$phrase" "$BA" "${ba_args[@]}" --out "$(mo)"
 done
 run_s env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 GITHUB_TOKEN=canary-token HTTPS_PROXY= GOFLAGS=-mod=mod "$BA" "${ba_args[@]}" --out "$(mo)"
-t "rule 23" "the privileged melange call gets EXACTLY HOME LC_ALL PATH SOURCE_DATE_EPOCH (an explicit env -i list; the stub adds nothing and test-only control variables are filtered out of the comparison)" bash -c "grep -q '^sudo env -i ' '$CALLS' && grep '^ENVNAMES=' '$CALLS' | head -1 | grep -qx 'ENVNAMES=HOME LC_ALL PATH SOURCE_DATE_EPOCH '"
-t "rule 23" "...and the call line names no variable but those four (plus test-mode stub controls)" bash -c "grep '^sudo env -i ' '$CALLS' | head -1 | tr ' ' '\n' | grep -E '^[A-Za-z_]+=' | cut -d= -f1 | grep -Ev '^(STUB_|FAKE_|CALLS|ImageOS|ImageVersion)' | sort | tr '\n' ' ' | grep -qx 'HOME LC_ALL PATH SOURCE_DATE_EPOCH '"
+t "rule 23" "the privileged melange call gets EXACTLY HOME LC_ALL PATH SOURCE_DATE_EPOCH (an explicit env -i list; the stub adds nothing and test-only control variables are filtered out of the comparison)" bash -c "grep -Eq '^sudo [^ ]*env -i ' '$CALLS' && grep '^ENVNAMES=' '$CALLS' | head -1 | grep -qx 'ENVNAMES=HOME LC_ALL PATH SOURCE_DATE_EPOCH '"
+t "rule 23" "...and the call line names no variable but those four (plus test-mode stub controls)" bash -c "grep -E '^sudo [^ ]*env -i ' '$CALLS' | head -1 | tr ' ' '\n' | grep -E '^[A-Za-z_]+=' | cut -d= -f1 | grep -Ev '^(STUB_|FAKE_|CALLS|ImageOS|ImageVersion)' | sort | tr '\n' ' ' | grep -qx 'HOME LC_ALL PATH SOURCE_DATE_EPOCH '"
 
 # ---- byte identity and the output listing (handoff 0393 ruling 4, advisor Oct 12; red first) ----------------------------------------
 # The chain builds standard and fips into ONE --out, so the fips files carry the -fips suffix (chain_items.py: modules SBOM and
@@ -922,21 +922,38 @@ bad = []
 for p in sys.argv[1:]:
     for n, ln in enumerate(open(p).read().split("\n"), 1):
         if ln.lstrip().startswith("#"): continue
-        for m in re.finditer(r"\"\$PY3\"(.{0,8})", ln):
-            if not re.match(r"\s+-I\b", m.group(1)): bad.append("%s:%d" % (p, n))
+        for m in re.finditer(r"\"\$PY3\"(.{0,12})", ln):
+            if not re.match(r"\s+-I\s+-B\b", m.group(1)): bad.append("%s:%d" % (p, n))
 sys.exit("PY3 calls without -I: %r" % bad if bad else 0)
 P
-t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git and python3 by variable, release-sign-apks.sh names openssl and melange by variable" python3 - "$BA_PROD" "$RS_REAL" <<'P'
+cat >"$work/toolscan.py" <<'PY'
 import re, sys
+# toolscan.py FILE WORD...: command positions (also behind env, sudo, unshare, nohup, timeout, exec and their options) that name a tool bare
+WRAP = r"(?:\"\$(?:SUDO|ENVBIN|UNSHARE)\"|sudo|env|unshare|nohup|timeout|exec)"
+OPT = r"(?:\s+(?:-[A-Za-z-]+|[A-Z_]+=\S*|\"\$\{[a-z_]+\[@\]\}\"))*"
+POS = r"(?:^|[;&|(]\s*|\$\(\s*|\bthen\s+|\bdo\s+)"
 bad = []
-for p, words in ((sys.argv[1], ("sha256sum", "go", "env", "sudo", "unshare", "melange", "git", "python3", "openssl", "shasum")), (sys.argv[2], ("openssl", "melange", "python3"))):
-    for n, ln in enumerate(open(p).read().split("\n"), 1):
-        s = ln.strip()
-        if s.startswith("#") or "TEST-SUBST" in ln: continue
-        code = re.sub(r"\"[^\"]*\"|'[^']*'", '""', s)       # quoted text (messages) is not a command
-        for w in words:
-            if re.search(r"(?:^|[;&|(]\s*|\$\(\s*|\bthen\s+|\bdo\s+)%s\s" % re.escape(w), code): bad.append("%s:%d %s" % (p, n, w))
+for n, ln in enumerate(open(sys.argv[1]).read().split("\n"), 1):
+    s = ln.strip()
+    if s.startswith("#") or "TEST-SUBST" in ln: continue
+    code = re.sub(r"\"[^\"]*\"|'[^']*'", lambda m: m.group(0) if m.group(0).startswith('"$') else '""', s)   # quoted text (messages) is not a command; "$VAR" words stay
+    for w in sys.argv[2:]:
+        if re.search(POS + re.escape(w) + r"(?:\s|$)", code) or re.search(POS + WRAP + OPT + r"\s+" + re.escape(w) + r"(?:\s|$)", code):
+            bad.append("%s:%d %s" % (sys.argv[1], n, w))
 sys.exit("bare tool words at a command position: %r" % bad if bad else 0)
-P
+PY
+t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git, python3, openssl and shasum by variable (also as the operand of env, sudo or unshare)" python3 "$work/toolscan.py" "$BA_PROD" sha256sum go env sudo unshare melange git python3 openssl shasum
+t "rule 23" "release-sign-apks.sh names openssl, melange and python3 by variable" python3 "$work/toolscan.py" "$RS_REAL" openssl melange python3
+python3 - "$BA_PROD" "$work" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+open(sys.argv[2] + "/mut-go.sh", "w").write(src.replace('"$GO_TOOL" version -m', 'go version -m'))
+open(sys.argv[2] + "/mut-env.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" env -i'))
+open(sys.argv[2] + "/mut-sum.sh", "w").write(src.replace('got=$("$SHA256SUM" ', 'got=$(sha256sum '))
+PY
+for m in mut-go mut-env mut-sum; do
+  t "rule 23" "the tool-path assertion bites: the mutant $m (a bare tool where the fixed one is) is refused" bash -c "! python3 '$work/toolscan.py' '$work/$m.sh' sha256sum go env sudo unshare melange git python3 openssl shasum >/dev/null 2>&1"
+done
+
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

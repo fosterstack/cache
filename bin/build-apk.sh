@@ -169,7 +169,7 @@ sealed=()
 while read -r -d '' item; do sealed+=("$item"); done < <("$PY3" -I -B bin/build-apk-helper.py sealed-env "$SEALED_ENV") || true
 [ "${#sealed[@]}" -ge 4 ] || die "the sealed environment could not be made (build/sealed-env.json, SOURCE_DATE_EPOCH)" 1
 set +e
-( cd "$rdir" && "$SUDO" env -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}" 2>"$tmp/melange.err" )
+( cd "$rdir" && "$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}" 2>"$tmp/melange.err" )
 rc=$?
 set -e
 cat "$tmp/melange.err" >&2   # complete once the command has exited; no race with a process substitution
