@@ -259,6 +259,9 @@ func TestEvictionGivesUpAfterRepeatedFailures(t *testing.T) {
 		if err != nil {
 			return err
 		}
+		if d.Name() == "+tmp" && filepath.Dir(path) == root {
+			return filepath.SkipDir // the store's temporary directory stays writable (REQ-PROTO-003-AC4), like the root
+		}
 		if d.IsDir() && path != root {
 			lockedDirs = append(lockedDirs, path)
 		}

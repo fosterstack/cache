@@ -2,7 +2,8 @@
 
 Every FosterStack Cache release is signed and provenance-attested by
 GitHub's own CI — not by us claiming it, by a chain you can check yourself
-in under a minute, with nothing installed but `cosign` and `gh`.
+in under a minute, with `cosign` and `gh` plus standard tools (`curl`,
+`sed`, `jq`, `base64`, `sha256sum` or `shasum`).
 
 The pull and the cosign commands below are fully anonymous. The
 `gh attestation verify` commands are not — they read GitHub's attestation
@@ -102,7 +103,7 @@ reproducibility, one scan verdict per scanner, acceptance — and its
 predicate body lists the Rekor log index of everything it checked.
 Pinning `--signer-workflow` is what makes this "signed by the
 authorization stage" rather than merely "signed by something in this
-repo." **These chain predicates exist for releases built by the new chain (v0.2.0 and later); the previous release carries only the image signature and SLSA provenance shown above.** <!-- pinned: historical -->
+repo." **These chain predicates exist for releases built by the new chain (v0.2.1 and later, the first published release built by the new chain); the previous release carries only the image signature and SLSA provenance shown above.** <!-- pinned: historical -->
 
 `gh attestation verify` reads GitHub's attestation API and therefore
 needs a token in the environment (`GH_TOKEN` or `gh auth login`) even
@@ -122,9 +123,45 @@ The individual statements, all verifiable with the same command shape
 | `https://fosterstack.com/attestations/release-authorization/v1` | the authorization stage | the whole graph above verified; this digest is approved for this version |
 | `https://fosterstack.com/attestations/publication/v1` | the promotion stage | the publication-phase results (REQ-REL-001/002): the anonymous verification and every-tag anonymous pull passed for this digest |
 
-**Resolving the deferred release ACs.** The `release-manifest.json` on the
-release page is signed and attached BEFORE publication, so its `ac_results`
-shows the two publication ACs (`REQ-REL-001-AC1`, `REQ-REL-002-AC1`) as
+**Verifying the release manifest.** The promotion workflow attaches the
+release manifest as a cosign attestation (predicate type
+`https://fosterstack.com/attestations/release-manifest/v1`) to each public
+image digest (production, debug, fips) on GHCR, which is authoritative, and
+on the Docker Hub mirror (best effort), BEFORE the GitHub release is
+published.
+This attestation exists for releases built by the new chain, v0.2.1 and later (v0.1.0 has none, so the command below fails there). <!-- pinned: historical -->
+The `release-manifest.json` on the release page is the same
+content. It has no separate signature file, and `gh attestation verify
+<file>` does not apply to it: it is an attestation on the image, so verify
+it on the image (anonymous, no token):
+
+```sh
+cosign verify-attestation \
+  --type https://fosterstack.com/attestations/release-manifest/v1 \
+  --certificate-identity-regexp "^https://github\.com/fosterstack/cache/\.github/workflows/stage-promote\.yml@refs/tags/v${VER}$" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/fosterstack/cache:${VER} > manifest-att.json
+```
+
+The OpenVEX, CSAF and inspector-filters files on the release page have no
+signature of their own. Today they are covered by the sha256 values
+recorded in the signed manifest. Check the downloaded files against them:
+
+```sh
+gh release download v${VER} --repo fosterstack/cache \
+  -p 'fosterstack-cache*' -p release-manifest.json
+
+jq -r '.payload' manifest-att.json | base64 -d \
+  | jq -r '.predicate.vex[] | "\(.sha256)  \(.file)"' > vex.sha256
+sha256sum -c vex.sha256    # or: shasum -a 256 -c vex.sha256
+```
+
+Each line must print `OK`. (`base64 -d` works on GNU coreutils and on
+macOS 14 and later; on older macOS use `base64 -D`.)
+
+**Resolving the deferred release ACs.** Because the release manifest is
+attached BEFORE publication, its `ac_results` shows the two publication
+ACs (`REQ-REL-001-AC1`, `REQ-REL-002-AC1`) as
 `deferred-to-publication`, and its `publication_evidence` field points
 here. Their **pass** outcome lives in the separate publication attestation
 above — verify it (needs a token), pinned to the promotion workflow and
