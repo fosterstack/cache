@@ -3023,5 +3023,22 @@ for pre in ("x=$(printf '%s' ok); ", 'x=$(printf "%s" ok); ', "x=$(echo 'a)b'); 
     assert {it.key for it in items} == {"tool:o/r/x.tgz@v1.2.3"}, (pre, [it.key for it in items])
 PY
 
+CASE="release downloads behind variables, round 6 findings: a variable read only inside \$(( )), a concrete download inside a command substitution, and the caller's env of a local composite call are part of the identity or leave the concrete key alone (REQ-SUP-001-AC2)"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys, json
+s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
+url = "https://github.com/o/r/releases/download/v1.2.3/"
+for path in ("bin/x.sh", "bin/install-scanner.sh"):
+    sc = lambda n: {path: "N=" + str(n) + "\ncurl " + url + "tool-$((N)).tgz\n"}
+    assert inv.moved(inv.inventory(sc(1)), inv.inventory(sc(2))), path
+for run in ('body=$(curl ' + url + 'x.tgz -o "$OUT")', 'body=$(curl ' + url + 'x.tgz)', 'a=`curl ' + url + 'x.tgz -o "$OUT"`', 'b="$(curl ' + url + 'x.tgz -o x)"'):
+    assert set(inv.inventory({"bin/x.sh": run + "\n"})) == {"tool:o/r/x.tgz@v1.2.3"}, run
+action = json.dumps({"name": "x", "runs": {"using": "composite", "steps": [{"shell": "bash", "run": "curl " + url + "${ASSET}.tgz"}]}})
+def tree(asset):
+    wf = {"on": "push", "jobs": {"j": {"runs-on": "ubuntu-latest", "steps": [{"uses": "./.github/actions/x", "env": {"ASSET": asset}}]}}}
+    return {".github/actions/x/action.yml": action, ".github/workflows/x.yml": json.dumps(wf)}
+assert inv.moved(inv.inventory(tree("old")), inv.inventory(tree("new")))
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
