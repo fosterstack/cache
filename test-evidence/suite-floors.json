@@ -48,7 +48,7 @@
  "rescan-current-only-test.sh": 33,
  "rescan-statement-test.sh": 198,
  "scout-root-cause-test.sh": 33,
- "suite-guard-test.sh": 53,
+ "suite-guard-test.sh": 67,
  "supply-chain-wiring-test.sh": 91,
  "vex-both-scanners-test.sh": 7,
  "vex-forms-test.sh": 64,

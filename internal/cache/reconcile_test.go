@@ -112,6 +112,41 @@ func TestReconcileAdoptsOrphanBlob(t *testing.T) {
 	}
 }
 
+// REQ-PROTO-003-AC3: reconciliation maps a blob under the fixed shard back
+// to its own key, and keeps a record whose blob sits there.
+func TestReconcileAdoptsDotLeafBlob(t *testing.T) {
+	blobDir, metaPath := t.TempDir(), filepath.Join(t.TempDir(), "meta.db")
+	blobs, meta := openTestStores(t, blobDir, metaPath)
+	if _, err := blobs.Put("a/..b", strings.NewReader("one")); err != nil {
+		t.Fatalf("seed blob: %v", err)
+	}
+	c := New(blobs, meta)
+	defer func() { _ = c.Close() }()
+	put(t, c, "x/..b", "two")
+
+	stats, err := c.Reconcile(context.Background())
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if stats.AdoptedBlobs != 1 || stats.DroppedRecords != 0 {
+		t.Errorf("stats = %+v, want 1 adopted, 0 dropped", stats)
+	}
+	if n, _ := c.EntryCount(); n != 2 {
+		t.Errorf("EntryCount = %d, want 2", n)
+	}
+	for key, want := range map[string]string{"a/..b": "one", "x/..b": "two"} {
+		rc, _, err := c.Get(context.Background(), key)
+		if err != nil {
+			t.Fatalf("Get %s: %v", key, err)
+		}
+		b, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		if string(b) != want {
+			t.Errorf("Get %s = %q, want %q", key, b, want)
+		}
+	}
+}
+
 // REQ-STORE-005-AC2: a dangling record is dropped and leaves the totals.
 func TestReconcileDropsDanglingRecord(t *testing.T) {
 	blobDir, metaPath := t.TempDir(), filepath.Join(t.TempDir(), "meta.db")
