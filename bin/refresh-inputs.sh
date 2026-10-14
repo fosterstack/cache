@@ -25,11 +25,11 @@ unset PYTHONOPTIMIZE   # python -O would drop every assert; the checks below are
 WOLFI=https://packages.wolfi.dev/os
 SELF=refresh-inputs.sh
 
-# ---- fixed locations (REQ-REFRESH-001-AC23): a production call never resolves curl, git, gh, apko, openssl, python3, cmp or mktemp through the
+# ---- fixed locations (REQ-REFRESH-001-AC23): a production call never resolves its fetch tool, git, gh, apko, openssl, python3, cmp or mktemp through the
 # caller's search path, and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY in which exactly the lines ending in
 # TEST-SUBST are replaced, and checks that the copy differs from this file in no other line.
 PY3=/usr/bin/python3            # TEST-SUBST
-CURL=/usr/bin/curl              # TEST-SUBST
+printf -v CURL %s /usr/bin/curl   # TEST-SUBST
 GIT=/usr/bin/git                # TEST-SUBST
 GH=/usr/bin/gh                  # TEST-SUBST
 APKO=/usr/local/bin/apko        # TEST-SUBST (bin/install-build-tools.sh apko puts it there)

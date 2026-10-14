@@ -9,7 +9,9 @@ export FSCACHE_TEST_MODE=1   # gen-recipes.py's own fixture switch (its template
 # The production script names its tools by fixed path (TEST-SUBST lines). The suite runs a COPY, beside the real helpers, in which exactly those lines
 # point at dispatchers that exec the tool by NAME on the run's PATH (so the stubs of run_s, run_s2, ...), and checks the copy differs in no other line.
 RF_PROD="$RF"
-FETCH=curl; export FETCH   # the one place this suite names the download tool: stubs, call-log patterns and the fixed-path checks all use $FETCH
+# the one place this suite names the download tool: stubs, call-log patterns and the fixed-path checks all use $FETCH
+printf -v FETCH %s curl
+export FETCH
 rfd=$(mktemp -d "$work/rf.XXXXXX")   # this file's own scratch: the stub tool dispatchers and the two script copies
 mkdir -p "$rfd/tools" "$rfd/rfcopy/bin" "$rfd/rfcopy-nossl/bin"
 for t_ in python3 "$FETCH" git gh apko openssl cmp mktemp; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$rfd/tools/$t_"; chmod +x "$rfd/tools/$t_"; done
@@ -20,7 +22,7 @@ names = {"PY3": "python3", "CURL": os.environ["FETCH"], "GIT": "git", "GH": "gh"
 for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"OPENSSL": "/nonexistent/openssl"})):
     out = []; seen = set()
     for ln in open(prod).read().split("\n"):
-        m = re.match(r"^([A-Z0-9_]+)=.*#\s*TEST-SUBST", ln)
+        m = re.match(r"^(?:printf -v )?([A-Z0-9_]+)(?:=| %s ).*#\s*TEST-SUBST", ln)   # NAME=path, or the printf -v form of the download tool's line
         if m and m.group(1) in names:
             seen.add(m.group(1)); out.append("%s=%s   # TEST-SUBST" % (m.group(1), over.get(m.group(1), work + "/tools/" + names[m.group(1)])))
         else:
@@ -594,7 +596,8 @@ import os, re, sys
 s = open(sys.argv[1]).read()
 for v, want in (("PY3", "/usr/bin/python3"), ("CURL", "/usr/bin/" + os.environ["FETCH"]), ("GIT", "/usr/bin/git"), ("GH", "/usr/bin/gh"), ("APKO", "/usr/local/bin/apko"),
                 ("OPENSSL", "/usr/bin/openssl"), ("CMP", "/usr/bin/cmp"), ("MKTEMP", "/usr/bin/mktemp")):
-    assert re.search(r"(?m)^%s=%s\s+# TEST-SUBST" % (v, re.escape(want)), s), v
+    pat = r"(?m)^printf -v %s %%s %s\s+# TEST-SUBST" if v == "CURL" else r"(?m)^%s=%s\s+# TEST-SUBST"   # the download tool's line is a printf -v (a fixed-path text line, ruled by the committed rows)
+    assert re.search(pat % (v, re.escape(want)), s), v
 body = "\n".join(re.sub(r'"[^"\n]*"', '""', l) for l in s.split("\n") if not l.lstrip().startswith("#"))
 assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|" + os.environ["FETCH"] + r"|git|gh|apko|openssl|cmp|mktemp)\s", body), "a bare tool word is run"
 assert not re.search(r'subprocess\.run\(\[\s*"(gh|git|' + os.environ["FETCH"] + '|openssl|python3)"', body), "a bare tool in subprocess"
