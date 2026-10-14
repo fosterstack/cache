@@ -269,6 +269,154 @@
       "key": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
       "line": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "119ed898b16a6a5d4125bb25294a853f278e77d36e1227b83269f13f3e5ec788",
+      "line": "2a5685aea41899f4d5f6f823f5523e858924f3cb4016af6a01d19a04906afd27",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "27692ba5860db84f1942230f6636f720348f111e8bb2982bd127dfb5e92cb402",
+      "line": "27692ba5860db84f1942230f6636f720348f111e8bb2982bd127dfb5e92cb402",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "3cc2fca98203f62a113605f70b345bfecc88187c56eeb0b5c6afb9ae3ab92e8b",
+      "line": "2a2ee121a5926a82d2905648214b840c9e25c3707c24d2f76967be1638cfd509",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "3d702e8e1229afd5788e2b940292571b9c0c2abd2a51e823faea03f0a907f9f8",
+      "line": "3d702e8e1229afd5788e2b940292571b9c0c2abd2a51e823faea03f0a907f9f8",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "40940f38ba973fa5fd41471c0d5dcd73b64bb17737e6a14fac1161e54136be4c",
+      "line": "e7355b5bc808829b00d7b2bbc7669e5b7b15d5c2a300545bdc640caab85ffef0",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "line": "08f143e6c6e8599454dfc76c13158c54e4fac5378308e58841ffe5b29b579250",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "427e4b79b1f0fc90306cbe064b1297b21dc6835bfa656d3bf46bc156e3f24bb0",
+      "line": "82c6c812fee86ae689ac2dfea75552ecfa28b94267d78188bad7acda8e856919",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "6fc127ab64f06952486d23288bf7048ec5c2d9fd4552f2be54a00a156abbc3b8",
+      "line": "0bc0b467824b09faa5608e8172ef831d5e71812379bc4081c4ccc71947188949",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "789c91f5f3c20cc793930c492dc0847aee508dd38f8200107b4ca06149c1a00a",
+      "line": "2a2ee121a5926a82d2905648214b840c9e25c3707c24d2f76967be1638cfd509",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "a140f054600ee82ec724aa3772903b623d3da15916ff37b557611f0626563212",
+      "line": "a140f054600ee82ec724aa3772903b623d3da15916ff37b557611f0626563212",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "a83ecba901e06c4e63ccc29166f3332dac765eef6f6ce972d1b327b0efdbcbaa",
+      "line": "4cbdd4ba92617f35541e389eb19ae212ad6be124a1fd16dd79c44939f6fc8aa9",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "a8e63f170924bae3a23a3a04d64cfd00c5377af418fe8dc4185d9244be8363aa",
+      "line": "e7355b5bc808829b00d7b2bbc7669e5b7b15d5c2a300545bdc640caab85ffef0",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "aae02fd47b1ccf516dd36fd362ce1c028410a22073c1f9e043b14d4672ceac43",
+      "line": "aae02fd47b1ccf516dd36fd362ce1c028410a22073c1f9e043b14d4672ceac43",
+      "ruling": "test stub, no network; handoff 0429",
+      "count": 2
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "b3f23db4d20f7eff2b1ba2726fd2571285b6836315e432d0ff4893b01e320cff",
+      "line": "e7355b5bc808829b00d7b2bbc7669e5b7b15d5c2a300545bdc640caab85ffef0",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "b71ad6f34d750f1e958b243df2beb7dbf5d74d74f00c81a82b4a1f216660cff4",
+      "line": "05812125c8db361a88976bd9fa5d661f3ee872af7bcc3c79ab14a39c83714e68",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "efd3c7bc110be4f80754f2d7840664160403af9cf344b68b60e0fb114ebe98e7",
+      "line": "efd3c7bc110be4f80754f2d7840664160403af9cf344b68b60e0fb114ebe98e7",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "f83524f14b93ec3ff5b082393373e7c6412d50ff55141219d5995b4aa096e9b8",
+      "line": "e7355b5bc808829b00d7b2bbc7669e5b7b15d5c2a300545bdc640caab85ffef0",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "fab798246fb142d6ebe833996cf34716280706bc93e7e333706dfd79015bf092",
+      "line": "0bc0b467824b09faa5608e8172ef831d5e71812379bc4081c4ccc71947188949",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "fed651e9ad6fec752608054266eb6ce89b1b99510547e38e22b832985a435572",
+      "line": "bead78a2dcb7b460805efe375d5044b0b810daea82490e7effb30cfe651d460d",
+      "ruling": "test stub, no network; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "2afc3af632da4990532331736713a96c87afb864e572836dfc733ccbefdbd643",
+      "line": "2afc3af632da4990532331736713a96c87afb864e572836dfc733ccbefdbd643",
+      "ruling": "Wolfi live fetch by the refresh job; rule 48 (no 7-day hold on Wolfi); verified per rules 32 and 28; handoff 0429"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "72f9fa3781851cb13ab62c2cdac47007eb71503b5b11ef8dd06d82a14c0eeb22",
+      "line": "72f9fa3781851cb13ab62c2cdac47007eb71503b5b11ef8dd06d82a14c0eeb22",
+      "ruling": "Wolfi live fetch by the refresh job; rule 48 (no 7-day hold on Wolfi); verified per rules 32 and 28; handoff 0429"
     }
   ]
 }
