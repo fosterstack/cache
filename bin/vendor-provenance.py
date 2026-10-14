@@ -27,7 +27,8 @@ EVIDENCE_SCHEMA = "fosterstack/vendor-evidence/v1"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_EPOCH = 253402300799
 H1 = re.compile(r"h1:[A-Za-z0-9+/]{43}=")
-PSEUDO = re.compile(r"-[0-9]{14}-[0-9a-f]{12}$")
+# every Go pseudo-version form (vX.0.0-TS-REV, vX.Y.Z-0.TS-REV, vX.Y.Z-pre.0.TS-REV), each with an optional +incompatible; REV is the 12-hex commit prefix
+PSEUDO = re.compile(r"[-.](?P<ts>[0-9]{14})-(?P<rev>[0-9a-f]{12})(?:\+incompatible)?$")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 EPOCH = re.compile(r"0|[1-9][0-9]*")
 MODULE_KEYS = {"path", "version", "go_sum_hash", "checksum_log", "origin", "license"}
@@ -66,11 +67,41 @@ def _no_dup(pairs):
     return d
 
 
+def _no_constant(name):
+    raise ValueError("%s is not JSON" % name)
+
+
 def load_json(raw, what):
     try:
-        return json.loads(raw.decode("utf-8"), object_pairs_hook=_no_dup)
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=_no_dup, parse_constant=_no_constant)
     except (UnicodeDecodeError, ValueError) as e:
         refuse("%s is not valid JSON: %s" % (what, e))
+
+
+def load_json_stream(raw, what):
+    """govulncheck -json writes a stream of JSON objects, one message after another; every message must be an object, none may be cut short,
+    and no non-JSON constant is read (the original bytes, not this reading, are what the evidence hashes)"""
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        refuse("%s is not valid UTF-8: %s" % (what, e))
+    dec = json.JSONDecoder(object_pairs_hook=_no_dup, parse_constant=_no_constant)
+    pos, n, count = 0, len(text), 0
+    while True:
+        while pos < n and text[pos] in " \t\r\n":
+            pos += 1
+        if pos >= n:
+            break
+        try:
+            val, pos = dec.raw_decode(text, pos)
+        except ValueError as e:
+            refuse("%s is not a stream of JSON messages: %s" % (what, e))
+        if not isinstance(val, dict):
+            refuse("%s: message %d is not a JSON object" % (what, count + 1))
+        count += 1
+    if count == 0:
+        refuse("%s holds no JSON message" % what)
+    return count
 
 
 def parse_args(argv, flags, optional=()):
@@ -123,6 +154,8 @@ def go_sum(path):
         mod, ver, h = parts
         if ver.endswith("/go.mod"):
             continue
+        if (mod, ver) in out and out[(mod, ver)] != h:
+            refuse("go.sum:%d: %s %s has two different hashes (conflict)" % (n, mod, ver))
         out[(mod, ver)] = h
     return out
 
@@ -219,8 +252,8 @@ def recorded_origins(path, want, origins):
         if not COMMIT.fullmatch(e["commit"]):
             refuse("module %s: the recorded commit is not 40 hex characters" % name)
         m = PSEUDO.search(ver)
-        if m and not e["commit"].startswith(ver[-12:]):
-            refuse("module %s: the recorded commit does not match the pseudo-version's hash prefix %s" % (name, ver[-12:]))
+        if m and not e["commit"].startswith(m.group("rev")):
+            refuse("module %s: the recorded commit does not match the pseudo-version's hash prefix %s" % (name, m.group("rev")))
         out[key] = {"url": e["url"], "commit": e["commit"]} if m else {"url": e["url"], "tag": ver}
     return out
 
@@ -270,7 +303,7 @@ def cmd_build(argv):
 def cmd_evidence(argv):
     a = parse_args(argv, ["--out", "--provenance", "--govulncheck", "--date"])
     date = a["--date"]
-    if not EPOCH.fullmatch(date) or int(date) > MAX_EPOCH:
+    if not EPOCH.fullmatch(date) or len(date) > len(str(MAX_EPOCH)) or int(date) > MAX_EPOCH:
         refuse("--date must be epoch digits (0 to %d), not %r" % (MAX_EPOCH, date))
     out_dir = a["--out"]
     if os.path.lexists(out_dir) and not os.path.isdir(out_dir):
@@ -278,7 +311,7 @@ def cmd_evidence(argv):
     praw = read_regular(a["--provenance"], "provenance")
     _, mods = read_provenance(praw, a["--provenance"])
     graw = read_regular(a["--govulncheck"], "govulncheck result")
-    load_json(graw, "govulncheck result")
+    load_json_stream(graw, "govulncheck result")
     day = datetime.datetime.fromtimestamp(int(date), datetime.timezone.utc).strftime("%Y-%m-%d")
     doc = {"schema": EVIDENCE_SCHEMA, "mode": "vendor",
            "provenance": {"sha256": hashlib.sha256(praw).hexdigest(), "modules": len(mods)},
@@ -286,8 +319,20 @@ def cmd_evidence(argv):
            "date": {"epoch": int(date), "utc": day}}
     text = json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n"
     os.makedirs(out_dir, exist_ok=True)
-    with open(os.path.join(out_dir, "vendor-evidence.json"), "w", encoding="utf-8") as fh:
-        fh.write(text)
+    final = os.path.join(out_dir, "vendor-evidence.json")
+    tmp = os.path.join(out_dir, ".vendor-evidence.json.tmp-%d" % os.getpid())
+    try:                                  # a sibling temporary file, replaced into place only once complete: a failure leaves nothing partial
+        with open(tmp, "x", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, final)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return 0
 
 

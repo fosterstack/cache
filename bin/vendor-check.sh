@@ -81,8 +81,8 @@ modeodd=$(find "$src/vendor" -type f ! -perm 644 -print -quit)
 [ -z "$modeodd" ] || die "vendor/ holds a file whose mode is not 100644 (mode): $modeodd" 1
 
 # A vendored .gitattributes can change what a checkout or a release archive holds without changing a committed byte. Only plain `text`
-# and `eol=lf` pass among the text/eol forms; any other form of a git-acting attribute, a macro, or a line this reader cannot
-# tokenize fails closed, naming file:line. Plain ASCII text, at most 1 MB, no NUL byte.
+# and `eol=lf` pass among the text/eol forms, and linguist-* labels; every other attribute (closed list, so a name this reader does not know
+# is refused too), a macro, or a line this reader cannot tokenize fails closed, naming file:line. Plain ASCII text, at most 1 MB, no NUL byte.
 oversize=$(find "$src/vendor" -name .gitattributes -type f -size +1048576c -print -quit)
 [ $? -eq 0 ] || die "vendor/ could not be listed in full" 1
 [ -z "$oversize" ] || die "$oversize is larger than 1 MB: the .gitattributes reader refuses what it cannot read in full" 1
@@ -91,10 +91,6 @@ nplain=$(find "$src/vendor" -name .gitattributes -type f -exec cat {} + | tr -d 
 [ "$((nbytes))" -eq "$((nplain))" ] || die "a vendored .gitattributes holds a NUL byte" 1
 find "$src/vendor" -name .gitattributes -type f -exec env LC_ALL=C awk '
 function fail(msg) { print "vendor-check.sh: " FILENAME ":" FNR ": " msg > "/dev/stderr"; exit 1 }
-BEGIN {
-  n = split("export-ignore export-subst filter diff merge ident text eol crlf binary working-tree-encoding", names, " ")
-  for (k = 1; k <= n; k++) forbidden[names[k]] = 1
-}
 {
   line = $0
   if (line ~ /[^\11\40-\176]/) fail("a byte the .gitattributes reader does not read (not plain ASCII text)")
@@ -114,10 +110,9 @@ BEGIN {
     if (eq > 0) { name = substr(v, 1, eq - 1); val = substr(v, eq + 1); hasval = 1 }
     if (name !~ /^[A-Za-z0-9_.][A-Za-z0-9_.-]*$/) fail("an attribute the reader cannot tokenize: " a)
     if (hasval && (pre != "" || val == "" || val ~ /=/)) fail("an attribute form the reader cannot tokenize: " a)
-    if (tolower(name) in forbidden) {
-      if (a == "text" || a == "eol=lf") continue
-      fail("a git-acting attribute that is not allowed (only text and eol=lf pass): " a)
-    }
+    if (a == "text" || a == "eol=lf") continue                      # the only text/eol forms that pass
+    if (pre == "" && name ~ /^linguist-[a-z-]+$/) continue           # a classification label for a code host: git does nothing with it
+    fail("an attribute that is not on the closed list (text, eol=lf and linguist-*): " a)
   }
 }' {} + || die "a vendored .gitattributes was refused (see above) or could not be read" 1
 
