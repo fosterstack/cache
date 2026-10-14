@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"errors"
 	"io"
 	"log/slog"
@@ -97,10 +98,20 @@ const (
 // (REQ-HTTP-001) around the handler from New. Every timeout is explicit:
 // an unset Go timeout is infinite, and an infinite timeout is a resource
 // leak with a slow-enough client attached.
-func NewHTTPServer(addr string, h http.Handler) *http.Server {
+//
+// tlsCfg, when non-nil, is the TLS configuration from TLSConfig and the
+// server is then served with ServeTLS (REQ-TLS-001); nil keeps plain HTTP.
+// Either way the server speaks HTTP/1 only (REQ-TLS-001-AC9): HTTP/2, over
+// TLS or unencrypted, is not offered, so the request bounds are the same
+// on both listeners.
+func NewHTTPServer(addr string, h http.Handler, tlsCfg *tls.Config) *http.Server {
+	var protocols http.Protocols
+	protocols.SetHTTP1(true)
 	return &http.Server{
 		Addr:              addr,
 		Handler:           h,
+		TLSConfig:         tlsCfg,
+		Protocols:         &protocols,
 		ReadHeaderTimeout: ReadHeaderTimeout,
 		ReadTimeout:       ReadTimeout,
 		WriteTimeout:      WriteTimeout,
