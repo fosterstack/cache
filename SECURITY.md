@@ -56,9 +56,9 @@ workflow artifacts; every scanner in the list scans those exact images, and
 the acceptance suites run against them; the Release stage first verifies the signed
 record of every earlier stage, and only the steps after that one read the
 registry and signing secrets; they push the same image bytes by digest to the
-public registries and read each registry back. The scan verdict attaches to the published digests
-because they are the scanned digests. Each scanner's
-verdict is a signed, digest-bound statement (see
+public registries and read each registry back, and the release stops if a digest read back differs
+from the attested one. The scan verdict attaches to the published digests because they are the
+scanned digests. Each scanner's verdict is a signed, digest-bound statement (see
 [docs/verify-images.md](docs/verify-images.md)), and the daily rescan
 re-checks the current release's published digests against newly disclosed CVEs.
 
