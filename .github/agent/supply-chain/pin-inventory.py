@@ -116,6 +116,7 @@ def _hide(text):
 class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
+        self.rawid = False   # the item's name is a release asset's: it is identified by the RAW text of its step (a "latest" download included)
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
         self.raw = None  # a file item's repository path, exactly as git names it (name goes through _hide(); REQ-SUP-001-AC21 compares this)
         self.src = None  # (script path, line id) of the script line that made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to that line
@@ -420,10 +421,10 @@ def _step(node, out, labels):
     if isinstance(run, str):
         legacy = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
         legacy_tag = "step:" + hashlib.sha256(legacy.encode("utf-8", "replace")).hexdigest()       # the identity every other placeholder item has always had: its key must not move
-        ctx = run + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign")) + "\0" + _INPUT_CTX[0]   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
+        ctx = node.get("_raw", run) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign")) + "\0" + _INPUT_CTX[0]   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
         k = 0
         for it in out[n0:]:
-            if "${" in (it.path or "") and not it.step:
+            if ("${" in (it.path or "") or it.rawid) and not it.step:
                 k += 1
                 it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart
             elif _NONPIN.search(it.version or "") and not it.step:
@@ -450,7 +451,9 @@ def _step_items(node, out, labels):
                 elif not tok.startswith("-") and "$" in tok:
                     out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
-            out.append(Item("tool", m.group(1), "latest"))
+            it = Item("tool", m.group(1), "latest")
+            it.rawid = True      # a "latest" download is an item that cannot be proven: its step's raw text, an expression's literals included, is its identity
+            out.append(it)
         for sub, tail in _docker_tails(run):
             images, pull = _docker_operand(tail)
             local_only = sub in ("run", "create") and pull == "never"
@@ -555,9 +558,9 @@ def inventory(files):
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
             sjoined, sraw = _script_lines(text)
             sctx = _assign_context(sjoined, sraw)
-            for ln, lid, actx in zip(sjoined, _line_ids(text), sctx):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
+            for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
                 before = len(found)
-                _step({"run": ln, "_assign": actx} if actx else {"run": ln}, found, {})
+                _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
@@ -576,10 +579,12 @@ def inventory(files):
                     assigns[am.group(1)] = am.group(2)
             _j2, _raw2 = _script_lines(text)
             gctx = _assign_context(_j2, _raw2) if len(_j2) == len(joined) else [[ln for ln in joined]] * len(joined)   # a line count that differs is read whole: fail closed
-            for ln, lid, actx in zip(joined, _line_ids(text), gctx):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
+            graw = _raw2 if len(_raw2) == len(joined) else joined
+            for ln, lid, actx, rawln in zip(joined, _line_ids(text), gctx, graw):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
                 refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
                 before = len(found)
                 node = {"run": ln, "env": refs} if refs else {"run": ln}
+                node["_raw"] = rawln
                 if actx:
                     node["_assign"] = actx
                 _step(node, found, {})
