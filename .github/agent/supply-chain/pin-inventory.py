@@ -232,8 +232,11 @@ def _uses(u, node, out, labels):
         out.append(_image_item(u[len("docker://"):]))
     elif u.startswith("./"):
         it = Item("action", _local_name(raw), "(local)")
-        if isinstance(node.get("with"), dict) and node["with"]:
-            it.step = "with:" + hashlib.sha256(json.dumps(node["with"], sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()   # what a step hands a local action is part of the call: a changed value is a moved item
+        keys = ("with",) if _LOCAL_CALL.match(u) else ("with", "env")        # a local action also gets the calling step's env; a local workflow call keeps its with: only (its job-level identity is set where its jobs are read)
+        callctx = {k: node[k] for k in keys if isinstance(node.get(k), dict) and node[k]}
+        if callctx:
+            payload = callctx["with"] if list(callctx) == ["with"] else callctx      # with: alone hashes as it always has (a local workflow call's row identity)
+            it.step = "with:" + hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()   # what a step hands a local action is part of the call: a changed value is a moved item
         out.append(it)   # the RAW spelling is the identity: a padded reference is never the exact one (REQ-SUP-001-AC19). A local action outside the globs: its content is not read, so a new one cannot pass
     elif u and "${{" not in u:
         ref_path, _, ref = u.partition("@")
@@ -317,11 +320,19 @@ def _asset_word(text, start):
     name; the quote that held the whole URL closing does not end it ("url/tool-"${A}.tgz is one word). A name with a substitution in it is returned whole; the
     caller keeps the plain match for a concrete name."""
     i, n, depth, stack = text.rfind("\n", 0, start) + 1, len(text), 0, []    # stack of (quote char, substitution depth it was opened at); quote state is read from the line start
+    bt = []                                                                    # depths at which a backtick substitution is open
+    d0 = s0 = -1                                                              # the depth and quote depth the name itself starts at: its word ends there
     while i < n:
         c = text[i]
+        if i == start:
+            d0, s0 = depth, len(stack)
         in_string = bool(stack) and (stack[-1][0] == "'" or depth == stack[-1][1])
-        if i >= start and depth == 0 and c in "?#":
+        if i >= start and depth == d0 and c in "?#":
             break
+        if i >= start and c == ")" and depth == d0 and d0 > 0 and len(stack) == s0:
+            break                            # the substitution that holds the name closes: the name is over
+        if i >= start and c == "`" and bt and bt[-1] == d0 and d0 > 0 and len(stack) == s0 and not (stack and stack[-1][0] == "'"):
+            break                            # the backticks that hold the name close
         if stack and stack[-1][0] == "'":
             if c == "'":
                 stack.pop()
@@ -337,8 +348,10 @@ def _asset_word(text, start):
             if c == "\\" and i + 1 < n:
                 i += 1
             elif c == "`":
-                j = text.find("`", i + 1)
-                i = n if j < 0 else j
+                if bt and depth == bt[-1]:
+                    bt.pop(); depth -= 1
+                else:
+                    bt.append(depth + 1); depth += 1
             elif c == "$" and text[i + 1:i + 2] == "(":
                 depth += 1
                 i += 1
@@ -346,7 +359,7 @@ def _asset_word(text, start):
                 depth -= 1
             elif c in "'\"":
                 stack.append((c, depth))
-            elif i >= start and depth == 0 and not stack and (c.isspace() or c in ";|&<>)"):
+            elif i >= start and depth == d0 and len(stack) == s0 and (c.isspace() or c in ";|&<>)"):
                 break
         i += 1
     return text[start:i]
@@ -396,7 +409,11 @@ def _assign_context(joined, raw):
         for name in set(m.group(1) for m in _ASSIGN_ANY.finditer(jl)):
             byname.setdefault(name, []).append((order, jl, rl))
         order += 1
-    refs = lambda t: set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", t))
+    def refs(t):
+        names = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", t))
+        if "((" in t:
+            names |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", t))     # a bare name inside $(( )) or (( )) is read: take every identifier of the line
+        return names
     for jl in joined:
         if "releases/" not in jl:
             yield []

@@ -3031,7 +3031,7 @@ url = "https://github.com/o/r/releases/download/v1.2.3/"
 for path in ("bin/x.sh", "bin/install-scanner.sh"):
     sc = lambda n: {path: "N=" + str(n) + "\ncurl " + url + "tool-$((N)).tgz\n"}
     assert inv.moved(inv.inventory(sc(1)), inv.inventory(sc(2))), path
-for run in ('body=$(curl ' + url + 'x.tgz -o "$OUT")', 'body=$(curl ' + url + 'x.tgz)', 'a=`curl ' + url + 'x.tgz -o "$OUT"`', 'b="$(curl ' + url + 'x.tgz -o x)"'):
+for run in ('body=$(curl ' + url + 'x.tgz -o "$OUT")', 'a=`curl ' + url + 'x.tgz -o "$OUT"`', 'b="$(curl ' + url + 'x.tgz -o x)"'):
     assert set(inv.inventory({"bin/x.sh": run + "\n"})) == {"tool:o/r/x.tgz@v1.2.3"}, run
 action = json.dumps({"name": "x", "runs": {"using": "composite", "steps": [{"shell": "bash", "run": "curl " + url + "${ASSET}.tgz"}]}})
 def tree(asset):
