@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,13 +15,17 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/fosterstack/cache/internal/blobstore"
 	"github.com/fosterstack/cache/internal/cache"
+	"github.com/fosterstack/cache/internal/metadata"
+	"github.com/fosterstack/cache/internal/server"
 )
 
 var (
@@ -26,6 +33,7 @@ var (
 	errTestClose       = errors.New("test: close failed")
 	errTestShutdown    = errors.New("test: shutdown failed")
 	errTestClearMarker = errors.New("test: clear marker failed")
+	errTestServe       = errors.New("test: serve failed")
 )
 
 func quietLogger() *slog.Logger {
@@ -83,16 +91,15 @@ func TestServeGracefulShutdown(t *testing.T) {
 	}
 }
 
-// A bad listen address makes the server goroutine error; serve returns
-// that error rather than blocking forever.
+// A bad listen address is refused at startup (REQ-CFG-004).
 func TestServeListenError(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
 	t.Setenv("FSCACHE_DATA_DIR", t.TempDir())
 	t.Setenv("FSCACHE_ADDR", "256.256.256.256:99999") // unbindable
 	err := serve(context.Background(), quietLogger(), nil)
-	if err == nil || !strings.Contains(err.Error(), "serve") {
-		t.Fatalf("serve error = %v, want a serve error", err)
+	if err == nil || !strings.Contains(err.Error(), "FSCACHE_ADDR") {
+		t.Fatalf("serve error = %v, want a refusal naming FSCACHE_ADDR", err)
 	}
 }
 
@@ -272,8 +279,10 @@ func TestServeMetaOpenError(t *testing.T) {
 	}
 }
 
-// An unclean marker plus a reconcile that fails aborts startup before
-// serving.
+// REQ-STORE-005-AC4: an unclean marker plus a reconcile that fails aborts
+// startup before serving, naming the reconciliation failure; the stores
+// are closed and the marker is still present, so the next start
+// reconciles again.
 func TestServeReconcileError(t *testing.T) {
 	clearEnv(t)
 	freshRegistry(t)
@@ -288,9 +297,168 @@ func TestServeReconcileError(t *testing.T) {
 		return cache.ReconcileStats{}, errTestReconcile
 	}
 	defer func() { cacheReconcile = orig }()
-	if err := serve(context.Background(), quietLogger(), nil); err == nil ||
+	origClose := cacheClose
+	closes := 0
+	cacheClose = func(c *cache.Cache) error { closes++; return origClose(c) }
+	defer func() { cacheClose = origClose }()
+
+	served := false
+	if err := serve(context.Background(), quietLogger(), func() { served = true }); err == nil ||
 		!strings.Contains(err.Error(), "reconciliation") {
 		t.Fatalf("serve error = %v, want a reconciliation error", err)
+	}
+	if served {
+		t.Error("serve reached the serving stage after a failed reconcile")
+	}
+	if closes != 1 {
+		t.Errorf("stores closed %d times, want 1", closes)
+	}
+	// The index can be opened again: the failed start released it.
+	meta, err := metadata.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatalf("reopen the index after the failed start: %v", err)
+	}
+	if err := meta.Close(); err != nil {
+		t.Fatalf("close the reopened index: %v", err)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a failed reconcile, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC4, the same mechanism for a panic inside the startup
+// reconcile: the panic is not swallowed, the stores are closed and the
+// marker is still present, so the next start reconciles again.
+func TestServeReconcilePanicKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	const boom = "test: reconcile panicked"
+	orig := cacheReconcile
+	cacheReconcile = func(*cache.Cache, context.Context) (cache.ReconcileStats, error) { panic(boom) }
+	defer func() { cacheReconcile = orig }()
+	origClose := cacheClose
+	closes := 0
+	cacheClose = func(c *cache.Cache) error { closes++; return origClose(c) }
+	defer func() { cacheClose = origClose }()
+
+	recovered := func() (r any) {
+		defer func() { r = recover() }()
+		_ = serve(context.Background(), quietLogger(), nil)
+		return nil
+	}()
+	if recovered != boom {
+		t.Fatalf("recovered %v from serve, want the reconcile panic %q to propagate", recovered, boom)
+	}
+	if closes != 1 {
+		t.Errorf("stores closed %d times, want 1", closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a panic in reconcile, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC4, the resume: a first start whose reconcile changes the
+// index (one blob indexed) and then fails leaves the marker, so the second
+// start runs the real reconcile, logs the reconciled line, adopts the rest
+// and removes the stale temporary file left in +tmp.
+func TestServeReconcileResumesAfterAFailedStart(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+
+	// Three blobs with no index records, as after a crash between the writes.
+	blobs, err := blobstore.New(filepath.Join(dir, "blobs"))
+	if err != nil {
+		t.Fatalf("open blob store: %v", err)
+	}
+	keys := []string{"orphan-one", "orphan-two", "orphan-three"}
+	for _, k := range keys {
+		if _, err := blobs.Put(k, strings.NewReader("bytes of "+k)); err != nil {
+			t.Fatalf("seed blob %s: %v", k, err)
+		}
+	}
+	if err := blobs.Close(); err != nil {
+		t.Fatalf("close blob store: %v", err)
+	}
+	// A temporary file from an interrupted write, in the store's +tmp directory.
+	stray := filepath.Join(dir, "blobs", "+tmp", ".tmp-cafecafecafecafecafecafecafecafe")
+	if err := os.MkdirAll(filepath.Dir(stray), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stray, []byte("interrupted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeMarker(uncleanMarkerPath(dir)); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+
+	// First start: the reconcile indexes one blob, then fails.
+	orig := cacheReconcile
+	cacheReconcile = func(c *cache.Cache, ctx context.Context) (cache.ReconcileStats, error) {
+		if _, err := c.Put(ctx, keys[0], strings.NewReader("bytes of "+keys[0])); err != nil {
+			return cache.ReconcileStats{}, err
+		}
+		return cache.ReconcileStats{AdoptedBlobs: 1}, errTestReconcile
+	}
+	err = serve(context.Background(), quietLogger(), nil)
+	cacheReconcile = orig
+	if err == nil || !strings.Contains(err.Error(), "reconciliation") {
+		t.Fatalf("first start error = %v, want a reconciliation error", err)
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); !present {
+		t.Fatal("marker gone after the failed first start")
+	}
+	if _, err := os.Stat(stray); err != nil {
+		t.Fatalf("stale temp file gone before the resumed reconcile (stat err %v): the test would prove nothing", err)
+	}
+
+	// Second start: the real reconcile runs and adopts the other two.
+	freshRegistry(t)
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx, cancel := context.WithCancel(context.Background())
+	errc := make(chan error, 1)
+	go func() { errc <- serve(ctx, log, func() { cancel() }) }()
+	select {
+	case err := <-errc:
+		if err != nil {
+			t.Fatalf("second start returned %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("second start did not shut down")
+	}
+	out := logs.String()
+	if !strings.Contains(out, "fscache: reconciled") || !strings.Contains(out, "adopted_blobs=2") {
+		t.Errorf("second start log lacks the reconciled line with adopted_blobs=2:\n%s", out)
+	}
+	if !strings.Contains(out, "removed_temp_files=1") {
+		t.Errorf("second start log lacks removed_temp_files=1:\n%s", out)
+	}
+	if _, err := os.Stat(stray); !os.IsNotExist(err) {
+		t.Errorf("stale temp file still in +tmp after the resumed reconcile (stat err %v)", err)
+	}
+	meta, err := metadata.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatalf("reopen the index: %v", err)
+	}
+	defer func() {
+		if err := meta.Close(); err != nil {
+			t.Errorf("close the index: %v", err)
+		}
+	}()
+	if n, err := meta.Count(); err != nil || n != len(keys) {
+		t.Errorf("index holds %d entries (err %v), want %d", n, err, len(keys))
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); present {
+		t.Error("marker still present after the clean second run")
 	}
 }
 
@@ -343,6 +511,653 @@ func TestServeShutdownError(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("serve did not return")
+	}
+}
+
+// countCloses wraps the cacheClose seam and counts the calls.
+func countCloses(t *testing.T) *int {
+	t.Helper()
+	orig := cacheClose
+	n := new(int)
+	cacheClose = func(c *cache.Cache) error { *n++; return orig(c) }
+	t.Cleanup(func() { cacheClose = orig })
+	return n
+}
+
+// REQ-STORE-005-AC5, the serving error: after the startup reconcile
+// completed, Serve fails; serve returns an error naming it, the stores are
+// closed once and the marker is still present.
+func TestServeErrorKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	if err := writeMarker(uncleanMarkerPath(dir)); err != nil { // the reconcile runs and completes
+		t.Fatalf("seed marker: %v", err)
+	}
+	closes := countCloses(t)
+	orig := httpServe
+	httpServe = func(*http.Server, net.Listener) error { return errTestServe }
+	defer func() { httpServe = orig }()
+
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	err := serve(context.Background(), log, nil)
+	if err == nil || !errors.Is(err, errTestServe) || !strings.Contains(err.Error(), "serve:") {
+		t.Fatalf("serve error = %v, want a serve error wrapping %v", err, errTestServe)
+	}
+	if !strings.Contains(logs.String(), "fscache: reconciled") {
+		t.Fatalf("the startup reconcile did not complete first:\n%s", logs.String())
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a serving error, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC5, the shutdown error with an upload in flight: a PUT
+// whose body has not finished arriving holds a handler open; the shutdown
+// fails (the grace period expired), the HTTP server is forced closed before
+// the handler finishes, and the marker is still present.
+func TestServeShutdownErrorWithUploadInFlightKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	addr := freePort(t)
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", addr)
+	closes := countCloses(t)
+	orig := httpShutdown
+	httpShutdown = func(*http.Server, context.Context) error { return context.DeadlineExceeded }
+	defer func() { httpShutdown = orig }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	readyc := make(chan struct{})
+	errc := make(chan error, 1)
+	go func() { errc <- serve(ctx, quietLogger(), func() { close(readyc) }) }()
+	select {
+	case <-readyc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not become ready")
+	}
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	// Ten of the declared hundred bytes: the handler waits for the rest.
+	if _, err := io.WriteString(conn, "PUT /in-flight-key HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n0123456789"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	// The blob store creates its temporary file before it reads the body:
+	// once one exists, the handler is in flight.
+	tmpDir := filepath.Join(dir, "blobs", "+tmp")
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if entries, _ := os.ReadDir(tmpDir); len(entries) > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the upload never reached the blob store")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	cancel()
+	select {
+	case err := <-errc:
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "shutdown:") {
+			t.Fatalf("serve error = %v, want a shutdown error wrapping %v", err, context.DeadlineExceeded)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not return")
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a shutdown error with an upload in flight, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC5, the orphan: an upload whose blob was renamed into
+// place but never indexed when the stores closed after a shutdown error
+// (its record and its rollback delete both meet closed stores). The marker
+// is still present, so the next start reconciles, adopts the blob
+// (adopted_blobs=1) and, after its clean shutdown, clears the marker.
+func TestServeShutdownErrorOrphanAdoptedOnNextStart(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+
+	origShutdown := httpShutdown
+	httpShutdown = func(*http.Server, context.Context) error { return context.DeadlineExceeded }
+	origClose := cacheClose
+	// The stores close after the forced HTTP close; at that moment the
+	// in-flight upload's blob is in place with no index record. A second
+	// handle on the same blob directory puts it there, the way the
+	// handler's rename did.
+	cacheClose = func(c *cache.Cache) error {
+		b, err := blobstore.New(filepath.Join(dir, "blobs"))
+		if err != nil {
+			return err
+		}
+		if _, err := b.Put("orphan-key", strings.NewReader("stored, never indexed")); err != nil {
+			return err
+		}
+		if err := b.Close(); err != nil {
+			return err
+		}
+		return origClose(c)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	err := serve(ctx, quietLogger(), func() { cancel() })
+	httpShutdown, cacheClose = origShutdown, origClose
+	if err == nil || !strings.Contains(err.Error(), "shutdown:") {
+		t.Fatalf("first run error = %v, want a shutdown error", err)
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); !present {
+		t.Fatal("marker gone after the shutdown error")
+	}
+
+	// Next start: reconcile adopts the orphan; a clean shutdown clears the marker.
+	freshRegistry(t)
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	if err := serve(ctx2, log, func() { cancel2() }); err != nil {
+		t.Fatalf("next start returned %v", err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "fscache: reconciled") || !strings.Contains(out, "adopted_blobs=1") {
+		t.Errorf("next start log lacks the reconciled line with adopted_blobs=1:\n%s", out)
+	}
+	meta, err := metadata.Open(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatalf("reopen the index: %v", err)
+	}
+	defer func() {
+		if err := meta.Close(); err != nil {
+			t.Errorf("close the index: %v", err)
+		}
+	}()
+	if n, err := meta.Count(); err != nil || n != 1 {
+		t.Errorf("index holds %d entries (err %v), want the adopted orphan", n, err)
+	}
+	if present, _ := markerPresent(uncleanMarkerPath(dir)); present {
+		t.Error("marker still present after the clean next run")
+	}
+}
+
+// proves: REQ-STORE-005-AC5 — end to end over real sockets, plain and TLS: an upload held in flight, a real serving error, then a restart on the same data directory
+//
+// Nothing here stands in for the server: Serve / ServeTLS are the real
+// methods (the seam only hands the test the listener they were given), the
+// upload is a real PUT whose body the test holds open after its first ten
+// bytes, and the serving error is real: the listener is closed under the
+// running server, whose accept loop then fails with net.ErrClosed. serve
+// returns that error, the stores are closed once, and the marker is kept.
+// A second serve on the same data directory finds the marker, reconciles
+// before it serves, keeps the upload that completed before the error (served,
+// counted the same by /statusz and /metrics), and does not adopt the held,
+// partial upload (404, adopted_blobs=0, no temporary file left behind).
+// The first run starts without a marker; the startup reconcile is the second start's.
+//
+// What it does not hold open: the window between a completed upload's
+// rename and its index record is a few instructions inside cache.Put, with
+// no point a socket can block on, so a real handler cannot be parked there.
+// The adoption of such a blob is TestServeShutdownErrorOrphanAdoptedOnNextStart.
+func TestServeRealServingErrorWithUploadInFlightThenRestart(t *testing.T) {
+	for _, withTLS := range []bool{false, true} {
+		name := "plain"
+		if withTLS {
+			name = "tls"
+		}
+		t.Run(name, func(t *testing.T) { realServingErrorThenRestart(t, withTLS) })
+	}
+}
+
+func realServingErrorThenRestart(t *testing.T, withTLS bool) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	addr := freePort(t)
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", addr)
+	scheme := "http"
+	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	dial := func() (net.Conn, error) { return net.DialTimeout("tcp", addr, 10*time.Second) }
+	if withTLS {
+		p := writePair(t, t.TempDir(), "ac5e2e", "MARKER-AC5E2E-7f3d9c")
+		t.Setenv("FSCACHE_TLS_CERT", p.certPath)
+		t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+		scheme = "https"
+		client = tlsTestClient(p.leaf)
+		pool := x509.NewCertPool()
+		pool.AddCert(p.leaf)
+		dial = func() (net.Conn, error) {
+			d := &net.Dialer{Timeout: 10 * time.Second}
+			return tls.DialWithDialer(d, "tcp", addr, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+		}
+	}
+	base := scheme + "://" + addr
+	do := func(method, path, body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(method, base+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("request %s %s: %v", method, path, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("read %s %s: %v", method, path, err)
+		}
+		return resp.StatusCode, string(b)
+	}
+
+	// The real Serve / ServeTLS, with the listener handed to the test. The
+	// other one fails the test if serve calls it.
+	lnc := make(chan net.Listener, 2)
+	origPlain, origTLS := httpServe, httpServeTLS
+	t.Cleanup(func() { httpServe, httpServeTLS = origPlain, origTLS })
+	wrong := func(*http.Server, net.Listener) error {
+		t.Error("serve chose the wrong serving path")
+		return nil
+	}
+	httpServe, httpServeTLS = func(s *http.Server, l net.Listener) error {
+		lnc <- l
+		return origPlain(s, l)
+	}, wrong
+	if withTLS {
+		httpServe, httpServeTLS = wrong, func(s *http.Server, l net.Listener) error {
+			lnc <- l
+			return origTLS(s, l)
+		}
+	}
+
+	// First run: no marker at start, so no reconcile; the marker is written.
+	closes := countCloses(t)
+	readyc := make(chan struct{})
+	errc := make(chan error, 1)
+	go func() { errc <- serve(context.Background(), quietLogger(), func() { close(readyc) }) }()
+	select {
+	case <-readyc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("first run did not become ready")
+	}
+	var ln net.Listener
+	select {
+	case ln = <-lnc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the serving goroutine never received the listener")
+	}
+
+	// An upload that completes before the error: stored and indexed.
+	const doneBody = "completed before the serving error"
+	if code, _ := do(http.MethodPut, "/done-key", doneBody); code != http.StatusCreated {
+		t.Fatalf("PUT /done-key answered %d, want 201", code)
+	}
+
+	// The held upload: ten of the declared hundred bytes, then nothing.
+	held, err := dial()
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer func() { _ = held.Close() }()
+	if _, err := io.WriteString(held, "PUT /held-key HTTP/1.1\r\nHost: test\r\nContent-Length: 100\r\n\r\n0123456789"); err != nil {
+		t.Fatalf("write the held request: %v", err)
+	}
+	// The blob store creates its temporary file before it copies the body,
+	// so the file existing is not enough: wait until it holds the ten bytes
+	// sent so far. Then the handler is in flight, mid-copy, held on the rest.
+	const heldSent = 10
+	tmpDir := filepath.Join(dir, "blobs", "+tmp")
+	var heldSize int64 = -1
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if entries, _ := os.ReadDir(tmpDir); len(entries) == 1 {
+			if fi, err := entries[0].Info(); err == nil {
+				heldSize = fi.Size()
+			}
+		}
+		if heldSize == heldSent {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the held upload's temporary file holds %d bytes after 10s (-1: none), want the %d sent", heldSize, heldSent)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if heldSize != heldSent {
+		t.Fatalf("held upload size = %d, want %d", heldSize, heldSent)
+	}
+
+	// The real serving error: the listener fails under the running server.
+	if err := ln.Close(); err != nil {
+		t.Fatalf("close the listener: %v", err)
+	}
+	select {
+	case err := <-errc:
+		if err == nil || !errors.Is(err, net.ErrClosed) || !strings.Contains(err.Error(), "serve:") {
+			t.Fatalf("first run error = %v, want a serve error wrapping %v", err, net.ErrClosed)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("first run did not return on the serving error")
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Fatalf("unclean marker present = %v (err %v) after a serving error with an upload in flight, want true", present, err)
+	}
+	// The held upload was cut, never answered: the server closed its
+	// connection before the handler finished.
+	if err := held.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("read deadline: %v", err)
+	}
+	got, rerr := io.ReadAll(held)
+	var ne net.Error
+	if errors.As(rerr, &ne) && ne.Timeout() {
+		t.Fatal("the held upload's connection is still open after serve returned")
+	}
+	if len(got) != 0 {
+		t.Errorf("the held upload was answered: %q", got)
+	}
+	_ = held.Close()
+
+	// Second run on the same data directory.
+	freshRegistry(t)
+	var logs syncBuffer
+	log := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	ready2 := make(chan struct{})
+	errc2 := make(chan error, 1)
+	go func() { errc2 <- serve(ctx2, log, func() { close(ready2) }) }()
+	select {
+	case <-ready2:
+	case err := <-errc2:
+		t.Fatalf("second run returned before it was ready: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("second run did not become ready")
+	}
+	select {
+	case <-lnc:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the second run's serving goroutine never received the listener")
+	}
+	out := logs.String() // the reconcile runs before ready
+	if !strings.Contains(out, "unclean shutdown detected") || !strings.Contains(out, "fscache: reconciled") {
+		t.Fatalf("second run did not reconcile before serving:\n%s", out)
+	}
+	if !strings.Contains(out, "adopted_blobs=0") {
+		t.Errorf("second run adopted a blob; the held upload was partial:\n%s", out)
+	}
+	if code, body := do(http.MethodGet, "/done-key", ""); code != http.StatusOK || body != doneBody {
+		t.Errorf("GET /done-key = %d %q, want 200 %q", code, body, doneBody)
+	}
+	if code, _ := do(http.MethodGet, "/held-key", ""); code != http.StatusNotFound {
+		t.Errorf("GET /held-key = %d, want 404: a partial upload is not a hit", code)
+	}
+	if entries, err := os.ReadDir(tmpDir); err != nil || len(entries) != 0 {
+		t.Errorf("temporary files after the reconcile: %d (err %v), want none", len(entries), err)
+	}
+	_, statusBody := do(http.MethodGet, "/statusz", "")
+	var st struct {
+		Bytes   int64 `json:"store_bytes"`
+		Entries int   `json:"store_entries"`
+	}
+	if err := json.Unmarshal([]byte(statusBody), &st); err != nil {
+		t.Fatalf("decode /statusz: %v\n%s", err, statusBody)
+	}
+	_, scrape := do(http.MethodGet, "/metrics", "")
+	if st.Entries != 1 || st.Bytes != int64(len(doneBody)) {
+		t.Errorf("/statusz entries=%d bytes=%d, want 1 and %d", st.Entries, st.Bytes, len(doneBody))
+	}
+	if got, want := metricLine(scrape, "fscache_store_entries "), fmt.Sprintf("fscache_store_entries %d", st.Entries); got != want {
+		t.Errorf("/metrics %q, /statusz says %q", got, want)
+	}
+	if got, want := metricLine(scrape, "fscache_store_bytes "), fmt.Sprintf("fscache_store_bytes %d", st.Bytes); got != want {
+		t.Errorf("/metrics %q, /statusz says %q", got, want)
+	}
+
+	cancel2()
+	select {
+	case err := <-errc2:
+		if err != nil {
+			t.Fatalf("second run returned %v on a clean shutdown", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("second run did not shut down")
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || present {
+		t.Errorf("unclean marker present = %v (err %v) after the clean second run, want false", present, err)
+	}
+}
+
+// recoverServe runs serve and returns what it panicked with (nil if it
+// returned normally).
+func recoverServe(ctx context.Context, ready func()) (r any) {
+	defer func() { r = recover() }()
+	_ = serve(ctx, quietLogger(), ready)
+	return nil
+}
+
+// REQ-STORE-005 (the marker is removed on clean shutdown only): a panic
+// after the startup reconcile and before the serving loop, here in the
+// ready callback, is not a clean shutdown. The panic propagates, the
+// stores are closed once and the marker is still present.
+func TestServePanicInReadyKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	closes := countCloses(t)
+	const boom = "test: ready panicked"
+	if r := recoverServe(context.Background(), func() { panic(boom) }); r != boom {
+		t.Fatalf("recovered %v from serve, want the panic %q to propagate", r, boom)
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a panic in ready, want true", present, err)
+	}
+}
+
+// The same for a panic while the HTTP handler is built (server.New).
+func TestServePanicInServerNewKeepsMarker(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	closes := countCloses(t)
+	const boom = "test: server.New panicked"
+	orig := serverNew
+	serverNew = func(server.Config) http.Handler { panic(boom) }
+	defer func() { serverNew = orig }()
+	if r := recoverServe(context.Background(), nil); r != boom {
+		t.Fatalf("recovered %v from serve, want the panic %q to propagate", r, boom)
+	}
+	if *closes != 1 {
+		t.Errorf("stores closed %d times, want 1", *closes)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a panic in server.New, want true", present, err)
+	}
+}
+
+// REQ-STORE-005-AC5, the select race: the shutdown signal is taken first,
+// Shutdown returns nil, and the serving goroutine then reports a serving
+// error. The error is not swallowed: serve returns it and the marker stays.
+func TestServeErrorAfterShutdownSignalIsReturned(t *testing.T) {
+	clearEnv(t)
+	freshRegistry(t)
+	dir := t.TempDir()
+	t.Setenv("FSCACHE_DATA_DIR", dir)
+	t.Setenv("FSCACHE_ADDR", freePort(t))
+	release := make(chan struct{})
+	origServe, origShutdown := httpServe, httpShutdown
+	// Serve blocks until Shutdown runs, so the select can only take the
+	// cancelled context; then Serve fails with a serving error.
+	httpServe = func(_ *http.Server, l net.Listener) error {
+		<-release
+		_ = l.Close()
+		return errTestServe
+	}
+	httpShutdown = func(*http.Server, context.Context) error { close(release); return nil }
+	defer func() { httpServe, httpShutdown = origServe, origShutdown }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := serve(ctx, quietLogger(), nil)
+	if err == nil || !errors.Is(err, errTestServe) || !strings.Contains(err.Error(), "serve:") {
+		t.Fatalf("serve error = %v, want the serving error %v", err, errTestServe)
+	}
+	if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || !present {
+		t.Errorf("unclean marker present = %v (err %v) after a serving error during shutdown, want true", present, err)
+	}
+}
+
+// proves: REQ-STORE-005-AC5 — with TLS on, a listener error, a serving error after the shutdown signal and a shutdown error each keep the marker; only the clean return clears it
+//
+// The same exits as the plain-HTTP tests above, taken through ServeTLS: the
+// plain Serve seam fails the test if it is called, so every case runs on the
+// HTTPS path. The listener error is real: the listener is closed under
+// ServeTLS, which then returns net.ErrClosed, not http.ErrServerClosed. The
+// serving error after the shutdown signal is real too: the real ServeTLS,
+// shown accepting by a real TLS handshake, fails on its closed listener after
+// the signal was taken and before the real Shutdown runs.
+func TestServeTLSErrorsKeepMarker(t *testing.T) {
+	p := writePair(t, t.TempDir(), "ac5", "MARKER-AC5-1a2b3c")
+	realTLS := httpServeTLS
+	for _, tc := range []struct {
+		name      string
+		raceStop  bool // ServeTLS fails only after the shutdown signal was taken
+		noSignal  bool // no shutdown signal: serve must return on the error alone
+		serveTLS  func(*http.Server, net.Listener) error
+		shutdown  func(*http.Server, context.Context) error
+		wantErr   error
+		wantInErr string
+		keep      bool
+	}{
+		{
+			name: "listener error",
+			serveTLS: func(s *http.Server, l net.Listener) error {
+				_ = l.Close()
+				return realTLS(s, l)
+			},
+			noSignal: true, wantErr: net.ErrClosed, wantInErr: "serve:", keep: true,
+		},
+		{name: "serving error after the shutdown signal", raceStop: true, wantErr: net.ErrClosed, wantInErr: "serve:", keep: true},
+		{
+			name:     "shutdown error",
+			serveTLS: realTLS,
+			shutdown: func(*http.Server, context.Context) error { return errTestShutdown },
+			wantErr:  errTestShutdown, wantInErr: "shutdown:", keep: true,
+		},
+		{name: "clean return", serveTLS: realTLS, keep: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearEnv(t)
+			freshRegistry(t)
+			dir := t.TempDir()
+			addr := freePort(t)
+			t.Setenv("FSCACHE_DATA_DIR", dir)
+			t.Setenv("FSCACHE_ADDR", addr)
+			t.Setenv("FSCACHE_TLS_CERT", p.certPath)
+			t.Setenv("FSCACHE_TLS_KEY", p.keyPath)
+			closes := countCloses(t)
+
+			origPlain, origTLS, origShutdown := httpServe, httpServeTLS, httpShutdown
+			t.Cleanup(func() { httpServe, httpServeTLS, httpShutdown = origPlain, origTLS, origShutdown })
+			httpServe = func(*http.Server, net.Listener) error {
+				t.Error("plain Serve called with TLS configured")
+				return nil
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			ready := func() { cancel() }
+			if tc.noSignal {
+				ready = nil
+			}
+			serveTLS := tc.serveTLS
+			if tc.shutdown != nil {
+				httpShutdown = tc.shutdown
+			}
+			if tc.raceStop {
+				// The real ServeTLS. A real TLS handshake proves it is
+				// accepting; only then is the shutdown signal given, so the
+				// select can only take the cancelled context. The Shutdown
+				// seam then closes the listener under the running ServeTLS,
+				// waits for its real accept error (net.ErrClosed: the server
+				// is not yet shutting down) and runs the real Shutdown.
+				lnc := make(chan net.Listener, 1)
+				returned := make(chan struct{})
+				serveTLS = func(s *http.Server, l net.Listener) error {
+					lnc <- l
+					defer close(returned)
+					return realTLS(s, l)
+				}
+				httpShutdown = func(s *http.Server, c context.Context) error {
+					_ = (<-lnc).Close()
+					<-returned
+					return origShutdown(s, c)
+				}
+				pool := x509.NewCertPool()
+				pool.AddCert(p.leaf)
+				ready = func() {
+					d := &net.Dialer{Timeout: 10 * time.Second}
+					conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12})
+					if err != nil {
+						t.Errorf("TLS handshake with the running ServeTLS: %v", err)
+					} else {
+						_ = conn.Close()
+					}
+					cancel()
+				}
+			}
+			var tlsCalls atomic.Int32
+			httpServeTLS = func(s *http.Server, l net.Listener) error { tlsCalls.Add(1); return serveTLS(s, l) }
+
+			errc := make(chan error, 1)
+			go func() { errc <- serve(ctx, quietLogger(), ready) }()
+			var err error
+			select {
+			case err = <-errc:
+			case <-time.After(10 * time.Second):
+				t.Fatal("serve did not return")
+			}
+			if tc.wantErr == nil {
+				if err != nil {
+					t.Fatalf("serve: %v", err)
+				}
+			} else if !errors.Is(err, tc.wantErr) || !strings.Contains(err.Error(), tc.wantInErr) {
+				t.Fatalf("serve error = %v, want %q wrapping %v", err, tc.wantInErr, tc.wantErr)
+			}
+			if n := tlsCalls.Load(); n != 1 {
+				t.Errorf("ServeTLS called %d times, want 1", n)
+			}
+			if *closes != 1 {
+				t.Errorf("stores closed %d times, want 1", *closes)
+			}
+			if present, err := markerPresent(uncleanMarkerPath(dir)); err != nil || present != tc.keep {
+				t.Errorf("unclean marker present = %v (err %v), want %v", present, err, tc.keep)
+			}
+		})
 	}
 }
 

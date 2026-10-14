@@ -129,7 +129,7 @@ func TestPutFailsOnTempFileCollision(t *testing.T) {
 		clear(b)
 		return len(b), nil
 	})
-	shard := filepath.Join(s.Root(), "ab")
+	shard := filepath.Join(s.Root(), storeTempDir) // temporary files live in the temporary directory (REQ-PROTO-003-AC4)
 	if err := os.MkdirAll(shard, 0o750); err != nil {
 		t.Fatal(err)
 	}
@@ -343,7 +343,7 @@ func TestWalkReportsStaleTempAndRemoveStaleTempDeletesIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	staleName := ".tmp-cafecafecafecafecafecafecafecafe"
-	stalePath := filepath.Join(s.Root(), "ab", staleName)
+	stalePath := filepath.Join(s.Root(), storeTempDir, staleName) // REQ-PROTO-003-AC4: the temporary directory
 	if err := os.WriteFile(stalePath, []byte("interrupted"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -356,8 +356,8 @@ func TestWalkReportsStaleTempAndRemoveStaleTempDeletesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Walk: %v", err)
 	}
-	if len(stale) != 1 || stale[0] != "ab/"+staleName {
-		t.Fatalf("Walk stale = %v, want [ab/%s]", stale, staleName)
+	if len(stale) != 1 || stale[0] != storeTempDir+"/"+staleName {
+		t.Fatalf("Walk stale = %v, want [%s/%s]", stale, storeTempDir, staleName)
 	}
 	if len(keys) != 1 || keys[0] != "abc" {
 		t.Fatalf("Walk keys = %v, want [abc]; temp files must not be visited as blobs", keys)
@@ -401,6 +401,20 @@ func TestWalkFailsOnUnreadableSubdirectory(t *testing.T) {
 	_, err := s.Walk(func(string, int64) error { return nil })
 	if err == nil || !strings.Contains(err.Error(), "walk open") {
 		t.Fatalf("Walk over unreadable subdir: err = %v, want walk open failure", err)
+	}
+}
+
+func TestWalkFailsOnUnreadableTempDir(t *testing.T) {
+	skipIfRoot(t)
+	s := newTestStore(t)
+	locked := filepath.Join(s.Root(), storeTempDir)
+	if err := os.MkdirAll(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o750) })
+	_, err := s.Walk(func(string, int64) error { return nil })
+	if err == nil || !strings.Contains(err.Error(), "walk open") {
+		t.Fatalf("Walk over unreadable temporary directory: err = %v, want walk open failure", err)
 	}
 }
 
