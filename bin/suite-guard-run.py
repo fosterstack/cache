@@ -70,6 +70,10 @@ def suite_names(floors):
 def cmd_all(floors, root, count_only):
     if not os.path.isfile(floors) or os.path.getsize(floors) == 0:
         die("the floors file %s is empty or missing" % floors)
+    # ROOT is a plain path: a conservative alphabet, no leading - ! ( (find reads those as expression syntax), no .. component (it changes what a .git
+    # predicate sees), no line break; and every candidate path below it must stay in the alphabet too (a line break splits find's output into two paths)
+    if not re.fullmatch(r"[A-Za-z0-9._+@/-]+", root) or root.startswith("-") or ".." in root.split("/"):
+        die("the suite root %r is not a plain path" % root)
     if os.path.islink(root) or not os.path.isdir(root):   # ROOT is a real directory, as `find ROOT` (physical) required: a link would lead outside it
         die("the suite root %s is not a real directory (a symlink or missing)" % root)
     bad = 0
@@ -78,7 +82,7 @@ def cmd_all(floors, root, count_only):
         for dp, dn, fn in os.walk(root):
             dn[:] = [d for d in dn if d != ".git"]
             q = os.path.join(dp, s)
-            if ".git" in os.path.abspath(q).split(os.sep):   # as -not -path '*/.git/*': any candidate below a .git directory, ROOT's own ancestors included
+            if not re.fullmatch(r"[A-Za-z0-9._+@/-]+", q) or ".git" in q.split(os.sep) or ".git" in os.path.abspath(q).split(os.sep):   # as -not -path '*/.git/*': any candidate below a .git directory, ROOT's own ancestors included
                 continue
             if s in fn and os.path.isfile(q) and not os.path.islink(q):   # a regular file, as `find -type f` selected: a symlink named for a suite is no suite
                 found.append(os.path.join(dp, s))

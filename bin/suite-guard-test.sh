@@ -101,6 +101,16 @@ expect 1 "all: a floors key with a ? is refused" "plain file name" -- all --coun
 # ROOT inside a .git directory: nothing below it is a suite (the shell runner's -not -path '*/.git/*')
 mkdir -p "$work/in/.git/bin"; cp "$work/s/good.sh" "$work/in/.git/bin/a-test.sh"; printf '{"a-test.sh": 50}\n' > "$work/in/floors.json"
 expect 1 "all: a ROOT inside a .git directory finds no suite" "0 files" -- all --count-only "$work/in/floors.json" "$work/in/.git"
+# ROOT spellings the shell runner's find read differently: find syntax, a .. component, a line break in the path
+for r in '(' '!' '-x' "$work/in/.git/../bin" "$work/nl
+dir"; do
+  mkdir -p "$r" 2> /dev/null || true
+  expect 1 "all: a ROOT spelled [$(printf %s "$r" | tr '\n' '~')] is refused as not a plain path" "not a plain path" -- all --count-only "$work/in/floors.json" "$r"
+done
+mkdir -p "$work/nld/a
+b"; cp "$work/s/good.sh" "$work/nld/a
+b/a-test.sh"; printf '{"a-test.sh": 50}\n' > "$work/nld.json"
+expect 1 "all: a suite below a directory whose name holds a line break is not selected" "0 files" -- all --count-only "$work/nld.json" "$work/nld"
 
 # round 1 F7 (Codex B4): `all` runs each suite in an `||` context, where `set -e` is off; a suite below its floor must still fail the run
 printf '{"a-test.sh": 70}\n' > "$work/all/floors3.json"
@@ -140,7 +150,7 @@ expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- al
 # round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.py all), not only the floors file against the base
 if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.py all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
-EXPECT=58
+EXPECT=64
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
