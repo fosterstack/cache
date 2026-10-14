@@ -29,8 +29,7 @@ Detected OS   family="debian" version="13.6"
 
 Google's distroless base ships an intact `/etc/os-release` deliberately
 (that's exactly what scanners key OS detection on), and we never strip it
-— see the scanner-facts source for this page,
-`sprint4_scanner_input.md`. The `gobinary` row is our own compiled binary,
+. The `gobinary` row is our own compiled binary,
 scanned by both tools' Go-module vulnerability catalogers directly.
 
 ## Package-DB asymmetry — expect this, it isn't a bug
@@ -47,11 +46,9 @@ asymmetric effect on checks:
 If you run a benchmark or policy pack written for a full-OS image (Debian,
 Ubuntu, etc.) against ours, expect confusing partial results — not a
 finding, just a mismatch between the benchmark's assumptions and a
-minimal image. `sprint4_scanner_input.md`'s source material for this page
-also notes there is often no genuine OS/platform gating in scanner content
-by default: a scanner may happily score a scratch image against a full
-distro benchmark and produce results that don't mean what they look like
-they mean. Don't over-read a scratch image's score against a
+minimal image. Scanner content often has no OS or platform gating by default,
+so a scanner may score a scratch image against a full distro benchmark and
+produce results that don't mean what they look like they mean. Don't over-read a scratch image's score against a
 Debian-shaped policy without checking what each rule verifies.
 
 ## Exit codes: don't gate on the raw process exit code
@@ -61,18 +58,16 @@ threshold" with "could not run at all" in ways that are easy to miss.
 **Read per-rule verdicts from the results document (JSON/SARIF), never
 gate a pipeline purely on the raw exit code** — a broken scan and a clean
 scan can both look like "exit 0" or both look like "exit 1" depending on
-flags, and conflating them ships a green gate that checks nothing. This
-failure mode has been observed in the field.
+flags, and conflating them ships a green gate that checks nothing.
 
-## The `-debug` variant is different on purpose
+## The `-debug` variant (v0.2.x releases)
 
-The `:debug` tag adds a busybox shell for interactive troubleshooting —
-it is not the image you deploy. Scanning it will show more than the
-production image (busybox itself carries a small package surface), and
-our own release pipeline documents any known, unfixable findings there as
-explicit VEX suppressions in [`.grype.yaml`](../.grype.yaml) rather than
-hiding them — see that file for the current reasoning on each entry.
-Production and `-fips` images never include busybox.
+The v0.2.x releases ship a `:debug` tag that adds a busybox shell for interactive
+troubleshooting; it is not the image you deploy. Scanning it shows more than the
+production image, because busybox itself carries a small package surface, and any
+known finding there that has no fix is published as a VEX statement rather than
+hidden. The production and `-fips` images never include busybox, and the v0.3
+releases ship no `-debug` image.
 
 ## Using our VEX files in your scanner
 
@@ -86,13 +81,14 @@ check them against the signed release manifest as described in
 |---|---|---|
 | Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
 | Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
-| Docker Scout | `fosterstack-cache.openvex.json` | `docker scout cves --vex-location fosterstack-cache.openvex.json IMAGE` |
+| Docker Scout | `fosterstack-cache.openvex.json` | `docker scout cves --vex-location fosterstack-cache.openvex.json --vex-author '^FosterStack LLC$' IMAGE` (see [Docker Scout](#docker-scout)) |
 | Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per statement: `aws inspector2 create-filter`, one rule per call |
 | Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
 
-The three files hold the same statements in three formats. The Inspector file
-carries one rule per `not_affected` or `fixed` statement, and Google applies
-whole-image statements only; [`.vex/README.md`](../.vex/README.md) has the detail.
+The three files are generated from the same statements. The OpenVEX and CSAF files
+carry every statement; the Inspector file carries one rule per `not_affected` or
+`fixed` statement and none for `affected` or `under_investigation`. Google applies
+whole-image statements only. [`.vex/README.md`](../.vex/README.md) has the detail.
 
 ## Suppression rules
 
@@ -115,15 +111,19 @@ statement**.
 
 ## Docker Scout
 
-Docker Scout reads OpenVEX directly. Point it at the file with `--vex-location`:
+Docker Scout reads OpenVEX directly. It applies only the statements whose author
+matches `--vex-author` (by default Docker's own), so name ours, the author recorded in
+the published file:
 
 ```sh
 docker scout cves --vex-location fosterstack-cache.openvex.json \
+  --vex-author '^FosterStack LLC$' \
   ghcr.io/fosterstack/cache:${VER}
 ```
 
-Run it once with and once without `--vex-location`: the difference is exactly the set
-of published statements, the same audit as in the Grype and Trivy runs below.
+Run it once with and once without the two VEX flags: the difference is exactly the
+set of published statements, the same audit as in
+[Reproducing our own gate](#reproducing-our-own-gate).
 
 ## Reproducing our own gate
 
@@ -151,10 +151,9 @@ Run without `--vex` to see raw findings including the ones we have
 publicly dispositioned — the difference between the two runs is exactly
 the set of published VEX statements, which is how you audit them.
 
-## Marketing claim, with the receipt
+## Confirming the scan is the release run
 
-"Every scanner in the repo's list runs on every release, verdicts in the
-public CI run" is not a claim we're asking you to take on faith — the scan
-IS the CI run, public, in this repo's Actions tab. See
+Every scanner in the repo's list runs on every release, and the verdicts are in the
+public CI run: the scan is the CI run, in this repository's Actions tab. See
 [Verify our images](verify-images.md) for how to confirm the exact image
 you pulled came from that same run.

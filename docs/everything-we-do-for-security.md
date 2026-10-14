@@ -1,28 +1,30 @@
 # Everything we do for security
 
-This is the list of security practices that run on this repository today, one line
-each. Every line links to the place that goes deep: a page that explains it, or the
-file that does it. [SECURITY.md](../SECURITY.md) is the short policy (what we
-promise); this page is what we do.
+This is the list of security practices that run on the FosterStack Cache repository
+today, one line each. Every line links to the place that goes deep: a page that
+explains it, or the file that does it. [SECURITY.md](../SECURITY.md) is the short
+policy (what we promise, including the patch target and how to report a
+vulnerability); this page is what we do.
 
 ## Source
 
-- **Signed commits.** The `main` branch accepts only signed commits, and its
-  protection rules are a repository ruleset that the required checks are part of
-  ([required checks](../.github/policy/required-checks.json)).
+- **Signed commits.** The `main` branch accepts only signed commits, under a
+  repository ruleset that also requires the checks on every pull request
+  ([the repository's rules](https://github.com/fosterstack/cache/rules),
+  [required checks](../.github/policy/required-checks.json)).
 - **Signed release tags, checked first.** The release chain starts by verifying the
   tag against a list of allowed signers kept on `main`, before any repository code
   runs ([admission stage](../.github/workflows/stage-admission.yml),
   [allowed signers](../.github/policy/allowed_signers)).
 - **Release tags are protected.** Creating a release tag is restricted by a
   repository rule, and a published release tag cannot be moved, updated or deleted
-  ([RELEASING.md](../RELEASING.md)).
+  ([the repository's rules](https://github.com/fosterstack/cache/rules)).
 - **The merge gate runs from `main`.** The check that judges a pull request is the
   copy on `main`, not the copy in the pull request, so a change cannot edit the rule
   that judges it ([review gate](../.github/workflows/agent-review-gate.yml)).
-- **Pull requests from forks never see secrets.** CI never uses
-  `pull_request_target`, so a fork's code never runs with repository secrets
-  ([CI](../.github/workflows/ci.yml)).
+- **CI runs a fork's code without secrets.** The CI workflow runs on
+  `pull_request`, never `pull_request_target`, so a fork's code runs with GitHub's
+  no-secrets treatment ([CI](../.github/workflows/ci.yml)).
 - **A reserved branch for the automated auditor.** Only the auditor's delivery
   identity may push to its branch prefix, and any other pusher fails the check
   ([guard](../.github/workflows/reserved-branch-guard.yml)).
@@ -33,7 +35,8 @@ promise); this page is what we do.
   branch reference fails the check on every pull request, and the check also reads
   the tag each digest claims to be ([pin checker](../.github/agent/bin/check-action-pins.py)).
 - **Container images are named by digest.** An image a workflow runs, pulls or
-  passes to an action must be a digest, never a tag.
+  passes to an action must be a digest, never a tag, and the same checker fails
+  the pull request otherwise ([pin checker](../.github/agent/bin/check-action-pins.py)).
 - **A new version waits seven days.** A pull request that moves a pinned version is
   held until that version has been public for seven days, by a server-side time
   ([supply-chain workflow](../.github/workflows/supply-chain.yml)).
@@ -93,9 +96,8 @@ promise); this page is what we do.
 - **Published images are rescanned daily.** A CVE disclosed against bytes we already
   shipped raises a tracked issue ([scanning.md](scanning.md)).
 - **An automated audit reads every finding.** Each day an automated auditor reads
-  every scanner finding against the code, the published VEX and the CISA Known
-  Exploited Vulnerabilities catalog, and writes up what each one needs
-  ([daily auditor](../.github/workflows/auditor.yml)).
+  every scanner finding against the code and the published VEX, and writes up what
+  each one needs ([daily auditor](../.github/workflows/auditor.yml)).
 - **Exceptions are published statements.** The only way to except a finding is an
   OpenVEX statement with a justification, kept in the repository and published with
   each release ([`.vex/`](../.vex/), [scanning.md](scanning.md)).
@@ -109,7 +111,8 @@ promise); this page is what we do.
 - **Signed provenance.** Archives, SBOMs and the checksums file carry build
   provenance naming the CI run that made them ([verify-images.md](verify-images.md)).
 - **An SBOM for every archive**, published with the release ([RELEASING.md](../RELEASING.md)).
-- **The VEX document ships with every release** as `fosterstack-cache.openvex.json`.
+- **The VEX document ships with every release** as `fosterstack-cache.openvex.json`
+  ([RELEASING.md](../RELEASING.md#vex-statements)).
 - **One authorization before anything goes public.** A single stage verifies the
   whole graph, fails closed on anything missing, and signs the approval that
   promotion requires ([authorization stage](../.github/workflows/stage-authorize.yml)).
@@ -128,15 +131,11 @@ promise); this page is what we do.
   denied to prove it ([egress acceptance](../.github/workflows/stage-acceptance-egress.yml),
   [SECURITY.md](../SECURITY.md#data-handling)).
 - **No request access log.** The only per-request logging is on failure, and it never
-  carries a body, a credential or a client address.
+  carries a body, a credential or a client address
+  ([SECURITY.md](../SECURITY.md#data-handling)).
 
 ## Watch
 
-- **A 48-hour patch target.** A fix ships to every user on the same day; the target
-  is commercially reasonable efforts within 48 hours of a fix or an assessment
-  ([SECURITY.md](../SECURITY.md#patch-commitment)).
-- **Private reporting.** Vulnerabilities are reported through GitHub's private
-  vulnerability reporting ([SECURITY.md](../SECURITY.md#reporting-a-vulnerability)).
 - **A daily watch of what we depend on.** Newly published advisories and
   malicious-package reports about anything we pin are read every day
   ([supply-chain workflow](../.github/workflows/supply-chain.yml)).
