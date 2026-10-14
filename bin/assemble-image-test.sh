@@ -1,0 +1,1078 @@
+#!/usr/bin/env bash
+# proves: REQ-IMAGE-001-AC1, REQ-IMAGE-001-AC2, REQ-IMAGE-001-AC3, REQ-IMAGE-001-AC4, REQ-IMAGE-001-AC5, REQ-IMAGE-001-AC6, REQ-IMAGE-001-AC7, REQ-IMAGE-001-AC8, REQ-IMAGE-001-AC9, REQ-IMAGE-001-AC10, REQ-IMAGE-001-AC11, REQ-BUILDTOOLS-002-AC1, REQ-BUILDTOOLS-002-AC2, REQ-BUILDTOOLS-002-AC3
+# Tests of the PR: apko configs, image assembly, lock and sealed-build proofs, OCI index digest.
+# Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
+# bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
+# unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
+. "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
+# ---- begin verbatim sections ----
+export FSCACHE_TEST_MODE=1   # the overrides below (--apko-config, --base-lock, --index-record, --key-record, --*-script) work only in test mode
+# ---- P5 round 1: the archive's index must be the one recorded in build/locks/archive-index.sha256 (fixture record) ------------------------------------
+shaof() { shasum -a 256 "$1" | cut -d' ' -f1; }
+keyrec="$work/key.record"; { for k in wolfi-signing.rsa.pub assembly.rsa.pub; do printf '%s sha256:%s\n' "$k" "$(shaof "$fx/keyring/$k")"; done; } >"$keyrec"
+idxrec="$work/idx.record"
+printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shaof "$fx/archive/x86_64/APKINDEX.tar.gz")" "$(shaof "$fx/archive/aarch64/APKINDEX.tar.gz")" >"$idxrec"
+# (setup copied from a section of another PR's file)
+BL="$fx/base.lock.json" FL="$fx/full.lock.json"
+# (setup copied from a section of another PR's file)
+python3 "$work/lib.py" mutate "$FL" "$work/f-sum.json" datasum tzdata
+# (setup copied from a section of another PR's file)
+python3 "$work/lib.py" mutate "$FL" "$work/f-extra.json" extra bash
+# (setup copied from a section of another PR's file)
+python3 "$work/lib.py" mutate "$FL" "$work/f-noapk.json" drop fscache
+# (setup copied from a section of another PR's file)
+rm -rf "$work/arch-t"; cp -R "$fx/archive" "$work/arch-t"; python3 "$work/lib.py" tamper "$work/arch-t/x86_64/tzdata-2026a-r0.apk"
+# (setup copied from a section of another PR's file)
+rm -rf "$work/arch-m"; cp -R "$fx/archive" "$work/arch-m"; rm -f "$work/arch-m/aarch64/tzdata-2026a-r0.apk"
+# (setup copied from a section of another PR's file)
+rm -rf "$work/arch-i"; cp -R "$fx/archive" "$work/arch-i"; rm -f "$work/arch-i/x86_64/APKINDEX.tar.gz"
+# (setup copied from a section of another PR's file)
+# se <rule> <desc> <exit> <keyword> <cmd...>: exit status exactly <exit> and the message names the reason
+# (setup copied from a section of another PR's file)
+se() { local ac=$1 d=$2 want=$3 kw=$4; shift 4; $RUNNER "$@"; if [ "$(rc)" = "$want" ] && grep -Eqi -- "$kw" "$work/log"; then ok; else bad "$ac" "$d (exit $(rc), wanted $want naming '$kw')"; fi; }
+# (setup copied from a section of another PR's file)
+# sx <rule> <desc> <rc-test> <cmd...>: exit status satisfies the test ('ne4' = non-zero, not 4, not 127)
+# (setup copied from a section of another PR's file)
+sx() { local ac=$1 d=$2 m=$3; shift 3; $RUNNER "$@"; local r; r=$(rc); if [ "$r" != 0 ] && [ "$r" != 4 ] && [ "$r" != 127 ] && toolrun; then ok; else bad "$ac" "$d (exit $r)"; fi; }
+t "rule 11" "the drivers never call docker build, buildx or goreleaser" bash -c "test -f '$BA' && test -f '$AI' && ! grep -Eq 'docker +(buildx|build)|goreleaser' '$BA' '$AI'"
+t "rule 11" "the drivers never use qemu or emulation (each arch builds natively)" bash -c "test -f '$BA' && test -f '$AI' && ! grep -Eqi 'qemu|binfmt|--platform' '$BA' '$AI'"
+# ===== host guard (owner, Oct 9): no real privileged tool is reachable on a non-Linux host ============================================
+for drv in "$BA" "$AI" "$SP" "$LP"; do
+  [ -f "$drv" ] || { bad "host guard" "$(basename "$drv") exists"; continue; }
+  run_s env FAKE_OS=Darwin SOURCE_DATE_EPOCH=$SDE "$drv" --variant standard --arch x86_64 --version 0.3.0
+  if [ "$(rc)" = 2 ] && grep -Eqi 'Linux' "$work/log" && ! grep -Eq '^(sudo|sysctl|unshare|melange|apko) ' "$CALLS"; then ok; else bad "host guard" "$(basename "$drv") exits 2 naming Linux, before any sudo/sysctl/unshare/melange/apko call, on a non-Linux host (exit $(rc))"; fi
+done
+
+t "rule 20" "no scanner (syft, trivy, grype, bomber, scout) makes or gates an SBOM in the drivers or the module tool" bash -c "test -f '$BA' && test -f '$AI' && test -f '$GS' && ! grep -Eqi '\\b(syft|trivy|grype|bomber|cyclonedx|scout)\\b' '$BA' '$AI' '$GS'"
+nogrep "rule 17" "image assembly, lock tooling and refresh never reference the release key" 'APK_RELEASE_SIGNING_KEY|release\.rsa( |$|")' "$AI" "$LK" "$RF"
+
+# ===== rule 19: signatures are always checked ============================================================================
+nogrep "rule 19" "the skip-signatures switches appear in no workflow, recipe, config or driver" 'ignore-signatures|allow-untrusted|--insecure' $root/.github/workflows/*.yml "$root/build/melange.yaml" "$root/build/melange-fips.yaml" "$root/build/apko.yaml" "$root/build/apko-fips.yaml" "$BA" "$AI" "$LK" "$RF"   # melange pkg/cli/build.go:86, apko internal/cli/build.go:143 and lock.go:115
+t "rule 19" "apko configs carry the Wolfi key and the assembly key (each package checked against the right key)" y apko-keys "$root/build/apko.yaml"
+t "rule 19" "apko-fips.yaml: the same two keys" y apko-keys "$root/build/apko-fips.yaml"
+
+# ===== rules 25 26 33 34 38: apko configs ================================================================================
+for v in production fips; do
+  f="$root/build/apko.yaml"; [ $v = fips ] && f="$root/build/apko-fips.yaml"
+  t "rule 25" "[$v] no base image, no include, no debug; declares only baselayout, ca-certificates-bundle, tzdata and our apk" y apko-pkgs "$f" $v
+  t "rule 26" "[$v] repositories are exactly /work/archive and /work/melange-repo, no live URL" y apko-repos "$f"
+  t "rule 33" "[$v] archs x86_64 and aarch64" y apko-archs "$f"
+  t "rule 38" "[$v] uid/gid 65532, /home/nonroot created and owned, work-dir, entrypoint /usr/bin/fscache" y apko-user "$f"
+done
+t "rule 34" "[fips] no shell package, no shell-fragment, no sh path" y apko-noshell "$root/build/apko-fips.yaml"
+t "rule 34" "[production] no shell package, no shell-fragment, no sh path" y apko-noshell "$root/build/apko.yaml"
+t "rule 25" "build/apko.yaml and build/apko-fips.yaml differ only in the apk name" bash -c "test -f '$root/build/apko.yaml' && diff <(sed 's/fscache-fips/fscache/' '$root/build/apko-fips.yaml') '$root/build/apko.yaml'"
+t "rule 37" "committed base lock (production): v1, every base package for both archs with checksums, archive paths, no fscache, keyring content" python3 "$work/lib.py" lockshape "$root/build/locks/apko.base.lock.json" production
+t "rule 37" "committed base lock (fips): the same" python3 "$work/lib.py" lockshape "$root/build/locks/apko-fips.base.lock.json" fips
+# ===== assemble-image.sh (rules 25-34, 37, 38b) ==========================================================================
+ai_args=(--variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --apko-config "$fx/apko.yaml" --base-lock "$BL" --index-record "$idxrec" --key-record "$keyrec")
+aif_args=(--variant fips --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo-fips" --keyring-dir "$fx/keyring" --apko-config "$fx/apko-fips.yaml" --base-lock "$fx/base-fips.lock.json" --index-record "$idxrec" --key-record "$keyrec")
+aie=(env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json")
+t "rule 38b" "assemble-image.sh exists and is executable" test -x "$AI"
+sd "rule 33" "[production] runs apko build" '^apko build ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+sd "rule 33" "[fips] runs apko build" '^apko build ' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
+for v in production fips; do
+  a=("${ai_args[@]}"); [ $v = fips ] && a=("${aif_args[@]}")
+  sd "rule 38b" "[$v] the full lock is made under sudo unshare -n (apko lock has no offline flag)" '^sudo .*unshare -n .*apko lock ' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # apko internal/cli/lock.go:109-116: no --offline
+  sd "rule 38b" "[$v] apko build runs under sudo unshare -n" '^sudo .*unshare -n .*apko build ' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  sd "rule 38b" "[$v] apko build --offline" '^apko build .*--offline' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # apko internal/cli/build.go:140
+  sd "rule 28" "[$v] apko build always has --lockfile (the lock's checksum check is the tamper check)" '^apko build .*--lockfile ' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # internal/cli/build.go:141
+  sd "rule 20" "[$v] apko writes the SBOM (--sbom-path)" '^apko build .*--sbom-path ' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # internal/cli/build.go:131 (VERIFIED)
+  sn "rule 20" "[$v] apko's SBOM is not disabled" '--sbom[ =]false|--sbom=false' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # build.go:130
+  sn "rule 31" "[$v] the config is passed to apko lock and apko build as a bare file name (cwd = the render dir): lock.config.name is that path and must not be random" '^apko (lock|build) [^ ]*/[^ ]*\.yaml' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # real-run finding Oct 9
+  sd "rule 31" "[$v] --build-date from SOURCE_DATE_EPOCH" "^apko build .*--build-date $ISO" "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"   # build.go:129
+  sd "rule 31" "[$v] apko sees SOURCE_DATE_EPOCH too (env wins, pkg/build/build.go:325)" "SOURCE_DATE_EPOCH=$SDE|-E |--preserve-env" "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  sn "rule 26" "[$v] no --repository-append / -r / --build-repository-append: the config's two local repositories only" ' (--repository-append|-r|--build-repository-append|-b) ' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  sn "rule 26" "[$v] no network address, proxy or ignore-signatures in any call" '://|[Pp][Rr][Oo][Xx][Yy]|ignore-signatures|allow-untrusted' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  sn "rule 38b" "[$v] no docker, podman, --privileged or container image in any call" 'docker|podman|--privileged|cgr\.dev|@sha256' "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  run_s "${aie[@]}" "$AI" "${a[@]}" --out "$(mo)"
+  if [ "$(rc)" = 0 ] && [ "$(grep -c '^apko build ' "$CALLS")" = 1 ] && ! grep -E '^apko build ' "$CALLS" | grep -Eq -- '--arch '; then ok; else bad "rule 33" "[$v] exactly one apko build, no --arch narrowing (both archs in one run)"; fi
+  ordered "rule 37" "[$v] the full lock is made before the image is built" '^apko lock ' '^apko build '
+  o=$(mo); run_s "${aie[@]}" "$AI" "${a[@]}" --out "$o"
+  t "rule 37" "[$v] OUT/$v.full.lock.json is kept (release file)" test -s "$o/$v.full.lock.json"
+  t "rule 20" "[$v] the SBOM is written under OUT (stub apko wrote it to the --sbom-path)" bash -c "find '$o' -name 'sbom*' | grep -q ."
+  t "rule 30" "[$v] OUT/$v.digest is sha256:<hex>" bash -c "grep -Eq '^sha256:[0-9a-f]{64}\$' '$o/$v.digest'"
+  o2=$(mo); run_s "${aie[@]}" "$AI" "${a[@]}" --out "$o2"
+  t "rule 37" "[$v] a rebuild makes an identical full lock" bash -c "cmp '$o/$v.full.lock.json' '$o2/$v.full.lock.json'"
+  t "rule 31" "[$v] same inputs give the same image digest" bash -c "cmp '$o/$v.digest' '$o2/$v.digest'"
+  o3=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_SALT=other "$AI" "${a[@]}" --out "$o3"
+  t "rule 31" "[$v] the digest follows the built image (a different image gives a different digest)" bash -c "test -s '$o/$v.digest' && test -s '$o3/$v.digest' && ! cmp -s '$o/$v.digest' '$o3/$v.digest'"
+done
+sd "rule 33" "the -fips image is assembled from the -fips config" 'apko-fips\.yaml|fscache-fips' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
+t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" bash -c "grep -q 'apko-fips.yaml' '$AI' && grep -q 'apko.yaml' '$AI'"
+rd2="$work/render2"; mkdir -p "$rd2"
+t "rule 25" "--render-dir writes the config with the version, no @FSCACHE_VERSION@ left" bash -c "env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' '$AI' ${ai_args[*]} --render-dir '$rd2' --out $(mo) >/dev/null 2>&1; f=\$(ls '$rd2'/*.yaml | head -1); test -n \"\$f\" && ! grep -q @FSCACHE_VERSION@ \$f && grep -Eq 'fscache=0\\.3\\.0-r0' \$f"
+# refusals: nothing may run
+sr "rule 31" "assemble refuses without SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
+sr "rule 31" "assemble refuses a non-numeric SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env SOURCE_DATE_EPOCH=never STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
+sr "rule 26" "assemble refuses an https archive" 'local' "${aie[@]}" "$AI" "${ai_args[@]}" --archive https://packages.wolfi.dev/os --out "$(mo)"
+sed 's#/work/archive#https://packages.wolfi.dev/os#' "$fx/apko.yaml" >"$work/live.yaml"
+sr "rule 26" "assemble refuses a config naming a live repository" 'repositor' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/live.yaml" --out "$(mo)"
+sr "rule 27" "archive missing a package of the base lock -> refuses, names it, no tool run, no fallback" 'tzdata' "${aie[@]}" "$AI" "${ai_args[@]}" --archive "$work/arch-m" --out "$(mo)"
+sr "rule 27" "archive missing its APKINDEX -> refuses, names it" 'APKINDEX' "${aie[@]}" "$AI" "${ai_args[@]}" --archive "$work/arch-i" --out "$(mo)"
+rm -rf "$work/mel-m"; cp -R "$fx/melrepo" "$work/mel-m"; rm -f "$work/mel-m"/*/fscache-*.apk
+sr "rule 27" "melange repo missing the fscache apk -> refuses, names it" 'fscache' "${aie[@]}" "$AI" "${ai_args[@]}" --melange-repo "$work/mel-m" --out "$(mo)"
+sr "rule 28" "a tampered archived package is refused at the lock checksum (before the build), named" 'tzdata-2026a-r0' "${aie[@]}" "$AI" "${ai_args[@]}" --archive "$work/arch-t" --out "$(mo)"
+sr "rule 28" "an unknown key (keyring dir without the Wolfi key) is refused" 'key' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/nokeys" --out "$(mo)"
+srb "rule 37" "a full lock whose package entries differ from the base lock stops the build, naming 'differ'" 'differ' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-sum.json" "$AI" "${ai_args[@]}" --out "$(mo)"
+srb "rule 37" "a full lock with an extra package stops the build" 'bash|differ' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-extra.json" "$AI" "${ai_args[@]}" --out "$(mo)"
+python3 "$work/lib.py" mutate "$FL" "$work/f-arch.json" archver
+srb "rule 33" "a full lock that resolves different versions per arch stops the build" 'arch|differ' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-arch.json" "$AI" "${ai_args[@]}" --out "$(mo)"
+srb "rule 37" "a full lock without our apk stops the build" 'fscache|differ|missing' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-noapk.json" "$AI" "${ai_args[@]}" --out "$(mo)"
+# the lock method proof (rule 36) and the rebuild-from-archive command (rule 30)
+lp_args=(--apko-config "$fx/apko.yaml" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL" --index-record "$idxrec" --key-record "$keyrec")
+lpo=$(mo); run_s "${aie[@]}" "$LP" --out "$lpo" --archive "$fx/archive" "${lp_args[@]}"
+if [ "$(rc)" = 0 ] && python3 - "$lpo/lock-proof.json" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); c = d["cases"]
+assert set(c) >= {"missing-package", "missing-index", "tampered-package", "live-packages"}, c
+assert all(v["result"] == "failed-as-required" and v["exit"] == 2 for v in c.values()), c   # the record now holds {result, exit, reason} per case
+P
+then ok; else bad "rule 36" "lock-proof.sh: all four cases (missing package, missing index, tampered package, live packages) fail as required and are recorded"; fi
+printf '#!/bin/sh\nexit 0\n' >"$work/alwaysok.sh"; chmod +x "$work/alwaysok.sh"
+run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/alwaysok.sh" "${lp_args[@]}"
+if [ "$(rc)" != 0 ] && [ "$(rc)" != 127 ] && grep -Eqi 'missing-package|did not fail' "$work/log"; then ok; else bad "rule 36" "lock-proof.sh fails when the assembly still succeeds on a bad input (the proof is not vacuous)"; fi
+
+se "rule 40" "[advisor reading] assemble-image.sh: apko attempts a connection in the sealed namespace -> exit 4" 4 'network attempt' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+if [ "$(rc)" = 4 ] && grep -Eq '^sudo .*unshare -n .*net-probe\.py' "$CALLS"; then ok; else bad "rule 40" "[advisor reading] assemble-image.sh: the probe is called under sudo unshare -n"; fi
+sx "rule 40" "[advisor reading] assemble-image.sh: a failure for another reason is non-zero but not 4" ne4 env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_FAIL=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+sx "rule 40" "[advisor reading] assemble-image.sh: leaky namespace -> non-zero, not 4" ne4 env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_UNSHARE_LEAKY=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
+if [ "$(rc)" = 0 ] && ! grep -q 'net-probe' "$CALLS"; then ok; else bad "rule 40" "assemble-image.sh: success -> exit 0 and no probe"; fi
+
+# ===== rules 30 31 37 (advisor): the image digest is the OCI INDEX digest ==================================================
+oc="$fx/oci"
+t "rule 31" "oci-digest.py: prints the index digest equal to the sha256 of the index blob in the layout (not of the tar)" bash -c "python3 '$OD' '$oc/good.tar' >'$work/oci.out' && python3 - '$oc/good.tar' '$work/oci.out' <<'P'
+import hashlib, json, sys, tarfile
+t = tarfile.open(sys.argv[1]); top = json.load(t.extractfile('index.json')); d = top['manifests'][0]['digest']
+blob = t.extractfile('blobs/sha256/' + d.split(':')[1]).read()
+assert hashlib.sha256(blob).hexdigest() == d.split(':')[1]
+first = open(sys.argv[2]).read().splitlines()[0]
+assert first == 'index ' + d, first
+assert d.split(':')[1] != hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest()
+P"
+t "rule 31" "oci-digest.py: lists the per-arch manifest digests (amd64, arm64) from the index blob" bash -c "python3 '$OD' '$oc/good.tar' | grep -Ec '^(amd64|arm64) sha256:[0-9a-f]{64}\$' | grep -qx 2"
+fails "rule 31" "oci-digest.py: a blob whose hash differs from its name is refused and the blob is named" 'blobs/sha256|sha256:[0-9a-f]{8}|mismatch' python3 "$OD" "$oc/tampered.tar"
+fails "rule 31" "oci-digest.py: a layout without index.json is refused and says so" 'index\.json' python3 "$OD" "$oc/noindex.tar"
+t "rule 31" "oci-digest.py: the real apko tar (blobs named sha256:<hex>, index.json is the index, no oci-layout): the index digest is the sha256 of index.json and both architectures are listed" bash -c "python3 '$OD' '$oc/apko.tar' >'$work/oci2.out' && python3 - '$oc/apko.tar' '$work/oci2.out' <<'P'
+import hashlib, sys, tarfile
+t = tarfile.open(sys.argv[1]); idx = t.extractfile('index.json').read()
+lines = open(sys.argv[2]).read().splitlines()
+assert lines[0] == 'index sha256:' + hashlib.sha256(idx).hexdigest(), lines
+assert sorted(l.split()[0] for l in lines[1:]) == ['amd64', 'arm64'], lines
+P"
+fails "rule 31" "oci-digest.py: the real apko tar with a manifest blob that does not hash to its name is refused and the blob is named" 'sha256:[0-9a-f]{8}|mismatch|hash' python3 "$OD" "$oc/apko-tampered.tar"
+for v in production fips; do
+  a=("${ai_args[@]}"); [ $v = fips ] && a=("${aif_args[@]}")
+  o=$(mo); run_s "${aie[@]}" "$AI" "${a[@]}" --out "$o"
+  t "rule 31" "[$v] OUT/$v.digest is ONE line and equals the sha256 of the index blob inside the layout directory OUT/$v/, not the sha256 of any file named like a tar" bash -c "test \$(wc -l <'$o/$v.digest') -eq 1 && python3 - '$o/$v' '$o/$v.digest' <<'P'
+import hashlib, json, sys
+d = json.load(open(sys.argv[1] + '/index.json'))['manifests'][0]['digest']
+got = open(sys.argv[2]).read().strip()
+assert got == d == 'sha256:' + hashlib.sha256(open(sys.argv[1] + '/blobs/sha256/' + d.split(':')[1], 'rb').read()).hexdigest(), got
+P"
+  t "rule 31" "[$v] OUT/$v.manifests has one '<arch> sha256:<digest>' line per arch manifest, each present in the index blob of OUT/$v/" bash -c "python3 - '$o/$v' '$o/$v.manifests' <<'P'
+import json, sys
+d = json.load(open(sys.argv[1] + '/index.json'))['manifests'][0]['digest']
+idx = json.load(open(sys.argv[1] + '/blobs/sha256/' + d.split(':')[1]))
+want = sorted('%s %s' % (m['platform']['architecture'], m['digest']) for m in idx['manifests'])
+got = sorted(open(sys.argv[2]).read().split('\n')[:-1])
+assert got == want and len(got) == 2, (got, want)
+P"
+  o2=$(mo); run_s "${aie[@]}" "$AI" "${a[@]}" --out "$o2"
+  t "rule 31" "[$v] a rebuild gives the same index digest and the same manifest list" bash -c "cmp '$o/$v.digest' '$o2/$v.digest' && cmp '$o/$v.manifests' '$o2/$v.manifests'"
+  o3=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_SALT=other "$AI" "${a[@]}" --out "$o3"
+  t "rule 31" "[$v] a different image changes the index digest and the manifest digests" bash -c "! cmp -s '$o/$v.digest' '$o3/$v.digest' && ! cmp -s '$o/$v.manifests' '$o3/$v.manifests' && test -s '$o/$v.manifests'"
+done
+sf "rule 31" "assemble-image.sh refuses an image whose blob hash differs from its name (tampered layout)" 'blobs/sha256|mismatch|sha256' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_OCI_TAMPER=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+sf "rule 31" "assemble-image.sh refuses an image layout with no index.json" 'index\.json' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_OCI_NOINDEX=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+
+# ===== rules 38a 38b 39 40 41 42: the sealed build proofs =================================================================
+sp_common=(--source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --arch x86_64 --version 0.3.0 --repo $fx/envrepo --keyring $kr --go-archive $fx/archive/go --melange-lock $fx/melange.lock --recipe $fx/melange.yaml" --assemble-args "--variant production --version 0.3.0 --melange-repo $fx/melrepo --keyring-dir $fx/keyring --apko-config $fx/apko.yaml --base-lock $BL --index-record $idxrec --key-record $keyrec")
+spe=(env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_LOCK="$FL" ImageOS=ubuntu24 ImageVersion=20261004.327.1)
+sp1=$(mo); run_s "${spe[@]}" "$SP" --out "$sp1" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$work/digests.txt" "${sp_common[@]}"
+t "rule 40" "sealed-proof: a probe that cannot get out passes (control reaches outside, blocked inside)" test "$(rc)" = 0
+t "rule 42" "sealed-proof: the record says how the network was cut (sudo unshare -n)" bash -c "grep -Eq 'unshare -n' '$sp1/sealed-record.json'"
+t "rule 42" "sealed-proof: the record holds the control result (outside reached, inside blocked)" bash -c "python3 - '$sp1/sealed-record.json' <<'P'
+import json, sys
+d = json.load(open(sys.argv[1])); c = d['control']; assert c['outside'] == 'reached' and c['inside'] == 'blocked', c
+P"
+t "rule 42" "sealed-proof: the record holds the runner image version (ImageOS, ImageVersion)" bash -c "grep -q ubuntu24 '$sp1/sealed-record.json' && grep -q 20261004.327.1 '$sp1/sealed-record.json'"
+t "rule 30" "sealed-proof: the recorded image digests are the OCI index digest and the per-arch manifest digests" bash -c "grep -Eq '^image-production\.digest [0-9a-f]{64}\$' '$work/digests.txt' && grep -Eq '^image-production\.manifests-amd64 [0-9a-f]{64}\$' '$work/digests.txt' && grep -Eq '^image-production\.manifests-arm64 [0-9a-f]{64}\$' '$work/digests.txt'"
+t "rule 39" "sealed-proof: digests of the sealed apk and image are recorded" bash -c "grep -Eq '[0-9a-f]{64}' '$work/digests.txt' && grep -q fscache '$work/digests.txt'"
+sd "rule 39" "sealed-proof runs the real drivers (a sealed melange build and a sealed apko build happen)" '^melange build .*' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --expect "$work/digests.txt" "${sp_common[@]}"
+t "rule 39" "sealed-proof --expect: same digests as the first build -> pass" test "$(rc)" = 0
+python3 "$work/lib.py" flipdigest "$work/digests.txt" "$work/digests-bad.txt"
+sf "rule 39" "sealed-proof --expect: a different digest fails and says so" 'digest|differ|mismatch' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --expect "$work/digests-bad.txt" "${sp_common[@]}"
+sf "rule 40" "sealed-proof: a probe that gets out (leaky seal) fails the proof" 'reached|escaped|leak|got out' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_LOCK="$FL" STUB_UNSHARE_LEAKY=1 "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+sf "rule 40" "sealed-proof: a probe that fails outside too is inconclusive (no control) and fails the proof" 'control' "${spe[@]}" "$SP" --out "$(mo)" --probe 'false' "${sp_common[@]}"
+sp2=$(mo); run_s "${spe[@]}" "$SP" --out "$sp2" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+t "rule 41" "sealed-proof: deleting vendor/ makes the sealed build fail, recorded" bash -c "python3 - '$sp2/sealed-record.json' <<'P'
+import json, sys
+n = json.load(open(sys.argv[1]))['negatives']; assert n['vendor-deleted']['result'] == 'failed-as-required' and 'vendor is missing' in n['vendor-deleted']['reason'], n
+P"
+t "rule 41" "sealed-proof: deleting one archived package makes the sealed image build fail, recorded" bash -c "python3 - '$sp2/sealed-record.json' <<'P'
+import json, sys
+n = json.load(open(sys.argv[1]))['negatives']; assert n['package-deleted']['result'] == 'failed-as-required' and n['package-deleted']['reason'], n
+P"
+sf "rule 41" "sealed-proof: if the build still succeeds without vendor/ the proof fails" 'vendor' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/alwaysok.sh" "${sp_common[@]}"
+sf "rule 41" "sealed-proof: if the image build still succeeds with a package deleted the proof fails" 'package' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/alwaysok.sh" "${sp_common[@]}"
+t "rule 38a" "the source tree is left untouched by the negative cases (vendor/ still there, after a proof run)" bash -c "test -x '$SP' && test -d '$src/vendor'"
+
+
+# NOT TESTABLE HERE (need the real tools on a GitHub-hosted ubuntu-24.04 x64/arm64 runner; the proof scripts above are what
+# run there, and the assertions above test their logic against stubs):
+#  rule 28  a real tampered package failing inside real apko is covered by the lock checksum checks above (the shell pre-checks refuse it before apko
+#           runs). UNPROVEN HERE: a wrong or unknown Wolfi KEY failing inside real apko (the index signature check): lock-proof.sh has no key case;
+#           the keyring directory is pinned by digest (build/locks/archive-keys.sha256) so a wrong key never reaches apko, but apko's own refusal
+#           of a wrongly signed index has not been exercised
+#  rule 23  a hostile build step in the real bubblewrap guest cannot read a key (the guest mounts only the workspace, resolv.conf
+#           and the cache dir: melange pkg/build/build.go:1020-1040; asserted here only as "Build holds no key")
+#  rule 14  that the Linux download and the image binary come out of the same apk (needs the release job); the byte comparison
+#           itself is apk-tool binary-check, tested above
+#  rule 31  same image digest at any later time on any machine (only one aarch64 host was ever tested; amd64 UNVERIFIED)
+#  rule 35  exactly two images and four Linux archives per release (release acceptance, pipeline lane)
+#  rule 43  Witness crypto/FIPS fit is a report, not a gate: nothing to assert on the cache
+#  rule 62  the VM-direct job and the sysctl step in the workflow (pipeline lane); the driver side is asserted above
+# UNVERIFIED tool claims used above: apk-tool's reading of real melange apks (the .melange.yaml control member, the .SIGN.RSA.*
+# name) is modelled on package.go:222-231 and the apk format, not on a real apk; "melange build --runner bubblewrap" under
+# `sudo unshare -n` with a local repo was proven only for the bwrap leg (spike 2026-10-09-cache-bwrap-runner-spike.md).
+# ---- P4 review round 1 (R2): a name-resolution failure inside the sealed apko call is a network attempt too ------------------------------
+se "rule 40" "assemble-image.sh: 'Temporary failure in name resolution' from apko in the sealed namespace -> exit 4 (the probe confirms)" 4 'network attempt' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_NETTEXT="Get https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz: dial: Temporary failure in name resolution" "$AI" "${ai_args[@]}" --out "$(mo)"
+
+# ---- P5 round 1 (cache-3f): assemble-image.sh refuses an archive whose index is not the recorded one (tests first) ---------------------------------
+ia=("${aie[@]}" "$AI" --variant production --version 0.3.0 --keyring-dir "$fx/keyring" --apko-config "$fx/apko.yaml" --base-lock "$BL" --melange-repo "$fx/melrepo" --key-record "$keyrec")
+mkarch() { rm -rf "$1"; cp -R "$fx/archive" "$1"; }   # a copy of the fixture archive (plain index files)
+mkversioned() { # <archive dir>: make the index of both archs a digest-named file under index/ with APKINDEX.tar.gz a symlink to it
+  local a d sha; for a in x86_64 aarch64; do d="$1/$a"; sha=$(shaof "$d/APKINDEX.tar.gz"); mkdir -p "$d/index"; mv "$d/APKINDEX.tar.gz" "$d/index/APKINDEX-$sha.tar.gz"; ln -s "index/APKINDEX-$sha.tar.gz" "$d/APKINDEX.tar.gz"; done; }
+sd "rule 31" "the recorded index is accepted when the archive holds it as a plain file" '^apko build ' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$(mo)"
+mkarch "$work/ia1"; mkversioned "$work/ia1"
+sd "rule 31" "...and when APKINDEX.tar.gz is a symlink to index/APKINDEX-<sha256>.tar.gz holding exactly those bytes" '^apko build ' "${ia[@]}" --archive "$work/ia1" --index-record "$idxrec" --out "$(mo)"
+sr "rule 31" "a missing record file is refused (exit 2, names the index record), no tool run" 'index record .* is missing' "${ia[@]}" --archive "$fx/archive" --index-record "$work/no-such-record" --out "$(mo)"
+grep -v '^aarch64' "$idxrec" >"$work/idx.noaarch"
+sr "rule 31" "a record with no line for aarch64 is refused (named, not a traceback)" 'has no line for aarch64' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.noaarch" --out "$(mo)"
+{ cat "$idxrec"; head -1 "$idxrec"; } >"$work/idx.twice"
+sr "rule 31" "a record with two lines for one architecture is refused (even identical)" 'two lines for x86_64' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.twice" --out "$(mo)"
+sed 's/sha256:[0-9a-f]*/sha256:zz/' "$idxrec" >"$work/idx.bad"
+sr "rule 31" "a malformed digest in the record is refused" 'malformed line' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.bad" --out "$(mo)"
+printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(printf other | shasum -a 256 | cut -d' ' -f1)" "$(shaof "$fx/archive/aarch64/APKINDEX.tar.gz")" >"$work/idx.other"
+sr "rule 31" "an archive whose index differs from the recorded digest is refused, naming the architecture and both digests" 'package index for x86_64 .* hashes to' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx.other" --out "$(mo)"
+mkarch "$work/ia2"; mkversioned "$work/ia2"; mkdir -p "$work/outside"; sha=$(shaof "$fx/archive/x86_64/APKINDEX.tar.gz"); cp "$work/ia2/x86_64/index/APKINDEX-$sha.tar.gz" "$work/outside/APKINDEX-$sha.tar.gz"; rm "$work/ia2/x86_64/index/APKINDEX-$sha.tar.gz"; ln -s "$work/outside/APKINDEX-$sha.tar.gz" "$work/ia2/x86_64/index/APKINDEX-$sha.tar.gz"
+sr "rule 31" "the recorded index file being a symlink to a file OUTSIDE the archive (same bytes) is refused" 'symlink' "${ia[@]}" --archive "$work/ia2" --index-record "$idxrec" --out "$(mo)"
+mkarch "$work/ia3"; mkversioned "$work/ia3"; sha=$(shaof "$fx/archive/x86_64/APKINDEX.tar.gz"); mv "$work/ia3/x86_64/index/APKINDEX-$sha.tar.gz" "$work/ia3/x86_64/index/other.tar.gz"; rm "$work/ia3/x86_64/APKINDEX.tar.gz"; ln -s index/other.tar.gz "$work/ia3/x86_64/APKINDEX.tar.gz"
+sr "rule 31" "a pointer symlink alone (no index/APKINDEX-<recorded sha256>.tar.gz and no plain file) is refused" 'no .*APKINDEX-|pointer' "${ia[@]}" --archive "$work/ia3" --index-record "$idxrec" --out "$(mo)"
+# R3: a rebuild of an OLD tag. The pointer already moved on to a newer index; the record names the old one, which is still in index/. apko must be given the old one.
+mkarch "$work/ia7"; mkversioned "$work/ia7"; printf 'a newer signed index' >"$work/ia7/x86_64/index/APKINDEX-newer.tar.gz"; rm "$work/ia7/x86_64/APKINDEX.tar.gz"; ln -s index/APKINDEX-newer.tar.gz "$work/ia7/x86_64/APKINDEX.tar.gz"
+rd7="$work/render7"; mkdir -p "$rd7"
+sd "rule 31" "R3: the pointer moved on to a newer index, the record names the older one that is still in index/: the build is accepted" '^apko build ' "${ia[@]}" --archive "$work/ia7" --index-record "$idxrec" --render-dir "$rd7" --out "$(mo)"
+t "rule 31" "R3: ...and apko is given the RECORDED index as APKINDEX.tar.gz (the archive view), never the pointer's target" bash -c "cmp '$rd7/archive-view/x86_64/APKINDEX.tar.gz' '$fx/archive/x86_64/APKINDEX.tar.gz' && ! cmp -s '$rd7/archive-view/x86_64/APKINDEX.tar.gz' '$work/ia7/x86_64/index/APKINDEX-newer.tar.gz' && test -L '$rd7/archive-view/x86_64/tzdata-2026a-r0.apk'"
+mkarch "$work/ia4"; mkversioned "$work/ia4"; sha=$(shaof "$fx/archive/x86_64/APKINDEX.tar.gz"); printf 'tampered' >"$work/ia4/x86_64/index/APKINDEX-$sha.tar.gz"
+sr "rule 31" "a digest-named index file whose content does not hash to its name is refused" 'hashes to' "${ia[@]}" --archive "$work/ia4" --index-record "$idxrec" --out "$(mo)"
+mkarch "$work/ia5"; printf 'a different plain index' >"$work/ia5/aarch64/APKINDEX.tar.gz"
+sr "rule 31" "a plain APKINDEX.tar.gz whose bytes are not the recorded digest is refused" 'package index for aarch64 .* hashes to' "${ia[@]}" --archive "$work/ia5" --index-record "$idxrec" --out "$(mo)"
+
+# ---- P5 round 1 (Opus): B1-B3 and residuals (tests first) ---------------------------------------------------------------------------------------
+# AC3 / R8: the /work links are made with ln -sfn, and apko build is told not to detect VCS
+sd "rule 26" "assemble makes /work/archive, /work/melange-repo and /work/keyring with sudo ln -sT (no -f: an existing link is an error, not replaced)" '^sudo ln -sT [^ ]+ /work/archive$' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 26" "...all three links, in the logged calls" bash -c "grep -Eq '^sudo ln -sT [^ ]+ /work/melange-repo\$' '$CALLS' && grep -Eq '^sudo ln -sT [^ ]+ /work/keyring\$' '$CALLS'"
+sd "rule 31" "apko build is given --vcs=false (no VCS URL is detected or embedded)" '^apko build .*--vcs=false' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+# M20: --version is X.Y.Z or X.Y.Z-rc.N, nothing else (it is substituted into the config and the image tag)
+# advisor 0393 (Oct 12): exactly the chain's grammar: X.Y.Z, X.Y.Z-rcN (N digits, no leading zero, no dot) and the one snapshot version 0.0.0-rc.1
+for v in v0.3.0 0.3 '(devel)' 0.3.0-rc 0.3.0-rc.1 0.3.0-rc01 0.3.0-rc1.2 0.3.0-rc.2 0.0.0-rc.2 0.0.0-rc.01 0.0.0-rc1.1 01.2.3 '0.3.0/x' 'a&b' '0.3.0 ' ' 0.3.0' '0.3.0+x' ''; do
+  sr "rule 24" "assemble refuses --version '$v'" 'version' "${aie[@]}" "$AI" "${ai_args[@]}" --version "$v" --out "$(mo)"; done
+sr "rule 24" "assemble --version 0.3.0-rc1 looks for the apk fscache-0.3.0_rc1-r0.apk (the apk-valid version) in the melange repo" 'fscache-0.3.0_rc1-r0\.apk' "${aie[@]}" "$AI" "${ai_args[@]}" --version 0.3.0-rc1 --out "$(mo)"
+sr "rule 24" "assemble --version 0.0.0-rc.1 (the snapshot) looks for the apk fscache-0.0.0_rc1-r0.apk in the melange repo" 'fscache-0.0.0_rc1-r0\.apk' "${aie[@]}" "$AI" "${ai_args[@]}" --version 0.0.0-rc.1 --out "$(mo)"
+# R10: a SOURCE_DATE_EPOCH too large to be a date is exit 2, not a traceback
+sr "rule 31" "assemble refuses a SOURCE_DATE_EPOCH too large to be a date" SOURCE_DATE_EPOCH env STUB_LOCK="$FL" SOURCE_DATE_EPOCH=99999999999999999999 "$AI" "${ai_args[@]}" --out "$(mo)"
+# M3 (rule 33): the full lock equals the base lock but one package differs between architectures -> arch-check stops the build
+mkarch "$work/ia6"; cp "$work/ia6/aarch64/tzdata-2026a-r0.apk" "$work/ia6/aarch64/tzdata-2026b-r0.apk"
+python3 "$work/lib.py" mutate "$BL" "$work/b-arch5.json" archver; python3 "$work/lib.py" mutate "$FL" "$work/f-arch5.json" archver
+srb "rule 33" "base and full lock agree entry by entry but tzdata differs between the architectures: arch-check stops the build before apko build, naming the package" 'tzdata' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-arch5.json" "$AI" --variant production --version 0.3.0 --archive "$work/ia6" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --apko-config "$fx/apko.yaml" --base-lock "$work/b-arch5.json" --index-record "$idxrec" --key-record "$keyrec" --out "$(mo)"
+# M4 (rule 28): the full lock is verified against the archive AND the melange repository: a tampered fscache apk is refused after apko lock, before apko build
+rm -rf "$work/mel-t"; cp -R "$fx/melrepo" "$work/mel-t"; python3 "$work/lib.py" tamper "$work/mel-t/x86_64/fscache-0.3.0-r0.apk"
+srb "rule 28" "a tampered fscache apk in the melange repo is caught by verifying the full lock (refused after apko lock, before apko build, naming the apk)" 'fscache-0.3.0-r0\.apk' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --melange-repo "$work/mel-t" --out "$(mo)"
+# M5 / R5 (test hook ASSEMBLE_WORK_DIR replaces /work for the pre-checks): an existing real directory, or any existing link or lock, is refused
+mkdir -p "$work/wd1/archive"
+sr "rule 26" "/work/archive exists and is a real directory -> refused, nothing replaced" 'not a symlink|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd1" "$AI" "${ai_args[@]}" --out "$(mo)"
+mkdir -p "$work/wd2"; ln -s /tmp "$work/wd2/keyring"
+sr "rule 26" "a /work link left by another run (a symlink to a different target) is refused: no two runs share /work" 'another|already|exists' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd2" "$AI" "${ai_args[@]}" --out "$(mo)"
+mkdir -p "$work/wd3/.assemble.lock"
+sr "rule 26" "an assembly lock directory in /work means another run is in progress -> refused" 'another|lock|in progress' "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd3" "$AI" "${ai_args[@]}" --out "$(mo)"
+# M13 (rule 40): only the exact errno 101 confirms a sealed namespace; any other probe result is a leak (exit 1, never 4)
+for rc_ in 0 1 111; do
+  run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_PROBE_RC=$rc_ "$AI" "${ai_args[@]}" --out "$(mo)"
+  t "rule 40" "assemble: network text but the probe exits $rc_ (not 101) -> exit 1, never 4" test "$(rc)" = 1
+done
+# B2: net-probe.py is run for real, with the socket replaced: connected -> 0, ENETUNREACH -> 101, anything else -> its errno
+mkdir -p "$work/sockstub"; cat >"$work/sockstub/sitecustomize.py" <<'P'
+import errno, os, socket
+mode = os.environ.get("NET_STUB_MODE", "")
+def connect(self, addr):
+    if mode == "connect":
+        return None
+    raise OSError(int(mode), os.strerror(int(mode)))
+socket.socket.connect = connect
+P
+nprc() { PYTHONPATH="$work/sockstub" NET_STUB_MODE=$1 python3 "$NP" >/dev/null 2>&1; echo $?; }
+t "rule 40" "net-probe.py really connects: a connect that succeeds exits 0" test "$(nprc connect)" = 0
+t "rule 40" "net-probe.py: errno 101 (ENETUNREACH on Linux) exits 101" test "$(nprc 101)" = 101
+t "rule 40" "net-probe.py: errno 111 (ECONNREFUSED) exits 111, not 101" test "$(nprc 111)" = 111
+t "rule 40" "net-probe.py: errno 113 (EHOSTUNREACH) exits 113" test "$(nprc 113)" = 113
+
+# ---- P5 round 1 (Opus + Sonnet), group A: the lock passed to apko build, the config path, indexes, keys, OUT, cache dir, classifier (tests first) -----------
+sd "rule 37" "apko build is given the FULL lock (production.full.lock.json), not the base lock" '^apko build .*--lockfile [^ ]*production\.full\.lock\.json ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 37" "...and the file given to apko build is the lock apko lock made (it holds our apk; the base lock does not)" bash -c "grep -Eo -- '--lockfile [^ ]+' '$CALLS' | tail -1 | grep -q 'full'"
+sd "rule 28" "apko lock and apko build are given a private --cache-dir (a temp directory, not the runner's home)" '^apko lock .*--cache-dir [^ ]*/apko-cache ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+sd "rule 28" "...apko build too" '^apko build .*--cache-dir [^ ]*/apko-cache ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+rm -rf "$work/mel-ni"; cp -R "$fx/melrepo" "$work/mel-ni"; rm -f "$work/mel-ni/x86_64/APKINDEX.tar.gz"
+sr "rule 27" "a melange repository without its APKINDEX.tar.gz is refused, naming APKINDEX" 'APKINDEX' "${aie[@]}" "$AI" "${ai_args[@]}" --melange-repo "$work/mel-ni" --out "$(mo)"
+# compare alone must stop an extra package in the full lock: the extra package is IN the archive, so verify-archive would pass it
+mkarch "$work/ia8"; cp "$work/ia8/x86_64/tzdata-2026a-r0.apk" "$work/ia8/x86_64/extra-1.0-r0.apk"; cp "$work/ia8/aarch64/tzdata-2026a-r0.apk" "$work/ia8/aarch64/extra-1.0-r0.apk"
+python3 - "$work" "$FL" <<'P'
+import json, sys
+sys.path.insert(0, sys.argv[1]); import lib
+w, fl = sys.argv[1:3]
+d = json.load(open(fl))
+for a in ("x86_64", "aarch64"):
+    raw = open("%s/ia8/%s/extra-1.0-r0.apk" % (w, a), "rb").read(); parts = lib.split(raw)
+    d["contents"]["packages"].append(lib.entry("extra", "1.0-r0", a, "/work/archive/%s/extra-1.0-r0.apk" % a, tuple(p[0] for p in ([(b"", b"")] + parts if len(parts) == 2 else parts))))
+json.dump(d, open(w + "/f-extra8.json", "w"))
+P
+srb "rule 37" "a full lock with one extra package that IS in the archive is stopped by the base-vs-full comparison alone, naming it" 'extra' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$work/f-extra8.json" "$AI" "${ai_args[@]}" --archive "$work/ia8" --out "$(mo)"
+# the exit-4 classifier knows apko's own wording
+for txt in "network request blocked in offline mode" "connect: connection refused" "Get \"https://packages.wolfi.dev/os/x86_64/APKINDEX.tar.gz\": no route to host"; do
+  se "rule 40" "assemble: apko says '$txt' in the sealed namespace -> exit 4 (the probe confirms)" 4 'network attempt' env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_NETATTEMPT=1 STUB_NETTEXT="$txt" "$AI" "${ai_args[@]}" --out "$(mo)"; done
+# OUT must be empty or absent: stale files from an earlier run are never mixed with a new result
+mkdir -p "$work/out-stale"; : >"$work/out-stale/production.digest"
+sr "rule 31" "assemble refuses an --out directory that already holds this variant's files (a stale digest would be mixed into the result)" 'not empty|already|stale' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$work/out-stale"
+mkdir -p "$work/out-other"; : >"$work/out-other/fips.digest"; mkdir -p "$work/out-other/fips-sbom"
+sd "rule 31" "...but a --out that holds only the OTHER variant's files is fine (the chain builds production and fips into one OUT)" '^apko build ' "${aie[@]}" "$AI" "${ai_args[@]}" --out "$work/out-other"
+# the keyring directory is pinned by digest: exactly the two keys, with the recorded bytes
+cp -R "$fx/keyring" "$work/kr-bad"; printf 'x' >>"$work/kr-bad/wolfi-signing.rsa.pub"
+sr "rule 19" "a Wolfi key file whose bytes differ from the recorded digest is refused, naming the key" 'wolfi-signing\.rsa\.pub' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-bad" --out "$(mo)"
+cp -R "$fx/keyring" "$work/kr-bad2"; printf 'x' >>"$work/kr-bad2/assembly.rsa.pub"
+sr "rule 19" "an assembly key file whose bytes differ from the recorded digest is refused" 'assembly\.rsa\.pub' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-bad2" --out "$(mo)"
+cp -R "$fx/keyring" "$work/kr-extra"; cp "$fx/keyring/assembly.rsa.pub" "$work/kr-extra/other.rsa.pub"
+sr "rule 19" "an extra key file in the keyring directory is refused (exactly the two recorded keys)" 'other\.rsa\.pub|extra|unexpected' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-extra" --out "$(mo)"
+sr "rule 19" "a missing key record is refused" 'key record' "${aie[@]}" "$AI" "${ai_args[@]}" --key-record "$work/no-such-key-record" --out "$(mo)"
+# overrides of the config, the locks and the records are test-only
+for ov in "--apko-config $fx/apko.yaml" "--base-lock $BL" "--index-record $idxrec" "--key-record $keyrec"; do
+  sr "rule 25" "outside test mode the override '${ov%% *}' is refused" 'test mode|FSCACHE_TEST_MODE' env -u FSCACHE_TEST_MODE "${aie[@]}" "$AI" --variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" $ov --out "$(mo)"; done
+
+# relative paths on the command line are fine (the script runs from the repository root): they are made absolute before the sealed calls change directory
+rel=$(mo); relname=$(basename "$rel"); rm -rf "$rel"
+( cd "$root" && relp() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1]))' "$1"; } && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" --variant production --version 0.3.0 --archive "$(relp "$fx/archive")" --melange-repo "$(relp "$fx/melrepo")" --keyring-dir "$(relp "$fx/keyring")" --apko-config "$(relp "$fx/apko.yaml")" --base-lock "$(relp "$BL")" --index-record "$(relp "$idxrec")" --key-record "$(relp "$keyrec")" --out "$(relp "$work/rel-out-$relname")" >"$work/log" 2>&1; echo $? >"$work/rc" )
+t "rule 31" "assemble with RELATIVE paths (archive, repo, keys, config, locks, records, out) works and writes the digest where --out says" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -s '$work/rel-out-$relname/production.digest'"
+# ---- P5 round 1 (Opus B1, Sonnet R1/R3, R4, R6, R10), group B: lock-proof, sealed-proof, oci-digest (tests first) ---------------------------------------
+# B1: lock-proof must run a POSITIVE control first (the untouched archive must assemble, exit 0), then every bad case must exit exactly 2 with its own reason
+mkdir -p "$work/lpjunk"
+sf "rule 36" "lock-proof: junk archive and --version NOT-A-VERSION -> every case would die at the version check; the positive control fails first (exit 1, naming the control)" 'control' env "${aie[@]:1}" "$LP" --out "$(mo)" --archive "$fx/archive" --apko-config "$fx/apko.yaml" -- --variant production --version NOT-A-VERSION --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL" --index-record "$idxrec" --key-record "$keyrec"
+printf '#!/bin/sh\nexit 1\n' >"$work/alwaysfail.sh"; chmod +x "$work/alwaysfail.sh"
+sf "rule 36" "lock-proof: an assembly script that always exits 1 fails the positive control (not 'all failed as required')" 'control' "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/alwaysfail.sh" "${lp_args[@]}"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in %s) exit 0;; esac; done\necho boom >&2; exit 2\n' "$fx/archive" >"$work/boom.sh"; chmod +x "$work/boom.sh"
+sf "rule 36" "lock-proof: an assembly script that passes the control but refuses every bad case with the same unrelated message 'boom' fails the proof: the reason must be the case's own" 'reason|boom' "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/boom.sh" "${lp_args[@]}"
+VICTIM=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["contents"]["packages"],key=lambda e:(e["name"],e["architecture"]))[0];print("%s-%s.apk"%(e["name"],e["version"]))' "$BL")
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in %s) exit 0;; esac; done\necho "assemble-image.sh: some reason: %s does not match APKINDEX missing live repository" >&2; exit 1\n' "$fx/archive" "$VICTIM" >"$work/exit1.sh"; chmod +x "$work/exit1.sh"
+sf "rule 36" "lock-proof: a refusal with exit 1 instead of the named refusal exit 2 is not 'failed as required'" 'not the named refusal exit 2' "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/exit1.sh" "${lp_args[@]}"
+lpo2=$(mo); run_s "${aie[@]}" "$LP" --out "$lpo2" --archive "$fx/archive" "${lp_args[@]}"
+t "rule 36" "lock-proof (real assembly): the record holds the positive control, the assembly script path and its sha256, and each case's reason and exit code" bash -c "python3 - '$lpo2/lock-proof.json' '$AI' <<'P'
+import hashlib, json, sys
+d = json.load(open(sys.argv[1])); ai = sys.argv[2]
+assert d['positive_control'] == 'ok', d
+assert d['assemble_script'] == ai and d['assemble_script_sha256'] == hashlib.sha256(open(ai, 'rb').read()).hexdigest(), d
+assert set(d['cases']) >= {'missing-package', 'missing-index', 'tampered-package', 'live-packages'}, d
+for c in d['cases'].values(): assert c['result'] == 'failed-as-required' and c['exit'] == 2 and c['reason'], c
+P"
+t "rule 36" "lock-proof: the victim is a package of the BASE LOCK (the first by name), and the failure names it" bash -c "python3 - '$lpo2/lock-proof.json' <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))['cases']
+for c in ('missing-package', 'tampered-package'): assert 'ca-certificates-bundle' in d[c]['reason'], d[c]
+P"
+mkarch "$work/lp-unrel"; cp "$work/lp-unrel/x86_64/tzdata-2026a-r0.apk" "$work/lp-unrel/x86_64/aaa-unrelated-1-r0.apk"
+run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/lp-unrel" "${lp_args[@]}"
+t "rule 36" "lock-proof: an unrelated apk that sorts first in the archive is NOT chosen as the victim (the proof damages a package the image uses)" bash -c "test \"\$(cat '$work/rc')\" = 0"
+printf 'x' >"$work/lp-unrel/x86_64/aaa-tiny-1-r0.apk"
+run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/lp-unrel" "${lp_args[@]}"
+t "rule 36" "lock-proof: a tiny apk in the archive never causes a traceback" bash -c "! grep -q Traceback '$work/log'"
+sr "rule 36" "lock-proof refuses --assemble-script outside test mode (exit 2)" 'test mode|FSCACHE_TEST_MODE' env -u FSCACHE_TEST_MODE "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/alwaysok.sh" "${lp_args[@]}"
+# sealed-proof: scripts only in test mode, recorded; unknown runner version refused outside test mode; quoted args; epoch overflow
+sf "rule 41" "sealed-proof refuses --build-script outside test mode" 'are allowed only in test mode' env -u FSCACHE_TEST_MODE ImageOS=ubuntu24 ImageVersion=20260901 "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/alwaysok.sh" "${sp_common[@]}"
+spo=$(mo); run_s "${spe[@]}" "$SP" --out "$spo" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+t "rule 42" "sealed-proof: the record says whether test mode was on, and names the two driver scripts with their sha256" bash -c "python3 - '$spo/sealed-record.json' '$BA' '$AI' <<'P'
+import hashlib, json, sys
+d = json.load(open(sys.argv[1]))
+assert d['test_mode'] is True, d
+for k, path in (('build_script', sys.argv[2]), ('assemble_script', sys.argv[3])):
+    assert d[k] == path and d[k + '_sha256'] == hashlib.sha256(open(path, 'rb').read()).hexdigest(), (k, d)
+P"
+sf "rule 42" "sealed-proof: with no ImageOS/ImageVersion in the environment the runner version is unknown -> refused outside test mode (rule 42 records the runner image)" 'ImageOS|ImageVersion' env -u FSCACHE_TEST_MODE -u ImageOS -u ImageVersion "${aie[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+mkdir -p "$work/with space"; cp "$idxrec" "$work/with space/idx.record"
+sp_space=(--source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --arch x86_64 --version 0.3.0 --repo $fx/envrepo --keyring $kr --go-archive $fx/archive/go --melange-lock $fx/melange.lock --recipe $fx/melange.yaml" --assemble-args "--variant production --version 0.3.0 --melange-repo $fx/melrepo --keyring-dir $fx/keyring --apko-config $fx/apko.yaml --base-lock $BL --index-record '$work/with space/idx.record' --key-record $keyrec")
+run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_space[@]}"
+t "rule 39" "sealed-proof: an argument with a space inside quotes in --assemble-args stays one argument" test "$(rc)" = 0
+sr "rule 31" "sealed-proof refuses a SOURCE_DATE_EPOCH too large to be a date" SOURCE_DATE_EPOCH env STUB_LOCK="$FL" SOURCE_DATE_EPOCH=99999999999999999999 ImageOS=ubuntu24 ImageVersion=1 "$SP" --out "$(mo)" --probe 'true' "${sp_common[@]}"
+# oci-digest: exactly one index, a platform on every manifest, exactly amd64 + arm64, media types, and './' member names
+python3 - "$work" "$fx/oci" <<'P'
+import hashlib, io, json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, oc = sys.argv[1:3]
+def members(path):
+    t = tarfile.open(path); return [(m.name, t.extractfile(m).read()) for m in t.getmembers() if m.isfile()]
+def put(name, ms): open("%s/%s.tar" % (w, name), "wb").write(lib.tarb(ms))
+H = lambda b: hashlib.sha256(b).hexdigest()
+# apko-shaped variants
+ap = dict(members(oc + "/apko.tar")); idx = json.loads(ap["index.json"]); rest = [(n, d) for n, d in ap.items() if n != "index.json"]
+def apko_variant(name, mans):
+    put("oci-" + name, rest + [("index.json", json.dumps(dict(idx, manifests=mans)).encode())])
+m_amd, m_arm = idx["manifests"]
+apko_variant("only-amd", [m_amd]); apko_variant("empty", []); apko_variant("three", [m_amd, m_arm, dict(m_arm, platform={"architecture": "s390x", "os": "linux"})])
+apko_variant("noplat", [m_amd, {k: v for k, v in m_arm.items() if k != "platform"}])
+apko_variant("dup", [m_amd, m_amd])
+put("oci-dotslash", [("./" + n, d) for n, d in members(oc + "/apko.tar")])
+# standard-layout variants
+g = dict(members(oc + "/good.tar")); top = json.loads(g["index.json"]); idxd = top["manifests"][0]["digest"].split(":")[1]; idxblob = json.loads(g["blobs/sha256/" + idxd])
+others = [(n, d) for n, d in g.items() if n not in ("index.json", "blobs/sha256/" + idxd)]
+def std_variant(name, blob, toplist=None):
+    b = json.dumps(blob).encode(); h = H(b)
+    t = {"schemaVersion": 2, "manifests": toplist if toplist is not None else [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + h, "size": len(b)}]}
+    put("oci-" + name, others + [("blobs/sha256/" + h, b), ("index.json", json.dumps(t).encode())])
+std_variant("std-twoidx", idxblob, [top["manifests"][0], top["manifests"][0]])
+std_variant("std-noplat", dict(idxblob, manifests=[idxblob["manifests"][0], {k: v for k, v in idxblob["manifests"][1].items() if k != "platform"}]))
+std_variant("std-onearch", dict(idxblob, manifests=[idxblob["manifests"][0]]))
+std_variant("std-badmedia", dict(idxblob, mediaType="application/x-evil"))
+P
+for v in only-amd empty three noplat dup std-onearch std-noplat; do
+  fails "rule 31" "oci-digest: the variant '$v' (not exactly one amd64 and one arm64 manifest, each with a platform architecture) is refused" 'amd64|arm64|platform|architecture' python3 "$OD" "$work/oci-$v.tar"; done
+fails "rule 31" "oci-digest: an index.json that names the index blob twice (standard layout) is refused: exactly one" 'exactly one' python3 "$OD" "$work/oci-std-twoidx.tar"
+fails "rule 31" "oci-digest: an index blob with a media type that is not an OCI index is refused" 'media' python3 "$OD" "$work/oci-std-badmedia.tar"
+t "rule 31" "oci-digest: members named './index.json', './sha256:<hex>' (a tar written with a leading ./) are read, not a KeyError" bash -c "python3 '$OD' '$work/oci-dotslash.tar' | head -1 | grep -q '^index sha256:'"
+
+# ---- P5 round 3 (Sonnet): sealed-proof's victim, cleanup that never changes the exit status, lock-proof in real mode, oci-digest malformed ---------------
+# an unremovable (root-written) cache inside the temp dir must not turn exit 0 into 1, or exit 4 into 1
+run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCKED_CACHE=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 40" "assemble: a root-written (unremovable) apko cache in the temp dir does not change a successful exit 0" test "$(rc)" = 0
+run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCKED_CACHE=1 STUB_NETATTEMPT=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 40" "assemble: ...nor the network-attempt exit 4" test "$(rc)" = 4
+trapok=0; for f in assemble-image lock-proof sealed-proof build-apk release-sign-apks refresh-inputs install-build-tools; do grep -Eq 'local rc=\$\?' "$root/bin/$f.sh" && grep -Eq 'exit \$rc' "$root/bin/$f.sh" || { trapok=1; echo "no status-preserving trap in $f" >&2; }; done
+t "rule 40" "every script's EXIT trap preserves the exit status (it captures it, cannot fail, and exits with it)" test "$trapok" = 0
+# sealed-proof deletes a package of the BASE LOCK (not the first apk in sorted order) and each negative needs its own reason
+mkarch "$work/sp-unrel"; cp "$work/sp-unrel/x86_64/tzdata-2026a-r0.apk" "$work/sp-unrel/x86_64/aaa-unrelated-1-r0.apk"
+sp_unrel=("${sp_common[@]}"); for i in "${!sp_unrel[@]}"; do [ "${sp_unrel[$i]}" = "$fx/archive" ] && sp_unrel[$i]="$work/sp-unrel"; done
+run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_unrel[@]}"
+t "rule 41" "sealed-proof: an unrelated apk sorting first in the archive does not become the victim: the proof deletes a base-lock package and passes" bash -c "test \"\$(cat '$work/rc')\" = 0"
+printf '#!/bin/sh\necho boom >&2\nexit 2\n' >"$work/boom2.sh"; chmod +x "$work/boom2.sh"
+sf "rule 41" "sealed-proof: a vendor-less build that fails for an UNRELATED reason does not prove rule 41 (its message must name vendor)" 'reason|vendor' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/boom2.sh" "${sp_common[@]}"
+sf "rule 41" "sealed-proof: an image build that fails for an UNRELATED reason with a package deleted does not prove rule 41 (its message must name the package)" 'reason|package' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/boom2.sh" "${sp_common[@]}"
+# the sudo control: a probe that works as the user must also work under sudo, otherwise a failure inside unshare proves nothing
+sf "rule 40" "sealed-proof: a probe that succeeds as the user but fails under plain sudo (control) fails the proof naming sudo" 'sudo' env ONLY_OUTSIDE=1 "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -n "${ONLY_OUTSIDE:-}"' "${sp_common[@]}"
+run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+t "rule 40" "sealed-proof: the control order is outside, then sudo bash -c, then sudo unshare -n bash -c" bash -c "a=\$(grep -n '^sudo bash -c' '$CALLS' | head -1 | cut -d: -f1); b=\$(grep -n '^sudo .*unshare -n bash -c' '$CALLS' | head -1 | cut -d: -f1); test -n \"\$a\" && test -n \"\$b\" && test \"\$a\" -lt \"\$b\""
+# lock-proof: the missing-index case removes the recorded named index too; it never writes through a symlinked victim; it hands the assembler no overrides it does not need
+mkarch "$work/lp-ver"; mkversioned "$work/lp-ver"
+run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/lp-ver" "${lp_args[@]}"
+t "rule 36" "lock-proof on an archive whose index is index/APKINDEX-<sha256> plus a pointer: all four cases still hold (the missing-index case removes both)" test "$(rc)" = 0
+mkarch "$work/lp-link"; v="$work/lp-link/x86_64/ca-certificates-bundle-20260909-r2.apk"
+python3 - "$work/lp-link" "$BL" <<'P'
+import json, os, sys
+a, bl = sys.argv[1:3]
+e = sorted(json.load(open(bl))["contents"]["packages"], key=lambda e: (e["name"], e["architecture"]))[0]
+p = "%s/%s/%s-%s.apk" % (a, e["architecture"], e["name"], e["version"])
+real = p + ".real"; os.rename(p, real); os.symlink(os.path.basename(real), p)
+P
+run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/lp-link" "${lp_args[@]}"
+t "rule 36" "lock-proof: a symlinked victim in the archive is never written through: the proof refuses naming symlink, the real file is unchanged" bash -c "test \"\$(cat '$work/rc')\" != 0 && grep -qi symlink '$work/log' && for r in \$(cd '$work/lp-link' && find . -name '*.real'); do cmp -s \"$work/lp-link/\$r\" \"$fx/archive/\${r%.real}\" || exit 1; done"
+cat >"$work/argvlog.sh" <<'S'
+#!/bin/sh
+ARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done
+echo "$@" >>"$ARGV_LOG"
+case " $* " in *" --apko-config "*live.yaml*) echo "assemble-image.sh: the config names a live repository or address" >&2; exit 2;; esac
+for a in "$@"; do case "$a" in */lp-archive-ok) exit 0;; esac; done
+case " $* " in *a-missing-package*) echo "apko-lock.sh: $VICTIM is not in the archive" >&2; exit 2;; *a-missing-index*) echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2;; *a-tampered*) echo "apko-lock.sh: $VICTIM: data section does not match the lock" >&2; exit 2;; esac
+exit 0
+S
+chmod +x "$work/argvlog.sh"; cp -R "$fx/archive" "$work/lp-archive-ok"
+rm -f "$work/argv.log"; VICTIM=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["contents"]["packages"],key=lambda e:(e["name"],e["architecture"]))[0];print("%s-%s.apk"%(e["name"],e["version"]))' "$BL"); lpo4=$(mo); run_s env VICTIM="$VICTIM" ARGV_LOG="$work/argv.log" "$LP" --out "$lpo4" --archive "$work/lp-archive-ok" --assemble-script "$work/argvlog.sh" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL"
+t "rule 36" "lock-proof without --apko-config: the assembler gets no --apko-config for the control and the first three cases, only the live-packages case gets a temp config, and the record says which case used an override" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c -- '--apko-config' '$work/argv.log')\" = 1 && grep -- '--apko-config' '$work/argv.log' | grep -q 'live.yaml' && python3 -c \"import json,glob,sys; d=json.load(open('$lpo4/lock-proof.json')); assert d['override_cases']==['live-packages'], d\""
+cat >"$work/idxcheck.sh" <<'S'
+#!/bin/sh
+ARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done
+# refuses a bad case only if the case really lacks the index: the pointer AND every named index must be gone for "a-missing-index"
+all="$*"
+arch=
+while [ $# -gt 0 ]; do [ "$1" = --archive ] && arch=$2; shift; done
+case " $all " in *live.yaml*) echo "assemble-image.sh: the config names a live repository" >&2; exit 2;; esac
+case "$arch" in
+  *a-missing-index*) for d in "$arch"/x86_64/ "$arch"/aarch64/; do if [ ! -e "$d/APKINDEX.tar.gz" ] && [ ! -L "$d/APKINDEX.tar.gz" ] && ! ls "$d"index/APKINDEX-* >/dev/null 2>&1; then echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2; fi; done; exit 0;;
+  *a-missing-package*) echo "apko-lock.sh: $VICTIM is not in the archive" >&2; exit 2;;
+  *a-tampered*) echo "apko-lock.sh: $VICTIM: data section does not match the lock" >&2; exit 2;;
+esac
+exit 0
+S
+chmod +x "$work/idxcheck.sh"
+run_s env VICTIM="$VICTIM" "$LP" --out "$(mo)" --archive "$work/lp-ver" --assemble-script "$work/idxcheck.sh" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL"
+t "rule 36" "lock-proof: the missing-index case removes the named index/APKINDEX-<sha256> files as well as the pointer (an assembler that only needs the named file would otherwise accept it)" test "$(cat "$work/rc")" = 0
+# oci-digest: malformed entries and the config and layer blobs
+python3 - "$work" "$fx/oci" <<'P'
+import hashlib, json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, oc = sys.argv[1:3]
+t = tarfile.open(oc + "/apko.tar"); ap = {m.name: t.extractfile(m).read() for m in t.getmembers() if m.isfile()}
+idx = json.loads(ap["index.json"]); rest = [(n, d) for n, d in ap.items() if n != "index.json"]
+def put(name, ms): open("%s/%s.tar" % (w, name), "wb").write(lib.tarb(ms))
+put("oci-nodigest", rest + [("index.json", json.dumps(dict(idx, manifests=[{k: v for k, v in idx["manifests"][0].items() if k != "digest"}, idx["manifests"][1]])).encode())])
+man = json.loads(ap["sha256:" + idx["manifests"][0]["digest"].split(":")[1]])
+bad = dict(man, config=dict(man["config"], digest="sha256:" + "0" * 64))
+bh = hashlib.sha256(json.dumps(bad).encode()).hexdigest()
+m0 = dict(idx["manifests"][0], digest="sha256:" + bh)
+put("oci-badcfg", [(n, d) for n, d in rest if n != "sha256:" + idx["manifests"][0]["digest"].split(":")[1]] + [("sha256:" + bh, json.dumps(bad).encode()), ("index.json", json.dumps(dict(idx, manifests=[m0, idx["manifests"][1]])).encode())])
+P
+fails "rule 31" "oci-digest: a manifest entry without a digest is a named refusal, not a traceback" 'digest' python3 "$OD" "$work/oci-nodigest.tar"
+t "rule 31" "...and no traceback" bash -c "! python3 '$OD' '$work/oci-nodigest.tar' 2>&1 | grep -q Traceback"
+fails "rule 31" "oci-digest: a manifest whose config blob is missing or does not hash to its name is refused" 'config|missing|hash' python3 "$OD" "$work/oci-badcfg.tar"
+t "rule 31" "...and it is a named refusal, not a traceback" bash -c "! python3 '$OD' '$work/oci-badcfg.tar' 2>&1 | grep -q Traceback"
+
+# ---- P5 round 3 (Opus + Sonnet): test hooks gated, render dir, containment, cleanup, claim race, oci duplicates, lock-proof inputs ----------------------------
+sr "rule 26" "ASSEMBLE_WORK_DIR (a test hook that moves the /work checks and links but not the paths in the config) is refused outside test mode" 'test mode|FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR' env -u FSCACHE_TEST_MODE "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd-gate" "$AI" --variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --out "$(mo)"
+# the render directory must be empty and not a symlink, so nothing planted in it is used or written through
+mkdir -p "$work/rd-planted"; : >"$work/rd-planted/apko.yaml"
+sr "rule 25" "a --render-dir that is not empty is refused (a planted file would be written through or kept)" 'render' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --render-dir "$work/rd-planted" --out "$(mo)"
+mkdir -p "$work/rd-real"; ln -s "$work/rd-real" "$work/rd-link"
+sr "rule 25" "a --render-dir that is a symlink is refused" 'render|symlink' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --render-dir "$work/rd-link" --out "$(mo)"
+# every path component of the archive is contained: arch directory, index directory, the keyring files
+mkarch "$work/ic1"; mkversioned "$work/ic1"; mkdir -p "$work/ic-out"; cp -R "$work/ic1/x86_64/index" "$work/ic-out/index"; rm -rf "$work/ic1/x86_64/index"; ln -s "$work/ic-out/index" "$work/ic1/x86_64/index"
+sr "rule 31" "an index/ directory that is a symlink out of the archive is refused (every component is contained, not just the last)" 'symlink|outside' "${ia[@]}" --archive "$work/ic1" --index-record "$idxrec" --out "$(mo)"
+mkarch "$work/ic2"; mv "$work/ic2/aarch64" "$work/ic-out/aarch64"; ln -s "$work/ic-out/aarch64" "$work/ic2/aarch64"
+sr "rule 31" "an architecture directory that is a symlink out of the archive is refused" 'symlink|outside' "${ia[@]}" --archive "$work/ic2" --index-record "$idxrec" --out "$(mo)"
+cp -R "$fx/keyring" "$work/kr-link"; cp "$fx/keyring/wolfi-signing.rsa.pub" "$work/kr-real.pub"; rm "$work/kr-link/wolfi-signing.rsa.pub"; ln -s "$work/kr-real.pub" "$work/kr-link/wolfi-signing.rsa.pub"
+sr "rule 19" "a key file that is a symlink is refused (the keyring files must be regular files in the directory)" 'symlink|regular' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-link" --out "$(mo)"
+printf 'this is not a key record line\n' >>"$work/key.bad"; cat "$keyrec" "$work/key.bad" >"$work/key.garbage"
+sr "rule 19" "an unparseable line in the key record is refused, not skipped" 'malformed|repeated' "${aie[@]}" "$AI" "${ai_args[@]}" --key-record "$work/key.garbage" --out "$(mo)"
+# the claim on /work is atomic: if the lock directory cannot be created (another run won the race) the run stops, makes no links and removes nothing
+sr "rule 26" "a lost race for the /work lock (sudo mkdir fails) is refused, naming the other assembly" 'another assembly' "${aie[@]}" STUB_SUDO_FAIL_MKDIR=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 26" "...and a run that never made a link removes none (no sudo rm in the calls)" bash -c "! grep -q '^sudo rm' '$CALLS' && ! grep -q '^sudo ln' '$CALLS'"
+run_s "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 26" "a successful run removes exactly the three links and the lock directory it made" bash -c "grep -q '^sudo rm -f /work/archive /work/melange-repo /work/keyring\$' '$CALLS' && grep -q '^sudo rmdir /work/.assemble.lock\$' '$CALLS'"
+run_s "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-bad" --out "$(mo)"
+t "rule 26" "a run refused before the claim (bad keys) calls no sudo rm at all (cleanup is conditional on what this run made)" bash -c "! grep -q '^sudo rm' '$CALLS'"
+# oci-digest: duplicate members, a manifest with another media type, no silent last-one-wins
+python3 - "$work" "$fx/oci" <<'P'
+import json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, oc = sys.argv[1:3]
+t = tarfile.open(oc + "/apko.tar"); ms = [(m.name, t.extractfile(m).read()) for m in t.getmembers() if m.isfile()]
+open(w + "/oci-dup.tar", "wb").write(lib.tarb(ms + [("./index.json", dict(ms)["index.json"])]))
+open(w + "/oci-dup2.tar", "wb").write(lib.tarb(ms + [("index.json", b"{}")]))
+import hashlib
+g = tarfile.open(oc + "/good.tar"); gm = {m.name: g.extractfile(m).read() for m in g.getmembers() if m.isfile()}
+top = json.loads(gm["index.json"]); d = top["manifests"][0]["digest"].split(":")[1]; idx = json.loads(gm["blobs/sha256/" + d])
+idx["manifests"][0]["mediaType"] = "application/x-evil"
+b = json.dumps(idx).encode(); h = hashlib.sha256(b).hexdigest()
+others = [(n, v) for n, v in gm.items() if n not in ("index.json", "blobs/sha256/" + d)]
+top["manifests"][0] = dict(top["manifests"][0], digest="sha256:" + h, size=len(b))
+open(w + "/oci-badmanmedia.tar", "wb").write(lib.tarb(others + [("blobs/sha256/" + h, b), ("index.json", json.dumps(top).encode())]))
+P
+fails "rule 31" "oci-digest: two members with the same name (index.json and ./index.json) are refused, not last-one-wins" 'duplicate' python3 "$OD" "$work/oci-dup.tar"
+fails "rule 31" "oci-digest: two members both named index.json are refused" 'duplicate' python3 "$OD" "$work/oci-dup2.tar"
+fails "rule 31" "oci-digest: a per-architecture manifest entry with a non-OCI media type is refused" 'media' python3 "$OD" "$work/oci-badmanmedia.tar"
+# lock-proof records the sha256 of everything it proved against
+lpo3=$(mo); run_s "${aie[@]}" "$LP" --out "$lpo3" --archive "$fx/archive" "${lp_args[@]}"
+t "rule 36" "lock-proof.json records the sha256 of the config, the base lock, the index record and the key record it proved" bash -c "python3 - '$lpo3/lock-proof.json' '$fx/apko.yaml' '$BL' '$idxrec' '$keyrec' <<'P'
+import hashlib, json, sys
+d = json.load(open(sys.argv[1]))['inputs']
+for k, path in zip(('config', 'base_lock', 'index_record', 'key_record'), sys.argv[2:6]):
+    assert d[k]['sha256'] == hashlib.sha256(open(path, 'rb').read()).hexdigest(), (k, d[k])
+P"
+
+# ---- P5 round 3: sealed-proof runner version "unknown", and a run that produces no digests ---------------------------------------------------------
+sr2() { local ac=$1 d=$2 kw=$3; shift 3; "$@"; if [ "$(rc)" != 0 ] && grep -Eqi -- "$kw" "$work/log"; then ok; else bad "$ac" "$d (exit $(rc), wanted non-zero naming '$kw')"; fi; }
+sr2 "rule 42" "sealed-proof: ImageOS/ImageVersion set to 'unknown' are refused outside test mode (the runner image must be real)" 'ImageOS|ImageVersion' run_s env -u FSCACHE_TEST_MODE ImageOS=unknown ImageVersion=unknown SOURCE_DATE_EPOCH=$SDE "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+
+# ---- snapshot-4 round 4 (Opus P5) -----------------------------------------------------------------------------------------------------------------------------
+# the proofs supply the paths themselves; a pass-through argument cannot put a reason into an error message
+for bad in --archive --out --render-dir --apko-config; do
+  sr2 "rule 36" "lock-proof refuses $bad after -- (the proof supplies it; a forwarded value could be printed back as a 'reason')" 'supplied by|after --' run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL" "$bad" "x/ca-certificates-bundle-20260101-r0.apk does not match APKINDEX live repository"
+done
+for bad in --source-dir --out --render-dir; do
+  sr2 "rule 41" "sealed-proof refuses $bad in --build-args" 'supplied by' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --arch x86_64 $bad x" --assemble-args "--variant production --version 0.3.0"
+done
+# a build that fails with a message that merely prints the source directory does not count as the vendor refusal
+printf '#!/bin/sh\nfor a in "$@"; do last=$a; done\necho "build-apk.sh: melange failed: network unreachable while building $*" >&2\nexit 2\n' >"$work/pathfail.sh"; chmod +x "$work/pathfail.sh"
+sf "rule 41" "sealed-proof: a failure that only prints the source path is not the vendor refusal (the builder's own 'vendor is missing' line is required)" 'vendor|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/pathfail.sh" "${sp_common[@]}"
+t "rule 41" "sealed-proof: the copy used for the vendor negative has no keyword in its name" bash -c "! grep -q 'src-novendor' '$SP'"
+printf '#!/bin/sh\necho "assemble-image.sh: failed while reading $*" >&2\nexit 2\n' >"$work/pathfail2.sh"; chmod +x "$work/pathfail2.sh"
+sf "rule 41" "sealed-proof: an image failure whose lines do not name the deleted package is not the package refusal" 'package|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/pathfail2.sh" "${sp_common[@]}"
+# an unlistable directory is not an empty directory
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$work/nolist"; : >"$work/nolist/planted"; chmod 0300 "$work/nolist"
+  sr "rule 25" "a --render-dir that cannot be listed is refused (not taken as empty)" 'render|list' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --render-dir "$work/nolist" --out "$(mo)"
+  sr "rule 31" "an --out that cannot be listed is refused (not taken as empty)" 'out|list' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$work/nolist"
+  chmod 0700 "$work/nolist"
+fi
+# oci-digest: the apko layout is checked as strictly as the standard one
+python3 - "$work" "$fx/oci" <<'P'
+import json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, oc = sys.argv[1:3]
+t = tarfile.open(oc + "/apko.tar"); ms = {m.name: t.extractfile(m).read() for m in t.getmembers() if m.isfile()}
+def variant(name, f):
+    idx = json.loads(ms["index.json"]); f(idx)
+    out = [(n, d) for n, d in ms.items() if n != "index.json"] + [("index.json", json.dumps(idx).encode())]
+    open("%s/%s.tar" % (w, name), "wb").write(lib.tarb(out))
+variant("apko-badidxmt", lambda i: i.__setitem__("mediaType", "application/x-evil"))
+variant("apko-badmanmt", lambda i: i["manifests"][0].__setitem__("mediaType", "application/x-evil"))
+variant("apko-noos", lambda i: i["manifests"][0]["platform"].pop("os", None))
+variant("apko-os", lambda i: i["manifests"][0]["platform"].__setitem__("os", "windows"))
+P
+for v in badidxmt badmanmt noos os; do
+  fails "rule 31" "oci-digest: the apko-layout variant '$v' (media type or platform.os not as the OCI layout requires) is refused" 'media|os|linux' python3 "$OD" "$work/apko-$v.tar"
+done
+# /work: links are made without -f; if one cannot be made (another run's link is there) the run stops and removes only the links IT made
+sf "rule 26" "assemble: an existing /work link (ln -sT fails on the second link) is an error naming the link, not a silent replacement" 'melange-repo|link' env STUB_LN_FAIL_AT=2 "${aie[@]}" "$AI" "${ai_args[@]}" --out "$(mo)"
+t "rule 26" "...and the cleanup removes only the link it made (archive), not the one that was already there" bash -c "grep -q '^sudo rm -f /work/archive\$' '$CALLS' && ! grep -q 'sudo rm -f /work/archive /work/melange-repo' '$CALLS'"
+
+# ---- snapshot-5 round 5 (Sonnet/Opus P5) -------------------------------------------------------------------------------------------------------------------------
+# a symlinked root is refused by the proofs and the assembler; the real tree is untouched
+mkarch "$work/real-arch"; ln -sfn "$work/real-arch" "$work/link-arch"; before=$(cd "$work/real-arch" && find . | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)
+sr2 "rule 36" "lock-proof refuses a symlinked --archive root (exit non-zero, names symlink)" 'symlink' run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/link-arch" "${lp_args[@]}"
+sr2 "rule 41" "sealed-proof refuses a symlinked --archive root" 'symlink' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$work/link-arch" --build-args "--variant standard" --assemble-args "--variant production --version 0.3.0"
+rm -f "$work/link-src"; ln -s "$src" "$work/link-src"; vend_before=$(cd "$src/vendor" && find . | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)
+sr2 "rule 41" "sealed-proof refuses a symlinked --source-dir root" 'symlink' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$work/link-src" --archive "$fx/archive" --build-args "--variant standard" --assemble-args "--variant production --version 0.3.0"
+t "rule 41" "...and the real source vendor/ is still there, byte for byte" test "$(cd "$src/vendor" && find . | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$vend_before"
+t "rule 36" "...and the real archive is byte-identical after the refused lock-proof and sealed-proof" test "$(cd "$work/real-arch" && find . | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$before"
+sr "rule 26" "assemble refuses a symlinked --archive root" 'symlink' "${ia[@]}" --archive "$work/link-arch" --index-record "$idxrec" --out "$(mo)"
+mkdir -p "$work/real-out"; ln -sfn "$work/real-out" "$work/link-out"
+sr "rule 31" "assemble refuses a symlinked --out (a link to an empty directory too)" 'symlink' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$work/link-out"
+t "rule 31" "...and nothing was written through it" test -z "$(ls -A "$work/real-out")"
+# every filter of the round-4 reason rule is pinned
+for bad in --archive --out --render-dir; do
+  sr2 "rule 41" "sealed-proof refuses $bad in --assemble-args" 'supplied by' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard" --assemble-args "--variant production $bad x"
+done
+sr2 "rule 41" "sealed-proof refuses --apk-cache-dir in --build-args" 'supplied by' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --apk-cache-dir x" --assemble-args "--variant production --version 0.3.0"
+printf '#!/bin/sh\nfor a in "$@"; do case "$a" in --source-dir) n=1;; *) [ "$n" = 1 ] && { echo "build-apk.sh: $a/vendor is missing: the build uses only vendored Go code" >&2; n=0; }; esac; done\necho "build-apk.sh: then something else failed" >&2\nexit 2\n' >"$work/vendor-then-other.sh"; chmod +x "$work/vendor-then-other.sh"
+sf "rule 41" "sealed-proof: a builder whose LAST prefixed line is something else after the vendor line is not the vendor refusal" 'vendor|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/vendor-then-other.sh" "${sp_common[@]}"
+printf '#!/bin/sh\necho "build-apk.sh: /elsewhere/vendor is missing" >&2\nexit 2\n' >"$work/vendor-elsewhere.sh"; chmod +x "$work/vendor-elsewhere.sh"
+sf "rule 41" "sealed-proof: 'vendor is missing' about ANOTHER path is not the refusal about the copy's own vendor/" 'vendor|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/vendor-elsewhere.sh" "${sp_common[@]}"
+V=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["contents"]["packages"],key=lambda e:(e["name"],e["architecture"]))[0];print("%s-%s.apk"%(e["name"],e["version"]))' "$BL")
+printf '#!/bin/sh\necho "the file %s is gone" >&2\necho "assemble-image.sh: failed" >&2\nexit 2\n' "$V" >"$work/unprefixed-victim.sh"; chmod +x "$work/unprefixed-victim.sh"
+sf "rule 41" "sealed-proof: the victim named only on an unprefixed line is not the package refusal" 'package|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/unprefixed-victim.sh" "${sp_common[@]}"
+printf '#!/bin/sh\ncase " $* " in *a-missing-package*) echo "the file %s is gone" >&2; echo "assemble-image.sh: failed" >&2; exit 2;; esac\nexit 0\n' "$V" >"$work/unprefixed-lp.sh"; chmod +x "$work/unprefixed-lp.sh"
+sf "rule 36" "lock-proof: a victim named only on an unprefixed line is not the case's own reason" 'reason' env VICTIM="$V" "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/unprefixed-lp.sh" "${lp_args[@]}"
+# a name with regex characters (libstdc++) is matched literally
+python3 - "$work" "$fx" "$BL" <<'P'
+import json, os, shutil, sys
+w, fx, bl = sys.argv[1:4]
+d = w + "/plus"; shutil.rmtree(d, ignore_errors=True); shutil.copytree(fx + "/archive", d + "/archive")
+lk = json.load(open(bl)); pk = lk["contents"]["packages"]
+old = sorted(pk, key=lambda e: (e["name"], e["architecture"]))[0]["name"]
+for e in pk:
+    if e["name"] == old:
+        src_ = "%s/archive/%s/%s-%s.apk" % (d, e["architecture"], e["name"], e["version"]); e["name"] = "a++c"
+        os.rename(src_, "%s/archive/%s/a++c-%s.apk" % (d, e["architecture"], e["version"]))
+json.dump(lk, open(d + "/plus.lock.json", "w"))
+P
+VP=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["contents"]["packages"],key=lambda e:(e["name"],e["architecture"]))[0];print("%s-%s.apk"%(e["name"],e["version"]))' "$work/plus/plus.lock.json")
+printf '#!/bin/sh\nARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done\ncase " $* " in *a-missing-package*) echo "apko-lock.sh: %s is not in the archive" >&2; echo "assemble-image.sh: the archive does not satisfy the base lock" >&2; exit 2;; *a-missing-index*) echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2;; *a-tampered*) echo "apko-lock.sh: %s: data section does not match the lock" >&2; exit 2;; *live.yaml*) echo "assemble-image.sh: the config names a live repository" >&2; exit 2;; esac\nexit 0\n' "$VP" "$VP" >"$work/plus-asm.sh"; chmod +x "$work/plus-asm.sh"
+run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/plus/archive" --assemble-script "$work/plus-asm.sh" --apko-config "$fx/apko.yaml" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$work/plus/plus.lock.json" --index-record "$idxrec" --key-record "$keyrec"
+t "rule 36" "lock-proof: a victim named a++c is matched literally (regex characters in a package name are not a reason to fail)" test "$(cat "$work/rc")" = 0
+t "rule 36" "lock-proof keeps the whole reason line in its record (cut after the match, 400 characters)" bash -c "grep -q 'cut -c1-400' '$LP'"
+# oci-digest: null or mistyped fields are named refusals, not tracebacks
+python3 - "$work" "$fx/oci" <<'P'
+import json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, oc = sys.argv[1:3]
+t = tarfile.open(oc + "/apko.tar"); ms = {m.name: t.extractfile(m).read() for m in t.getmembers() if m.isfile()}
+def variant(name, f):
+    idx = json.loads(ms["index.json"]); f(idx)
+    open("%s/%s.tar" % (w, name), "wb").write(lib.tarb([(n, d) for n, d in ms.items() if n != "index.json"] + [("index.json", json.dumps(idx).encode())]))
+variant("oci-null", lambda i: i.__setitem__("manifests", None))
+variant("oci-platstr", lambda i: i["manifests"][0].__setitem__("platform", "linux/amd64"))
+variant("oci-entrystr", lambda i: i["manifests"].__setitem__(0, "x"))
+P
+for v in null platstr entrystr; do
+  fails "rule 31" "oci-digest: the variant '$v' (null or mistyped field) is a named refusal" 'manifest|platform|index' python3 "$OD" "$work/oci-$v.tar"
+  t "rule 31" "...$v: no traceback" bash -c "! python3 '$OD' '$work/oci-$v.tar' 2>&1 | grep -q Traceback"
+done
+
+# oci-digest: named refusals for lists and numbers where objects are expected
+python3 - "$work" "$fx/oci" <<'P'
+import json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, oc = sys.argv[1:3]
+t = tarfile.open(oc + "/apko.tar"); ms = {m.name: t.extractfile(m).read() for m in t.getmembers() if m.isfile()}
+def variant(name, f):
+    idx = json.loads(ms["index.json"]); f(idx)
+    open("%s/%s.tar" % (w, name), "wb").write(lib.tarb([(n, d) for n, d in ms.items() if n != "index.json"] + [("index.json", json.dumps(idx).encode())]))
+variant("oci-archlist", lambda i: i["manifests"][0]["platform"].__setitem__("architecture", ["amd64"]))
+variant("oci-archint", lambda i: i["manifests"][0]["platform"].__setitem__("architecture", 5))
+variant("oci-samedigest", lambda i: i["manifests"][1].__setitem__("digest", i["manifests"][0]["digest"]))
+P
+for v in archlist archint samedigest; do
+  fails "rule 31" "oci-digest: the variant '$v' is a named refusal" 'architecture|manifest|same' python3 "$OD" "$work/oci-$v.tar"
+  t "rule 31" "...$v: no traceback" bash -c "! python3 '$OD' '$work/oci-$v.tar' 2>&1 | grep -q Traceback"
+done
+# the guard before every write in the throwaway copies is reachable: a copy whose architecture directory is a symlink out of it is refused
+mkdir -p "$work/outside-arch"; cp -R "$fx/archive" "$work/archlink"; mv "$work/archlink/x86_64" "$work/outside-arch/x86_64"; ln -s "$work/outside-arch/x86_64" "$work/archlink/x86_64"
+before=$(cd "$work/outside-arch" && find . -type f | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)
+sp_alink=("${sp_common[@]}"); for i in "${!sp_alink[@]}"; do [ "${sp_alink[$i]}" = "$fx/archive" ] && sp_alink[$i]="$work/archlink"; done
+sr2 "rule 41" "sealed-proof: a symlinked ARCHITECTURE directory inside the archive is refused before anything is deleted through it" 'symlink|temp directory' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_alink[@]}"
+t "rule 41" "...and the real files behind the link are byte-identical" test "$(cd "$work/outside-arch" && find . -type f | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$before"
+
+# ---- snapshot-7 round 7 (Sonnet/Opus P5) -----------------------------------------------------------------------------------------------------------------------
+# a path with a "." or ".." component after another component hides a symlinked root from the -L test: refused by all three scripts
+mkdir -p "$work/real-out2/sub"; ln -sfn "$work/real-out2" "$work/link-out2"
+for spell in "$work/link-out2/." "$work/link-out2/./" "$work/real-out2/sub/../../link-out2" "$work/link-out2//" "$work/link-out2/"; do
+  sr "rule 31" "assemble refuses --out '${spell#$work/}' (a symlinked root spelled so that -L is false)" 'symlink|component|real directory' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$spell"
+  sr2 "rule 36" "lock-proof refuses --out '${spell#$work/}'" 'symlink|component|real directory' run_s "${aie[@]}" "$LP" --out "$spell" --archive "$fx/archive" "${lp_args[@]}"
+  sr2 "rule 41" "sealed-proof refuses --out '${spell#$work/}'" 'symlink|component|real directory' run_s "${spe[@]}" "$SP" --out "$spell" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+done
+t "rule 31" "...and nothing was written through the link by any of them" test -z "$(ls -A "$work/real-out2")" -o "$(ls -A "$work/real-out2")" = sub
+for v in --archive --melange-repo --keyring-dir --out; do
+  args=(--variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --out "$(mo)")
+  for i in "${!args[@]}"; do [ "${args[$i]}" = "$v" ] && args[$((i+1))]=""; done
+  sr "rule 26" "assemble refuses an EMPTY value for $v (it would silently mean the current directory)" 'empty' "${aie[@]}" "$AI" "${args[@]}" --index-record "$idxrec" --key-record "$keyrec" --apko-config "$fx/apko.yaml" --base-lock "$BL"
+done
+# the guard in the throwaway copies is reached: the control passes through the test-mode stub, the symlinked architecture directory is then met by the proof's own guard
+mkdir -p "$work/outside-g"; cp -R "$fx/archive" "$work/archg"; python3 - "$work/archg" "$BL" "$work/outside-g" <<'P'
+import json, os, shutil, sys
+arc, bl, outside = sys.argv[1:4]
+e = sorted(json.load(open(bl))["contents"]["packages"], key=lambda e: (e["name"], e["architecture"]))[0]
+a = e["architecture"]; shutil.move("%s/%s" % (arc, a), "%s/%s" % (outside, a)); os.symlink("%s/%s" % (outside, a), "%s/%s" % (arc, a))
+P
+gbefore=$(cd "$work/outside-g" && find . -type f | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)
+printf '#!/bin/sh\nexit 0\n' >"$work/ok-asm.sh"; chmod +x "$work/ok-asm.sh"
+sr2 "rule 36" "lock-proof's own guard refuses a copy whose architecture directory is a symlink out of it ('internal: ... temp directory'), even when the assembler stub accepts everything" 'internal|temp directory' run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/archg" --assemble-script "$work/ok-asm.sh" "${lp_args[@]}"
+sp_g=("${sp_common[@]}"); for i in "${!sp_g[@]}"; do [ "${sp_g[$i]}" = "$fx/archive" ] && sp_g[$i]="$work/archg"; done
+sr2 "rule 41" "sealed-proof's own guard refuses the same (stub drivers accept everything)" 'internal|temp directory' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/ok-asm.sh" "${sp_g[@]}"
+t "rule 36" "...and the real files behind the link are byte-identical" test "$(cd "$work/outside-g" && find . -type f | sort | xargs shasum -a 256 2>/dev/null | shasum -a 256)" = "$gbefore"
+# oci-digest: the config must name the architecture and os, and layers must be a list
+python3 - "$work" "$fx/oci" <<'P'
+import hashlib, json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, oc = sys.argv[1:3]
+t = tarfile.open(oc + "/apko.tar"); ms = {m.name: t.extractfile(m).read() for m in t.getmembers() if m.isfile()}
+idx = json.loads(ms["index.json"])
+def rebuild(name, edit_cfg=None, edit_man=None):
+    members = dict(ms); top = json.loads(ms["index.json"])
+    for k, m in enumerate(top["manifests"]):
+        mn = "sha256:" + m["digest"].split(":")[1]; man = json.loads(members.pop(mn))
+        cn = "sha256:" + man["config"]["digest"].split(":")[1]; cfg = json.loads(members.pop(cn))
+        if edit_cfg and k == 0: edit_cfg(cfg)
+        if edit_man and k == 0: edit_man(man)
+        cb = json.dumps(cfg).encode(); chex = hashlib.sha256(cb).hexdigest(); man["config"]["digest"] = "sha256:" + chex; members["sha256:" + chex] = cb
+        mb = json.dumps(man).encode(); mhex = hashlib.sha256(mb).hexdigest(); m["digest"] = "sha256:" + mhex; members["sha256:" + mhex] = mb
+    members["index.json"] = json.dumps(top).encode()
+    open("%s/%s.tar" % (w, name), "wb").write(lib.tarb(list(members.items())))
+rebuild("oci-cfgarchwrong", edit_cfg=lambda c: c.__setitem__("architecture", "s390x"))
+rebuild("oci-cfgarchnone", edit_cfg=lambda c: c.pop("architecture", None))
+rebuild("oci-cfgoswin", edit_cfg=lambda c: c.__setitem__("os", "windows"))
+rebuild("oci-layersint", edit_man=lambda m: m.__setitem__("layers", 5))
+def prefix(m, p):
+    m["config"]["digest"] = p + m["config"]["digest"][len("sha256"):]
+def rebuild_post(name, post):
+    members = dict(ms); top = json.loads(ms["index.json"])
+    for k, m in enumerate(top["manifests"]):
+        mn = "sha256:" + m["digest"].split(":")[1]; man = json.loads(members.pop(mn))
+        cn = "sha256:" + man["config"]["digest"].split(":")[1]; cfg = json.loads(members.pop(cn))
+        cb = json.dumps(cfg).encode(); chex = hashlib.sha256(cb).hexdigest(); man["config"]["digest"] = "sha256:" + chex; members["sha256:" + chex] = cb
+        if k == 0: post(man)
+        mb = json.dumps(man).encode(); mhex = hashlib.sha256(mb).hexdigest(); m["digest"] = "sha256:" + mhex; members["sha256:" + mhex] = mb
+    members["index.json"] = json.dumps(top).encode()
+    open("%s/%s.tar" % (w, name), "wb").write(lib.tarb(list(members.items())))
+rebuild_post("oci-cfgsha512", lambda m: prefix(m, "sha512"))
+rebuild_post("oci-cfgupper", lambda m: m["config"].__setitem__("digest", "sha256:" + m["config"]["digest"][7:].upper()))
+rebuild_post("oci-layersfalse", lambda m: m.__setitem__("layers", False))
+rebuild_post("oci-layersdict", lambda m: m.__setitem__("layers", {}))
+rebuild_post("oci-layersnone", lambda m: m.pop("layers", None))
+rebuild_post("oci-manmt", lambda m: m.__setitem__("mediaType", "application/vnd.docker.distribution.manifest.v2+json"))
+P
+for v in cfgarchwrong cfgarchnone cfgoswin layersint cfgsha512 cfgupper layersfalse layersdict layersnone manmt; do
+  fails "rule 31" "oci-digest: the variant '$v' (config architecture/os or layers wrong) is a named refusal" 'architecture|os|layers|sha256|media type' python3 "$OD" "$work/oci-$v.tar"
+  t "rule 31" "...$v: no traceback" bash -c "! python3 '$OD' '$work/oci-$v.tar' 2>&1 | grep -q Traceback"
+done
+
+# an apk name with a newline in the archive is refused, never linked under a split name
+cp -R "$fx/archive" "$work/archnl"; : >"$work/archnl/x86_64/$(printf 'evil\nname.apk')"
+sr "rule 31" "assemble refuses an archive holding an apk whose NAME has a newline (control character)" 'control' "${ia[@]}" --archive "$work/archnl" --index-record "$idxrec" --out "$(mo)"
+
+# the standard layout's oci-layout file must be exactly the 1.0.0 marker
+python3 - "$work" "$oc/good.tar" <<'P'
+import sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, g = sys.argv[1:3]
+ms = [(m.name, tarfile.open(g).extractfile(m).read()) for m in tarfile.open(g).getmembers() if m.isfile()]
+for name, content in (("ol-v2", b'{"imageLayoutVersion":"2.0.0"}'), ("ol-junk", b"junk"), ("ol-extra", b'{"imageLayoutVersion":"1.0.0","x":1}')):
+    open("%s/oci-%s.tar" % (w, name), "wb").write(lib.tarb([(n, content if n == "oci-layout" else b) for n, b in ms]))
+P
+t "rule 31" "oci-digest: the exact 1.0.0 oci-layout is accepted" python3 "$OD" "$oc/good.tar"
+for v in ol-v2 ol-junk ol-extra; do fails "rule 31" "oci-digest: an oci-layout that is not exactly the 1.0.0 marker ($v) is refused" 'oci-layout' python3 "$OD" "$work/oci-$v.tar"; done
+
+# ---- snapshot-8 round 8 (P5) ---------------------------------------------------------------------------------------------------------------------------
+# lock-proof: a link put in place of the copied victim while an earlier case runs is never written through (copies come first; the write refuses a link)
+VN=$(python3 - "$BL" <<'P'
+import json, sys
+e = sorted(json.load(open(sys.argv[1]))["contents"]["packages"], key=lambda e: (e["name"], e["architecture"]))[0]
+print("%s/%s-%s.apk" % (e["architecture"], e["name"], e["version"]))
+P
+)
+echo "outside file, must stay as it is" >"$work/outside-victim"; ov_before=$(shasum -a 256 "$work/outside-victim" | cut -d' ' -f1)
+cat >"$work/swap-asm.sh" <<EOF
+#!/bin/bash
+a=; for ((i=1;i<=\$#;i++)); do [ "\${!i}" = --archive ] && a=\${@:i+1:1}; done
+case "\$a" in
+  */a-missing-package) echo "assemble-image.sh: $(basename "$VN") is not in the archive" >&2; exit 2;;
+  */a-missing-index) rm -f "\$(dirname "\$a")/a-tampered/$VN"; ln -s "$work/outside-victim" "\$(dirname "\$a")/a-tampered/$VN"; echo "assemble-image.sh: \$a/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2;;
+  */a-tampered) echo "assemble-image.sh: $(basename "$VN"): data section does not match the lock" >&2; exit 2;;
+  *) exit 0;;
+esac
+EOF
+chmod +x "$work/swap-asm.sh"
+run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/swap-asm.sh" "${lp_args[@]}"
+t "rule 36" "lock-proof: a link swapped in for a copied victim while an earlier case runs is never written through (the copies and the tamper come BEFORE any run); the outside file is unchanged" test "$(shasum -a 256 "$work/outside-victim" | cut -d' ' -f1)" = "$ov_before"
+# lock-proof's index/ guard: an architecture's index/ directory that is a symlink in the copy is refused by the guard itself
+cp -R "$fx/archive" "$work/archidx"; mkdir -p "$work/idx-outside"; a0=$(dirname "$VN"); [ -d "$work/archidx/$a0/index" ] && mv "$work/archidx/$a0/index" "$work/idx-outside/index" || mkdir -p "$work/idx-outside/index"; ln -s "$work/idx-outside/index" "$work/archidx/$a0/index"
+sr2 "rule 36" "lock-proof: a symlinked <arch>/index in the archive is refused by the proof's own guard (internal/temp directory)" 'internal|temp directory|symlink' run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/archidx" --assemble-script "$work/ok-asm.sh" "${lp_args[@]}"
+# the "." / ".." refusal is shared: every root flag of assemble-image.sh is pinned, and --render-dir too
+mkdir -p "$work/rd-real"; ln -sfn "$work/rd-real" "$work/rd-link"
+sr "rule 31" "assemble refuses --render-dir 'link/.' (a symlinked render root spelled so that -L is false)" 'symlink|component|real directory' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --out "$(mo)" --render-dir "$work/rd-link/."
+t "rule 31" "...and nothing was written through the render link" test -z "$(ls -A "$work/rd-real")"
+for flag in archive melange-repo keyring-dir; do
+  case $flag in archive) good="$fx/archive";; melange-repo) good="$fx/melrepo";; keyring-dir) good="$fx/keyring";; esac
+  args=(--variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --out "$(mo)" --index-record "$idxrec" --key-record "$keyrec" --apko-config "$fx/apko.yaml" --base-lock "$BL")
+  for i in "${!args[@]}"; do [ "${args[$i]}" = "--$flag" ] && args[$((i+1))]="$good/./"; done
+  sr "rule 31" "assemble refuses --$flag with a '.' component" 'component|real directory' "${aie[@]}" "$AI" "${args[@]}"
+done
+# a control character in ANY path argument is refused up front, named plainly
+nlroot="$work/arch"$'\n'"nl"; cp -R "$fx/archive" "$nlroot"
+sr "rule 31" "assemble refuses a newline in the archive ROOT path up front (named, before any work)" 'control character' "${ia[@]}" --archive "$nlroot" --index-record "$idxrec" --out "$(mo)"
+
+# ---- Opus round 9 (P5): the victim fields are validated before any copy, the physical path decides "inside", forwarded records are refused outside test mode -----
+mkbl() { python3 - "$BL" "$1" "$2" "$3" "$4" <<'P'
+import json, sys
+src, dst, name, ver, arch = sys.argv[1:6]
+d = json.load(open(src)); d["contents"]["packages"].insert(0, {"name": name, "version": ver, "architecture": arch, "checksum": "Q1" + "A" * 27, "url": "x"}); json.dump(d, open(dst, "w"))
+P
+}
+# the Opus probe: a symlink under x86_64 pointing outside, and a first base-lock entry whose architecture reaches it with "/lnk/.."
+rm -rf "$work/out2"; mkdir -p "$work/out2/sub"; : >"$work/out2/aa-0-r0.apk"; printf 'index' >"$work/out2/APKINDEX.tar.gz"
+rm -rf "$work/archp"; cp -R "$fx/archive" "$work/archp"; ln -s "$work/out2/sub" "$work/archp/x86_64/lnk"
+mkbl "$work/bl-evil.json" aa 0-r0 "x86_64/lnk/.."
+o2_before=$(cd "$work/out2" && find . -type f | sort | xargs shasum -a 256 | shasum -a 256)
+for mode in unset set; do
+  if [ $mode = unset ]; then pre=(env -u FSCACHE_TEST_MODE); asm=(); else pre=(); asm=(--assemble-script "$work/ok-asm.sh"); fi
+  sr2 "rule 36" "lock-proof ($mode test mode): a base-lock victim with the architecture 'x86_64/lnk/..' is refused by the ARCHITECTURE rule (exit 2) before any copy" 'architecture' run_s "${pre[@]}" "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/archp" "${asm[@]}" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$work/bl-evil.json"
+  t "rule 36" "...$mode test mode: exit 2, no assembler call in the log" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -q 'assemble' '$CALLS'"
+  t "rule 36" "...$mode test mode: both outside files are untouched" test "$(cd "$work/out2" && find . -type f | sort | xargs shasum -a 256 | shasum -a 256)" = "$o2_before"
+done
+sp_evil=(--source-dir "$src" --archive "$work/archp" --build-args "--variant standard --arch x86_64 --version 0.3.0" --assemble-args "--variant production --version 0.3.0 --base-lock $work/bl-evil.json")
+sr2 "rule 41" "sealed-proof: the same victim is refused by the architecture rule before any copy (exit 2)" 'architecture' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/ok-asm.sh" --build-script "$work/ok-asm.sh" "${sp_evil[@]}"
+t "rule 41" "...and the outside files are untouched" test "$(cd "$work/out2" && find . -type f | sort | xargs shasum -a 256 | shasum -a 256)" = "$o2_before"
+# one test per field rule (lock-proof)
+for case_ in "aa|0-r0|x86_64/|architecture" "aa|0-r0|arm64|architecture" "a/b|0-r0|x86_64|name" "..|0-r0|x86_64|name" "-x|0-r0|x86_64|name" "aa|0-r0..1|x86_64|version" "aa|-1|x86_64|version" "aa|a b|x86_64|version"; do
+  IFS='|' read -r n v a kw <<<"$case_"; mkbl "$work/bl-r.json" "$n" "$v" "$a"
+  sr2 "rule 36" "lock-proof: a base-lock victim with name='$n' version='$v' architecture='$a' is refused by the $kw rule" "$kw" run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/ok-asm.sh" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$work/bl-r.json"
+done
+# a victim with a valid architecture (and not in the archive) passes the field rules (it fails later, for its own reason: not named by the field rules)
+for a in x86_64 aarch64; do mkbl "$work/bl-r.json" aa 0-r0 "$a"
+  run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/ok-asm.sh" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$work/bl-r.json"
+  t "rule 36" "lock-proof: architecture $a passes the field rules (any refusal is another one)" bash -c "! grep -Eqi 'architecture rule|the victim .* architecture' '$work/log'"
+done
+# forwarded records outside test mode are refused BEFORE any copy
+for opt in --base-lock --index-record --key-record; do
+  case $opt in --base-lock) val="$BL";; --index-record) val="$idxrec";; --key-record) val="$keyrec";; esac
+  sr2 "rule 36" "lock-proof refuses a forwarded $opt outside test mode (exit 2) before any copy" 'test mode' run_s env -u FSCACHE_TEST_MODE "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" "$opt" "$val"
+  t "rule 36" "...$opt: exit 2 and no assembler call" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -q 'assemble' '$CALLS'"
+done
+# a leaf of --out that already exists (a link to elsewhere) is never written through
+for proof in lock sealed; do
+  od=$(mo); echo "keep me" >"$work/leaf-target"; case $proof in lock) leaf=lock-proof.json;; sealed) leaf=sealed-record.json;; esac; ln -s "$work/leaf-target" "$od/$leaf"
+  if [ $proof = lock ]; then sr2 "rule 36" "lock-proof: a symlink at the leaf --out/$leaf is refused (not written through)" 'leaf|exists|symlink' run_s "${aie[@]}" "$LP" --out "$od" --archive "$fx/archive" --assemble-script "$work/ok-asm.sh" "${lp_args[@]}"
+  else sr2 "rule 41" "sealed-proof: a symlink at the leaf --out/$leaf is refused (not written through)" 'leaf|exists|symlink' run_s "${spe[@]}" "$SP" --out "$od" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/ok-asm.sh" --build-script "$work/ok-asm.sh" "${sp_common[@]}"; fi
+  t "rule 36" "...the file behind the $leaf link is unchanged" test "$(cat "$work/leaf-target")" = "keep me"
+done
+# bytes outside printable ASCII in a path argument (a C1 control such as U+009B passes [[:cntrl:]] in some locales)
+c1root="$work/arch"$'\xc2\x9b'"x"; cp -R "$fx/archive" "$c1root"
+sr "rule 31" "assemble refuses a byte >= 0x80 in a path argument (named)" 'control|byte|plain' "${ia[@]}" --archive "$c1root" --index-record "$idxrec" --out "$(mo)"
+# a value such as -P or - must not be read as an option of cd
+# (the script runs from the repository root only, so the directory named -P is made in the root for the run and removed at once)
+mkdir -p "$root/-P"; cp -R "$fx/keyring/." "$root/-P/"
+run_s bash -c "cd '$root' && exec env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' '$AI' --variant production --version 0.3.0 --keyring-dir -P --apko-config '$fx/apko.yaml' --base-lock '$BL' --melange-repo '$fx/melrepo' --key-record '$keyrec' --archive '$fx/archive' --index-record '$idxrec' --out '$(mo)'"
+t "rule 31" "assemble-image: --keyring-dir '-P' is the directory named -P (cd -P -- is used, not read as an option): success" test "$(cat "$work/rc")" = 0
+rm -rf "$root/-P"
+# a CRLF index record is refused by the assembler too
+python3 - "$idxrec" "$work/idx-crlf.record" <<'P'
+import sys; s = open(sys.argv[1]).read(); assert "\n" in s; open(sys.argv[2], "w", newline="").write(s.replace("\n", "\r\n"))
+P
+sr "rule 31" "assemble refuses an index record with CRLF line ends (malformed, exit 2)" 'malformed' "${ia[@]}" --archive "$fx/archive" --index-record "$work/idx-crlf.record" --out "$(mo)"
+# oci-digest: the index.json entry's media type
+python3 - "$work" "$oc/good.tar" <<'P'
+import json, sys, tarfile
+sys.path.insert(0, sys.argv[1]); import lib
+w, g = sys.argv[1:3]
+ms = [(m.name, tarfile.open(g).extractfile(m).read()) for m in tarfile.open(g).getmembers() if m.isfile()]
+out = []
+for n, b in ms:
+    if n == "index.json":
+        d = json.loads(b); d["manifests"][0]["mediaType"] = "application/vnd.oci.image.manifest.v1+json"; b = json.dumps(d).encode()
+    out.append((n, b))
+open("%s/oci-topmt.tar" % w, "wb").write(lib.tarb(out))
+P
+fails "rule 31" "oci-digest: the single entry of index.json must have the index media type" 'media type' python3 "$OD" "$work/oci-topmt.tar"
+
+c1o="$work/outc1"$'\xc2\x9b'; mkdir -p "$c1o"
+sr2 "rule 36" "lock-proof refuses a byte >= 0x80 in --out (named)" 'control character|printable ASCII' run_s "${aie[@]}" "$LP" --out "$c1o" --archive "$fx/archive" --assemble-script "$work/ok-asm.sh" "${lp_args[@]}"
+sr2 "rule 41" "sealed-proof refuses a byte >= 0x80 in --out (named)" 'control character|printable ASCII' run_s "${spe[@]}" "$SP" --out "$c1o" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/ok-asm.sh" --build-script "$work/ok-asm.sh" "${sp_common[@]}"
+
+
+# ===== advisor 0393 (Oct 12): the chain's output layout, the judge-listable structure, byte identity ====================================
+# REQ-IMAGE-001 (output names) and REQ-CHAIN-004-AC6/AC11, REQ-CHAIN-005-AC3 as the release chain reads them
+for v in production fips; do
+  a=("${ai_args[@]}"); [ $v = fips ] && a=("${aif_args[@]}")
+  o=$(mo); run_s "${aie[@]}" "$AI" "${a[@]}" --out "$o"
+  t "chain" "[$v] OUT/$v/ is an OCI layout DIRECTORY (oci-layout, index.json, blobs/sha256/<hex> only), every blob hashes to its name, no symlink" bash -c "python3 - '$o/$v' <<'P'
+import hashlib, json, os, sys
+d = sys.argv[1]; assert os.path.isdir(d) and not os.path.islink(d), d
+top = sorted(os.listdir(d)); assert top == ['blobs', 'index.json', 'oci-layout'], top
+assert json.load(open(d + '/oci-layout')) == {'imageLayoutVersion': '1.0.0'}
+idx = json.load(open(d + '/index.json')); assert len(idx['manifests']) == 1
+assert os.listdir(d + '/blobs') == ['sha256']
+n = 0
+for root, dirs, files in os.walk(d):
+    for x in dirs + files: assert not os.path.islink(os.path.join(root, x)), x
+for f in os.listdir(d + '/blobs/sha256'):
+    assert hashlib.sha256(open(d + '/blobs/sha256/' + f, 'rb').read()).hexdigest() == f, f; n += 1
+assert idx['manifests'][0]['digest'].split(':')[1] in os.listdir(d + '/blobs/sha256') and n >= 3
+P"
+  t "chain" "[$v] there is no tarball: OUT/$v.tar does not exist and nothing in OUT is a tar" bash -c "test ! -e '$o/$v.tar' && ! ls '$o' | grep -Eq '\\.tar(\\.gz)?\$'"
+  t "chain" "[$v] the SBOM is OUT/$v-sbom/sbom.json (one file) and there is no OUT/sbom" bash -c "test -s '$o/$v-sbom/sbom.json' && test \$(ls '$o/$v-sbom' | wc -l) -eq 1 && test ! -e '$o/sbom'"
+  t "chain" "[$v] OUT holds exactly: $v/ $v.digest $v.manifests $v.full.lock.json $v-sbom/ (no dotfile, no other name)" bash -c "test \"\$(ls -A '$o' | tr '\\n' ' ')\" = '$v $v-sbom $v.digest $v.full.lock.json $v.manifests '"
+  o2=$(mo); run_s "${aie[@]}" "$AI" "${a[@]}" --out "$o2"
+  t "chain" "[$v] a second run with the same inputs and SOURCE_DATE_EPOCH gives a byte-identical OUT (every file's bytes and the directory listing)" bash -c "cd '$o' && find . -type f | LC_ALL=C sort | xargs shasum -a 256 >'$work/t1.sum' && find . | LC_ALL=C sort >'$work/t1.ls' && cd '$o2' && find . -type f | LC_ALL=C sort | xargs shasum -a 256 >'$work/t2.sum' && find . | LC_ALL=C sort >'$work/t2.ls' && cmp '$work/t1.sum' '$work/t2.sum' && cmp '$work/t1.ls' '$work/t2.ls' && test -s '$work/t1.sum'"
+  o3=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_OCI_REAL=1 "$AI" "${a[@]}" --out "$o3"
+  t "chain" "[$v] the tar real apko writes (blobs named sha256:<hex>, index.json is the index, no oci-layout) is unpacked into the SAME kind of layout directory, with the index digest = sha256 of apko's index.json" bash -c "python3 - '$o3/$v' '$o3/$v.digest' <<'P'
+import hashlib, json, os, sys
+d = sys.argv[1]; assert sorted(os.listdir(d)) == ['blobs', 'index.json', 'oci-layout'], os.listdir(d)
+top = json.load(open(d + '/index.json')); dig = top['manifests'][0]['digest']
+blob = open(d + '/blobs/sha256/' + dig.split(':')[1], 'rb').read()
+assert 'sha256:' + hashlib.sha256(blob).hexdigest() == dig == open(sys.argv[2]).read().strip()
+assert [m['platform']['architecture'] for m in json.loads(blob)['manifests']] == ['amd64', 'arm64']
+for f in os.listdir(d + '/blobs/sha256'): assert hashlib.sha256(open(d + '/blobs/sha256/' + f, 'rb').read()).hexdigest() == f
+P"
+  o4=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_OCI_REAL=1 "$AI" "${a[@]}" --out "$o4"
+  t "chain" "[$v] ...and two runs over the real-apko tar are byte-identical too (fixed modes and member order)" bash -c "diff -r '$o3' '$o4' >/dev/null && test \$(stat -c %a '$o3/$v/index.json' 2>/dev/null || stat -f %Lp '$o3/$v/index.json') = 644"
+done
+# the production and the fips call write into the SAME --out and neither overwrites the other
+o=$(mo); run_s "${aie[@]}" "$AI" "${ai_args[@]}" --out "$o"; run_s "${aie[@]}" "$AI" "${aif_args[@]}" --out "$o"
+t "chain" "the fips call into the same --out leaves the production result untouched (both layouts, digests and SBOMs are there)" bash -c "test -d '$o/production' && test -d '$o/fips' && test -s '$o/production.digest' && test -s '$o/fips.digest' && test -s '$o/production-sbom/sbom.json' && test -s '$o/fips-sbom/sbom.json' && ! cmp -s '$o/production.digest' '$o/fips.digest'"
+# structure: what the release chain's script judge can list (advisor 0393 item 8 / handoff: no PATH or IFS assignment, no python3 -c or python3 - heredoc, no variable-path interpreter call, literal repo-root paths)
+t "chain" "assemble-image.sh has a shebang and mode 100755 in git" bash -c "head -n 1 '$AI' | grep -Fxq '#!/usr/bin/env bash' && git -C '$root' ls-files -s bin/assemble-image.sh | grep -q '^100755'"
+nogrep "chain" "assemble-image.sh never assigns PATH, IFS, BASH_ENV or ENV (the judge never waives an assignment)" '(^|[^A-Za-z_$])(export +)?(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)=' "$AI"
+nogrep "chain" "assemble-image.sh has no python3 -c and no python3 - heredoc (helper code lives in a committed, listed file)" 'python3? +-c |python3? +-( |$)|<<.?PY' "$AI"
+nogrep "chain" "assemble-image.sh calls no interpreter, script or tool through a variable path: no \$here/ or \$root/ command words, no \"\$lk\", no \$(...) command word" '\$here/|\$\{here\}|\$root/|"\$lk"|^ *\$\(|command -v' "$AI"
+t "chain" "assemble-image.sh names its helpers by literal repo-root-relative paths (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py)" bash -c "grep -Fq 'bash bin/apko-lock.sh' '$AI' && grep -Fq 'python3 bin/oci-digest.py' '$AI' && grep -Fq 'python3 bin/net-probe.py' '$AI'"
+# run from anywhere but the repository root: exit 2 naming the root, before any tool
+mkdir -p "$work/elsewhere"; : >"$CALLS"
+( cd "$work/elsewhere" && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$work/elsewhere/o" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
+if [ "$(rc)" = 2 ] && grep -Eqi 'repository root' "$work/log" && ! toolrun; then ok; else bad "chain" "assemble-image.sh run from another working directory exits 2 naming the repository root, before any tool (exit $(rc))"; fi
+# the chain never passes the test hooks: they are refused outside test mode, exit 2, before any tool
+for hook in "--apko-config $fx/apko.yaml" "--base-lock $BL" "--render-dir $work/rd-x" "--index-record $idxrec" "--key-record $keyrec" "--lockfile $FL" "--build-date 2026-01-01T00:00:00Z" "--arch x86_64"; do
+  # shellcheck disable=SC2086
+  FSCACHE_TEST_MODE= sr "chain" "assemble-image.sh refuses '${hook%% *}' outside test mode" 'test mode|unknown argument' env -u FSCACHE_TEST_MODE SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" --variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --out "$(mo)" $hook
+done
+
+# ===== REQ-BUILDTOOLS-002-AC3 (advisor step 5, Oct 12): oci-digest.py unpack TAR DIR DIGEST MANIFESTS, called directly ==================
+ud="$work/unpack"; mkdir -p "$ud"
+unp_ok() { # <tar> <dir> <tag>
+  python3 "$OD" unpack "$1" "$2" "$ud/$3.digest" "$ud/$3.manifests" >"$ud/$3.out" 2>&1; }
+mkdir "$ud/empty"; unp_ok "$oc/good.tar" "$ud/empty" e1; er=$?
+t "rule 31" "BT-002-AC3: unpack into an EMPTY directory succeeds and writes oci-layout, index.json and blobs/sha256 only" bash -c "test $er = 0 && test \"\$(ls '$ud/empty' | tr '\n' ' ')\" = 'blobs index.json oci-layout ' && test \"\$(ls '$ud/empty/blobs')\" = sha256 && grep -Fxq '{\"imageLayoutVersion\":\"1.0.0\"}' '$ud/empty/oci-layout'"
+unp_ok "$oc/good.tar" "$ud/absent/deeper" e2; ar=$?
+t "rule 31" "BT-002-AC3: an ABSENT directory (and its parents) is created" bash -c "test $ar = 0 && test -f '$ud/absent/deeper/index.json' && test -d '$ud/absent/deeper/blobs/sha256'"
+t "rule 31" "BT-002-AC3: DIGEST is ONE line sha256:<hex> equal to the sha256 of the index blob in the layout, MANIFESTS has one '<arch> sha256:<hex>' line per architecture" bash -c "python3 - '$ud/empty' '$ud/e1.digest' '$ud/e1.manifests' <<'P'
+import hashlib, json, sys
+d, dg, mf = sys.argv[1:4]
+idx = json.load(open(d + '/index.json'))['manifests']; assert len(idx) == 1
+got = open(dg).read(); assert got.count('\\n') == 1 and got.endswith('\\n'), repr(got)
+assert got.strip() == idx[0]['digest'] == 'sha256:' + hashlib.sha256(open(d + '/blobs/sha256/' + idx[0]['digest'][7:], 'rb').read()).hexdigest()
+lines = open(mf).read().split('\\n'); assert lines[-1] == '' and sorted(l.split()[0] for l in lines[:-1]) == ['amd64', 'arm64'], lines
+assert all(l.split()[1].startswith('sha256:') and len(l.split()[1]) == 71 for l in lines[:-1])
+P"
+t "rule 31" "BT-002-AC3: files are regular with mode 0644 and directories 0755; no symlink" bash -c "python3 - '$ud/empty' <<'P'
+import os, stat, sys
+for root, dirs, files in os.walk(sys.argv[1]):
+    for n in dirs: m = os.lstat(os.path.join(root, n)); assert stat.S_ISDIR(m.st_mode) and stat.S_IMODE(m.st_mode) == 0o755, n
+    for n in files: m = os.lstat(os.path.join(root, n)); assert stat.S_ISREG(m.st_mode) and stat.S_IMODE(m.st_mode) == 0o644, n
+P"
+mkdir "$ud/full"; printf keep >"$ud/full/keep.txt"; unp_ok "$oc/good.tar" "$ud/full" e3; fr=$?
+t "rule 31" "BT-002-AC3: a directory that exists and is not empty is refused (exit 1, named), nothing in it changes and no DIGEST or MANIFESTS is written" bash -c "test $fr = 1 && grep -Eqi 'not an empty directory|empty' '$ud/e3.out' && test \"\$(ls '$ud/full')\" = keep.txt && test ! -e '$ud/e3.digest' && test ! -e '$ud/e3.manifests'"
+ln -s "$ud/empty" "$ud/linkdir"; unp_ok "$oc/good.tar" "$ud/linkdir" e4; lr=$?
+t "rule 31" "BT-002-AC3: a symlink as DIR is refused" bash -c "test $lr = 1 && grep -Eqi 'not an empty directory|empty' '$ud/e4.out'"
+unp_ok "$oc/tampered.tar" "$ud/tampered-dir" e5; tr_=$?
+t "rule 31" "BT-002-AC3: a tar with a blob that does not hash to its name is refused naming the blob; no directory and no digest file is written" bash -c "test $tr_ = 1 && grep -Eqi 'blobs/sha256|hash|sha256:' '$ud/e5.out' && test ! -e '$ud/tampered-dir' && test ! -e '$ud/e5.digest'"
+unp_ok "$oc/noindex.tar" "$ud/noindex-dir" e6; nr=$?
+t "rule 31" "BT-002-AC3: a tar without index.json is refused naming index.json; nothing is written" bash -c "test $nr = 1 && grep -q 'index.json' '$ud/e6.out' && test ! -e '$ud/noindex-dir'"
+unp_ok "$oc/apko.tar" "$ud/apko-dir" e7; kr=$?
+t "rule 31" "BT-002-AC3: the real apko tar unpacks to the same kind of layout; DIGEST is the sha256 of apko's index.json" bash -c "test $kr = 0 && python3 - '$oc/apko.tar' '$ud/apko-dir' '$ud/e7.digest' <<'P'
+import hashlib, json, os, sys, tarfile
+raw = tarfile.open(sys.argv[1]).extractfile('index.json').read()
+h = 'sha256:' + hashlib.sha256(raw).hexdigest()
+assert open(sys.argv[3]).read() == h + '\\n'
+d = sys.argv[2]; assert sorted(os.listdir(d)) == ['blobs', 'index.json', 'oci-layout']
+assert json.load(open(d + '/index.json'))['manifests'][0]['digest'] == h
+assert open(d + '/blobs/sha256/' + h[7:], 'rb').read() == raw
+P"
+unp_ok "$oc/apko-tampered.tar" "$ud/apko-t-dir" e8; kt=$?
+t "rule 31" "BT-002-AC3: the real apko tar with a manifest blob that does not hash to its name is refused; nothing is written" bash -c "test $kt = 1 && test ! -e '$ud/apko-t-dir' && test ! -e '$ud/e8.digest'"
+
+# ===== advisor/pipeline (Oct 12): the refusals name no other script (the chain row's `runs` lists only what the script runs) ===========
+rm -rf "$work/stubs-noapko"; cp -R "$stubs" "$work/stubs-noapko"; rm -f "$work/stubs-noapko/apko"
+: >"$CALLS"
+( PATH="$work/stubs-noapko:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" FSCACHE_TEST_MODE=1 STUB_LOCK_FIPS="$fx/full-fips.lock.json" "$AI" "${ai_args[@]}" --out "$(mo)" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
+if [ "$(rc)" = 1 ] && grep -Eq 'apko is not installed \(the chain installs it before this step\)' "$work/log"; then ok; else bad "chain" "no apko on PATH: exit 1 saying 'apko is not installed (the chain installs it before this step)' (exit $(rc): $(tail -n 2 "$work/log" | tr '\n' ' '))"; fi
+t "chain" "no refusal, comment or message of assemble-image.sh, oci-digest.py, apko-lock.sh or net-probe.py names bin/install-build-tools.sh" bash -c "! grep -n 'install-build-tools' '$AI' '$OD' '$LK' '$NP'"
+
+# ===== advisor (Oct 12): the proofs run as the chain will run them: from the repository root only ====================================
+# lock-proof.sh and sealed-proof.sh exit 2 naming the repository root, before any tool, from anywhere else; from the root they work
+for drv_ in "$LP" "$SP"; do
+  mkdir -p "$work/elsewhere-p"
+  : >"$CALLS"
+  if [ "$drv_" = "$LP" ]; then dargs_=(--out "$work/elsewhere-p/o" --archive "$fx/archive" "${lp_args[@]}"); else dargs_=(--out "$work/elsewhere-p/o" --probe true --source-dir "$src" --archive "$fx/archive"); fi
+  ( cd "$work/elsewhere-p" && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$drv_" "${dargs_[@]}" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
+  if [ "$(rc)" = 2 ] && grep -Eqi 'repository root' "$work/log" && grep -Eqi 'usage|run from' "$work/log" && ! toolrun; then ok; else bad "chain" "$(basename "$drv_") run from another working directory exits 2 naming the repository root and how to run it, before any tool (exit $(rc))"; fi
+done
+# ...and from the root the real positive control still passes (the proof is run the way the chain runs it)
+lpr=$(mo); run_s "${aie[@]}" "$LP" --out "$lpr" --archive "$fx/archive" "${lp_args[@]}"
+t "chain" "lock-proof.sh runs from the repository root and its positive control passes" test "$(rc)" = 0
+spr=$(mo); run_s "${spe[@]}" "$SP" --out "$spr" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
+t "chain" "sealed-proof.sh runs from the repository root and passes" test "$(rc)" = 0
+t "chain" "the test runs from the repository root (the harness changes into it, as the chain runs everything)" test "$(pwd -P)" = "$(cd "$root" && pwd -P)"
+
+# ===== optional: the release chain's own binder over both variants' output (set CHAIN_BINDER_DIR to a directory holding the chain's
+# bin/chain_items.py, chain_common.py and check-bind.py, copied read-only from the chain's tree; skipped when unset) =============
+if [ -n "${CHAIN_BINDER_DIR:-}" ] && [ -f "$CHAIN_BINDER_DIR/bin/chain_items.py" ] && [ -f "$CHAIN_BINDER_DIR/bin/check-bind.py" ]; then
+  bo=$(mo); run_s "${aie[@]}" "$AI" "${ai_args[@]}" --out "$bo"; r1=$(rc); run_s "${aie[@]}" "$AI" "${aif_args[@]}" --out "$bo"; r2=$(rc)
+  t "chain" "the chain's image_items reads the output of a production and a fips run in one OUT (items image-<v>, image-<v>-manifest-<arch>, lock-<v>, sbom-<v>)" bash -c "test $r1 = 0 && test $r2 = 0 && cd '$CHAIN_BINDER_DIR' && python3 -I -B -c \"import sys; sys.path.insert(0,'bin'); import chain_items as c; r=c.image_items('$bo'); assert sorted(r)==sorted(['image-production','image-fips','image-production-manifest-amd64','image-production-manifest-arm64','image-fips-manifest-amd64','image-fips-manifest-arm64','lock-production','lock-fips','sbom-production','sbom-fips']), sorted(r); print(r)\""
+  python3 - "$bo" "$work/binder-digests.json" <<'PY'
+import json, sys
+o = sys.argv[1]
+json.dump({"image-production": open(o + "/production.digest").read().strip(), "image-fips": open(o + "/fips.digest").read().strip()}, open(sys.argv[2], "w"))
+PY
+  t "chain" "the chain's check-bind.py (Check's stricter binder: every blob re-hashed, every config and layer present) accepts the layouts" bash -c "cd '$CHAIN_BINDER_DIR' && python3 -I -B bin/check-bind.py --digests '$work/binder-digests.json' --images '$bo'"
+  # the same over the tar real apko writes (blobs named sha256:<hex>, index.json the multi-architecture index, no oci-layout)
+  bo2=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_OCI_REAL=1 "$AI" "${ai_args[@]}" --out "$bo2"; r1=$(rc)
+  run_s env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" STUB_OCI_REAL=1 "$AI" "${aif_args[@]}" --out "$bo2"; r2=$(rc)
+  t "chain" "...the chain's image_items reads the output built from the real-apko tar shape too" bash -c "test $r1 = 0 && test $r2 = 0 && cd '$CHAIN_BINDER_DIR' && python3 -I -B -c \"import sys; sys.path.insert(0,'bin'); import chain_items as c; r=c.image_items('$bo2'); assert len(r)==10, r\""
+  python3 - "$bo2" "$work/binder-digests2.json" <<'PY'
+import json, sys
+o = sys.argv[1]
+json.dump({"image-production": open(o + "/production.digest").read().strip(), "image-fips": open(o + "/fips.digest").read().strip()}, open(sys.argv[2], "w"))
+PY
+  t "chain" "...and check-bind.py accepts it" bash -c "cd '$CHAIN_BINDER_DIR' && python3 -I -B bin/check-bind.py --digests '$work/binder-digests2.json' --images '$bo2'"
+  if [ -n "${CHAIN_BINDER_KEEP:-}" ]; then   # keep the two output trees and their digest lists for a by-hand run (the directory must not exist)
+    mkdir "$CHAIN_BINDER_KEEP" && cp -R "$bo" "$CHAIN_BINDER_KEEP/std" && cp -R "$bo2" "$CHAIN_BINDER_KEEP/apko" && cp "$work/binder-digests.json" "$CHAIN_BINDER_KEEP/std.digests.json" && cp "$work/binder-digests2.json" "$CHAIN_BINDER_KEEP/apko.digests.json"
+  fi
+fi
+# ---- end verbatim sections ----
+echo "assemble-image-test: $pass passed, $failn failed"
+[ "$failn" -eq 0 ]

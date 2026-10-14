@@ -48,9 +48,10 @@
 #  I4 bin/assemble-image.sh --variant production|fips --version X.Y.Z --archive DIR --melange-repo DIR --keyring-dir DIR
 #        --out DIR [--apko-config FILE] [--base-lock FILE] [--render-dir DIR]. Env: SOURCE_DATE_EPOCH. Order: verify the base
 #     lock against the archive -> sudo unshare -n apko lock (full lock) -> compare base vs full -> verify full -> sudo unshare -n
-#     apko build --offline --lockfile FULL --sbom-path DIR. OUT gets <variant>.full.lock.json, <variant>.tar (apko's OCI layout),
-#     <variant>.digest (ONE line sha256:<hex>: the OCI INDEX digest, CHANGED, was the tar's sha256), <variant>.manifests (NEW, one
-#     line `<arch> sha256:<hex>` per per-arch manifest: amd64, arm64) and the SBOM directory.
+#     apko build --offline --lockfile FULL --sbom-path DIR. OUT gets <variant>.full.lock.json, <variant>/ (the image as an OCI layout
+#     DIRECTORY: oci-layout, index.json, blobs/sha256/<hex>; no tarball, advisor 0393), <variant>.digest (ONE line sha256:<hex>: the OCI
+#     INDEX digest), <variant>.manifests (one line `<arch> sha256:<hex>` per per-arch manifest: amd64, arm64) and <variant>-sbom/sbom.json.
+#     --version is X.Y.Z, X.Y.Z-rcN or 0.0.0-rc.1; it runs from the repository root only (exit 2 elsewhere).
 #  I4b CHANGED/NEW (advisor): bin/oci-digest.py TAR  reads the OCI layout tarball: oci-layout, index.json -> index blob, per-arch
 #     manifest blobs under blobs/sha256/; every blob must hash to its name. Prints `index sha256:<hex>` then `<arch> sha256:<hex>`
 #     lines; exit 1 naming the file/blob on a missing index.json or a blob whose hash differs.
@@ -406,6 +407,7 @@ def stubbuild(recipe_path, out, arch, cache):
     open("%s/%s/APKINDEX.tar.gz" % (out, arch), "wb").write(b"index")
 def stuboci(out, lockfile, salt, sde, tamper=False, noindex=False):
     seed = hashlib.sha256(open(lockfile, "rb").read()).hexdigest() + salt + sde
+    if os.environ.get("STUB_OCI_REAL"): return stubapkotar(out, tamper, seed=seed)   # the tar real apko writes (the layout the script must unpack)
     H = lambda b: hashlib.sha256(b).hexdigest()
     blobs, mans = [], []
     for arch in ("amd64", "arm64"):
@@ -421,13 +423,13 @@ def stuboci(out, lockfile, salt, sde, tamper=False, noindex=False):
     for i, (h, b) in enumerate(blobs):
         members.append(("blobs/sha256/" + h, b + b"X" if tamper and i == 1 else b))   # tamper: a manifest blob whose bytes no longer hash to its name
     open(out, "wb").write(tarb(members))
-def stubapkotar(out, tamper=False):
+def stubapkotar(out, tamper=False, seed=""):
     # the shape real apko v1.4.6 writes (real-run finding Oct 9): blobs are top-level members named sha256:<hex>, index.json is the
     # multi-arch index itself (it lists the per-arch manifests), manifest.json is the docker-style list, and there is no oci-layout
     H = lambda b: hashlib.sha256(b).hexdigest()
     members, mans = [], []
     for arch in ("amd64", "arm64"):
-        cfg = json.dumps({"architecture": arch, "os": "linux"}, sort_keys=True).encode()
+        cfg = json.dumps(dict({"architecture": arch, "os": "linux"}, **({"seed": seed} if seed else {})), sort_keys=True).encode()
         man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
                           "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)}, "layers": []}, sort_keys=True).encode()
         members += [("sha256:" + H(cfg), cfg), ("sha256:" + H(man), man + b"X" if tamper and arch == "arm64" else man)]
