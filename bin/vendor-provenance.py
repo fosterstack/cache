@@ -27,8 +27,9 @@ EVIDENCE_SCHEMA = "fosterstack/vendor-evidence/v1"
 MAX_BYTES = 16 * 1024 * 1024
 MAX_EPOCH = 253402300799
 H1 = re.compile(r"h1:[A-Za-z0-9+/]{43}=")
-# every Go pseudo-version form (vX.0.0-TS-REV, vX.Y.Z-0.TS-REV, vX.Y.Z-pre.0.TS-REV), each with an optional +incompatible; REV is the 12-hex commit prefix
-PSEUDO = re.compile(r"[-.](?P<ts>[0-9]{14})-(?P<rev>[0-9a-f]{12})(?:\+incompatible)?$")
+# the three Go pseudo-version forms, whole-string (cmd/go's pseudoVersionRE): vX.0.0-TS-REV, vX.Y.Z-0.TS-REV and vX.Y.Z-pre.0.TS-REV, each with an
+# optional +incompatible; REV is the 12-hex commit prefix. A tagged prerelease that merely ends in TS-REV (vX.Y.Z-rc.TS-REV) is a tag.
+PSEUDO = re.compile(r"^v[0-9]+\.(?:0\.0-|[0-9]+\.[0-9]+-(?:[^+]*\.)?0\.)(?P<ts>[0-9]{14})-(?P<rev>[0-9a-f]{12})(?:\+incompatible)?$")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 EPOCH = re.compile(r"0|[1-9][0-9]*")
 MODULE_KEYS = {"path", "version", "go_sum_hash", "checksum_log", "origin", "license"}
@@ -318,20 +319,40 @@ def cmd_evidence(argv):
            "govulncheck": {"sha256": hashlib.sha256(graw).hexdigest()},
            "date": {"epoch": int(date), "utc": day}}
     text = json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n"
-    os.makedirs(out_dir, exist_ok=True)
+    missing, d = [], os.path.abspath(out_dir)       # the directories this run creates, outermost first: removed again, if empty, on a failure
+    while not os.path.lexists(d):
+        missing.insert(0, d)
+        d = os.path.dirname(d)
     final = os.path.join(out_dir, "vendor-evidence.json")
-    tmp = os.path.join(out_dir, ".vendor-evidence.json.tmp-%d" % os.getpid())
-    try:                                  # a sibling temporary file, replaced into place only once complete: a failure leaves nothing partial
-        with open(tmp, "x", encoding="utf-8") as fh:
+    tmp = None
+    try:
+        os.makedirs(out_dir, exist_ok=True)
+        for _ in range(8):                  # a sibling temporary file this run created itself (exclusive, unpredictable name), replaced into place only once complete
+            cand = os.path.join(out_dir, ".vendor-evidence.json.tmp-" + os.urandom(8).hex())
+            try:
+                fd = os.open(cand, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+            except FileExistsError:
+                continue
+            tmp = cand
+            break
+        else:
+            raise OSError("no unused temporary name in %s" % out_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, final)
     except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
+        if tmp is not None:                 # only a file this run created
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        for d in reversed(missing):
+            try:
+                os.rmdir(d)
+            except OSError:
+                break
         raise
     return 0
 
