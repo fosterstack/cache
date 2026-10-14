@@ -329,9 +329,7 @@ def _asset_word(text, start):
             elif quote == '"' and c == ")" and depth > 0:
                 depth -= 1
             elif c == quote and depth == 0:
-                if qat < start and i >= start:
-                    break              # the quote that held the whole URL closes: the name is over
-                quote = ""
+                quote = ""             # a quote that closes inside the word does not end it: "url/tool-"${A}.tgz is one word
         elif c == "\\" and i + 1 < n:
             i += 1
         elif c == "`":
@@ -382,17 +380,23 @@ def _script_lines(text):
     return joined, raw
 
 
+_ASSIGN_ANY = re.compile(r"(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\+?=")
+
+
 def _assign_context(joined, raw):
-    """For each logical line: every assignment, in file order and as written, to the variables the line reads, and (transitively) to the variables those
-    assignments read. A later assignment, an indirect one (A=$B) and spacing inside a continued value are all part of a download's identity."""
-    byname, order = {}, []
+    """For each logical line (a generator: only a line that names a release download is worked out): every assignment, in file order and as written, to the
+    variables the line reads, and (transitively) to the variables those assignments read. An assignment is any NAME= at the start of a word (A=x B=old,
+    export A=x, declare -r A=), so a later one, an indirect one (A=$B) and spacing inside a continued value are all part of a download's identity."""
+    byname, order = {}, 0
     for jl, rl in zip(joined, raw):
-        am = _ASSIGN_LINE.match(jl)
-        if am:
-            byname.setdefault(am.group(1), []).append((len(order), jl, rl)); order.append(rl)
+        for name in set(m.group(1) for m in _ASSIGN_ANY.finditer(jl)):
+            byname.setdefault(name, []).append((order, jl, rl))
+        order += 1
     refs = lambda t: set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", t))
-    out = []
     for jl in joined:
+        if "releases/" not in jl:
+            yield []
+            continue
         seen, todo, rows = set(), sorted(refs(jl)), []
         while todo:
             v = todo.pop()
@@ -403,8 +407,7 @@ def _assign_context(joined, raw):
             for ix, j2, r2 in byname[v]:
                 rows.append((ix, r2))
                 todo.extend(sorted(refs(j2) - seen))
-        out.append([r for _, r in sorted(set(rows))])      # file order: B=x, A=$B, B=y is not B=y, A=$B, B=x
-    return out
+        yield [r for _, r in sorted(set(rows))]      # file order: B=x, A=$B, B=y is not B=y, A=$B, B=x
 
 
 MAX_ITEMS_PER_STEP = 500
@@ -424,7 +427,7 @@ def _step(node, out, labels):
         ctx = node.get("_raw", run) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign")) + "\0" + _INPUT_CTX[0]   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
         k = 0
         for it in out[n0:]:
-            if ("${" in (it.path or "") or it.rawid) and not it.step:
+            if (("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid) and not it.step:
                 k += 1
                 it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart
             elif _NONPIN.search(it.version or "") and not it.step:
@@ -627,7 +630,7 @@ def inventory(files):
                 if it.src is None:
                     it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
         for it in found:
-            if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "${" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
+            if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
                 while True:
                     it.step = re.sub(r"~\d+$", "", it.step or "") + f"~{n}"
