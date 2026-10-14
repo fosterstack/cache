@@ -464,7 +464,7 @@ def main(argv=None):
 
 
 def _line_hash(flat):
-    return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16]
+    return hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()
 
 
 def _occurrences(root, rev):
@@ -514,7 +514,7 @@ def _no_constant(name):
 
 
 def load_ruled_text(path, required=False):
-    """{(file, form, 16-hex segment hash, 16-hex whole-line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
+    """{(file, form, 64-hex segment hash, 64-hex whole-line hash): (ruling, count)} from the file's unmeasured_text list. A missing default file is no rulings; anything malformed
     raises RuntimeError (the check cannot run, exit 2): never 'nothing ruled' and never 'everything ruled'."""
     if not os.path.exists(path):
         if required:
@@ -535,10 +535,10 @@ def load_ruled_text(path, required=False):
             raise bad("must be an object with exactly file, form, key, line, ruling (and an optional count)")
         if not all(isinstance(r[k], str) and r[k].strip() for k in _RULED_FIELDS):
             raise bad("has an empty or non-text file, form, key, line or ruling")
-        if not re.fullmatch(r"[0-9a-f]{16}", r["key"]):
-            raise bad("key is not the scan's 16 lowercase hex hash")
-        if not re.fullmatch(r"[0-9a-f]{16}", r["line"]):
-            raise bad("line is not the 16 lowercase hex hash of the whole flattened line")
+        if not re.fullmatch(r"[0-9a-f]{64}", r["key"]):
+            raise bad("key is not the scan's 64 lowercase hex hash")
+        if not re.fullmatch(r"[0-9a-f]{64}", r["line"]):
+            raise bad("line is not the 64 lowercase hex hash of the whole flattened line")
         count = r.get("count", 1)
         if type(count) is not int or not 1 <= count <= MAX_RULED_COUNT:
             raise bad(f"count is not a whole number from 1 to {MAX_RULED_COUNT}")
@@ -554,12 +554,24 @@ LOCAL_CALL_FORM = "a local reusable workflow call"
 
 
 def _item_hash(item):
-    return hashlib.sha256(item.key.encode("utf-8", "replace")).hexdigest()[:16]
+    return hashlib.sha256(item.key.encode("utf-8", "replace")).hexdigest()
+
+
+def unresolved_call_rows(root, rev, exceptions_path):
+    """The local-call rows of the exceptions file that would rule NO item of the tree at rev, judged by the very tuple split_ruled_local_calls() looks up
+    ((file, form, h, h) for an eligible item: kind action, version (local), with an origin file): [] when every row resolves to exactly one item."""
+    rows = [k for k in load_ruled_text(exceptions_path, required=True) if k[1] == LOCAL_CALL_FORM]
+    have = {}
+    for it in inv.load_at(root, rev).values():
+        if it.kind == "action" and it.version == "(local)" and it.src:
+            h = _item_hash(it)
+            have.setdefault((it.src[0], LOCAL_CALL_FORM, h, h), []).append(it.key)
+    return [k for k in rows if len(have.get(k, [])) != 1]
 
 
 def split_ruled_local_calls(moved, rulings):
     """REQ-SUP-001-AC19: a local reusable-workflow call that keeps a with: block is an item that cannot pass, unless a base-branch row names it: file, form
-    "a local reusable workflow call", key and line both the 16-hex hash of the item's whole identity (its path and the hash of its with: block), so an edited
+    "a local reusable workflow call", key and line both the 64-hex hash of the item's whole identity (its path and the hash of its with: block), so an edited
     with: block is another item. Returns (still moved, [(item, ruling)])."""
     keep, ruled = [], []
     for m in moved:
