@@ -1,11 +1,35 @@
 #!/usr/bin/env bash
-# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22
+# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23
 # Tests of the PR: the daily input refresh script and the daily FIPS-module check.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
-export FSCACHE_TEST_MODE=1   # REFRESH_OPENSSL (the one test hook of the script) works only in test mode
+export FSCACHE_TEST_MODE=1   # gen-recipes.py's own fixture switch (its template pin); bin/refresh-inputs.sh has no test hook and does not read it
+# The production script names its tools by fixed path (TEST-SUBST lines). The suite runs a COPY, beside the real helpers, in which exactly those lines
+# point at dispatchers that exec the tool by NAME on the run's PATH (so the stubs of run_s, run_s2, ...), and checks the copy differs in no other line.
+RF_PROD="$RF"
+mkdir -p "$work/tools" "$work/rfcopy/bin" "$work/rfcopy-nossl/bin"
+for t_ in python3 curl git gh apko openssl cmp mktemp; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$work/tools/$t_"; chmod +x "$work/tools/$t_"; done
+python3 - "$RF_PROD" "$work" <<'P'
+import os, re, shutil, sys
+prod, work = sys.argv[1:3]
+names = {"PY3": "python3", "CURL": "curl", "GIT": "git", "GH": "gh", "APKO": "apko", "OPENSSL": "openssl", "CMP": "cmp", "MKTEMP": "mktemp"}
+for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"OPENSSL": "/nonexistent/openssl"})):
+    out = []; seen = set()
+    for ln in open(prod).read().split("\n"):
+        m = re.match(r"^([A-Z0-9_]+)=.*#\s*TEST-SUBST", ln)
+        if m and m.group(1) in names:
+            seen.add(m.group(1)); out.append("%s=%s   # TEST-SUBST" % (m.group(1), over.get(m.group(1), work + "/tools/" + names[m.group(1)])))
+        else:
+            out.append(ln)
+    assert seen == set(names), sorted(set(names) - seen)
+    dst = "%s/%s/bin" % (work, d)
+    open(dst + "/refresh-inputs.sh", "w").write("\n".join(out)); os.chmod(dst + "/refresh-inputs.sh", 0o755)
+    for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh"):
+        shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
+P
+RF="$work/rfcopy/bin/refresh-inputs.sh"; RFN="$work/rfcopy-nossl/bin/refresh-inputs.sh"
 export FSCACHE_GEN_PIN=$(shasum -a 256 "$fx/melange.yaml.tmpl" | cut -d" " -f1)   # the fixture template's pin: the job asks the generator what the recipes become
 # ---- begin verbatim sections ----
 # ===== rules 44-49: the refresh job ======================================================================================
@@ -438,7 +462,7 @@ for v in baddh norange; do
 done
 # openssl is needed to verify the index: a missing one is a named refusal (exit 2), not a traceback
 mkrepo; before=$(treehash "$work/ar" "$work/rp")
-run_s2 env REFRESH_OPENSSL=openssl-that-is-not-installed "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+run_s2 env "${rfn[@]:1}" "$RFN" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 32" "refresh: openssl missing -> exit 2 naming openssl, no traceback, trees unchanged" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -qi 'openssl' '$work/log' && ! grep -q Traceback '$work/log'"
 t "rule 32" "refresh: ...openssl missing: unchanged" test "$(treehash "$work/ar" "$work/rp")" = "$before"
 
@@ -552,10 +576,30 @@ mkrepo; before=$(treehash "$work/ar" "$work/rp")
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$work/ln-dup.json" STUB_LOCK_FIPS="$work/ln-dup.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$work/dup-live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 48" "refresh: an apk whose control section has two datahash lines is refused (exit 1, 'datahash'), nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'datahash' '$work/log'"
 t "rule 48" "refresh: ...two datahash lines: archive and repo unchanged" test "$(treehash "$work/ar" "$work/rp")" = "$before"
-# REFRESH_OPENSSL is a test hook
+# no test hook in the production script; the test copy differs from it on the TEST-SUBST lines only (REQ-REFRESH-001-AC23)
 sr2() { local ac=$1 d=$2 kw=$3; shift 3; "$@"; if [ "$(rc)" = 2 ] && grep -Eqi -- "$kw" "$work/log"; then ok; else bad "$ac" "$d (exit $(rc), wanted 2 naming '$kw')"; fi; }
-mkrepo; run_s2 env -u FSCACHE_TEST_MODE REFRESH_OPENSSL=/bin/true STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 32" "refresh: REFRESH_OPENSSL outside test mode is refused (exit 2, names test mode): a replaced openssl would accept any index signature" bash -c "test \"\$(cat '$work/rc')\" = 2 && grep -Eqi 'test mode|FSCACHE_TEST_MODE' '$work/log' && ! grep -q '^apko ' '$CALLS'"
+t "AC23" "refresh-inputs.sh has no test hook: no REFRESH_OPENSSL and no FSCACHE_TEST_MODE in the production file" bash -c "! grep -Eq 'REFRESH_OPENSSL|FSCACHE_TEST_MODE|FSCACHE_[A-Z_]+' '$RF_PROD'"
+t "AC23" "the test copy of refresh-inputs.sh differs from the production file in the TEST-SUBST lines only (and replaces all eight)" python3 - "$RF_PROD" "$RF" <<'P'
+import re, sys
+a = open(sys.argv[1]).read().split("\n"); b = open(sys.argv[2]).read().split("\n")
+sub = re.compile(r"#\s*TEST-SUBST")
+assert len(a) == len(b), "line count differs"
+d = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+assert len(d) == 8 and all(sub.search(a[i]) and sub.search(b[i]) for i in d), "differs outside TEST-SUBST lines: %s" % d
+P
+t "AC23" "refresh-inputs.sh names curl, git, gh, apko, openssl, python3, cmp and mktemp by fixed absolute path, and runs every python3 with -I -B" python3 - "$RF_PROD" <<'P'
+import re, sys
+s = open(sys.argv[1]).read()
+for v, want in (("PY3", "/usr/bin/python3"), ("CURL", "/usr/bin/curl"), ("GIT", "/usr/bin/git"), ("GH", "/usr/bin/gh"), ("APKO", "/usr/local/bin/apko"),
+                ("OPENSSL", "/usr/bin/openssl"), ("CMP", "/usr/bin/cmp"), ("MKTEMP", "/usr/bin/mktemp")):
+    assert re.search(r"(?m)^%s=%s\s+# TEST-SUBST" % (v, re.escape(want)), s), v
+body = "\n".join(re.sub(r'"[^"\n]*"', '""', l) for l in s.split("\n") if not l.lstrip().startswith("#"))
+assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|curl|git|gh|apko|openssl|cmp|mktemp)\s", body), "a bare tool word is run"
+assert not re.search(r'subprocess\.run\(\[\s*"(gh|git|curl|openssl|python3)"', body), "a bare tool in subprocess"
+raw = "\n".join(l for l in s.split("\n") if not l.lstrip().startswith("#"))
+uses = re.findall(r'"\$PY3"[^\n]*', raw)
+assert len(uses) == 3 and all(u.startswith('"$PY3" -I -B') for u in uses), uses
+P
 # url checks are parsed, not prefix-matched
 n=0; for u in 'https://packages.wolfi.dev:444/os/%s/tzdata-2026b-r0.apk' 'https://user@packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/../x/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/%s\tzdata-2026b-r0.apk' 'http://packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev.evil.example/os/%s/tzdata-2026b-r0.apk'; do
   n=$((n+1)); python3 - "$work/ln.json" "$work/evil-url$n.json" "$u" <<'P'
@@ -592,6 +636,10 @@ run_s4 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --arc
 t "rule 27" "refresh: a missing archived package that live Wolfi no longer serves fails the job (exit 1) naming tzdata-2026a-r0, no PR" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'tzdata-2026a-r0' '$work/log' && ! grep -q '^gh pr create' '$CALLS'"
 t "rule 27" "refresh: ...nothing changed" test "$(treehash "$work/ar" "$work/rp")" = "$before"
 # -- atomic placement: a copy that dies half-way leaves nothing under a final name, and the next run still succeeds
+# the production script runs python3 -I (the caller's PYTHONPATH is ignored); the fault injection needs the interpreter's site hook, so for these runs only
+# the python3 found by name is a wrapper that drops -I and runs the real interpreter
+mkdir -p "$work/faultbin"; real_py=$(command -v python3)
+printf '#!/bin/bash\nargs=(); for a in "$@"; do [ "$a" = -I ] || args+=("$a"); done\nexec %s "${args[@]}"\n' "$real_py" >"$work/faultbin/python3"; chmod +x "$work/faultbin/python3"
 mkdir -p "$work/faultinj"; cat >"$work/faultinj/sitecustomize.py" <<'P'
 import os, shutil, sys
 here = os.path.abspath(os.path.dirname(__file__))
@@ -621,7 +669,7 @@ if what:
         return r(src, dst, *a, **k)
 P
 for what in APKINDEX .apk; do
-  mkrepo; run_s4 env PYTHONPATH="$work/faultinj:${PYTHONPATH:-}" FAULT_COPY="$what" "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+  mkrepo; run_s4 env PATH="$work/faultbin:$work/stubs4:$stubs2:$stubs:$PATH" PYTHONPATH="$work/faultinj:${PYTHONPATH:-}" FAULT_COPY="$what" "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
   t "rule 31" "refresh: a copy into a '$what' file is killed half-way (the run dies with exit 137)" test "$(cat "$work/rc")" = 137
   t "rule 31" "refresh: ...and leaves no file under a final name in the archive (temp names only)" test "$(find "$work/ar" -type f \( -path "*/index/APKINDEX-*" -o -name "tzdata-2026b-r0.apk*" \) | grep "$([ "$what" = APKINDEX ] && echo APKINDEX || echo 'r0\.apk')" | grep -vc '\.tmp-')" = 0
   run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -686,7 +734,7 @@ t "rule 49" "refresh: ...and when the PR lookup fails (exit 1) nothing was chang
 # repo files are written under a temp name and renamed: a kill mid-write leaves the old file whole
 for f in build/locks/apko.base.lock.json build/locks/melange.lock build/locks/archive-index.sha256 build/melange.yaml; do
   mkrepo; rm -f "$work/rp/build/locks/archive-index.sha256"; [ "$f" = build/locks/archive-index.sha256 ] || cp "$fx/repo/build/locks/archive-index.sha256" "$work/rp/build/locks/" 2>/dev/null; oldsum=$(shasum -a 256 "$work/rp/$f" 2>/dev/null | cut -d' ' -f1)
-  run_s4 env PYTHONPATH="$work/faultinj:${PYTHONPATH:-}" FAULT_COPY="$(basename "$f")" "${rfn[@]:1}" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+  run_s4 env PATH="$work/faultbin:$work/stubs4:$stubs2:$stubs:$PATH" PYTHONPATH="$work/faultinj:${PYTHONPATH:-}" FAULT_COPY="$(basename "$f")" "${rfn[@]:1}" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
   t "rule 44" "refresh: a kill (137) while writing $f leaves the file as it was (temp name, then rename)" bash -c "test \"\$(cat '$work/rc')\" = 137 && { test ! -e '$work/rp/$f' && test -z '$oldsum' || test \"\$(shasum -a 256 '$work/rp/$f' | cut -d' ' -f1)\" = '$oldsum'; }"
 done
 # bytes after the last range are rejected when the package is downloaded, not only later
@@ -772,7 +820,7 @@ t "rule 31" "refresh: nothing changed in the locks but the archive's index file 
 t "rule 31" "refresh: ...archive index check: nothing was changed" test "$(treehash "$work/ar" "$work/rp")" = "$before"
 # the FIPS recipe is written atomically and preflighted like every other repository file
 echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"; fr; old3=$(bash "$work/bhash.sh")
-run_s4 env PYTHONPATH="$work/faultinj:${PYTHONPATH:-}" FAULT_COPY="melange-fips.yaml" "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
+run_s4 env PATH="$work/faultbin:$work/stubs4:$stubs2:$stubs:$PATH" PYTHONPATH="$work/faultinj:${PYTHONPATH:-}" FAULT_COPY="melange-fips.yaml" "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
 t "rule 73" "fips-module: a kill (137) while writing the recipe leaves it as it was" bash -c "test \"\$(cat '$work/rc')\" = 137 && test \"\$(bash '$work/bhash.sh')\" = '$old3'"
 if [ "$(id -u)" != 0 ]; then
   fr; chmod 555 "$work/rp3/build"; run_s4 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"; chmod 755 "$work/rp3/build"
