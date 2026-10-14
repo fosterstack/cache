@@ -547,7 +547,7 @@ def unmeasured_occurrences(files):
     a backslash-newline continuation: bash reads such a line differently from this flattening, so no row may ever match it."""
     for path, text in sorted(files.items()):
         if not (path.startswith(".github/") or path.endswith(".sh")) or path.startswith(".github/agent/"):
-            continue  # .github/agent/ is covered by the review-record gate (and its tests quote such commands as fixtures)
+            continue  # .github/agent/ is covered by the independent second review (and its tests quote such commands as fixtures)
         mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
         tainted = mark in text
         for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
