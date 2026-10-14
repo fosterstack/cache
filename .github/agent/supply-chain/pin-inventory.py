@@ -310,7 +310,47 @@ def _docker_operand(cmd_args):
     return [], (None if guessed else pull)
 
 
+def _asset_word(text, start):
+    """The release asset's name as the shell reads it, from `start` to the end of the word: quotes, $( ) and backticks nest; an unquoted space or shell
+    operator, the closing quote of a URL that was quoted before the name, and a ? or # (a query or a fragment: URL syntax, quoted or not) end the name.
+    A name with a substitution in it is returned whole; the caller keeps the plain match for a concrete name."""
+    i, n, depth, quote, qat = text.rfind("\n", 0, start) + 1, len(text), 0, "", -1     # the quote state at the name is read from the start of its line
+    while i < n:
+        c = text[i]
+        if i >= start and depth == 0 and c in "?#":
+            break
+        if quote:
+            if c == "\\" and quote == '"' and i + 1 < n:
+                i += 1
+            elif quote == '"' and c == "$" and text[i + 1:i + 2] == "(":
+                depth += 1
+                i += 1
+            elif quote == '"' and c == ")" and depth > 0:
+                depth -= 1
+            elif c == quote and depth == 0:
+                if qat < start and i >= start:
+                    break              # the quote that held the whole URL closes: the name is over
+                quote = ""
+        elif c == "\\" and i + 1 < n:
+            i += 1
+        elif c == "`":
+            j = text.find("`", i + 1)
+            i = n if j < 0 else j
+        elif c == "$" and text[i + 1:i + 2] == "(":
+            depth += 1
+            i += 1
+        elif c == ")" and depth > 0:
+            depth -= 1
+        elif c in "'\"":
+            quote, qat = c, i
+        elif i >= start and depth == 0 and (c.isspace() or c in ";|&<>)"):
+            break
+        i += 1
+    return text[start:i]
+
+
 _ENV_CTX = [""]
+_INPUT_CTX = [""]   # a composite action's input definitions: part of a release asset's identity only (never of another item's key)
 _TREE = [frozenset()]   # the paths of the tree being inventoried that are read as workflows: a local reusable-workflow call is judged against it (REQ-SUP-001-AC19)
 _FILES = [{}]           # and their text
 _JOB_SUMS = [[]]
@@ -344,11 +384,11 @@ def _script_lines(text):
 def _assign_context(joined, raw):
     """For each logical line: every assignment, in file order and as written, to the variables the line reads, and (transitively) to the variables those
     assignments read. A later assignment, an indirect one (A=$B) and spacing inside a continued value are all part of a download's identity."""
-    byname = {}
+    byname, order = {}, []
     for jl, rl in zip(joined, raw):
         am = _ASSIGN_LINE.match(jl)
         if am:
-            byname.setdefault(am.group(1), []).append((jl, rl))
+            byname.setdefault(am.group(1), []).append((len(order), jl, rl)); order.append(rl)
     refs = lambda t: set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", t))
     out = []
     for jl in joined:
@@ -359,10 +399,10 @@ def _assign_context(joined, raw):
                 seen.add(v)
                 continue
             seen.add(v)
-            for j2, r2 in byname[v]:
-                rows.append(r2)
+            for ix, j2, r2 in byname[v]:
+                rows.append((ix, r2))
                 todo.extend(sorted(refs(j2) - seen))
-        out.append(sorted(set(rows)))
+        out.append([r for _, r in sorted(set(rows))])      # file order: B=x, A=$B, B=y is not B=y, A=$B, B=x
     return out
 
 
@@ -380,7 +420,7 @@ def _step(node, out, labels):
     if isinstance(run, str):
         legacy = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
         legacy_tag = "step:" + hashlib.sha256(legacy.encode("utf-8", "replace")).hexdigest()       # the identity every other placeholder item has always had: its key must not move
-        ctx = run + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign"))   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
+        ctx = run + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign")) + "\0" + _INPUT_CTX[0]   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
         k = 0
         for it in out[n0:]:
             if "${" in (it.path or "") and not it.step:
@@ -425,8 +465,8 @@ def _step_items(node, out, labels):
                 out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest(), "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
             sums = sorted(set(re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", run)) | set(_JOB_SUMS[0]))   # checksums, not image digests
-            tail = re.match(r"[^\s;|&]*", run[m.end(4):]).group(0)   # the asset name goes on past a quote: "tool-"${A}".tgz is a name behind a variable too
-            asset = m.group(4) + (tail if ("$" in tail or "`" in tail) else "")
+            word = _asset_word(run, m.start(4))
+            asset = word if ("$" in word or "`" in word) else m.group(4)   # the name goes on past a quote or a space inside $( ): it is a name behind a variable too
             out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), asset + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest() if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for tail in _pip_tails(run):
             for p in _PIP_PIN.finditer(tail):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
@@ -573,11 +613,11 @@ def inventory(files):
                 mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
                 raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
             if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
-                _ENV_CTX[0] = "inputs:" + json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
+                _INPUT_CTX[0] = json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
             try:
                 _walk(doc, found, labels, "")
             finally:
-                _ENV_CTX[0] = ""
+                _INPUT_CTX[0] = ""
             for it in found:
                 if it.src is None:
                     it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
