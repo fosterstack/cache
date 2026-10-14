@@ -7,7 +7,7 @@
 set -euo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 guard="$root/bin/suite-guard.sh"
-runner="$root/bin/suite-guard-run.sh"
+runner="$root/bin/suite-guard-run.py"
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0; failn=0
 ok()  { pass=$((pass + 1)); echo "ok   $1"; }
@@ -15,7 +15,7 @@ bad() { failn=$((failn + 1)); echo "FAIL $1"; }
 [ -s "$guard" ] && [ -s "$runner" ] || { echo "FAIL bin/suite-guard.sh is missing or empty"; echo "suite-guard: 0 passed, 1 failed"; exit 1; }
 # expect RC LABEL WORD -- ARGS : the guard exits RC and its output contains WORD
 expect() { local want=$1 label=$2 word=$3 out rc=0 tool=$guard; shift 4; case "${1:-}" in run|all) tool=$runner ;; esac
-  out=$(bash "$tool" "$@" 2>&1 < /dev/null) || rc=$?
+  out=$(if [ "$tool" = "$runner" ]; then python3 -I "$tool" "$@"; else bash "$tool" "$@"; fi 2>&1 < /dev/null) || rc=$?
   if [ "$rc" = "$want" ] && { [ -z "$word" ] || grep -Fqi -- "$word" <<< "$out"; }; then ok "$label"; else bad "$label -> rc=$rc (want $want), wanted '$word': ${out:0:160}"; fi; }
 
 # ---- files: no empty test file ----------------------------------------------------------------------------------------------------
@@ -122,8 +122,8 @@ expect 1 "all: a floors file that is not JSON fails (it must not pass having run
 expect 1 "all: a floors file with no suite in it fails" "floors" -- all --count-only "$work/empty-floors.json" "$work"
 expect 1 "all: a floors file that is a list, not an object, fails" "floors" -- all --count-only "$work/list-floors.json" "$work"
 expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- all --count-only "$work/str-floors.json" "$work"
-# round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.sh all), not only the floors file against the base
-if grep -Eq 'run: bash bin/suite-guard-run\.sh all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.sh all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
+# round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.py all), not only the floors file against the base
+if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.sh all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
 EXPECT=53
 echo "suite-guard: $pass passed, $failn failed"

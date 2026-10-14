@@ -468,7 +468,7 @@ jobs:
       - name: every suite runs at or above its committed floor (real counts)
         env:
           CHAIN_TEST_REQUIRE_NETCUT: '1'
-        run: bash bin/suite-guard-run.sh all --count-only test-evidence/suite-floors.json .
+        run: python3 -I bin/suite-guard-run.py all --count-only test-evidence/suite-floors.json .
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
