@@ -2258,5 +2258,182 @@ pkck pkff ok bin/judge-test.sh "pip install requests"
 CASE="AC20: a line holding whitespace other than space or tab (a form feed) can never be ruled: exit 1"
 check test "$rc" -eq 1
 
+# --- round 1 of the review of PR 329 (both seats held): the exact boundary of AC19, the line identity of AC20, and AC3's fractional second ------------------
+# lcallc NAME USES [WITH] [CALLEE-TEXT-FILE]: like lcall, with the callee's text taken from a file; and as a STEP rather than a job when NAME starts with step
+lcallc() {
+  local n=$1 uses=$2 with=${3:-} callee=${4:-$work/callee.yml}
+  printf '%s' "$uses" >"$work/lcall.uses"; printf '%s' "$with" >"$work/lcall.with"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$callee').read_text())
+c = w / 'ci.yml'
+uses = pathlib.Path(r'$work/lcall.uses').read_text()
+with_ = pathlib.Path(r'$work/lcall.with').read_text()
+c.write_text(c.read_text() + '  c:\n    uses: ' + uses + '\n' + with_)"
+}
+lcallc m1 './.github/workflows/callee.yaml'
+lck m1
+CASE="AC19: the .yaml spelling is not the exact form: not exempted (exit 1)"
+check test "$rc" -eq 1
+lcallc m2 './.github/workflows/ca..llee.yml'
+lck m2
+CASE="AC19: a name holding .. is not the plain form: not exempted (exit 1)"
+check test "$rc" -eq 1
+newcase mstep "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text().replace('    steps:\n      - uses: actions/checkout@$SHA1 # v4.1.0\n', '    steps:\n      - uses: ./.github/workflows/callee.yml\n      - uses: actions/checkout@$SHA1 # v4.1.0\n', 1))"
+lck mstep
+CASE="AC19: a STEP that uses a workflow file is not a reusable-workflow call: it stays an item (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/mstep.out"
+lcallc m3 ' ./.github/workflows/callee.yml'
+printf '%s' "\" ./.github/workflows/callee.yml\"" >"$work/lcall.uses"
+newcase m3 "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: \" ./.github/workflows/callee.yml\"\n')"
+lck m3
+CASE="AC19: a quoted value with a leading space is not the exact form: not exempted (exit 1)"
+check test "$rc" -eq 1
+printf '%s\n' 'on: workflow_call' >"$work/callee-empty.yml"
+lcallc m4 './.github/workflows/callee.yml' '' "$work/callee-empty.yml"
+lck m4
+CASE="AC19: a callee with no jobs is not a workflow read as one: not exempted (exit 1)"
+check test "$rc" -eq 1
+printf '%s\n' 'echo harmless' >"$work/callee-scalar.yml"
+lcallc m5 './.github/workflows/callee.yml' '' "$work/callee-scalar.yml"
+lck m5
+CASE="AC19: a callee that is a plain scalar is not a workflow: not exempted (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-notcall.yml" <<EOF
+on: push
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+EOF
+lcallc m6 './.github/workflows/callee.yml' '' "$work/callee-notcall.yml"
+lck m6
+CASE="AC19: a callee with no workflow_call trigger cannot be called: not exempted (exit 1)"
+check test "$rc" -eq 1
+lcallc m7 './.github/workflows/callee.yml' $'    with:\n      mode2: release\n'
+lck m7
+CASE="AC19: a digit in an input NAME is not a digit in a value: exempted (exit 0)"
+check test "$rc" -eq 0
+lcallc m8 './.github/workflows/callee.yml' $'    with:\n      mode: café\n'
+lck m8
+CASE="AC19: a non-ASCII value is not serialised into digits: exempted (exit 0)"
+check test "$rc" -eq 0
+lcallc m9 './.github/workflows/callee.yml' $'    with:\n      steps: [one, \'two2\']\n'
+lck m9
+CASE="AC19: a digit inside a list value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-fed.yml" <<EOF
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: golangci/golangci-lint-action@$SHA2 # v9.3.0
+        with:
+          version: \${{ inputs.version }}
+EOF
+lcallc m10 './.github/workflows/callee.yml' $'    with:\n      version: latest\n' "$work/callee-fed.yml"
+lck m10
+CASE="AC19: a callee whose installer version comes from an input (an expression in its identity) is not exempted, whatever the caller passes (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-dl.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsSL https://example.invalid/tool.sh | sh
+EOF
+lcallc m11 './.github/workflows/callee.yml' '' "$work/callee-dl.yml"
+lck m11
+CASE="AC19: a callee with a download this check cannot measure is not exempted (exit 1)"
+check test "$rc" -eq 1
+# a call whose with: input changes between base and head, in the quoted-space spelling (the input's identity must move with it)
+rm -rf "$work/mchg"; cp -R "$base" "$work/mchg"
+( cd "$work/mchg" && python3 - "$work/callee.yml" <<'PY'
+import pathlib, subprocess, sys
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(sys.argv[1]).read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: " ./.github/workflows/callee.yml"\n    with:\n      pin: v1.0.0\n')
+subprocess.run(["git", "add", "-A"], check=True)
+subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "base2"], check=True)
+c.write_text(c.read_text().replace("v1.0.0", "v9.9.9"))
+subprocess.run(["git", "add", "-A"], check=True)
+subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "head2"], check=True)
+PY
+)
+lck mchg
+CASE="AC19: changing a version input of a local call (quoted with a leading space) moves the call's identity: exit 1, not 0"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/mchg.out"
+
+# AC20: the line identity
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=requests' 'pip install "$DEPS"' >"$work/mix-base.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=flask' 'pip install "$DEPS"' '# pip install fixture' >"$work/mix-head.sh"
+rm -rf "$work/mix"; cp -R "$base" "$work/mix"
+( cd "$work/mix" && cp "$work/mix-base.sh" bin/mix-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm b2 && cp "$work/mix-head.sh" bin/mix-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm h2 )
+pkck mix ok bin/mix-test.sh "# pip install fixture"
+CASE="AC20: a ruled comment line does not rule the UNCHANGED install line whose assignment changed: exit 1"
+check test "$rc" -eq 1
+newcase pkscan "
+import pathlib
+f = pathlib.Path('bin/install-scanner.sh')
+f.write_text(f.read_text() + 'echo \"fixture pip install requests\"\n')"
+pkck pkscan ok bin/install-scanner.sh 'echo "fixture pip install requests"'
+CASE="AC20: the same ruled line in bin/install-scanner.sh passes like in any script (exit 0)"
+check test "$rc" -eq 0
+pkck pkscan none bin/install-scanner.sh 'echo "fixture pip install requests"'
+CASE="AC20: without its row the line in bin/install-scanner.sh fails (exit 1)"
+check test "$rc" -eq 1
+# the advisory audit judges the same line once: with a row it is not an advisory hit, without it it is (exit 1)
+audfx() {  # REPO OUT: a fixtures file with an advisory against the repo's unpinned requests item
+  python3 - "$work/$1" "$2" "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[3]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+k = [k for k in inv.load_at(sys.argv[1], None) if k.startswith("package:pypi/requests@(unpinned)")]
+assert len(k) == 1, k
+json.dump({"lists": {k[0]: {"github": [{"id": "GHSA-test-test-test", "incident": "INC-T", "affected": True, "modified": "2026-09-01T00:00:00Z"}], "osv": []}},
+           "upstream": {}, "prs": []}, open(sys.argv[2], "w"))
+PY
+}
+audck() {  # REPO EXCEPTIONS -> rc
+  rc=0; python3 "$here/../supply-chain/pin-audit.py" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/aud.fx.json" --exceptions "$2" --now "$NOW" --gh /bin/true >"$work/aud.out" 2>&1 || rc=$?
+}
+audfx pk "$work/aud.fx.json"
+audck pk "$work/pk-pk-ok.json"
+CASE="AC20: pin-audit (the second command of the required job) does not report a ruled script line's package as an advisory hit (exit 0)"
+check test "$rc" -eq 0
+audck pk "$work/pk-pk-none.json"
+CASE="AC20: with no row the same package IS an advisory hit in pin-audit (exit 1): the ruling is what changes it"
+check test "$rc" -eq 1; check grep -q 'HIT' "$work/aud.out"
+# AC3: a fractional second never makes a time earlier (age short of 7 days is young)
+CASE="AC3: a publish time 0.5 s short of seven days before now is too young (the fraction rounds up)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys, datetime as dt
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+class I: kind="package"; name="pypi/x"; version="1.0.0"; label=""; path=""
+now = dt.datetime(2026, 10, 14, 12, 0, 0, tzinfo=dt.timezone.utc)
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00.500Z", "pypi")], now)
+assert not ok, why
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00Z", "pypi")], now)
+assert ok, why
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

@@ -117,7 +117,7 @@ class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
-        self.src = ""    # the script file a line of which made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to it
+        self.src = None  # (script path, line id) of the script line that made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to that line
 
     @property
     def key(self):
@@ -198,9 +198,62 @@ def _ctx_tag(node):
     return "step:" + hashlib.sha256((json.dumps(node, sort_keys=True, default=str) + "\0" + _ENV_CTX[0]).encode("utf-8", "replace")).hexdigest()[:10]
 
 
-def _plain_local_workflow(u):
-    """REQ-SUP-001-AC19: exactly ./.github/workflows/<plain name>.yml|.yaml, no subdirectory, no @ref, no expression, and the file is read as a workflow here."""
-    return bool(re.fullmatch(r"\./\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", u)) and u[2:] in _TREE[0]
+_LOCAL_CALL = re.compile(r"\./\.github/workflows/(?!.*\.\.)[A-Za-z0-9._-]+\.yml")
+
+
+def _scalars(node):
+    """Every scalar VALUE under a with: block (mapping keys and serialisation are never looked at)."""
+    if isinstance(node, dict):
+        for v in node.values():
+            yield from _scalars(v)
+    elif isinstance(node, list):
+        for v in node:
+            yield from _scalars(v)
+    else:
+        yield "" if node is None else str(node)
+
+
+def _input_fed(item):
+    """An item whose identity holds an expression or a variable: the version it selects can come from a caller's input."""
+    return any(m in item.key for m in ("${{", "${var}", "(variable)", "(expression)"))
+
+
+_CALLEE = {}   # (path, text hash) -> True when a call of that workflow file is no item (cached: a file is judged once per inventory)
+
+
+def _callee_is_plain(path, text):
+    """True when the file is a reusable workflow that no caller can steer a version through: it parses as a workflow with on.workflow_call and jobs, yields no
+    item whose identity holds an expression or a variable, and has no unmeasurable download (REQ-SUP-001-AC19)."""
+    try:
+        doc = yaml.load(text, Loader=yaml.BaseLoader)
+    except yaml.YAMLError:
+        return False
+    if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
+        return False
+    on = doc.get("on")
+    if not (on == "workflow_call" or (isinstance(on, list) and "workflow_call" in on) or (isinstance(on, dict) and "workflow_call" in on)):
+        return False
+    saved = (_TREE[0], _ENV_CTX[0], _JOB_SUMS[0])
+    try:
+        items = inventory({path: text})
+        if any(_input_fed(i) for i in items.values()):
+            return False
+        return not any(True for _ in unmeasured_occurrences({path: text}))
+    except RuntimeError:
+        return False
+    finally:
+        _TREE[0], _ENV_CTX[0], _JOB_SUMS[0] = saved
+
+
+def _exempt_local_call(raw, job):
+    """REQ-SUP-001-AC19: a job calling exactly ./.github/workflows/<plain name>.yml (the raw value, unstripped), a workflow of this tree that is plain
+    (above), with no digit in any value of its with: block, is no item: the called file is inventoried itself."""
+    if not _LOCAL_CALL.fullmatch(raw) or raw[2:] not in _TREE[0]:
+        return False
+    if any(re.search(r"\d", s) for s in _scalars(job.get("with"))):
+        return False
+    path = raw[2:]
+    return _callee_is_plain(path, _FILES[0].get(path, ""))
 
 
 def _uses(u, node, out, labels):
@@ -208,9 +261,6 @@ def _uses(u, node, out, labels):
     if u.startswith("docker://"):
         out.append(_image_item(u[len("docker://"):]))
     elif u.startswith("./"):
-        if _plain_local_workflow(u) and not re.search(r"\d", json.dumps(node.get("with"), default=str) if node.get("with") else ""):
-            return    # REQ-SUP-001-AC19: a call of a workflow file of this very tree is no item, the called file is inventoried itself; a digit in any with: value (a version
-                      # the callee could hand to an installer, which would move nothing in the callee's file) keeps the call an item that cannot pass
         out.append(Item("action", "local:" + _hide(u), "(local)"))   # a local action outside the globs: its content is not read, so a new one cannot pass
     elif u and "${{" not in u:
         ref_path, _, ref = u.partition("@")
@@ -290,6 +340,7 @@ def _docker_operand(cmd_args):
 
 _ENV_CTX = [""]
 _TREE = [frozenset()]   # the paths of the tree being inventoried that are read as workflows: a local reusable-workflow call is judged against it (REQ-SUP-001-AC19)
+_FILES = [{}]           # and their text
 _JOB_SUMS = [[]]
 
 
@@ -405,10 +456,15 @@ def _walk(node, out, labels, path="", in_step=False):
                 for job in v.values():
                     _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
                     _JOB_SUMS[0] = re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", json.dumps(job, default=str)) if isinstance(job, dict) else []   # a checksum in ANY step of the job (a separate verify step) belongs to the job's downloads
+                    n0 = len(out)
                     _walk(job, out, labels, "job:" + k)
-                    if isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"].startswith("./") and job.get("with"):
-                        for it in out:                       # a local reusable-workflow call: what it passes in is part of that call's identity
-                            if it.version == "(local)" and it.name == "local:" + _hide(job["uses"]) and not it.step:
+                    if isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"].strip().startswith("./"):
+                        mine = [it for it in out[n0:] if it.version == "(local)" and it.name == "local:" + _hide(job["uses"].strip()) and not it.step]
+                        if mine and _exempt_local_call(job["uses"], job):
+                            for it in mine:
+                                out.remove(it)       # REQ-SUP-001-AC19: the called file is inventoried itself
+                        elif job.get("with"):
+                            for it in mine:          # a local reusable-workflow call: what it passes in is part of that call's identity
                                 it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:10]
                 _ENV_CTX[0] = ""
                 _JOB_SUMS[0] = []
@@ -423,6 +479,7 @@ def inventory(files):
     """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped."""
     items = {}
     _TREE[0] = frozenset(n for n in files if any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS))
+    _FILES[0] = files
     for path, text in sorted(files.items()):
         found = []
         if path == "bin/install-scanner.sh":
@@ -430,8 +487,11 @@ def inventory(files):
             found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
             found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
-            for ln in re.sub(r"\\\n\s*", " ", text).split("\n"):   # and the rest of the script like any other: an appended download is seen
+            for ln, lid in zip(re.sub(r"\\\n\s*", " ", text).split("\n"), _line_ids(text)):   # and the rest of the script like any other: an appended download is seen
+                before = len(found)
                 _step({"run": ln}, found, {})
+                for it in found[before:]:
+                    it.src = (path, lid)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
             found = [Item("tool", "file:" + path, "(file)")]   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
             found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]      # what an installer's *-version-file selects: a changed content is a changed key
@@ -445,12 +505,12 @@ def inventory(files):
                 am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
                 if am:
                     assigns[am.group(1)] = am.group(2)
-            for ln in joined:   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
+            for ln, lid in zip(joined, _line_ids(text)):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
                 refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
                 before = len(found)
                 _step({"run": ln, "env": refs} if refs else {"run": ln}, found, {})
                 for it in found[before:]:
-                    it.src = path
+                    it.src = (path, lid)
                 if len(found) > MAX_ITEMS_PER_FILE:
                     raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
@@ -553,6 +613,21 @@ def unmeasured(files):
     for key, _flat, _bashlike in unmeasured_occurrences(files):
         out[key] = out.get(key, 0) + 1
     return out
+
+
+def _line_ids(text):
+    """One id per line of a script (continuations joined, as the inventory reads it): the 16-hex hash of the whole whitespace-flattened line, prefixed
+    'unruled:' for a line bash reads differently from that flattening (REQ-SUP-001-AC16, AC20)."""
+    mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
+    tainted = mark in text
+    ids = []
+    for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
+        bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
+        if not tainted:
+            line = line.replace(mark, "")
+        h = hashlib.sha256(" ".join(line.split()).encode("utf-8", "replace")).hexdigest()[:16]
+        ids.append(h if bashlike else "unruled:" + h)
+    return ids
 
 
 def unmeasured_occurrences(files):

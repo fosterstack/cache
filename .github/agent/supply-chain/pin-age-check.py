@@ -57,7 +57,10 @@ def parse_time(s):
         sign = 1 if tz[0] == "+" else -1
         hh, mm = int(tz[1:3]), int(tz[-2:])
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
-    return d.replace(tzinfo=dt.timezone.utc)
+    d = d.replace(tzinfo=dt.timezone.utc)
+    if frac:
+        d += dt.timedelta(seconds=1)   # a fractional second is rounded UP: a time is never earlier than it was published (AC3: short of 7 days is young)
+    return d
 
 
 _PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
@@ -544,25 +547,43 @@ def load_ruled_text(path, required=False):
     return out
 
 
+UNPINNED_FORM = "an unpinned package install"
+
+
+def drop_ruled_unpinned(items, ruled_lines):
+    """REQ-SUP-001-AC20: an unpinned package item leaves the list only when the script line that made it (its own path and line id) is a ruled occurrence."""
+    return [m for m in items if not (m.kind == "package" and m.version == "(unpinned)" and m.src and tuple(m.src) in ruled_lines)]
+
+
+def ruled_unpinned_lines(root, base, head, exceptions_path):
+    """The (script path, line id) pairs of the unpinned-package occurrences the head ADDS that a base-branch row rules, within the row's count. Shared by this check and
+    pin-audit.py, so the one required job judges a ruled line once."""
+    rulings = load_ruled_text(exceptions_path, required=False)
+    out = set()
+    for k, per in _unmeasured_counts(root, base, head).items():
+        if k[1] != UNPINNED_FORM:
+            continue
+        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
+        if all(r and n <= r[1] for r, n in zip(rs, per.values())):
+            out.update((k[0], lh) for lh in per)
+    return out
+
+
 def _run(a, moved, fx, now):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
     lines = _unmeasured_counts(a.root, a.base, a.head)
-    added, ruled = [], []
+    added, ruled, ruled_lines = [], [], set()
     for k in sorted(lines):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
+            if k[1] == UNPINNED_FORM:
+                ruled_lines.update((k[0], lh) for lh in lines[k])
         else:
             added.append(k)
-    # REQ-SUP-001-AC20: an unpinned package a script line brought is judged by the ruled row of that line, not twice: it leaves the moved list only when the
-    # file has a ruled occurrence of that form and no unruled one (an unruled added line of the same form keeps every such item of the file failing)
-    form = "an unpinned package install"
-    unruled_files = {k[0] for k in added if k[1] == form}
-    ruled_files = {k[0] for k, _ in ruled if k[1] == form}
-    moved = [m for m in moved if not (m.kind == "package" and m.version == "(unpinned)" and m.src
-                                      and m.src in ruled_files and m.src not in unruled_files)]
+    moved = drop_ruled_unpinned(moved, ruled_lines)   # REQ-SUP-001-AC20: judged by the ruled row of ITS OWN line, never by another line's
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
