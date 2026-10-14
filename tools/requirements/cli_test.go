@@ -563,6 +563,7 @@ func TestFreezeFailsWhenOutputPathUnwritable(t *testing.T) {
 
 func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	chdirTemp(t)
+	writeFixtureModule(t)
 	dir := "pkg"
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
@@ -571,27 +572,60 @@ func TestGoTestExistsSkipsAndErrors(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(dir, "aaa_dir_test.go"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A non-test file mentioning the needle must not count.
-	if err := os.WriteFile(filepath.Join(dir, "notatest.go"), []byte("func TestReal(t *testing.T) {}\n"), 0o644); err != nil {
+	// A non-test file mentioning the needle must not count (own directory: it is the only file there).
+	if err := os.Mkdir("pkgnotatest", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// A dangling symlink with the suffix is not a regular file and is skipped.
-	if err := os.Symlink("missing", filepath.Join(dir, "dangling_test.go")); err != nil {
+	if err := os.WriteFile(filepath.Join("pkgnotatest", "notatest.go"), []byte("package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// An unparsable test file is skipped, never searched as text.
-	if err := os.WriteFile(filepath.Join(dir, "broken_test.go"), []byte("func TestBroken(t *testing.T) {\n"), 0o644); err != nil {
+	// A dangling symlink with the suffix is not a regular file and is not searched; the loader follows a symlink and
+	// this tool does not, so it keeps its own package from counting.
+	if err := os.Mkdir("pkgdangling", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	src := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc helper() {}\nfunc Testhelper(t *testing.T) {}\nfunc TestTwo(a, b *testing.T) {}\nfunc TestB(b *testing.B) {}\nfunc TestRet(t *testing.T) error { return nil }\nfunc TestVal(t testing.T) {}\ntype T struct{}\nfunc TestLocal(t *T) {}\n"
+	if err := os.Symlink("missing", filepath.Join("pkgdangling", "dangling_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("pkgdangling", "real_test.go"), []byte("package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("pkgdangling", "TestReal") {
+		t.Error("a package with a symlinked Go file was accepted")
+	}
+	// An unparsable test file is never searched as text, and it keeps its package from loading (own directory).
+	if err := os.Mkdir("pkgbroken", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("pkgbroken", "broken_test.go"), []byte("func TestBroken(t *testing.T) {\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// a function the toolchain does not register (helper, Testhelper) is not a test; one it rejects (wrong signature) fails
+	// its whole package, so it sits in a directory of its own
+	if err := os.Mkdir("pkgsig", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sig := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc TestTwo(a, b *testing.T) {}\nfunc TestB(b *testing.B) {}\nfunc TestRet(t *testing.T) error { return nil }\nfunc TestVal(t testing.T) {}\ntype T struct{}\nfunc TestLocal(t *T) {}\n"
+	if err := os.WriteFile(filepath.Join("pkgsig", "sig_test.go"), []byte(sig), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"TestReal", "TestTwo", "TestB", "TestRet", "TestVal", "TestLocal"} {
+		if goTestExists("pkgsig", name) {
+			t.Errorf("%s is in a package the toolchain rejects but was accepted", name)
+		}
+	}
+	src := "package p\n\nimport \"testing\"\n\nfunc TestReal(t *testing.T) {}\nfunc helper() {}\nfunc Testhelper(t *testing.T) {}\n"
 	if err := os.WriteFile(filepath.Join(dir, "real_test.go"), []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if !goTestExists(dir, "TestReal") {
 		t.Error("TestReal exists in real_test.go but was not found")
 	}
+	if goTestExists("pkgbroken", "TestBroken") || goTestExists("pkgnotatest", "TestReal") {
+		t.Error("a name in an unparsable or non-test file was accepted")
+	}
 	// residual 3 (step 8 r3): only a function `go test` runs is a test
-	for _, name := range []string{"helper", "Testhelper", "TestTwo", "TestB", "TestRet", "TestVal", "TestLocal", "TestBroken", "TestOnlyInNonTestFile"} {
+	for _, name := range []string{"helper", "Testhelper"} {
 		if goTestExists(dir, name) {
 			t.Errorf("%s is not a runnable test but was accepted", name)
 		}
@@ -985,5 +1019,246 @@ func TestVerifyFreezeRejectsMalformedFrozenFile(t *testing.T) {
 	code, _, stderr := runCommand(t, "verify-freeze", "v0.2.0")
 	if code != 1 || !strings.Contains(stderr, "parse requirements/releases/v0.2.0.yaml") {
 		t.Fatalf("malformed frozen file not rejected: code=%d stderr=%q", code, stderr)
+	}
+}
+
+// ── goTestExists asks the toolchain (REQ-REL-007-AC3) ────────────────
+
+func writeFixtureModule(t *testing.T) {
+	t.Helper()
+	if err := os.WriteFile("go.mod", []byte("module fixture\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A mapped Go test counts only when `go list -e -test`, run for linux/amd64 and linux/arm64 with cgo off and on, lists
+// its file as a test file of the package with no error in all four runs; the tool reads no constraint itself.
+func TestGoTestExistsAsksTheToolchain(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	write := func(dir, file, src string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, file), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fn := func(name string) string { return "import \"testing\"\n\nfunc " + name + "(t *testing.T) {}\n" }
+	body := func(name, constraint string) string { return constraint + "package p\n\n" + fn(name) }
+	type c struct {
+		dir, name string
+		want      bool
+	}
+	var cases []c
+	// one package, many files: each file is judged by the toolchain alone
+	for name, f := range map[string]struct {
+		file, constraint string
+		want             bool
+	}{
+		"TestPlain":          {"plain_test.go", "", true},
+		"TestLinuxSuffix":    {"a_linux_test.go", "", true},
+		"TestBothArch":       {"b_test.go", "//go:build linux && (amd64 || arm64)\n\n", true},
+		"TestUnix":           {"unix_test.go", "//go:build unix\n\n", true},
+		"TestRelease":        {"rel_test.go", "//go:build go1.1\n\n", true},
+		"TestNotRace":        {"race_test.go", "//go:build !race\n\n", true},
+		"TestNotIntegration": {"integ_test.go", "//go:build !integration\n\n", true},
+		"TestLegacyLinux":    {"leg_test.go", "// +build linux\n\n", true},
+		"TestDocBuildLine":   {"doc_test.go", "// Package p documents a flag.\n// +build integration\n", true},
+		"TestBom":            {"bom_test.go", "\ufeff//go:build linux\n\n", true},
+		"TestWindowsSuffix":  {"w_windows_test.go", "", false},
+		"TestIgnore":         {"ign_test.go", "//go:build ignore\n\n", false},
+		"TestNotLinux":       {"nl_test.go", "//go:build !linux\n\n", false},
+		"TestAmd64Only":      {"am_test.go", "//go:build linux && amd64\n\n", false},
+		"TestArm64Only":      {"ar_test.go", "//go:build linux && arm64\n\n", false},
+		"TestNeedsCgo":       {"cgo_test.go", "//go:build cgo\n\n", false},
+		"TestNeedsNoCgo":     {"nocgo_test.go", "//go:build !cgo\n\n", false},
+		"TestCustomTag":      {"cust_test.go", "//go:build integration\n\n", false},
+		"TestNoFeature":      {"feat_test.go", "//go:build !amd64.v1\n\n", false},
+		"TestBomCgo":         {"bomcgo_test.go", "\ufeff//go:build !cgo\n\n", false},
+		"TestOldWindows":     {"oldw_test.go", "// +build windows\n\n", false},
+	} {
+		src := f.constraint + "package p\n\n" + fn(name)
+		if strings.HasPrefix(f.constraint, "// Package p") {
+			src = f.constraint + "package p\n\n" + fn(name)
+		}
+		write("sel", f.file, src)
+		cases = append(cases, c{"sel", name, f.want})
+	}
+	// a test in package documentation is not a test file of the package; the external test package is
+	write("pkgs", "a.go", "package p\n")
+	write("pkgs", "doc_test.go", "package documentation\n\n"+fn("TestDocumentationPkg"))
+	write("pkgs", "x_test.go", "package p_test\n\n"+fn("TestExternal"))
+	write("pkgs", "y_test.go", "package p\n\n"+fn("TestInternal"))
+	// the toolchain rejects a test function with type parameters: its package does not count
+	write("generic", "generic_test.go", "package p\n\nimport \"testing\"\n\nfunc TestGeneric[P any](t *testing.T) {}\nfunc TestSibling(t *testing.T) {}\n")
+	write("pkgs", "n_test.go", "package p\n\nimport \"testing\"\n\nfunc Testé(t *testing.T) {}\nfunc TestÉ(t *testing.T) {}\n")
+	cases = append(cases, c{"pkgs", "TestDocumentationPkg", false}, c{"pkgs", "TestExternal", true}, c{"pkgs", "TestInternal", true},
+		c{"generic", "TestGeneric", false}, c{"generic", "TestSibling", false}, c{"pkgs", "Testé", false}, c{"pkgs", "TestÉ", true})
+	// whatever the toolchain reports an error for keeps the package from counting
+	write("badcon", "a.go", "package p\n")
+	write("badcon", "p_test.go", body("TestBadConstraint", "")+"\n")
+	write("badcon", "bad.go", "//go:build &&\n\npackage p\n")
+	write("mixed", "a.go", "package a\n")
+	write("mixed", "p_test.go", "package b\n\n"+fn("TestMixed"))
+	write("embed", "a.go", "package p\n\nimport _ \"embed\"\n\n//go:embed missing.txt\nvar s string\n")
+	write("embed", "p_test.go", body("TestEmbedMissing", ""))
+	write("badimp", "p_test.go", "package p\n\nimport (\n\t\"testing\"\n\t_ \"fixture/does/not/exist\"\n)\n\nfunc TestMissingImport(t *testing.T) {}\n")
+	cases = append(cases, c{"badcon", "TestBadConstraint", false}, c{"mixed", "TestMixed", false}, c{"embed", "TestEmbedMissing", false},
+		c{"badimp", "TestMissingImport", false})
+	for _, k := range cases {
+		if got := goTestExists(k.dir, k.name); got != k.want {
+			t.Errorf("%s/%s: counted=%v, want %v", k.dir, k.name, got, k.want)
+		}
+	}
+	// no module around the directory, no such directory: the toolchain cannot answer, the check fails
+	if goTestExists("absentdir", "TestPlain") {
+		t.Error("a missing directory counted")
+	}
+}
+
+// With no module the toolchain cannot list the package: nothing counts (fail closed).
+func TestGoTestExistsFailsClosedWithoutAModule(t *testing.T) {
+	chdirTemp(t)
+	if err := os.MkdirAll("p", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("p", "p_test.go"), []byte("package p\n\nimport \"testing\"\n\nfunc TestX(t *testing.T) {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("p", "TestX") {
+		t.Error("counted although go list could not list the package")
+	}
+}
+
+// A persisted `go env -w GOFLAGS=-tags=...` does not change the answer: the toolchain is asked with a clean
+// configuration, so a file that only a custom tag selects does not count.
+func TestGoTestExistsIgnoresPersistedGoFlags(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	cfg := filepath.Join(t.TempDir(), "goenv")
+	if err := os.WriteFile(cfg, []byte("GOFLAGS=-tags=integration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GOENV", cfg)
+	t.Setenv("GOFLAGS", "")
+	if err := os.MkdirAll("p", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "//go:build integration\n\npackage p\n\nimport \"testing\"\n\nfunc TestOnlyWithTag(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join("p", "tag_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("p", "TestOnlyWithTag") {
+		t.Error("a test selected only by a persisted GOFLAGS tag was counted")
+	}
+}
+
+// A package whose directory (and so import path) ends in .test is an ordinary package, not the generated test main.
+func TestGoTestExistsAcceptsAPackagePathEndingInTest(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	if err := os.MkdirAll("widget.test", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	src := "package widget\n\nimport \"testing\"\n\nfunc TestWidget(t *testing.T) {}\n"
+	if err := os.WriteFile(filepath.Join("widget.test", "w_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !goTestExists("widget.test", "TestWidget") {
+		t.Error("a test in a package directory ending in .test was not found")
+	}
+}
+
+// The bare name Test is registered by go test; a symlinked test file is not searched (the repository's own rule for
+// mapped evidence), and when go itself is missing or answers something unreadable nothing counts.
+func TestGoTestExistsEdgesOfTheAnswer(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	src := "package p\n\nimport \"testing\"\n\nfunc Test(t *testing.T) {}\n"
+	if err := os.MkdirAll("bare", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("bare", "b_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !goTestExists("bare", "Test") {
+		t.Error("the bare name Test was not found")
+	}
+	if err := os.MkdirAll("sym", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("sym", "target.src"), []byte(strings.Replace(src, "func Test(", "func TestViaLink(", 1)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("target.src", filepath.Join("sym", "link_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("sym", "TestViaLink") {
+		t.Error("a test in a symlinked file was counted")
+	}
+	// go missing: no PATH entry holds it (a directory of its own: answers are cached per directory)
+	if err := os.MkdirAll("nogo", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("nogo", "b_test.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
+	if goTestExists("nogo", "Test") {
+		t.Error("counted although the go command was not found")
+	}
+	// go present but answering garbage, then nothing: unreadable answers do not count
+	stub := t.TempDir()
+	script := "#!/bin/sh\ncase \"$*\" in\n*-test*) exit 0 ;;\n*) echo '{\"ImportPath\": \"x\"}' ;;\nesac\n"
+	if err := os.WriteFile(filepath.Join(stub, "go"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", stub)
+	if err := os.MkdirAll("stubbed", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("stubbed", "Test") {
+		t.Error("counted although go list printed no test variants")
+	}
+	garbage := "#!/bin/sh\necho 'not json'\n"
+	if err := os.WriteFile(filepath.Join(stub, "go"), []byte(garbage), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll("garbled", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if goTestExists("garbled", "Test") {
+		t.Error("counted although go list printed something unreadable")
+	}
+}
+
+// A test function must be spelled func TestX(t *testing.T) under the file's own name for the testing import: the
+// toolchain's scanner accepts *T by name, and TestMain is a runner hook.
+func TestGoTestExistsChecksTheSignatureTheToolchainDoesNot(t *testing.T) {
+	chdirTemp(t)
+	writeFixtureModule(t)
+	if err := os.MkdirAll("sig", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"alias_test.go":   "package p\n\nimport tt \"testing\"\n\nfunc TestAliased(t *tt.T) {}\n",
+		"empty_test.go":   "package p\n\nimport \"testing\"\n\nfunc TestEmptyResults(t *testing.T) () {}\n",
+		"unnamed_test.go": "package p\n\nimport \"testing\"\n\nfunc TestUnnamed(*testing.T) {}\n",
+		"main_test.go":    "package p\n\nimport \"testing\"\n\nfunc TestMain(m *testing.M) {}\n",
+		"local_test.go":   "package p\n\nimport \"testing\"\n\ntype T struct{}\n\nfunc TestLocalType(t *T) {}\n\nvar _ = testing.Short\n",
+		"dot_test.go":     "package p\n\nimport . \"testing\"\n\nfunc TestDot(t *T) {}\n",
+	}
+	for n, src := range files {
+		if err := os.WriteFile(filepath.Join("sig", n), []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]bool{"TestAliased": true, "TestEmptyResults": true, "TestUnnamed": true,
+		"TestMain": false, "TestLocalType": false, "TestDot": false} {
+		if got := goTestExists("sig", name); got != want {
+			t.Errorf("%s: counted=%v, want %v", name, got, want)
+		}
 	}
 }
