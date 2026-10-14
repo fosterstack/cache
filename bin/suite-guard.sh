@@ -4,7 +4,7 @@
 #   count LOG                             prints the case count a suite's log carries (`pass=N`, `N passed`, `passed: N`, `Ran N tests`, `N killed`, else the
 #                                         number of ok/PASS lines); none, or zero, fails
 #   floor FLOORS SUITE N                  N must be at least the committed floor of SUITE (an unlisted suite, or a floor below 1, fails)
-#   (run and all, which execute suites, are bin/suite-guard-run.sh)
+#   (run and all, which execute suites, are bin/suite-guard-run.py)
 #   floors-vs-base [--allow-lowered A,B] REF FLOORS   FLOORS (a path in the working tree) may not lower or drop a floor the file at REF holds,
 #                                         unless the suite is named in --allow-lowered (the PR body names it); no file at REF: passes
 # Why: a script committed as an empty file exits 0, so "rc 0" proved nothing (release chain PR 3, bin/check-file-allowlist-test.sh).

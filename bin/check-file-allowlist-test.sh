@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 170, 6   # 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 171, 6   # 171: 170 + ^bin/suite-guard-run\.py$ (the runner is Python, R-PINS; the .sh runner pattern is gone); 170: 171 - the Dockerfile pattern (rule 61: the Dockerfiles are removed; the goreleaser name left the config alternation, PR 4b-4); 171: 170 + the PR 4b-1 pattern; 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "f7560b3e18ca8399833aa9ae45a7c854e951b01fd9eeba5d7ef64ca2218b0120"
+PINNED_SHA256 = "7f19f64ff589eaf389c91d876e80b1bb3df06b759f9e7dd5125fd48aa8239d20"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -740,8 +740,8 @@ passfam "feature/x" "v030: the split build-chain test files and library" "bin/me
 passfam "feature/x" "v030: the OCI digest and network probe tools" "bin/oci-digest.py" "bin/net-probe.py"
 passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed environment list" "bin/build-apk-helper.py" "build/sealed-env.json"
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"
-passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.sh" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
-runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
+passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.py" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
+runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-run.sh" "bin/suite-guard-run.pyc" "bin/suite-guard-run-other.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
 passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
 passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "build/archive.json" "secret_scanning.yml"
