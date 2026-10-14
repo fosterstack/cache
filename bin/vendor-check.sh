@@ -37,9 +37,9 @@ if [ ! -d "$src/vendor" ] || [ -L "$src/vendor" ]; then
   git -C "$src" rev-parse --git-dir >/dev/null 2>&1 || die "no vendor/ here, and $src is not a git tree to read origin/main from" 1
   top=$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)
   [ "$top" = "$src" ] || die "no vendor/ here, and $src is not the top of its git tree: a subdirectory is never judged as the whole tree"
-  git -C "$src" rev-parse --verify --quiet "origin/main^{commit}" >/dev/null 2>&1 || die "no vendor/ here, and origin/main cannot be read" 1
+  basecommit=$(git -C "$src" rev-parse --verify --quiet "refs/remotes/origin/main^{commit}" 2>/dev/null) || die "no vendor/ here, and origin/main cannot be read" 1
   scratch=$(mktemp -d) || die "no scratch directory" 1
-  git -C "$src" ls-tree -r -z --full-tree --name-only origin/main >"$scratch/base.z" 2>/dev/null || die "origin/main cannot be listed" 1
+  git -C "$src" ls-tree -r -t -z --full-tree --name-only "$basecommit" >"$scratch/base.z" 2>/dev/null || die "origin/main cannot be listed" 1
   tr '\0' '\n' <"$scratch/base.z" >"$scratch/base.txt" || die "origin/main listing cannot be read" 1
   grep -E '(^|/)vendor(/|$)' "$scratch/base.txt" >"$scratch/base.hit"
   case $? in
