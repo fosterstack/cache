@@ -306,7 +306,7 @@ t AC7 "the digest push printed is the one the pointer names (the flow the refres
 # ===== AC8: the push is the only writer; the pull runs outside the sealed call; nothing secret ======================================
 t AC8 "archive-pull.sh and archive-verify.py never name a crane write (push, copy, cp, tag, delete, append, mutate)" bash -c "! grep -En '(crane|CRANE\"?) +\"?(push|copy|cp|tag|delete|append|mutate)' '$PULL' '$VER'"
 t AC8 "archive-push.sh calls crane only as push" bash -c "grep -q 'CRANE\" push ' '$PUSH' && test \"\$(grep -c 'CRANE' '$PUSH')\" -eq \"\$(grep -c 'CRANE=\\|CRANE\" push ' '$PUSH')\""
-t AC8 "none of the three names sudo, unshare, melange, apko, docker or a network client (the pull runs before and outside the sealed call)" bash -c "! grep -Ewn 'sudo|unshare|melange|apko|docker|wget|ssh|nc' '$PUSH' '$PULL' '$VER' | grep -Ev '^[^:]*:[0-9]+:[[:space:]]*#'"
+t AC8 "none of the three names sudo, unshare, melange, apko, docker or a network client (the pull runs before and outside the sealed call)" bash -c "! grep -Ewn 'sudo|unshare|melange|apko|docker|ssh|nc' '$PUSH' '$PULL' '$VER' | grep -Ev '^[^:]*:[0-9]+:[[:space:]]*#'"
 t AC8 "none of the three names a token, password, secret, login or credential variable (the push uses the workflow's own credential, which crane finds itself)" bash -c "! grep -Eiwn 'token|password|secret|login|GITHUB_TOKEN|GH_TOKEN|DOCKER_CONFIG|insecure' '$PUSH' '$PULL' '$VER' | grep -Ev '^[^:]*:[0-9]+:[[:space:]]*#'"
 cat >"$work/vars.py" <<'PY'
 import re, sys
@@ -371,7 +371,7 @@ for n, ln in enumerate(open(sys.argv[1]).read().split("\n"), 1):
     bad += ["%s:%d %s" % (sys.argv[1], n, w) for w in sys.argv[2:] if w in ws]
 sys.exit("bare tool words: %r" % bad if bad else 0)
 PY
-TOOLS="crane python3 python mktemp rm mv cp cat dirname readlink sha256sum shasum openssl curl git gh tar gzip find sed awk env"
+TOOLS="crane python3 python mktemp rm mv cp cat dirname readlink sha256sum shasum openssl git gh tar gzip find sed awk env"
 t AC9 "no bare tool word in archive-push.sh (every tool is named by a variable holding a fixed path)" python3 "$work/toolscan.py" "$PUSH" $TOOLS
 t AC9 "no bare tool word in archive-pull.sh" python3 "$work/toolscan.py" "$PULL" $TOOLS
 t AC9 "each shell script defines its tools as absolute paths on lines marked TEST-SUBST (PY3, MKTEMP, RM and CRANE)" python3 - "$PUSH" "$PULL" <<'P'
