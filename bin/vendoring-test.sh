@@ -104,12 +104,19 @@ rc AC2 "an empty GOFLAGS is accepted (0)" 0 env GOFLAGS= bash "$bin_vc" "$work/f
 mkdir -p "$work/emptygo"; printf '#!/bin/sh\n"%s" "$@"; rc=$?; if [ "$1 $2" = "mod vendor" ]; then mkdir -p vendor/example.test/dep/emptied; fi; exit $rc\n' "$realgo" >"$work/emptygo/go"; chmod 755 "$work/emptygo/go"
 mkcase emptyboth; mkdir -p "$work/fx-emptyboth/vendor/example.test/dep/emptied"
 rc AC2 "an empty directory that regeneration also produces is refused (1)" 1 env PATH="$work/emptygo:$PATH" bash "$bin_vc" "$work/fx-emptyboth"
-says AC2 "(empty directory) the failure names the empty directory" "empty directory"
+says AC2 "(empty directory) the failure names the empty directory and its name" "emptied"
 # GOFLAGS from the Go tool's own configuration file is the effective value: judged like the environment's
 printf 'GOFLAGS=-mod=mod -modfile=alternate.mod\n' >"$work/go.env"
 rc AC2 "a -modfile set through GOENV's file is refused (2)" 2 env -u GOFLAGS GOENV="$work/go.env" bash "$bin_vc" "$work/fx-clean"
 printf 'GOFLAGS=-o=/tmp/x\n' >"$work/go-o.env"
 rc AC2 "an -o set through GOENV's file is refused (2)" 2 env -u GOFLAGS GOENV="$work/go-o.env" bash "$bin_vc" "$work/fx-clean"
+# every Go invocation (go env GOFLAGS, go mod verify, go mod vendor) runs with GOAUTH=off, and verification comes before vendoring and stops it
+mkdir -p "$work/reccgo"; printf '#!/bin/sh\necho "$* GOAUTH=${GOAUTH-unset}" >>"$RECORD"\nexec "%s" "$@"\n' "$realgo" >"$work/reccgo/go"; chmod 755 "$work/reccgo/go"
+rm -f "$work/rec.txt"; rc AC2 "a clean tree with a recording go: passes (0)" 0 env RECORD="$work/rec.txt" GOAUTH=audit-sentinel PATH="$work/reccgo:$PATH" bash "$bin_vc" "$work/fx-clean"
+t AC2 "every go invocation ran with GOAUTH=off (env, verify, vendor)" bash -c "[ \$(wc -l <'$work/rec.txt') -ge 3 ] && ! grep -v 'GOAUTH=off\$' '$work/rec.txt'"
+t AC2 "go env GOFLAGS comes first, then mod verify, then mod vendor" bash -c "[ \"\$(sed -n 1p '$work/rec.txt' | cut -d' ' -f1-2)\" = 'env GOFLAGS' ] && grep -n 'mod verify' '$work/rec.txt' | head -1 | grep -q '^2:' && grep -n 'mod vendor' '$work/rec.txt' | head -1 | grep -q '^3:'"
+rm -f "$work/rec.txt"; rc AC2 "verify failure with a recording go (1)" 1 env RECORD="$work/rec.txt" GOMODCACHE="$work/modcache-bad" PATH="$work/reccgo:$PATH" bash "$bin_vc" "$work/fx-clean"
+t AC2 "after a failed go mod verify, go mod vendor never ran" bash -c "grep -q 'mod verify' '$work/rec.txt' && ! grep -q 'mod vendor' '$work/rec.txt'"
 rc AC2 "an unknown argument exits 2" 2 vc --frobnicate
 rc AC2 "two arguments exit 2" 2 vc "$work/fx-clean" extra
 rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
