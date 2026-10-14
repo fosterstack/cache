@@ -34,7 +34,7 @@ bash .github/agent/tests/auditor-matrix-test.sh > "$W/matrix.log" 2>&1 \
   || { grep -A2 '^FAIL' "$W/matrix.log" >&2; tail -1 "$W/matrix.log" >&2
        echo "::error::matrix suite failed under coverage" >&2; exit 1; }
 tail -1 "$W/matrix.log"
-# row 78: the action-pin checker's fixture cases (it lives here so its changes need the review record)
+# row 78: the action-pin checker's fixture cases (it lives here so its changes need the independent second review)
 bash .github/agent/tests/check-action-pins-test.sh > "$W/pins.log" 2>&1 \
   || { grep '^FAIL' "$W/pins.log" >&2; tail -1 "$W/pins.log" >&2
        echo "::error::action-pin cases failed under coverage" >&2; exit 1; }
