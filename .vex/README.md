@@ -19,14 +19,16 @@ from someone quietly turning a scanner down.
 ## How it is consumed
 
 One document, many statements: adding an exception appends to `statements[]` and
-increments the document's `version`. Both scanners read this file in the release
-gate and in the daily rescan, so an exception applies identically at release time and
-for the life of the shipped bytes:
+increments the document's `version`. Grype reads this file in the release gate
+(`--vex` on the `grype` command in `.github/workflows/stage-verify.yml`) and in the
+daily rescan, so an exception applies identically at release time and for the life of
+the shipped bytes. The OSV-Scanner scans in the release gate run without it: an OSV
+finding blocks a release even when a statement covers it.
 
-| Scanner | How |
+| Scanner in the release gate | How it reads this file |
 |---|---|
-| Trivy | `TRIVY_VEX` environment variable |
-| Grype | `vex:` input to `anchore/scan-action` |
+| Grype | `--vex` on the `grype` command |
+| OSV-Scanner | not at all: no VEX input in the gate |
 
 It ships as a release asset, so anyone auditing an artifact gets our claims alongside
 the SBOM and the provenance rather than having to take the scan result on faith.
