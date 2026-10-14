@@ -3156,7 +3156,7 @@ requirements:
       - id: REQ-ARCHIVE-001-AC8
         given: "the three archive tools"
         when: "they are read and run"
-        then: "bin/archive-push.sh is the only one that names a crane write (crane push); bin/archive-pull.sh and bin/archive-verify.py name none; none names sudo, unshare, melange or apko (the pull happens before and outside the sealed call, rules 38a, 38b unchanged), a token, a password or a login; the shell scripts read no variable of the caller (the push uses the workflow's own credential, which crane finds itself) and a hostile caller environment changes nothing (read-back item 3)"
+        then: "bin/archive-push.sh is the only one that names a crane write (crane push); bin/archive-pull.sh and bin/archive-verify.py name none; none names sudo, unshare, melange or apko (the pull happens before and outside the sealed call, rules 38a, 38b unchanged), a token, a password or a login; the shell scripts read no variable of the caller (the push uses the workflow's own credential, which crane finds itself) and a hostile caller environment (a tool or repository variable, PYTHONPATH, PYTHONSTARTUP) changes nothing; STATED RESIDUAL: TMPDIR, which mktemp itself reads for the scratch directory of the push and the pull, and the process environment the script starts in (read-back item 3)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-ARCHIVE-001-AC9

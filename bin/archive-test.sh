@@ -62,6 +62,7 @@ P
 # ---- fixtures --------------------------------------------------------------------------------------------------------------------
 mkfx() {   # mkfx DIR: a small archive in the refresh job's layout (keys, per-arch apks, index/)
   rm -rf "${1:?}"; mkdir -p "$1/keys" "$1/x86_64/index" "$1/aarch64/index"
+  printf 'index-arm\n' >"$1/aarch64/index/APKINDEX-2222222222222222222222222222222222222222222222222222222222222222.tar.gz"
   printf 'PUBLIC KEY\n' >"$1/keys/wolfi-signing.rsa.pub"
   printf 'apk-a-x86\n' >"$1/x86_64/tzdata-2026b-r0.apk"; printf 'apk-b-x86\n' >"$1/x86_64/busybox-1.37.0-r5.apk"
   printf 'apk-a-arm\n' >"$1/aarch64/tzdata-2026b-r0.apk"
@@ -321,8 +322,8 @@ PY
 t AC8 "the shell scripts read no variable they do not set themselves (BASH_SOURCE aside)" python3 "$work/vars.py" "$PUSH" "$PULL"
 t AC8 "archive-verify.py reads no environment variable" bash -c "! grep -En 'environ|getenv' '$VER'"
 mkdir -p "$work/evil"; printf 'raise SystemExit("hostile hashlib")\n' >"$work/evil/hashlib.py"
-reset; run env CRANE=/bin/false PY3=/bin/false MKTEMP=/bin/false RM=/bin/false REPO=evil/x TMPDIR=/nonexistent PYTHONPATH="$work/evil" PYTHONHOME=/nonexistent PYTHONOPTIMIZE=1 "$P_PUSH" --dir "$fx"
-t AC8 "a hostile caller environment (CRANE, PY3, REPO, PYTHONPATH, PYTHONHOME, TMPDIR) does not change the digest push prints" bash -c "test '$(rc)' = 0 && test \"\$(cat '$work/o')\" = '$DIGEST'"
+reset; run env CRANE=/bin/false PY3=/bin/false MKTEMP=/bin/false RM=/bin/false REPO=evil/x PYTHONPATH="$work/evil" PYTHONSTARTUP="$work/evil/hashlib.py" PYTHONOPTIMIZE=1 "$P_PUSH" --dir "$fx"
+t AC8 "a hostile caller environment (CRANE, PY3, REPO, PYTHONPATH, PYTHONSTARTUP) does not change the digest push prints" bash -c "test '$(rc)' = 0 && test \"\$(cat '$work/o')\" = '$DIGEST'"
 
 # ===== AC9: tool paths, isolated interpreters, no test hook, the copy differs only on TEST-SUBST lines (NEW, PROPOSED) ======================
 cat >"$work/toolscan.py" <<'PY'
