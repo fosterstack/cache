@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8
+# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8, REQ-BUILDAPK-001-AC9
 # Tests of the PR: melange recipes, the apk build driver, release signing and the key files.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
