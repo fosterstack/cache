@@ -248,6 +248,11 @@ done <<'EOF'
 *.go text=lf
 *.go eol=crlf
 *.go eol=native
+*.go text eol=lf whitespace=-blank-at-eol
+*.go text eol=lf conflict-marker-size=32
+*.go text eol=lf unknownattr
+*.go text eol=lf unknownattr=1
+*.go whitespace
 *.go eol=LF
 *.go -eol
 *.go !eol

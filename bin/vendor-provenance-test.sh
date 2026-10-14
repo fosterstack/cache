@@ -126,6 +126,11 @@ neg4 extra-field    "d['modules'][0]['note']='x'"
 neg4 tag-for-pseudo "d['modules'][1]['origin']={'url':'https://example.test/beta','tag':'v1'}"
 neg4 commit-for-tag "d['modules'][0]['origin']={'url':'https://example.test/alpha','commit':'$C2'}"
 printf '{"schema":"fosterstack/dependency-provenance/v1","schema":"x","modules":[]}' >"$work/dup.json"
+cp -R "$F" "$work/f4dup"; printf 'example.test/alpha v1.2.3 h1:ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ=\n' >>"$work/f4dup/go.sum"
+rc AC4 "check refuses (exit 2): go.sum names two different hashes for one module version" 2 python3 "$bin_vp" check --vendor-dir "$work/f4dup/vendor" --go-sum "$work/f4dup/go.sum" --provenance "$F/prov.json"
+if grep -q "go.sum.*example.test/alpha.*v1.2.3\|example.test/alpha.*v1.2.3.*conflict" "$work/out"; then ok; else bad AC4 "... and says which module version conflicts: $(head -c 120 "$work/out")"; fi
+cp -R "$F" "$work/f4same"; printf 'example.test/alpha v1.2.3 %s\n' "$H1" >>"$work/f4same/go.sum"
+rc AC4 "check accepts (exit 0): the same hash repeated for one module version" 0 python3 "$bin_vp" check --vendor-dir "$work/f4same/vendor" --go-sum "$work/f4same/go.sum" --provenance "$F/prov.json"
 rc AC4 "check refuses (exit 2): a repeated key" 2 python3 "$bin_vp" check --vendor-dir "$F/vendor" --go-sum "$F/go.sum" --provenance "$work/dup.json"
 sed -i.bak 's#example.test/alpha v1.2.3#example.test/alpha v1.2.4#' "$F/vendor/modules.txt"
 rc AC4 "check refuses (exit 2) stale provenance after a version bump" 2 python3 "$bin_vp" check --vendor-dir "$F/vendor" --go-sum "$F/go.sum" --provenance "$F/prov.json"
@@ -179,6 +184,16 @@ assert e == {"schema": "fosterstack/vendor-evidence/v1", "mode": "vendor",
              "date": {"epoch": 1790000000, "utc": "2026-09-21"}}, e
 PY
 
+GV="$root/.github/agent/fixtures/govulncheck/gv-01.json"
+t AC7 "evidence accepts govulncheck's own output, a stream of JSON messages (the repository's scanner fixture), and hashes its original bytes" python3 - "$bin_vp" "$F7" "$GV" "$work/ev7-stream" <<'PY'
+import hashlib, json, subprocess, sys
+bp, fx, gv, out = sys.argv[1:5]
+r = subprocess.run(["python3", bp, "evidence", "--out", out, "--provenance", fx + "/prov.json", "--govulncheck", gv, "--date", "1790000000"], capture_output=True, text=True)
+assert r.returncode == 0, (r.returncode, r.stderr)
+e = json.load(open(out + "/vendor-evidence.json"))
+assert e["govulncheck"]["sha256"] == hashlib.sha256(open(gv, "rb").read()).hexdigest(), e
+PY
+
 # ===== AC8: refusals, nothing written ==========================================================
 r8() { local n=$1; shift; rm -rf "$work/ev8-$n"; rc AC8 "evidence refuses (exit 2): $n" 2 python3 "$bin_vp" evidence "$@" --out "$work/ev8-$n"
        t AC8 "nothing written, DIR not created: $n" bash -c "[ -e '$bin_vp' ] && [ ! -e '$work/ev8-$n' ]"; }
@@ -189,11 +204,18 @@ r8 date-empty       --provenance "$P" --govulncheck "$G" --date ""
 r8 date-negative    --provenance "$P" --govulncheck "$G" --date -1
 r8 date-leading-0   --provenance "$P" --govulncheck "$G" --date 01790000000
 r8 date-too-big     --provenance "$P" --govulncheck "$G" --date 253402300800
+r8 date-huge        --provenance "$P" --govulncheck "$G" --date "$(printf '9%.0s' $(seq 1 5000))"
 r8 prov-missing     --provenance "$work/nope.json" --govulncheck "$G" --date 1
 r8 govuln-missing   --provenance "$P" --govulncheck "$work/nope.json" --date 1
 : >"$work/empty.json"; echo '[' >"$work/bad.json"; mkdir "$work/adir"; ln -s "$G" "$work/link.json"
 r8 govuln-empty     --provenance "$P" --govulncheck "$work/empty.json" --date 1
 r8 govuln-not-json  --provenance "$P" --govulncheck "$work/bad.json" --date 1
+printf '{"a": NaN}\n' >"$work/g-nan.json"; printf '{"a": Infinity}\n' >"$work/g-inf.json"; printf '{"config":{}}\n{"finding":\n' >"$work/g-trunc.json"; printf '{"config":{}} [1,2]\n' >"$work/g-array.json"; printf '"just a string"\n' >"$work/g-str.json"
+r8 govuln-nan       --provenance "$P" --govulncheck "$work/g-nan.json" --date 1
+r8 govuln-infinity  --provenance "$P" --govulncheck "$work/g-inf.json" --date 1
+r8 govuln-truncated-stream --provenance "$P" --govulncheck "$work/g-trunc.json" --date 1
+r8 govuln-array-in-stream  --provenance "$P" --govulncheck "$work/g-array.json" --date 1
+r8 govuln-bare-string      --provenance "$P" --govulncheck "$work/g-str.json" --date 1
 r8 govuln-dir       --provenance "$P" --govulncheck "$work/adir" --date 1
 r8 govuln-link      --provenance "$P" --govulncheck "$work/link.json" --date 1
 r8 prov-bad-schema  --provenance "$work/p-wrong-schema.json" --govulncheck "$G" --date 1
@@ -202,6 +224,24 @@ r8 repeated-flag    --provenance "$P" --provenance "$P" --govulncheck "$G" --dat
 r8 missing-flag     --provenance "$P" --date 1
 echo x >"$work/afile"
 rc AC8 "evidence refuses (exit 2): --out is an existing file" 2 python3 "$bin_vp" evidence --out "$work/afile" --provenance "$P" --govulncheck "$G" --date 1
+
+t AC8 "an output failure exits 1, leaves no partial or temporary file and keeps an earlier complete evidence file" python3 - "$bin_vp" "$F7" "$work/ev8-fault" <<'PY'
+import importlib.util, os, sys
+bp, fx, out = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+os.makedirs(out); good = b'{"earlier":"complete"}\n'; open(out + "/vendor-evidence.json", "wb").write(good)
+real_replace = os.replace
+def boom(*a, **k): raise OSError(28, "No space left on device")
+args = ["--out", out, "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"]
+os.replace = boom
+try:
+    rc = vp.main(["evidence"] + args)
+finally:
+    os.replace = real_replace
+assert rc == 1, rc
+assert open(out + "/vendor-evidence.json", "rb").read() == good, "the earlier file was changed"
+assert os.listdir(out) == ["vendor-evidence.json"], os.listdir(out)
+PY
 
 # ===== AC9: determinism ========================================================================
 ev "$work/d1" >/dev/null 2>&1; ev "$work/d2" >/dev/null 2>&1; ev "$work/d3" 1790000001 >/dev/null 2>&1
@@ -238,7 +278,9 @@ for f in bin/vendor-provenance.py; do
   t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
   t AC11 "$f builds no command word by substitution" bash -c "[ -e '$f' ] && ! grep -Eq '^[[:space:]]*(\\\$\\(|\\\`)' '$f'"
 done
-(cd "$work" && rc AC11 "vendor-provenance.py exits 2 outside the repository root" 2 python3 "$bin_vp" check --vendor-dir x --go-sum y --provenance z)
+rc AC11 "vendor-provenance.py exits 2 outside the repository root (valid absolute inputs, so only the directory can refuse)" 2 \
+   bash -c "cd '$work' && python3 '$bin_vp' check --vendor-dir '$F7/vendor' --go-sum '$F7/go.sum' --provenance '$F7/prov.json'"
+if grep -q "run it from the repository root" "$work/out"; then ok; else bad AC11 "... and the refusal says to run it from the repository root: $(head -c 120 "$work/out")"; fi
 
 # ===== AC12: signs nothing ========================================================================
 t AC12 "vendor-provenance.py holds no signing tool, key or signature code" bash -c "[ -e '$bin_vp' ] && ! grep -Eqi 'cosign|gpg|openssl|rsa|sign_|signing|private key' '$bin_vp'"
@@ -286,6 +328,25 @@ m = {x['path']: x for x in json.load(open(sys.argv[1]))['modules']}
 assert m['example.test/beta']['origin'] == {'url': 'https://example.test/beta', 'commit': 'a7dc8b61c822528f973a5e4e7b272055c6fdb43e'}, m
 assert m['example.test/alpha']['origin'] == {'url': 'https://example.test/alpha', 'tag': 'v1.2.3'}
 PY"
+# every Go pseudo-version form takes a commit (never a tag) and the commit must start with the version's 12-hex revision
+for form in "v1.2.4-0.20191010083416-a7dc8b61c822" "v1.2.3-pre.0.20191010083416-a7dc8b61c822" "v2.0.0-20191010083416-a7dc8b61c822+incompatible"; do
+  n="pf-$(printf '%s' "$form" | tr -c 'A-Za-z0-9' _)"; d="$work/f14-$n"; mkfix "$d"
+  python3 - "$d" "$form" <<'PY'
+import json, sys
+d, form = sys.argv[1:3]
+old = "example.test/beta@v0.0.0-20191010083416-a7dc8b61c822"; new = "example.test/beta@" + form
+for f in ("origins.json", "sumdb.json", "licenses.json"):
+    x = json.load(open(d + "/" + f)); x[new] = x.pop(old); json.dump(x, open(d + "/" + f, "w"))
+s = open(d + "/go.sum").read().replace("v0.0.0-20191010083416-a7dc8b61c822", form); open(d + "/go.sum", "w").write(s)
+m = open(d + "/vendor/modules.txt").read().replace("v0.0.0-20191010083416-a7dc8b61c822", form); open(d + "/vendor/modules.txt", "w").write(m)
+o = json.load(open(d + "/origins.json")); o.pop(new); json.dump(o, open(d + "/origins.json", "w"))
+good = "a7dc8b61c822528f973a5e4e7b272055c6fdb43e"
+json.dump([{"module": "example.test/beta", "version": form, "url": "https://example.test/beta", "commit": good, "command": "git fetch --depth 1 https://example.test/beta.git " + good}], open(d + "/rec.json", "w"))
+json.dump([{"module": "example.test/beta", "version": form, "url": "https://example.test/beta", "commit": "2" * 40, "command": "x"}], open(d + "/rec-bad.json", "w"))
+PY
+  t AC14 "pseudo-version form $form: the recorded commit with the matching revision builds, origin has a commit" bash -c "python3 '$bin_vp' build --vendor-dir '$d/vendor' --go-sum '$d/go.sum' --sumdb-record '$d/sumdb.json' --origins '$d/origins.json' --licenses '$d/licenses.json' --recorded-origins '$d/rec.json' --out '$d/out.json' && python3 -c \"import json; m={x['path']:x for x in json.load(open('$d/out.json'))['modules']}; assert set(m['example.test/beta']['origin'])=={'url','commit'}, m\""
+  rc AC14 "pseudo-version form $form: a commit that does not start with the revision is refused (exit 2)" 2 python3 "$bin_vp" build --vendor-dir "$d/vendor" --go-sum "$d/go.sum" --sumdb-record "$d/sumdb.json" --origins "$d/origins.json" --licenses "$d/licenses.json" --recorded-origins "$d/rec-bad.json" --out "$d/out2.json"
+done
 f14 tagged
 python3 - "$work/f14-tagged" <<'PY'
 import json, sys
