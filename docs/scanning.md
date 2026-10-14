@@ -119,8 +119,9 @@ docker scout cves --vex-location fosterstack-cache.openvex.json \
   ghcr.io/fosterstack/cache:${VER}
 ```
 
-Run it once with and once without the two VEX flags: the difference is the set of
-published statements that apply to the findings Scout detects, the same audit as in
+Run it once with and once without `--vex-location` and `--vex-author`: the difference
+is the set of findings that applicable `not_affected` and `fixed` statements suppress,
+the same audit as in
 [Reproducing our own gate](#reproducing-our-own-gate).
 
 ## Reproducing our own gate
@@ -128,17 +129,23 @@ published statements that apply to the findings Scout detects, the same audit as
 The release pipeline's scan stage is public:
 [`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml) runs one
 job per scanner in [the scanner list](../.github/policy/scanners.json) (today Grype and
-OSV-Scanner) against the exact candidate digests. The gate's policy is every severity,
-with the published VEX applied, so a faithful reproduction uses the same. The VEX
+OSV-Scanner) against the exact candidate digests: every variant and architecture, and
+for Grype every release archive too. The commands below are the same invocations
+pointed at one public tag, so they show what a scan of that tag reports; they do not
+cover everything the gate covers.
+
+Grype runs in the gate at every severity with the published VEX applied. The VEX
 document ships with each release as `fosterstack-cache.openvex.json` and lives in-repo
 at [`.vex/`](../.vex/):
 
 ```sh
-# Grype, as the release gate runs it (every severity, the published VEX):
 grype ghcr.io/fosterstack/cache:X.Y.Z \
   --fail-on negligible --vex fosterstack-cache.openvex.json
+```
 
-# OSV-Scanner, as the release gate runs it on the image:
+OSV-Scanner runs in the gate on the images and on the Go module manifests:
+
+```sh
 osv-scanner scan image ghcr.io/fosterstack/cache:X.Y.Z
 ```
 
@@ -152,10 +159,10 @@ trivy image --scanners vuln \
   ghcr.io/fosterstack/cache:X.Y.Z
 ```
 
-Run Grype, Trivy or Docker Scout without `--vex` to see raw findings including the
-ones we have publicly dispositioned. The difference between the two runs is the set of
-published statements that apply to the findings your scanner detects, which is how you
-audit them.
+To see raw findings including the ones we have publicly dispositioned, run Grype or
+Trivy without `--vex`, or Docker Scout without `--vex-location` and `--vex-author`.
+The difference between the two runs is the set of findings that applicable `not_affected`
+and `fixed` statements suppress, which is how you audit them.
 
 ## Confirming the scan is the release run
 
