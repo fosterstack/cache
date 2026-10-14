@@ -53,10 +53,10 @@ OSV-Scanner), and a scanner on the list that it cannot run fails the run.
 What the release workflow does today, stated exactly: there is one build.
 Its images are assembled as OCI layouts and handed to the later stages as
 workflow artifacts; every scanner in the list scans those exact images, and
-the acceptance suites run against them; the Release stage verifies the signed
-record of every earlier stage before any registry credential exists in its job,
-and then pushes the same image bytes by digest to the public registries and
-reads each registry back. The scan verdict attaches to the published digests
+the acceptance suites run against them; the Release stage first verifies the signed
+record of every earlier stage, and only the steps after that one read the
+registry and signing secrets; they push the same image bytes by digest to the
+public registries and read each registry back. The scan verdict attaches to the published digests
 because they are the scanned digests. Each scanner's
 verdict is a signed, digest-bound statement (see
 [docs/verify-images.md](docs/verify-images.md)), and the daily rescan
