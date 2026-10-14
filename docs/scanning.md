@@ -130,9 +130,10 @@ The release pipeline's scan stage is public:
 [`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml) runs one
 job per scanner in [the scanner list](../.github/policy/scanners.json) (today Grype and
 OSV-Scanner) against the exact candidate digests: every variant and architecture, and
-for Grype every release archive too. The commands below are partial examples that use
-the gate's scanners and its severity policy on one public tag; they show what a scan of
-that tag reports and do not cover everything the gate covers.
+for Grype every release archive too. The Grype and OSV-Scanner commands below are
+partial examples that use the gate's scanners and its severity policy on one public
+tag; they show what a scan of that tag reports and do not cover everything the gate
+covers.
 
 Grype runs in the gate at every severity with the published VEX applied. The VEX
 document ships with each release as `fosterstack-cache.openvex.json` and lives in-repo
@@ -149,8 +150,8 @@ OSV-Scanner runs in the gate on the images and on the Go module manifests:
 osv-scanner scan image ghcr.io/fosterstack/cache:X.Y.Z
 ```
 
-Trivy is not part of the release gate; if you run it, use the same severities and the
-same file:
+Trivy is not a gate command. If you run it, the example below uses the same severity
+set and the same file, which makes its result comparable but not gate-equivalent:
 
 ```sh
 trivy image --scanners vuln \
