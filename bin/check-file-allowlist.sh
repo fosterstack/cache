@@ -61,7 +61,13 @@ ALLOW_PATTERNS=(
   '^requirements/[A-Za-z0-9._-]+\.(yaml|json)$'
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
+  # The vendored dependency tree (go mod vendor output): any depth of plain path components under vendor/. The guard is the
+  # regenerate-and-compare check (bin/vendor-check.sh), not this pattern; a component outside [A-Za-z0-9._-] is refused.
+  '^vendor/([A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
+  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites, its test, and the committed floors.
+  '^bin/suite-guard(-run|-test)?\.sh$'
+  '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -217,6 +223,10 @@ ALLOW_PATTERNS=(
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
+  # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
+  # of bin/build-apk.sh, and the closed rule-23 variable list as data.
+  '^bin/build-apk-helper\.py$'
+  '^build/sealed-env\.json$'
   # Archive scripts: push, pull (.sh) and verify (.py).
   '^bin/archive-(push|pull)\.sh$'
   '^bin/archive-verify\.py$'
