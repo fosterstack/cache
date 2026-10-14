@@ -74,6 +74,57 @@ explicit VEX suppressions in [`.grype.yaml`](../.grype.yaml) rather than
 hiding them — see that file for the current reasoning on each entry.
 Production and `-fips` images never include busybox.
 
+## Using our VEX files in your scanner
+
+Each release carries our exceptions as published statements, generated from one
+source ([`.vex/`](../.vex/)). Download them from the release page
+(`gh release download v${VER} --repo fosterstack/cache -p 'fosterstack-cache*'`) and
+check them against the signed release manifest as described in
+[Verify our images](verify-images.md). Then apply the form your scanner reads:
+
+| Your scanner | File | How |
+|---|---|---|
+| Grype | `fosterstack-cache.openvex.json` | `grype IMAGE --vex fosterstack-cache.openvex.json` |
+| Trivy | `fosterstack-cache.openvex.json` | `trivy image --vex fosterstack-cache.openvex.json IMAGE` |
+| Docker Scout | `fosterstack-cache.openvex.json` | `docker scout cves --vex-location fosterstack-cache.openvex.json IMAGE` |
+| Amazon Inspector | `fosterstack-cache-<version>.inspector-filters.json` | one suppression rule per statement: `aws inspector2 create-filter`, one rule per call |
+| Google Artifact Analysis | `fosterstack-cache-<version>.csaf.json` | `gcloud artifacts vulnerabilities load-vex`, see [`.vex/README.md`](../.vex/README.md) for naming your image path |
+
+The three files hold the same statements in three formats. The Inspector file
+carries one rule per `not_affected` or `fixed` statement, and Google applies
+whole-image statements only; [`.vex/README.md`](../.vex/README.md) has the detail.
+
+## Suppression rules
+
+A suppression rule in your scanner is only as trustworthy as the claim behind it,
+so ours work in one direction: **every suppression traces to a published
+statement**.
+
+- **Our rules.** We keep no scanner-side ignore that stands alone. A suppression in
+  our repository must cite the statement that governs it
+  ([`.vex/README.md`](../.vex/README.md)), and the Inspector rules above are
+  generated from the statements, never written by hand.
+- **Which statements become rules.** `not_affected` and `fixed` statements become
+  suppression rules. `affected` and `under_investigation` never do: those findings
+  stay visible in your scanner.
+- **Scoped to what we shipped.** Each rule is scoped by the CVE and by the digests
+  of the release it was written for (and by package and version when the statement
+  names one), so it does not hide the same CVE in a different image.
+- **Your own rules.** Put the statement ID in the rule's reason or comment, so a
+  reviewer on your side can trace it back to our file the same way.
+
+## Docker Scout
+
+Docker Scout reads OpenVEX directly. Point it at the file with `--vex-location`:
+
+```sh
+docker scout cves --vex-location fosterstack-cache.openvex.json \
+  ghcr.io/fosterstack/cache:${VER}
+```
+
+Run it once with and once without `--vex-location`: the difference is exactly the set
+of published statements, the same audit as in the Grype and Trivy runs below.
+
 ## Reproducing our own gate
 
 Our release pipeline's scan step is public —
