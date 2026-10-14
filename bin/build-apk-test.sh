@@ -928,19 +928,47 @@ sys.exit("PY3 calls without -I: %r" % bad if bad else 0)
 P
 cat >"$work/toolscan.py" <<'PY'
 import re, sys
-# toolscan.py FILE WORD...: fail closed. A tool word that appears as a whole shell word anywhere in code (any wrapper, any option, any depth,
-# also inside a command substitution within quotes) is refused; the production scripts name every tool by variable, so a bare word is never legal.
+# toolscan.py FILE WORD...: fail closed. A shell lexer with quote removal (m'elang'e is the word melange) and a stack for command
+# substitution: $( ... ) and backticks are code at any nesting depth, also inside double quotes. Any word equal to a tool word, in code, is refused:
+# the production scripts name every tool by variable, so a bare word is never legal. Quoted text is one word (a message is never a tool word).
+def words(s):
+    out, cur, st, i = [], "", ["code"], 0          # st: "code" | "dq" | "sq" | "sub" (a $( ... ) opened from dq or code, returns to what is beneath)
+    def flush():
+        nonlocal cur
+        if cur: out.append(cur)
+        cur = ""
+    while i < len(s):
+        c, m = s[i], st[-1]
+        if m == "sq":
+            if c == "'": st.pop()
+            else: cur += c
+        elif m == "dq":
+            if s.startswith("$(", i): flush(); st.append("sub"); i += 1
+            elif c == "`": flush(); st.append("bt")
+            elif c == "\\" and i + 1 < len(s): cur += s[i + 1]; i += 1
+            elif c == '"': st.pop()
+            else: cur += c
+        else:                                        # code, sub, bt: all are code
+            if c == "'": st.append("sq")
+            elif c == '"': st.append("dq")
+            elif s.startswith("$(", i): flush(); st.append("sub"); i += 1
+            elif c == "`":
+                flush()
+                if m == "bt": st.pop()
+                else: st.append("bt")
+            elif c == ")" and m == "sub": flush(); st.pop()
+            elif c == "\\" and i + 1 < len(s): cur += s[i + 1]; i += 1
+            elif c == "#" and not cur: break
+            elif c in " \t;&|()<>{}=$": flush()
+            else: cur += c
+        i += 1
+    flush()
+    return out
 bad = []
 for n, ln in enumerate(open(sys.argv[1]).read().split("\n"), 1):
-    s = ln.strip()
-    if s.startswith("#") or "TEST-SUBST" in ln: continue
-    def keep(m):
-        q = m.group(0)
-        return " ".join(re.findall(r"\$\((.*?)\)", q)) if q.startswith('"') else ""     # quoted text is data; a $(...) inside double quotes is code
-    code = re.sub(r"\"[^\"]*\"|'[^']*'", keep, s)
-    toks = re.split(r"[\s;&|()<>{}=$`]+", code)
-    for w in sys.argv[2:]:
-        if w in toks: bad.append("%s:%d %s" % (sys.argv[1], n, w))
+    if "TEST-SUBST" in ln: continue
+    ws = words(ln.strip())
+    bad += ["%s:%d %s" % (sys.argv[1], n, w) for w in sys.argv[2:] if w in ws]
 sys.exit("bare tool words: %r" % bad if bad else 0)
 PY
 t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git, python3, openssl and shasum by variable (also as the operand of env, sudo or unshare)" python3 "$work/toolscan.py" "$BA_PROD" sha256sum go env sudo unshare melange git python3 openssl shasum
@@ -953,9 +981,12 @@ open(sys.argv[2] + "/mut-env.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i',
 open(sys.argv[2] + "/mut-sum.sh", "w").write(src.replace('got=$("$SHA256SUM" ', 'got=$(sha256sum '))
 open(sys.argv[2] + "/mut-melange.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n melange'))
 open(sys.argv[2] + "/mut-timeout.sh", "w").write(src.replace('"$GO_TOOL" version -m', 'timeout 30 go version -m'))
+open(sys.argv[2] + "/mut-quote.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n m\'elang\'e'))
+open(sys.argv[2] + "/mut-nest.sh", "w").write(src.replace('gov=$("$ENVBIN" GOTOOLCHAIN=local', 'gov=$(true $(printf x); go version -m "$tmp/fscache.bin"; "$ENVBIN" GOTOOLCHAIN=local', 1))
+open(sys.argv[2] + "/mut-nestq.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$(true $(printf x); melange --version)"'))
 open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" nice -n 5 "$ENVBIN" -u X env -i'))
 PY
-for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-chain; do
+for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-chain; do
   t "rule 23" "the mutant $m differs from the production script" bash -c "! cmp -s '$BA_PROD' '$work/$m.sh'"
   t "rule 23" "the tool-path assertion bites: the mutant $m (a bare tool where the fixed one is) is refused" bash -c "! python3 '$work/toolscan.py' '$work/$m.sh' sha256sum go env sudo unshare melange git python3 openssl shasum >/dev/null 2>&1"
 done
