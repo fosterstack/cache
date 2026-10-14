@@ -100,6 +100,16 @@ rc AC2 "GOFLAGS that redirects the module file (-modfile) is refused (2): the co
 rc AC2 "GOFLAGS with -overlay is refused (2)" 2 env GOFLAGS='-mod=mod -overlay=x.json' bash "$bin_vc" "$work/fx-clean"
 rc AC2 "GOFLAGS with -o is refused (2)" 2 env GOFLAGS='-o=/tmp/x' bash "$bin_vc" "$work/fx-clean"
 rc AC2 "an empty GOFLAGS is accepted (0)" 0 env GOFLAGS= bash "$bin_vc" "$work/fx-clean"
+# an empty directory that regeneration itself reproduces (a package directory whose only sources were links): refused, by name
+mkdir -p "$work/emptygo"; printf '#!/bin/sh\n"%s" "$@"; rc=$?; if [ "$1 $2" = "mod vendor" ]; then mkdir -p vendor/example.test/dep/emptied; fi; exit $rc\n' "$realgo" >"$work/emptygo/go"; chmod 755 "$work/emptygo/go"
+mkcase emptyboth; mkdir -p "$work/fx-emptyboth/vendor/example.test/dep/emptied"
+rc AC2 "an empty directory that regeneration also produces is refused (1)" 1 env PATH="$work/emptygo:$PATH" bash "$bin_vc" "$work/fx-emptyboth"
+says AC2 "(empty directory) the failure names the empty directory" "empty directory"
+# GOFLAGS from the Go tool's own configuration file is the effective value: judged like the environment's
+printf 'GOFLAGS=-mod=mod -modfile=alternate.mod\n' >"$work/go.env"
+rc AC2 "a -modfile set through GOENV's file is refused (2)" 2 env -u GOFLAGS GOENV="$work/go.env" bash "$bin_vc" "$work/fx-clean"
+printf 'GOFLAGS=-o=/tmp/x\n' >"$work/go-o.env"
+rc AC2 "an -o set through GOENV's file is refused (2)" 2 env -u GOFLAGS GOENV="$work/go-o.env" bash "$bin_vc" "$work/fx-clean"
 rc AC2 "an unknown argument exits 2" 2 vc --frobnicate
 rc AC2 "two arguments exit 2" 2 vc "$work/fx-clean" extra
 rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
@@ -234,6 +244,8 @@ mutate defaults-shell 's = s.replace("jobs:\n", "defaults:\n  run:\n    shell: \
 mutate job-renamed 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor-skipped\n", 1)'
 mutate checkout-ref 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          ref: main\n", 1)'
 mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          repository: o/r\n", 1)'
+mutate env-shellopts 's = s.replace("jobs:\n", "env:\n  SHELLOPTS: noexec\njobs:\n", 1)'
+mutate env-bash-env 's = s.replace("jobs:\n", "env:\n  BASH_ENV: /dev/null\njobs:\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
@@ -242,7 +254,7 @@ t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1
 t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
 t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
 cmdword='(^|[;&|({!]|(^|[[:space:]])(then|do|else|if|elif|while|until))[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]$`]*[[:space:]]+)*.?[A-Za-z0-9_./-]*(\$\(|`|\$\{?[A-Za-z_])'
-for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off "g$(printf o)" mod verify' "GOAUTH=off 'g\$(printf o)' mod verify" 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg'; do
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off "g$(printf o)" mod verify' "GOAUTH=off 'g\$(printf o)' mod verify" 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'GOAUTH=off g"$(printf o)" mod verify' 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'p"$cmd" arg'; do
   t AC11 "the substitution pattern flags: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
 done
 for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"'; do
