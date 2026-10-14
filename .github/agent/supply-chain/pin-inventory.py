@@ -312,38 +312,42 @@ def _docker_operand(cmd_args):
 
 
 def _asset_word(text, start):
-    """The release asset's name as the shell reads it, from `start` to the end of the word: quotes, $( ) and backticks nest; an unquoted space or shell
-    operator, the closing quote of a URL that was quoted before the name, and a ? or # (a query or a fragment: URL syntax, quoted or not) end the name.
-    A name with a substitution in it is returned whole; the caller keeps the plain match for a concrete name."""
-    i, n, depth, quote, qat = text.rfind("\n", 0, start) + 1, len(text), 0, "", -1     # the quote state at the name is read from the start of its line
+    """The release asset's name as the shell reads it, from `start` to the end of the word. Quotes, $( ) and backticks nest as a stack (a quote opened inside a
+    substitution closes there, whatever the depth); an unquoted space or shell operator, and a ? or # (a query or a fragment: URL syntax, quoted or not) end the
+    name; the quote that held the whole URL closing does not end it ("url/tool-"${A}.tgz is one word). A name with a substitution in it is returned whole; the
+    caller keeps the plain match for a concrete name."""
+    i, n, depth, stack = text.rfind("\n", 0, start) + 1, len(text), 0, []    # stack of (quote char, substitution depth it was opened at); quote state is read from the line start
     while i < n:
         c = text[i]
+        in_string = bool(stack) and (stack[-1][0] == "'" or depth == stack[-1][1])
         if i >= start and depth == 0 and c in "?#":
             break
-        if quote:
-            if c == "\\" and quote == '"' and i + 1 < n:
+        if stack and stack[-1][0] == "'":
+            if c == "'":
+                stack.pop()
+        elif in_string:                      # inside double quotes, not inside a substitution
+            if c == "\\" and i + 1 < n:
                 i += 1
-            elif quote == '"' and c == "$" and text[i + 1:i + 2] == "(":
+            elif c == '"':
+                stack.pop()
+            elif c == "$" and text[i + 1:i + 2] == "(":
                 depth += 1
                 i += 1
-            elif quote == '"' and c == ")" and depth > 0:
+        else:                                # code: unquoted, or inside $( ) within quotes
+            if c == "\\" and i + 1 < n:
+                i += 1
+            elif c == "`":
+                j = text.find("`", i + 1)
+                i = n if j < 0 else j
+            elif c == "$" and text[i + 1:i + 2] == "(":
+                depth += 1
+                i += 1
+            elif c == ")" and depth > 0:
                 depth -= 1
-            elif c == quote and depth == 0:
-                quote = ""             # a quote that closes inside the word does not end it: "url/tool-"${A}.tgz is one word
-        elif c == "\\" and i + 1 < n:
-            i += 1
-        elif c == "`":
-            j = text.find("`", i + 1)
-            i = n if j < 0 else j
-        elif c == "$" and text[i + 1:i + 2] == "(":
-            depth += 1
-            i += 1
-        elif c == ")" and depth > 0:
-            depth -= 1
-        elif c in "'\"":
-            quote, qat = c, i
-        elif i >= start and depth == 0 and (c.isspace() or c in ";|&<>)"):
-            break
+            elif c in "'\"":
+                stack.append((c, depth))
+            elif i >= start and depth == 0 and not stack and (c.isspace() or c in ";|&<>)"):
+                break
         i += 1
     return text[start:i]
 
@@ -380,7 +384,7 @@ def _script_lines(text):
     return joined, raw
 
 
-_ASSIGN_ANY = re.compile(r"(?:^|[\s;&|(])([A-Za-z_][A-Za-z0-9_]*)\+?=")
+_ASSIGN_ANY = re.compile(r"(?:^|[\s;&|(])[\"']?([A-Za-z_][A-Za-z0-9_]*)\+?=")   # export "A=$B" and declare -x 'A=x' name A too
 
 
 def _assign_context(joined, raw):
