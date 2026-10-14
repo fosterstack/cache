@@ -117,6 +117,7 @@ class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
+        self.src = ""    # the script file a line of which made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to it
 
     @property
     def key(self):
@@ -197,11 +198,19 @@ def _ctx_tag(node):
     return "step:" + hashlib.sha256((json.dumps(node, sort_keys=True, default=str) + "\0" + _ENV_CTX[0]).encode("utf-8", "replace")).hexdigest()[:10]
 
 
+def _plain_local_workflow(u):
+    """REQ-SUP-001-AC19: exactly ./.github/workflows/<plain name>.yml|.yaml, no subdirectory, no @ref, no expression, and the file is read as a workflow here."""
+    return bool(re.fullmatch(r"\./\.github/workflows/[A-Za-z0-9._-]+\.ya?ml", u)) and u[2:] in _TREE[0]
+
+
 def _uses(u, node, out, labels):
     u = u.strip()
     if u.startswith("docker://"):
         out.append(_image_item(u[len("docker://"):]))
     elif u.startswith("./"):
+        if _plain_local_workflow(u) and not re.search(r"\d", json.dumps(node.get("with"), default=str) if node.get("with") else ""):
+            return    # REQ-SUP-001-AC19: a call of a workflow file of this very tree is no item, the called file is inventoried itself; a digit in any with: value (a version
+                      # the callee could hand to an installer, which would move nothing in the callee's file) keeps the call an item that cannot pass
         out.append(Item("action", "local:" + _hide(u), "(local)"))   # a local action outside the globs: its content is not read, so a new one cannot pass
     elif u and "${{" not in u:
         ref_path, _, ref = u.partition("@")
@@ -280,6 +289,7 @@ def _docker_operand(cmd_args):
 
 
 _ENV_CTX = [""]
+_TREE = [frozenset()]   # the paths of the tree being inventoried that are read as workflows: a local reusable-workflow call is judged against it (REQ-SUP-001-AC19)
 _JOB_SUMS = [[]]
 
 
@@ -412,6 +422,7 @@ def _walk(node, out, labels, path="", in_step=False):
 def inventory(files):
     """The items of one tree's files ({path: text}). Raises on a workflow that does not parse: a pin we cannot read is never skipped."""
     items = {}
+    _TREE[0] = frozenset(n for n in files if any(fnmatch.fnmatchcase(n, g) for g in WORKFLOW_GLOBS))
     for path, text in sorted(files.items()):
         found = []
         if path == "bin/install-scanner.sh":
@@ -436,7 +447,10 @@ def inventory(files):
                     assigns[am.group(1)] = am.group(2)
             for ln in joined:   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
                 refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
+                before = len(found)
                 _step({"run": ln, "env": refs} if refs else {"run": ln}, found, {})
+                for it in found[before:]:
+                    it.src = path
                 if len(found) > MAX_ITEMS_PER_FILE:
                     raise RuntimeError(f"{path} yields more than {MAX_ITEMS_PER_FILE} items: refusing to read it")   # a script's go install / pip install / docker run / release download are measured like a run step's
         elif path.endswith("requirements.txt") or re.search(r"requirements[\w.-]*\.txt$", path):
@@ -562,6 +576,11 @@ def unmeasured_occurrences(files):
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
                 if re.search(r"\b(?:curl|wget)\b", seg) and not plain:
                     yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100]), flat, bashlike
+            if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line
+                probe = []
+                _step({"run": flat}, probe, {})
+                if any(i.kind == "package" and i.version == "(unpinned)" for i in probe):
+                    yield (path, "an unpinned package install", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100]), flat, bashlike
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     yield (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100]), flat, bashlike  # the WHOLE line decides identity (its hash), never a truncation

@@ -556,6 +556,13 @@ def _run(a, moved, fx, now):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
             added.append(k)
+    # REQ-SUP-001-AC20: an unpinned package a script line brought is judged by the ruled row of that line, not twice: it leaves the moved list only when the
+    # file has a ruled occurrence of that form and no unruled one (an unruled added line of the same form keeps every such item of the file failing)
+    form = "an unpinned package install"
+    unruled_files = {k[0] for k in added if k[1] == form}
+    ruled_files = {k[0] for k, _ in ruled if k[1] == form}
+    moved = [m for m in moved if not (m.kind == "package" and m.version == "(unpinned)" and m.src
+                                      and m.src in ruled_files and m.src not in unruled_files)]
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
