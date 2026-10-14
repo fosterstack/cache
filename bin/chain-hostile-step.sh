@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The hostile Build step of the dry run (v0.3.0 rules 52a and 59; REQ-CHAIN-001-AC5). It runs as a step of the Build job, only when
-# the dry run asks for it (`if: ${{ inputs.hostile }}`), and tries the six ways a Build step could reach Sign's signing identity.
+# the dry run asks for it (`if: ${{ inputs.hostile }}`), and tries the five ways a Build step could reach Sign's signing identity.
 # It writes only the RAW MATERIAL of each attempt (a file under attempts/) and never says whether an attempt worked: the verify
 # job judges every attempt with the real verifier, so this step cannot grade itself.
 #
@@ -10,8 +10,8 @@
 #   attempt_read_sign_key                        look for Sign's signing key material on this runner
 #   attempt_hand_sign_code                       give Sign a digest list that carries code instead of digests
 #   attempt_forge_provenance                     write provenance for different digests and sign it with this job's own identity
-#   attempt_call_sign_from_other_workflow        a second workflow that calls stage-sign.yml at the tag: its record is made by a
-#                                                throwaway workflow on the dry-run ref (never merged) and uploaded as hostile-caller
+#   (the sixth case of rule 52a, a second workflow calling stage-sign.yml, is not a runtime case: no second workflow file exists; Sign's
+#   caller check in the static judge and the offline hostile test prove it, a stated limit of the proof, REQ-CHAIN-001-AC5)
 #
 # The token and key attempts write a first line `# transcript: ...` (what was tried) and then the attempt's own output; a file
 # without both is an error for the verifier, never a sign of isolation. No token or key is ever copied into the material: only
@@ -73,11 +73,13 @@ attempt_read_sign_token() {
 # of files searched (a search of nothing proves nothing); the verifier compares the hashes with Sign's certificate.
 # The workspace is not searched: it holds this repository, whose test files contain key-shaped text.
 attempt_read_sign_key() {
-  local f
+  # the search roots are the arguments; the call below passes none, which means the four runner locations (the offline test passes its own directories)
+  local f roots=("$@")
+  [ "${#roots[@]}" -gt 0 ] || roots=("${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm)
   {
     echo "# transcript: searched HOME, RUNNER_TEMP, /tmp and /dev/shm for private key files and recorded the sha256 of each one's public key"
-    echo "searched: $(grep -rIl '' "${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm 2> /dev/null | wc -l | tr -d ' ') files"
-    for f in $(grep -rIl -e 'BEGIN [A-Z ]*PRIVATE KEY' "${HOME:-/nonexistent}" "${RUNNER_TEMP:-/nonexistent}" /tmp /dev/shm 2> /dev/null | head -50); do
+    echo "searched: $(grep -rIl '' "${roots[@]}" 2> /dev/null | wc -l | tr -d ' ') files"
+    for f in $(grep -rIl -e 'BEGIN [A-Z ]*PRIVATE KEY' "${roots[@]}" 2> /dev/null | head -50); do
       printf 'pubkey-sha256: %s\n' "$(openssl pkey -in "$f" -pubout -outform DER 2> /dev/null | sha256sum | cut -d' ' -f1)"
     done
   } > attempts/read_sign_key.txt
@@ -95,19 +97,8 @@ attempt_forge_provenance() {
   return 0
 }
 
-# The record comes from a throwaway second workflow that calls stage-sign.yml on this ref; without it this attempt did not run, and
-# a dry run that skipped an attempt must be red, not green.
-attempt_call_sign_from_other_workflow() {
-  if [ ! -f hostile-caller/record.json ]; then
-    echo "attempt_call_sign_from_other_workflow: hostile-caller/record.json is missing: the throwaway second-caller workflow did not run on this ref" >&2
-    return 1
-  fi
-  cp hostile-caller/record.json attempts/call_sign_from_other_workflow.json
-}
-
 attempt_mint_sign_cert
 attempt_read_sign_token
 attempt_read_sign_key
 attempt_hand_sign_code
 attempt_forge_provenance
-attempt_call_sign_from_other_workflow

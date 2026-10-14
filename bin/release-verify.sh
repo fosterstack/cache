@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Release, first witnessed step (rules 56, 57, 58, 69, 71): the tag is checked, the release policy is made for it, and every earlier stage's
+# signed record is verified in rule 69's order. No credential exists in this step. A failure stops the run and names the stage (the message starts with the stage).
+# TODO (PR 2, not here): the tag grammar of bin/chain-verify.py (the policy for a tag, and Sign's ref grammar) must accept vX.Y.Z-rcN (a record made for a release candidate is refused for the final tag, and the reverse).
+# After this step a release candidate ends: every later step of stage-promote.yml is skipped for a tag with a hyphen.
+set -euo pipefail
+[[ "${GITHUB_REF_NAME:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]] || { echo "refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN" >&2; exit 1; }
+python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag "$GITHUB_REF_NAME" --out policy.json
+python3 bin/chain-verify.py stage-start --stage release --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json
+python3 bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/items.json
+python3 bin/chain-verify.py bind-items --policy policy.json --record witness-build/build-collection.json --items witness-build/admission-baseline.json --product admission-baseline.json
+python3 bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json
+python3 bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json
+python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check

@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "c5cbc1abb9c844ffb453eeb9cfd351d0d81bce84d12c874a81f51955a7c4d9dd",
+      "sha256": "b7abe6155e395aa8702cbe19051501b2033e89b229b36da4c81a257671ba1c09",
       "tools": [
         "make",
         "at",
@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "2616fd2a436f2c6c28bf1610860c06865b8dd5a04fe3200421bc4f685a678c4e",
+      "sha256": "20f11876c6862d6e9c77f789db627317a639895c7de213a0a3dcddcdd9a2bd81",
       "tools": [
         "at",
         "curl",
@@ -48,7 +48,7 @@
     },
     {
       "path": "bin/chain-hostile-step.sh",
-      "sha256": "284b3cc53f253fcef6c210ba929490243c4c25f7e7d925c51690d15934fc0c69",
+      "sha256": "35d5ea6f3ceb69ab76e373d382fba50c65658346634a2818d9d36b677129e7f8",
       "tools": [
         "curl",
         "bash",
@@ -71,13 +71,51 @@
     },
     {
       "path": "bin/chain_hostile.py",
-      "sha256": "6ab3b518f81534e428be0d112dbdfe630b59e2d1d4d471151104257194a0b96a",
+      "sha256": "726e3016604e4971aec8e5e69f266cc200e5aed19df11bf567b349c483b94750",
       "tools": [
         "at"
       ],
       "runs": [],
       "signs": false,
       "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+    },
+    {
+      "path": "bin/chain-bytes-sha.py",
+      "sha256": "8acf83c8af876e6b66c8dac9fdf7c3819e63390ea1b67dc7254655686eef72f2",
+      "tools": [
+        "at",
+        "git"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof, run by build-admit.py (from origin/main) and patch-decide.py rc-proof; reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
+    },
+    {
+      "path": "bin/install-build-tools.sh",
+      "sha256": "4703b2ee829fa12247e1abd1c1fcdaeacece6fb495a1a172e100a58505ae4267",
+      "tools": [
+        "at",
+        "command",
+        "curl",
+        "find",
+        "tar",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "command -v sha256sum >/dev/null 2>&1",
+          "why": "a feature test only: `command -v` prints where sha256sum is and launches nothing; the installer picks sha256sum or shasum for the checksum of the archive it fetched"
+        },
+        {
+          "rule": "script-name",
+          "text": "$(uname -m) in",
+          "why": "the operand of `case $(uname -m) in`: a pattern match on this machine's architecture name (x86_64 or aarch64), never run as a command"
+        }
+      ],
+      "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
     },
     {
       "path": "bin/witnessed.sh",
@@ -94,9 +132,12 @@
       "runs": [],
       "signs": "other",
       "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
-      "sha256": "967d781576b1ee9f319a1df976a16c48f5384f582782c025293f7bbf572535c5",
+      "sha256": "bfd75d3ee399b92efd0e3fa0843977f22b6550fd4ef945ece7da03ba52b5a154",
       "reads_env": [
-        "GH_TOKEN"
+        "GH_TOKEN",
+        "APK_RELEASE_SIGNING_KEY",
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN"
       ],
       "arg_map": {
         "apk": "bin/build-stage-apk.sh",
@@ -110,12 +151,18 @@
         "scanners": "bin/check-phase-scanners.sh",
         "acceptance": "bin/check-phase-acceptance.sh",
         "runtime": "bin/check-phase-runtime.sh",
+        "release-verify": "bin/release-verify.sh",
+        "release-apks": "bin/release-apks.sh",
+        "release-publish": "bin/release-publish.sh",
+        "release-sign": "bin/release-sign.sh",
+        "release-assets": "bin/release-assets.sh",
+        "release-postverify": "bin/release-postverify.sh",
         "arm64": "bin/check-phase-arm64.sh"
       },
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   --env-add-sensitive-key APK_RELEASE_SIGNING_KEY   --env-add-sensitive-key DOCKERHUB_USERNAME   --env-add-sensitive-key DOCKERHUB_TOKEN   --env-add-sensitive-key SIGSTORE_ID_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
           "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
         },
         {
@@ -142,7 +189,7 @@
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
-      "sha256": "3c7315296fe843b96aed848c3507680e22ffeeb9cea9ffaef46b7a2405a8d470",
+      "sha256": "8a0dd834bf709677c2d79218ef4ccd2bcf1de6de7c1ab0454b9c936ebb1d5756",
       "reads_env": [
         "GH_TOKEN"
       ]
@@ -160,7 +207,7 @@
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
-      "sha256": "5fa22e9865bd996bbec13cf203f91949a3fc3f47ec7ab2507743d19ac5563cdc"
+      "sha256": "80219e55402fd8ae50870cf0c23f8bec4a2237d2aeab1b486ae3c12f4e1e914c"
     },
     {
       "path": "bin/build-stage-rebuild-apk.sh",
@@ -206,11 +253,12 @@
       ],
       "runs": [
         "bin/admission-tag-signer.py",
+        "bin/chain-bytes-sha.py",
         "bin/install-scanner.sh"
       ],
       "signs": "other",
       "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
-      "sha256": "8c6f3797dc5e051098649709dae6aeb97f1449f733bdc89cac6a8e205ea959f5",
+      "sha256": "54ed0504dbc63598c821e681c90d06290c7993b91076f57f45594db2c7e59a6b",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -266,7 +314,7 @@
       "runs": [],
       "signs": false,
       "reason": "the four Linux archives from the apks (PROPOSED layout)",
-      "sha256": "28cb359a20c9affa0be33c599ef60074fef2c344a46309b51378c4033053a583"
+      "sha256": "0033149642f2c7ed3982ec3ffcc71a6d487d6f2513ae824ea4eac9e24e57d483"
     },
     {
       "path": "bin/chain_items.py",
@@ -279,7 +327,7 @@
       "runs": [],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
-      "sha256": "6d69d9dd3950648f903b53bbbe4ad58dc17effb1f9f8c81924a7a42bb922b6b0"
+      "sha256": "629e13abc2d7b885e631ffaeae089a2609f3d65aeae940d29386cc7529ef2909"
     },
     {
       "path": "bin/build-stage-snapshot-apk.sh",
@@ -833,6 +881,174 @@
       ]
     },
     {
+      "path": "bin/release-verify.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
+      "sha256": "dee8d7f3d7ea025728c18399c00ffabcb1c7903a777dc8cba1e782e5a907b1ff",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "[[ \"${GITHUB_REF_NAME:-}\" =~ ^v[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]] || { echo \"refused at tag: ${GITHUB_REF_NAME:-} is not vX.Y.Z or vX.Y.Z-rcN\" >&2; exit 1; }",
+          "line_sha256": "8f8d116d24c40ce326b31d13a270a361609939c249925e03a44b3051b3c4cb99",
+          "count": 1,
+          "why": "the refusal message must read `refused at tag` (rule 71: the failure names its stage); `at` is a word of that message, not a command"
+        },
+        {
+          "rule": "deny",
+          "line": "python3 bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "line_sha256": "8fe91de9714fae476faa76135b732fc863b248e97d3d63984719de9bb1a4eb3e",
+          "count": 1,
+          "why": "`make` is the chain-verify.py subcommand `policy make` (rule 57: the policy is made for the tag), not the make program"
+        }
+      ]
+    },
+    {
+      "path": "bin/release-apks.sh",
+      "tools": [
+        "bash",
+        "jq",
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/apk-tool.py",
+        "bin/release-sign-apks.sh"
+      ],
+      "signs": "other",
+      "reason": "Release, step release-apks: checks the four apks against the digests Build attested, then calls cache's bin/release-sign-apks.sh (Build/Rebuild comparison and melange sign) with the stored release key (REQ-CHAIN-007-AC6); the key goes to a private file that trap removes and is never printed",
+      "sha256": "9acc2f0bd89d3651cd4aee5b96d91df170e5efea003a7eecd670c25709b0d480",
+      "reads_env": [
+        "APK_RELEASE_SIGNING_KEY"
+      ]
+    },
+    {
+      "path": "bin/release-publish.sh",
+      "tools": [
+        "crane",
+        "jq",
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/release-layout.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-publish: pushes the exact image bytes by digest to ghcr.io and Docker Hub and reads each registry back (REQ-CHAIN-007-AC7, REQ-REL-009-AC11); it signs nothing",
+      "sha256": "308369a11710cfc0c81550bbee596aa4fa45ba9a6490043d1a1228346169b264",
+      "reads_env": [
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-sign.sh",
+      "tools": [
+        "cosign",
+        "jq",
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/release-metadata.py",
+        "bin/vendor-provenance.py",
+        "bin/vex-forms.py"
+      ],
+      "signs": "other",
+      "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
+      "sha256": "17e9f4250e6bc933bf929c8248aa3330bff0cf2c9aa29ab98d836bf0eda04810",
+      "reads_env": [
+        "DOCKERHUB_USERNAME",
+        "DOCKERHUB_TOKEN",
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-assets.sh",
+      "tools": [
+        "gh",
+        "git",
+        "python3"
+      ],
+      "runs": [
+        "bin/release-metadata.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-assets: attaches the evidence to the GitHub release, a release created only with --verify-tag (REQ-CHAIN-007-AC9)",
+      "sha256": "e9c4402127e0beaab440d4d0f7d6b7d22ca21182d0324bdb6ba2df81152ccff3",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-postverify.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/release-postverify.py"
+      ],
+      "signs": false,
+      "reason": "Release, step release-postverify: runs the customer-guide commands that need a registry against what was just published (rule 79 as amended Oct 10; REQ-CHAIN-006-AC7)",
+      "sha256": "ab5a70151cbc2f3170d36a1b869e676683af50f57fd423720694b0c0885a0808",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/release-postverify.py",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "cosign",
+        "gh",
+        "jq",
+        "just"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the planner and runner of release-postverify: judges every listed command first, then runs the verify forms in both registries; the listed words at, command and just are prose and the {command, reason} row key of the list, which the text scan over-reports, and bash is the shell that runs a judged verify pipe",
+      "sha256": "aafd50f630f2d0d718d8fb84e5af533b41dff49938beb0e8f108eab3c5088ed3"
+    },
+    {
+      "path": "bin/release-metadata.py",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Release: the vex-forms image input from Build's verified digests, the deterministic release-manifest.json, release-files.sha256 over the four metadata files and the coverage gate over the release assets (REQ-CHAIN-007-AC13); offline; `at` is a word of its messages",
+      "sha256": "11fe5a78b03035f4631a80618d6781761938c232758451a3ccfb14d2dd3e13b0"
+    },
+    {
+      "path": "bin/vex-forms.py",
+      "tools": [
+        "at",
+        "aws",
+        "gcloud"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the VEX in three forms: the CSAF and inspector-filters files from the one OpenVEX file and the image digests (REQ-SCAN-010); offline; run by release-sign.sh; the listed words at, aws and gcloud are prose and the guide commands it prints for customers, never run here",
+      "sha256": "86b95375aefdfa64ff682244012ed3643b5699b1b9bbfc18321070209532354c",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "            # no namespace: the forms carry a package's name only, so pkg:golang/github.com/acme/busybox would widen",
+          "line_sha256": "67b70aee004b9d32aeb202d7ddc726f137ae53b5fe08c950c9ae528a8ae6265c",
+          "count": 1,
+          "why": "a comment quoting the purl pkg:golang/github.com/acme/busybox as the example of a namespaced component the forms refuse; it is text, not a command (cache's REQ-SCAN-010 code)"
+        }
+      ]
+    },
+    {
       "path": "bin/check-phase-scanners.sh",
       "sha256": "0eba74a24fcaefc173a068e6bd97f03493e8988ec6109b3a2c14f0601c7bf04c",
       "tools": [
@@ -948,7 +1164,7 @@
     },
     {
       "path": "bin/rescan-statement.py",
-      "sha256": "b330cafa126bf35cf00ba797c736a5319a0128b4c41c7699c157c2e5486787c6",
+      "sha256": "193e0bd7829f10f7aeb77f0326e60f00790439cbbb74b1ff45d62e46ca9ddc90",
       "tools": [
         "at",
         "gh",
@@ -999,6 +1215,15 @@
       "runs": [],
       "signs": false,
       "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
+    },
+    {
+      "path": "bin/release-layout.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Release, step release-publish: the OCI layout directory is the image Build attested (index.json holds the one attested descriptor, every blob hashes to its name, the index, manifests, configs and layers are present), checked before any login or push (REQ-CHAIN-007-AC7)",
+      "sha256": "0d4ac3dab902f39eb07661617882b0b184dca61403ed91e29d4950c948908662",
+      "reads_env": []
     }
   ],
   "ambient_env": [
@@ -1023,6 +1248,97 @@
       "why": "admission reads GitHub (GET only) through gh, which inherits the token; the step's env is the only route the token has (REQ-CHAIN-004-AC8)",
       "file": ".github/workflows/stage-build.yml",
       "job": "apk"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J row 5): the run's own token, read by gh in this step's script; the wrapper passes its environment on and never reads it",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-publish.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-sign.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-assets.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/release-postverify.sh",
+      "why": "Release row 5: the run's own token (contents write, packages write) read from this script's environment, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "APK_RELEASE_SIGNING_KEY",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret APK_RELEASE_SIGNING_KEY from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "APK_RELEASE_SIGNING_KEY",
+      "script": "bin/release-apks.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret APK_RELEASE_SIGNING_KEY, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_USERNAME from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/release-publish.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_USERNAME",
+      "script": "bin/release-sign.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_USERNAME, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/witnessed.sh",
+      "why": "Release (rule 56, advisor 0386 J): the wrapper receives the stored secret DOCKERHUB_TOKEN from the step's env and passes its environment on; it never reads it and names it only in the sensitive-key list",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/release-publish.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
+    },
+    {
+      "name": "DOCKERHUB_TOKEN",
+      "script": "bin/release-sign.sh",
+      "why": "Release (rule 56, advisor 0386 J): the stored secret DOCKERHUB_TOKEN, read whole from this script's environment, passed to the tool by standard input or a private file, never printed",
+      "file": ".github/workflows/stage-promote.yml",
+      "job": "release"
     }
   ],
   "pinned_steps": [

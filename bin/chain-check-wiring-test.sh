@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC10, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12, REQ-CHAIN-006-AC13, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC14
+# proves: REQ-CHAIN-006-AC17, REQ-CHAIN-006-AC1, REQ-CHAIN-006-AC2, REQ-CHAIN-006-AC3, REQ-CHAIN-006-AC8, REQ-CHAIN-006-AC9, REQ-CHAIN-006-AC10, REQ-CHAIN-006-AC11, REQ-CHAIN-006-AC12, REQ-CHAIN-006-AC13, REQ-CHAIN-006-AC5, REQ-CHAIN-006-AC14, REQ-CHAIN-007-AC15
 # RED until PR 3 is implemented (stage-verify.yml rewritten, bin/check-*.sh, bin/witnessed.sh, release.yml graph, the old acceptance stages removed): step 4.
 #
 # Check, static half (v0.3.0 rules 50, 53, 55, 58, 61, 63, 65, 66, 68, 70, 72, 79; advisor read-back approved Oct 9; PR 3 merges into chain-v030 only).
@@ -121,10 +121,12 @@ open(w + "/witnessed.sh", "w").write("""#!/usr/bin/env bash
 set -euo pipefail
 step="$1"
 shift
-case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
+case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
 tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
 echo "::add-mask::$tok"
+unset SIGSTORE_ID_TOKEN
+if [ "$step" = release-sign ]; then sig=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value); [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; echo "::add-mask::$sig"; export SIGSTORE_ID_TOKEN="$sig"; fi
 unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL
 unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL
 exec witness run --step "$step" \\
@@ -139,6 +141,10 @@ exec witness run --step "$step" \\
   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \\
   --env-add-sensitive-key GH_TOKEN \\
   --env-add-sensitive-key GITHUB_TOKEN \\
+  --env-add-sensitive-key APK_RELEASE_SIGNING_KEY \\
+  --env-add-sensitive-key DOCKERHUB_USERNAME \\
+  --env-add-sensitive-key DOCKERHUB_TOKEN \\
+  --env-add-sensitive-key SIGSTORE_ID_TOKEN \\
   -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"
 """)
 V = ["python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json"]
@@ -367,9 +373,9 @@ hm h_mask    'echo "::add-mask::\$tok"'                        'echo hi'        
 hm h_unset   'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL\n' ''                                    'the helper'        "AC9 the request variables stay set for the wrapped script"
 hm h_tokfile '<\(printf %s "\$tok"\)'                         '"$RUNNER_TEMP/tok"'                                     'the helper'        "AC9 the token passed through a file (PR 2: one-read process substitution)"
 hm h_noset   'set -euo pipefail\n'                              ''                                                       'the helper'        "AC11 the helper without set -euo pipefail"
-hm h_nostep  '\|scanners\|acceptance\|runtime\|arm64\)'              ')'                                                      'the helper'        "AC11 PR 3's steps missing from the closed list"
+hm h_nostep  '\|scanners\|acceptance\|runtime\|arm64\|release-verify\|release-apks\|release-publish\|release-sign\|release-assets\|release-postverify\)'              ')'                                                      'the helper'        "AC11 PR 3's steps missing from the closed list"
 hm h_open    '\*\) echo "witnessed: unknown step \$step" >&2; exit 2 ;;' '*) ;;'                                    'the helper'        "AC11 an unknown step accepted"
-hm h_extra   '\|arm64\)'                                       '|arm64|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
+hm h_extra   '\|release-postverify\)'                          '|release-postverify|extra)'                                       'the helper'        "AC11 a fourth Check step in the closed list"
 # ---- AC14: the kind install and the cluster ------------------------------------------------------------------------------
 km() { if mutate "$work/install-kind.sh" "$work/$1.sh" "$2" "$3"; then expect caught "$5" "$4" kind "$work/$1.sh"; fi; }
 km k_ver     'v0.33.0/kind-linux-amd64'                         'v0.32.0/kind-linux-amd64'                                'the kind installer' "AC14 another kind version"
@@ -519,6 +525,96 @@ cp -r "$work/r" "$work/r5"; mkdir -p "$work/r5/bin"; : > "$work/r5/bin/authorize
 expect caught "AC10 the custom authorization verifier still exists (rule 65)" "authorize-acceptance-check.py" removed "$work/r5"
 cp -r "$work/r" "$work/r6"; mkdir -p "$work/r6/.github/workflows"; printf 'jobs:\n  t:\n    steps:\n      - run: bash bin/authorize-acceptance-check-test.sh\n' > "$work/r6/.github/workflows/ci.yml"
 expect caught "AC10 ci.yml still runs the custom authorization verifier's test (rule 65)" "ci.yml" removed "$work/r6"
+# rule 61 (advisor Oct 12): the Dockerfile, buildx and goreleaser, their Dependabot entry and every reader
+mkr() { rm -rf "$work/$1"; cp -r "$work/r" "$work/$1"; mkdir -p "$work/$1/bin" "$work/$1/.github/policy"; }
+mkr q1; : > "$work/q1/.goreleaser.yaml"
+expect caught "AC10 rule 61: .goreleaser.yaml still exists" ".goreleaser.yaml" removed "$work/q1"
+mkr q2; mkdir -p "$work/q2/build/docker"; : > "$work/q2/build/docker/Dockerfile.production"
+expect caught "AC10 rule 61: build/docker still exists" "build/docker" removed "$work/q2"
+mkr q3; mkdir -p "$work/q3/tools/x"; : > "$work/q3/tools/x/Dockerfile"
+expect caught "AC10 rule 61: a Dockerfile anywhere is refused" "tools/x/Dockerfile" removed "$work/q3"
+mkr q4; printf 'updates:\n  - package-ecosystem: "docker"\n    directory: "/build/docker"\n' > "$work/q4/.github/dependabot.yml"
+expect caught "AC10 rule 61: the Dependabot docker entry is still there" "docker ecosystem" removed "$work/q4"
+mkr q5; printf '          grep -h FROM build/docker/Dockerfile.* | sort -u\n' >> "$work/q5/.github/workflows/release.yml"
+expect caught "AC10 rule 61: release.yml still reads a Dockerfile" "release.yml names" removed "$work/q5"
+mkr q6; printf 'jobs:\n  r:\n    steps:\n      - run: docker buildx imagetools inspect --raw "$ref"\n' > "$work/q6/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a workflow still reads an image with buildx imagetools" "main-candidate-rescan.yml names" removed "$work/q6"
+mkr q7; printf '#!/usr/bin/env bash\ndocker buildx imagetools create --tag x y\n' > "$work/q7/bin/scout-root-cause.sh"
+expect caught "AC10 rule 61: a script still builds an index with buildx imagetools" "scout-root-cause.sh names" removed "$work/q7"
+mkr q8; printf '  {"path": ".goreleaser.yaml", "sha256": "0"}\n' > "$work/q8/.github/policy/build-config-files.json"
+expect caught "AC10 rule 61: the build-config list still pins .goreleaser.yaml" "build-config-files.json names" removed "$work/q8"
+mkr q9; printf 'jobs:\n  r:\n    steps:\n      - run: docker login ghcr.io\n' > "$work/q9/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the rescan does not read the candidate index with crane by digest" "crane" removed "$work/q9"
+RSOK='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n'
+mkr q10; printf "$RSOK" > "$work/q10/.github/workflows/main-candidate-rescan.yml"
+expect ok "fixture: a rescan that reads the candidate index with the pinned crane, by digest, passes" "" removed "$work/q10"
+# Codex 4b-4 r1 (B4, B3): the digest reference, the install order, a commented command, and the Scout job's own install
+mkr q12; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q12/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a rescan that reads the candidate by a tag reference is refused" "assigned exactly once" removed "$work/q12"
+mkr q13; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          ./bin/install-scanner.sh crane\n' > "$work/q13/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: crane manifest before the pinned install of that job is refused" "before the pinned install" removed "$work/q13"
+mkr q14; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          # crane manifest "$ref" (commented out)\n          echo nothing\n' > "$work/q14/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a commented-out crane manifest is not a read of the candidate" "does not read the candidate index" removed "$work/q14"
+mkr q15; printf "$RSOK"'  s:\n    steps:\n      - run: bash bin/scout-root-cause.sh "$RUNNER_TEMP/rc"\n' > "$work/q15/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the Scout job runs scout-root-cause.sh without installing crane in that job" "scout-root-cause.sh" removed "$work/q15"
+mkr q16; printf "$RSOK"'  s:\n    steps:\n      - run: ./bin/install-scanner.sh crane\n      - run: bash bin/scout-root-cause.sh "$RUNNER_TEMP/rc"\n' > "$work/q16/.github/workflows/main-candidate-rescan.yml"
+expect ok "fixture: the Scout job with crane installed in its own earlier step passes" "" removed "$work/q16"
+mkr q17; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO:multi"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q17/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q17/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the Scout probe's index append from a tag reference is refused" "built_idx is not assigned exactly once, by digest" removed "$work/q17"
+mkr q18; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO:att"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q18/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q18/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the Scout probe's attestation manifest named by a tag is refused" "att_ref is not assigned exactly once, by digest" removed "$work/q18"
+mkr q19; mkdir -p "$work/q19/tools/x/y"; printf 'MAP = {"goreleaser": "x"}\n' > "$work/q19/tools/x/y/helper.py"
+expect caught "AC10 rule 61: a nested script anywhere under tools/ that names goreleaser is a reader" "tools/x/y/helper.py names" removed "$work/q19"
+AG=".github/ag"ent      # assembled: the layout check refuses a file outside the agent folder that spells it out
+mkr q20; mkdir -p "$work/q20/$AG/auditor"; printf 'run: docker buildx build .\n' > "$work/q20/$AG/auditor/step.sh"
+expect caught "AC10 rule 61: a script under the agent folder (outside the judges' own directories) that names buildx is a reader" "auditor/step.sh names" removed "$work/q20"
+mkr q21; mkdir -p "$work/q21/$AG/supply-chain"; printf 'MAP = {"buildx": "docker/buildx"}\n' > "$work/q21/$AG/supply-chain/pin-age-check.py"
+expect ok "fixture: the supply-chain judges' own tool tables (a documented exclusion) may name the tools they recognise" "" removed "$work/q21"
+mkr q22; mkdir -p "$work/q22/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(["goreleaser", "build"])\n' > "$work/q22/$AG/supply-chain/helper.py"
+expect caught "AC10 rule 61: a NEW file in the supply-chain judges' directory that names goreleaser is scanned like any other" "supply-chain/helper.py names" removed "$work/q22"
+mkr q23; mkdir -p "$work/q23/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(["docker", "buildx", "build", "."])\n' > "$work/q23/$AG/supply-chain/pin-age-check.py"
+expect caught "AC10 rule 61: a judge file that names buildx beside a way to run a program is a finding (its tables name tools, they never start them)" "starts a program with a removed tool" removed "$work/q23"
+RSX='jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then exit 1; fi\n'
+mkr q24; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          command crane manifest "ghcr.io/o/cache:latest" || true\n' > "$work/q24/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a second crane form beside the approved manifest read (command crane manifest ... :latest) is refused" "other than the pinned install" removed "$work/q24"
+mkr q25; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q25/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the reference reassigned to a tag after the digest assignment is refused" "assigned exactly once" removed "$work/q25"
+mkr q26; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          crane manifest "ghcr.io/o/cache:latest" > /tmp/index.json\n' > "$work/q26/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a redirected tag-based manifest read is an unrecognised crane form" "other than the pinned install" removed "$work/q26"
+mkr q27; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$PROBE_REPO:latest" -m "$att_ref" -t "$built_ref"\n' > "$work/q27/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q27/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: an index append from a literal tag is refused (the one approved append names the variables)" "other than the one index append" removed "$work/q27"
+mkr q39; printf '#!/bin/sh\ngoreleaser release --clean\n' > "$work/q39/bin/retired-test.sh"
+expect caught "AC10 rule 61: a test file whose line starts goreleaser is a finding (tests name the tools in fixtures; none starts one)" "runs a removed tool" removed "$work/q39"
+mkr q40; printf '#!/bin/sh\nFOO=1 goreleaser release --clean\n' > "$work/q40/bin/retired-test.sh"
+expect caught "AC10 rule 61: a test line whose command word follows a NAME=value word is a plain form (goreleaser)" "runs a removed tool" removed "$work/q40"
+mkr q41; printf '#!/bin/sh\ncd x && /usr/local/bin/goreleaser build\n' > "$work/q41/bin/retired-test.sh"
+expect caught "AC10 rule 61: a test line whose command word after && is a path-qualified goreleaser is a plain form" "runs a removed tool" removed "$work/q41"
+mkr q42; printf '#!/bin/sh\necho "goreleaser is gone"; printf "docker buildx\\n"\n' > "$work/q42/bin/retired-test.sh"
+expect ok "fixture: a test that only names the removed tools in a message (the command words are echo and printf) passes" "" removed "$work/q42"
+mkr q35; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          true;ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q35/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a reference reset inside a command list (true;ref=...) is counted as a second assignment" "assigned exactly once" removed "$work/q35"
+mkr q36; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n          built_idx="ghcr.io/o/cache:latest"; att_ref="ghcr.io/o/cache:latest"; built_ref=x\n          crane index append "$built_idx" -m "$att_ref" -t "$built_ref"\n' > "$work/q36/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the index append is not a form of the rescan workflow (only of the Scout script)" "other than the pinned install" removed "$work/q36"
+mkr q37; printf '#!/usr/bin/env bash\nbuilt_idx="$PROBE_REPO@$MULTI"; att_ref="$PROBE_REPO@$att_dig"\ncrane index append "$built_idx" -m "$att_ref" -t "$built_ref"\nref="x:latest"\nif ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then exit 1; fi\n' > "$work/q37/bin/scout-root-cause.sh"; printf "$RSOK" > "$work/q37/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a crane manifest in the Scout script is not a form of that script" "other than the one index append" removed "$work/q37"
+mkr q38; mkdir -p "$work/q38/$AG/supply-chain"; printf 'import os\nos.spawnlp(os.P_WAIT, "goreleaser", "goreleaser", "build")\n' > "$work/q38/$AG/supply-chain/pin-age-check.py"
+expect caught "AC10 rule 61: a judge file that starts a removed tool through the spawn family is a finding" "starts a program with a removed tool" removed "$work/q38"
+mkr q28; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          echo checking; crane manifest "ghcr.io/o/cache:latest" > /tmp/x.json\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q28/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a tag read after an echo on the same line is refused" "other than the pinned install" removed "$work/q28"
+mkr q29; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          /usr/local/bin/crane manifest "ghcr.io/o/cache:latest" > /tmp/x.json\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q29/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: a path-qualified crane reading a tag is refused" "other than the pinned install" removed "$work/q29"
+mkr q30; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          if false; then\n            ./bin/install-scanner.sh crane\n          fi\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q30/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: the pinned install inside a conditional never counts as the install" "inside a conditional or loop" removed "$work/q30"
+mkr q31; printf 'jobs:\n  r:\n    steps:\n      - run: |\n          ./bin/install-scanner.sh crane\n          ref="ghcr.io/o/cache@${TARGET_DIGEST}"\n          unused=ok ref="ghcr.io/o/cache:latest"\n          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then\n            exit 1\n          fi\n' > "$work/q31/.github/workflows/main-candidate-rescan.yml"
+expect caught "AC10 rule 61: an assignment list that sets the reference to a tag is counted as a second assignment" "assigned exactly once" removed "$work/q31"
+mkr q32; mkdir -p "$work/q32/$AG/supply-chain"; printf 'import subprocess\nsubprocess.run(\n    ["goreleaser", "build"]\n)\n' > "$work/q32/$AG/supply-chain/pin-age-check.py"
+expect caught "AC10 rule 61: a judge file that starts a removed tool over several lines is a finding" "starts a program with a removed tool" removed "$work/q32"
+mkr q33; printf 'import subprocess\nsubprocess.run(["goreleaser", "build"])\n' > "$work/q33/bin/chain-release-shape.py"
+expect caught "AC10 rule 61: a shape judge that starts a removed tool is a finding (its deny list may name them)" "starts a program with a removed tool" removed "$work/q33"
+mkr q34; printf '#!/bin/sh\ndocker buildx version\n' > "$work/q34/bin/retired-build"
+expect caught "AC10 rule 61: an extensionless script that names buildx is a reader" "bin/retired-build names" removed "$work/q34"
+mkr q11; printf 'DENY = "docker buildx goreleaser"\n' > "$work/q11/bin/chain-release-shape.py"
+expect ok "fixture: the deny list of a judge may name the removed tools (it refuses them)" "" removed "$work/q11"
 # ---- the real repository (RED until PR 3 is implemented) ---------------------------------------------------------------
 expect ok "the real stage-verify.yml is the Check stage" "" stage "$root/.github/workflows/stage-verify.yml"
 expect ok "AC4 round 1 F2: the real stage-verify.yml installs every scanner .github/policy/scanners.json lists (check-scan.sh runs them)" "" installs "$root/.github/workflows/stage-verify.yml" "$root/.github/policy/scanners.json"
@@ -534,7 +630,7 @@ expect ok "the real bin/install-kind.sh installs kind v0.33.0 and kubectl v1.37.
 expect ok "the real k8s suite creates its cluster with the node image by digest (AC14)" "" cluster "$root/bin/acceptance-k8s.sh"
 expect ok "the real acceptance.yml runs the shared gradle and maven suite scripts (AC5)" "" suites "$root/.github/workflows/acceptance.yml"
 expect ok "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)" "" guidelist "$root/docs/verify-release.md"
-EXPECT=217
+EXPECT=259
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

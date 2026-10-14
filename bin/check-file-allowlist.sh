@@ -30,11 +30,7 @@ ALLOW_PATTERNS=(
   '^docs/[A-Za-z0-9._-]+\.json$'
 
   # Build, lint, scan and release configuration.
-  '^\.(gitignore|golangci\.yml|goreleaser\.yaml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
-
-  # Image-assembly Dockerfiles (release chain stage 3): COPY-only, FROM
-  # pinned image:tag@sha256, watched by Dependabot's docker ecosystem.
-  '^build/docker/Dockerfile\.[a-z]+$'
+  '^\.(gitignore|golangci\.yml|grype\.yaml|ko\.yaml|gremlins\.yaml)$'
 
   # CI/CD. Note these are ALSO gated in autoMode soft_deny — the allowlist
   # says a workflow file may live here, not that it may change freely.
@@ -161,6 +157,13 @@ ALLOW_PATTERNS=(
   '^bin/install-kind\.sh$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
+  # The rc-proof marker helper (REQ-CHAIN-001-AC6): the one definition of the chain-file set.
+  '^bin/chain-bytes-sha\.py$'
+  # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
+  '^bin/release-(verify|apks|publish|sign|assets|postverify)\.sh$'
+  '^bin/release-(postverify|metadata|layout)\.py$'
+  '^bin/chain-(install-crane|release-scripts|release-wiring|release-metadata)-test\.sh$'
+  '^bin/chain-release-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'

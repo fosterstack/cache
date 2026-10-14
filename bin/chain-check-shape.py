@@ -37,7 +37,7 @@ RED until PR 3 is implemented. Finite grammars and allowlists only; no shell ana
                         check-scan/fips/acceptance/guide; bin/check-stage.sh is judged by `script` alone (its pinned lines name Build's
                         witness-build/ directory, advisor ruling Q3).
   listed JSON ROOT      REQ-CHAIN-006-AC8: each check script is a row of .github/policy/chain-scripts.json with the sha256 the file has.
-  removed ROOT          REQ-CHAIN-006-AC10 (rules 61, 65): the old acceptance stages and the custom authorization verifier are gone and
+  removed ROOT          REQ-CHAIN-006-AC10 (rules 61, 65): the Dockerfile, buildx and goreleaser, their Dependabot entry and every reader are gone; the old acceptance stages and the custom authorization verifier are gone and
                         neither release.yml nor ci.yml calls them.
 Modelled on: in-toto-witness docs/attestors/environment.md and docs/commands.md (the flags), docs/tutorials/artifact-policy.md:58-70 (what a
 collection holds); PR 2's bin/chain-test-shape.py (the same flag allowlist, the same token-fetch lines)."""
@@ -51,8 +51,8 @@ KIND_STEP = "bash bin/install-kind.sh"
 STEPS = ["scanners", "acceptance", "runtime"]
 SCANNERS = ["grype", "osv-scanner"]   # the release scanners bin/check-scan.sh runs, in .github/policy/scanners.json order; the `installs` judge holds this list to that file
 PHASE_TARGET = {s: "bin/check-phase-%s.sh" % s for s in STEPS}   # the judge of bin/witnessed.sh admits exactly `STEP TARGET`, so each step has a thin listed target (ruling 0384)                          # the closed list of Check's witnessed steps, in order
-STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64"   # PR 2's + PR 3's three
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # PR 2's; never github or slsa
+STEP_LIST = "apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify"   # PR 2's + PR 3's three
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "SIGSTORE_ID_TOKEN"]   # PR 2's; never github or slsa
 
 
 def witnessed_lines():
@@ -63,6 +63,8 @@ def witnessed_lines():
             'mkdir -p "witness-${step#snapshot-}"',
             'tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)',
             'echo "::add-mask::$tok"',
+            "unset SIGSTORE_ID_TOKEN",
+            'if [ "$step" = release-sign ]; then sig=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value); [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; echo "::add-mask::$sig"; export SIGSTORE_ID_TOKEN="$sig"; fi',
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
             'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '
@@ -561,6 +563,222 @@ def removed(root):
         for f in OLD + ["acceptance.yml"]:
             if re.search(r"uses:\s*\./\.github/workflows/" + re.escape(f), t):
                 bad.append("release.yml still calls %s" % f)
+    bad += removed_rule61(root)
+    return bad
+
+
+# PLAIN FORM, the closed definition this judge enforces (orchestrator, Oct 13, from the owner's Oct 3 scope rule for the pin checker: "a simple parse ... deliberately
+# hidden forms are out of scope; reviewers judge intent"): (a) the named files, directories or the Dependabot docker entry exist, or (b) a workflow run line or a script
+# line whose command word, after splitting on ; && || | and newlines and stripping a leading NAME=value word and a path, is one of the removed tools (and, for crane,
+# the closed list of forms below). Everything else (assembled names, variables, dead branches, program-running API argument tricks, games with exempt files) is
+# information: this is a tripwire against reintroducing a Dockerfile or goreleaser by habit, not a wall against an insider.
+# Rule 61 (REQ-CHAIN-006-AC10; advisor Oct 12): once the new chain works, the Dockerfile, buildx and goreleaser and their Dependabot entries are removed, and nothing
+# reads them. Under apko there is no base image: the base inputs are the committed locks (.github/policy/base-inputs.json), and a candidate image is read by crane, by digest.
+RULE61_WORDS = re.compile(r"(?i)\bdockerfile|\bbuildx\b|goreleaser|\bimagetools\b|build/docker")
+# the judges and the deny lists that NAME these tools in order to refuse them are not readers of them
+RULE61_NAMING = {"bin/chain-release-shape.py", "bin/chain-test-shape.py", "bin/chain-check-shape.py"}
+# The documented exclusions of the recursive reader scan (Codex 4b-4 r1 and r2; Row 78: each one an exact name and a reason). These four files are the supply-chain
+# JUDGES: the pin checker, the pin inventory, the pin audit and the pin-age check recognise and version-check ANY installer a workflow might use (their tool tables and
+# refusal logic name docker/buildx and goreleaser among a dozen others), and the scan here refuses every workflow that uses one. They are named one by one (a new file
+# in their directories is scanned like any other), the review records are matched by their hash-named form, and a line in a judge file that names the tools next to a
+# way to run a program is a finding (the tables name tools; they never start them). Tests are skipped by name pattern everywhere, as before.
+_AG = ".github/" + "ag" + "ent"      # assembled: the layout check (REQ-AUD-18) refuses a file outside the agent folder that spells the folder out
+RULE61_JUDGE_FILES = {_AG + "/supply-chain/pin-inventory.py", _AG + "/supply-chain/pin-age-check.py", _AG + "/supply-chain/pin-audit.py", _AG + "/bin/check-action-pins.py"}
+RULE61_REVIEW_RECORD = re.compile(r"^" + re.escape(_AG) + r"/reviews/[0-9a-f]{64}\.json$")
+RULE61_RUNS = re.compile(r"subprocess|os\.system|os\.exec|os\.popen|\bPopen\b|check_output|check_call|shell=True|\bexec\(|\beval\(")
+RULE61_SCAN_ROOTS = (".github", "bin", "tools", "build")
+RULE61_SCAN_EXT = (".yml", ".yaml", ".json", ".sh", ".py", ".go", ".mod")
+
+
+def _plain_command_is_removed_tool(line):
+    """The closed definition of a plain form for a script line (orchestrator, Oct 13): split on ; && || | (a newline ends the line), strip leading NAME=value words and a
+    leading path, and the command word is goreleaser or buildx, or `docker buildx`. Everything else (an assembled name, a variable, a dead branch, an argument of a
+    program-running API) is information, not a finding of this judge."""
+    line = re.sub(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", '""', line)       # a quoted string is an argument or a message, never the command word
+    for seg in re.split(r"&&|\|\||;|\|", line):
+        words = seg.split()
+        while words and re.fullmatch(r"[A-Za-z_]\w*=\S*", words[0]):
+            words.pop(0)
+        if not words:
+            continue
+        cmd = words[0].rsplit("/", 1)[-1]
+        if cmd in ("goreleaser", "buildx") or (cmd == "docker" and len(words) > 1 and words[1] == "buildx"):
+            return True
+    return False
+
+
+def _judge_starts_tool(root, rel):
+    """A judge's tables and refusal lists name the removed tools; a judge never STARTS one: no call of a program-running API (subprocess, os.system, exec, eval...)
+    whose arguments, over however many lines, name one. A judge that does not parse is a finding (fail closed)."""
+    import ast
+    try:
+        text = open(os.path.join(root, rel), errors="replace").read()
+        tree = ast.parse(text)
+    except (SyntaxError, ValueError) as ex:
+        return ["%s does not parse (%s): a judge that cannot be read cannot be shown not to start a removed tool" % (rel, type(ex).__name__)]
+    out = []
+    runs = re.compile(r"^(run|call|check_\w+|Popen|system|popen\w*|spawn\w*|posix_spawn\w*|exec\w*|eval|getoutput|getstatusoutput|startfile|fork\w*|forkpty|__import__|import_module)$")
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else f.id if isinstance(f, ast.Name) else ""
+            if runs.match(name):
+                seg = ast.get_source_segment(text, node) or ""
+                if RULE61_WORDS.search(seg):
+                    out.append("%s:%d starts a program with a removed tool in its arguments (a judge's table names tools; it never starts them)" % (rel, node.lineno))
+    return out
+
+
+def removed_rule61(root):
+    bad = []
+    for f in (".goreleaser.yaml", ".goreleaser.yml"):
+        if os.path.exists(os.path.join(root, f)):
+            bad.append("%s still exists (rule 61: goreleaser is removed)" % f)
+    if os.path.isdir(os.path.join(root, "build/docker")):
+        bad.append("build/docker still exists (rule 61: the Dockerfiles are removed; the image is assembled by apko from committed locks)")
+    for dp, dn, fn in os.walk(root):
+        dn[:] = [d for d in dn if d not in (".git", "node_modules")]
+        for f in fn:
+            if f.startswith("Dockerfile"):
+                bad.append("%s exists (rule 61: no Dockerfile)" % os.path.relpath(os.path.join(dp, f), root))
+    dp_ = os.path.join(root, ".github/dependabot.yml")
+    if os.path.exists(dp_) and re.search(r"package-ecosystem:\s*[\"']?docker[\"']?\s*$", open(dp_).read(), re.M):
+        bad.append(".github/dependabot.yml still has the docker ecosystem entry (rule 61: its Dependabot entry is removed with the Dockerfiles)")
+    readers = []
+    for top in RULE61_SCAN_ROOTS:
+        base = os.path.join(root, top)
+        for dp, dn, fn in os.walk(base):
+            dn[:] = sorted(d for d in dn if d not in (".git", "node_modules", "__pycache__"))
+            for f in sorted(fn):
+                rel = os.path.relpath(os.path.join(dp, f), root).replace(os.sep, "/")
+                full = os.path.join(dp, f)
+                if os.path.islink(full):
+                    continue
+                try:
+                    with open(full, "rb") as fh:
+                        head = fh.read(4096)
+                except OSError:
+                    continue
+                if b"\0" in head:      # a binary file is not a reader of a text name
+                    continue
+                if rel in RULE61_NAMING:
+                    bad += _judge_starts_tool(root, rel)
+                    continue
+                if RULE61_REVIEW_RECORD.match(rel):
+                    continue
+                if re.search(r"(-test\.(sh|py)|_test\.py|^test_.*\.py)$", f):
+                    # a test names the removed tools in its fixtures and in what it expects to be refused; it never RUNS one: a line whose first command word is the tool is a finding
+                    for n_, ln in enumerate(open(full, errors="replace").read().splitlines(), 1):
+                        if _plain_command_is_removed_tool(ln):
+                            bad.append("%s:%d runs a removed tool (a test names tools in its fixtures; it never starts one): %s" % (rel, n_, ln.strip()[:100]))
+                    continue
+                if rel in RULE61_JUDGE_FILES:
+                    bad += _judge_starts_tool(root, rel)
+                    continue
+                readers.append(rel)
+    if os.path.exists(dp_):
+        readers.append(".github/dependabot.yml")
+    for rel in readers:
+        m = RULE61_WORDS.search(open(os.path.join(root, rel), errors="replace").read())
+        if m:
+            bad.append("%s names %r (rule 61: no Dockerfile, buildx or goreleaser is read or kept; a candidate image is read by crane, by digest)" % (rel, m.group(0)))
+    # crane (the chain's own copy tool) is the ONLY reader of a candidate image now, so every executable line that names it is one of a short closed list of forms
+    # (Codex 4b-4 r2): the pinned install, the one manifest read of the rescan, the one index append of the Scout probe (and messages that only print its name);
+    # any other line naming crane is refused, and the variables those two forms read are assigned exactly once, by digest, in the same step or file.
+    CRANE = re.compile(r"(?<![\w-])crane(?![\w-])")      # also a path-qualified crane (/usr/local/bin/crane, ./crane) and crane.<anything>
+    INSTALL = re.compile(r"^(?:\./)?bin/install-scanner\.sh crane(?:\s+#.*)?$")
+    MANIFEST = re.compile(r"^if ! crane manifest \"\$ref\" > /tmp/index\.json 2>/tmp/inspect\.err; then$")
+    APPEND = re.compile(r"^(?:> \"\$a/built-create\.log\" 2>&1 )?crane index append \"\$built_idx\" -m \"\$att_ref\" -t \"\$built_ref\"$")
+
+    def exec_lines(text):
+        return [ln.strip() for ln in str(text or "").splitlines() if ln.strip() and not ln.strip().startswith("#")]
+
+    def crane_forbidden(l, context):
+        """True when the line names crane in a form that is not the install, the manifest read, the append, or a message that only prints the name."""
+        if not CRANE.search(l) or INSTALL.match(l) or (context == "workflow" and MANIFEST.match(l)) or (context == "script" and APPEND.match(l)):
+            return False
+        if re.match(r"(echo|printf)\b", l):
+            inner = re.findall(r"\$\([^)]*\)|`[^`]*`", l)      # a command substitution inside a message would run
+            if any(CRANE.search(x) for x in inner):
+                return True
+            outside = re.sub(r"\"(?:\\.|[^\"\\])*\"|'[^']*'", "", l)       # what is left outside the quotes must be one command: no ; & | or substitution
+            return bool(re.search(r"[;&|`]|\$\(", outside)) and bool(CRANE.search(l))
+        return True
+
+    def assigned(lines, var):
+        # every shell word of every line (split like a shell would, so an assignment list `a=1 ref=x` counts) that assigns the variable; a line that cannot be split counts as one
+        n = 0
+        for l in lines:
+            try:
+                words = []
+                for part in re.split(r"[;&|(){}]+", l):      # a command list `true;ref=x` is its words, not one
+                    words += shlex.split(part, comments=True, posix=True)
+            except ValueError:
+                n += 1 if re.search(r"\b%s\+?=" % re.escape(var), l) else 0
+                continue
+            n += sum(1 for w in words if w.startswith(var + "=") or w.startswith(var + "+="))
+            n += sum(1 for w in words if re.fullmatch(r"[;&|(]*%s\+?=.*" % re.escape(var), w) and not (w.startswith(var + "=") or w.startswith(var + "+=")))
+        n += sum(1 for l in lines if re.search(r"\bread\s+(?:-\w+\s+)*%s\b" % re.escape(var), l) or re.search(r"\bfor\s+%s\s+in\b" % re.escape(var), l)
+                 or re.search(r"\b(?:printf|mapfile|readarray)\b[^\n]*-v\s*%s\b" % re.escape(var), l))
+        return n
+
+    rs = os.path.join(root, ".github/workflows/main-candidate-rescan.yml")
+    if os.path.exists(rs):
+        try:
+            wf = yaml.load(open(rs).read(), Loader=yaml.BaseLoader)
+        except yaml.YAMLError:
+            wf = None
+        if not isinstance(wf, dict) or not isinstance(wf.get("jobs"), dict):
+            bad.append("main-candidate-rescan.yml is not a workflow (rule 61: a candidate image is read by crane, by digest)")
+            wf = {"jobs": {}}
+        saw_manifest = False
+        for jn, job in wf["jobs"].items():
+            steps = job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []
+            installed = False
+            for st in steps:
+                ls = exec_lines(st.get("run") if isinstance(st, dict) else "")
+                installed_before_step = installed
+                depth = 0
+                for k, l in enumerate(ls):
+                    if INSTALL.match(l):
+                        if depth == 0:
+                            installed = True
+                        else:
+                            bad.append("main-candidate-rescan.yml job %s: the pinned crane install is inside a conditional or loop (it must run unconditionally)" % jn)
+                        continue
+                    first = l.split()[0] if l.split() else ""
+                    closes_here = bool(re.search(r"(?:;|\bthen\b.*|\bdo\b.*)\b(?:fi|done|esac)\s*$", l))
+                    if first in ("if", "for", "while", "until", "case", "select") or l == "{" or l.startswith("{ ") or l.startswith("("):
+                        depth += 0 if closes_here else 1
+                    elif first in ("fi", "done", "esac") or l == "}" or l.startswith(") "):
+                        depth = max(0, depth - 1)
+                    if crane_forbidden(l, "workflow"):
+                        bad.append("main-candidate-rescan.yml job %s: a line names crane in a form other than the pinned install or `if ! crane manifest \"$ref\" > /tmp/index.json 2>/tmp/inspect.err; then`: %s" % (jn, l[:120]))
+                    elif MANIFEST.match(l):
+                        saw_manifest = True
+                        if not installed:
+                            bad.append("main-candidate-rescan.yml job %s: `crane manifest` runs before the pinned install in that job (the install is per job; an ambient crane is not checksummed)" % jn)
+                        want = re.compile(r"^ref=\"[^\"]*cache@\$\{TARGET_DIGEST\}\"$")
+                        if assigned(ls, "ref") != 1 or not any(want.match(x) for x in ls[:k]):
+                            bad.append("main-candidate-rescan.yml job %s: `crane manifest` does not read a reference assigned exactly once, before it, as <repository>/cache@${TARGET_DIGEST} in the same step (a tag could move: by digest only)" % jn)
+                if any("bin/scout-root-cause.sh" in l for l in ls) and not installed_before_step:
+                    bad.append("main-candidate-rescan.yml job %s: runs bin/scout-root-cause.sh (its index append is crane) without the pinned crane install in an earlier step of that job" % jn)
+        if not saw_manifest:
+            bad.append("main-candidate-rescan.yml does not read the candidate index with crane (the pinned install, `crane manifest` by digest)")
+    sc = os.path.join(root, "bin/scout-root-cause.sh")
+    if os.path.exists(sc):
+        ls = exec_lines(open(sc, errors="replace").read())
+        for l in ls:
+            if crane_forbidden(l, "script"):
+                bad.append("bin/scout-root-cause.sh: a line names crane in a form other than the one index append: %s" % l[:120])
+        napp = sum(1 for l in ls if APPEND.match(l))
+        if any(re.search(r"(?<![\w`])crane index append", l) for l in ls) and napp != 1:
+            bad.append("bin/scout-root-cause.sh: the crane index append is not exactly one `crane index append \"$built_idx\" -m \"$att_ref\" -t \"$built_ref\"`")
+        if napp:
+            for var, pat in (("built_idx", r"built_idx=\"\$PROBE_REPO@\$MULTI\""), ("att_ref", r"att_ref=\"\$PROBE_REPO@\$att_dig\"")):
+                n_ok = sum(len(re.findall(r"(?:^|[;&] *)" + pat + r"(?:$|[; ])", l)) for l in ls)
+                if n_ok != 1 or assigned(ls, var) != 1:
+                    bad.append("bin/scout-root-cause.sh: %s is not assigned exactly once, by digest (%s)" % (var, pat.replace("\\", "")))
     return bad
 
 

@@ -4,7 +4,8 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
 
   classify / patch_clean  rule 1: a patch carries fixes only. Each commit since the latest tag is, by the files it
                           changes, fix-class (dependency version pins of existing modules in go.mod/go.sum, the
-                          base-image digest pins in build/docker/Dockerfile.*, the VEX and suppression files), neutral
+                          base inputs listed in .github/policy/base-inputs.json (the apko base locks, the melange
+                          lock and the archive records: no base image exists, rules 61 and 62), the VEX and suppression files), neutral
                           (no shipped byte: .github/, docs/, requirements/, test-evidence/, tests) or not patch-clean
                           (anything else, unless its merged PR carries the `patch-fix` label, which the owner applies,
                           or the lane only when both step-8 reviewers recorded "no behavior change").
@@ -15,14 +16,51 @@ with the floating-tags amendment; advisor read-backs 0051/0055/0056; REQ-REL-009
                           docs/next-release-notes.md, each citing the handoff that judged it; no vendor or model names.
   removed_critical_high   rule 2: the latest release's critical/high findings that HEAD removes (a Go module or the
                           toolchain at or past the advisory's fixed version; a distribution package the new base
-                          image no longer reports); unknown or unreadable never counts as removed.
+                          no longer reports, only with base evidence, which the chain does not produce today);
+                          unknown or unreadable never counts as removed.
+  base-moved              the base inputs of the list that differ between a release tag and HEAD (the decide job
+                          prints them: the "base input changed" signal).
   floating                amendment: :X.Y always; :X and :latest only when this is the highest released version.
 """
 import argparse, json, os, re, subprocess, sys
 FIX_EXACT = {".snyk", "osv-scanner.toml"}
 FIX_PREFIX = (".vex/", ".auditor/")
 NEUTRAL_PREFIX = (".github/", "docs/", "requirements/", "test-evidence/")
-DOCKERFILES = re.compile(r"^build/docker/Dockerfile\.[a-z0-9-]+$")
+# The base inputs are DATA in one committed file, read by the decide job (through `base-moved`) and by `classify` here (rules 61 and 65; advisor Oct 12): a change
+# in a listed lock or record is the "base input changed" signal, fix-class (the daily refresh PRs change exactly these). The recipes (build/apko*.yaml,
+# build/melange*.yaml) declare the build and are build inputs, never base signals: they fall to the shipped-source rule.
+BASE_INPUTS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".github", "policy", "base-inputs.json")
+_BASE_INPUTS = {}
+
+
+def load_base_inputs(path=None):
+    """The listed base-input paths, fail closed: a file that is missing, not JSON, without a non-empty `base_inputs` list of unique plain relative paths
+    (no leading / or ./, no .. or empty segment, no glob, backslash or trailing /) is a ValueError, never an empty list."""
+    path = path or BASE_INPUTS_FILE
+    try:
+        with open(path) as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError) as e:
+        raise ValueError("the base-input list %s is unreadable: %s" % (path, e))
+    items = doc.get("base_inputs") if isinstance(doc, dict) else None
+    if not isinstance(items, list) or not items:
+        raise ValueError("the base-input list %s has no non-empty base_inputs list" % path)
+    seen = set()
+    for it in items:
+        if not isinstance(it, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*(/[A-Za-z0-9_][A-Za-z0-9._-]*)*", it) or "\\" in it:
+            raise ValueError("the base-input list %s names %r, which is not a plain relative file path" % (path, it))
+        if it in seen:
+            raise ValueError("the base-input list %s names %s twice" % (path, it))
+        seen.add(it)
+    return list(items)
+
+
+def _base_inputs(given=None):
+    if given is not None:
+        return given
+    if "list" not in _BASE_INPUTS:
+        _BASE_INPUTS["list"] = load_base_inputs()
+    return _BASE_INPUTS["list"]
 SEMVER = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
 VERSION = re.compile(r"^v(\d+)\.(\d+)\.(\d+)(?:-rc\.(\d+))?$")
 def _sep(*words):
@@ -65,7 +103,6 @@ NEUTRAL_WORKFLOWS = {"agent-review-gate.yml", "auditor.yml", "ci.yml", "codeql.y
                      "dependabot-auto-merge.yml", "dependabot-reviewer.yml", "dependency-review.yml", "go-freshness.yml",
                      "hygiene.yml", "main-candidate-rescan.yml", "release-chain-pr.yml", "requirements.yml",
                      "rescan-v010.yml", "reserved-branch-guard.yml", "scan.yml", "scorecard.yml"}
-BUILD_INPUTS = re.compile(r"^\.goreleaser\.ya?ml$")
 # Outside workflows, .github/ is release-chain input by default: the stage workflows run .github/agent/bin and read
 # .github/policy (Codex #158 phase-2 r2, B04). Neutral only what is reviewed as never read by the release chain.
 NEUTRAL_GITHUB = {".github/dependabot.yml", ".github/CODEOWNERS", ".github/PULL_REQUEST_TEMPLATE.md"}
@@ -142,32 +179,6 @@ def _go_sum_ok(diff, moved):
     return all(signs != {"+", "-"} for signs in seen.values())
 
 
-FROM = re.compile(r"^FROM\s+((?:--\S+\s+)*)(\S+?)@sha256:([0-9a-f]{64})(\s+AS\s+\S+)?\s*$", re.I)
-
-
-def _digest_only(diff):
-    """Each FROM keeps its flags, image, tag and alias and only the digest moves; no stage added or removed
-    (Codex #158 r1, B03)."""
-    # each change is a removed FROM directly followed by its replacement, so the instruction keeps its place
-    # (Codex #158 phase-2 r2, B03)
-    raw = [ln for ln in (diff or "").splitlines() if not ln.startswith(("+++", "---"))]
-    pairs, i = 0, 0
-    while i < len(raw):
-        if raw[i][:1] == "+":
-            return False                    # an added line not directly replacing a removed FROM
-        if raw[i][:1] == "-":
-            o = FROM.match(raw[i][1:].strip())
-            n = FROM.match(raw[i + 1][1:].strip()) if i + 1 < len(raw) and raw[i + 1][:1] == "+" else None
-            if not o or not n or o.group(1, 2, 4) != n.group(1, 2, 4) or o.group(3) == n.group(3):
-                return False
-            pairs, i = pairs + 1, i + 2
-            continue
-        i += 1
-    if not pairs:
-        return False
-    return True
-
-
 DATA_FILE = re.compile(r"\.(md|txt|json|ya?ml|toml|csv)$")
 
 
@@ -180,13 +191,22 @@ def _reviewed_workflow(f):
     return f.count("/") == 2 and f.split("/")[-1] in NEUTRAL_WORKFLOWS
 
 
-def classify(commit):
+def classify(commit, base_inputs=None):
     """('fix' | 'neutral' | 'dirty', reason) for one commit. Neutral means non-executable data only — docs/, requirements/,
-    test-evidence/ data and the reviewed .github files; an executable test never counts (REQ-REL-009 AC1, owner Oct 3)."""
+    test-evidence/ data and the reviewed .github files; an executable test never counts (REQ-REL-009 AC1, owner Oct 3).
+    base_inputs: the listed base-input paths (default: .github/policy/base-inputs.json, loaded once, fail closed)."""
     files, diffs, modes = commit.get("files") or [], commit.get("diffs") or {}, commit.get("modes") or {}
     kinds, why = set(), []
+    base = _base_inputs(base_inputs)
+    hard = False      # a base input deleted, made executable or a symlink, or without mode evidence: no label upgrades it (an image change is not "no behavior change")
     for f in files:
-        if modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
+        if f in base and modes.get(f) is None:
+            kinds.add("dirty"); hard = True; why.append("%s has no mode evidence: a base input is a refresh only with its file mode known" % f)
+        elif f in base and modes.get(f) == "000000":
+            kinds.add("dirty"); hard = True; why.append("%s is deleted: a base input removed is not a refresh" % f)
+        elif f in base and modes.get(f) != "100644":
+            kinds.add("dirty"); hard = True; why.append("%s has mode %s: a base input is a regular non-executable file (100644), never a refresh when it is not" % (f, modes.get(f)))
+        elif modes.get(f) in ("100755", "120000") or re.search(r"(?m)^\+#!", diffs.get(f) or ""):
             # data is not executable: Git's executable bit, a symlink, or a script's #! line (Codex #159 AC1(h), B01)
             kinds.add("dirty"); why.append("%s is executable (mode %s or a #! line), never data" % (f, modes.get(f, "?")))
         elif TEST_FILE.search(f):
@@ -210,12 +230,9 @@ def classify(commit):
                 kinds.add("fix")
             else:
                 kinds.add("dirty"); why.append("%s changes checksums its go.mod's version moves do not explain" % f)
-        elif DOCKERFILES.match(f):
-            if _digest_only(diffs.get(f)):
-                kinds.add("fix")
-            else:
-                kinds.add("dirty"); why.append("%s changes more than the base-image digest pin" % f)
-        elif BUILD_INPUTS.match(f) or (f.startswith(".github/workflows/") and not _reviewed_workflow(f)):
+        elif f in base:
+            kinds.add("fix")           # a base lock or record moved (rules 61, 65): the whole file is the signal, no line parsing
+        elif f.startswith(".github/workflows/") and not _reviewed_workflow(f):
             kinds.add("dirty"); why.append("%s builds or ships the release image" % f)
         elif f.startswith(".github/") and not f.startswith(".github/workflows/") \
                 and f not in NEUTRAL_GITHUB and not f.startswith(NEUTRAL_GITHUB_PREFIX):
@@ -224,24 +241,24 @@ def classify(commit):
             kinds.add("neutral")
         else:
             kinds.add("dirty"); why.append("%s is shipped source or configuration" % f)
-    if "dirty" in kinds and "patch-fix" in (commit.get("labels") or []):
+    if "dirty" in kinds and not hard and "patch-fix" in (commit.get("labels") or []):
         return "fix", "labelled patch-fix (no behavior change)"
     if "dirty" in kinds:
         return "dirty", "; ".join(why)
     return ("fix" if "fix" in kinds else "neutral"), ""
 
 
-def ships_bytes(commits):
-    return any(classify(c)[0] == "fix" for c in commits)
+def ships_bytes(commits, base_inputs=None):
+    return any(classify(c, base_inputs)[0] == "fix" for c in commits)
 
 
-def patch_clean(commits):
+def patch_clean(commits, base_inputs=None):
     """(True, []) when every commit is fix-class or neutral and at least one ships bytes; (False, why) otherwise
     (why is empty when nothing would ship)."""
-    why = ["%s: %s" % (c.get("sha", "?")[:7], r) for c in commits for k, r in [classify(c)] if k == "dirty"]
+    why = ["%s: %s" % (c.get("sha", "?")[:7], r) for c in commits for k, r in [classify(c, base_inputs)] if k == "dirty"]
     if why:
         return False, why
-    return ships_bytes(commits), []
+    return ships_bytes(commits, base_inputs), []
 
 
 def _semver(tag):
@@ -308,7 +325,8 @@ def notes(version, fixes, vex_changes, behavior=()):
     if not fixes:
         lines.append("- none (dependency or VEX maintenance only)")
     lines += ["", "### VEX"]
-    lines += ["- %s: %s (%s)" % (v["cve"], v["status"], v["change"]) for v in vex_changes] or ["- no change"]
+    lines += ["- %s%s: %s (%s)" % (v["cve"], (" [%s]" % v["scope"]) if v.get("scope") else "", v["status"], v["change"])
+              for v in vex_changes] or ["- no change"]
     for b in behavior:
         _check_entry(b)
     if behavior:
@@ -417,18 +435,52 @@ def fixed_findings(release_by_variant, head):
 
 
 def vex_changes(old_doc, new_doc):
-    """AC8: each VEX statement added, changed (its status) or removed since the latest tag, by CVE."""
-    def by_cve(doc):
-        return {s_["vulnerability"]["name"]: s_.get("status", "") for s_ in (doc or {}).get("statements", [])}
-    old, new = by_cve(old_doc), by_cve(new_doc)
+    """AC8: each VEX statement added, removed or changed since the latest tag. A statement is identified by its CVE and its scope (the products and
+    subcomponents it names); a change is its status, justification or impact statement. A CVE that appears under more than one scope carries the
+    scope in every entry that names it (round 1, Codex A R2: a scope change or a second statement is never lost)."""
+    def scope(s_):
+        # structured, not joined: a component id may contain any character; each product stays with its own subcomponents
+        return tuple(sorted((str(p_.get("@id", "")), tuple(sorted(str(c.get("@id", "")) for c in p_.get("subcomponents") or [])))
+                            for p_ in s_.get("products") or []))
+
+    def show(sc):
+        # unambiguous: the subcomponent ids are a JSON array, so "a,b" (one id) and "a", "b" (two) are displayed differently
+        return " ".join("%s(%s)" % (pid, json.dumps(list(subs))) if subs else pid for pid, subs in sc)
+
+    def by_key(doc):
+        out = {}
+        for s_ in (doc or {}).get("statements", []):
+            out.setdefault((s_["vulnerability"]["name"], scope(s_)), []).append(
+                (s_.get("status", ""), s_.get("justification", ""), s_.get("impact_statement", "")))
+        return {k: sorted(v) for k, v in out.items()}
+    old, new = by_key(old_doc), by_key(new_doc)
+    scopes = {}
+    for cve, sc in set(old) | set(new):
+        scopes.setdefault(cve, set()).add(sc)
     out = []
-    for cve in sorted(set(old) | set(new)):
-        if cve not in old:
-            out.append({"cve": cve, "status": new[cve], "change": "added"})
-        elif cve not in new:
-            out.append({"cve": cve, "status": old[cve], "change": "removed"})
-        elif old[cve] != new[cve]:
-            out.append({"cve": cve, "status": new[cve], "change": "changed from %s" % old[cve]})
+    for key in sorted(set(old) | set(new)):
+        cve, sc = key
+        o, n = old.get(key), new.get(key)
+        if o is None:
+            status, change = n[0][0], "added"
+        elif n is None:
+            status, change = o[0][0], "removed"
+        elif o == n:
+            continue
+        else:
+            os_, ns_ = [x[0] for x in o], [x[0] for x in n]
+            status = ns_[0]
+            if os_ != ns_:
+                changed = [(a_, b_) for a_, b_ in zip(os_, ns_) if a_ != b_]
+                change = "changed from %s" % (changed[0][0] if changed else os_[0])
+            elif [x[1] for x in o] != [x[1] for x in n]:
+                change = "changed justification"
+            else:
+                change = "changed impact statement"
+        entry = {"cve": cve, "status": status, "change": change}
+        if len(scopes[cve]) > 1:
+            entry["scope"] = show(sc)
+        out.append(entry)
     return out
 
 
@@ -489,11 +541,11 @@ def changelog(notes_text, changelog_text, next_notes_text):
     return new_cl, "".join(keep)
 
 
-def decide(event, commits, tags, cut_today, removed):
+def decide(event, commits, tags, cut_today, removed, base_inputs=None):
     """{cut, version, reason, not_clean}: rule 1 (patch-clean, fix-only), rule 2 (a critical/high fix at once on push;
     otherwise at most one daily patch on the schedule)."""
     version = next_patch(tags)
-    clean, why = patch_clean(commits)
+    clean, why = patch_clean(commits, base_inputs)
     out = {"cut": False, "version": version, "reason": "", "not_clean": why}
     if version is None:
         out["reason"] = "no release yet: the first release is the owner's"
@@ -562,14 +614,18 @@ def gather_commits(since, cwd=".", labels=lambda sha: []):
     the PR that merged it (from `labels`; none when it cannot be read: a missing label never admits a change)."""
     out = []
     for sha in _git("rev-list", "--reverse", "%s..HEAD" % since, cwd=cwd).split():
-        files = [f for f in _git("show", "--format=", "--name-only", sha, cwd=cwd).splitlines() if f]
+        files = [f for f in _git("show", "--format=", "--name-only", "--no-renames", "-m", "--first-parent", sha, cwd=cwd).splitlines() if f]
         # full context: the classifier needs a go.mod line's block (require vs replace/exclude) to judge it
-        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
+        diffs = {f: "\n".join(ln for ln in _git("show", "--format=", "--no-renames", "-m", "--first-parent", "--unified=100000", sha, "--", f, cwd=cwd).splitlines()
                               if ln[:1] in "+- " and not ln.startswith(("+++", "---")))
                  for f in files}
         # each file's mode after the commit (":old new oldsha newsha status\tpath"); 000000 is a deletion (Codex B01)
         modes = {}
-        for ln in _git("diff-tree", "-r", "--no-commit-id", "--raw", "-M", sha, cwd=cwd).splitlines():
+        try:       # against the FIRST parent (a merge is read the same way as the name list and the diffs above); a root commit has none
+            raw = _git("diff", "--raw", "-r", "--no-renames", sha + "^1", sha, cwd=cwd)
+        except subprocess.CalledProcessError:
+            raw = _git("diff-tree", "--root", "-r", "--no-commit-id", "--raw", "--no-renames", sha, cwd=cwd)
+        for ln in raw.splitlines():
             meta, _, paths = ln.partition("\t")
             if meta.startswith(":"):
                 modes[paths.split("\t")[-1]] = meta.split()[1]
@@ -625,7 +681,16 @@ def main(argv=None):
                    help="JSON list of the tags with a published release: the baseline is the latest of these, never a "
                         "tag whose release failed (Codex #159 r1, B4)")
     d.add_argument("--labels", help="JSON {sha: [labels]} of the PRs that merged each commit")
+    d.add_argument("--base-inputs", help="the list of base inputs (default: .github/policy/base-inputs.json beside this script)")
     d.add_argument("--out", required=True)
+    bm = sub.add_parser("base-moved", help="the listed base inputs that differ between a release tag and HEAD (the base-input-changed signal)")
+    bm.add_argument("--since", required=True, help="the latest release's tag")
+    bm.add_argument("--base-inputs", help="the list of base inputs (default: .github/policy/base-inputs.json beside this script)")
+    bm.add_argument("--repo", default=".")
+    q = sub.add_parser("rc-proof", help="REQ-CHAIN-001-AC6: exit 0 only when the committed rc-proof marker validates for the commit about to be tagged; else exit 1, naming the marker")
+    q.add_argument("--marker", required=True)
+    q.add_argument("--commit", required=True)
+    q.add_argument("--repo", default=".")
     k = sub.add_parser("ready")
     k.add_argument("--required", required=True, help=".github/policy/required-checks.json")
     k.add_argument("--check-runs", required=True, help="JSON list of the commit's check runs {name, status, conclusion, app_id}")
@@ -644,12 +709,50 @@ def main(argv=None):
     n.add_argument("--next-notes", required=True)
     n.add_argument("--published", required=True, help="every v* tag message and CHANGELOG.md, concatenated")
     n.add_argument("--out", required=True)
+    vv = sub.add_parser("variants", help="the image tags of release X.Y.Z that exist: X.Y.Z, X.Y.Z-fips, and X.Y.Z-debug only before v0.3.0 (the owner dropped debug for v0.3.0)")
+    vv.add_argument("--version", required=True)
     sub.add_parser("tag-notes", help="stdin: git cat-file tag; stdout: a generated patch tag's notes, else exit 1")
     c = sub.add_parser("changelog")
     c.add_argument("--notes", required=True)
     c.add_argument("--changelog", required=True)
     c.add_argument("--next-notes", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "rc-proof":
+        # the helper is the ONE definition of the chain-file set and of the marker's checks (bin/chain-bytes-sha.py, next to this file); no marker, no helper,
+        # an unreadable or mismatching marker: no patch decision (never a skip)
+        helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chain-bytes-sha.py")
+        if not os.path.isfile(helper):
+            print("refused at marker: %s is missing, so the rc-proof marker %s cannot be checked: no patch decision" % (helper, a.marker), file=sys.stderr)
+            return 1
+        r = subprocess.run([sys.executable, helper, "check-marker", "--marker", a.marker, "--commit", a.commit, "--repo", a.repo], capture_output=True, text=True)
+        if r.returncode != 0:
+            print(_clean("refused at marker: no patch decision: " + (r.stderr.strip().splitlines() or ["the marker does not validate"])[0].replace("refused at marker: ", "")), file=sys.stderr)
+            return 1
+        print("rc-proof: the marker %s validates for %s" % (a.marker, a.commit))
+        return 0
+    if a.cmd == "base-moved":
+        try:
+            listed = load_base_inputs(a.base_inputs)
+            _git("rev-parse", "--verify", "-q", "refs/tags/%s^{commit}" % a.since, cwd=a.repo)       # a release that is not a tag here is an error, never "nothing moved"
+            moved = [f for f in _git("diff", "--name-only", "--no-renames", "%s..HEAD" % a.since, "--", *listed, cwd=a.repo).splitlines() if f in listed]
+        except (ValueError, subprocess.CalledProcessError) as e:
+            print("base-moved: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
+            return 2
+        if moved:
+            print("base input moved since %s:" % a.since)
+            for f in sorted(moved):
+                print("  " + f)
+        else:
+            print("no base input moved since %s" % a.since)
+        return 0
+    if a.cmd == "variants":
+        m = re.fullmatch(r"([0-9]+)\.([0-9]+)\.([0-9]+)", a.version)
+        if not m:
+            print("patch-decide: version %r is not X.Y.Z" % a.version, file=sys.stderr)
+            return 2
+        tags = [a.version] + ([a.version + "-debug"] if (int(m.group(1)), int(m.group(2))) < (0, 3) else []) + [a.version + "-fips"]
+        print("\n".join(tags))
+        return 0
     if a.cmd == "notes":
         try:
             rel = {}
@@ -711,7 +814,12 @@ def main(argv=None):
     removed = None if a.removed_unknown else json.load(open(a.removed)) if a.removed else []
     event = "schedule" if a.event == "workflow_dispatch" else a.event
     # no published release yet: the first release is the owner's, whatever tags a failed attempt left
-    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed)
+    try:
+        base_inputs = load_base_inputs(a.base_inputs)      # an unreadable list is exit 2 and no decision (never a silent empty list)
+    except ValueError as e:
+        print("decide: %s — no patch decision" % _clean(str(e)), file=sys.stderr)
+        return 2
+    dec = decide(event, commits, tags if since else [], a.cut_today == "true", removed, base_inputs)
     dec["since"] = since
     # decision.json feeds a public issue (the "not patch-clean" list): every string in it is redacted as stdout is
     dec = {k: ([_clean(x) for x in v] if isinstance(v, list) else _clean(v) if isinstance(v, str) else v)

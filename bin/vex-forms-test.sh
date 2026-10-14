@@ -184,21 +184,17 @@ if src:
 rescan = open(os.path.join(root, ".github/workflows/main-candidate-rescan.yml")).read()
 check("the rescan filters grype, docker scout and the tally against the OpenVEX file",
       rescan.count(".vex/fosterstack-cache.openvex.json") >= 3 and "inspector-filters" not in rescan and "csaf" not in rescan.lower())
-# --- the release wiring (advisor 0077 check 1): generated BEFORE the signed manifest, which records all three sha256
-import yaml
-steps = yaml.load(open(os.path.join(root, ".github/workflows/stage-promote.yml")), Loader=yaml.BaseLoader)["jobs"]["promote"]["steps"]
-names = [x.get("name", "") for x in steps]
-gen = next((i for i, n in enumerate(names) if n.startswith("generate the VEX in three forms")), None)
-man = next((i for i, n in enumerate(names) if n.startswith("assemble release-manifest.json")), None)
-up = next((i for i, n in enumerate(names) if n.startswith("create the draft release")), None)
-check("the three forms are generated before the manifest that the release signs", gen is not None and man is not None and gen < man, (gen, man))
-grun = steps[gen]["run"] if gen is not None else ""
-check("generated from the one OpenVEX file by bin/vex-forms.py", "python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json" in grun)
-mrun = steps[man]["run"] if man is not None else ""
-check("the manifest records all three files' sha256", all(k in mrun for k in ("vex_openvex_sha", "vex_inspector_sha", "vex_csaf_sha", "vex: [")))
-urun = steps[up]["run"] if up is not None else ""
-check("the release uploads the three files the manifest hashed", all(f in urun for f in (
-    "/tmp/vex/fosterstack-cache.openvex.json", "fosterstack-cache-${ver}.inspector-filters.json", "fosterstack-cache-${ver}.csaf.json")))
+# --- the release wiring (advisor 0077 check 1): generated BEFORE the signed manifest, which records all three sha256.
+# From v0.3.0 the Release stage's committed scripts do it: bin/release-sign.sh makes the files and signs the list, bin/release-assets.sh attaches them.
+sign = open(os.path.join(root, "bin/release-sign.sh")).read()
+assets = open(os.path.join(root, "bin/release-assets.sh")).read()
+gen = sign.find("python3 bin/vex-forms.py --openvex .vex/fosterstack-cache.openvex.json")
+man = sign.find("python3 bin/release-metadata.py manifest")
+lst = sign.find("python3 bin/release-metadata.py list")
+check("the three forms are generated before the manifest that the release signs", gen != -1 and man != -1 and gen < man < lst, (gen, man, lst))
+check("generated from the one OpenVEX file by bin/vex-forms.py", gen != -1 and "--out-dir release-metadata" in sign[gen:man])
+check("the manifest records all three files' sha256 (it reads the directory the forms were written to)", "--vex-dir release-metadata" in sign[man:lst])
+check("the release uploads the three files the manifest hashed", "release-metadata/fosterstack-cache*.json" in assets and "release-metadata/release-manifest.json" in assets)
 # --- Codex #165 r2: SEC-165-01 (version wildcards, qualifiers), SEC-165-07 (component identity), SEC-165-02 (titles),
 #     SEC-165-06 (the Google step binds the chosen digest; exactly one branch matches)
 def pkgst(cve, status, purl):

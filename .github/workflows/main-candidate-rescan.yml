@@ -60,6 +60,7 @@ jobs:
         run: |
           set -uo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
+          ./bin/install-scanner.sh crane      # the chain's own copy tool (pinned by checksum): the built-index probe appends by digest with it
           grype db update >/dev/null 2>&1 || true
           for v in production fips; do
             for arch in amd64 arm64; do
@@ -231,7 +232,7 @@ jobs:
           sudo systemctl restart docker
           docker info -f '{{ .DriverStatus }}'
 
-      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0 (each pinned by checksum) and skopeo
+      - name: install docker-scout 1.26.0, 1.25.0 and 1.24.0, crane and skopeo (each pinned by checksum, skopeo from apt)
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/scout" "$HOME/.docker/cli-plugins"
@@ -242,6 +243,8 @@ jobs:
           mv "$RUNNER_TEMP/docker-scout/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.26.0"
           mv "$RUNNER_TEMP/docker-scout-1.25.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.25.0"
           mv "$RUNNER_TEMP/docker-scout-1.24.0/docker-scout" "$RUNNER_TEMP/scout/docker-scout-1.24.0"
+          # the chain's own copy tool appends the attestation manifest to the scratch index (bin/scout-root-cause.sh: crane index append), by digest
+          ./bin/install-scanner.sh crane
           sudo apt-get update -qq && sudo apt-get install -y -qq skopeo
 
       - name: log in to Docker Hub (read-only token) and GHCR (this job's token)
@@ -627,13 +630,15 @@ jobs:
         run: |
           set -euo pipefail
           echo '${{ github.token }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin || true
+          # the chain's own copy tool reads the candidate index, by digest (pinned by checksum; it uses the docker login above)
+          ./bin/install-scanner.sh crane
           ref="ghcr.io/${GITHUB_REPOSITORY_OWNER}/cache@${TARGET_DIGEST}"
           : > /tmp/children.txt
           # A FAILED or MALFORMED enumeration must REJECT the run (B04): a
           # lost platform inventory must never be silently downgraded to a
           # single-arch index scan. Only a VALID manifest that genuinely has
           # no platform children falls back to "scan the index as itself".
-          if ! docker buildx imagetools inspect --raw "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
+          if ! crane manifest "$ref" > /tmp/index.json 2>/tmp/inspect.err; then
             echo "::error::could not inspect ${ref} to enumerate platform children — refusing to rescan on an unknown platform inventory" >&2
             cat /tmp/inspect.err >&2 || true
             exit 1

@@ -14,7 +14,7 @@ THE VERSION (PROPOSED/UNVERIFIED, cache-3f): the stage passes --version = the ta
 accepts X.Y.Z and X.Y.Z-rc.N and names the apk fscache-0.3.0-r0.apk (final) or fscache-0.3.0_rc1-r0.apk (rc); the fips apk is fscache-fips-....
 THE ITEMS (PROPOSED/UNVERIFIED layout; cache-3f's note fixes the apk digest, the image index digest and the manifests):
   digests.json (Sign's only input, PR 1's schema): image-production, image-fips, apk-<standard|fips>-<amd64|arm64>, and the four Linux archives
-      archive-linux-<amd64|arm64>, archive-fips-linux-<amd64|arm64> (the goreleaser names fscache_<ver>_linux_<arch>.tar.gz, fscache-fips_...).
+      archive-linux-<amd64|arm64>, archive-fips-linux-<amd64|arm64> (the release archive names fscache_<ver>_linux_<arch>.tar.gz, fscache-fips_...).
   items.json (Rebuild's comparison, bin/chain-rebuild-test.sh REQUIRED): those archives and the apks (named by x86_64|aarch64), apkindex-<arch>,
       binary-<variant>-<arch> (sha256 of `apk-tool.py cat APK usr/bin/fscache`), modules-sbom-<variant>, inputs-manifest-<variant>, lock-<image>, image-<image>,
       image-<image>-manifest-<amd64|arm64>,
@@ -124,7 +124,7 @@ def layout_files(image, tag):
 
 
 def archive_files(tag):
-    """{item name: (file name in dist, bytes)} for the four Linux archives (goreleaser's names; --version is the tag minus v)."""
+    """{item name: (file name in dist, bytes)} for the four Linux archives (the release archive names; --version is the tag minus v)."""
     ver, out = tag[1:], {}
     for _, _, g in RUNNERS:
         out["archive-linux-" + g] = ("fscache_%s_linux_%s.tar.gz" % (ver, g), ("tar|std|%s|%s" % (g, ver)).encode())
@@ -175,8 +175,10 @@ def expected(d, kind, which, tag):
 
 # ---- the fakes: what the real cache scripts and chain-verify.py would do, reduced to what a stage script can observe ----------------
 FAKE_ADMIT = '''#!/usr/bin/env python3
-import os, subprocess, sys
+import json, os, subprocess, sys
 open("calls.log", "a").write("admit gh=%s\\n" % ("yes" if os.environ.get("GH_TOKEN") else "no"))
+json.dump({"tag": os.environ.get("GITHUB_REF_NAME", "v0.3.0"), "sha": os.environ.get("GITHUB_SHA", "0" * 40), "baseline_version": os.environ.get("GITHUB_REF_NAME", "v0.3.0"),
+           "baseline": "requirements/releases/%s.yaml" % os.environ.get("GITHUB_REF_NAME", "v0.3.0")}, open("admission.json", "w"))      # what the real admission writes at the repository root
 subprocess.run(["gh", "api", "repos/fosterstack/cache/commits/0123/check-runs"])      # the admission reads (GET only); the fake gh logs the call to gh.log
 sys.exit(int(os.environ.get("FAKE_ADMIT_RC", "0")))
 '''
@@ -302,6 +304,8 @@ if cmd == "policy":
 if cmd in ("verify", "stage-start"):
     if rc: sys.stderr.write("refused at build: identity (fake)\\n")
     sys.exit(rc)
+if cmd == "admission-baseline":     # REQ-CHAIN-007-AC19: the REAL command (bin/chain_items.py) runs, so a refusal of an admitted tag shows up in the integration cases (Codex 4b-2 r1)
+    os.execv(sys.executable, [sys.executable, os.environ["REAL_CV"]] + a)
 if cmd == "bind":       # every file under --dir must be a product of the record: the harness wrote the table .bind/<path with / as _>
     bad = []
     for root, _, files in os.walk(arg("--dir")):
@@ -368,6 +372,8 @@ def mktree(d, kind, script, mode="oracle", tag="v0.3.0"):
         for r, arch, _ in RUNNERS:                   # the downloaded artifacts, laid out as upload-artifact rooted at `out` lays them out
             files = out_files(arch, tag)
             files["items-apk.json"] = json.dumps(fragment(arch, tag)).encode()
+            if kind == "assemble":      # each release apk leg copies its admission.json into out/ (REQ-CHAIN-007-AC19)
+                files["admission.json"] = json.dumps({"tag": tag, "sha": "0123456789abcdef0123456789abcdef01234567", "baseline_version": tag, "baseline": "requirements/releases/%s.yaml" % tag}).encode()
             for rel, b in files.items():
                 write("%s/%s/%s/%s" % (d, pre, r, rel), b)
                 write("%s/.bind/%s" % (d, ("%s/%s/%s" % (pre, r, rel)).replace("/", "_")), sha(b))

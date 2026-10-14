@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5
+# proves: REQ-CHAIN-001-AC1, REQ-CHAIN-001-AC2, REQ-CHAIN-001-AC3, REQ-CHAIN-002-AC4, REQ-CHAIN-003-AC5, REQ-CHAIN-007-AC18
 # The Sign boundary (v0.3.0 rules 50, 50a, 52, 52a, 53a; owner RATIFIED Oct 9), static half. Three judges, each first proven
 # on a known-good fixture and on every mutated copy (a judge that cannot fail proves nothing), then applied to the real repo:
 #   judge_sign  stage-sign.yml is an ALLOWLIST: a reusable workflow of one job on a GitHub-hosted runner whose only input is
@@ -30,8 +30,8 @@
 #               script scanned as raw text, signing only as its row says; only bin/chain-verify.py `sign` may sign provenance). Three CLOSED
 #               lists keep this from being a text scan: id_token_jobs (.github/policy/id-token-jobs.json: the only jobs that may hold
 #               id-token: write, which keyless signing needs; a << merge key in permissions or an unparsable workflow fails closed),
-#               build_config (.github/policy/build-config-files.json: the build configuration outside bin/ and .github/ pinned by sha256,
-#               and .goreleaser.yaml held to a closed key set), frozen_files (.github/policy/legacy-stage-files.json: the eleven legacy
+#               build_config (.github/policy/build-config-files.json: the build configuration outside bin/ and .github/ pinned by sha256),
+#               frozen_files (.github/policy/legacy-stage-files.json: the eleven legacy
 #               stage files PRs 2-4 rewrite, pinned by sha256; their own findings are left out; the LISTED scripts they run are still
 #               followed, an UNLISTED file they run is never scanned). stdlib_shadows refuses a file or directory under bin/ or .github/
 #               named after a standard-library module; the Sign step and every python3 line of a stage file run isolated (python3 -I).
@@ -182,9 +182,7 @@ def judge_build(path):
 # FROZEN LEGACY FILES: the eleven legacy stage files PRs 2-4 rewrite on chain-v030, pinned by sha256 in .github/policy/legacy-stage-files.json
 # a PR that rewrites a legacy file removes its row AND its pinned entry; adding or changing an entry here is a reviewed edit and is
 # refused by every other case (advisor ruling, Oct 10: the list is a pre-existing residual that can only shrink). Copied from the list at ae15a44.
-LEGACY_PINNED = {
-    ".github/workflows/stage-promote.yml": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393",
-}
+LEGACY_PINNED = {}     # PR 4 rewrote the last legacy stage file (stage-promote.yml) and deleted legacy-stage-files.json; the list can only shrink, so it stays empty
 LEGACY_EXPECTED = set(LEGACY_PINNED)
 def sha256_of(path):
     import hashlib
@@ -213,22 +211,10 @@ def frozen_files(base, bad):
     return frozen
 
 # BUILD CONFIGURATION outside bin/ and .github/ that the build tooling reads (the file allowlist's config files): pinned by sha256
-BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".goreleaser.yaml", ".grype.yaml", ".ko.yaml", ".gremlins.yaml", "build/docker/*", ".githooks/*")
-# .goreleaser.yaml as a CLOSED key set (Opus r3, Sonnet r3): the keys, and the values that can run a command, are exactly today's; in
-# particular no signs, docker_signs, binary_signs, dockers, nfpms, includes, universal_binaries, upx, publishers, build hooks or gobinary
-GORELEASER_KEYS = {"": {"version", "project_name", "before", "builds", "archives", "checksum", "sboms", "release", "changelog"},
-                   "before": {"hooks"}, "builds": {"binary", "env", "flags", "goarch", "goos", "id", "ldflags", "main", "mod_timestamp"},
-                   "archives": {"formats", "id", "ids", "name_template"}, "checksum": {"name_template"}, "sboms": {"artifacts"},
-                   "release": {"draft", "github"}, "changelog": {"filters", "sort"}}
-GORELEASER_HOOKS = ["go mod verify", "git diff --exit-code go.mod go.sum"]      # the only before.hooks
-# each build's env, flags and ldflags EXACTLY as today (GOFLAGS=-toolexec, -toolexec, or -linkmode=external -extld=... would run a tool)
-GORELEASER_BUILDS = {"fscache": {"env": ["CGO_ENABLED=0"], "flags": ["-trimpath"], "ldflags": ["-s -w"]},
-                     "fscache-fips": {"env": ["CGO_ENABLED=0", "GOFIPS140=v1.0.0"], "flags": ["-trimpath"], "ldflags": ["-s -w"]}}
-
+BUILD_CONFIG_GLOBS = (".gitignore", ".golangci.yml", ".grype.yaml", ".ko.yaml", ".gremlins.yaml", ".githooks/*")
 def build_config(base, bad):
     """Every build configuration file is listed with its sha256 in .github/policy/build-config-files.json; a changed, missing or unlisted
-    one is a finding. .goreleaser.yaml (run with id-token: write by stage-build.yml) may not sign: no signs/docker_signs/binary_signs/notarize/
-    publishers/after, no hooks but GORELEASER_HOOKS, no per-build hooks, no custom sboms command."""
+    one is a finding (rule 61: goreleaser and the Dockerfiles are removed, so there is no file whose keys need a closed set)."""
     p = os.path.join(base, ".github/policy/build-config-files.json")
     try: listed = {r["path"]: r["sha256"] for r in (_cts.jload(p)["files"] if os.path.exists(p) else [])}
     except Exception as ex: bad.append("AC1: build-config-files.json is malformed (%s)" % ex); return
@@ -237,7 +223,6 @@ def build_config(base, bad):
         if x not in listed: bad.append("AC1: build config file not listed: %s: add it to build-config-files.json with its sha256" % x)
         elif sha256_of(os.path.join(base, x)) != listed[x]: bad.append("AC1: build config file changed: %s: update build-config-files.json or delete it" % x)
     for x in sorted(set(listed) - set(present)): bad.append("AC1: build config file missing: %s: update build-config-files.json" % x)
-    goreleaser_keys(base, bad)
 
 COMPILED = (".pyc", ".pyo", ".so", ".pyd", ".dll")
 
@@ -264,32 +249,6 @@ def stdlib_shadows(base, bad):
                 stem = x.split(".")[0].lower()
                 if x.lower().endswith((".py", ".pyc")) and stem in names:
                     bad.append("AC1: %s is named after the standard-library module %s (it would shadow it)" % (os.path.relpath(os.path.join(dp, x), base), stem))
-
-def goreleaser_keys(base, bad):
-    """.goreleaser.yaml (run with id-token: write by stage-build.yml's build job) holds only GORELEASER_KEYS, the two hooks, and build
-    env/flags from the closed sets: no signs, docker_signs, binary_signs, universal_binaries, upx, nfpms, publishers, gobinary, tool..."""
-    g = os.path.join(base, ".goreleaser.yaml")
-    if not os.path.exists(g): return
-    try: d = yload(open(g).read())
-    except Exception as ex: bad.append("AC1: .goreleaser.yaml does not parse (%s)" % ex); return
-    if not isinstance(d, dict): bad.append("AC1: .goreleaser.yaml is not a mapping"); return
-    for k in sorted(set(d) - GORELEASER_KEYS[""]): bad.append("AC1: .goreleaser.yaml has key `%s`, outside its closed key set" % k)
-    def entries(sec):
-        v = d.get(sec)
-        return v if isinstance(v, list) else [v] if isinstance(v, dict) else []
-    for sec in sorted(set(GORELEASER_KEYS) - {""}):
-        if d.get(sec) is not None and not entries(sec): bad.append("AC1: .goreleaser.yaml %s has an unexpected shape" % sec)
-        for e in entries(sec):
-            if not isinstance(e, dict): bad.append("AC1: .goreleaser.yaml %s entry is not a mapping" % sec); continue
-            for k in sorted(set(e) - GORELEASER_KEYS[sec]): bad.append("AC1: .goreleaser.yaml %s has key `%s`, outside its closed key set" % (sec, k))
-            if sec == "builds":
-                if [x.get("id") for x in entries("builds") if isinstance(x, dict)].count(e.get("id")) > 1:
-                    bad.append("AC1: .goreleaser.yaml build id %r is repeated" % e.get("id")); continue
-                want = GORELEASER_BUILDS.get(e.get("id"))
-                if want is None: bad.append("AC1: .goreleaser.yaml build id %r is not one of %s" % (e.get("id"), sorted(GORELEASER_BUILDS))); continue
-                for k in ("env", "flags", "ldflags"):
-                    if e.get(k) != want[k]: bad.append("AC1: .goreleaser.yaml build %s %s is %s, not exactly %s" % (e.get("id"), k, e.get(k), want[k]))
-    if (d.get("before") or {}).get("hooks") != GORELEASER_HOOKS: bad.append("AC1: .goreleaser.yaml before.hooks are not exactly %s" % GORELEASER_HOOKS)
 
 MERGE_TAG = "tag:yaml.org,2002:merge"
 
@@ -2289,7 +2248,7 @@ expect ok "003-AC5 a non-stage workflow (scan.yml) may still call stage-build.ym
 tracked_copy() {  # tracked_copy NAME [REPO] -> a copy of the tracked files of .github/ and bin/ of REPO (default: the real tree)
   local d="$work/tree-$1"; rm -rf "$d"; mkdir -p "$d"
   # .github/ and bin/, plus the build configuration the build tooling reads outside them (pinned in .github/policy/build-config-files.json)
-  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .goreleaser.yaml .grype.yaml .ko.yaml .gremlins.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
+  ( cd "${2:-$root}" && git ls-files -z -- .github bin .gitignore .golangci.yml .grype.yaml .ko.yaml .gremlins.yaml build .githooks ':(icase,glob)**/action.yml' ':(icase,glob)**/action.yaml' | tar --null -T - -cf - ) | tar -xf - -C "$d"; echo "$d"; }
 # a tracked file deleted in the working tree would make the copy silently partial: fail clearly instead (CI checks out every tracked file)
 gone=$(cd "$root" && git ls-files --deleted -- .github bin)
 if [ -n "$gone" ]; then echo "FAIL tracked file(s) deleted in the working tree, the real-tree cases cannot run: $(echo $gone | head -c 300)"; exit 1; fi
@@ -2322,7 +2281,6 @@ probe sneak    stage-admission.yml  "stage-admission.yml running an unlisted bin
 probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
-probe comment  "legacy file changed" "a harmless comment added to a legacy file (it is then judged in full)" "printf '# a comment\n' >> .github/workflows/stage-promote.yml"
 # a LISTED script that a frozen file runs, turned into a provenance signer with its row and sha256 updated
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
@@ -2336,10 +2294,6 @@ probe stdcache  "bin/__pycache__/argparse" "a cached bin/__pycache__/argparse.cp
 probe pycache   "bin/__pycache__" "a bin/__pycache__/chain_common.cpython-312.pyc" "mkdir -p bin/__pycache__; printf '\\0' > bin/__pycache__/chain_common.cpython-312.pyc"
 probe soext     "bin/json.abi3.so" "a native extension bin/json.abi3.so" "printf '\\0' > bin/json.abi3.so"
 probe pkgcache  ".github/actions/pkg/__pycache__" "a package __pycache__ under .github/actions" "mkdir -p .github/actions/pkg/__pycache__; printf '\\0' > .github/actions/pkg/__pycache__/m.cpython-312.pyc"
-probe extra    "not list exactly the eleven" "a twelfth path in the legacy list" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":\"0\"*64});json.dump(d,open(p,\"w\"))'"
-probe outside  "outside .github/workflows/" "a legacy-list path outside .github/workflows/" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"path\"]=\"bin/chain-verify.py\";json.dump(d,open(p,\"w\"))'"
 # a listed script names another program or script only exactly (Codex #249 r7 B3, the class closed): a script token must be the exact
 # listed path (a leading ./ aside), a command named by any path or through a launcher prefix is refused even when its row allows the name
 scriptcase s8_ok_exact ok "${S0}bash bin/install-scanner.sh x\n" 'rows["bin/build-stage.sh"]["tools"]=["witness","bash","python3","env","exec","command","builtin","nohup","timeout","xargs","sudo"]; rows["bin/build-stage.sh"]["runs"]=["bin/build-apk.sh","bin/install-scanner.sh"]' 'control: the exact listed path of a script in runs'
@@ -2410,37 +2364,10 @@ probe mytool "./mytool" "the real bin/chain-hostile-step.sh running ./mytool (an
   "printf '#!/usr/bin/env bash\\necho x\\n' > mytool; chmod +x mytool; printf './mytool\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 probe bashlib "mylib" "the real bin/chain-hostile-step.sh running bash mylib, its sha256 updated (Sonnet 3)" \
   "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
-probe missing  "legacy file missing: .github/workflows/stage-promote.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-promote.yml"
-# the legacy list can only SHRINK (advisor ruling, Oct 10): the suite pins each path AND its sha256, so a legacy file edited together with
-# its list hash, or a list entry given a new hash, is refused; a row is removed only together with its pinned entry here
-probe relisted "legacy hash is not the one this suite pins" "a legacy file edited TOGETHER with its sha256 in the list" \
-  "printf '# a comment\n' >> .github/workflows/stage-promote.yml; python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p))
-for r in d[\"files\"]:
-    r[\"sha256\"]=hashlib.sha256(open(r[\"path\"],\"rb\").read()).hexdigest()
-json.dump(d,open(p,\"w\"))'"
-probe rehashed "legacy hash is not the one this suite pins" "a list entry given a different 64-hex hash for an unchanged file" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"sha256\"]=\"1\"*64;json.dump(d,open(p,\"w\"))'"
-probe rowonly  "not list exactly the eleven" "one row removed from the list while the suite still pins it" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"]=[r for r in d[\"files\"] if r[\"path\"]!=\".github/workflows/stage-promote.yml\"];json.dump(d,open(p,\"w\"))'"
-probe addci    "not list exactly the eleven" "a row for an existing non-legacy file (ci.yml) with its true hash" \
-  "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/ci.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
-probe addsign  "not list exactly the eleven" "a row for stage-sign.yml with its true hash (it would freeze Sign's own findings)" \
-  "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/stage-sign.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/stage-sign.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
-# the shrink a rewriting PR makes: the row AND its pinned entry go (simulated on a copy of this suite's judge), the file is rewritten or deleted
-d=$(tracked_copy shrink); rm "$d/.github/workflows/stage-promote.yml"
-python3 -c 'import json,sys;p=sys.argv[1]+"/.github/policy/legacy-stage-files.json";d=json.load(open(p));d["files"]=[r for r in d["files"] if r["path"]!=".github/workflows/stage-promote.yml"];json.dump(d,open(p,"w"));q=sys.argv[1]+"/.github/policy/id-token-jobs.json";e=json.load(open(q));e["jobs"]=[r for r in e["jobs"] if r["workflow"]!="stage-promote.yml"];json.dump(e,open(q,"w"))' "$d"
-grep -v '^    "\.github/workflows/stage-promote\.yml": "' "$work/judge.py" > "$work/judge-shrink.py"
-if cmp -s "$work/judge.py" "$work/judge-shrink.py"; then failn=$((failn + 1)); echo "FAIL shrink: the suite has no pinned entry for stage-promote.yml to remove"
-else rc=0; out=$(python3 "$work/judge-shrink.py" tree "$d") || rc=$?
-  if [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   shrink: a row removed TOGETHER with its pinned entry (the file deleted) is accepted"; else failn=$((failn + 1)); echo "FAIL shrink: row + pinned entry removed was refused: ${out:0:300}"; fi; fi
-rm -f "$work/judge-shrink.py"
 # ---- Opus #249 r-final: the signer rule is a CLOSED ALLOW-LIST, not a scan ----
-# (B1) build configuration outside bin/ and .github/ is pinned by sha256, and .goreleaser.yaml may not sign or grow hooks
-probe gorel     .goreleaser.yaml "a before.hooks entry in .goreleaser.yaml that signs provenance (stage-build.yml's build job has id-token: write)" \
-  "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    - git diff --exit-code go.mod go.sum\n\",\"    - git diff --exit-code go.mod go.sum\n    - cosign attest-blob --yes --type slsaprovenance --predicate p.json x\n\",1);open(p,\"w\").write(t)'"
-probe gorelsigns .goreleaser.yaml "a signs: block in .goreleaser.yaml (cmd cosign, an args array)" "printf 'signs:\n  - cmd: cosign\n    args: [\"sign-blob\", \"--yes\", \"--bundle\", \"x\"]\n' >> .goreleaser.yaml"
-probe cfgchanged build/docker/Dockerfile.production "a byte change in a pinned build file (Dockerfile.production)" "printf '# x\n' >> build/docker/Dockerfile.production"
-probe cfgnew    build/docker/Dockerfile.evil "a new, unlisted build file (build/docker/Dockerfile.evil)" "printf 'FROM scratch\n' > build/docker/Dockerfile.evil"
+# (B1) build configuration outside bin/ and .github/ is pinned by sha256 (rule 61: .goreleaser.yaml and the Dockerfiles are gone; their key-set and hook probes went with them)
+probe cfgchanged .golangci.yml "a byte change in a pinned build file (.golangci.yml)" "printf '# x\n' >> .golangci.yml"
+probe cfgnew    .ko.yaml "a new, unlisted build file (.ko.yaml)" "printf 'defaultBaseImage: scratch\n' > .ko.yaml"
 # (B2) a job may hold id-token: write only if .github/policy/id-token-jobs.json lists it (workflow, job): remote reusable-workflow signers and
 # in-process libraries need the token, so the list covers them structurally
 IDJ='  probe-job:\n    runs-on: ubuntu-24.04\n    permissions:\n      id-token: write\n      contents: read\n'
@@ -2463,15 +2390,6 @@ probe otherrepo "ci.yml job probe-job" "a ci.yml job with id-token: write callin
 GHS='      - uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7.0.1\n        with:\n          script: require(\x27@actions/attest\x27).attestProvenance()\n'
 probe listedjob "scorecard.yml signs provenance" "actions/github-script calling attestProvenance added to scorecard.yml's listed analysis job" \
   "python3 -c 'import sys;p=\".github/workflows/scorecard.yml\";t=open(p).read();i=t.index(\"    steps:\n\")+len(\"    steps:\n\");t=t[:i]+sys.argv[1].encode().decode(\"unicode_escape\")+t[i:];open(p,\"w\").write(t)' '$GHS'"
-# Opus r3 M1: .goreleaser.yaml is a CLOSED key set; each probe re-edits the file's sha256 so only the key rule can catch it
-rehash_cfg() { python3 -c 'import hashlib,json,sys; p=".github/policy/build-config-files.json"; d=json.load(open(p))
-for r in d["files"]:
-    if r["path"] == sys.argv[1]: r["sha256"] = hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest()
-json.dump(d, open(p,"w"), indent=1)' "$1"; }
-probe gorelub   "universal_binaries" "universal_binaries with hooks in .goreleaser.yaml (hash re-edited)" "printf 'universal_binaries:\n  - hooks:\n      post: cosign attest-blob x\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
-probe gorelgob  "gobinary" "a build's gobinary set in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    main: ./cmd/fscache\n\",\"    main: ./cmd/fscache\n    gobinary: ./evil-go\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelupx  "upx" "an upx section in .goreleaser.yaml (hash re-edited)" "printf 'upx:\n  - enabled: true\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
-probe gorelnfpm "nfpms" "nfpms with scripts in .goreleaser.yaml (hash re-edited)" "printf 'nfpms:\n  - scripts:\n      postinstall: x.sh\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 # Sonnet r3 G1: the same signer step in another listed job (scan.yml's scanner)
 probe listedjob2 "scan.yml signs provenance" "actions/github-script calling attestProvenance added to scan.yml's listed scanner job" \
   "python3 -c 'import sys;p=\".github/workflows/scan.yml\";t=open(p).read();i=t.index(\"  scanner:\");i=t.index(\"    steps:\n\",i)+len(\"    steps:\n\");t=t[:i]+sys.argv[1].encode().decode(\"unicode_escape\")+t[i:];open(p,\"w\").write(t)' '$GHS'"
@@ -2535,13 +2453,6 @@ PYT
 case "$bout" in *TIMEOUT*) failn=$((failn + 1)); echo "FAIL an alias bomb hung the merge-key walk";;
   rc=1*"merge key"*) pass=$((pass + 1)); echo "ok   an alias bomb with a merge key at its base is walked once per node, finishes, and is refused";;
   *) failn=$((failn + 1)); echo "FAIL an alias bomb was not refused: ${bout:0:200}";; esac
-probe goreldup   "repeated" "two goreleaser builds with the same id (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"id: fscache-fips\",\"id: fscache\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelflag "flags" "a build flag -toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - -trimpath\n\",\"      - -trimpath\n      - -toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelenv  "env" "a build env GOFLAGS=-toolexec in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"      - CGO_ENABLED=0\n\",\"      - CGO_ENABLED=0\n      - GOFLAGS=-toolexec=./evil\n\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelenv0  "env" "a build with env: [] in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"    env:\n      - CGO_ENABLED=0\n    goos\",\"    env: []\n    goos\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe gorelld   "ldflags" "ldflags -s -w -linkmode=external -extld=./bin/x.sh in .goreleaser.yaml (hash re-edited)" "python3 -c 'p=\".goreleaser.yaml\";t=open(p).read();t=t.replace(\"- -s -w\",\"- -s -w -linkmode=external -extld=./bin/x.sh\",1);open(p,\"w\").write(t)'; rehash_cfg .goreleaser.yaml"
-probe goreldock "dockers" "a dockers section in .goreleaser.yaml (hash re-edited)" "printf 'dockers:\n  - image_templates: [x]\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
-probe gorelinc  "includes" "an includes section in .goreleaser.yaml (hash re-edited)" "printf 'includes:\n  - from_file:\n      path: evil.yaml\n' >> .goreleaser.yaml; rehash_cfg .goreleaser.yaml"
 # Opus r3 L2: a workflow the id-token check cannot parse fails closed (here next to a new id-token job)
 probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-token job" "printf '$IDJ    steps:\n      - run: true\n  broken: [\n' >> .github/workflows/codeql.yml"
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
@@ -2596,16 +2507,12 @@ if [ -z "$qp" ]; then pass=$((pass + 1)); echo "ok   no chain suite pipes into g
 G=grep; printf 'x | %s --quiet y\n' "$G" > "$work/qp1.sh"; printf 'printf x \\\n  | %s -qF y\n' "$G" > "$work/qp2.sh"
 [ -n "$(quiet_pipes "$work/qp1.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches grep --quiet"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed grep --quiet"; }
 [ -n "$(quiet_pipes "$work/qp2.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches a pipe continued with a backslash (and -qF)"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed a continued pipe"; }
-# the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
-d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
-[ "$rc" != 0 ] && grep -F -q "stage-promote.yml" <<< "$out" && ok_n=1 || ok_n=0
-if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.json deleted the same case judges the whole tree (red today on the legacy signers)"; else failn=$((failn + 1)); echo "FAIL deleting legacy-stage-files.json did not bring the legacy files back into the judge: rc=$rc ${out:0:200}"; fi
 # only TRACKED files are judged: an untracked file with a signer in a working copy is not part of what CI checks out
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
 # (Codex #249 r6 R8; PR 2: admission is the first step of Build's apk job, so the tag guard is Build's own gate G) every release.yml job after build
-# up to promotion that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build, which carries the gate G (a v* tag PUSH, or a dry run),
+# up to release that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build, which carries the gate G (a v* tag PUSH, or a dry run),
 # directly or through its needs
 cat > "$work/tagguard.py" <<'PY'
 import sys, yaml
@@ -2616,7 +2523,7 @@ def needs(j):
     return [n] if isinstance(n, str) else list(n)
 def reaches(j, seen=()):
     return any(x == "build" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
-order = list(jobs); chain = order[order.index("build") + 1:order.index("promotion") + 1]
+order = list(jobs); chain = order[order.index("build") + 1:order.index("release") + 1]
 bad = [j for j in chain if str(jobs[j].get("if", "")).strip() != "${{ inputs.dry-run }}" and not reaches(j)]
 if "admission" in jobs: bad.append("an admission job is back (admission is Build's first step)")
 if str(jobs["build"].get("if", "")).strip() != GATE: bad.append("build is not tag-guarded by the gate G")
@@ -2624,12 +2531,12 @@ print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 tg() { local rc=0 out; out=$(python3 "$work/tagguard.py" "$2") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then pass=$((pass + 1)); echo "ok   $3${out:+ ($out)}"; else failn=$((failn + 1)); echo "FAIL $3 -> $out"; fi; }
-tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build carries the tag gate and every job from sign to promotion that is not dry-run-only depends on build through needs"
+tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build carries the tag gate and every job from sign to release that is not dry-run-only depends on build through needs"
 cp "$root/.github/workflows/release.yml" "$work/rel-noadm.yml"
 python3 - "$work/rel-noadm.yml" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()
-for j in ("sign", "promotion", "authorization", "acceptance-predicate", "scans", "acceptance-artifacts"):
+for j in ("sign", "check", "release", "authorization", "acceptance-predicate", "scans", "acceptance-artifacts"):
     t = re.sub(r"(\n  %s:\n(?:    .*\n|\s*\n)*?    needs: )(.*)" % re.escape(j), lambda m: m.group(1) + "[" + ", ".join(x for x in re.findall(r"[\w-]+", m.group(2)) if x not in ("build", "rebuild")) + "]", t, count=1)
 t = re.sub(r"(\n  rebuild:\n(?:    .*\n|\s*\n)*?    needs: )build", r"\1[]", t, count=1)
 open(sys.argv[1], "w").write(t)
@@ -3224,11 +3131,12 @@ for pth in archive/vi archive/ash /usr/bin/python3.11 x/rbash usr/bin/perl5.38 x
 d=$(py8 p8_ok1 "archive/go.tar"); expm ok "$d" - "round-4 (8): control: a data path archive/go.tar is admitted"
 d=$(py8 p8_ok2 "dist/data.json"); expm ok "$d" - "round-4 (8): control: dist/data.json is admitted"
 # (10) minimal: an absolute path or a substitution as the command word
-kc a10_a '/tmp/x arg' 'run time or absolute'
+ABS10="$work/abs10/x"   # an absolute path in this run's own temp dir: never a fixed host path (advisor ruling, finding 5)
+kc a10_a "$ABS10 arg" 'run time or absolute'
 kc a10_b '$(echo x) arg' 'run time or absolute'
 kc a10_c '`echo x` arg' 'run time or absolute'
 kc a10_d '/opt/zz/tool' 'run time or absolute'
-d=$(cfix a10_x '/tmp/x arg'); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"/tmp/x arg","why":"x"}]'; expm ok "$d" - "round-4 (10): a script-name exception with the exact whole command waives an absolute-path command"
+d=$(cfix a10_x "$ABS10 arg"); edit_spec "$d" 'rows["bin/c.sh"]["exceptions"]=[{"rule":"script-name","text":"'"$ABS10"' arg","why":"x"}]'; expm ok "$d" - "round-4 (10): a script-name exception with the exact whole command waives an absolute-path command"
 ko a10_ok 'cp x y'
 # (11) more forbidden env names
 for nm in PIP_INDEX_URL DOCKER_HOST KUBECONFIG KUBE_X TAR_OPTIONS MAKEFILES EDITOR VISUAL PAGER GH_HOST GH_REPO GH_EDITOR GH_PAGER GH_CONFIG_DIR OPENSSL_X REGISTRY_AUTH_FILE CC CXX CFLAGS LDFLAGS PWD; do
@@ -3311,6 +3219,42 @@ print("; ".join(errs) or "ok"); sys.exit(1 if errs else 0)
 PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
+# ---- the named secrets of Release (rule 56: only Release holds a stored secret; advisor 0386 J, the corrected binding list) ----------------------------
+# ONE closed list, five rows: (1) GH_TOKEN, the run's own token, Build job apk, admission only (witnessed.sh -> build-stage-apk.sh), job permissions exactly contents/checks/statuses/
+# pull-requests read + id-token write (Witness); in stage-promote.yml job release (contents/packages/id-token write): (2) APK_RELEASE_SIGNING_KEY -> release-apks.sh,
+# (3) DOCKERHUB_USERNAME and (4) DOCKERHUB_TOKEN -> release-publish.sh and release-sign.sh, (5) GH_TOKEN (the run's own) -> release-publish.sh, release-sign.sh, release-assets.sh,
+# release-postverify.sh. bin/witnessed.sh is bound for GH_TOKEN at exactly those two places and for the three secrets in Release. Every other name, place or script is refused.
+repl() { python3 -c 'import sys;p,a,b=sys.argv[1:4];a=a.replace("\\n","\n");t=open(p).read();assert a in t,"not found: "+a;open(p,"w").write(t.replace(a,b.replace("\\n","\n"),1))' "$@"; }
+RCIF="if: \${{ !contains(github.ref_name, '\\''-'\\'') }}"
+for f in stage-sign stage-reproducibility stage-verify stage-build; do
+  probe "sec_$f" "stored secret outside Release" "a stored secret (secrets.X_KEY) in a step env of $f.yml" "printf '  extra:\n    runs-on: ubuntu-24.04\n    steps:\n      - name: x\n        env:\n          X_KEY: \${{ secrets.X_KEY }}\n        run: bash bin/install-scanner.sh cosign\n' >> .github/workflows/$f.yml"
+done
+probe gh_build_other "GH_TOKEN is allowed only" "the run's token on a Build step other than the admission step" \
+  "repl .github/workflows/stage-build.yml '      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness' '      - name: install Witness (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh witness'"
+probe gh_check "GH_TOKEN is allowed only" "the run's token in Check" \
+  "repl .github/workflows/stage-verify.yml '      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness' '      - name: install Witness (pinned by checksum)\n        env:\n          GH_TOKEN: \${{ github.token }}\n        run: bash bin/install-scanner.sh witness'"
+probe perm_apk "must hold exactly the permissions" "a write permission (packages) on Build's apk job" \
+  "repl .github/workflows/stage-build.yml '      pull-requests: read\n      id-token: write\n' '      pull-requests: read\n      packages: write\n      id-token: write\n'"
+probe perm_gh_release "must hold exactly the permissions" "the run's token with another permission (attestations: write) in Release" \
+  "repl .github/workflows/stage-promote.yml '      id-token: write\n    steps:' '      id-token: write\n      attestations: write\n    steps:'"
+probe sixth_name "not in the closed secret list" "a sixth secret name (FIFTH_KEY) in a Release step" \
+  "repl .github/workflows/stage-promote.yml '      - name: release-sign under Witness\n        $RCIF\n        env:\n' '      - name: release-sign under Witness\n        $RCIF\n        env:\n          FIFTH_KEY: \${{ secrets.FIFTH_KEY }}\n'"
+probe apk_wrong_step "not in the closed secret list" "the apk signing key on the publish step" \
+  "repl .github/workflows/stage-promote.yml '      - name: release-publish under Witness\n        $RCIF\n        env:\n' '      - name: release-publish under Witness\n        $RCIF\n        env:\n          APK_RELEASE_SIGNING_KEY: \${{ secrets.APK_RELEASE_SIGNING_KEY }}\n'"
+probe token_unlisted_script "not in the closed secret list" "DOCKERHUB_TOKEN bound to release-apks.sh (an unlisted script)" \
+  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"DOCKERHUB_TOKEN\",\"script\":\"bin/release-apks.sh\",\"why\":\"x\",\"file\":\".github/workflows/stage-promote.yml\",\"job\":\"release\"});[r.__setitem__(\"reads_env\",[\"APK_RELEASE_SIGNING_KEY\",\"DOCKERHUB_TOKEN\"]) for r in d[\"scripts\"] if r[\"path\"]==\"bin/release-apks.sh\"];json.dump(d,open(p,\"w\"))'"
+probe name_twice "listed twice" "the same name listed twice at one place" \
+  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));e=[x for x in d[\"ambient_env\"] if x[\"name\"]==\"GH_TOKEN\" and x[\"script\"]==\"bin/release-assets.sh\"][0];d[\"ambient_env\"].append(dict(e));json.dump(d,open(p,\"w\"))'"
+probe sixth_row "not in the closed secret list" "a sixth row: SIXTH_SECRET bound to release-sign.sh in Release" \
+  "python3 -c 'import json;p=\".github/policy/chain-scripts.json\";d=json.load(open(p));d[\"ambient_env\"].append({\"name\":\"SIXTH_SECRET\",\"script\":\"bin/release-sign.sh\",\"why\":\"x\",\"file\":\".github/workflows/stage-promote.yml\",\"job\":\"release\"});json.dump(d,open(p,\"w\"))'"
+probe value_glued "must be exactly" "DOCKERHUB_TOKEN with a glued value" \
+  "repl .github/workflows/stage-promote.yml 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}' 'DOCKERHUB_TOKEN: \${{ secrets.DOCKERHUB_TOKEN }}x'"
+probe value_gh_secret "must be exactly" "GH_TOKEN read from a stored secret instead of the run's own token" \
+  "repl .github/workflows/stage-promote.yml 'GH_TOKEN: \${{ github.token }}' 'GH_TOKEN: \${{ secrets.GH_TOKEN }}'"
+probe value_swapped "must be exactly" "DOCKERHUB_USERNAME given the token's secret" \
+  "repl .github/workflows/stage-promote.yml 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_USERNAME }}' 'DOCKERHUB_USERNAME: \${{ secrets.DOCKERHUB_TOKEN }}'"
+probe secret_in_if "stored secret outside" "a stored secret read in a step condition of Release" \
+  "repl .github/workflows/stage-promote.yml '      - name: release-assets under Witness\n        $RCIF' '      - name: release-assets under Witness\n        if: \${{ !contains(github.ref_name, \"-\") && secrets.DOCKERHUB_TOKEN != \"\" }}'"
 
 # ---- Codex A r2 blocker 4 / r3 F4 (advisor): NO actions/setup-go anywhere; Go comes from the checksum-pinned `bash bin/install-scanner.sh go` line -------------
 # the stage grammar run on the REAL stage-build.yml (and on edited copies): the installer line is accepted, every use of setup-go is refused
@@ -3384,7 +3328,30 @@ else failn=$((failn + 1)); echo "FAIL findings ids: the printed structured ids d
 rc=0; env -u CHAIN_FINDINGS python3 "$work/judge.py" tree "$d" > /dev/null 2> "$fj/err2.txt" || rc=$?
 if ! grep -q 'FINDINGS-JSON' "$fj/err2.txt"; then pass=$((pass + 1)); echo "ok   findings ids: nothing is printed unless CHAIN_FINDINGS=1 (no change to the judge's existing output)"; else failn=$((failn + 1)); echo "FAIL findings ids: printed without CHAIN_FINDINGS=1"; fi
 
-EXPECT=1331
+# ---- advisor ruling (finding 5): no file of the HOST may change a verdict ------------------------------------------------------------------------------
+# "an absolute command word is judged by the rule alone (refused unless listed), never by os.path.isfile/exists against the host": the same listed script is judged
+# with no file at the absolute path, and again with an executable file with a shebang there (and with a plain file): the three outputs must be the same text.
+hostjudge() { # hostjudge LABEL 'script line using $ABS' : the verdict does not depend on a host file at $ABS
+  local label=$1 line=$2 d abs o1 o2 o3 rc1=0 rc2=0 rc3=0
+  abs="$work/hostfile-$RANDOM/tool"
+  d=$(cfix "hj_$RANDOM" "${line//\$ABS/$abs}")
+  o1=$(judge tree "$d" 2>&1) || rc1=$?
+  mkdir -p "$(dirname "$abs")"; printf '#!/usr/bin/env bash\necho x\n' > "$abs"; chmod 755 "$abs"
+  o2=$(judge tree "$d" 2>&1) || rc2=$?
+  chmod 644 "$abs"; printf 'plain text\n' > "$abs"
+  o3=$(judge tree "$d" 2>&1) || rc3=$?
+  rm -rf "$(dirname "$abs")"
+  if [ "$rc1" = "$rc2" ] && [ "$rc1" = "$rc3" ] && [ "$o1" = "$o2" ] && [ "$o1" = "$o3" ]; then pass=$((pass + 1)); echo "ok   host independence: $label (same verdict with no file, an executable file and a plain file at the absolute path)"
+  else failn=$((failn + 1)); echo "FAIL host independence: $label -> rc $rc1/$rc2/$rc3; without: ${o1:0:200} | with an executable: ${o2:0:200}"; fi
+}
+hostjudge "an absolute command word" '$ABS arg'
+hostjudge "an absolute command word as the second command" 'echo a
+$ABS --flag x'
+hostjudge "an absolute path as an argument of a listed tool" 'cat $ABS'
+hostjudge "an absolute path after an interpreter" 'python3 $ABS'
+hostjudge "an absolute path inside an assignment" 'x=$ABS'
+
+EXPECT=1329
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
