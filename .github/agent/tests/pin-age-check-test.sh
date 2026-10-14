@@ -2876,5 +2876,27 @@ kept, ruled = ac.split_base_inputs(moved, {"build/${var}/archive-keys.sha256"})
 assert len(kept) == 1 and not ruled
 PY
 
+CASE="two release downloads whose asset names differ only in the shell variable (or expression) they hold are two items, a changed variable is a moved item, and a concrete asset keeps its key (REQ-SUP-001-AC19: a row of one never rules the other)"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+def dl(asset, tag="v1.2.3", where="bin/x.sh"):
+    return {where: "curl -fsSL https://github.com/o/r/releases/download/%s/%s -o x\n" % (tag, asset)}
+a, b = inv.inventory(dl("${A}.tgz")), inv.inventory(dl("${B}.tgz"))
+assert len(a) == 1 and len(b) == 1 and set(a) != set(b), (sorted(a), sorted(b))
+assert all("#step:" in k for k in list(a) + list(b)), (sorted(a), sorted(b))
+assert set(a) == set(inv.inventory(dl("${A}.tgz"))), "the same spelling must give the same key"
+assert len(inv.moved(a, b)) == 1, inv.moved(a, b)
+# an expression, a braced variable and a bare one: each spelling is its own key
+for x, y in (("${{ matrix.os }}.tgz", "${{ matrix.arch }}.tgz"), ("$OS.tgz", "$ARCH.tgz"), ("x_${OS}.tgz", "x_${ARCH}.tgz")):
+    kx, ky = set(inv.inventory(dl(x))), set(inv.inventory(dl(y)))
+    assert len(kx) == 1 and len(ky) == 1 and kx != ky, (x, y, sorted(kx), sorted(ky))
+# a concrete asset is unchanged: no step tag, the key the inventory has always had
+assert set(inv.inventory(dl("x.tgz"))) == {"tool:o/r/x.tgz@v1.2.3"}, sorted(inv.inventory(dl("x.tgz")))
+# the same asset in a workflow step, the form every workflow takes
+wf = lambda asset: {".github/workflows/ci.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: curl -fsSL https://github.com/o/r/releases/download/v1.2.3/%s -o x\n" % asset}
+assert set(inv.inventory(wf("${A}.tgz"))) != set(inv.inventory(wf("${B}.tgz")))
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
