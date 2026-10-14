@@ -957,3 +957,12 @@ mappings:
   - ac: REQ-BUILDTOOLS-001-AC10
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-VEND-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
