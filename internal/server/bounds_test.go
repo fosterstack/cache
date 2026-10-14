@@ -11,7 +11,7 @@ import (
 
 // REQ-HTTP-001-AC1: every timeout explicitly set — none left infinite.
 func TestHTTPServerTimeoutsAreSet(t *testing.T) {
-	srv := NewHTTPServer(":0", http.NewServeMux())
+	srv := NewHTTPServer(":0", http.NewServeMux(), nil)
 	if srv.ReadHeaderTimeout != 10*time.Second {
 		t.Errorf("ReadHeaderTimeout = %v, want 10s", srv.ReadHeaderTimeout)
 	}

@@ -210,8 +210,8 @@ func TestReconcileLogsUnremovableStaleTempFile(t *testing.T) {
 
 	// A temp file inside a read-only directory: the walk can list it
 	// (r-x) but removal needs write permission on the parent.
-	dir := filepath.Join(c.blobs.Root(), "aa")
-	if err := os.Mkdir(dir, 0o750); err != nil {
+	dir := filepath.Join(c.blobs.Root(), "+tmp") // the store's temporary directory (REQ-PROTO-003-AC4)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".tmp-cafe"), []byte("partial"), 0o600); err != nil {
