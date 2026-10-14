@@ -869,5 +869,115 @@ class LiteralRunnerMatrix(unittest.TestCase):
         self.assertNotIn("runs-on", out)
 
 
+GATE_A = "adcfd54fb68814da2b5b87baf0f56c2e32f85416f16800e810545cb1e2a1842d"   # main's gate workflow before #316
+GATE_B = "699abb31e2ce43b62e66d0d03366b0eca4c868b6e1e3c701793f79596798d533"   # the gate workflow of cache PR #316
+# cache PR #316's edits to the gate workflow (old text, new text): the second accepted digest is the gate
+# workflow with these applied; either variant is derived from whichever one the repository carries
+PR316_HUNKS = (
+    ('          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure\n',
+     '          PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure\n'
+     '          # REQ-SCAN-015: main\'s scanner guard judges the head\'s workflows and composite actions as git objects, so a step\n'
+     '          # of the PR\'s own CI that overwrites the guard on disk changes nothing\n'
+     '          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure\n'),
+    ('summary="Every action reference is a commit digest, and the allowlist guard and the pin-wiring judge passed."',
+     'summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge and the scanner guard passed."'),
+    ('summary="An action reference is not a commit digest, or the allowlist guard or the pin-wiring judge failed (or the judge did not finish) — see the run log."',
+     'summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge or the scanner guard failed (or the judge did not finish) — see the run log."'),
+    ('               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh; then\n'
+     "              conclusion=success   # every action reference a digest (row 78), main's allowlist guard and pin-wiring judge\n",
+     '               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \\\n'
+     '               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh; then\n'
+     "              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge and scanner guard\n"),
+)
+
+
+def gate_variants():
+    """(the gate workflow before #316, the gate workflow of #316), from the repository's copy."""
+    with open(GATE) as fh:
+        cur = fh.read()
+    if all(cur.count(old) == 1 for old, _ in PR316_HUNKS):
+        a, b = cur, cur
+        for old, new in PR316_HUNKS:
+            b = b.replace(old, new)
+    else:
+        assert all(cur.count(new) == 1 for _, new in PR316_HUNKS), "the gate workflow is neither variant"
+        a, b = cur, cur
+        for old, new in PR316_HUNKS:
+            a = a.replace(new, old)
+    return a, b
+
+
+def gate_tree(gate_text):
+    """A minimal tree the checker passes, carrying `gate_text` as the gate workflow."""
+    return repo({".github/workflows/agent-review-gate.yml": gate_text,
+                 ".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
+                 ".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
+                 "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
+                 "bin/scan-no-workflow-call-test.sh": ""}, gate=False)
+
+
+def bump_first_pin(text):
+    """A Dependabot-style bump: the first `@<40 hex> # v<ver>` pin moves to another commit and tag."""
+    out, n = re.subn(r"@[0-9a-f]{40} # v[0-9][0-9A-Za-z.+-]*", f"@{OTHER} # v99.0.0", text, count=1)
+    assert n == 1
+    return out
+
+
+class GateWorkflowDigestSet(unittest.TestCase):
+    """The bootstrap of cache PR #316 (PR A): the pin checker accepts exactly two gate-workflow digests, main's
+    and #316's, both taken by gate_digest (pins masked); a later change removes main's old one."""
+
+    def test_the_constant_is_a_frozen_set_of_exactly_two_digests(self):
+        s = M.GATE_WORKFLOW_SHA256
+        self.assertIsInstance(s, frozenset)      # immutable: no code path can add a digest at run time
+        self.assertEqual(len(s), 2)              # not empty, not one, not three (a frozenset has no duplicates)
+        for d in s:
+            self.assertRegex(d, r"\A[0-9a-f]{64}\Z")
+        self.assertEqual(s, frozenset({GATE_A, GATE_B}))
+
+    def test_both_variants_are_taken_by_gate_digest(self):
+        a, b = gate_variants()
+        self.assertEqual(M.gate_digest(a), GATE_A)
+        self.assertEqual(M.gate_digest(b), GATE_B)
+
+    def test_a_tree_with_either_accepted_gate_workflow_passes(self):
+        for name, text in zip(("main", "pr316"), gate_variants()):
+            with self.subTest(gate=name):
+                code, out = run([gate_tree(text)])
+                self.assertEqual(code, 0, out)
+                self.assertIn(", 0 finding(s)", out)
+
+    def test_a_dependabot_pin_bump_in_either_still_matches(self):
+        for name, text in zip(("main", "pr316"), gate_variants()):
+            with self.subTest(gate=name):
+                bumped = bump_first_pin(text)
+                self.assertNotEqual(bumped, text)
+                self.assertIn(M.gate_digest(bumped), M.GATE_WORKFLOW_SHA256)
+                code, out = run([gate_tree(bumped)])
+                self.assertEqual(code, 0, out)
+
+    def test_a_third_digest_is_refused_and_the_message_names_the_accepted_set(self):
+        a, _ = gate_variants()
+        third = a.replace("--verify-tags --git", "--git", 1)
+        self.assertNotEqual(third, a)
+        d3 = M.gate_digest(third)
+        self.assertNotIn(d3, (GATE_A, GATE_B))
+        code, out = run([gate_tree(third)])
+        self.assertEqual(code, 1, out)
+        (line,) = [ln for ln in out.splitlines() if ln.startswith(".github/workflows/agent-review-gate.yml:")]
+        self.assertIn("changed — update GATE_WORKFLOW_SHA256 in this checker", line)
+        self.assertIn(d3, line)
+        self.assertIn(GATE_A, line)
+        self.assertIn(GATE_B, line)
+
+    def test_a_missing_gate_workflow_still_fails(self):
+        a, _ = gate_variants()
+        d = gate_tree(a)
+        os.remove(os.path.join(d, ".github/workflows/agent-review-gate.yml"))
+        code, out = run([d])
+        self.assertEqual(code, 1, out)
+        self.assertIn(".github/workflows/agent-review-gate.yml: missing", out)
+
+
 if __name__ == "__main__":       # last: every test class above is defined first (Codex #164 adversarial r1, R02)
     unittest.main()
