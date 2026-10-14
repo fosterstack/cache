@@ -188,7 +188,7 @@ PZ
   ;; esac
 fi
 if [ "\$name" = grype ]; then
-  python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({"matches":[],"source":{"type":"image","target":{}},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
+  python3 -c 'import json,os; st={"schemaVersion":"v6.1.9","from":os.environ["FAKE_DB_FROM"],"built":os.environ["FAKE_DB_BUILT"],"path":"/.cache/grype/db/6/vulnerability.db","valid":True}; st={k:v for k,v in st.items() if v != ""}; print(json.dumps({"matches":json.loads(os.environ.get("FAKE_GRYPE_MATCHES","[]")),"source":{"type":"image","target":{}},"descriptor":{"name":"grype","version":"9.9.9","db":{"status":st,"providers":{}}}}))'
 else
   eco=Debian:12; case " \$* " in *go.mod*) eco=Go;; esac
   python3 "$work/osvout.py" "\$n" "\$eco"
@@ -237,6 +237,16 @@ mkdist "${FOUR[@]:0:3}" fscache-fips_0.4.0_linux_arm64.tar.gz; want_fail "PLAT-0
 mkdist "${FOUR[@]}"
 mkfake grype 1 120
 want_fail "AC4 a scanner reports findings: the script fails naming it" grype "${SCAN[@]}"
+# REQ-REL-004-AC1 (owner rule, register rows 18 and 38: block at any severity, the published VEX the only exception): grype's own --fail-on negligible does not fail
+# on a finding of UNKNOWN severity, so the script judges grype's JSON result: any match that survived the VEX fails, whatever its severity, and a result with no
+# readable matches list is a scan that did not run.
+mkfake grype 0 120; mkfake osv-scanner 0 80
+GM='[{"vulnerability":{"id":"CVE-2099-0001","severity":"Unknown"},"artifact":{"name":"x","version":"1"}}]'
+FAKE_GRYPE_MATCHES="$GM" want_fail "AC4 a grype finding of UNKNOWN severity (exit 0, --fail-on negligible does not fire) fails: no VEX statement covers it" "does not except" "${SCAN[@]}"
+GM='[{"vulnerability":{"id":"CVE-2099-0002","severity":"Negligible"},"artifact":{"name":"x","version":"1"}}]'
+FAKE_GRYPE_MATCHES="$GM" want_fail "AC4 a grype finding of NEGLIGIBLE severity that exits 0 also fails" "does not except" "${SCAN[@]}"
+FAKE_GRYPE_MATCHES='"not a list"' want_fail "AC4 a grype result whose matches is not a list is a scan that did not run" "matches" "${SCAN[@]}"
+FAKE_GRYPE_MATCHES='[]' want_ok "AC4 grype with no match left after the VEX passes" "${SCAN[@]}"
 mkfake grype 0 120; mkfake osv-scanner 1 80
 want_fail "AC4 the second scanner reports findings: the script fails naming it" osv-scanner "${SCAN[@]}"
 mkfake osv-scanner 0 80; mkfake grype 0 0
@@ -964,7 +974,7 @@ if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G no go.mod in the working direc
 printf 'module example.com/a\n' > "$gvt/go.mod"
 if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
 else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
-EXPECT=301
+EXPECT=305
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]
