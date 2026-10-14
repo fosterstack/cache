@@ -88,8 +88,8 @@ rc AC2 "an embedded dot file that go mod vendor regenerates is still refused (1)
 says AC2 "(embedded dot file) the failure names the dot component" "dot component"
 mkcase gosumempty; : >"$work/fx-gosumempty/go.sum"
 rc AC2 "a go.sum that go mod vendor would have to repair is refused (1), with GOFLAGS=-mod=mod in the caller's environment" 1 vc "$work/fx-gosumempty"
-mkcase gomodedit; printf '\n// edited\n' >>"$work/fx-gomodedit/go.mod"
-rc AC2 "a go.mod that go mod vendor rewrites is refused (1)" 1 vc "$work/fx-gomodedit"
+mkcase gomodedit; printf 'module example.test/app\n\ngo 1.20\n' >"$work/fx-gomodedit/go.mod"   # the require line is missing: go mod vendor (GOFLAGS=-mod=mod) would add it
+rc AC2 "a go.mod that go mod vendor has to rewrite is refused (1)" 1 vc "$work/fx-gomodedit"
 mkdir -p "$work/emptybin"
 rc AC2 "an unreachable proxy fails (1)" 1 env GOPROXY="file://$work/no-such-proxy" GOMODCACHE="$work/modcache-empty" bash "$bin_vc" "$work/fx-clean"
 rc AC2 "a missing go toolchain fails (1)" 1 env PATH="$work/emptybin" /bin/bash "$bin_vc" "$work/fx-clean"
@@ -164,9 +164,10 @@ uses = [s["uses"] for s in steps if "uses" in s]
 if not uses or not all(re.fullmatch(r"[A-Za-z0-9._/-]+@[0-9a-f]{40}", u.split(" ")[0]) for u in uses): fail("an action is not a commit digest: " + str(uses))
 co = [s for s in steps if s.get("uses", "").startswith("actions/checkout@")]
 if not co or str((co[0].get("with") or {}).get("fetch-depth", "")) != "0": fail("checkout must fetch the whole history (fetch-depth: 0)")
-blob = open(sys.argv[1]).read()
-if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out appears in ci.yml")
-if "continue-on-error" in blob: fail("continue-on-error appears in ci.yml")
+import json
+blob = json.dumps(job) + json.dumps(d.get("env")) + json.dumps(d.get("defaults"))
+if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out in the vendor job or the workflow env")
+if "continue-on-error" in blob or "continue-on-error" in str(d.get("defaults")): fail("continue-on-error in the vendor job")
 PY
 t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify then bin/vendor-check.sh, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
 mutate() { # NAME PYTHON-EXPRESSION on s (the ci.yml text): the mutated file must be refused
