@@ -134,6 +134,16 @@ class ImagesLayout(unittest.TestCase):
             self.assertEqual(got, "production")
             self.assertEqual(sk.call_args_list[0][0][0], "oci:" + lay)
 
+    def test_manifest_refuses_a_layout_whose_blobs_cannot_be_read(self):
+        with tempfile.TemporaryDirectory() as w:
+            lay = os.path.join(w, "images", "production"); os.makedirs(lay)
+            open(os.path.join(lay, "oci-layout"), "w").write('{"imageLayoutVersion": "1.0.0"}')   # a layout marker and no blobs/ directory at all
+            with mock.patch.object(M, "_skopeo", return_value=True) as sk:
+                got, why = M._archives(w, "", os.path.join(w, "c.oci"), os.path.join(w, "c.tar"))
+            self.assertIsNone(got)
+            self.assertIn("blobs cannot be read", why)
+            sk.assert_not_called()
+
     def test_manifest_without_a_production_layout_fails_closed(self):
         with tempfile.TemporaryDirectory() as w:
             open(os.path.join(w, "production.oci"), "w").write("x"); open(os.path.join(w, "production.tar"), "w").write("x")
