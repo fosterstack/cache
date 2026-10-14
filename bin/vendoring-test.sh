@@ -36,6 +36,23 @@ printf 'module example.test/app\n\ngo 1.20\n\nrequire example.test/dep v1.0.0\n'
 printf 'package main\n\nimport "example.test/dep"\n\nfunc main() { println(dep.Name()) }\n' >"$fx/main.go"
 export GOPROXY="file://$proxy" GOSUMDB=off GOFLAGS=-mod=mod GOMODCACHE="$work/modcache" GOCACHE="$work/gocache" GOTOOLCHAIN=local
 ( cd "$fx" && go mod tidy && go mod vendor ) >"$work/fixsetup.log" 2>&1 || echo "fixture setup failed: $(tail -3 "$work/fixsetup.log")"
+# a module whose package embeds a dot file: go mod vendor copies it, so regeneration alone would accept it
+python3 - "$proxy" <<'PY'
+import sys, zipfile, json, os
+p = sys.argv[1] + "/example.test/emb/@v"
+os.makedirs(p, exist_ok=True)
+open(p + "/list", "w").write("v1.0.0\n")
+open(p + "/v1.0.0.info", "w").write(json.dumps({"Version": "v1.0.0", "Time": "2024-01-01T00:00:00Z"}))
+open(p + "/v1.0.0.mod", "w").write("module example.test/emb\n\ngo 1.20\n")
+with zipfile.ZipFile(p + "/v1.0.0.zip", "w") as z:
+    z.writestr("example.test/emb@v1.0.0/go.mod", "module example.test/emb\n\ngo 1.20\n")
+    z.writestr("example.test/emb@v1.0.0/.hidden", "secret\n")
+    z.writestr("example.test/emb@v1.0.0/emb.go", "package emb\n\nimport _ \"embed\"\n\n//go:embed .hidden\nvar hidden string\n\nfunc Name() string { return hidden }\n")
+PY
+fxe="$work/gofix-emb"; mkdir -p "$fxe"
+printf 'module example.test/app2\n\ngo 1.20\n\nrequire example.test/emb v1.0.0\n' >"$fxe/go.mod"
+printf 'package main\n\nimport "example.test/emb"\n\nfunc main() { println(emb.Name()) }\n' >"$fxe/main.go"
+( cd "$fxe" && go mod tidy && go mod vendor ) >"$work/fixsetup2.log" 2>&1 || echo "embed fixture setup failed: $(tail -3 "$work/fixsetup2.log")"
 H1=h1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
 cp -R "$fx" "$work/fx-clean"
 rc AC2 "a clean fixture tree passes the regeneration check" 0 vc "$work/fx-clean"
@@ -67,6 +84,12 @@ rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
 mkdir -p "$work/nogo"; cp -R "$fx/vendor" "$work/nogo/vendor"
 rc AC2 "a tree with vendor/ but no go.mod or go.sum exits 2" 2 vc "$work/nogo"
 # fail closed: a proxy that cannot serve the module, and a toolchain that is not there, are failures, never a pass
+rc AC2 "an embedded dot file that go mod vendor regenerates is still refused (1)" 1 vc "$fxe"
+says AC2 "(embedded dot file) the failure names the dot component" "dot component"
+mkcase gosumempty; : >"$work/fx-gosumempty/go.sum"
+rc AC2 "a go.sum that go mod vendor would have to repair is refused (1), with GOFLAGS=-mod=mod in the caller's environment" 1 vc "$work/fx-gosumempty"
+mkcase gomodedit; printf '\n// edited\n' >>"$work/fx-gomodedit/go.mod"
+rc AC2 "a go.mod that go mod vendor rewrites is refused (1)" 1 vc "$work/fx-gomodedit"
 mkdir -p "$work/emptybin"
 rc AC2 "an unreachable proxy fails (1)" 1 env GOPROXY="file://$work/no-such-proxy" GOMODCACHE="$work/modcache-empty" bash "$bin_vc" "$work/fx-clean"
 rc AC2 "a missing go toolchain fails (1)" 1 env PATH="$work/emptybin" /bin/bash "$bin_vc" "$work/fx-clean"
@@ -92,6 +115,14 @@ mkgit nobase
 rc AC2 "origin/main cannot be read: fails (1)" 1 vc "$work/g-nobase"
 mkdir -p "$work/g-nogit"; cp "$fx/go.mod" "$fx/go.sum" "$work/g-nogit/"
 rc AC2 "no git tree to read origin/main from: fails (1)" 1 vc "$work/g-nogit"
+mkdir -p "$work/findfail"; printf '#!/bin/sh\nexit 1\n' >"$work/findfail/find"; chmod 755 "$work/findfail/find"
+rc AC2 "a listing of the tree that fails is no proof of absence: fails (1)" 1 env PATH="$work/findfail:$PATH" bash "$bin_vc" "$work/g-absent"
+for nm in "vendor/a	b.go" "vendor/caf$(printf '\303\251').go" 'vendor/a"b.go'; do
+  mkgit quoted
+  ( cd "$work/g-quoted" && mkdir -p vendor && : >"$nm" && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm q \
+      && git update-ref refs/remotes/origin/main HEAD && git rm -rq --cached vendor && rm -rf vendor && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm rmq ) >/dev/null 2>&1
+  rc AC2 "a vendor path with an unusual name on origin/main is found (1): $(printf '%s' "$nm" | tr '\t' '~')" 1 vc "$work/g-quoted"
+done
 mkgit nested;   mkdir -p "$work/g-nested/pkg/vendor" && echo x >"$work/g-nested/pkg/vendor/x.go"
 rc AC2 "a vendor path below the top, none at the top: full check, refused (2)" 2 vc "$work/g-nested"
 mkgit vfile;    echo x >"$work/g-vfile/vendor"
@@ -109,32 +140,70 @@ J="$work/vendorjob.py"
 cat >"$J" <<'PY'
 import re, sys, yaml
 d = yaml.load(open(sys.argv[1]), Loader=yaml.BaseLoader)
+fail = lambda m: sys.exit("vendor job: " + m)
+on = d.get("on")
+pr = on.get("pull_request") if isinstance(on, dict) else (True if isinstance(on, list) and "pull_request" in on else None)
+if pr is None and not (isinstance(on, list) and "pull_request" in on):
+    fail("ci.yml does not run on pull_request")
+if pr not in ("", None, True) and pr != {}:
+    fail("pull_request carries a filter: " + str(pr))
 job = d.get("jobs", {}).get("vendor")
-assert job, "ci.yml has no job named vendor"
-assert "pull_request" in (d.get("on") or {}), "ci.yml does not run on pull_request"
-ro = str(job.get("runs-on", "")); assert ro.startswith("ubuntu-") and "self-hosted" not in ro, "runs-on " + ro
-steps = "\n".join((s.get("run") or "") for s in job.get("steps", []))
-assert "go mod verify" in steps, "no go mod verify"
-assert "bin/vendor-check.sh" in steps, "no bin/vendor-check.sh"
+if not job: fail("ci.yml has no job named vendor")
+ro = str(job.get("runs-on", ""))
+if not ro.startswith("ubuntu-") or "self-hosted" in ro: fail("runs-on " + ro)
+if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
+if job.get("permissions") != {"contents": "read"}: fail("permissions " + str(job.get("permissions")))
+steps = job.get("steps", [])
+runs = [s for s in steps if "run" in s]
+if [s["run"].strip() for s in runs] != ["go mod verify", "bash bin/vendor-check.sh"]: fail("run steps are not exactly go mod verify, then bash bin/vendor-check.sh: " + str([s["run"] for s in runs]))
+allowed = {"name", "uses", "with", "run"}
+for s in steps:
+    if set(s) - allowed: fail("a step key beyond name, uses, with, run: " + str(sorted(set(s) - allowed)))
+    if "shell" in s: fail("a step sets a shell")
+uses = [s["uses"] for s in steps if "uses" in s]
+if not uses or not all(re.fullmatch(r"[A-Za-z0-9._/-]+@[0-9a-f]{40}", u.split(" ")[0]) for u in uses): fail("an action is not a commit digest: " + str(uses))
+co = [s for s in steps if s.get("uses", "").startswith("actions/checkout@")]
+if not co or str((co[0].get("with") or {}).get("fetch-depth", "")) != "0": fail("checkout must fetch the whole history (fetch-depth: 0)")
 blob = open(sys.argv[1]).read()
-assert not re.search(r"GOSUMDB\s*[:=]\s*[\"']?off|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|-insecure|GOFLAGS[^\n]*-mod=mod", blob), "sumdb opt-out or -mod=mod"
-for x in [job] + list(job.get("steps", [])):
-    v = str(x.get("if", ""))
-    assert "dependabot" not in v.lower() and "actor" not in v and "head_ref" not in v and "ref_name" not in v, "the job or a step skips by actor or branch: " + v
-    assert str(x.get("continue-on-error", "false")).lower() != "true", "continue-on-error"
-uses = [s.get("uses", "") for s in job.get("steps", []) if s.get("uses")]
-assert uses and all(re.search(r"@[0-9a-f]{40}$", u.split(" ")[0]) for u in uses), "an action is not a commit digest: " + str(uses)
-co = [s for s in job.get("steps", []) if str(s.get("uses", "")).startswith("actions/checkout@")]
-assert co and str((co[0].get("with") or {}).get("fetch-depth", "")) == "0", "checkout must fetch history so origin/main is readable (fetch-depth: 0)"
+if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out appears in ci.yml")
+if "continue-on-error" in blob: fail("continue-on-error appears in ci.yml")
 PY
-t AC3 "ci.yml vendor job: PR trigger, hosted runner, go mod verify + vendor-check, no opt-out, no skip, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
+t AC3 "ci.yml vendor job: bare pull_request trigger, hosted runner, exactly go mod verify then bin/vendor-check.sh, no condition, no opt-out, digest pins, history fetched" python3 "$J" "$root/.github/workflows/ci.yml"
+mutate() { # NAME PYTHON-EXPRESSION on s (the ci.yml text): the mutated file must be refused
+  python3 - "$root/.github/workflows/ci.yml" "$work/mut-$1.yml" "$2" <<'PY'
+import sys
+s = open(sys.argv[1]).read(); o = s
+exec(sys.argv[3])
+assert s != o, "mutation did not apply"
+open(sys.argv[2], "w").write(s)
+PY
+  tn AC3 "the job check refuses: $1" python3 "$J" "$work/mut-$1.yml"
+}
+tn() { local ac=$1 d=$2; shift 2; if "$@" >"$work/out" 2>&1; then bad "$ac" "$d (expected a refusal)"; else ok; fi; }
+mutate trigger-branches 's = s.replace("  pull_request:\n", "  pull_request:\n    branches: [main]\n", 1)'
+mutate or-true 's = s.replace("run: bash bin/vendor-check.sh\n", "run: bash bin/vendor-check.sh || true\n", 1)'
+mutate echo-only 's = s.replace("run: bash bin/vendor-check.sh\n", "run: echo bin/vendor-check.sh\n", 1)'
+mutate coe-expression 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    continue-on-error: ${{ true }}\n", 1)'
+mutate job-if 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    if: github.actor != \x27dependabot[bot]\x27\n", 1)'
+mutate step-if-always 's = s.replace("      - name: vendor/ is what go mod vendor regenerates\n", "      - name: vendor/ is what go mod vendor regenerates\n        if: ${{ !cancelled() && false }}\n", 1)'
+mutate job-env-goflags 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
+mutate shell-override 's = s.replace("        run: bash bin/vendor-check.sh\n", "        shell: bash {0}\n        run: bash bin/vendor-check.sh\n", 1)'
+mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod", "      - uses: actions/setup-go@v7\n        with:\n          go-version-file: go.mod", 1)'
+mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
 f=bin/vendor-check.sh
 t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1 '$f' | grep -q '^#!' && git ls-files -s '$f' | grep -q '^100755'"
 t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
 t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
-t AC11 "$f builds no command word by substitution" bash -c "[ -e '$f' ] && ! grep -Eq '^[[:space:]]*(\\\$\\(|\\\`)' '$f'"
+cmdword='(^|[;&|({]|[[:space:]](then|do|else))[[:space:]]*(\$\(|`|\$\{?[A-Za-z_])'
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )'; do
+  t AC11 "the substitution pattern flags: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
+done
+for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"'; do
+  tn AC11 "the substitution pattern leaves alone: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
+done
+t AC11 "$f builds no command word by substitution or variable" bash -c "[ -e '$f' ] && ! grep -Ev '^[[:space:]]*#' '$f' | grep -Eq '$cmdword'"
 rc AC11 "vendor-check.sh exits 2 outside the repository root" 2 bash -c "cd '$work' && bash '$bin_vc'"
 
 echo "vendoring-test: $pass passed, $failn failed"
