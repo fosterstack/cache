@@ -252,22 +252,22 @@
     {
       "file": ".github/workflows/release.yml",
       "form": "a local reusable workflow call",
-      "key": "8dbbc8c07bc7b9b2",
-      "line": "8dbbc8c07bc7b9b2",
+      "key": "f4f32af697ab6c09",
+      "line": "f4f32af697ab6c09",
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
     },
     {
       "file": ".github/workflows/scan.yml",
       "form": "a local reusable workflow call",
-      "key": "84e7f1a14e3a5e89",
-      "line": "84e7f1a14e3a5e89",
+      "key": "50dda8fb78f41612",
+      "line": "50dda8fb78f41612",
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
     },
     {
       "file": ".github/workflows/release.yml",
       "form": "a local reusable workflow call",
-      "key": "a0d9c6df392b6961",
-      "line": "a0d9c6df392b6961",
+      "key": "6ad5a49fad2db181",
+      "line": "6ad5a49fad2db181",
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
     }
   ]

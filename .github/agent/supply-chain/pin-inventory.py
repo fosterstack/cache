@@ -220,7 +220,7 @@ def _exempt_local_call(raw, job):
 def _local_name(raw):
     """A local reference's identity: its hidden spelling plus a digest of the RAW text, so two references that differ only where _hide() folds them (two expressions,
     padding) are two items and the row of one never rules the other (REQ-SUP-001-AC19)."""
-    return "local:" + _hide(raw) + "~" + hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:8]
+    return "local:" + _hide(raw) + "~" + hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()
 
 
 def _uses(u, node, out, labels):
@@ -433,7 +433,7 @@ def _walk(node, out, labels, path="", in_step=False):
                                 out.remove(it)       # REQ-SUP-001-AC19: the called file is inventoried itself
                         elif job.get("with"):
                             for it in mine:          # a local reusable-workflow call: what it passes in is part of that call's identity
-                                it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:10]
+                                it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()
                 _ENV_CTX[0] = ""
                 _JOB_SUMS[0] = []
                 continue

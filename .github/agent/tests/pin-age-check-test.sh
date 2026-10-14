@@ -2712,5 +2712,22 @@ c.write_text(c.read_text() + '  c:\n    uses: ' + pathlib.Path(r'$work/lcall.use
   check test "$rc" -eq 1
 done
 
+# round 8 of the review (both seats): an identity digest is never truncated; brute-forced 32-bit and 40-bit collision pairs stay two items
+CASE="AC19: two local references (expressions) and two with: blocks that collided under the old 32-bit and 40-bit digests are four different identities, and swapping one for the other MOVES an item"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+a, b = "./.github/workflows/${{ inputs.v81708 }}.yml", "./.github/workflows/${{ inputs.v83546 }}.yml"
+assert inv._local_name(a) != inv._local_name(b)
+assert len(inv._local_name(a).split("~")[1]) == 64
+def tree(uses, with_):
+    return {".github/workflows/a.yml": "jobs:\n  c:\n    uses: '%s'\n    with:\n      mode: %s\n" % (uses, with_)}
+k1 = set(inv.inventory(tree("./.github/workflows/callee.yml", "value98725")))
+k2 = set(inv.inventory(tree("./.github/workflows/callee.yml", "value793926")))
+assert k1 != k2 and all(len(k.split("#with:")[1]) == 64 for k in k1 | k2 if "#with:" in k), (k1, k2)
+j1, j2 = set(inv.inventory(tree(a, "x"))), set(inv.inventory(tree(b, "x")))
+assert j1 != j2
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
