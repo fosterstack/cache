@@ -2554,5 +2554,25 @@ ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00Z", "pypi")], now)
 assert ok, why
 PY
 
+# the opaque installer input: a version selected by a FILE the caller names (round 3 of the review of PR 329)
+cat >"$work/callee-file.yml" <<EOF
+on:
+  workflow_call:
+    inputs:
+      file:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@$SHA4 # v6.1.0
+        with:
+          python-version-file: \${{ inputs.file }}
+EOF
+lcallc m12 './.github/workflows/callee.yml' $'    with:\n      file: stable.txt\n' "$work/callee-file.yml"
+lck m12
+CASE="AC19: a callee that hands a caller input to an installer through an input nobody classified (python-version-file) is not exempted (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:./.github/workflows/callee.yml' "$work/m12.out"
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

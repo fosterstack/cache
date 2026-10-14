@@ -213,9 +213,13 @@ def _scalars(node):
         yield "" if node is None else str(node)
 
 
+_PLAIN_VERSION = re.compile(r"[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?|\(default\)|\(file\)")
+
+
 def _input_fed(item):
-    """An item whose identity holds an expression or a variable: the version it selects can come from a caller's input."""
-    return any(m in item.key for m in ("${{", "${var}", "(variable)", "(expression)"))
+    """True unless the item names a plain, literal version (a commit, a digest, dotted numbers) or one the file itself fixes ((default), (file)): anything else
+    (an expression, a variable, an installer input nobody classified) is a version a caller's input could select, and is refused (REQ-SUP-001-AC19)."""
+    return not _PLAIN_VERSION.fullmatch(item.version) or any(m in item.key for m in ("${{", "${var}", "(variable)", "(expression)"))
 
 
 _CALLEE_MODE = [False]   # True while a callee is being judged: no call inside it is exempted, so a relay, a cycle or a self-call is never plain
