@@ -16,6 +16,11 @@ VER=$(curl -fsSL https://api.github.com/repos/fosterstack/cache/releases/latest 
         | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
 ```
 
+This page covers v0.3.0 and later. A release before v0.3.0 was built by the <!-- pinned: historical -->
+earlier eight-stage chain and has a `-debug` image and darwin archives; where
+its commands differ they are marked "before v0.3.0", and gathered under <!-- pinned: historical -->
+[Releases before v0.3.0](#releases-before-v030). <!-- pinned: historical -->
+
 ## 1. Verify the signature
 
 Two different things get verified on an image, and they answer two
@@ -31,8 +36,9 @@ cosign verify ghcr.io/fosterstack/cache:${VER} \
   --certificate-oidc-issuer='https://token.actions.githubusercontent.com'
 ```
 
-The signing workflow is **version-scoped**: the current chain signs the
-public image in `stage-promote.yml` (pinned above); the earliest release
+The signing workflow is **version-scoped**: v0.3.0 and later sign the <!-- pinned: historical -->
+public image in the Release stage, `stage-promote.yml` (pinned above), and
+so did the releases of the earlier chain; the earliest release
 was signed by the old `release.yml`, so for it use
 `--certificate-identity-regexp='^https://github.com/fosterstack/cache/.github/workflows/release.yml@'` instead. <!-- pinned: historical -->
 
@@ -41,50 +47,48 @@ short-lived, minted by Sigstore's Fulcio from a GitHub Actions OIDC token
 at the moment the release workflow ran, and the signature's existence is
 recorded in the public Rekor transparency log.
 
-## 2. Verify the provenance attestation
+## 2. Verify the provenance
 
-**The attestation** answers a different question: what *produced* these
-bytes? It is a signed statement about the build — which repository, which
-workflow file, which run — not merely a signature over the artifact.
-Verifying it is a separate step with a separate meaning: a valid signature
-with no attestation tells you who signed, but nothing about how the thing
-was built.
+**The provenance** answers a different question: what *produced* these
+bytes? It is a signed SLSA statement about the build — which repository,
+which workflow file, which run — not merely a signature over the artifact.
+A valid signature with no provenance tells you who signed, but nothing about
+how the thing was built.
 
-```sh
-# Needs a token (GH_TOKEN / gh auth login). Pin the producing stage - it
-# is version-scoped: the current chain builds with stage-image.yml, the
-# earliest release with release.yml (swap --signer-workflow accordingly).
-gh attestation verify oci://ghcr.io/fosterstack/cache:${VER} \
-  --repo fosterstack/cache \
-  --signer-workflow fosterstack/cache/.github/workflows/stage-image.yml \
-  --source-ref "refs/tags/v${VER}"
-```
-
-This names the exact workflow run that produced the image you pulled.
-The SLSA provenance is stored in GitHub's attestation store (queried by
-the command above), not pushed as a registry attestation, so verify it
-through `gh attestation verify` rather than `cosign verify-attestation`.
+From v0.3.0 the provenance is written and signed by the Sign stage <!-- pinned: historical -->
+(`stage-sign.yml`), keyless, under its own identity, and Release verifies it
+before anything is published. It is attached to the GitHub release as
+`provenance.json`, with its signature bundle `provenance.bundle.json` and its
+Rekor entry `provenance.rekor.json`. The signer to pin is
+`https://github.com/fosterstack/cache/.github/workflows/stage-sign.yml@refs/tags/v${VER}`,
+with the issuer `https://token.actions.githubusercontent.com`. The provenance
+names each image (`production` and `-fips`) by digest; compare those with the
+digest of the image you pulled. The step-by-step commands are in the
+[v0.3.0 release guide](verify-release.md). <!-- pinned: historical -->
 
 What neither step tells you, stated so nobody over-reads them: whether the
-artifact was scanned or tested. Those are separate statements — and they
-are also attached to the digest, verifiable the same way. See
-"Verify the whole chain" below.
-
-```
-✓ Verification succeeded!
-- Build repo:..... fosterstack/cache
-- Build workflow:. .github/workflows/stage-image.yml@refs/tags/v${VER}
-- Signer repo:.... fosterstack/cache
-- Signer workflow: .github/workflows/stage-image.yml@refs/tags/v${VER}
-```
-
-`Build workflow` is cryptographic confirmation that the bytes you pulled
-came out of this repository's public CI pipeline — the image-assembly
-stage of [`.github/workflows/release.yml`](../.github/workflows/release.yml),
-readable in full — and not from a developer machine (see
-[`RELEASING.md`](../RELEASING.md)'s "releases build only in CI" rule).
+artifact was scanned or tested. Those are separate statements, made by other
+stages of the chain. See "Verify the whole chain" below.
 
 ## 2b. Verify the whole chain
+
+From v0.3.0 the chain is five stages (Build, Sign, Rebuild, Check, Release; <!-- pinned: historical -->
+see [`RELEASING.md`](../RELEASING.md)). Each stage verifies the signed record
+of the one before it, and the records are attached to the release so you can
+verify them too: the Witness records of Build (`build-collection.json`,
+`digests.json`, `items.json`), Rebuild (`rebuild-collection.json`,
+`verdict.json`) and Check (`scanners-collection.json`,
+`acceptance-collection.json`, `runtime-collection.json`,
+`arm64-collection.json`). `release-manifest.json`, the OpenVEX, CSAF and
+inspector-filters files are covered by the signed `release-files.sha256`;
+the archives are covered by the signed `checksums.txt`. The commands for
+those two lists are in [`RELEASING.md`](../RELEASING.md#archives-and-metadata-files).
+
+### Releases before v0.3.0 <!-- pinned: historical -->
+
+The rest of this section, and the `-debug` image in section 3, describe the
+earlier eight-stage chain, which signed one predicate per stage on the image
+digest.
 
 Every stage of the release chain signs its own statement about the exact
 digest you pulled, and each is independently verifiable. The one that
@@ -129,7 +133,7 @@ release manifest as a cosign attestation (predicate type
 image digest (production, debug, fips) on GHCR, which is authoritative, and
 on the Docker Hub mirror (best effort), BEFORE the GitHub release is
 published.
-This attestation exists for releases built by the new chain, v0.2.1 and later (v0.1.0 has none, so the command below fails there). <!-- pinned: historical -->
+This attestation exists for the releases of the earlier chain, v0.2.1 up to v0.2.x (v0.1.0 has none, so the command below fails there; v0.3.0 and later attach `release-manifest.json` as a release file covered by `release-files.sha256` instead). <!-- pinned: historical -->
 The `release-manifest.json` on the release page is the same
 content. It has no separate signature file, and `gh attestation verify
 <file>` does not apply to it: it is an attestation on the image, so verify
@@ -212,13 +216,16 @@ a limit, authenticate with any free Docker account or pull from GHCR.
 | Tag | Base image | Shell | What it is |
 |---|---|---|---|
 | `X.Y.Z` | `gcr.io/distroless/static:nonroot` | none | Production. Deploy this one. |
-| `X.Y.Z-debug` | `gcr.io/distroless/static:debug-nonroot` | busybox at `/busybox/` | Same binary, plus troubleshooting tools. Not for deployment. |
 | `X.Y.Z-fips` | `gcr.io/distroless/static:nonroot` | none | Same source built with `GOFIPS140=v1.0.0` (Go's CMVP FIPS 140-3 validated module) | <!-- pinned: upstream -->
-| `latest` / `debug` / `fips` | — | — | Floating tags, always the newest release of that variant |
+| `X.Y` | — | — | Floating: moves to every final release of that line |
+| `X` / `latest` | — | — | Floating: move only when the release is the highest released version |
 
-All three variants of every release are signed and attested the same way.
+Both variants of every release are signed the same way. The `-fips` image has
+its exact tag only; it has no floating tags. Releases before v0.3.0 also had <!-- pinned: historical -->
+`X.Y.Z-debug` and the floating `debug` and `fips` tags; v0.3.0 and later do <!-- pinned: historical -->
+not.
 
-### The images have no shell, and `:debug`'s is not where you expect
+### The images have no shell
 
 Production and `-fips` contain the `fscache` binary and nothing else — no
 shell, no package manager, no coreutils. `docker exec ... sh` into them
@@ -231,51 +238,29 @@ attacker can do through the process's own capabilities and syscalls, or
 attacks that bring their own tooling. A minimal image narrows the toolbox;
 it is not a sandbox.
 
-`:debug` is the escape hatch. It is the same `fscache` binary on
-Google's `debug-nonroot` base, which adds busybox. **The layout is not the
-one you know from other Linux images.** Debian, RHEL, Amazon Linux, Alpine
-and Wolfi all give you `/bin/sh`. Distroless does not:
-
-- There is **no `/bin/sh`** and **no `/bin/bash`**. (`/bin` exists, as a
-  symlink to `usr/bin`, but contains no shell.)
-- There is **no package manager** — no `apt`, `apk`, `yum`, `dnf`. Nothing
-  to install means nothing to drift, and nothing for an attacker to use.
-- Everything busybox provides lives under **`/busybox/`** — 382 applets,
-  including `sh`, `ls`, `cat`, `ps`, `netstat`, `wget`, `grep`, `df`, `vi`.
-
-So the shell is at `/busybox/sh`:
-
-```sh
-docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
-```
-
-```sh
-# a pod already running the :debug tag
-kubectl exec -it <pod> -- /busybox/sh
-```
-
-`/busybox` is on the image's `PATH`, so bare `sh` resolves too
-(`--entrypoint sh`). The full path is shown first because it works whether
-or not `PATH` survives however you invoke the container.
-
-Both commands run as the image's default user, uid **65532** (`nonroot`) —
-no `--user=root`. Clusters that enforce `runAsNonRoot` reject a root
-override, and troubleshooting as root would not reflect what the server
-sees anyway.
-
+To troubleshoot, run a separate toolbox container that shares the server's
+network and process namespaces; see
+[Troubleshooting without a shell](docker-deploy.md#troubleshooting-without-a-shell-in-the-image).
 Verify the difference yourself:
 
 ```sh
-docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:${VER}-debug -c 'id; ls /busybox | wc -l'
-# uid=65532(nonroot) gid=65532(nonroot) groups=65532(nonroot)
-# 382
-
 docker run --rm --entrypoint /busybox/sh ghcr.io/fosterstack/cache:${VER} -c 'echo reached'
 # error ... exec: "/busybox/sh": stat /busybox/sh: no such file or directory
 ```
 
-The second command failing is the point: the production image has no shell
-to exec.
+The command failing is the point: the production image has no shell to exec.
+
+### The `-debug` image, before v0.3.0 <!-- pinned: historical -->
+
+Those releases also shipped `:X.Y.Z-debug` (and `:debug`) on Google's
+`gcr.io/distroless/static:debug-nonroot` base, which adds busybox under
+`/busybox/` (no `/bin/sh`, no package manager; the shell is `/busybox/sh`,
+uid 65532):
+
+```sh
+docker run -it --entrypoint /busybox/sh ghcr.io/fosterstack/cache:debug
+kubectl exec -it <pod> -- /busybox/sh      # a pod running the :debug tag
+```
 
 Each tag is a multi-arch manifest (`linux/amd64` + `linux/arm64`), and
 `cosign verify` above validates the **index digest** — which covers both
