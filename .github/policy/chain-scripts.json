@@ -7,7 +7,7 @@
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "b7abe6155e395aa8702cbe19051501b2033e89b229b36da4c81a257671ba1c09",
+      "sha256": "b621d8943fe985c86663c00ac1eb82c957eca981a590f94021fe9efa0efad693",
       "tools": [
         "make",
         "at",
@@ -32,7 +32,7 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "20f11876c6862d6e9c77f789db627317a639895c7de213a0a3dcddcdd9a2bd81",
+      "sha256": "eda54a31cd768fd72f7106f37a25be4d78708562a7023fb953c07b0f4caca0ba",
       "tools": [
         "at",
         "curl",
@@ -410,7 +410,7 @@
     },
     {
       "path": "bin/check-stage.sh",
-      "sha256": "dd0121ee69b09ecf037bca2a6a15d333e962a9de314ffd2147187ee480b790f4",
+      "sha256": "34d873b931d5d67789643114af9a81b1a8d5e1ba24b212a176c1fb8d2f0af0e7",
       "tools": [
         "bash",
         "make",
@@ -420,6 +420,7 @@
       "runs": [
         "bin/chain-verify.py",
         "bin/check-scan.sh",
+        "bin/check-govulncheck.py",
         "bin/check-acceptance.sh",
         "bin/check-fips.sh",
         "bin/check-guide.sh",
@@ -437,6 +438,29 @@
           "rule": "script-name",
           "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
           "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/check-govulncheck.py --scanners .github/policy/scanners.json --out check-results",
+          "why": "Check runs its Go scan isolated (python3 -I -B), as the verifier lines above; the one Python-run script of the scanners phase, pinned by the script judge of the Check wiring test (ruling G, REQ-CHAIN-006-AC4)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-govulncheck.py",
+      "sha256": "f5f9bf18a882b22eee3c242489976c2197a9d2452ac220694a4c07f16e223e0b",
+      "tools": [
+        "env",
+        "source"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "Check's Go scan of the module's code: `govulncheck -json ./...` in the pinned Go environment (GOFLAGS=-mod=readonly, GOTOOLCHAIN=local, the pinned Go first on the tool's search path), the stream written unchanged to check-results/govulncheck.json, a called symbol fails (ruling G, REQ-CHAIN-006-AC4); it knows nothing of signing; the listed words env (the interpreter line) and source (the scanners.json key source_scanners) are names in the file, not commands it runs",
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "env[\"PATH\"] = search",
+          "why": "the tool is started with the pinned Go first on its search path (the one value this script sets; a shell script may not set the search path, so this is Python): the pinned directory, then the inherited path"
         }
       ]
     },
@@ -890,7 +914,7 @@
       ],
       "signs": false,
       "reason": "Release, step release-verify: the tag, the release policy, then Build's, Sign's, Rebuild's and Check's records in rule 69's order (REQ-CHAIN-007-AC4); no credential exists in this step",
-      "sha256": "dee8d7f3d7ea025728c18399c00ffabcb1c7903a777dc8cba1e782e5a907b1ff",
+      "sha256": "f37dc534305a7b2d5380d690a15408edf87fa44e3ee40877e36a10177b17241d",
       "exceptions": [
         {
           "rule": "deny",
@@ -951,6 +975,7 @@
       "path": "bin/release-sign.sh",
       "tools": [
         "cosign",
+        "git",
         "jq",
         "python3",
         "trap"
@@ -962,7 +987,7 @@
       ],
       "signs": "other",
       "reason": "Release, step release-sign: keyless cosign signatures with a Rekor entry on the images in both registries and on the SBOMs, lock files, dependency evidence, checksums and release policy (REQ-CHAIN-007-AC8)",
-      "sha256": "17e9f4250e6bc933bf929c8248aa3330bff0cf2c9aa29ab98d836bf0eda04810",
+      "sha256": "91d4cee0ebb15b8db3a25fd3d0eade9f31ef18bc7dcc0cb1f832d55e2f5d1599",
       "reads_env": [
         "DOCKERHUB_USERNAME",
         "DOCKERHUB_TOKEN",

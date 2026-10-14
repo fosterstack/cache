@@ -12,3 +12,5 @@ python3 bin/chain-verify.py bind-items --policy policy.json --record witness-bui
 python3 bin/chain-verify.py stage-start --stage release --previous sign --record provenance/provenance.json --digests witness-build/digests.json --policy policy.json --rekor-stub provenance/provenance.rekor.json
 python3 bin/chain-verify.py stage-start --stage release --previous rebuild --record witness-rebuild/rebuild-collection.json --digests witness-build/digests.json --policy policy.json
 python3 bin/chain-verify.py check-list --policy policy.json --digests witness-build/digests.json --dir witness-check
+# ruling G: the govulncheck stream release-sign hands the evidence step is a product of Check's verified scanners record (bound under Check's identity, for Build's digests)
+python3 bin/chain-verify.py bind-check --policy policy.json --record witness-check/witness-scanners/scanners-collection.json --digests witness-build/digests.json --file check-results/govulncheck.json --product check-results/govulncheck.json

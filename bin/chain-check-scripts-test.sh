@@ -845,7 +845,8 @@ for s in check-scan check-fips check-artifacts check-acceptance check-guide; do 
 cat > "$dp/bin/python3" <<'EOF'
 #!/usr/bin/env bash
 [ "$1 $2" = "-I -B" ] || { echo "python3 not isolated: $*" >> "$DP_LOG"; exit 3; }
-shift 3; bash "bin/chain-verify.py" "$@"
+script=$3; shift 3
+case "$script" in bin/check-govulncheck.py) echo "check-govulncheck $*" >> "$DP_LOG" ;; *) bash "bin/chain-verify.py" "$@" ;; esac
 EOF
 chmod +x "$dp/bin/python3"
 drun() { rc=0; : > "$work/dplog"; out=$( (cd "$dp" && PATH="$dp/bin:$PATH" DP_LOG="$work/dplog" VERIFY_RC="${VERIFY_RC:-0}" GITHUB_REF_NAME=v0.3.0 bash bin/check-stage.sh "$@") 2>&1) || rc=$?; }   # a release run always has its tag (Q5)
@@ -874,12 +875,96 @@ if [ "$d_ok" = 1 ] && [ "$rc" = 2 ] && grep -Fq 'unknown phase: nosuch' <<< "$ou
 VERIFY_RC=1 drun scanners
 if [ "$d_ok" = 1 ] && [ "$rc" != 0 ] && ! grep -q '^check-' "$work/dplog"; then ok "AC3 when verifying Build's record fails, no check runs (rule 58)"; else bad "AC3 verify failure -> rc=$rc, log: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun scanners
-if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start " ] && grep -q '^verify policy make .*--tag ' "$work/dplog" && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1 | tr '\n' ' ')" = "check-scan " ]; then ok "AC3 phase scanners: the policy made per tag (Q5), both verifications, then only the scan"; else bad "AC3 phase scanners ran: $(tr '\n' ' ' < "$work/dplog")"; fi
+if [ "$rc" = 0 ] && [ "$(grep '^verify' "$work/dplog" | cut -d' ' -f2 | tr '\n' ' ')" = "policy stage-start " ] && grep -q '^verify policy make .*--tag ' "$work/dplog" && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1 | tr '\n' ' ')" = "check-scan check-govulncheck " ]; then ok "AC3 phase scanners: the policy made per tag (Q5), both verifications, then only the scan"; else bad "AC3 phase scanners ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun acceptance
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance gradle check-acceptance maven " ]; then ok "AC3 phase acceptance: gradle, then maven, nothing else"; else bad "AC3 phase acceptance ran: $(tr '\n' ' ' < "$work/dplog")"; fi
 drun runtime
 if [ "$rc" = 0 ] && [ "$(grep '^check-' "$work/dplog" | cut -d' ' -f1,2 | tr '\n' ' ')" = "check-acceptance egress check-acceptance k8s check-fips --digests check-artifacts --digests check-guide --guide " ]; then ok "AC3 phase runtime: egress, k8s, fips, guide, in that order"; else bad "AC3 phase runtime ran: $(tr '\n' ' ' < "$work/dplog")"; fi
-EXPECT=279
+# ---- ruling G (advisor Oct 12): bin/check-govulncheck.py, the source scan of the product module, whose output Release reads from Check's record -----------------------
+# `govulncheck -json ./...` runs once in the scanners step with the pinned Go (the fixed path /usr/local/bin/fscache-go/bin first on PATH, GOTOOLCHAIN=local,
+# GOFLAGS=-mod=readonly, never a flag or toolchain of the caller's environment); the raw stream is written byte for byte to OUT/govulncheck.json, which the Witness
+# record of the step carries as a product. Exit 0 only when the tool ran (a config message of scanner govulncheck, database https://vuln.go.dev) and no finding
+# reaches a called symbol (a trace whose first frame has a function); the file is written in every case that ran.
+gvt="$work/gv"; mkdir -p "$gvt/bin" "$gvt/.github/policy" "$gvt/fake" "$gvt/out"
+cp "$root/bin/check-govulncheck.py" "$gvt/bin/" 2> /dev/null || true
+printf 'module example.com/a\n' > "$gvt/go.mod"
+printf '{"scanners":["grype","osv-scanner"],"source_scanners":["govulncheck"],"pr_gate":["grype","inspector"]}\n' > "$gvt/.github/policy/scanners.json"
+cat > "$gvt/fake/govulncheck" <<'EOF'
+#!/usr/bin/env bash
+# the scan runs with an explicit environment (the caller's variables do not reach it), so the case settings come from a file next to this fake
+[ ! -f "$(dirname "$0")/env" ] || . "$(dirname "$0")/env"
+echo "govulncheck $*" >> "$GV_LOG"
+echo "env GOFLAGS=${GOFLAGS:-} GOTOOLCHAIN=${GOTOOLCHAIN:-} GOPROXY=${GOPROXY:-} PATH1=${PATH%%:*}" >> "$GV_LOG"
+echo "goenv GOOS=${GOOS-unset} GOARCH=${GOARCH-unset} CGO_ENABLED=${CGO_ENABLED-unset} GOAMD64=${GOAMD64-unset} GOPATH=${GOPATH-unset} GOCACHE=${GOCACHE-unset} GOMODCACHE=${GOMODCACHE-unset} GOENV=${GOENV-unset}" >> "$GV_LOG"
+case "$1" in -version) printf 'Go: go1.27.2\nScanner: govulncheck@v1.7.0\nDB: https://vuln.go.dev\nDB updated: 2026-10-10 00:00:00 +0000 UTC\n'; exit 0 ;; esac
+[ "${GV_RC:-0}" = 0 ] || { echo "govulncheck: boom" >&2; exit "$GV_RC"; }
+case "${GV_OUT:-clean}" in
+  clean) echo '{"config":{"protocol_version":"v1.0.0","scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://vuln.go.dev","db_last_modified":"2026-10-10T00:00:00Z","go_version":"go1.27.2","scan_level":"symbol"}}'
+         echo '{"progress":{"message":"Scanning your code and 12 packages across 3 dependent modules for known vulnerabilities..."}}' ;;
+  imported) echo '{"config":{"scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://vuln.go.dev"}}'
+         echo '{"osv":{"id":"GO-2099-0001"}}'; echo '{"finding":{"osv":"GO-2099-0001","trace":[{"module":"example.org/m","version":"v1.0.0","package":"example.org/m/p"}]}}' ;;
+  called) echo '{"config":{"scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://vuln.go.dev"}}'
+         echo '{"osv":{"id":"GO-2099-0002"}}'; echo '{"finding":{"osv":"GO-2099-0002","fixed_version":"v1.0.1","trace":[{"module":"example.org/m","version":"v1.0.0","package":"example.org/m/p","function":"Do"},{"module":"example.com/a","function":"main"}]}}' ;;
+  noconfig) echo '{"progress":{"message":"hello"}}' ;;
+  otherscanner) echo '{"config":{"scanner_name":"other","scanner_version":"v1.7.0","db":"https://vuln.go.dev"}}' ;;
+  otherdb) echo '{"config":{"scanner_name":"govulncheck","scanner_version":"v1.7.0","db":"https://mirror.example.org"}}' ;;
+  empty) : ;;
+  notjson) echo 'this is not json' ;;
+esac
+EOF
+chmod +x "$gvt/fake/govulncheck"
+gvrun() { # gvrun [ENV=V ...] -- ARGS... : runs the script in the throw-away tree with the fake first on PATH
+  local envs=(); while [ "$1" != -- ]; do envs+=("$1"); shift; done; shift
+  rc=0; : > "$work/gvlog"; rm -rf "$gvt/out"
+  { printf 'export GV_LOG=%q\n' "$work/gvlog"; local e; for e in "${envs[@]}"; do case "$e" in GV_*) printf 'export %s=%q\n' "${e%%=*}" "${e#*=}" ;; esac; done; } > "$gvt/fake/env"
+  out=$( (cd "$gvt" && env "${envs[@]}" PATH="$gvt/fake:$PATH" python3 -I -B bin/check-govulncheck.py "$@") 2>&1) || rc=$?; }
+GVARGS=(--scanners .github/policy/scanners.json --out out)
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ] && grep -q '^govulncheck -json ./\.\.\.$' "$work/gvlog" && [ "$(grep -c '^govulncheck ' "$work/gvlog")" = 2 ]; then ok "G a clean source scan: exit 0, the stream is written to OUT/govulncheck.json, and the tool ran once as govulncheck -json ./..."
+else bad "G a clean source scan -> rc=$rc $out | $(tr '\n' '|' < "$work/gvlog" | cut -c1-200)"; fi
+( cd "$gvt/fake" && : > env && GV_LOG=/dev/null GV_OUT=clean ./govulncheck -json ./... > "$work/gv-expected.bin" ) 2> /dev/null
+if [ -f "$gvt/out/govulncheck.json" ] && cmp -s "$gvt/out/govulncheck.json" "$work/gv-expected.bin" && [ -s "$work/gv-expected.bin" ] \
+   && [ "$(wc -l < "$gvt/out/govulncheck.json" | tr -d ' ')" = 2 ]; then ok "G the file is the tool's own output, byte for byte (the whole stream, whitespace included; two lines: config, progress)"
+else bad "G the written file is not the tool's output"; fi
+if grep -q 'GOFLAGS=-mod=readonly GOTOOLCHAIN=local' "$work/gvlog" && grep -q 'PATH1=/usr/local/bin/fscache-go/bin$' "$work/gvlog"; then ok "G the scan runs with GOFLAGS=-mod=readonly, GOTOOLCHAIN=local and the pinned Go first on PATH"
+else bad "G the scan environment is not the pinned one: $(grep '^env' "$work/gvlog" | head -1)"; fi
+gvrun GOFLAGS=-toolexec=/tmp/evil GOTOOLCHAIN=auto GOPROXY=https://evil.example GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && grep -q 'GOFLAGS=-mod=readonly GOTOOLCHAIN=local' "$work/gvlog" && ! grep -q 'evil' "$work/gvlog"; then ok "G a GOFLAGS, GOTOOLCHAIN or GOPROXY of the caller's environment never reaches the scan"
+else bad "G the caller's Go environment reached the scan: $(grep '^env' "$work/gvlog" | head -1) rc=$rc"; fi
+gvrun GOOS=windows GOARCH=arm64 CGO_ENABLED=0 GOAMD64=v4 GOPATH=/tmp/evil-path GOCACHE=/tmp/evil-cache GOMODCACHE=/tmp/evil-mod GOENV=/tmp/evil-env GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && grep -q '^goenv GOOS=unset GOARCH=unset CGO_ENABLED=unset GOAMD64=unset GOPATH=unset GOCACHE=unset GOMODCACHE=unset GOENV=off$' "$work/gvlog"; then ok "G no Go setting of the caller (GOOS, GOARCH, CGO_ENABLED, GOAMD64, GOPATH, GOCACHE, GOMODCACHE, GOENV) reaches the scan and persisted Go configuration is off (GOENV=off)"
+else bad "G the caller's platform or cache settings reached the scan: $(grep '^goenv' "$work/gvlog" | head -1) rc=$rc"; fi
+gvrun GV_OUT=called -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'GO-2099-0002' <<< "$out" && [ -f "$gvt/out/govulncheck.json" ]; then ok "G a finding that reaches a called symbol fails the scan, naming the advisory, and the file is still written"
+else bad "G a called finding -> rc=$rc $out"; fi
+gvrun GV_OUT=imported -- "${GVARGS[@]}"
+if [ "$rc" = 0 ] && [ -f "$gvt/out/govulncheck.json" ]; then ok "G a finding of an imported package that no called symbol reaches is carried in the file and does not fail (the PR gate's own rule)"
+else bad "G an imported-only finding -> rc=$rc $out"; fi
+for c in noconfig otherscanner otherdb empty notjson; do
+  gvrun GV_OUT=$c -- "${GVARGS[@]}"
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G an output that is not a govulncheck run on its own database ($c) fails"; else bad "G $c was accepted or the script is missing: rc=$rc $out"; fi
+done
+gvrun GV_RC=3 GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G a tool exit other than 0 fails (it could not run: nothing is clean behind it)"; else bad "G a failing tool was accepted"; fi
+rm -f "$gvt/fake/govulncheck.hide"; mv "$gvt/fake/govulncheck" "$gvt/fake/govulncheck.hide"
+gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ] && grep -q 'govulncheck: \|not installed' <<< "$out"; then ok "G govulncheck listed but not installed fails, naming it"; else bad "G a missing govulncheck: rc=$rc $out"; fi
+mv "$gvt/fake/govulncheck.hide" "$gvt/fake/govulncheck"
+for lst in '{"scanners":["grype"],"source_scanners":["govulncheck","trivy"]}' '{"scanners":["grype"],"source_scanners":[]}' '{"scanners":["grype"]}' '{"scanners":["grype"],"source_scanners":["snyk"]}'; do
+  printf '%s\n' "$lst" > "$gvt/.github/policy/scanners-x.json"
+  gvrun GV_OUT=clean -- --scanners .github/policy/scanners-x.json --out out
+  if [ "$rc" != 0 ] && [ "$rc" != 127 ] && [ ! -e "$gvt/out/govulncheck.json" ] && [ ! -s "$work/gvlog" ]; then ok "G a source_scanners list that is not exactly [govulncheck] runs nothing: $lst"; else bad "G list $lst accepted: rc=$rc"; fi
+done
+gvrun GV_OUT=clean -- --scanners .github/policy/scanners.json
+if [ "$rc" = 2 ]; then ok "G a missing --out is a usage error (exit 2)"; else bad "G missing --out -> rc=$rc"; fi
+gvrun GV_OUT=clean -- --scanners .github/policy/scanners.json --out out --extra x
+if [ "$rc" = 2 ]; then ok "G an unknown argument is a usage error (exit 2)"; else bad "G unknown argument -> rc=$rc"; fi
+rm -f "$gvt/go.mod"; gvrun GV_OUT=clean -- "${GVARGS[@]}"
+if [ "$rc" != 0 ] && [ "$rc" != 127 ]; then ok "G no go.mod in the working directory fails (a source scan of nothing is not a scan)"; else bad "G a tree without go.mod was scanned"; fi
+printf 'module example.com/a\n' > "$gvt/go.mod"
+if ! grep -Eq 'cosign|witness|attest|gitsign|docker login|ghcr\.io|secrets|GH_TOKEN|ACTIONS_ID_TOKEN' "$root/bin/check-govulncheck.py" 2> /dev/null && [ -f "$root/bin/check-govulncheck.py" ]; then ok "G the script knows nothing about signing (plain, rule 66)"
+else bad "G bin/check-govulncheck.py is missing or names a signing tool or credential"; fi
+EXPECT=301
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

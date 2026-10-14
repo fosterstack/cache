@@ -126,9 +126,10 @@ else echo "FAIL: the bump script does not describe the installer pin in the PR b
 
 # END TO END (Codex A r5 #3, B F2): a proposed bump, made by the script's real code path in a copy of the REAL files with a fake go.dev, leaves every
 # check that reads the pin green: the policy validator (load_scripts), the installer test and the go-freshness wiring test
-e2e="$(mktemp -d)"; rm -rf "$e2e"; mkdir -p "$e2e/bin" "$e2e/tools/requirements" "$e2e/.github/policy" "$e2e/.github/workflows" "$e2e/fake"
+e2e="$(mktemp -d)"; rm -rf "$e2e"; mkdir -p "$e2e/bin" "$e2e/tools/requirements" "$e2e/tools/govulncheck" "$e2e/.github/policy" "$e2e/.github/workflows" "$e2e/fake"
 root="$(cd "$here/.." && pwd)"
 cp "$root/go.mod" "$e2e/go.mod"; cp "$root/tools/requirements/go.mod" "$e2e/tools/requirements/go.mod"
+cp "$root/tools/govulncheck/go.mod" "$root/tools/govulncheck/go.sum" "$e2e/tools/govulncheck/"      # the installer test reads the govulncheck pin (ruling G)
 cp "$root/.github/policy/chain-scripts.json" "$e2e/.github/policy/"; cp "$root"/.github/workflows/*.yml "$e2e/.github/workflows/"
 cp "$root"/bin/*.sh "$root"/bin/*.py "$e2e/bin/" 2> /dev/null; cp "$root/bin/chain-test-signers.json" "$e2e/bin/" 2> /dev/null
 cur=$(sed -n 's/^GO_VER=\([0-9.]*\).*/\1/p' "$e2e/bin/install-scanner.sh" | head -1); new="9.${cur#*.}"

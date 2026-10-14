@@ -483,6 +483,10 @@ mappings:
   - ac: REQ-DEP-003-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+  - ac: REQ-DEP-003-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
+      - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
   - ac: REQ-DEP-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependabot-reviewer-test.sh" }
@@ -650,6 +654,7 @@ mappings:
   - ac: REQ-REL-009-AC1
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
+      - { type: shell-test, ref: "bin/release-patch-wiring-test.sh" }
   - ac: REQ-REL-009-AC2
     evidence:
       - { type: shell-test, ref: "bin/patch-decide-test.sh" }
@@ -683,6 +688,7 @@ mappings:
   - ac: REQ-SUP-001-AC1
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/supply-chain-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-SUP-001-AC2
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
@@ -1089,6 +1095,8 @@ mappings:
   - ac: REQ-CHAIN-006-AC4
     evidence:
       - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-install-witness-test.sh" }
   - ac: REQ-CHAIN-006-AC5
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
@@ -1110,6 +1118,7 @@ mappings:
   - ac: REQ-CHAIN-006-AC10
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/scout-root-cause-test.sh" }
   - ac: REQ-CHAIN-006-AC11
     evidence:
       - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
