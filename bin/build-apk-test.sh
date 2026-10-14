@@ -1095,11 +1095,12 @@ json.dump({"closed": c, "from_environment": ["SOURCE_DATE_EPOCH"]}, open(sys.arg
 PYW
 }
 # rp_build SCRIPT OUT: the build-apk copy SCRIPT with PATH=$rp and nothing else of the caller's environment; log in $work/rp.log, status in $work/rp.rc
-rp_build() { local script=$1 out=$2; : >"$CALLS"; rp_sealed
+rp_ba() { local script=$1; shift; : >"$CALLS"; rp_sealed
   env -i PATH="${RP_PATH:-$rp}" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 \
     TEST_SEALED_ENV="$work/rp-sealed.json" TEST_RECIPE="$fx/melange.yaml" TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_MELANGE="$rpw/melange" \
-    TEST_GO="$rpw/go" TEST_SHA256SUM="$rpw/sha256sum" "${rp_extra[@]}" "$BASH_BIN" "$script" "${rp_args[@]}" --out "$out" >"$work/rp.log" 2>&1 </dev/null
+    TEST_GO="$rpw/go" TEST_SHA256SUM="$rpw/sha256sum" "${rp_extra[@]}" "$BASH_BIN" "$script" "$@" >"$work/rp.log" 2>&1 </dev/null
   echo $? >"$work/rp.rc"; }
+rp_build() { rp_ba "$1" "${rp_args[@]}" --out "$2"; }
 # rp_sign SCRIPT BUILD REBUILD: the release-sign copy likewise
 rp_sign() { : >"$CALLS"
   env -i PATH="$rp" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" TEST_MELANGE="$rpw/melange" "${rp_extra[@]}" \
@@ -1131,7 +1132,6 @@ M = {   # name -> [(old, new), ...]; each old must occur exactly once in the cop
  "ba-env-go":     [('gov=$("$ENVBIN" GOTOOLCHAIN=local', 'gov=$(env GOTOOLCHAIN=local')],
  "ba-openssl":    [('tmp=$(mktemp -d)\n', 'openssl version >/dev/null\ntmp=$(mktemp -d)\n')],      # inserted call: the script has no openssl site of its own
  "ba-apko":       [('tmp=$(mktemp -d)\n', 'apko version >/dev/null\ntmp=$(mktemp -d)\n')],         # inserted call: likewise
- "ba-sysctl-sudo": [('"$SUDO" sysctl -w', 'sudo sysctl -w')],
  "ba-brace":      [(UN, '"$UNSHARE" -n mela{n..n}ge')],
  "ba-brace-set":  [(UN, '"$UNSHARE" -n m{elange,elange}')],
  "ba-quote":      [(UN, '"$UNSHARE" -n m\'elang\'e')],
@@ -1183,10 +1183,75 @@ for m in ba-sudo ba-sha256sum ba-python3 ba-git; do
   o=$(mo); RP_PATH="$work/rp-open" rp_build "$rpm/$m.sh" "$o"
   t "AC9" "$m: with the tool on the search path the same mutant completes (so the restricted path is what makes it fail)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q '^built ' '$work/rp.log'"
 done
-# the first sudo call (sysctl) only warns when it fails (production: '|| echo warning'): the mutant must be visibly not the control
+# --- the named-tool sites the successful control does not reach (review round 1 of PR 349) -----------------------------------------
+# each has its own restricted scenario (expected outcomes, failures included) and site-specific mutants: bare, assembled, and through basename
+python3 - "$work/ba-copy.sh" "$rpm" <<'PYM'
+import sys
+src = open(sys.argv[1]).read(); out = sys.argv[2]
+SDE = '"$GIT" -C "$src" log -1 --format=%ct 2>/dev/null |'
+RM = '|| "$SUDO" rm -rf "$tmp" >/dev/null 2>&1;'
+PR = '"$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1;'
+SYS = '"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 ||'
+ENVI = '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE"'
+M = {
+ "ba-sde-git":      [(SDE, 'git -C "$src" log -1 --format=%ct |')],
+ "ba-sde-assembled": [(SDE, 'g=gi; g+=t; "$g" -C "$src" log -1 --format=%ct |')],
+ "ba-sde-basename": [(SDE, '"$(basename "$GIT")" -C "$src" log -1 --format=%ct |')],
+ "ba-rm-sudo":      [(RM, '|| sudo rm -rf "$tmp";')],
+ "ba-rm-assembled": [(RM, '|| s=su; s+=do; "$s" rm -rf "$tmp";')],
+ "ba-rm-basename":  [(RM, '|| "$(basename "$SUDO")" rm -rf "$tmp";')],
+ "ba-probe-sudo":   [(PR, 'sudo "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-probe-unshare": [(PR, '"$SUDO" unshare -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-probe-python3": [(PR, '"$SUDO" "$UNSHARE" -n python3 -I -B bin/net-probe.py;')],
+ "ba-probe-assembled": [(PR, 'g=sud; g+=o; "$g" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-probe-basename": [(PR, '"$(basename "$SUDO")" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-sysctl-sudo":  [(SYS, 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ||')],
+ "ba-env-opt":      [('"$SUDO" "$ENVBIN" -i', '"$SUDO" -n env -i')],
+ "ba-env-dashes":   [('"$SUDO" "$ENVBIN" -i', '"$SUDO" -- env -i')],
+ "ba-env-after-i":  [(ENVI, '"$SUDO" "$ENVBIN" -i "${sealed[@]}" env "$UNSHARE"')],
+}
+for name, pairs in M.items():
+    t = src
+    for old, new in pairs:
+        assert t.count(old) == 1, (name, old, t.count(old))
+        t = t.replace(old, new)
+    assert t != src
+    open("%s/%s.sh" % (out, name), "w").write(t)
+PYM
+# 1. env named by bare name after sudo's options, after --, and after env -i: not found (the stub resolves a command operand under the script's path)
+for m in ba-env-opt ba-env-dashes ba-env-after-i; do rp_extra=("${RP_GO[@]}"); rp_refused $m env "env by bare name ($m) is not found"; done
+# 2a. --print-source-date-epoch reaches git
+rp_extra=(); rp_ba "$work/ba-copy.sh" --print-source-date-epoch --source-dir "$src"
+t "AC9" "build-apk.sh: --print-source-date-epoch with PATH holding only the coreutils prints the commit time (reaches the git site)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -qx '$SDE' '$work/rp.log'"
+for m in ba-sde-git ba-sde-assembled ba-sde-basename; do
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  rp_ba "$rpm/$m.sh" --print-source-date-epoch --source-dir "$src"
+  t "AC9" "$m: git by bare name in the commit-time call is not found, and no commit time is printed" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -Eqi 'git.*(not found|No such file)' '$work/rp.log' && ! grep -qx '$SDE' '$work/rp.log'"
+done
+# 2b. the cleanup fallback: an ordinary rm that fails (a tree the user cannot remove) runs sudo rm; skipped where the user is root (rm succeeds)
+if [ "$(id -u)" != 0 ]; then
+  rp_extra=("${RP_GO[@]}" STUB_LOCKED_CACHE=1); rp_build "$work/ba-copy.sh" "$(mo)"
+  t "AC9" "build-apk.sh: with a cleanup that fails the fixed-path sudo rm runs (the build still ends 0 and says built)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q '^built ' '$work/rp.log' && grep -q '^sudo rm -rf ' '$CALLS'"
+  for m in ba-rm-sudo ba-rm-assembled ba-rm-basename; do
+    t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+    rp_build "$rpm/$m.sh" "$(mo)"
+    t "AC9" "$m: sudo by bare name in the cleanup fallback is not found and no sudo rm was made" bash -c "grep -q 'sudo: command not found' '$work/rp.log' && ! grep -q '^sudo rm' '$CALLS'"
+  done
+  chmod -R u+w "$work"/out.* 2>/dev/null; chmod -R u+w /tmp/tmp.* 2>/dev/null || true
+else echo "note: running as root: the cleanup-fallback scenario is skipped (rm cannot fail)"; ok; fi
+# 2c. a network-classified melange failure reaches the probe: sudo unshare -n python3 net-probe.py, exit 4
+rp_extra=("${RP_GO[@]}" STUB_NETATTEMPT=1); rp_build "$work/ba-copy.sh" "$(mo)"
+t "AC9" "build-apk.sh: a network failure with PATH holding only the coreutils runs the probe by fixed paths and exits 4 naming the attempt" bash -c "[ '$(cat "$work/rp.rc")' = 4 ] && grep -q 'network attempt was made' '$work/rp.log' && grep -Eq '^unshare -n .*net-probe.py' '$CALLS'"
+for m in ba-probe-sudo ba-probe-unshare ba-probe-python3 ba-probe-assembled ba-probe-basename; do
+  case $m in ba-probe-sudo|ba-probe-assembled|ba-probe-basename) tool=sudo;; ba-probe-unshare) tool=unshare;; *) tool=python3;; esac
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  rp_build "$rpm/$m.sh" "$(mo)"
+  t "AC9" "$m: $tool by bare name in the network probe is not found: the run does not exit 4 and does not claim a network attempt" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && [ '$(cat "$work/rp.rc")' != 4 ] && ! grep -q 'network attempt was made' '$work/rp.log' && grep -Eqi '$tool.*(not found|No such file)' '$work/rp.log'"
+done
+# 3. the nonfatal sysctl call: its failure is proved by its diagnostic and effect (production: '|| echo warning')
 t "AC9" "ba-sysctl-sudo differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/ba-sysctl-sudo.sh'"
-o=$(mo); rp_build "$rpm/ba-sysctl-sudo.sh" "$o"
-t "AC9" "ba-sysctl-sudo: sudo by bare name in the sysctl call is not found: the run says it could not relax the sysctl and no sysctl call was made (the control prints no warning)" bash -c "grep -q 'could not relax' '$work/rp.log' && ! grep -q '^sysctl' '$CALLS'"
+rp_extra=("${RP_GO[@]}"); rp_build "$rpm/ba-sysctl-sudo.sh" "$(mo)"
+t "AC9" "ba-sysctl-sudo: sudo by bare name in the sysctl call is 'not found' (named), the warning 'could not relax' is printed and no sysctl call was made; the call is nonfatal by design" bash -c "grep -q 'sudo: command not found' '$work/rp.log' && grep -q 'could not relax' '$work/rp.log' && ! grep -q '^sysctl' '$CALLS'"
 rp_build "$work/ba-copy.sh" "$(mo)"
 t "AC9" "build-apk.sh: the control prints no sysctl warning and does call sysctl" bash -c "! grep -q 'could not relax' '$work/rp.log' && grep -q '^sysctl' '$CALLS'"
 # --- release-sign-apks.sh -------------------------------------------------------------------------------------------
