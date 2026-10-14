@@ -2139,8 +2139,8 @@ CASE="AC19: a call of ./.github/workflows/<name>.yml whose file is in the tree i
 check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/l1.out"
 lcall l2 './.github/workflows/callee.yml' $'    with:\n      mode: release\n      digests: ${{ needs.j.outputs.digests }}\n'
 lck l2
-CASE="AC19: a call whose with: holds only plain words and expressions without a version-shaped token is no item either (exit 0)"
-check test "$rc" -eq 0
+CASE="AC19: ANY with: value keeps the call an item, plain words and expressions included (the closed form: exit 1)"
+check test "$rc" -eq 1
 lcall l3 './.github/workflows/callee.yml' $'    with:\n      tool-version: 9.9.9\n'
 lck l3
 CASE="AC19: a with: value that is a version (9.9.9) keeps the call an item that cannot pass: exit 1, the local call is named"
@@ -2324,12 +2324,12 @@ CASE="AC19: a callee with no workflow_call trigger cannot be called: not exempte
 check test "$rc" -eq 1
 lcallc m7 './.github/workflows/callee.yml' $'    with:\n      mode2: release\n'
 lck m7
-CASE="AC19: a digit in an input NAME is not a digit in a value: exempted (exit 0)"
-check test "$rc" -eq 0
+CASE="AC19: any with: value, whatever it holds, keeps the call an item (exit 1)"
+check test "$rc" -eq 1
 lcallc m8 './.github/workflows/callee.yml' $'    with:\n      mode: café\n'
 lck m8
-CASE="AC19: a non-ASCII value is not serialised into digits: exempted (exit 0)"
-check test "$rc" -eq 0
+CASE="AC19: a non-ASCII with: value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
 lcallc m9 './.github/workflows/callee.yml' $'    with:\n      steps: [one, \'two2\']\n'
 lck m9
 CASE="AC19: a digit inside a list value keeps the call an item (exit 1)"
@@ -2362,7 +2362,7 @@ jobs:
 EOF
 lcallc m11 './.github/workflows/callee.yml' '' "$work/callee-dl.yml"
 lck m11
-CASE="AC19: a callee with a download this check cannot measure is not exempted (exit 1)"
+CASE="AC19: a callee with a download this check cannot measure: the call is no item, the callee's own new download fails by its own rule (exit 1)"
 check test "$rc" -eq 1
 # a call whose with: input changes between base and head, in the quoted-space spelling (the input's identity must move with it)
 rm -rf "$work/mchg"; cp -R "$base" "$work/mchg"
@@ -2529,8 +2529,8 @@ w = pathlib.Path('.github/workflows')
 c = w / 'ci.yml'
 c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/selfcall.yml\n')"
 lck selfc
-CASE="AC19: a workflow that calls itself terminates and is not exempted (exit 1, no crash)"
-check test "$rc" -eq 1; check bash -c "! grep -qi 'traceback\|recursion' '$work/selfc.out'"
+CASE="AC19: a workflow that calls itself terminates (no crash); with no with: the call is no item and nothing else moved (exit 0)"
+check test "$rc" -eq 0; check bash -c "! grep -qi 'traceback\|recursion' '$work/selfc.out'"
 # AC20: an identical copy added beside an unchanged install line whose assignment changed
 printf '%s\n' '#!/usr/bin/env bash' 'DEPS=requests' 'pip install "$DEPS"' >"$work/cp-base.sh"
 printf '%s\n' '#!/usr/bin/env bash' 'DEPS=flask' 'pip install "$DEPS"' 'pip install "$DEPS"' >"$work/cp-head.sh"
@@ -2627,8 +2627,8 @@ jobs:
 EOF
 lcallc m16 './.github/workflows/callee.yml' $'    with:\n      mode: release\n' "$work/callee-envarg.yml"
 lck m16
-CASE="AC19: an input in an if: and in an env value handed to a script as a quoted argument is the allowed shape (exit 0)"
-check test "$rc" -eq 0
+CASE="AC19: even the quiet shape (an if: and a quoted env argument) keeps the call an item once the caller passes a with: value (exit 1)"
+check test "$rc" -eq 1
 
 # round 5 of the review: the step that receives an input through env must be nothing but a literal script invocation
 mkcallee() { # NAME 'run text' -> $work/NAME.yml: a callee with one step handing inputs.x to env X and running the text
@@ -2646,6 +2646,50 @@ PY
   CASE="AC19: a step that hands an input to env and runs [$run] is not a literal script invocation: the call stays an item (exit 1)"
   check test "$rc" -eq 1
 done
+
+# --- the closed form (orchestrator, Oct 14): a with-bearing local call is ruled by a base-branch row bound to its identity ---------------------------------
+printf '%s\n' "on: workflow_call" "jobs:" "  k:" "    runs-on: ubuntu-latest" "    steps:" "      - uses: actions/checkout@$SHA1 # v4.1.0" >"$work/callee-w.yml"
+lcallc w1 './.github/workflows/callee.yml' $'    with:\n      mode: release\n' "$work/callee-w.yml"
+lck w1
+CASE="AC19 closed form: a call with a with: block is an item that cannot pass (exit 1)"
+check test "$rc" -eq 1
+lcallc w2 './.github/workflows/callee.yml' $'    with: {}\n' "$work/callee-w.yml"
+lck w2
+CASE="AC19 closed form: an EMPTY with: block is no with: (exit 0)"
+check test "$rc" -eq 0
+# lcrow OUT MODE REPO: a row built from the real inventory of REPO's head, the hash computed here from the item's whole key
+lcrow() {
+  python3 - "$1" "$2" "$work/$3" "$here/../supply-chain/pin-inventory.py" <<'PY'
+import hashlib, importlib.util, json, sys
+out, mode, repo, invp = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("inv", invp); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+head = inv.load_at(repo, "HEAD"); base = inv.load_at(repo, "HEAD~1")
+keys = [k for k in head if k not in base and "(local)" in k]
+assert len(keys) == 1, keys
+h = hashlib.sha256(keys[0].encode()).hexdigest()[:16]
+row = {"file": ".github/workflows/ci.yml", "form": "a local reusable workflow call", "key": h, "line": h,
+       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"}
+if mode == "wrongfile": row["file"] = ".github/workflows/other.yml"
+elif mode == "wrongform": row["form"] = "a download"
+elif mode == "wronghash": row["key"] = row["line"] = ("0" if h[0] != "0" else "1") + h[1:]
+elif mode != "ok": raise SystemExit(mode)
+json.dump({"_format": "t", "exceptions": [], "unmeasured_text": [row]}, open(out, "w"))
+PY
+}
+lcrow "$work/lc-ok.json" ok w1
+rc=0; python3 "$chk" --root "$work/w1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-ok.json" >"$work/w1r.out" 2>&1 || rc=$?
+CASE="AC19 closed form: a base-branch row naming the call's file and whole identity rules it: exit 0, reported as ruled text with the ruling"
+check test "$rc" -eq 0; check grep -q 'advisor ruling Oct 14' "$work/w1r.out"
+for m in wrongfile wrongform wronghash; do
+  lcrow "$work/lc-$m.json" $m w1
+  rc=0; python3 "$chk" --root "$work/w1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-$m.json" >"$work/w1r.out" 2>&1 || rc=$?
+  CASE="AC19 closed form: a row with the $m does not rule the call (exit 1)"
+  check test "$rc" -eq 1
+done
+lcallc w3 './.github/workflows/callee.yml' $'    with:\n      mode: debug\n' "$work/callee-w.yml"
+rc=0; python3 "$chk" --root "$work/w3" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-ok.json" >"$work/w3r.out" 2>&1 || rc=$?
+CASE="AC19 closed form: editing the with: block voids the row (the identity carries the block's hash): exit 1"
+check test "$rc" -eq 1
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

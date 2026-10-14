@@ -550,6 +550,25 @@ def load_ruled_text(path, required=False):
 
 
 UNPINNED_FORM = "an unpinned package install"
+LOCAL_CALL_FORM = "a local reusable workflow call"
+
+
+def _item_hash(item):
+    return hashlib.sha256(item.key.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def split_ruled_local_calls(moved, rulings):
+    """REQ-SUP-001-AC19: a local reusable-workflow call that keeps a with: block is an item that cannot pass, unless a base-branch row names it: file, form
+    "a local reusable workflow call", key and line both the 16-hex hash of the item's whole identity (its path and the hash of its with: block), so an edited
+    with: block is another item. Returns (still moved, [(item, ruling)])."""
+    keep, ruled = [], []
+    for m in moved:
+        r = None
+        if m.kind == "action" and m.version == "(local)" and m.src:
+            h = _item_hash(m)
+            r = rulings.get((m.src[0], LOCAL_CALL_FORM, h, h))
+        (ruled if r else keep).append((m, r[0]) if r else m)
+    return keep, ruled
 
 
 def drop_ruled_unpinned(items, ruled_lines):
@@ -586,7 +605,8 @@ def _run(a, moved, fx, now):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
             added.append(k)
-    moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20: judged by the ruled row of ITS OWN line, never by another line's
+    moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20
+    moved, ruled_calls = split_ruled_local_calls(moved, rulings)                                                       # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
@@ -599,6 +619,9 @@ def _run(a, moved, fx, now):
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+    for it, ruling in ruled_calls:
+        rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
+        print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})

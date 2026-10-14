@@ -201,111 +201,20 @@ def _ctx_tag(node):
 _LOCAL_CALL = re.compile(r"\./\.github/workflows/(?!.*\.\.)[A-Za-z0-9._-]+\.yml")
 
 
-def _scalars(node):
-    """Every scalar VALUE under a with: block (mapping keys and serialisation are never looked at)."""
-    if isinstance(node, dict):
-        for v in node.values():
-            yield from _scalars(v)
-    elif isinstance(node, list):
-        for v in node:
-            yield from _scalars(v)
-    else:
-        yield "" if node is None else str(node)
-
-
-_PLAIN_VERSION = re.compile(r"[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?|\(default\)|\(file\)")
-
-
-def _input_fed(item):
-    """True unless the item names a plain, literal version (a commit, a digest, dotted numbers) or one the file itself fixes ((default), (file)): anything else
-    (an expression, a variable, an installer input nobody classified) is a version a caller's input could select, and is refused (REQ-SUP-001-AC19)."""
-    return not _PLAIN_VERSION.fullmatch(item.version) or any(m in item.key for m in ("${{", "${var}", "(variable)", "(expression)"))
-
-
-_INPUT = re.compile(r"\binputs\s*(?:\.|\[)", re.I)
-_ARG = r"""(?:"\$[A-Za-z_][A-Za-z0-9_]*"|"\$\{[A-Za-z_][A-Za-z0-9_]*\}"|[A-Za-z0-9_.:=/@+,-]+|'[^'$`"\\]*')"""
-_SCRIPT_RUN = re.compile(r"(?:bash|sh|python3?)(?: -[IBEsuxv]+)* (?:\./)?(?:bin|\.github/[A-Za-z0-9_./-]+)/[A-Za-z0-9_.-]+\.(?:sh|py)(?: " + _ARG + r")*")
-_PRINTF_RUN = re.compile(r"""printf '%s' "\$[A-Za-z_][A-Za-z0-9_]*" > [A-Za-z0-9_./-]+""")
-
-
-def _literal_script_run(run):
-    """True when a step's run text is only invocations of a literal script file of the tree (bash|sh|python3 PATH with plain or quoted-variable arguments) or a
-    printf of a quoted variable into a plain file: no eval, no -c, no command word taken from a variable, no pipe, no substitution (REQ-SUP-001-AC19)."""
-    if not isinstance(run, str):
+def _exempt_local_call(raw, job):
+    """REQ-SUP-001-AC19 (the closed form, orchestrator Oct 14): a job calling exactly ./.github/workflows/<plain name>.yml, a workflow of this tree with a
+    workflow_call trigger and jobs, with NO with: block (absent or empty: no caller can hand it anything), is no item: the called file is inventoried itself.
+    Any with: value, any other local form, a step, keeps the call an item that cannot pass."""
+    if not _LOCAL_CALL.fullmatch(raw) or raw[2:] not in _TREE[0] or job.get("with"):
         return False
-    lines = [ln.strip() for ln in re.sub(r"\\\n\s*", " ", run).split("\n") if ln.strip() and not ln.strip().startswith("#")]
-    return bool(lines) and all(_SCRIPT_RUN.fullmatch(ln) or _PRINTF_RUN.fullmatch(ln) for ln in lines)
-
-
-def _inputs_confined(doc):
-    """True when the callee refers to its caller's inputs only where no version can be selected by name: an `if:` condition, a step `name:`, or a step `env:` value
-    of a step whose whole run text is literal script invocations (see _literal_script_run; a script is a file of this tree, read and pinned like any other). An
-    input in uses:, with:, run:, a container, a matrix or a job-level key is a version a caller could steer (REQ-SUP-001-AC19)."""
-    def has(n):
-        return bool(_INPUT.search(json.dumps(n, default=str))) if n is not None else False
-    for job in (doc.get("jobs") or {}).values():
-        if not isinstance(job, dict):
-            return False
-        for k, v in job.items():
-            if k in ("if", "name", "needs", "permissions", "timeout-minutes", "concurrency", "outputs"):
-                continue
-            if k == "steps":
-                continue
-            if has(v):
-                return False
-        for st in job.get("steps") or []:
-            if not isinstance(st, dict):
-                return False
-            env = st.get("env") if isinstance(st.get("env"), dict) else {}
-            rest = {k: v for k, v in st.items() if k not in ("if", "name", "env")}
-            if has(rest) or (st.get("env") is not None and not isinstance(st.get("env"), dict) and has(st.get("env"))):
-                return False
-            if any(has(v) for v in env.values()) and not _literal_script_run(st.get("run")):
-                return False   # an input handed through env to anything but a literal script invocation can be turned into a command or a version
-            if any(has(v) for v in env.values()) and (st.get("uses") or st.get("with")):
-                return False
-    return not has({k: v for k, v in doc.items() if k not in ("jobs", "on")})
-
-
-_CALLEE_MODE = [False]   # True while a callee is being judged: no call inside it is exempted, so a relay, a cycle or a self-call is never plain
-
-
-def _callee_is_plain(path, text):
-    """True when the file is a reusable workflow that no caller can steer a version through: it parses as a workflow with on.workflow_call and jobs, yields no
-    item whose identity holds an expression or a variable, and has no unmeasurable download (REQ-SUP-001-AC19)."""
     try:
-        doc = yaml.load(text, Loader=yaml.BaseLoader)
+        doc = yaml.load(_FILES[0].get(raw[2:], ""), Loader=yaml.BaseLoader)
     except yaml.YAMLError:
         return False
     if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
         return False
-    if not _inputs_confined(doc):
-        return False
     on = doc.get("on")
-    if not (on == "workflow_call" or (isinstance(on, list) and "workflow_call" in on) or (isinstance(on, dict) and "workflow_call" in on)):
-        return False
-    saved = (_TREE[0], _FILES[0], _ENV_CTX[0], _JOB_SUMS[0], _CALLEE_MODE[0])
-    _CALLEE_MODE[0] = True
-    try:
-        items = inventory({path: text})
-        if any(_input_fed(i) or i.version == "(local)" for i in items.values()):   # a local call left inside it forwards inputs the tree-level view cannot follow
-            return False
-        return not any(True for _ in unmeasured_occurrences({path: text}))
-    except RuntimeError:
-        return False
-    finally:
-        _TREE[0], _FILES[0], _ENV_CTX[0], _JOB_SUMS[0], _CALLEE_MODE[0] = saved
-
-
-def _exempt_local_call(raw, job):
-    """REQ-SUP-001-AC19: a job calling exactly ./.github/workflows/<plain name>.yml (the raw value, unstripped), a workflow of this tree that is plain
-    (above), with no digit in any value of its with: block, is no item: the called file is inventoried itself."""
-    if _CALLEE_MODE[0] or not _LOCAL_CALL.fullmatch(raw) or raw[2:] not in _TREE[0]:
-        return False
-    if any(re.search(r"\d", s) for s in _scalars(job.get("with"))):
-        return False
-    path = raw[2:]
-    return _callee_is_plain(path, _FILES[0].get(path, ""))
+    return on == "workflow_call" or (isinstance(on, list) and "workflow_call" in on) or (isinstance(on, dict) and "workflow_call" in on)
 
 
 def _uses(u, node, out, labels):
@@ -591,6 +500,9 @@ def inventory(files):
                 mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
                 raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
             _walk(doc, found, labels, "")
+            for it in found:
+                if it.src is None:
+                    it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
         for it in found:
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
