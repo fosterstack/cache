@@ -130,9 +130,9 @@ The release pipeline's scan stage is public:
 [`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml) runs one
 job per scanner in [the scanner list](../.github/policy/scanners.json) (today Grype and
 OSV-Scanner) against the exact candidate digests: every variant and architecture, and
-for Grype every release archive too. The commands below are the same invocations
-pointed at one public tag, so they show what a scan of that tag reports; they do not
-cover everything the gate covers.
+for Grype every release archive too. The commands below are partial examples that use
+the gate's scanners and its severity policy on one public tag; they show what a scan of
+that tag reports and do not cover everything the gate covers.
 
 Grype runs in the gate at every severity with the published VEX applied. The VEX
 document ships with each release as `fosterstack-cache.openvex.json` and lives in-repo
@@ -159,8 +159,8 @@ trivy image --scanners vuln \
   ghcr.io/fosterstack/cache:X.Y.Z
 ```
 
-To see raw findings including the ones we have publicly dispositioned, run Grype or
-Trivy without `--vex`, or Docker Scout without `--vex-location` and `--vex-author`.
+To see the findings without our statements applied, run Grype or Trivy without
+`--vex`, or Docker Scout without `--vex-location` and `--vex-author`.
 The difference between the two runs is the set of findings that applicable `not_affected`
 and `fixed` statements suppress, which is how you audit them.
 
