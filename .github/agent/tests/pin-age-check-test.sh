@@ -2862,5 +2862,19 @@ for moved, want in ((["package:pypi/x@1.0.0", "tool:file:build/locks/archive-key
     assert len([c for c in gh.calls if c[:2] == ("run", "rerun")]) == want, (moved, gh.calls)
 PY
 
+CASE="AC21: renaming a file between two paths that _hide() folds (build/\${var}/... listed, build/\$OTHER/... not) with the same content is a MOVED item (the path is part of the identity), so the unlisted one fails"
+check python3 - "$chk" "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+def load(n, p):
+    s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+ac, inv = load("ac", sys.argv[1]), load("inv", sys.argv[2])
+base = inv.inventory({"build/${var}/archive-keys.sha256": "same\n"})
+head = inv.inventory({"build/$OTHER/archive-keys.sha256": "same\n"})
+moved = inv.moved(base, head)
+assert len(moved) == 1, moved
+kept, ruled = ac.split_base_inputs(moved, {"build/${var}/archive-keys.sha256"})
+assert len(kept) == 1 and not ruled
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

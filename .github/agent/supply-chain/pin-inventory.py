@@ -464,7 +464,7 @@ def inventory(files):
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
             found = [Item("tool", "file:" + path, "(file)")]
             found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
-            found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # what an installer's *-version-file selects: a changed content is a changed key
+            found[0].step = "content:" + hashlib.sha256((path + "\0" + text).encode("utf-8", "replace")).hexdigest()      # what an installer's *-version-file selects: a changed content is a changed key
         elif path.endswith(".sh"):
             found = []
             joined = re.sub(r"\\\n\s*", " ", text).split("\n")
