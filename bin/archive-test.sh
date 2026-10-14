@@ -48,9 +48,9 @@ src, dst, tools, mfile, old, new = sys.argv[1:7]
 names = {"PY3": "python3", "CRANE": "crane", "MKTEMP": "mktemp", "RM": "rm"}
 for f in ("archive-push.sh", "archive-pull.sh", "archive-verify.py"):
     out = []
-    for ln in open(src + "/" + f).read().split("\n"):
-        m = re.match(r"^([A-Z0-9_]+)=.*#\s*TEST-SUBST", ln)
-        out.append("%s=%s/%s   # TEST-SUBST" % (m.group(1), tools, names[m.group(1)]) if m and m.group(1) in names else ln)
+    for row in open(src + "/" + f).read().split("\n"):
+        m = re.match(r"^([A-Z0-9_]+)=.*#\s*TEST-SUBST", row)
+        out.append("%s=%s/%s   # TEST-SUBST" % (m.group(1), tools, names[m.group(1)]) if m and m.group(1) in names else row)
     s = "\n".join(out)
     if f == mfile:
         assert s.count(old) == 1, (f, old, s.count(old))
