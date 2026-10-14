@@ -161,6 +161,8 @@ if pr not in ("", None, True) and pr != {}:
     fail("pull_request carries a filter: " + str(pr))
 job = d.get("jobs", {}).get("vendor")
 if not job: fail("ci.yml has no job named vendor")
+if job.get("name") != "vendor": fail("the job's check name is " + str(job.get("name")) + ", not vendor")
+if d.get("defaults"): fail("a workflow-level defaults block (a shell default can skip every step)")
 ro = str(job.get("runs-on", ""))
 if not ro.startswith("ubuntu-") or "self-hosted" in ro: fail("runs-on " + ro)
 if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))

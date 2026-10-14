@@ -7,7 +7,7 @@
 #
 # Exit codes: 0 identical (or the narrow no-vendor case below) | 1 a difference is named, or the check could not be completed (no go
 # toolchain, a failed go mod verify or go mod vendor, a tree or a base that cannot be read in full) | 2 refused: not run from the
-# repository root, an unknown argument, an unreadable tree, a vendor path that is not a vendor/ directory at the top, or a tree without
+# repository root, an unknown argument, an unreadable tree, a go.mod or go.sum that is a link, a vendor path that is not a vendor/ directory at the top, or a tree without
 # go.mod, go.sum or vendor/. It writes nothing but its scratch directory, and it only compares: no token, no commit. The Go environment
 # (GOPROXY, GOFLAGS, GOSUMDB) is the caller's, so a CI run uses the checksum database and a fixture run uses a file proxy.
 #
@@ -49,6 +49,7 @@ if [ ! -d "$src/vendor" ] || [ -L "$src/vendor" ]; then
 fi
 
 [ -f "$src/go.mod" ] && [ -f "$src/go.sum" ] || die "$src holds no go.mod and go.sum next to vendor/"
+[ ! -L "$src/go.mod" ] && [ ! -L "$src/go.sum" ] || die "go.mod or go.sum is a link: a repair would land in its target and hide from the comparison"
 command -v go >/dev/null 2>&1 || die "go toolchain not found: the vendored tree cannot be regenerated" 1
 command -v find diff cmp tar mktemp rm head >/dev/null 2>&1 || die "a required tool (find, diff, cmp, tar, mktemp, rm, head) is not found" 1
 
@@ -66,9 +67,13 @@ scratch=$(mktemp -d) || die "no scratch directory" 1
 tree="$scratch/tree"; mkdir "$tree" || die "no scratch tree" 1
 ( cd "$src" && tar -cf - --exclude=./.git --exclude=./vendor . ) | ( cd "$tree" && tar -xf - ) || die "cannot copy $src" 1
 ( cd "$tree" && go mod verify ) >"$scratch/verify.log" 2>&1 || { cat "$scratch/verify.log" >&2; die "go mod verify failed" 1; }
-( cd "$tree" && go mod vendor ) >"$scratch/vendor.log" 2>&1 || { cat "$scratch/vendor.log" >&2; die "go mod vendor failed" 1; }
+( umask 022; cd "$tree" && go mod vendor ) >"$scratch/vendor.log" 2>&1 || { cat "$scratch/vendor.log" >&2; die "go mod vendor failed" 1; }
 cmp -s "$src/go.mod" "$tree/go.mod" || die "go mod vendor changed go.mod: the committed go.mod is not what the vendored tree was made from" 1
 cmp -s "$src/go.sum" "$tree/go.sum" || die "go mod vendor changed go.sum: the committed go.sum is not what the vendored tree was made from" 1
+
+regenodd=$(find "$tree/vendor" -type f ! -perm 644 -print -quit)
+[ $? -eq 0 ] || die "the regenerated vendor/ could not be listed in full" 1
+[ -z "$regenodd" ] || die "the regenerated vendor/ holds a file whose mode is not 100644 (mode): $regenodd" 1
 
 if diff -rq "$src/vendor" "$tree/vendor" >"$scratch/diff.txt" 2>&1; then
   echo "vendor-check: vendor/ is what go mod vendor regenerates"
