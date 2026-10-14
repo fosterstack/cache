@@ -14,7 +14,7 @@ THE VERSION (PROPOSED/UNVERIFIED, cache-3f): the stage passes --version = the ta
 accepts X.Y.Z and X.Y.Z-rc.N and names the apk fscache-0.3.0-r0.apk (final) or fscache-0.3.0_rc1-r0.apk (rc); the fips apk is fscache-fips-....
 THE ITEMS (PROPOSED/UNVERIFIED layout; cache-3f's note fixes the apk digest, the image index digest and the manifests):
   digests.json (Sign's only input, PR 1's schema): image-production, image-fips, apk-<standard|fips>-<amd64|arm64>, and the four Linux archives
-      archive-linux-<amd64|arm64>, archive-fips-linux-<amd64|arm64> (the goreleaser names fscache_<ver>_linux_<arch>.tar.gz, fscache-fips_...).
+      archive-linux-<amd64|arm64>, archive-fips-linux-<amd64|arm64> (the release archive names fscache_<ver>_linux_<arch>.tar.gz, fscache-fips_...).
   items.json (Rebuild's comparison, bin/chain-rebuild-test.sh REQUIRED): those archives and the apks (named by x86_64|aarch64), apkindex-<arch>,
       binary-<variant>-<arch> (sha256 of `apk-tool.py cat APK usr/bin/fscache`), modules-sbom-<variant>, inputs-manifest-<variant>, lock-<image>, image-<image>,
       image-<image>-manifest-<amd64|arm64>,
@@ -124,7 +124,7 @@ def layout_files(image, tag):
 
 
 def archive_files(tag):
-    """{item name: (file name in dist, bytes)} for the four Linux archives (goreleaser's names; --version is the tag minus v)."""
+    """{item name: (file name in dist, bytes)} for the four Linux archives (the release archive names; --version is the tag minus v)."""
     ver, out = tag[1:], {}
     for _, _, g in RUNNERS:
         out["archive-linux-" + g] = ("fscache_%s_linux_%s.tar.gz" % (ver, g), ("tar|std|%s|%s" % (g, ver)).encode())

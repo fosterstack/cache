@@ -352,7 +352,7 @@ def cmd_enumerate(args):
             "inventory" % args.index)
         return 1
     except json.JSONDecodeError:
-        err("imagetools inspect for %s did not return valid JSON — refusing "
+        err("the manifest of %s did not return valid JSON — refusing "
             "to guess the platform inventory" % args.ref)
         return 1
 
