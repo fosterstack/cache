@@ -6,6 +6,7 @@
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
 cd "$root"   # the driver runs from the repository root only (it names its helpers by literal repo-relative paths)
+unset GITHUB_ACTIONS   # the suite is the same on a runner (where it is set) and on a workstation: a test that needs it sets it on its own call
 # The production scripts have NO test hook (REQ-BUILDAPK-001-AC3): the tests below run COPIES of bin/build-apk.sh and bin/release-sign-apks.sh in
 # which exactly the lines ending in TEST-SUBST are replaced (tool locations, the sealed data file, the recipes, the keys directory) and which are
 # checked to differ in no other line. The copies take their stubs and per-call settings from TEST_* variables and a sealed environment the
@@ -988,6 +989,21 @@ def closed_ok(t):
     if re.search(r"[*?^!\[\]]", t.replace("$@", "").replace("$*", "").replace("$#", "").replace("$$", "").replace("$!", "").replace("$-", "")) and re.search(r"[*?^]", t): return False
     if re.search(r"\$(?![A-Za-z_0-9@*#?!$(-])", t): return False             # $' $" $[ and a lone $
     return True
+RAW = re.compile(r"""(?:"(?:\\.|[^"\\])*"|'[^']*'|\\.|[^\s"'])+""")
+ONE = re.compile(r"""^"?\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]|[@*#?!$-]|\{[!#]?[A-Za-z_0-9]+(?:\[[@*]\])?(?::?[-+=][^{}]*)?\}|\(.*)"?[;)&|<>]*$""")
+COMPOSITE_OK = {'"${2:-2}"', 'v$version', '"v$version"'}                  # the only composite words the scripts hold today
+def raw_ok(line):
+    """a word that mixes an expansion with other text, has no / and no space is how a tool name is assembled: refused unless listed"""
+    line = re.sub(r"\[\[.*?\]\]", " T ", line)
+    for w in RAW.findall(line):
+        w = re.sub(r"'[^']*'", "", w)                                          # single-quoted text is data
+        w = re.sub(r"^[0-9]*[<>&(]+", "", w)                                   # a redirection or a group opener in front of the word
+        if "$" not in w or re.search(r"\s", w) or "/" in w: continue
+        w2 = re.sub(r"^[A-Za-z_][A-Za-z0-9_]*(\+?=)", "", w)               # an assignment: the value is the word
+        w2 = re.sub(r"^[<>&(]+", "", w2).rstrip(";)&|<>")
+        if w2 == "" or ONE.match(w2) or w2 in COMPOSITE_OK or w in COMPOSITE_OK: continue
+        return False
+    return True
 bad = []
 text = open(sys.argv[1]).read().replace("\\\n", "")        # backslash-newline is removed by the shell before it splits words
 lines, tag = text.split("\n"), None
@@ -1002,7 +1018,7 @@ for n, ln in enumerate(lines, 1):
         bad.append("%s:%d unquoted heredoc" % (sys.argv[1], n)); continue
     ws, code = scan(ln.strip())
     if any(w in REFUSE for w in ws): ws.append("<unresolved>")
-    if not closed_ok(code): ws.append("<unresolved>")
+    if not closed_ok(code) or not raw_ok(ln.strip()): ws.append("<unresolved>")
     bad += ["%s:%d %s" % (sys.argv[1], n, w) for w in sys.argv[2:] + ["<unresolved>"] if w in ws]
 sys.exit("refused: %r" % bad if bad else 0)
 PY
@@ -1032,9 +1048,13 @@ open(sys.argv[2] + "/mut-bracen.sh", "w").write(src.replace('"$UNSHARE" -n "$mel
 open(sys.argv[2] + "/mut-glob.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n m?lange'))
 open(sys.argv[2] + "/mut-hash.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$#" ; melange'))
 open(sys.argv[2] + "/mut-heredoc.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$melange_bin" <<EOF\n$(melange)\nEOF\n'))
+open(sys.argv[2] + "/mut-frag1.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n m{elange,elange}'))
+open(sys.argv[2] + "/mut-frag2.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n ${AUDIT_UNSET:-mela}nge'))
+open(sys.argv[2] + "/mut-frag3.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "${AUDIT_UNSET:-mela}nge"'))
+open(sys.argv[2] + "/mut-concat.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', 'A=mela; B=nge; "$UNSHARE" -n "$A$B"'))
 open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" nice -n 5 "$ENVBIN" -u X env -i'))
 PY
-for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-cont mut-btick mut-ansic mut-default mut-eval mut-brace mut-bracen mut-glob mut-hash mut-heredoc mut-chain; do
+for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-cont mut-btick mut-ansic mut-default mut-eval mut-brace mut-bracen mut-glob mut-hash mut-heredoc mut-frag1 mut-frag2 mut-frag3 mut-concat mut-chain; do
   t "rule 23" "the mutant $m differs from the production script" bash -c "! cmp -s '$BA_PROD' '$work/$m.sh'"
   t "rule 23" "the tool-path assertion bites: the mutant $m (a bare tool where the fixed one is) is refused" bash -c "! python3 '$work/toolscan.py' '$work/$m.sh' sha256sum go env sudo unshare melange git python3 openssl shasum >/dev/null 2>&1"
 done
