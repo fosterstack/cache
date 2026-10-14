@@ -9,9 +9,10 @@ export FSCACHE_TEST_MODE=1   # gen-recipes.py's own fixture switch (its template
 # The production script names its tools by fixed path (TEST-SUBST lines). The suite runs a COPY, beside the real helpers, in which exactly those lines
 # point at dispatchers that exec the tool by NAME on the run's PATH (so the stubs of run_s, run_s2, ...), and checks the copy differs in no other line.
 RF_PROD="$RF"
-mkdir -p "$work/tools" "$work/rfcopy/bin" "$work/rfcopy-nossl/bin"
-for t_ in python3 curl git gh apko openssl cmp mktemp; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$work/tools/$t_"; chmod +x "$work/tools/$t_"; done
-python3 - "$RF_PROD" "$work" <<'P'
+rfd=$(mktemp -d "$work/rf.XXXXXX")   # this file's own scratch: the stub tool dispatchers and the two script copies
+mkdir -p "$rfd/tools" "$rfd/rfcopy/bin" "$rfd/rfcopy-nossl/bin"
+for t_ in python3 curl git gh apko openssl cmp mktemp; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$rfd/tools/$t_"; chmod +x "$rfd/tools/$t_"; done
+python3 - "$RF_PROD" "$rfd" <<'P'
 import os, re, shutil, sys
 prod, work = sys.argv[1:3]
 names = {"PY3": "python3", "CURL": "curl", "GIT": "git", "GH": "gh", "APKO": "apko", "OPENSSL": "openssl", "CMP": "cmp", "MKTEMP": "mktemp"}
@@ -29,7 +30,7 @@ for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"OPENSSL": "/nonexistent/opens
     for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh"):
         shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
 P
-RF="$work/rfcopy/bin/refresh-inputs.sh"; RFN="$work/rfcopy-nossl/bin/refresh-inputs.sh"
+RF="$rfd/rfcopy/bin/refresh-inputs.sh"; RFN="$rfd/rfcopy-nossl/bin/refresh-inputs.sh"
 export FSCACHE_GEN_PIN=$(shasum -a 256 "$fx/melange.yaml.tmpl" | cut -d" " -f1)   # the fixture template's pin: the job asks the generator what the recipes become
 # ---- begin verbatim sections ----
 # ===== rules 44-49: the refresh job ======================================================================================
@@ -444,11 +445,11 @@ sys.path.insert(0, sys.argv[1]); import lib
 w, fx = sys.argv[1:3]
 d = w + "/live-baddh"; shutil.rmtree(d, ignore_errors=True); shutil.copytree(fx + "/live", d)
 sig, ctl, data = lib.mkapk(d + "/x86_64/tzdata-2026b-r0.apk", "tzdata", "2026b-r0", {"usr/share/tzdata/data": b"tzdata-2026b-r0-x86_64"}, signer="wolfi-signing.rsa.pub", datahash="0" * 64)
-ln = json.load(open(w + "/ln.json"))
-for e in ln["contents"]["packages"]:
+lk = json.load(open(w + "/ln.json"))
+for e in lk["contents"]["packages"]:
     if e["name"] == "tzdata" and e["architecture"] == "x86_64":
         e.update(lib.entry("tzdata", "2026b-r0", "x86_64", e["url"], (sig, ctl, data)))
-json.dump(ln, open(w + "/ln-baddh.json", "w"))
+json.dump(lk, open(w + "/ln-baddh.json", "w"))
 ln2 = json.load(open(w + "/ln.json"))
 for e in ln2["contents"]["packages"]:
     if e["name"] == "tzdata" and e["architecture"] == "x86_64": e["data"] = {"range": "", "checksum": ""}
@@ -561,16 +562,16 @@ import copy, json, os, shutil, sys
 sys.path.insert(0, sys.argv[1]); import lib
 w, fx = sys.argv[1:3]
 d = w + "/dup-live"; shutil.rmtree(d, ignore_errors=True); shutil.copytree(fx + "/live", d)
-ln = json.load(open(w + "/ln.json"))
+lk = json.load(open(w + "/ln.json"))
 for arch in ("x86_64", "aarch64"):
     data = lib.gz(lib.tarb([("usr/share/tzdata/data", ("tzdata-2026b-r0-" + arch).encode())]))
     dh = lib.hashlib.sha256(data).hexdigest()
     ctrl = lib.gz(lib.tarb([(".PKGINFO", ("pkgname = tzdata\npkgver = 2026b-r0\ndatahash = %s\ndatahash = %s\n" % (dh, "0" * 64)).encode())]))
     open("%s/%s/tzdata-2026b-r0.apk" % (d, arch), "wb").write(ctrl + data)
-    for e in ln["contents"]["packages"]:
+    for e in lk["contents"]["packages"]:
         if e["name"] == "tzdata" and e["architecture"] == arch:
             ne = lib.entry("tzdata", "2026b-r0", arch, e["url"], (b"", ctrl, data)); e.update({k: ne[k] for k in ("control", "data", "checksum", "signature")})
-json.dump(ln, open(w + "/ln-dup.json", "w"))
+json.dump(lk, open(w + "/ln-dup.json", "w"))
 P
 mkrepo; before=$(treehash "$work/ar" "$work/rp")
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$work/ln-dup.json" STUB_LOCK_FIPS="$work/ln-dup.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$work/dup-live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
