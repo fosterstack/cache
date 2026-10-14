@@ -123,7 +123,7 @@ rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
 mkcase noperm; chmod 000 "$work/fx-noperm/vendor"
 rc AC2 "a tree whose vendor/ cannot be read is a failure, never a pass (1)" 1 vc "$work/fx-noperm"
 chmod 755 "$work/fx-noperm/vendor"
-for pair in "byte:dep.go" "del:dep.go" "mtxt:modules.txt" "exec:dep.go" "m600:dep.go" "m666:dep.go" "m444:dep.go" "symrepl:dep.go" "symfile:link.go" "symdir:depl" "fifo:pipe" "emptydir:sub" "add:extra.go" "dot:.hidden" "dotdir:.github"; do
+for pair in "byte:dep.go" "del:example.test/dep" "mtxt:modules.txt" "exec:dep.go" "m600:dep.go" "m666:dep.go" "m444:dep.go" "symrepl:dep.go" "symfile:link.go" "symdir:depl" "fifo:pipe" "emptydir:sub" "add:extra.go" "dot:.hidden" "dotdir:.github"; do
   c=${pair%%:*}; nm=${pair#*:}
   rc AC2 "($c case) refused (1)" 1 vc "$work/fx-$c"
   says AC2 "($c case) the failure names the offending path $nm" "$nm"
