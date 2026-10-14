@@ -142,6 +142,17 @@ for s in "${scanners[@]}"; do
     [[ "$packages" =~ ^[0-9]+$ ]] || packages=0
     echo "check-scan: $s $name ($digest): $packages packages, exit $rc"
     sv=pass vexn=0
+    if [ "$s" = grype ] && [ "$rc" = 0 ]; then
+      # The owner's rule (register rows 18 and 38): every severity blocks, and the published VEX is the only exception. --fail-on negligible does not fire
+      # on a finding of UNKNOWN severity, so the result is judged here: a match that survived --vex fails whatever its severity, and a result with no
+      # matches list is a scan that did not run (fail closed).
+      um=$(jq -e 'if (.matches | type) == "array" then (.matches | length) else error("matches is not a list") end' "$tmp/out.json" 2> /dev/null) || um=unreadable
+      if [[ ! "$um" =~ ^[0-9]+$ ]]; then
+        echo "check-scan: grype's result for $name has no readable matches list: nothing is judged behind a result that cannot be read" >&2; rc=2
+      elif [ "$um" -gt 0 ]; then
+        echo "check-scan: grype reported $um finding(s) in $name ($digest) of any severity, UNKNOWN included, that the VEX document does not except" >&2; rc=1
+      fi
+    fi
     if [ "$rc" = 1 ] && [ "$s" = osv-scanner ]; then
       # grype read the VEX itself (--vex); osv-scanner cannot, so its findings are held to the same published document here (round 1 F3): exit 1 stands
       # unless the report holds findings and every one is excepted by a statement (the rescan's product-and-alias-scoped decision)
