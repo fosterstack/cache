@@ -195,7 +195,7 @@ def _cap(text):
 
 def _ctx_tag(node):
     node = {k: v for k, v in node.items() if k != "uses"} if isinstance(node, dict) else node    # the action's own pin is measured separately: bumping it must not re-key its placeholders
-    return "step:" + hashlib.sha256((json.dumps(node, sort_keys=True, default=str) + "\0" + _ENV_CTX[0]).encode("utf-8", "replace")).hexdigest()[:10]
+    return "step:" + hashlib.sha256((json.dumps(node, sort_keys=True, default=str) + "\0" + _ENV_CTX[0]).encode("utf-8", "replace")).hexdigest()
 
 
 _LOCAL_CALL = re.compile(r"\./\.github/workflows/(?!.*\.\.)[A-Za-z0-9._-]+\.yml")
@@ -246,7 +246,7 @@ def _uses(u, node, out, labels):
         for inp, tool in INSTALLER_INPUTS.get(repo.lower(), []):
             if tool is not None and not (isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip()):
                 it = Item("tool", tool, "(default)")       # no version given: the action installs whatever its default is, so removing the input must not remove the obligation
-                it.step = "default:" + inp + ":" + hashlib.sha256(json.dumps({k: v for k, v in node.items() if k not in ("with", "uses")}, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()[:8]
+                it.step = "default:" + inp + ":" + hashlib.sha256(json.dumps({k: v for k, v in node.items() if k not in ("with", "uses")}, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()
                 out.append(it)
             if isinstance(w, dict) and isinstance(w.get(inp), str) and w[inp].strip():
                 val = w[inp].strip()
@@ -328,7 +328,7 @@ def _step(node, out, labels):
     run = node.get("run")
     if isinstance(run, str):
         ctx = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
-        tag = "step:" + hashlib.sha256(ctx.encode("utf-8", "replace")).hexdigest()[:10]
+        tag = "step:" + hashlib.sha256(ctx.encode("utf-8", "replace")).hexdigest()
         for it in out[n0:]:
             if _NONPIN.search(it.version or "") and not it.step:
                 it.step = tag     # a placeholder (variable, @latest, @main, unpinned) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused
@@ -366,10 +366,10 @@ def _step_items(node, out, labels):
         for ln in run.split("\n"):    # where a script downloads FROM: an assignment of a URL/BASE variable is a source line identified by its own text
             m = _SOURCE_ASSIGN.match(ln)
             if m:
-                out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))
+                out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest(), "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
             sums = sorted(set(re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", run)) | set(_JOB_SUMS[0]))   # checksums, not image digests
-            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4) + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest()[:8] if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
+            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4) + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest() if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for tail in _pip_tails(run):
             for p in _PIP_PIN.finditer(tail):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
@@ -404,7 +404,7 @@ def _walk(node, out, labels, path="", in_step=False):
             if k == "env" and isinstance(v, dict):
                 for ek, ev in v.items():
                     if re.fullmatch(r"[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL)", str(ek)):
-                        out.append(Item("tool", "source:env:" + ("(expression)" if "${{" in str(ev) else str(ek).lower()) + "=" + hashlib.sha256(str(ev).encode("utf-8", "replace")).hexdigest()[:12], "(source)"))   # an env var that retargets a download
+                        out.append(Item("tool", "source:env:" + ("(expression)" if "${{" in str(ev) else str(ek).lower()) + "=" + hashlib.sha256(str(ev).encode("utf-8", "replace")).hexdigest(), "(source)"))   # an env var that retargets a download
             if k in ("container", "image") and isinstance(v, (str, dict)):
                 img = v if isinstance(v, str) else v.get("image")
                 # an `image:` input of an action counts only when it names a digest (other inputs called image are not pins)
@@ -462,7 +462,7 @@ def inventory(files):
                     it.src = (path, lid)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
             found = [Item("tool", "file:" + path, "(file)")]   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
-            found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:12]      # what an installer's *-version-file selects: a changed content is a changed key
+            found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # what an installer's *-version-file selects: a changed content is a changed key
         elif path.endswith(".sh"):
             found = []
             joined = re.sub(r"\\\n\s*", " ", text).split("\n")
@@ -489,7 +489,7 @@ def inventory(files):
                     continue
                 if _REQ_PIN.match(body):
                     continue                      # name==version (with its --hash options)
-                found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest()[:12] + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
+                found.append(Item("package", "pypi/(unmeasured:" + hashlib.sha256(body.encode("utf-8", "replace")).hexdigest() + ")", "(unpinned)"))   # a URL requirement, a range, an index option, a bare name
         else:
             labels = {}
             for m in re.finditer(r"uses:\s*([^\s#'\"]+)\s*#\s*(\S+)", text):
@@ -584,7 +584,7 @@ def unmeasured(files):
 
 
 def _line_ids(text):
-    """One id per line of a script (continuations joined, as the inventory reads it): the 16-hex hash of the whole whitespace-flattened line, prefixed
+    """One id per line of a script (continuations joined, as the inventory reads it): the 64-hex hash of the whole whitespace-flattened line, prefixed
     'unruled:' for a line bash reads differently from that flattening (REQ-SUP-001-AC16, AC20)."""
     mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
     tainted = mark in text
@@ -593,7 +593,7 @@ def _line_ids(text):
         bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
         if not tainted:
             line = line.replace(mark, "")
-        h = hashlib.sha256(" ".join(line.split()).encode("utf-8", "replace")).hexdigest()[:16]
+        h = hashlib.sha256(" ".join(line.split()).encode("utf-8", "replace")).hexdigest()
         ids.append(h if bashlike else "unruled:" + h)
     return ids
 
@@ -618,15 +618,15 @@ def unmeasured_occurrences(files):
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
                 if re.search(r"\b(?:curl|wget)\b", seg) and not plain:
-                    yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(seg)[:100]), flat, bashlike
+                    yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":" + _hide(seg)[:100]), flat, bashlike
             if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line
                 probe = []
                 _step({"run": flat}, probe, {})
                 if any(i.kind == "package" and i.version == "(unpinned)" for i in probe):
-                    yield (path, "an unpinned package install", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100]), flat, bashlike
+                    yield (path, "an unpinned package install", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
-                    yield (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100]), flat, bashlike  # the WHOLE line decides identity (its hash), never a truncation
+                    yield (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike  # the WHOLE line decides identity (its hash), never a truncation
 
 
 if __name__ == "__main__":
