@@ -277,6 +277,69 @@ assert open(name).read() == "someone else's file\n", "the other file was removed
 assert sorted(os.listdir(out)) == [os.path.basename(name)], os.listdir(out)
 PY
 
+# Output cleanup is closed by construction: a '..' component is refused before anything is touched, directories are made one at a time and only the ones THIS run made
+# are removed (never another run's), and the temporary file is created, replaced and removed through the open output directory, never through a path that can be retargeted.
+t AC8 "a failure part-way through creating the output directories removes the ones this run made (the base stays empty)" python3 - "$bin_vp" "$F7" "$work/ev8-partial" <<'PY'
+import importlib.util, os, sys
+bp, fx, base = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+os.makedirs(base)
+real = os.mkdir
+def flaky(path, *a, **k):
+    if os.path.basename(path) == "deeper": raise OSError(28, "No space left on device")
+    return real(path, *a, **k)
+os.mkdir = flaky
+try:
+    rc = vp.main(["evidence", "--out", base + "/new/deeper/ev", "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"])
+finally:
+    os.mkdir = real
+assert rc == 1, rc
+assert os.listdir(base) == [], os.listdir(base)
+PY
+rc AC8 "an --out with a '..' component is refused (exit 2) before anything is created" 2 python3 "$bin_vp" evidence --out "$work/ev8-dd/new/../ev" --provenance "$F7/prov.json" --govulncheck "$F7/govuln.json" --date 1790000000
+t AC8 "... and nothing was created" bash -c "[ -e '$bin_vp' ] && [ ! -e '$work/ev8-dd' ]"
+t AC8 "a directory another run creates meanwhile is never removed by this run's cleanup" python3 - "$bin_vp" "$F7" "$work/ev8-race" <<'PY'
+import importlib.util, os, sys
+bp, fx, base = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+os.makedirs(base)
+real_mkdir, real_replace = os.mkdir, os.replace
+def raced(path, *a, **k):
+    if os.path.basename(path) == "new":      # the other run wins the creation of 'new'
+        real_mkdir(path, *a, **k); raise FileExistsError(17, "File exists", path)
+    return real_mkdir(path, *a, **k)
+def boom(*a, **k): raise OSError(28, "No space left on device")
+os.mkdir, os.replace = raced, boom
+try:
+    rc = vp.main(["evidence", "--out", base + "/new/ev", "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"])
+finally:
+    os.mkdir, os.replace = real_mkdir, real_replace
+assert rc == 1, rc
+assert os.path.isdir(base + "/new"), "the other run's directory was removed"
+assert os.listdir(base + "/new") == [], os.listdir(base + "/new")
+PY
+t AC8 "a symlinked output directory retargeted mid-run: the temporary file is removed from the directory it was created in, the other directory's same-named file stays" python3 - "$bin_vp" "$F7" "$work/ev8-link" <<'PY'
+import importlib.util, os, sys
+bp, fx, base = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+A, B = base + "/A", base + "/B"; os.makedirs(A); os.makedirs(B); os.symlink(A, base + "/out")
+name = ".vendor-evidence.json.tmp-" + (b"\x01" * 8).hex()
+open(B + "/" + name, "w").write("other directory's file\n")
+real_urandom, real_replace = os.urandom, os.replace
+def retarget_then_fail(*a, **k):
+    os.unlink(base + "/out"); os.symlink(B, base + "/out")      # the path now leads to B; this run's open directory is still A
+    raise OSError(28, "No space left on device")
+os.urandom = lambda n: b"\x01" * n
+os.replace = retarget_then_fail
+try:
+    rc = vp.main(["evidence", "--out", base + "/out", "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"])
+finally:
+    os.urandom, os.replace = real_urandom, real_replace
+assert rc == 1, rc
+assert open(B + "/" + name).read() == "other directory's file\n", "the other directory's file was removed"
+assert os.listdir(A) == [], os.listdir(A)
+PY
+
 # ===== AC9: determinism ========================================================================
 ev "$work/d1" >/dev/null 2>&1; ev "$work/d2" >/dev/null 2>&1; ev "$work/d3" 1790000001 >/dev/null 2>&1
 t AC9 "two runs are byte-identical" bash -c "[ -s '$work/d1/vendor-evidence.json' ] && cmp -s '$work/d1/vendor-evidence.json' '$work/d2/vendor-evidence.json'"
