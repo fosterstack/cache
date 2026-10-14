@@ -2435,5 +2435,16 @@ ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00Z", "pypi")], now)
 assert ok, why
 PY
 
+CASE="AC3: an action named by a TAG (v1.2.3), not by its commit, has no age even with an old clock for it: not ok, and nothing is looked up"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys, datetime as dt
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+class I: kind="action"; name="o/r"; version="v1.2.3"; label=""; path=""
+now = dt.datetime(2026, 10, 14, 12, 0, 0, tzinfo=dt.timezone.utc)
+ok, why, _ = ac.judge_item(I(), [("2026-09-01T00:00:00Z", "first-seen")], now)
+assert not ok, why
+assert ac.live_proofs(I(), "/nonexistent") == []
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
