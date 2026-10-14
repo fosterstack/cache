@@ -331,8 +331,8 @@ def _step(node, out, labels):
         ctx = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
         tag = "step:" + hashlib.sha256(ctx.encode("utf-8", "replace")).hexdigest()
         for it in out[n0:]:
-            if _NONPIN.search(it.version or "") and not it.step:
-                it.step = tag     # a placeholder (variable, @latest, @main, unpinned) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused
+            if (_NONPIN.search(it.version or "") or "${" in (it.path or "")) and not it.step:
+                it.step = tag     # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
