@@ -4,6 +4,8 @@
 unmapped:
   - ac: REQ-PROTO-003-AC2
     reason: no http-integration test for PUT / returning 400 has been mapped since the baseline (Sep 11); the owner decides
+  # Note: AC8 of REQ-TLS-001 reads "first log line" as the startup record when an earlier warning applies
+  # (advisor reading, Oct 11); wording alignment of this AC is the owner's call.
   - ac: REQ-OBS-004-AC1
     reason: no component test asserts the startup line's six fields; none mapped since the baseline (Sep 11); the owner decides
   - ac: REQ-PLAT-004-AC1

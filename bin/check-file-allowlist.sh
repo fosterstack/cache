@@ -62,6 +62,9 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
+  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites, its test, and the committed floors.
+  '^bin/suite-guard(-run|-test)?\.sh$'
+  '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -80,6 +83,7 @@ ALLOW_PATTERNS=(
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
   '^bin/branch-sweep-test\.sh$'
+  '^bin/scan-no-workflow-call-test\.sh$'
   '^bin/local-prune\.sh$'
   '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
@@ -154,9 +158,6 @@ ALLOW_PATTERNS=(
   '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
   '^bin/acceptance-k8s-(manifests|smoke)\.py$'
   '^bin/install-kind\.sh$'
-  # the suite guard: no empty test file, a printed case count held to a committed floor that only rises
-  '^bin/suite-guard(-run|-test)?\.sh$'
-  '^test-evidence/suite-floors\.json$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
@@ -181,11 +182,6 @@ ALLOW_PATTERNS=(
   '^\.github/agent/test-requirements\.txt$'
   '^\.github/agent/coverage-exclusions\.txt$'
   '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
-  # REQ-AUD-18 AC3: review-loop records, one per reviewed .github/agent/ content hash, read by
-  # .github/agent/bin/auditor-review-gate.py (run from main by .github/workflows/agent-review-gate.yml).
-  '^\.github/agent/reviews/[0-9a-f]{64}\.json$'
-  # REQ-AUD-018 AC4: the owner-recorded second-seat substitutes, read from the default branch by the same gate
-  '^\.github/agent/reviews/substitutes\.json$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
   '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
@@ -260,6 +256,10 @@ ALLOW_PATTERNS=(
   '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
   # OCI digest and network-probe tools.
   '^bin/(oci-digest|net-probe)\.py$'
+  # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
+  # of bin/build-apk.sh, and the closed rule-23 variable list as data.
+  '^bin/build-apk-helper\.py$'
+  '^build/sealed-env\.json$'
   # Archive scripts: push, pull (.sh) and verify (.py).
   '^bin/archive-(push|pull)\.sh$'
   '^bin/archive-verify\.py$'
