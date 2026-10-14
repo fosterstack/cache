@@ -82,12 +82,17 @@ def cmd_all(floors, root, count_only):
         for dp, dn, fn in os.walk(root):
             dn[:] = [d for d in dn if d != ".git"]
             q = os.path.join(dp, s)
-            if not re.fullmatch(r"[A-Za-z0-9._+@/-]+", q) or ".git" in q.split(os.sep) or ".git" in os.path.abspath(q).split(os.sep):   # as -not -path '*/.git/*': any candidate below a .git directory, ROOT's own ancestors included
+            if ".git" in q.split(os.sep) or ".git" in os.path.abspath(q).split(os.sep):   # as -not -path '*/.git/*': any candidate below a .git directory, ROOT's own ancestors included
                 continue
             if s in fn and os.path.isfile(q) and not os.path.islink(q):   # a regular file, as `find -type f` selected: a symlink named for a suite is no suite
                 found.append(os.path.join(dp, s))
         if len(found) != 1:
             print("suite-guard: the floors file names %s, which is %d files under %s (it must be exactly one)" % (s, len(found), root), file=sys.stderr)
+            bad = 1
+            continue
+        # every same-name regular file was counted above, so a duplicate with an odd path runs neither (fail closed); only now is the one match's path held to the alphabet
+        if not re.fullmatch(r"[A-Za-z0-9._+@/-]+", found[0]):
+            print("suite-guard: the suite %s is at %r, which is not a plain path; not run" % (s, found[0]), file=sys.stderr)
             bad = 1
             continue
         if cmd_run(floors, s, found[0], count_only) != 0:
