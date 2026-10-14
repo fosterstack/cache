@@ -1517,6 +1517,7 @@ cat >"$work/hf-real.txt" <<'EOF'
 # ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------
 # the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir
 # url characters, curl flags and caps
+printf -v FETCH %s curl
 EOF
 while IFS= read -r line; do
   case "$line" in t\ *) hf "$line"; CASE="AC16 harness form: accepted (the committed row line ${line:0:60}...): exit 0"; check test "$rc" -eq 0;; esac
@@ -1917,6 +1918,10 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "2d6db92689368ed648fa331c9bb3331fb4cee877998e1aa7efa34c2a5850e24b": "# url characters, curl flags and caps",
     "bd58928b6ad7d1e1b488524a9ced8ea7cd302651ded5ef4b3976879cec9394e6": "# the live melange resolution moves busybox to 9.9.9-r0: a copy of the live melange lock with that version, and the new apk in the live archive/curl dir",
     "e40f62c4290cc6dcc405320d1b7d8a9ea8092be908d5f84ccd64eb594548b00b": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
+
+    # the fetch tool's one-word lines of the refresh job and its test (cache#344, handoff 0432): printf -v of a constant, text for the checker
+    "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596": "printf -v FETCH %s curl",
+    "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b": "printf -v CURL %s /usr/bin/curl # TEST-SUBST",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
 rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call"]   # those name an item, not a text line (AC19)
