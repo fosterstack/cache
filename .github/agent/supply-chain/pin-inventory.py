@@ -223,13 +223,24 @@ def _input_fed(item):
 
 
 _INPUT = re.compile(r"\binputs\s*(?:\.|\[)", re.I)
-_INSTALLER_WORD = re.compile(r"(?<![\w.-])(?:pip[0-9.]*|pipx|uv|npm|npx|yarn|pnpm|gem|go|cargo|curl|wget|docker|apt|apt-get|apk|brew|helm|kubectl|conda|cosign|grype|syft)(?![\w.-])")
+_ARG = r"""(?:"\$[A-Za-z_][A-Za-z0-9_]*"|"\$\{[A-Za-z_][A-Za-z0-9_]*\}"|[A-Za-z0-9_.:=/@+,-]+|'[^'$`"\\]*')"""
+_SCRIPT_RUN = re.compile(r"(?:bash|sh|python3?)(?: -[IBEsuxv]+)* (?:\./)?(?:bin|\.github/[A-Za-z0-9_./-]+)/[A-Za-z0-9_.-]+\.(?:sh|py)(?: " + _ARG + r")*")
+_PRINTF_RUN = re.compile(r"""printf '%s' "\$[A-Za-z_][A-Za-z0-9_]*" > [A-Za-z0-9_./-]+""")
+
+
+def _literal_script_run(run):
+    """True when a step's run text is only invocations of a literal script file of the tree (bash|sh|python3 PATH with plain or quoted-variable arguments) or a
+    printf of a quoted variable into a plain file: no eval, no -c, no command word taken from a variable, no pipe, no substitution (REQ-SUP-001-AC19)."""
+    if not isinstance(run, str):
+        return False
+    lines = [ln.strip() for ln in re.sub(r"\\\n\s*", " ", run).split("\n") if ln.strip() and not ln.strip().startswith("#")]
+    return bool(lines) and all(_SCRIPT_RUN.fullmatch(ln) or _PRINTF_RUN.fullmatch(ln) for ln in lines)
 
 
 def _inputs_confined(doc):
     """True when the callee refers to its caller's inputs only where no version can be selected by name: an `if:` condition, a step `name:`, or a step `env:` value
-    whose variable name the same step's own uses/with/run text does not mention (a script the step runs reads it; that script is a file of this tree, read and
-    pinned like any other). An input in uses:, with:, run:, a container, a matrix or a job-level key is a version a caller could steer (REQ-SUP-001-AC19)."""
+    of a step whose whole run text is literal script invocations (see _literal_script_run; a script is a file of this tree, read and pinned like any other). An
+    input in uses:, with:, run:, a container, a matrix or a job-level key is a version a caller could steer (REQ-SUP-001-AC19)."""
     def has(n):
         return bool(_INPUT.search(json.dumps(n, default=str))) if n is not None else False
     for job in (doc.get("jobs") or {}).values():
@@ -249,14 +260,10 @@ def _inputs_confined(doc):
             rest = {k: v for k, v in st.items() if k not in ("if", "name", "env")}
             if has(rest) or (st.get("env") is not None and not isinstance(st.get("env"), dict) and has(st.get("env"))):
                 return False
-            text = json.dumps(rest, default=str)
-            for name, val in env.items():
-                if not has(val):
-                    continue
-                n = re.escape(str(name))
-                bare = re.sub(r'\\"\$\{?' + n + r'\}?\\"', "", text)    # the quoted-argument form "$NAME" / "${NAME}" is the safe way to hand it to a script
-                if re.search(r"\$\{?" + n + r"(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])" + n + r"(?![A-Za-z0-9_])", bare) or _INSTALLER_WORD.search(text):
-                    return False
+            if any(has(v) for v in env.values()) and not _literal_script_run(st.get("run")):
+                return False   # an input handed through env to anything but a literal script invocation can be turned into a command or a version
+            if any(has(v) for v in env.values()) and (st.get("uses") or st.get("with")):
+                return False
     return not has({k: v for k, v in doc.items() if k not in ("jobs", "on")})
 
 

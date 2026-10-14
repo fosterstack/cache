@@ -2630,5 +2630,22 @@ lck m16
 CASE="AC19: an input in an if: and in an env value handed to a script as a quoted argument is the allowed shape (exit 0)"
 check test "$rc" -eq 0
 
+# round 5 of the review: the step that receives an input through env must be nothing but a literal script invocation
+mkcallee() { # NAME 'run text' -> $work/NAME.yml: a callee with one step handing inputs.x to env X and running the text
+  printf 'on:\n  workflow_call:\n    inputs:\n      x:\n        type: string\njobs:\n  k:\n    runs-on: ubuntu-latest\n    steps:\n      - env:\n          X: ${{ inputs.x }}\n          CLIENT: npm\n        run: %s\n' "$2" >"$work/$1.yml"
+}
+n=0
+for run in '"$CLIENT" install "$X"' 'eval "$X"' 'bash -c "$X"' 'bash bin/s.sh "$X" | sh' 'bash bin/s.sh $(echo "$X")' 'bash bin/s.sh "$X" && "$CLIENT" install "$X"' 'bash ../s.sh "$X"' 'python3 -c "$X"' 'sh "$X"'; do
+  n=$((n+1)); mkcallee "envbad$n" "$run" ; python3 - "$work/envbad$n.yml" <<'PY'
+import sys
+t = open(sys.argv[1]).read().replace("run: ", "run: '", 1).rstrip("\n").replace("\n  ", "\n  ")
+open(sys.argv[1], "w").write(t + "'\n")
+PY
+  lcallc "me$n" './.github/workflows/callee.yml' $'    with:\n      x: lodash@latest\n' "$work/envbad$n.yml"
+  lck "me$n"
+  CASE="AC19: a step that hands an input to env and runs [$run] is not a literal script invocation: the call stays an item (exit 1)"
+  check test "$rc" -eq 1
+done
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
