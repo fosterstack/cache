@@ -71,16 +71,17 @@ vulnerability); this page is what we do.
   of a newer toolchain disabled, and module manifests are verified, never rewritten
   ([build stage](../.github/workflows/stage-build.yml)).
 - **Distroless image, assembled by copy.** Each image variant is a base image digest
-  plus the binary bytes: no shell, no package manager, no build step inside the
-  image ([image stage](../.github/workflows/stage-image.yml)).
+  plus the binary bytes, with no build step inside the image; the production and
+  FIPS images have no shell and no package manager
+  ([image stage](../.github/workflows/stage-image.yml)).
 - **Assembled twice and compared.** The image assembly is repeated on a fresh runner
   and the digests must be equal ([reproducibility stage](../.github/workflows/stage-reproducibility.yml)).
 - **A FIPS variant.** A `-fips` build uses Go's FIPS 140-3 validated cryptographic
   module, announces itself at startup, and the whole test suite runs in
   `fips140=only` mode on every commit ([SECURITY.md](../SECURITY.md#approved-only-cryptography)).
-- **Approved-only cryptography is enforced by lint too.** Only in-boundary crypto
-  imports are allowed, and third-party cryptographic code is denied outright
-  ([`.golangci.yml`](../.golangci.yml)).
+- **Approved-only cryptography is checked by lint too.** A lint rule denies the
+  third-party cryptographic packages we name, such as `golang.org/x/crypto`, so code
+  reaches for the validated module instead ([`.golangci.yml`](../.golangci.yml)).
 
 ## Scanning
 

@@ -28,8 +28,7 @@ Detected OS   family="debian" version="13.6"
 ```
 
 Google's distroless base ships an intact `/etc/os-release` deliberately
-(that's exactly what scanners key OS detection on), and we never strip it
-. The `gobinary` row is our own compiled binary,
+(that's exactly what scanners key OS detection on), and we never strip it. The `gobinary` row is our own compiled binary,
 scanned by both tools' Go-module vulnerability catalogers directly.
 
 ## Package-DB asymmetry — expect this, it isn't a bug
@@ -60,14 +59,13 @@ gate a pipeline purely on the raw exit code** — a broken scan and a clean
 scan can both look like "exit 0" or both look like "exit 1" depending on
 flags, and conflating them ships a green gate that checks nothing.
 
-## The `-debug` variant (v0.2.x releases)
+## The `-debug` variant
 
-The v0.2.x releases ship a `:debug` tag that adds a busybox shell for interactive
-troubleshooting; it is not the image you deploy. Scanning it shows more than the
-production image, because busybox itself carries a small package surface, and any
-known finding there that has no fix is published as a VEX statement rather than
-hidden. The production and `-fips` images never include busybox, and the v0.3
-releases ship no `-debug` image.
+The `:debug` tag adds a busybox shell for interactive troubleshooting; it is not the
+image you deploy. Scanning it shows more than the production image, because busybox
+itself carries a small package surface, and any known finding there that has no fix is
+published as a VEX statement rather than hidden. The production and `-fips` images
+never include busybox.
 
 ## Using our VEX files in your scanner
 
@@ -121,35 +119,43 @@ docker scout cves --vex-location fosterstack-cache.openvex.json \
   ghcr.io/fosterstack/cache:${VER}
 ```
 
-Run it once with and once without the two VEX flags: the difference is exactly the
-set of published statements, the same audit as in
+Run it once with and once without the two VEX flags: the difference is the set of
+published statements that apply to the findings Scout detects, the same audit as in
 [Reproducing our own gate](#reproducing-our-own-gate).
 
 ## Reproducing our own gate
 
-Our release pipeline's scan step is public —
-[`.github/workflows/release.yml`](../.github/workflows/release.yml) — so
-the exact invocation we gate releases on is not a secret:
-
-The gate's policy is every severity, with the published VEX applied — so
-a faithful reproduction uses the same. The VEX document ships with each
-release as `fosterstack-cache.openvex.json` and lives in-repo at
-[`.vex/`](../.vex/):
+The release pipeline's scan stage is public:
+[`.github/workflows/stage-verify.yml`](../.github/workflows/stage-verify.yml) runs one
+job per scanner in [the scanner list](../.github/policy/scanners.json) (today Grype and
+OSV-Scanner) against the exact candidate digests. The gate's policy is every severity,
+with the published VEX applied, so a faithful reproduction uses the same. The VEX
+document ships with each release as `fosterstack-cache.openvex.json` and lives in-repo
+at [`.vex/`](../.vex/):
 
 ```sh
-# Same severity policy and VEX as the release gate:
+# Grype, as the release gate runs it (every severity, the published VEX):
+grype ghcr.io/fosterstack/cache:X.Y.Z \
+  --fail-on negligible --vex fosterstack-cache.openvex.json
+
+# OSV-Scanner, as the release gate runs it on the image:
+osv-scanner scan image ghcr.io/fosterstack/cache:X.Y.Z
+```
+
+Trivy is not part of the release gate; if you run it, use the same severities and the
+same file:
+
+```sh
 trivy image --scanners vuln \
   --severity CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN \
   --vex fosterstack-cache.openvex.json \
   ghcr.io/fosterstack/cache:X.Y.Z
-
-grype ghcr.io/fosterstack/cache:X.Y.Z \
-  --fail-on negligible --vex fosterstack-cache.openvex.json
 ```
 
-Run without `--vex` to see raw findings including the ones we have
-publicly dispositioned — the difference between the two runs is exactly
-the set of published VEX statements, which is how you audit them.
+Run Grype, Trivy or Docker Scout without `--vex` to see raw findings including the
+ones we have publicly dispositioned. The difference between the two runs is the set of
+published statements that apply to the findings your scanner detects, which is how you
+audit them.
 
 ## Confirming the scan is the release run
 
