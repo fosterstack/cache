@@ -1,5 +1,7 @@
 # FosterStack Cache
 
+We build tools that help you secure your build pipeline. It made sense to start with the build cache. We built FosterStack Cache by meticulously following the security guidance that matters: CISA Secure by Design, NIST SP 800-204C and 800-204D, and SLSA. Where the guidance stops, we kept going: hermetic, reproducible builds, a distroless image, and more. [Read the full list](docs/everything-we-do-for-security.md).
+
 [![CI](https://github.com/fosterstack/cache/actions/workflows/ci.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/fosterstack/cache/actions/workflows/codeql.yml/badge.svg)](https://github.com/fosterstack/cache/actions/workflows/codeql.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/fosterstack/cache/badge)](https://scorecard.dev/viewer/?uri=github.com/fosterstack/cache)

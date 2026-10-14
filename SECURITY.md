@@ -1,5 +1,8 @@
 # Security policy
 
+This page is the policy. The full list of what we do is in
+[Everything we do for security](docs/everything-we-do-for-security.md).
+
 ## Reporting a vulnerability
 
 Please use [GitHub's private vulnerability reporting](https://github.com/fosterstack/cache/security/advisories/new)
