@@ -566,9 +566,6 @@ def main():
     print(json.dumps(sorted(load_at(root, rev)), indent=1))
 
 
-if __name__ == "__main__":
-    main()
-
 
 _UNMEASURED = [
     (re.compile(r"\b(?:npm|pnpm|yarn|bun|deno)\b[^\n;&|]*?\s(?:install|add|i|exec|x|dlx)(?=\s|$)|\b(?:npx|bunx)\b|\bcargo\s+(?:install|binstall)\b|\bgem\s+install\b|\bpipx\s+(?:install|run)\b|\buvx?\s+\S|\bbrew\s+(?:install|reinstall|upgrade)\b|\bconda\s+(?:install|create)\b|\bmamba\s+install\b|\bbundle\s+(?:install|add)\b|\bdotnet\s+(?:tool\s+install|add\s+package|restore)\b|\bgo\s+(?:get|run)\b[^\n]*\$"), "a package-manager install"),
@@ -660,3 +657,7 @@ def unmeasured_occurrences(files):
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     yield (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest()[:16] + ":" + _hide(flat)[:100]), flat, bashlike  # the WHOLE line decides identity (its hash), never a truncation
+
+
+if __name__ == "__main__":
+    main()
