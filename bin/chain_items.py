@@ -496,6 +496,46 @@ def cmd_record_env(a):
 
 
 # ---- the command line -------------------------------------------------------------------------------------------------------------
+# ---- admission-baseline (REQ-CHAIN-007-AC19, advisor ruling B, Oct 12) ------------------------------------------------------------------
+ADM_FIELDS = ("tag", "sha", "baseline_version", "baseline")
+
+
+def cmd_admission_baseline(a):
+    """The baseline admission chose, as a file of Build's own record: both apk legs' admission.json (already bound to their records) must agree on the
+    tag, the commit, the baseline version and its path, and match this run; only those four fields are written, canonical, for Release to verify and read."""
+    if len(a.admission) != 2:
+        refuse("build", "count: exactly two --admission files (one per apk leg) are required, got %d" % len(a.admission))
+    legs = []
+    for path in a.admission:
+        try:
+            with open(path, "rb") as f:
+                doc = strict_json(f.read())
+        except OSError:
+            refuse("build", "missing: %s" % path)
+        except (ValueError, TypeError):
+            refuse("build", "shape: %s is not a JSON object" % path)
+        if not isinstance(doc, dict) or not all(isinstance(doc.get(k), str) and doc.get(k) for k in ADM_FIELDS):
+            refuse("build", "shape: %s does not hold the strings %s" % (path, ", ".join(ADM_FIELDS)))
+        legs.append({k: doc[k] for k in ADM_FIELDS})
+    if legs[0] != legs[1]:
+        refuse("build", "disagree: the two apk legs' admission.json differ in %s" % ", ".join(k for k in ADM_FIELDS if legs[0][k] != legs[1][k]))
+    got = legs[0]
+    if got["tag"] != a.tag:
+        refuse("build", "tag: admission was for %s, this run is %s" % (got["tag"], a.tag))
+    if got["sha"] != a.sha:
+        refuse("build", "sha: admission was for %s, this run is %s" % (got["sha"], a.sha))
+    # a release candidate tag (vX.Y.Z-rcN) is admitted with its OWN baseline: the version is the tag itself; every other tag carries a vX.Y.Z baseline
+    if re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+", a.tag):
+        version_ok = got["baseline_version"] == a.tag
+    else:
+        version_ok = re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", got["baseline_version"]) is not None
+    if not version_ok or got["baseline"] != "requirements/releases/%s.yaml" % got["baseline_version"]:
+        refuse("build", "baseline: %r at %r is not the baseline of tag %s at requirements/releases/<version>.yaml (vX.Y.Z, or the release candidate's own version)" % (got["baseline_version"], got["baseline"], a.tag))
+    with open(a.out, "w") as f:
+        f.write(json.dumps(got, sort_keys=True, indent=1) + "\n")
+    print("ok")
+
+
 def add_parsers(sub):
     b = sub.add_parser("bind")
     b.add_argument("--step", required=True)
@@ -516,7 +556,11 @@ def add_parsers(sub):
     c.add_argument("--snapshot", action="store_true")
     e = sub.add_parser("record-env")
     e.add_argument("--record", required=True)
+    ab = sub.add_parser("admission-baseline")
+    ab.add_argument("--admission", action="append", required=True)
+    for name in ("tag", "sha", "out"):
+        ab.add_argument("--" + name, required=True)
 
 
 COMMANDS = {"bind": cmd_bind, "items-apk": cmd_items_apk, "items-merge": cmd_items_merge, "rebuild-compare": cmd_rebuild_compare,
-            "record-env": cmd_record_env}
+            "record-env": cmd_record_env, "admission-baseline": cmd_admission_baseline}

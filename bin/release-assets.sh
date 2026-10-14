@@ -50,12 +50,13 @@ for v in production fips; do
     if [ -f "${kind#*:}" ]; then stage "${kind#*:}" "${kind%%:*}"; fi
   done
 done
-only witness-build build-collection.json digests.json items.json
+only witness-build build-collection.json digests.json items.json admission-baseline.json
 only witness-rebuild rebuild-collection.json verdict.json
+only provenance provenance.json provenance.rekor.json provenance.bundle.json
 for n in scanners acceptance runtime arm64; do only "witness-check/witness-$n" "$n-collection.json"; done
 for f in dist/*.txt; do [ "${f##*/}" = checksums.txt ] || { echo "release-assets: $f is not in the inventory of dist (the four archives and checksums.txt)" >&2; exit 1; }; done
 for f in dist/*.tar.gz dist/checksums.txt release-evidence/*.bundle release-evidence/*.json release-metadata/release-manifest.json release-metadata/fosterstack-cache*.json release-metadata/release-files.sha256 policy.json \
-         witness-build/build-collection.json witness-build/digests.json witness-build/items.json witness-rebuild/rebuild-collection.json witness-check/witness-*/*-collection.json; do
+         witness-build/build-collection.json witness-build/digests.json witness-build/items.json witness-build/admission-baseline.json witness-rebuild/rebuild-collection.json witness-check/witness-*/*-collection.json provenance/provenance.json provenance/provenance.rekor.json provenance/provenance.bundle.json; do
   stage "$f" "${f##*/}"
 done
 python3 bin/release-metadata.py gate --dir release-upload

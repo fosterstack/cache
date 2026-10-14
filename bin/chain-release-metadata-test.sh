@@ -138,6 +138,7 @@ def release_dir():
     open(a + "/production.sbom.json", "w").write("{}"); open(a + "/production.sbom.json.bundle", "w").write("{}")
     open(a + "/policy.json", "w").write("{}"); open(a + "/release-policy.bundle", "w").write("{}")
     open(a + "/build-collection.json", "w").write("{}")
+    for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"): open(os.path.join(a, n), "w").write("{}")      # Sign's three files (REQ-CHAIN-007-AC9, AC19)
     return a
 def gate(label, mutate, word=None):
     a = release_dir(); mutate(a); rc, so, se = run("gate", "--dir", a)
@@ -150,11 +151,22 @@ gate("a file listed in checksums.txt that is not an asset is refused", lambda a:
 gate("an archive whose bytes differ from checksums.txt is refused", lambda a: open(a + "/fscache_0.3.0_linux_amd64.tar.gz", "wb").write(b"tampered"), "fscache_0.3.0_linux_amd64.tar.gz")
 gate("a metadata file altered after the list was made is refused", lambda a: open(a + "/release-manifest.json", "a").write("x"), "release-manifest.json")
 gate("an extra line in release-files.sha256 is refused", lambda a: open(a + "/release-files.sha256", "a").write("%s  extra.json\n" % ("0" * 64)), "extra")
+# Codex 4b-2 r1 (A B3): the exact four-line format; a blank line anywhere (leading, between entries, or more than the one final newline) is an extra line
+def _sums_edit(f):
+    def w(a):
+        t = open(a + "/release-files.sha256").read(); open(a + "/release-files.sha256", "w").write(f(t))
+    return w
+gate("a blank line before the first entry of release-files.sha256 is refused", _sums_edit(lambda t: "\n" + t), "blank")
+gate("a blank line between entries of release-files.sha256 is refused", _sums_edit(lambda t: t.replace("\n", "\n\n", 1)), "blank")
+gate("a second newline at the end of release-files.sha256 is refused", _sums_edit(lambda t: t + "\n"), "blank")
+gate("a blank line in checksums.txt is refused", lambda a: open(a + "/checksums.txt", "a").write("\n"), "blank")
 gate("an empty release-files.sha256 is refused", lambda a: open(a + "/release-files.sha256", "w").write(""), "release-files.sha256")
 gate("a missing release-files.sha256.bundle is refused (v0.3.0 is not released without the four files signed)", lambda a: os.remove(a + "/release-files.sha256.bundle"), "release-files.sha256.bundle")
 gate("a missing metadata file is refused", lambda a: os.remove(a + "/fosterstack-cache.openvex.json"), "fosterstack-cache.openvex.json")
 gate("a missing checksums.txt.bundle is refused", lambda a: os.remove(a + "/checksums.txt.bundle"), "checksums.txt.bundle")
 gate("a file with its own bundle (the SBOM) is covered by it", lambda a: None)
+for n in ("provenance.json", "provenance.rekor.json", "provenance.bundle.json"):
+    gate("a release without Sign's %s is refused, naming it (Sign's provenance is part of every release)" % n, lambda a, n=n: os.remove(os.path.join(a, n)), n)
 gate("an SBOM whose bundle is gone is refused", lambda a: os.remove(a + "/production.sbom.json.bundle"), "production.sbom.json")
 gate("a symlink among the assets is refused", lambda a: os.symlink(a + "/checksums.txt", a + "/link.txt"), "link.txt")
 # ---- tag-notes: the release tag's generated notes (REQ-REL-009-AC8), the same decision as bin/patch-decide.py tag_notes ----------------------------
@@ -179,6 +191,27 @@ for what, raw, tag in cases:
     check(same, "tag-notes: %s gives what patch-decide's tag_notes gives (notes, or none)" % what, "rc=%s out=%r pd=%r" % (r.returncode, r.stdout[:60], (pd or "")[:60]))
 print("pass=%d fail=%d" % (passn, failn))
 EXPECT = int(os.environ.get("EXPECT_CASES", "73"))
+# ---- the accepted AC text of advisor rulings B, C and E (Oct 12): requirements.yaml says what the code now does ----------------------------------------------------------
+import yaml
+REQS = {r["id"]: r for r in yaml.safe_load(open(os.path.join(BIN, "..", "requirements", "requirements.yaml")))["requirements"]}
+def ac(rid, n): return next(a for a in REQS[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))
+t4, t7 = ac("REQ-CHAIN-004", 2)["then"], ac("REQ-CHAIN-007", 9)["then"]
+t19 = ac("REQ-CHAIN-007", 19)["then"]
+check("the command wrapped in timeout -k 20 540 (a kill-after of 20 seconds, so a command that ignores the TERM cannot hold the job past the certificate)" in t4 and "wrapped in timeout 540," not in t4,
+      "text: REQ-CHAIN-004-AC2 says timeout -k 20 540 (E item A)")
+n4, n7 = REQS["REQ-CHAIN-004"]["notes"], REQS["REQ-CHAIN-007"]["notes"]
+check("wrapped in timeout -k 20 540." in n4 and "wrapped in timeout 540." not in n4 and "with timeout -k 20 540 inside it" in n7 and "with timeout 540 inside it" not in n7
+      and "Release has six such steps (release-verify, release-apks, release-publish, release-sign, release-assets, release-postverify)" in n7 and "Release has five such steps" not in n7,
+      "text: the REQ-CHAIN-004 and REQ-CHAIN-007 notes say timeout -k 20 540 and six Release steps (E item B)")
+check("the release notes are posted here only from the notes carried in the generated patch tag's message (REQ-REL-009-AC8; the changelog is the patch-notes job's)" in t7 and "release notes are not posted here" not in t7,
+      "text: REQ-CHAIN-007-AC9 agrees with REQ-REL-009-AC8 (the notes are posted by release-assets from the generated tag's message; Codex 4b-2 r1 B2)")
+check("release-files.sha256 with its bundle and the four metadata files (AC19), Sign's provenance (provenance.json, provenance.rekor.json, provenance.bundle.json, as named files of the release) and the Witness records of Build, Rebuild and Check to the release" in t7,
+      "text: REQ-CHAIN-007-AC9 attaches Sign's three provenance files (ruling C)")
+check("Build's digests.json, items.json or admission-baseline.json (products of Build's signed record) or Sign's provenance.json, provenance.rekor.json and provenance.bundle.json (the record the Sign stage signed; the bundle carries its signature)" in t19
+      and "Build's admission-baseline.json" in t19 and "never a version Release chooses itself" in t19 and "the baseline admission chose for a CI patch)" not in t19,
+      "text: REQ-CHAIN-007-AC19 covers admission-baseline.json and Sign's provenance and takes the baseline from Build's verified file (rulings B and C)")
+print("pass=%d fail=%d" % (passn, failn))
+EXPECT = int(os.environ.get("EXPECT_CASES", "85"))
 if EXPECT and passn + failn != EXPECT: print("FAIL case count %d != expected %d" % (passn + failn, EXPECT)); sys.exit(1)
 sys.exit(1 if failn else 0)
 PY

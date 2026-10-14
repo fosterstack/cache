@@ -14,3 +14,5 @@ export SOURCE_DATE_EPOCH
 python3 bin/build-version-check.py --apk-dir "out/$(uname -m)" --variant standard --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
 python3 bin/build-version-check.py --apk-dir "out/$(uname -m)" --variant fips --tag "$GITHUB_REF_NAME" --sha "$GITHUB_SHA"
 python3 bin/chain-verify.py items-apk --out-dir "out/$(uname -m)" --result out/items-apk.json
+# this leg's admission file is also a product of its record: the assemble job binds it (REQ-CHAIN-007-AC19)
+cp admission.json out/admission.json

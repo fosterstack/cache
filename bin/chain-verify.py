@@ -894,16 +894,20 @@ def cmd_bind_items(a):
     """items.json is a product of Build's VERIFIED record with the same sha256: its children, locks and SBOMs are then not a side channel."""
     pol = _release_policy(a, "build")
     now = parse_now(a.now)
-    have = _sha256_bytes_of(a.items, "build", "items.json")
+    product = getattr(a, "product", None) or "items.json"      # REQ-CHAIN-007-AC19: a second product of Build's record, admission-baseline.json, is bound the same way
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", product):
+        refuse("build", "product: %r is not a plain file name" % product)
+    want = ITEMS_PRODUCT if product == "items.json" else "https://witness.dev/attestations/product/v0.1/file:" + product
+    have = _sha256_bytes_of(a.items, "build", product)
     with tempfile.TemporaryDirectory() as tmp:
         stmt, _payload, dsse = verify_record(pol, "build", a.record, None, now, tmp)
     if dsse["payloadType"] == POLT:
         refuse("build", "predicate: a signed release policy is not Build's record")
-    hits = [s for s in typed_subjects("build", stmt) if s["name"] == ITEMS_PRODUCT]
+    hits = [s for s in typed_subjects("build", stmt) if s["name"] == want]
     if len(hits) != 1:
-        refuse("build", "items.json: Build's record holds %d product subjects named file:items.json, exactly one is required" % len(hits))
+        refuse("build", "%s: Build's record holds %d product subjects named file:%s, exactly one is required" % (product, len(hits), product))
     if hits[0]["digest"].get("sha256") != have:
-        refuse("build", "digest: items.json is not the file Build's record holds")
+        refuse("build", "digest: %s is not the file Build's record holds" % product)
     print("ok")
 
 
@@ -1470,6 +1474,7 @@ def build_parser():
     bi.add_argument("--policy", required=True)
     bi.add_argument("--record", required=True)
     bi.add_argument("--items", required=True)
+    bi.add_argument("--product")
     bi.add_argument("--now")
     cl = sub.add_parser("check-list")
     cl.add_argument("--policy", required=True)
