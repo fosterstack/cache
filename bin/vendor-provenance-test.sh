@@ -243,6 +243,40 @@ assert open(out + "/vendor-evidence.json", "rb").read() == good, "the earlier fi
 assert os.listdir(out) == ["vendor-evidence.json"], os.listdir(out)
 PY
 
+t AC8 "an output failure with an ABSENT output directory leaves no directory behind (the new parents too), and a pre-existing parent stays" python3 - "$bin_vp" "$F7" "$work/ev8-absent" <<'PY'
+import importlib.util, os, sys
+bp, fx, base = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+os.makedirs(base)
+out = base + "/new/deeper/ev"
+real = os.replace
+def boom(*a, **k): raise OSError(28, "No space left on device")
+os.replace = boom
+try:
+    rc = vp.main(["evidence", "--out", out, "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"])
+finally:
+    os.replace = real
+assert rc == 1, rc
+assert os.listdir(base) == [], os.listdir(base)
+PY
+t AC8 "a leftover temporary name is never deleted by another run: the file stays and no evidence is written" python3 - "$bin_vp" "$F7" "$work/ev8-collide" <<'PY'
+import importlib.util, os, sys
+bp, fx, out = sys.argv[1:4]
+spec = importlib.util.spec_from_file_location("vp", bp); vp = importlib.util.module_from_spec(spec); spec.loader.exec_module(vp)
+os.makedirs(out)
+name = out + "/.vendor-evidence.json.tmp-" + (b"\x01" * 8).hex()
+open(name, "w").write("someone else's file\n")
+real = os.urandom
+os.urandom = lambda n: b"\x01" * n
+try:
+    rc = vp.main(["evidence", "--out", out, "--provenance", fx + "/prov.json", "--govulncheck", fx + "/govuln.json", "--date", "1790000000"])
+finally:
+    os.urandom = real
+assert rc == 1, rc
+assert open(name).read() == "someone else's file\n", "the other file was removed or changed"
+assert sorted(os.listdir(out)) == [os.path.basename(name)], os.listdir(out)
+PY
+
 # ===== AC9: determinism ========================================================================
 ev "$work/d1" >/dev/null 2>&1; ev "$work/d2" >/dev/null 2>&1; ev "$work/d3" 1790000001 >/dev/null 2>&1
 t AC9 "two runs are byte-identical" bash -c "[ -s '$work/d1/vendor-evidence.json' ] && cmp -s '$work/d1/vendor-evidence.json' '$work/d2/vendor-evidence.json'"
@@ -347,6 +381,10 @@ PY
   t AC14 "pseudo-version form $form: the recorded commit with the matching revision builds, origin has a commit" bash -c "python3 '$bin_vp' build --vendor-dir '$d/vendor' --go-sum '$d/go.sum' --sumdb-record '$d/sumdb.json' --origins '$d/origins.json' --licenses '$d/licenses.json' --recorded-origins '$d/rec.json' --out '$d/out.json' && python3 -c \"import json; m={x['path']:x for x in json.load(open('$d/out.json'))['modules']}; assert set(m['example.test/beta']['origin'])=={'url','commit'}, m\""
   rc AC14 "pseudo-version form $form: a commit that does not start with the revision is refused (exit 2)" 2 python3 "$bin_vp" build --vendor-dir "$d/vendor" --go-sum "$d/go.sum" --sumdb-record "$d/sumdb.json" --origins "$d/origins.json" --licenses "$d/licenses.json" --recorded-origins "$d/rec-bad.json" --out "$d/out2.json"
 done
+# a tagged prerelease whose text ends like a pseudo-version (no ".0." component) is a TAGGED version: origin {url, tag}
+d="$work/f4rc"; mkfix "$d"; RC="v1.2.3-rc.20191010083416-a7dc8b61c822"
+sed -i.bak "s/v1\.2\.3/$RC/g" "$d/vendor/modules.txt" "$d/go.sum" "$d/sumdb.json" "$d/origins.json" "$d/licenses.json"
+t AC4 "a tagged prerelease that ends like a pseudo-version builds with origin {url, tag}, not a commit" bash -c "python3 '$bin_vp' build --vendor-dir '$d/vendor' --go-sum '$d/go.sum' --sumdb-record '$d/sumdb.json' --origins '$d/origins.json' --licenses '$d/licenses.json' --out '$d/out.json' && python3 -c \"import json; m={x['path']:x for x in json.load(open('$d/out.json'))['modules']}; assert set(m['example.test/alpha']['origin'])=={'url','tag'}, m\" && python3 '$bin_vp' check --vendor-dir '$d/vendor' --go-sum '$d/go.sum' --provenance '$d/out.json'"
 f14 tagged
 python3 - "$work/f14-tagged" <<'PY'
 import json, sys
