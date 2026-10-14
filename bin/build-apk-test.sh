@@ -1174,7 +1174,7 @@ for m in ba-go ba-env-go; do
   rp_extra=(GITHUB_ACTIONS=true "${RP_GO[@]}"); o=$(mo); rp_build "$rpm/$m.sh" "$o"
   t "AC9" "$m: in CI the run fails saying there is no Go toolchain on PATH, and the go stub was never called" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -q 'no Go toolchain on PATH in CI' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
   rp_extra=("${RP_GO[@]}"); o=$(mo); rp_build "$rpm/$m.sh" "$o"
-  t "AC9" "$m: outside CI the run is not the control's: it says 'not verified' and the go stub was never called" bash -c "grep -q 'not verified' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
+  t "AC9" "$m: outside CI the check degrades as AC4 states: exit 0, 'not verified' printed, the go stub never called" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q 'not verified' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
 done
 # the restriction is what bites: the same four direct-call mutants COMPLETE when the search path also holds sudo, sha256sum, python3 and git
 restricted_path_dir "$work/rp-open" $RP_COREUTILS python3 git && ln -s "$stubs/uname" "$work/rp-open/uname" && ln -s "$rpw/sudo" "$work/rp-open/sudo" && ln -s "$rpw/sha256sum" "$work/rp-open/sha256sum" \
@@ -1204,6 +1204,7 @@ M = {
  "ba-probe-unshare": [(PR, '"$SUDO" unshare -n "$PY3" -I -B bin/net-probe.py;')],
  "ba-probe-python3": [(PR, '"$SUDO" "$UNSHARE" -n python3 -I -B bin/net-probe.py;')],
  "ba-probe-assembled": [(PR, 'g=sud; g+=o; "$g" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-probe-sudo-py": [(PR, 'p=py; p+=thon3; "$SUDO" "$p" -I -B bin/net-probe.py;')],
  "ba-probe-basename": [(PR, '"$(basename "$SUDO")" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
  "ba-sysctl-sudo":  [(SYS, 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ||')],
  "ba-env-opt":      [('"$SUDO" "$ENVBIN" -i', '"$SUDO" -n env -i')],
@@ -1228,20 +1229,36 @@ for m in ba-sde-git ba-sde-assembled ba-sde-basename; do
   rp_ba "$rpm/$m.sh" --print-source-date-epoch --source-dir "$src"
   t "AC9" "$m: git by bare name in the commit-time call is not found, and no commit time is printed" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -Eqi 'git.*(not found|No such file)' '$work/rp.log' && ! grep -qx '$SDE' '$work/rp.log'"
 done
-# 2b. the cleanup fallback: an ordinary rm that fails (a tree the user cannot remove) runs sudo rm; skipped where the user is root (rm succeeds)
-if [ "$(id -u)" != 0 ]; then
-  rp_extra=("${RP_GO[@]}" STUB_LOCKED_CACHE=1); rp_build "$work/ba-copy.sh" "$(mo)"
-  t "AC9" "build-apk.sh: with a cleanup that fails the fixed-path sudo rm runs (the build still ends 0 and says built)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q '^built ' '$work/rp.log' && grep -q '^sudo rm -rf ' '$CALLS'"
-  for m in ba-rm-sudo ba-rm-assembled ba-rm-basename; do
-    t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
-    rp_build "$rpm/$m.sh" "$(mo)"
-    t "AC9" "$m: sudo by bare name in the cleanup fallback is not found and no sudo rm was made" bash -c "grep -q 'sudo: command not found' '$work/rp.log' && ! grep -q '^sudo rm' '$CALLS'"
-  done
-else echo "note: running as root: the cleanup-fallback scenario is skipped (rm cannot fail)"; ok; fi
+# 2b. the cleanup fallback: the ordinary rm FAILS because the script's own search path holds an rm that exits 1 (deterministic, whoever runs the
+# suite, root included): the fixed-path sudo rm must run; the original status of the build is kept. A scenario that did not run FAILS the suite.
+mkdir -p "$work/rp-rmfail"; for f in "$rp"/*; do ln -s "$(readlink "$f")" "$work/rp-rmfail/$(basename "$f")"; done
+rm -f "$work/rp-rmfail/rm"; printf '#!/bin/sh\nexit 1\n' >"$work/rp-rmfail/rm"; chmod +x "$work/rp-rmfail/rm"
+rp_extra=("${RP_GO[@]}"); RP_PATH="$work/rp-rmfail" rp_build "$work/ba-copy.sh" "$(mo)"
+t "AC9" "build-apk.sh: when the ordinary cleanup fails the fixed-path sudo rm runs and the build keeps its own status (exit 0, 'built')" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q '^built ' '$work/rp.log' && grep -q '^sudo rm -rf ' '$CALLS'"
+for m in ba-rm-sudo ba-rm-assembled ba-rm-basename; do
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  RP_PATH="$work/rp-rmfail" rp_build "$rpm/$m.sh" "$(mo)"
+  t "AC9" "$m: sudo by bare name in the cleanup fallback is refused: 'sudo: command not found' is printed, no sudo rm is made, the build keeps its status 0" bash -c "grep -q 'sudo: command not found' '$work/rp.log' && ! grep -q '^sudo rm' '$CALLS' && [ '$(cat "$work/rp.rc")' = 0 ]"
+done
+# the sudo and probe stubs resolve their operand the way exec would: a bare name by the search path only, a name with a slash as a path
+# (a name that is not found: exit 127 and '<name>: command not found'; never a silent success, never the working directory)
+mkdir -p "$work/rp-cwd"; printf '#!/bin/sh\nexit 0\n' >"$work/rp-cwd/python3"; chmod +x "$work/rp-cwd/python3"
+for n in python3 openssl git go sha256sum melange; do
+  : >"$CALLS"; ( cd "$work/rp-cwd" && env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" "$rpw/sudo" $n -V ) >"$work/rp.log" 2>&1; r=$?
+  t "AC9" "the sudo stub: a bare $n operand (also with an executable of that name in the working directory) is 'command not found', exit 127" bash -c "[ '$r' = 127 ] && grep -q '$n: command not found' '$work/rp.log'"
+done
+: >"$CALLS"; ( cd "$work/rp-cwd" && env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" -c 'p=py; p+=thon3; "$0" "$p" -V' "$rpw/sudo" ) >"$work/rp.log" 2>&1; r=$?
+t "AC9" "the sudo stub: an assembled python3 operand (p=py; p+=thon3) is 'command not found', exit 127" bash -c "[ '$r' = 127 ] && grep -q 'python3: command not found' '$work/rp.log'"
+for stub in "$stubs/unshare" "$rpw/unshare"; do
+  : >"$CALLS"; ( cd "$work/rp-cwd" && env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" "$stub" -n python3 -I -B bin/net-probe.py ) >"$work/rp.log" 2>&1; r=$?
+  t "AC9" "the probe stub ($(basename "$(dirname "$stub")")): python3 in the working directory is not a program on the search path: exit 127, not 101" bash -c "[ '$r' = 127 ]"
+  : >"$CALLS"; ( env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" "$stub" -n /definitely/missing/python3 -I -B bin/net-probe.py ) >"$work/rp.log" 2>&1; r=$?
+  t "AC9" "the probe stub ($(basename "$(dirname "$stub")")): a missing absolute program is exit 127" bash -c "[ '$r' = 127 ]"
+done
 # 2c. a network-classified melange failure reaches the probe: sudo unshare -n python3 net-probe.py, exit 4
 rp_extra=("${RP_GO[@]}" STUB_NETATTEMPT=1); rp_build "$work/ba-copy.sh" "$(mo)"
 t "AC9" "build-apk.sh: a network failure with PATH holding only the coreutils runs the probe by fixed paths and exits 4 naming the attempt" bash -c "[ '$(cat "$work/rp.rc")' = 4 ] && grep -q 'network attempt was made' '$work/rp.log' && grep -Eq '^unshare -n .*net-probe.py' '$CALLS'"
-for m in ba-probe-sudo ba-probe-unshare ba-probe-python3 ba-probe-assembled ba-probe-basename; do
+for m in ba-probe-sudo ba-probe-unshare ba-probe-python3 ba-probe-assembled ba-probe-basename ba-probe-sudo-py; do
   case $m in ba-probe-sudo|ba-probe-assembled|ba-probe-basename) tool=sudo;; ba-probe-unshare) tool=unshare;; *) tool=python3;; esac
   t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
   rp_build "$rpm/$m.sh" "$(mo)"
