@@ -115,7 +115,7 @@ try:
 except Exception as ex:
     refuse("--key %s: the block is not exactly one PKCS#1 RSA private key (%s); refusing" % (path, ex))
 block = "\n".join(lines[b[0]:e[0] + 1]) + "\n"
-r = subprocess.run([sys.argv[2], "rsa", "-pubout", "-passin", "pass:"], input=block.encode(), capture_output=True, env={"LC_ALL": "C"})
+r = subprocess.run([sys.argv[2], "rsa", "-pubout", "-passin", "pass:"], input=block.encode(), capture_output=True, env={"LC_ALL": "C", "PATH": "/nonexistent"})
 if r.returncode != 0:
     refuse("--key %s is not a readable RSA private key (openssl: %s)" % (path, r.stderr.decode(errors="replace").strip()[:100]))
 sys.stdout.write(r.stdout.decode())

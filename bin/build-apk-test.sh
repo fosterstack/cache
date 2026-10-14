@@ -1223,7 +1223,7 @@ PY
 rs_refused() { local m=$1 tool=$2 desc=$3
   t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/rs-copy.sh' '$rpm/$m.sh'"
   rp_sign_dirs rpC rpD; rp_extra=(); rp_sign "$rpm/$m.sh" "$work/rpC" "$work/rpD"
-  if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)" "$work/rp.log" && ! grep -q '^melange sign' "$CALLS"; then ok
+  if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)|(not found|No such file or directory).*$tool" "$work/rp.log" && ! grep -q '^melange sign' "$CALLS"; then ok
   else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found, nothing signed)"; fi; }
 rs_refused rs-melange melange "melange called by bare name in the signing call is not found"
 rs_refused rs-python3 python3 "python3 called by bare name (signer read) is not found"
