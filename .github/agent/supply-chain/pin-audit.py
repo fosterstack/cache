@@ -1170,9 +1170,14 @@ def file_issues(gh, plan, today):
 # ---------- held pull requests ----------
 def rerun_held(gh, net, now):
     n = 0
+    base_inputs = age.load_base_inputs(age.DEFAULT_BASE_INPUTS)
     for pr in net.prs():
         try:  # one pull request's failure (an unreachable repository, a bad response) must never stop the others from being re-run
             items = pr.get("_items") or [inv.Item(*_split_key(k)) for k in pr["moved"]]
+            for it in items:     # a key-built item (fixtures): its repository path is the part after file:
+                if it.raw is None and it.kind == "tool" and it.version == "(file)" and it.name.startswith("file:"):
+                    it.raw = it.name[5:]
+            items, _ = age.split_base_inputs(items, base_inputs)   # REQ-SUP-001-AC21: the same trusted decision the age check takes, or a mixed pull request is never re-run
             rows = [age.judge_item(it, net.proofs(it, pr.get("_base"), pr.get("_head", "HEAD")), now) for it in items]
         except (Fail, age.CouldNotLook, RuntimeError, ValueError) as e:
             print(f"information: pull request #{pr.get('number')} was skipped: {clean(e)}")

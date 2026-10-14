@@ -2545,6 +2545,12 @@ requirements:
         then: "the line is reported as ruled text and does not fail the check when the head holds that line no more times than the row's count (1 unless the row says more, at most 100), and only the package items THAT line made (by its own path and line id) leave the moved list, in the age check and in the advisory audit alike; a line with no such row, an edited line, a line joined from a continuation or holding whitespace other than a space or a tab, the same text in a workflow step, an unchanged line whose item moved because an assignment it reads changed, and one copy too many fail as before (decided by the advisor Oct 14: the AC16 mechanism, no parser; the ruling text for a test fixture is \"test fixture: the quoted text is input to a judge test and is never executed; advisor ruling Oct 13\")"
         verification: { method: ci-workflow, release_blocking: false }
         status: approved
+      - id: REQ-SUP-001-AC21
+        given: "a pull request that adds or changes a checksum or version record file (an item whose identity is the file's content) at a path that .github/policy/base-inputs.json, as the base branch holds it, lists in base_inputs"
+        when: "the age check runs"
+        then: "that file is no item and no finding (it is the repository's own base record: its content change is the release chain's base-input-changed signal, and the list is itself a reviewed file); a file at any other path, a path spelled differently from the list (a ./ prefix, a .. inside), and every item that is not a file item stay as before; a list the pull request brings never counts (the base branch's copy is read), a missing list exempts nothing and a malformed one stops the check (decided by the orchestrator Oct 14, the plainest closed form: no pattern on names or directories)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
   - id: REQ-REPO-001
     title: Branch hygiene without a human
     statement: >
