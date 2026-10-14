@@ -40,7 +40,7 @@ inv = _load("pin-inventory")
 tobs = _load("tag_observer")
 
 
-def parse_time(s):
+def parse_time(s, clock=False):
     """ISO 8601 -> aware datetime, or None when it is not one."""
     if not isinstance(s, str):
         return None
@@ -57,7 +57,10 @@ def parse_time(s):
         sign = 1 if tz[0] == "+" else -1
         hh, mm = int(tz[1:3]), int(tz[-2:])
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
-    return d.replace(tzinfo=dt.timezone.utc)
+    d = d.replace(tzinfo=dt.timezone.utc)
+    if frac and not clock:
+        d += dt.timedelta(seconds=1)   # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated: an age is never over-counted (AC3)
+    return d
 
 
 _PIN = re.compile(r"^(?:[0-9a-f]{40}|sha256:[0-9a-f]{64}|v?\d+(?:\.\d+)*(?:[-+._][0-9A-Za-z][0-9A-Za-z.\-+]*)?)$")
@@ -70,8 +73,9 @@ def is_pin(version):
 
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version):
-        return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, so it has no age", None
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version) \
+            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
+        return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
         return False, f"not a pin: {item.version!r} is a series, not an exact release (the installer picks the newest patch), so it has no age", None
     best, seen = None, []
@@ -318,8 +322,9 @@ def _release_with_assets(repo, tags):
 
 def live_proofs(item, root, base=None, head="HEAD"):
     out = []
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version):
-        return out    # a placeholder, a range or a variable has no age: nothing is looked up (and nothing can pass)
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version) \
+            or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
+        return out    # a placeholder, a range, a variable or an action not named by its commit has no age: nothing is looked up (and nothing can pass)
     if item.kind == "action":
         # the age of the EXACT commit: when our own scheduled run first saw the tag point at it (a release date proves nothing about a moved tag),
         # or the PR clock; the tag in the `# vX` label must itself resolve to the pinned commit
@@ -439,7 +444,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         fx = json.load(open(a.fixtures)) if a.fixtures else None
-        now = parse_time(a.now) if a.now else (parse_time((fx or {}).get("now")) if fx and fx.get("now") else dt.datetime.now(dt.timezone.utc))
+        now = parse_time(a.now, True) if a.now else (parse_time((fx or {}).get("now"), True) if fx and fx.get("now") else dt.datetime.now(dt.timezone.utc))
         if now is None:
             raise ValueError("--now is not an ISO time")
         base_items = inv.load_at(a.root, a.base)
@@ -544,6 +549,50 @@ def load_ruled_text(path, required=False):
     return out
 
 
+UNPINNED_FORM = "an unpinned package install"
+LOCAL_CALL_FORM = "a local reusable workflow call"
+
+
+def _item_hash(item):
+    return hashlib.sha256(item.key.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def split_ruled_local_calls(moved, rulings):
+    """REQ-SUP-001-AC19: a local reusable-workflow call that keeps a with: block is an item that cannot pass, unless a base-branch row names it: file, form
+    "a local reusable workflow call", key and line both the 16-hex hash of the item's whole identity (its path and the hash of its with: block), so an edited
+    with: block is another item. Returns (still moved, [(item, ruling)])."""
+    keep, ruled = [], []
+    for m in moved:
+        r = None
+        if m.kind == "action" and m.version == "(local)" and m.src:
+            h = _item_hash(m)
+            r = rulings.get((m.src[0], LOCAL_CALL_FORM, h, h))
+        (ruled if r else keep).append((m, r[0]) if r else m)
+    return keep, ruled
+
+
+def drop_ruled_unpinned(items, ruled_lines):
+    """REQ-SUP-001-AC20: an unpinned package item leaves the list only when the script line that made it (its own path and line id) is a ruled occurrence."""
+    return [m for m in items if not (m.kind == "package" and m.version == "(unpinned)" and m.src and tuple(m.src) in ruled_lines)]
+
+
+def ruled_unpinned_lines(root, base, head, exceptions_path):
+    """The (script path, line id) pairs of the unpinned-package occurrences the head ADDS that a base-branch row rules, within the row's count. Shared by this check and
+    pin-audit.py, so the one required job judges a ruled line once."""
+    rulings = load_ruled_text(exceptions_path, required=False)
+    in_base = _occurrences(root, base)
+    out = set()
+    for k, per in _unmeasured_counts(root, base, head).items():
+        if k[1] != UNPINNED_FORM:
+            continue
+        rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
+        # a line the base already holds is never ruled here: an item of that line may have moved because an assignment it reads changed, and a copy of
+        # the line cannot be told from it (the occurrence is still reported; the item keeps failing)
+        if all(r and n <= r[1] and not in_base.get(k, {}).get(lh) for r, (lh, n) in zip(rs, per.items())):
+            out.update((k[0], lh) for lh in per)
+    return out
+
+
 def _run(a, moved, fx, now):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
     lines = _unmeasured_counts(a.root, a.base, a.head)
@@ -556,6 +605,8 @@ def _run(a, moved, fx, now):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
             added.append(k)
+    moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20
+    moved, ruled_calls = split_ruled_local_calls(moved, rulings)                                                       # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []
@@ -568,6 +619,9 @@ def _run(a, moved, fx, now):
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+    for it, ruling in ruled_calls:
+        rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
+        print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")
     for (path, what, line), ruling in ruled:
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": True, "proof": None,
                      "reason": f"ruled text: {what} in {path} ({line[:100]}) is listed in the base branch's unmeasured_text: {ruling[:200]}"})
