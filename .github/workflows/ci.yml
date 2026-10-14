@@ -545,6 +545,39 @@ jobs:
   # App secrets live in the main-only `agent` environment, which a PR run cannot use. A drift first
   # seen on a PR run is dispatched by the next push to main (or by hand). Best effort: no token or
   # a failed call is a warning; the issue is the record.
+  # REQ-CHAIN-001-AC6, "whose CI verifies" (slice 4b-6; orchestrator ruling Oct 13). On a pull request that commits .github/policy/rc-proof.json this job requires the change to
+  # be exactly the marker and the removal of the one KR-CUTOVER entry of test-evidence/known-red.json, and verifies the run the marker names with the verifier of the BASE
+  # checkout (bin/marker-pr-gate.py runs `chain-verify.py rc-proof` on the run's artifacts). Any other pull request passes it without a read. Three read permissions, no
+  # secret; a fork's token is read-only and enough. LIMIT: a pull request that also rewrites THIS job is stopped by the workflow-change rule (both reviews and the owner's
+  # merge), not by the job; bin/marker-gate-test.sh pins the job's text so an edit fails the suite on the same pull request.
+  marker-gate:
+    name: marker-gate
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+      - name: the marker pull request's files, and the run its marker names
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[] | .filename | @json' > changed.txt
+          python3 -I -B base/bin/marker-pr-gate.py --base-dir base --head-dir head --files changed.txt --repository "$GITHUB_REPOSITORY"
+
   drift-fixer-dispatch:
     name: dispatch the fixer for required-check drift
     needs: required-check-guard

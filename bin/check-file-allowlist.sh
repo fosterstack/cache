@@ -162,6 +162,8 @@ ALLOW_PATTERNS=(
   '^tools/govulncheck/go\.(mod|sum)$'
   # The rc-proof marker helper (REQ-CHAIN-001-AC6): the one definition of the chain-file set.
   '^bin/chain-bytes-sha\.py$'
+  # The marker-only pull request gate (REQ-CHAIN-001-AC6, slice 4b-6): the script and its suite.
+  '^bin/marker-(pr-gate\.py|gate-test\.sh)$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
   '^bin/release-(verify|apks|publish|sign|assets|postverify)\.sh$'
   '^bin/release-(postverify|metadata|layout)\.py$'
