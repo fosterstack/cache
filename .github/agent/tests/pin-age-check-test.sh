@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -509,8 +509,9 @@ got = inv.inventory({"bin/tool.sh": "go install example.org/evil@v9.9.9\ndocker 
                      "bin/install-scanner.sh": "NEWT_VERSION=9.9.9\nSCOUT_BASE=\"${SCOUT_BASE_URL:-https://github.com/docker/scout-cli/releases/download}\"\nTOOL_BASE_URL=https://evil.example/dl\n",
                      "tools/act/action.yml": "runs:\n  using: composite\n  steps:\n    - uses: evil/act@v1\n",
                      ".github/workflows/a.yml": "jobs:\n  j:\n    steps:\n      - uses: ./tools/act\n      - run: pip install -r deps.txt\n"})
-for k in ("gotool:example.org/evil@v9.9.9", "image:alpine:3.99@", "package:pypi/evilpkg@1.0", "tool:evil/evil/x.tgz@v1.0", "tool:newt@9.9.9", "action:evil/act@v1", "action:local:./tools/act@(local)"):
+for k in ("gotool:example.org/evil@v9.9.9", "image:alpine:3.99@", "package:pypi/evilpkg@1.0", "tool:evil/evil/x.tgz@v1.0", "tool:newt@9.9.9", "action:evil/act@v1"):
     assert k in got, (k, sorted(got))
+assert any(k.startswith("action:local:./tools/act~") and k.endswith("@(local)") for k in got), sorted(got)   # a local action: its name carries a digest of the raw spelling
 assert any(k.startswith("tool:source:tool_base_url=https://evil.example/dl@") for k in got), sorted(got)
 assert ("a pip requirements file not named requirements*.txt" in {k[1] for k in inv.unmeasured({".github/workflows/a.yml": "x: pip install -r deps.txt\n"})})
 assert not inv.unmeasured({".github/workflows/a.yml": "x: pip install -r .github/pins/adjudicator-requirements.txt\n"})
@@ -1918,7 +1919,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = json.load(open(sys.argv[1]))["unmeasured_text"]
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call"]   # those name an item, not a text line (AC19)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1973,9 +1974,13 @@ CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, 
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-rows = json.load(open(sys.argv[2]))["unmeasured_text"]
+allrows = json.load(open(sys.argv[2]))["unmeasured_text"]
 loaded = ac.load_ruled_text(sys.argv[2], required=True)
-assert rows and len(loaded) == len(rows), (len(rows), len(loaded))
+assert allrows and len(loaded) == len(allrows), (len(allrows), len(loaded))
+calls = [r for r in allrows if r["form"] == "a local reusable workflow call"]    # REQ-SUP-001-AC19: rows that name an item (its whole-identity hash), ruled by the orchestrator
+for r in calls:
+    assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["file"].startswith(".github/workflows/") and r["ruling"].startswith("local reusable workflow call; "), r
+rows = [r for r in allrows if r["form"] != "a local reusable workflow call"]
 forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
 for r in rows:
     assert set(r) - {"count"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
@@ -2106,6 +2111,623 @@ CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, t
 check iso "$q" "$q/agent/tests" "$q/root" ibt inventory "$q/root/bin/install-build-tools.sh"
 CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, the variable-version mutant still fails on the REAL diagnostic"
 check iso "$q" "$q/agent/tests" "$q/root" ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
+
+# --- REQ-SUP-001-AC19: a local reusable-workflow call (advisor, Oct 14; ops/docs/ratify/2026-10-13-advisor-latitude-costs-and-stale-wording.md, question 2) ---
+# The exact form `uses: ./.github/workflows/<name>.yml`, with that file in the tree and read as a workflow, is no item: the called file is inventoried
+# itself. Any other local form stays an item that cannot pass. A `with:` that passes a version-shaped value keeps the call an item (the callee may feed
+# it to an installer, and nothing in the callee's file would move): refused as before.
+cat >"$work/callee.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+EOF
+# lcall NAME USES [WITH-BLOCK]: a copy of base whose head adds .github/workflows/callee.yml and a job `c` in ci.yml calling USES (the pieces travel in files)
+lcall() {
+  local n=$1 uses=$2 with=${3:-}
+  printf '%s' "$uses" >"$work/lcall.uses"; printf '%s' "$with" >"$work/lcall.with"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+uses = pathlib.Path(r'$work/lcall.uses').read_text()
+with_ = pathlib.Path(r'$work/lcall.with').read_text()
+c.write_text(c.read_text() + '  c:\n    uses: ' + uses + '\n' + with_)"
+}
+lck() { runck "$1" '{"times": {}}'; }
+lcall l1 './.github/workflows/callee.yml'
+lck l1
+CASE="AC19: a call of ./.github/workflows/<name>.yml whose file is in the tree is no item: exit 0 and nothing moved"
+check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/l1.out"
+lcall l2 './.github/workflows/callee.yml' $'    with:\n      mode: release\n      digests: ${{ needs.j.outputs.digests }}\n'
+lck l2
+CASE="AC19: ANY with: value keeps the call an item, plain words and expressions included (the closed form: exit 1)"
+check test "$rc" -eq 1
+lcall l3 './.github/workflows/callee.yml' $'    with:\n      tool-version: 9.9.9\n'
+lck l3
+CASE="AC19: a with: value that is a version (9.9.9) keeps the call an item that cannot pass: exit 1, the local call is named"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/l3.out"
+lcall l4 './.github/workflows/callee.yml' $'    with:\n      tool-version: ${{ inputs.v || \'9.9.9\' }}\n'
+lck l4
+CASE="AC19: an expression that holds a version literal inside it keeps the call an item (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/l4.out"
+lcall l5 './.github/workflows/callee.yml' $'    with:\n      pin: v2.17.1\n'
+lck l5
+CASE="AC19: a v-prefixed version value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+lcall l6 './.github/workflows/callee.yml' $'    with:\n      digest: sha256:'"$(printf '7%.0s' $(seq 64))"$'\n'
+lck l6
+CASE="AC19: a digest value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+i=0
+for form in './other/callee.yml' './.github/workflows/sub/callee.yml' './.github/workflows/../callee.yml' './.github/workflows/callee.yml@main' './.github/workflows/missing.yml' './.github/workflows/callee.txt' './.github/actions/local'; do
+  i=$((i+1)); lcall "lx$i" "$form"; lck "lx$i"
+  CASE="AC19: the form '$form' is not the exact local workflow call: it is not exempted (exit 1)"
+  check test "$rc" -eq 1
+done
+newcase lmoved "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text().replace('$SHA1', '$NEW1'))
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/callee.yml\n')"
+runck lmoved "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$YOUNG\", \"source\": \"observer\"}}}"
+CASE="AC19: the called file is inventoried by its own rules: a young action pin inside it still FAILS (exit 1) though the call itself is no item"
+check test "$rc" -eq 1; check grep -q "action:actions/checkout@$NEW1" "$work/lmoved.out"
+
+# --- REQ-SUP-001-AC20: a ruled row for an unpinned package named by a script line (advisor Oct 14: option B; the AC16 mechanism, no parser) ---
+# A script line whose pip install names a package with no version is an item that cannot pass. The base branch's exceptions file may rule that line exactly like
+# AC16's text lines: {file, form "an unpinned package install", key = line = 16-hex hash of the whole flattened line, ruling[, count]}. Only a script (*.sh)
+# outside .github/agent/ can be ruled; the same text in a workflow step, or in a script under .github/agent/, fails as before.
+pk_line="       'run: |\\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\\n          pip install requests'"
+pyk() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }
+# pkrows OUT MODE FILE LINE: the exceptions file, hashes computed here, independent of the check
+pkrows() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import hashlib, json, sys
+out, mode, f, line = sys.argv[1:5]
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+h = H(" ".join(line.split()))
+row = {"file": f, "form": "an unpinned package install", "key": h, "line": h,
+       "ruling": "test fixture: the quoted text is input to a judge test and is never executed; advisor ruling Oct 13"}
+rows = [row]
+if mode == "none": rows = []
+elif mode == "wronghash": row["key"] = row["line"] = ("0" if h[0] != "0" else "1") + h[1:]
+elif mode == "wrongfile": row["file"] = "bin/other-test.sh"
+elif mode == "wrongform": row["form"] = "a download"
+elif mode == "count2": row["count"] = 2
+elif mode == "ok": pass
+else: raise SystemExit("unknown mode " + mode)
+json.dump({"_format": "t", "exceptions": [], "unmeasured_text": rows}, open(out, "w"), indent=2)
+PY
+}
+pkck() { # REPO MODE FILE LINE -> rc, $work/pk.out
+  local repo=$1 mode=$2 f=$3 line=$4; pkrows "$work/pk-$repo-$mode.json" "$mode" "$f" "$line"; rc=0
+  python3 "$chk" --root "$work/$repo" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/pk.json" --exceptions "$work/pk-$repo-$mode.json" >"$work/pk.out" 2>&1 || rc=$?
+}
+newcase pk "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$pk_line
+")"
+pkck pk none bin/judge-test.sh "$pk_line"
+CASE="AC20: with no row, the added script line that names an unpinned package fails (exit 1): a pull request that adds one is refused"
+check test "$rc" -eq 1
+pkck pk ok bin/judge-test.sh "$pk_line"
+CASE="AC20: a base-branch row (file, form, key and line hash, ruling) for that exact line passes: exit 0, reported as ruled text with the ruling"
+check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pk.out"; check grep -q 'is never executed' "$work/pk.out"
+pkck pk wronghash bin/judge-test.sh "$pk_line"
+CASE="AC20: a row whose hash is off by one digit does not apply (exit 1)"
+check test "$rc" -eq 1
+pkck pk wrongfile bin/judge-test.sh "$pk_line"
+CASE="AC20: a row for another file does not apply (exit 1)"
+check test "$rc" -eq 1
+pkck pk wrongform bin/judge-test.sh "$pk_line"
+CASE="AC20: a row with another form does not apply (exit 1)"
+check test "$rc" -eq 1
+newcase pkedit "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+${pk_line/requests/requests2}
+")"
+pkrows "$work/pk-orig.json" ok bin/judge-test.sh "$pk_line"
+rc=0; python3 "$chk" --root "$work/pkedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/pk-orig.json" >"$work/pk.out" 2>&1 || rc=$?
+CASE="AC20: editing the ruled line voids its row (the whole-line hash changes): exit 1"
+check test "$rc" -eq 1
+newcase pktwo "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$pk_line
+$pk_line
+")"
+pkck pktwo ok bin/judge-test.sh "$pk_line"
+CASE="AC20: two copies of a line ruled with count 1 fail (exit 1): the row names one occurrence"
+check test "$rc" -eq 1
+pkck pktwo count2 bin/judge-test.sh "$pk_line"
+CASE="AC20: the same two copies ruled with count 2 pass (exit 0)"
+check test "$rc" -eq 0
+newcase pkwf "
+import pathlib
+c = pathlib.Path('.github/workflows/ci.yml')
+c.write_text(c.read_text() + '      - run: pip install requests\n')"
+pkck pkwf ok .github/workflows/ci.yml "      - run: pip install requests"
+CASE="AC20: the same package text in a WORKFLOW step cannot be ruled (a row for the workflow file does not apply): exit 1"
+check test "$rc" -eq 1
+newcase pkpinned "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+pip install fixture-pkg==3.1.4 --hash=sha256:aaaa
+")"
+rc=0; python3 "$chk" --root "$work/pkpinned" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/pk.out" 2>&1 || rc=$?
+CASE="AC20: a pinned package line is not an unpinned-package occurrence: no row is asked for (the pin itself is measured as before: exit 1, no fixture age)"
+check test "$rc" -eq 1; check grep -q 'pypi/fixture-pkg@3.1.4' "$work/pk.out"
+newcase pkff "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$(printf 'pip install requests\f')
+")"
+pkck pkff ok bin/judge-test.sh "pip install requests"
+CASE="AC20: a line holding whitespace other than space or tab (a form feed) can never be ruled: exit 1"
+check test "$rc" -eq 1
+
+# --- round 1 of the review of PR 329 (both seats held): the exact boundary of AC19, the line identity of AC20, and AC3's fractional second ------------------
+# lcallc NAME USES [WITH] [CALLEE-TEXT-FILE]: like lcall, with the callee's text taken from a file; and as a STEP rather than a job when NAME starts with step
+lcallc() {
+  local n=$1 uses=$2 with=${3:-} callee=${4:-$work/callee.yml}
+  printf '%s' "$uses" >"$work/lcall.uses"; printf '%s' "$with" >"$work/lcall.with"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$callee').read_text())
+c = w / 'ci.yml'
+uses = pathlib.Path(r'$work/lcall.uses').read_text()
+with_ = pathlib.Path(r'$work/lcall.with').read_text()
+c.write_text(c.read_text() + '  c:\n    uses: ' + uses + '\n' + with_)"
+}
+lcallc m1 './.github/workflows/callee.yaml'
+lck m1
+CASE="AC19: the .yaml spelling is not the exact form: not exempted (exit 1)"
+check test "$rc" -eq 1
+lcallc m2 './.github/workflows/ca..llee.yml'
+lck m2
+CASE="AC19: a name holding .. is not the plain form: not exempted (exit 1)"
+check test "$rc" -eq 1
+newcase mstep "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text().replace('    steps:\n      - uses: actions/checkout@$SHA1 # v4.1.0\n', '    steps:\n      - uses: ./.github/workflows/callee.yml\n      - uses: actions/checkout@$SHA1 # v4.1.0\n', 1))"
+lck mstep
+CASE="AC19: a STEP that uses a workflow file is not a reusable-workflow call: it stays an item (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/mstep.out"
+lcallc m3 ' ./.github/workflows/callee.yml'
+printf '%s' "\" ./.github/workflows/callee.yml\"" >"$work/lcall.uses"
+newcase m3 "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: \" ./.github/workflows/callee.yml\"\n')"
+lck m3
+CASE="AC19: a quoted value with a leading space is not the exact form: not exempted (exit 1)"
+check test "$rc" -eq 1
+printf '%s\n' 'on: workflow_call' >"$work/callee-empty.yml"
+lcallc m4 './.github/workflows/callee.yml' '' "$work/callee-empty.yml"
+lck m4
+CASE="AC19: a callee with no jobs is not a workflow read as one: not exempted (exit 1)"
+check test "$rc" -eq 1
+printf '%s\n' 'echo harmless' >"$work/callee-scalar.yml"
+lcallc m5 './.github/workflows/callee.yml' '' "$work/callee-scalar.yml"
+lck m5
+CASE="AC19: a callee that is a plain scalar is not a workflow: not exempted (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-notcall.yml" <<EOF
+on: push
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+EOF
+lcallc m6 './.github/workflows/callee.yml' '' "$work/callee-notcall.yml"
+lck m6
+CASE="AC19: a callee with no workflow_call trigger cannot be called: not exempted (exit 1)"
+check test "$rc" -eq 1
+lcallc m7 './.github/workflows/callee.yml' $'    with:\n      mode2: release\n'
+lck m7
+CASE="AC19: any with: value, whatever it holds, keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+lcallc m8 './.github/workflows/callee.yml' $'    with:\n      mode: café\n'
+lck m8
+CASE="AC19: a non-ASCII with: value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+lcallc m9 './.github/workflows/callee.yml' $'    with:\n      steps: [one, \'two2\']\n'
+lck m9
+CASE="AC19: a digit inside a list value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-fed.yml" <<EOF
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: golangci/golangci-lint-action@$SHA2 # v9.3.0
+        with:
+          version: \${{ inputs.version }}
+EOF
+lcallc m10 './.github/workflows/callee.yml' $'    with:\n      version: latest\n' "$work/callee-fed.yml"
+lck m10
+CASE="AC19: a callee whose installer version comes from an input (an expression in its identity) is not exempted, whatever the caller passes (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-dl.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - run: curl -fsSL https://example.invalid/tool.sh | sh
+EOF
+lcallc m11 './.github/workflows/callee.yml' '' "$work/callee-dl.yml"
+lck m11
+CASE="AC19: a callee with a download this check cannot measure: the call is no item, the callee's own new download fails by its own rule (exit 1)"
+check test "$rc" -eq 1
+# a call whose with: input changes between base and head, in the quoted-space spelling (the input's identity must move with it)
+rm -rf "$work/mchg"; cp -R "$base" "$work/mchg"
+( cd "$work/mchg" && python3 - "$work/callee.yml" <<'PY'
+import pathlib, subprocess, sys
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(sys.argv[1]).read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: " ./.github/workflows/callee.yml"\n    with:\n      pin: v1.0.0\n')
+subprocess.run(["git", "add", "-A"], check=True)
+subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "base2"], check=True)
+c.write_text(c.read_text().replace("v1.0.0", "v9.9.9"))
+subprocess.run(["git", "add", "-A"], check=True)
+subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "head2"], check=True)
+PY
+)
+lck mchg
+CASE="AC19: changing a version input of a local call (quoted with a leading space) moves the call's identity: exit 1, not 0"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/mchg.out"
+
+# AC20: the line identity
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=requests' 'pip install "$DEPS"' >"$work/mix-base.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=flask' 'pip install "$DEPS"' '# pip install fixture' >"$work/mix-head.sh"
+rm -rf "$work/mix"; cp -R "$base" "$work/mix"
+( cd "$work/mix" && cp "$work/mix-base.sh" bin/mix-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm b2 && cp "$work/mix-head.sh" bin/mix-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm h2 )
+pkck mix ok bin/mix-test.sh "# pip install fixture"
+CASE="AC20: a ruled comment line does not rule the UNCHANGED install line whose assignment changed: exit 1"
+check test "$rc" -eq 1
+newcase pkscan "
+import pathlib
+f = pathlib.Path('bin/install-scanner.sh')
+f.write_text(f.read_text() + 'echo \"fixture pip install requests\"\n')"
+pkck pkscan ok bin/install-scanner.sh 'echo "fixture pip install requests"'
+CASE="AC20: the same ruled line in bin/install-scanner.sh passes like in any script (exit 0)"
+check test "$rc" -eq 0
+pkck pkscan none bin/install-scanner.sh 'echo "fixture pip install requests"'
+CASE="AC20: without its row the line in bin/install-scanner.sh fails (exit 1)"
+check test "$rc" -eq 1
+# the advisory audit judges the same line once: with a row it is not an advisory hit, without it it is (exit 1)
+audfx() {  # REPO OUT: a fixtures file with an advisory against the repo's unpinned requests item
+  python3 - "$work/$1" "$2" "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[3]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+k = [k for k in inv.load_at(sys.argv[1], None) if k.startswith("package:pypi/requests@(unpinned)")]
+assert len(k) == 1, k
+json.dump({"lists": {k[0]: {"github": [{"id": "GHSA-test-test-test", "incident": "INC-T", "affected": True, "modified": "2026-09-01T00:00:00Z"}], "osv": []}},
+           "upstream": {}, "prs": []}, open(sys.argv[2], "w"))
+PY
+}
+audck() {  # REPO EXCEPTIONS -> rc
+  rc=0; python3 "$here/../supply-chain/pin-audit.py" --root "$work/$1" --base HEAD~1 --head HEAD --fixtures "$work/aud.fx.json" --exceptions "$2" --now "$NOW" --gh /bin/true >"$work/aud.out" 2>&1 || rc=$?
+}
+audfx pk "$work/aud.fx.json"
+audck pk "$work/pk-pk-ok.json"
+CASE="AC20: pin-audit (the second command of the required job) does not report a ruled script line's package as an advisory hit (exit 0)"
+check test "$rc" -eq 0
+audck pk "$work/pk-pk-none.json"
+CASE="AC20: with no row the same package IS an advisory hit in pin-audit (exit 1): the ruling is what changes it"
+check test "$rc" -eq 1; check grep -q 'HIT' "$work/aud.out"
+# AC3: a fractional second never makes a time earlier (age short of 7 days is young)
+CASE="AC3: a publish time 0.5 s short of seven days before now is too young (the fraction rounds up)"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys, datetime as dt
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+class I: kind="package"; name="pypi/x"; version="1.0.0"; label=""; path=""
+now = dt.datetime(2026, 10, 14, 12, 0, 0, tzinfo=dt.timezone.utc)
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00.500Z", "pypi")], now)
+assert not ok, why
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00Z", "pypi")], now)
+assert ok, why
+PY
+
+CASE="AC3: an action named by a TAG (v1.2.3), not by its commit, has no age even with an old clock for it: not ok, and nothing is looked up"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys, datetime as dt
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+class I: kind="action"; name="o/r"; version="v1.2.3"; label=""; path=""
+now = dt.datetime(2026, 10, 14, 12, 0, 0, tzinfo=dt.timezone.utc)
+ok, why, _ = ac.judge_item(I(), [("2026-09-01T00:00:00Z", "first-seen")], now)
+assert not ok, why
+assert ac.live_proofs(I(), "/nonexistent") == []
+PY
+
+# --- round 2 of the review of PR 329: state between calls, a relay, a self-call, an identical copy, a fractional clock -------------------------------------
+cat >"$work/callee2.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@$SHA5 # v4.2.0
+EOF
+newcase two "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+(w / 'callee2.yml').write_text(pathlib.Path(r'$work/callee2.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c1:\n    uses: ./.github/workflows/callee.yml\n  c2:\n    uses: ./.github/workflows/callee2.yml\n')"
+lck two
+CASE="AC19: two different plain callees in one tree are BOTH exempted: no state of the first judgement leaks into the second (exit 0)"
+check test "$rc" -eq 0; check bash -c "! grep -q 'action:local:' '$work/two.out'"
+# the second call already in the base, the first added in the head: the unchanged second must not move
+rm -rf "$work/two2"; cp -R "$base" "$work/two2"
+( cd "$work/two2" && python3 - "$work" <<'PY'
+import pathlib, subprocess, sys
+work = sys.argv[1]
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(work + '/callee.yml').read_text())
+(w / 'callee2.yml').write_text(pathlib.Path(work + '/callee2.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c2:\n    uses: ./.github/workflows/callee2.yml\n')
+g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True)
+g("add", "-A"); g("commit", "-qm", "b")
+c.write_text(c.read_text() + '  c1:\n    uses: ./.github/workflows/callee.yml\n')
+g("add", "-A"); g("commit", "-qm", "h")
+PY
+)
+lck two2
+CASE="AC19: adding one exempt call beside an unchanged one moves nothing (exit 0): the unchanged call keeps its exemption"
+check test "$rc" -eq 0
+# a relay: caller -> relay -> leaf, the relay forwarding an input to an installer version in the leaf
+cat >"$work/leaf.yml" <<EOF
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  i:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@$SHA4 # v6.1.0
+        with:
+          python-version: \${{ inputs.version }}
+EOF
+cat >"$work/relay.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  forward:
+    uses: ./.github/workflows/leaf.yml
+    with:
+      version: ${{ inputs.version }}
+EOF
+newcase relay "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'leaf.yml').write_text(pathlib.Path(r'$work/leaf.yml').read_text())
+(w / 'relay.yml').write_text(pathlib.Path(r'$work/relay.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/relay.yml\n    with:\n      version: latest\n')"
+lck relay
+CASE="AC19: a relay that forwards an input to another local workflow is not exempted (a version could be steered through it): the call stays an item (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:./.github/workflows/relay.yml' "$work/relay.out"
+printf 'on: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/selfcall.yml\n' >"$work/selfcall.yml"
+newcase selfc "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'selfcall.yml').write_text(pathlib.Path(r'$work/selfcall.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/selfcall.yml\n')"
+lck selfc
+CASE="AC19: a workflow that calls itself terminates (no crash); with no with: the call is no item and nothing else moved (exit 0)"
+check test "$rc" -eq 0; check bash -c "! grep -qi 'traceback\|recursion' '$work/selfc.out'"
+# AC20: an identical copy added beside an unchanged install line whose assignment changed
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=requests' 'pip install "$DEPS"' >"$work/cp-base.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=flask' 'pip install "$DEPS"' 'pip install "$DEPS"' >"$work/cp-head.sh"
+rm -rf "$work/cp"; cp -R "$base" "$work/cp"
+( cd "$work/cp" && cp "$work/cp-base.sh" bin/cp-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm b3 && cp "$work/cp-head.sh" bin/cp-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm h3 )
+pkrows "$work/pk-cp.json" count2 bin/cp-test.sh 'pip install "$DEPS"'
+rc=0; python3 "$chk" --root "$work/cp" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/pk-cp.json" >"$work/cp.out" 2>&1 || rc=$?
+CASE="AC20: an identical copy of a line the base already holds is never ruled away with the unchanged one whose assignment moved (exit 1)"
+check test "$rc" -eq 1
+audfx cp "$work/aud-cp.fx.json" 2>/dev/null || true
+# AC3: a fractional measurement clock is truncated, a fractional publication time rounded up
+CASE="AC3: now = ...:00.500Z against a publication at ...:01Z is NOT seven full days (publication rounds up, the clock down): too young"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+class I: kind="package"; name="pypi/x"; version="1.0.0"; label=""; path=""
+now = ac.parse_time("2026-10-14T12:00:00.500Z", True)
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:01Z", "pypi")], now)
+assert not ok, why
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00Z", "pypi")], now)
+assert ok, why
+PY
+
+# the opaque installer input: a version selected by a FILE the caller names (round 3 of the review of PR 329)
+cat >"$work/callee-file.yml" <<EOF
+on:
+  workflow_call:
+    inputs:
+      file:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@$SHA4 # v6.1.0
+        with:
+          python-version-file: \${{ inputs.file }}
+EOF
+lcallc m12 './.github/workflows/callee.yml' $'    with:\n      file: stable.txt\n' "$work/callee-file.yml"
+lck m12
+CASE="AC19: a callee that hands a caller input to an installer through an input nobody classified (python-version-file) is not exempted (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:./.github/workflows/callee.yml' "$work/m12.out"
+
+# round 4 of the review: an input may appear in a callee only in an if:, a name:, or an env: value handed to a script as a quoted argument
+cat >"$work/callee-uses.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@${{ inputs.version }}
+EOF
+lcallc m14 './.github/workflows/callee.yml' $'    with:\n      version: stable\n' "$work/callee-uses.yml"
+lck m14
+CASE="AC19: an input in a remote uses: reference (which the inventory cannot read) keeps the call an item whatever the caller passes (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:./.github/workflows/callee.yml' "$work/m14.out"
+cat >"$work/callee-goenv.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      suffix:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TOOL_SUFFIX: ${{ inputs.suffix }}
+        run: go install github.com/example/tool@v1.0.0`printenv TOOL_SUFFIX`
+EOF
+lcallc m15 './.github/workflows/callee.yml' $'    with:\n      suffix: -alpha\n' "$work/callee-goenv.yml"
+lck m15
+CASE="AC19: an input handed through env to an installer command in the same step keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-envarg.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - name: the mode is release or snapshot
+        if: ${{ inputs.mode == 'release' }}
+        env:
+          MODE: ${{ inputs.mode }}
+        run: bash bin/refuse-mode.sh "$MODE"
+EOF
+lcallc m16 './.github/workflows/callee.yml' $'    with:\n      mode: release\n' "$work/callee-envarg.yml"
+lck m16
+CASE="AC19: even the quiet shape (an if: and a quoted env argument) keeps the call an item once the caller passes a with: value (exit 1)"
+check test "$rc" -eq 1
+
+# round 5 of the review: the step that receives an input through env must be nothing but a literal script invocation
+mkcallee() { # NAME 'run text' -> $work/NAME.yml: a callee with one step handing inputs.x to env X and running the text
+  printf 'on:\n  workflow_call:\n    inputs:\n      x:\n        type: string\njobs:\n  k:\n    runs-on: ubuntu-latest\n    steps:\n      - env:\n          X: ${{ inputs.x }}\n          CLIENT: npm\n        run: %s\n' "$2" >"$work/$1.yml"
+}
+n=0
+for run in '"$CLIENT" install "$X"' 'eval "$X"' 'bash -c "$X"' 'bash bin/s.sh "$X" | sh' 'bash bin/s.sh $(echo "$X")' 'bash bin/s.sh "$X" && "$CLIENT" install "$X"' 'bash ../s.sh "$X"' 'python3 -c "$X"' 'sh "$X"'; do
+  n=$((n+1)); mkcallee "envbad$n" "$run" ; python3 - "$work/envbad$n.yml" <<'PY'
+import sys
+t = open(sys.argv[1]).read().replace("run: ", "run: '", 1).rstrip("\n").replace("\n  ", "\n  ")
+open(sys.argv[1], "w").write(t + "'\n")
+PY
+  lcallc "me$n" './.github/workflows/callee.yml' $'    with:\n      x: lodash@latest\n' "$work/envbad$n.yml"
+  lck "me$n"
+  CASE="AC19: a step that hands an input to env and runs [$run] is not a literal script invocation: the call stays an item (exit 1)"
+  check test "$rc" -eq 1
+done
+
+# --- the closed form (orchestrator, Oct 14): a with-bearing local call is ruled by a base-branch row bound to its identity ---------------------------------
+printf '%s\n' "on: workflow_call" "jobs:" "  k:" "    runs-on: ubuntu-latest" "    steps:" "      - uses: actions/checkout@$SHA1 # v4.1.0" >"$work/callee-w.yml"
+lcallc w1 './.github/workflows/callee.yml' $'    with:\n      mode: release\n' "$work/callee-w.yml"
+lck w1
+CASE="AC19 closed form: a call with a with: block is an item that cannot pass (exit 1)"
+check test "$rc" -eq 1
+lcallc w2 './.github/workflows/callee.yml' $'    with: {}\n' "$work/callee-w.yml"
+lck w2
+CASE="AC19 closed form: an EMPTY with: block is no with: (exit 0)"
+check test "$rc" -eq 0
+# lcrow OUT MODE REPO: a row built from the real inventory of REPO's head, the hash computed here from the item's whole key
+lcrow() {
+  python3 - "$1" "$2" "$work/$3" "$here/../supply-chain/pin-inventory.py" <<'PY'
+import hashlib, importlib.util, json, sys
+out, mode, repo, invp = sys.argv[1:5]
+spec = importlib.util.spec_from_file_location("inv", invp); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+head = inv.load_at(repo, "HEAD"); base = inv.load_at(repo, "HEAD~1")
+keys = [k for k in head if k not in base and "(local)" in k]
+assert len(keys) == 1, keys
+h = hashlib.sha256(keys[0].encode()).hexdigest()[:16]
+row = {"file": ".github/workflows/ci.yml", "form": "a local reusable workflow call", "key": h, "line": h,
+       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"}
+if mode == "wrongfile": row["file"] = ".github/workflows/other.yml"
+elif mode == "wrongform": row["form"] = "a download"
+elif mode == "wronghash": row["key"] = row["line"] = ("0" if h[0] != "0" else "1") + h[1:]
+elif mode != "ok": raise SystemExit(mode)
+json.dump({"_format": "t", "exceptions": [], "unmeasured_text": [row]}, open(out, "w"))
+PY
+}
+lcrow "$work/lc-ok.json" ok w1
+rc=0; python3 "$chk" --root "$work/w1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-ok.json" >"$work/w1r.out" 2>&1 || rc=$?
+CASE="AC19 closed form: a base-branch row naming the call's file and whole identity rules it: exit 0, reported as ruled text with the ruling"
+check test "$rc" -eq 0; check grep -q 'advisor ruling Oct 14' "$work/w1r.out"
+for m in wrongfile wrongform wronghash; do
+  lcrow "$work/lc-$m.json" $m w1
+  rc=0; python3 "$chk" --root "$work/w1" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-$m.json" >"$work/w1r.out" 2>&1 || rc=$?
+  CASE="AC19 closed form: a row with the $m does not rule the call (exit 1)"
+  check test "$rc" -eq 1
+done
+lcallc w3 './.github/workflows/callee.yml' $'    with:\n      mode: debug\n' "$work/callee-w.yml"
+rc=0; python3 "$chk" --root "$work/w3" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-ok.json" >"$work/w3r.out" 2>&1 || rc=$?
+CASE="AC19 closed form: editing the with: block voids the row (the identity carries the block's hash): exit 1"
+check test "$rc" -eq 1
+
+# round 6 of the review: a padded reference is a different identity, so the row of the exact call never rules it
+for pad in '" ./.github/workflows/callee.yml"' '"./.github/workflows/callee.yml "'; do
+  printf '%s' "$pad" >"$work/lcall.uses"
+  printf '%s' $'    with:\n      mode: release\n' >"$work/lcall.with"
+  n="pad$(printf '%s' "$pad" | cksum | cut -d' ' -f1)"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee-w.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ' + pathlib.Path(r'$work/lcall.uses').read_text() + '\n    with:\n      mode: release\n')"
+  rc=0; python3 "$chk" --root "$work/$n" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-ok.json" >"$work/$n.out" 2>&1 || rc=$?
+  CASE="AC19: the exact call's row does not rule the padded spelling $pad of the same call (exit 1)"
+  check test "$rc" -eq 1
+done
+
+# round 8 of the review (both seats): an identity digest is never truncated; brute-forced 32-bit and 40-bit collision pairs stay two items
+CASE="AC19: two local references (expressions) and two with: blocks that collided under the old 32-bit and 40-bit digests are four different identities, and swapping one for the other MOVES an item"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
+a, b = "./.github/workflows/${{ inputs.v81708 }}.yml", "./.github/workflows/${{ inputs.v83546 }}.yml"
+assert inv._local_name(a) != inv._local_name(b)
+assert len(inv._local_name(a).split("~")[1]) == 64
+def tree(uses, with_):
+    return {".github/workflows/a.yml": "jobs:\n  c:\n    uses: '%s'\n    with:\n      mode: %s\n" % (uses, with_)}
+k1 = set(inv.inventory(tree("./.github/workflows/callee.yml", "value98725")))
+k2 = set(inv.inventory(tree("./.github/workflows/callee.yml", "value793926")))
+assert k1 != k2 and all(len(k.split("#with:")[1]) == 64 for k in k1 | k2 if "#with:" in k), (k1, k2)
+j1, j2 = set(inv.inventory(tree(a, "x"))), set(inv.inventory(tree(b, "x")))
+assert j1 != j2
+PY
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
