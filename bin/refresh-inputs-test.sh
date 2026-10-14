@@ -161,7 +161,7 @@ live_sha_x=$(shasum -a 256 "$fx/live/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1); l
 old_sha_x=$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)
 mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 47" "refresh: the live signed index is stored under a name made of its sha256 (index/APKINDEX-<sha256>.tar.gz), byte for byte" bash -c "test \"\$(cat '$work/rc')\" = 0 && cmp '$work/ar/x86_64/index/APKINDEX-$live_sha_x.tar.gz' '$fx/live/x86_64/APKINDEX.tar.gz' && cmp '$work/ar/aarch64/index/APKINDEX-$live_sha_a.tar.gz' '$fx/live/aarch64/APKINDEX.tar.gz'"
-t "rule 31" "refresh: APKINDEX.tar.gz is a pointer (symlink) to that versioned file, so apko still reads the original signed index" bash -c "test -L '$work/ar/x86_64/APKINDEX.tar.gz' && cmp '$work/ar/x86_64/APKINDEX.tar.gz' '$fx/live/x86_64/APKINDEX.tar.gz'"
+t "rule 31" "refresh: APKINDEX.tar.gz is a regular-file COPY of that versioned file (same sha256, no symlink; AC13 amended), so apko still reads the original signed index" bash -c "test -f '$work/ar/x86_64/APKINDEX.tar.gz' && test ! -L '$work/ar/x86_64/APKINDEX.tar.gz' && cmp '$work/ar/x86_64/APKINDEX.tar.gz' '$fx/live/x86_64/APKINDEX.tar.gz' && cmp '$work/ar/x86_64/APKINDEX.tar.gz' '$work/ar/x86_64/index/APKINDEX-$live_sha_x.tar.gz' && test \"\$(shasum -a 256 '$work/ar/x86_64/APKINDEX.tar.gz' | cut -d' ' -f1)\" = '$live_sha_x'"
 t "rule 47" "refresh: the previous index is kept (a version that disappeared upstream stays resolvable from the archive's older index)" bash -c "cmp '$work/ar/x86_64/index/APKINDEX-$old_sha_x.tar.gz' '$fx/archive/x86_64/APKINDEX.tar.gz'"
 t "rule 31" "refresh: the index digests are recorded in build/locks/archive-index.sha256 (one line per arch) so a build can refuse a different index" bash -c "grep -qx 'x86_64 sha256:$live_sha_x' '$work/rp/build/locks/archive-index.sha256' && grep -qx 'aarch64 sha256:$live_sha_a' '$work/rp/build/locks/archive-index.sha256'"
 before=$(treehash "$work/ar" "$work/rp")
@@ -396,7 +396,7 @@ t "rule 73" "fips-module: a PR for this module is already open -> no push, no du
 
 # ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------
 mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 31" "refresh: the APKINDEX.tar.gz pointer is a RELATIVE symlink (index/APKINDEX-<sha256>.tar.gz), never an absolute path" bash -c "test -L '$work/ar/x86_64/APKINDEX.tar.gz' && case \"\$(readlink '$work/ar/x86_64/APKINDEX.tar.gz')\" in /*) exit 1;; index/APKINDEX-*.tar.gz) exit 0;; *) exit 1;; esac"
+t "rule 31" "refresh: no symlink anywhere in the archive after a run (the pointers and every index file are regular files; AC13 amended)" bash -c "test -z \"\$(find '$work/ar' -type l)\" && test -f '$work/ar/aarch64/APKINDEX.tar.gz' && test -f '$work/ar/aarch64/index/APKINDEX-$live_sha_a.tar.gz'"
 t "rule 32" "refresh: every curl call is HTTPS-only with TLS 1.2 or newer (--proto =https --tlsv1.2)" bash -c "grep '^curl ' '$CALLS' | grep -vq -- '--proto =https --tlsv1.2' && exit 1; test \"\$(grep -c '^curl ' '$CALLS')\" -ge 3"
 # certified.txt: exactly one module line
 printf 'v1.0.0-c2097c7c\nv1.1.0-deadbeef\n' >"$gr/lib/fips140/certified.txt"; fr; h=$(fhash); run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3"
@@ -762,7 +762,7 @@ t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unp
 mkrepo; mkdir -p "$work/ar/x86_64/index"; tgt="APKINDEX-$(printf 'a%.0s' $(seq 64)).tar.gz"; printf 'not the index' >"$work/ar/x86_64/index/$tgt"; rm -f "$work/ar/x86_64/APKINDEX.tar.gz"; ln -s "index/$tgt" "$work/ar/x86_64/APKINDEX.tar.gz"; before=$(treehash "$work/ar" "$work/rp")
 run_s4 "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar" 2>/dev/null || true
 run_s4 env "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 31" "refresh: when the previous pointer is a symlink, the file it points to must hash to its name (here it does not): exit 1, 'hash', nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'hash' '$work/log'"
+t "rule 31" "refresh: a pointer that is a symlink is refused whatever it points to (the pointer is a regular-file copy; AC13 amended): exit 1, names symlink, nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'symlink' '$work/log'"
 t "rule 31" "refresh: ...previous pointer target: archive and repo unchanged" test "$(treehash "$work/ar" "$work/rp")" = "$before"
 
 # ---- snapshot-4 round 4 (Opus P3): only our own PRs hold the refresh back; version grammar; archive-name collisions -----------------------------------------------
@@ -813,7 +813,7 @@ t "rule 31" "refresh: ...index symlink: archive and repo unchanged" test "$(tree
 # ---- snapshot-5 round 5 (Sonnet/Opus P3) -------------------------------------------------------------------------------------------------------------------------
 # the archive's index is re-checked on EVERY run (a day with no lock change too)
 mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-named="$work/ar/x86_64/$(readlink "$work/ar/x86_64/APKINDEX.tar.gz")"; printf 'garbage' >"$named"
+named="$work/ar/x86_64/index/APKINDEX-$live_sha_x.tar.gz"; printf 'garbage' >"$named"
 before=$(treehash "$work/ar" "$work/rp")
 run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 31" "refresh: nothing changed in the locks but the archive's index file was replaced by garbage: exit 1, names the index, not 'nothing changed'" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'index' '$work/log' && ! grep -q 'nothing changed' '$work/log'"
@@ -896,7 +896,7 @@ mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/r
 reset_repo_keep_archive   # main still records the OLD index (the PR is not merged); remove that index's own file from index/
 oldsha_x=$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1); rm -f "$work/ar/x86_64/index/APKINDEX-$oldsha_x.tar.gz"; before=$(treehash "$work/ar" "$work/rp")
 run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 31" "with a symlink pointer, the record's own index file index/APKINDEX-<recorded>.tar.gz missing: exit 1 (assembly would fail), not 'nothing changed'" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'recorded' '$work/log' && ! grep -q 'nothing changed' '$work/log'"
+t "rule 31" "with a copy pointer, the record's own index file index/APKINDEX-<recorded>.tar.gz missing: exit 1 (assembly would fail), not 'nothing changed'" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'recorded' '$work/log' && ! grep -q 'nothing changed' '$work/log'"
 for v in "c2097c7c.9" "c2097c7c_9" "c2097c7c-9"; do
   fr; printf 'v1.0.0-%s\n' "$v" >"$work/rp3/build/locks/fips-module.txt"; hx=$(bash "$work/bhash.sh")
   echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
@@ -925,7 +925,7 @@ t "rule 31" "AC22: closed-unmerged with UNCHANGED locks (the archive is ahead of
 # nothing to commit after the repointing (the live index IS the recorded one): exit 0, no PR, no 'git add -- \"\"'
 mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 oldsha_x2=$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1); oldsha_a2=$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)
-ln -sfn "index/APKINDEX-$oldsha_x2.tar.gz" "$work/ar/x86_64/APKINDEX.tar.gz"; ln -sfn "index/APKINDEX-$oldsha_a2.tar.gz" "$work/ar/aarch64/APKINDEX.tar.gz"   # the pointers sit on the OLD index
+for a in x86_64 aarch64; do rm -f "$work/ar/$a/APKINDEX.tar.gz"; cp "$work/ar/$a/index/APKINDEX-$(shasum -a 256 "$fx/archive/$a/APKINDEX.tar.gz" | cut -d' ' -f1).tar.gz" "$work/ar/$a/APKINDEX.tar.gz"; done   # the pointer copies sit on the OLD index
 printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$live_sha_x" "$live_sha_a" >"$work/rp/build/locks/archive-index.sha256"; cp "$fx/repo/build/locks/"*.lock* "$work/rp/build/locks/" 2>/dev/null || true
 cp "$work/rp/build/locks/apko.base.lock.json" "$work/keep.lock" 2>/dev/null; python3 - "$work/rp" "$work/ln.json" <<'P'
 import json, sys
@@ -945,7 +945,7 @@ run_s4 env GH_STUB_OPEN="$day1b" STUB_CURL_DIR="$work/nonexistent-live" "${rfn[@
 t "rule 49" "AC22: with a refresh PR waiting and the live index unreachable, the run still exits 0 'earlier' (the guard comes before the download)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log'"
 # the recorded index file is checked whatever the pointer is
 mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-for a in x86_64 aarch64; do cp "$work/ar/$a/index/$(readlink "$work/ar/$a/APKINDEX.tar.gz" | sed 's#index/##')" "$work/plain-$a"; rm -f "$work/ar/$a/APKINDEX.tar.gz"; cp "$work/plain-$a" "$work/ar/$a/APKINDEX.tar.gz"; done   # plain pointers equal to the record
+cmp "$work/ar/x86_64/APKINDEX.tar.gz" "$work/ar/x86_64/index/APKINDEX-$live_sha_x.tar.gz"   # the pointer is a copy equal to the record
 printf 'garbage' >"$work/ar/x86_64/index/APKINDEX-$live_sha_x.tar.gz"
 run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 31" "a PLAIN pointer equal to the record with a damaged recorded file index/APKINDEX-<recorded> stops the job (exit 1, names it)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -Eqi 'recorded|index file .*hash' '$work/log'"
@@ -962,7 +962,7 @@ t "rule 44" "after opening the PR the repository is switched back to the branch 
 
 # a plain pointer that is NOT the recorded index while the recorded file index/APKINDEX-<recorded> is fine: the pointer itself is the damage
 mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-for a in x86_64 aarch64; do rm -f "$work/ar/$a/APKINDEX.tar.gz"; cp "$fx/archive/$a/APKINDEX.tar.gz" "$work/ar/$a/APKINDEX.tar.gz"; done   # the OLD signed index: signed, but not the recorded (new) one
+for a in x86_64 aarch64; do rm -f "$work/ar/$a/APKINDEX.tar.gz" "$work/ar/$a/index/APKINDEX-$(shasum -a 256 "$fx/archive/$a/APKINDEX.tar.gz" | cut -d' ' -f1).tar.gz"; cp "$fx/archive/$a/APKINDEX.tar.gz" "$work/ar/$a/APKINDEX.tar.gz"; done   # the OLD signed index with no versioned file: signed, but neither the recorded one nor a stored version
 run_s4 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 31" "a plain pointer that is not the recorded index, with the recorded file intact, stops the job (exit 1, 'plain file')" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'plain file' '$work/log'"
 
@@ -1077,7 +1077,7 @@ run_s4 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --arc
 t "rule 48" "a digest-named index file that does not hash to its name stops the job (exit 1, names it) even when NO record exists yet" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -q 'does not hash to its own name' '$work/log'"
 mkrepo; rm -f "$work/rp/build/locks/archive-index.sha256"; ln -sfn "index/APKINDEX-$(printf 'b%.0s' $(seq 64)).tar.gz" "$work/ar/x86_64/APKINDEX.tar.gz"
 run_s4 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 48" "a pointer link to a missing/foreign target stops the job even when NO record exists yet" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'hash' '$work/log'"
+t "rule 48" "a pointer that is a symlink stops the job even when NO record exists yet (exit 1, names symlink)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'symlink' '$work/log'"
 # F3: a legacy plain pointer is kept under its digest only if it is a SIGNED index
 mkrepo; printf 'not an index at all' >"$work/ar/x86_64/APKINDEX.tar.gz"; printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$work/ar/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$work/ar/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"
 run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
