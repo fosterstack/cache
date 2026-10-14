@@ -89,7 +89,12 @@ rc AC2 "a go.mod that is a link is refused (2)" 2 vc "$work/fx-lnkmod"
 realgo=$(command -v go); mkdir -p "$work/modego"
 printf '#!/bin/sh\n"%s" "$@"; rc=$?; if [ "$1 $2" = "mod vendor" ]; then find vendor -name dep.go -exec chmod 600 {} +; fi; exit $rc\n' "$realgo" >"$work/modego/go"; chmod 755 "$work/modego/go"
 rc AC2 "regenerated files that are not mode 644 are refused (1)" 1 env PATH="$work/modego:$PATH" bash "$bin_vc" "$work/fx-clean"
-( umask 077; rc AC2 "a caller's umask 077 does not change the verdict on a clean tree (0)" 0 vc "$work/fx-clean" )
+rc AC2 "a caller's umask 077 does not change the verdict on a clean tree (0)" 0 bash -c "umask 077; bash '$bin_vc' '$work/fx-clean'"
+# go mod verify itself must be what refuses a module cache that was altered; vendoring never runs after it
+cp -R "$work/modcache" "$work/modcache-bad"; chmod -R u+w "$work/modcache-bad"
+find "$work/modcache-bad" -name dep.go -exec sh -c 'echo "// altered" >>"$1"' _ {} \;
+rc AC2 "a module cache that go mod verify refuses is a failure (1)" 1 env GOMODCACHE="$work/modcache-bad" bash "$bin_vc" "$work/fx-clean"
+says AC2 "(verify failure) the failure names go mod verify" "go mod verify failed"
 rc AC2 "an unknown argument exits 2" 2 vc --frobnicate
 rc AC2 "two arguments exit 2" 2 vc "$work/fx-clean" extra
 rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
@@ -141,6 +146,15 @@ mkgit subroot
 ( cd "$work/g-subroot" && mkdir -p vendor sub && echo x >vendor/x && echo x >sub/x && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm v \
     && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
 rc AC2 "a ROOT that is a subdirectory of its git tree is refused (2), never judged as the whole tree" 2 vc "$work/g-subroot/sub"
+mkgit shadow
+( cd "$work/g-shadow" && mkdir vendor && echo x >vendor/x && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm v \
+    && git update-ref refs/remotes/origin/main HEAD && git rm -rq --cached vendor && rm -rf vendor && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm r \
+    && git update-ref refs/tags/origin/main HEAD ) >/dev/null 2>&1
+rc AC2 "a tag named origin/main does not stand in for the remote-tracking branch: vendor/ on the real origin/main fails (1)" 1 vc "$work/g-shadow"
+mkgit emptyv
+( cd "$work/g-emptyv" && e=$(git mktree </dev/null) && t=$(printf '040000 tree %s\tvendor\n' "$e" | git mktree) \
+    && c=$(git -c user.name=t -c user.email=t@t commit-tree "$t" -m ev) && git update-ref refs/remotes/origin/main "$c" ) >/dev/null 2>&1
+rc AC2 "an empty vendor directory on origin/main is a vendor component: fails (1)" 1 vc "$work/g-emptyv"
 mkgit nested;   mkdir -p "$work/g-nested/pkg/vendor" && echo x >"$work/g-nested/pkg/vendor/x.go"
 rc AC2 "a vendor path below the top, none at the top: full check, refused (2)" 2 vc "$work/g-nested"
 mkgit vfile;    echo x >"$work/g-vfile/vendor"
@@ -184,6 +198,7 @@ uses = [s["uses"] for s in steps if "uses" in s]
 if not uses or not all(re.fullmatch(r"[A-Za-z0-9._/-]+@[0-9a-f]{40}", u.split(" ")[0]) for u in uses): fail("an action is not a commit digest: " + str(uses))
 co = [s for s in steps if s.get("uses", "").startswith("actions/checkout@")]
 if not co or str((co[0].get("with") or {}).get("fetch-depth", "")) != "0": fail("checkout must fetch the whole history (fetch-depth: 0)")
+if len(co) != 1 or steps.index(co[0]) != 0 or set(co[0].get("with") or {}) != {"fetch-depth"}: fail("the one checkout comes first and sets only fetch-depth (no ref, repository, path, token)")
 import json
 blob = json.dumps(job) + json.dumps(d.get("env")) + json.dumps(d.get("defaults"))
 if re.search(r"GOSUMDB|GONOSUMDB|GONOSUMCHECK|GOPRIVATE|GOINSECURE|GOFLAGS|GOPROXY|-insecure|-mod=mod", blob): fail("a Go environment setting or opt-out in the vendor job or the workflow env")
@@ -212,6 +227,8 @@ mutate shell-override 's = s.replace("        run: bash bin/vendor-check.sh\n", 
 mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod", "      - uses: actions/setup-go@v7\n        with:\n          go-version-file: go.mod", 1)'
 mutate defaults-shell 's = s.replace("jobs:\n", "defaults:\n  run:\n    shell: \x27bash -c \"exit 0\" {0}\x27\njobs:\n", 1)'
 mutate job-renamed 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor-skipped\n", 1)'
+mutate checkout-ref 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          ref: main\n", 1)'
+mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          repository: o/r\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
@@ -219,8 +236,8 @@ f=bin/vendor-check.sh
 t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1 '$f' | grep -q '^#!' && git ls-files -s '$f' | grep -q '^100755'"
 t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
 t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
-cmdword='(^|[;&|({!]|(^|[[:space:]])(then|do|else|if|elif|while|until))[[:space:]]*[A-Za-z0-9_./-]*(\$\(|`|\$\{?[A-Za-z_])'
-for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)'; do
+cmdword='(^|[;&|({!]|(^|[[:space:]])(then|do|else|if|elif|while|until))[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]$`]*[[:space:]]+)*.?[A-Za-z0-9_./-]*(\$\(|`|\$\{?[A-Za-z_])'
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off "g$(printf o)" mod verify' "GOAUTH=off 'g\$(printf o)' mod verify" 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg'; do
   t AC11 "the substitution pattern flags: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
 done
 for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"'; do
