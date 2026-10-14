@@ -189,8 +189,9 @@ a file that anyone could have written.
 Any scanner finding we ship past is answered by a published statement in
 [`.vex/`](.vex/), attached to the release as
 `fosterstack-cache.openvex.json` and, generated from it, as a CSAF file and an
-Inspector filters file. Both release scanners read it, so an exception is one
-public claim rather than two tool-local suppressions. No statement, no
+Inspector filters file. Grype reads it, and the release gate holds OSV-Scanner's findings
+to the same document (`bin/check-osv-vex.py`), so an exception is one public
+claim rather than two tool-local suppressions. No statement, no
 exception, no push.
 
 ## CI-only releases, verified in practice

@@ -47,29 +47,34 @@ exactly.
 Independent scanners with deliberately different vulnerability databases run
 in the release workflow, each blocking at every severity including UNKNOWN.
 The scanner set is [one list in the repo](.github/policy/scanners.json);
-nothing hard-codes a count or a name.
+the check script runs exactly the scanners it knows how to run (today Grype and
+OSV-Scanner), and a scanner on the list that it cannot run fails the run.
 
 What the release workflow does today, stated exactly: there is one build.
-Its images go to a private candidates package by digest; every scanner in
-the list scans those exact digests; the acceptance suites run against
-them; an authorization stage verifies the signed evidence for all of it;
-and promotion copies the same digests — asserted byte-identical after the
-copy — to the public registries. The scan verdict attaches to the
-published digests because they are the scanned digests. Each scanner's
-verdict is a signed, digest-bound statement (see
+Its images are assembled as OCI layouts and handed to the later stages as
+workflow artifacts; every scanner in the list scans those exact images, and
+the acceptance suites run against them; the Release stage first verifies the signed
+record of every earlier stage, and only the steps after that one read the
+registry and signing secrets; they push the same image bytes by digest to the
+public registries and read each registry back, and the release stops if a digest read back differs
+from the attested one. The scan verdict attaches to the published digests because they are the
+scanned digests. Each scanner's verdict is a signed, digest-bound statement (see
 [docs/verify-images.md](docs/verify-images.md)), and the daily rescan
 re-checks the current release's published digests against newly disclosed CVEs.
 
 The pairing is deliberate. Grype is best-in-class at finding CVEs in binary
-artifacts. Its partner is chosen for a database that disagrees with Grype's —
-different sources, low overlap, and a lead of roughly a week over public
-feeds — because two scanners that agree with each other only tell you what
-one of them already knew. Anti-correlation is the point.
+artifacts. Its partner is chosen for a different database and matcher
+(OSV.dev's), built on upstream advisory sources that partly overlap with
+Grype's (it imports the GitHub Advisory and Go Vulnerability databases, which
+Grype also consumes), so the two are different databases, not different
+sources. A disagreement between
+them is a signal to investigate, never proof of a false positive.
 
-Exceptions are OpenVEX documents in [`.vex/`](.vex/), read by both scanners
-and published as a release asset. VEX is the single source of truth: any
-tool-specific ignore must cite the statement that governs it and may never
-stand alone. No statement, no exception, no push.
+Exceptions are OpenVEX documents in [`.vex/`](.vex/), published as a release
+asset. Grype reads the document itself; OSV-Scanner cannot, so the release gate
+holds OSV-Scanner's findings to the same document with `bin/check-osv-vex.py`.
+VEX is the single source of truth: any tool-specific ignore must cite the
+statement that governs it and may never stand alone. No statement, no exception, no push.
 
 The current release's images are also rescanned daily at every severity the
 scanners report (critical through low, and unknown), so a CVE disclosed against
