@@ -402,6 +402,14 @@ for f in ("archive-push.sh", "archive-pull.sh", "archive-verify.py"):
 P
 t AC9 "the shell scripts set -euo pipefail" bash -c "grep -q '^set -euo pipefail' '$PUSH' && grep -q '^set -euo pipefail' '$PULL'"
 
+# ---- the refresh layout's APKINDEX.tar.gz is a regular-file COPY of its index/APKINDEX-<sha256>.tar.gz (advisor 0425): the same bytes under two names ----
+mkfx "$work/fc"
+for a in x86_64 aarch64; do cp "$work/fc/$a/index/"APKINDEX-*.tar.gz "$work/fc/$a/APKINDEX.tar.gz"; done
+reset; run "$P_PUSH" --dir "$work/fc"; cdig=$(cat "$work/o"); cpush=$(rc)
+$LIB pointer "$work/fc" "$cdig" >"$work/cptr.json"; rm -rf "${work:?}/o-c"; : >"$STUB_CALLS"; run "$P_PULL" --pointer "$work/cptr.json" --out "$work/o-c"; cpull=$(rc)
+run python3 -I -B "$CP/archive-verify.py" verify --pointer "$work/cptr.json" --dir "$work/o-c"; cver=$(rc)
+t AC1 "a directory holding the pointer copy and its index file (the same sha256 under two names) pushes, pulls and verifies (exit 0 each), byte for byte" bash -c "test '$cpush' = 0 && test '$cpull' = 0 && test '$cver' = 0 && test \"\$($LIB tree '$work/o-c')\" = \"\$($LIB tree '$work/fc')\" && cmp '$work/o-c/x86_64/APKINDEX.tar.gz' '$work/o-c/x86_64/index/APKINDEX-1111111111111111111111111111111111111111111111111111111111111111.tar.gz' && test -z \"\$(find '$work/o-c' -type l)\" && test \"\$(grep -c '\"sha256\": \"$(shasum -a 256 "$work/fc/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)\"' '$work/cptr.json')\" = 2"
+fresh
 # ---- mutants: every check the ACs name is removed in turn, and the suite's detectors must notice ------------------------------------
 mut() {   # mut NAME FILE OLD NEW DETECTOR: the mutated copy differs from the original, and the detector (which passes on the real copy) fails on it
   local n=$1 f=$2 old=$3 new=$4 det=$5 d="$work/mut-$1"
