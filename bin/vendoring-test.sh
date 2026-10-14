@@ -71,7 +71,10 @@ mkcase symrepl; f=$(dep symrepl); rm "$f"; ln -s "$work/fx-clean/vendor/example.
 mkcase symdir;  ln -s dep "$work/fx-symdir/vendor/example.test/depl"
 mkcase fifo;    mkfifo "$work/fx-fifo/vendor/example.test/dep/pipe"
 mkcase exec;    chmod 755 "$(dep exec)"
-for c in byte add del mtxt gosum dot dotdir emptydir symfile symrepl symdir fifo exec; do
+mkcase m600;    chmod 600 "$(dep m600)"
+mkcase m666;    chmod 666 "$(dep m666)"
+mkcase m444;    chmod 444 "$(dep m444)"
+for c in byte add del mtxt gosum dot dotdir emptydir symfile symrepl symdir fifo exec m600 m666 m444; do
   rc AC2 "the regeneration check refuses: $c" 1 vc "$work/fx-$c"
 done
 rc AC2 "(byte case) the failure names the changed path" 1 vc "$work/fx-byte"
@@ -206,6 +209,10 @@ for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "
 done
 t AC11 "$f builds no command word by substitution or variable" bash -c "[ -e '$f' ] && ! grep -Ev '^[[:space:]]*#' '$f' | grep -Eq '$cmdword'"
 rc AC11 "vendor-check.sh exits 2 outside the repository root" 2 bash -c "cd '$work' && bash '$bin_vc'"
+# the root is the directory the script itself sits in, never a stand-in file of the same name
+mkdir -p "$work/impostor/bin"; cp "$bin_vc" "$work/impostor/bin/vendor-check.sh"
+rc AC11 "a copy of the script in a directory that is not its own root exits 2" 2 bash -c "cd '$work/impostor' && bash '$bin_vc' '$root'"
+rc AC11 "run from the repository root by a relative path it still works (no vendor, no base: refused or passed, never 2 for the root)" 0 bash -c "cd '$work/g-absent' && mkdir -p bin && cp '$bin_vc' bin/vendor-check.sh && bash bin/vendor-check.sh"
 
 echo "vendoring-test: $pass passed, $failn failed"
 [ "$failn" = 0 ]
