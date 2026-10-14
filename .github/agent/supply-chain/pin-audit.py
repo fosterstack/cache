@@ -1215,7 +1215,7 @@ def main(argv=None):
                 fx = json.load(open(a.fixtures))
             except (OSError, ValueError) as e:
                 raise Fail(f"unreadable fixtures: {e}")
-        now = age.parse_time(a.now) if a.now else dt.datetime.now(dt.timezone.utc)
+        now = age.parse_time(a.now, True) if a.now else dt.datetime.now(dt.timezone.utc)
         if now is None:
             raise Fail("--now is not an ISO time")
         gh = Gh(a.gh)
@@ -1239,6 +1239,11 @@ def main(argv=None):
             raise Fail(str(e))
         # placeholders (a local action, a download source) have no advisories; their CHANGE is refused by the age check
         audited = [i for i in audited if i.version not in ("(local)", "(source)")]
+        if a.base:    # REQ-SUP-001-AC20: an unpinned package that a ruled script line made is judged by that ruling (the age check reports it), never as an advisory hit
+            try:
+                audited = age.drop_ruled_unpinned(audited, age.ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or age.DEFAULT_EXCEPTIONS))
+            except RuntimeError as e:
+                raise Fail(str(e))
         today = now.strftime("%Y-%m-%d")
         if a.observations_out and not a.base:
             state = tobs.update_state(net.observed(), net.tag_map([i for i in head.values()]), now.strftime("%Y-%m-%dT%H:%M:%SZ"))
