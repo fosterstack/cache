@@ -10,6 +10,7 @@
 # the repository's committed tests, each held by the suite guard's floors and by their own review).
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -60,6 +61,9 @@ def suite_names(floors):
             raise ValueError("the floors file is not a non-empty JSON object of integer floors")
     except (OSError, ValueError) as e:
         die("the floors file %s cannot be read as suite floors (%s)" % (floors, e))
+    for k in d:   # a suite name is a plain file name: no glob characters, escapes, separators or line breaks (the shell runner's find -name read it as a pattern)
+        if not re.fullmatch(r"[A-Za-z0-9._+@-]+", k) or k in (".", ".."):
+            die("the floors file names %r, which is not a plain file name" % k)
     return list(d)
 
 
@@ -74,6 +78,8 @@ def cmd_all(floors, root, count_only):
         for dp, dn, fn in os.walk(root):
             dn[:] = [d for d in dn if d != ".git"]
             q = os.path.join(dp, s)
+            if ".git" in os.path.abspath(q).split(os.sep):   # as -not -path '*/.git/*': any candidate below a .git directory, ROOT's own ancestors included
+                continue
             if s in fn and os.path.isfile(q) and not os.path.islink(q):   # a regular file, as `find -type f` selected: a symlink named for a suite is no suite
                 found.append(os.path.join(dp, s))
         if len(found) != 1:
