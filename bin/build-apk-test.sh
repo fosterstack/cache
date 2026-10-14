@@ -928,19 +928,20 @@ sys.exit("PY3 calls without -I: %r" % bad if bad else 0)
 P
 cat >"$work/toolscan.py" <<'PY'
 import re, sys
-# toolscan.py FILE WORD...: command positions (also behind env, sudo, unshare, nohup, timeout, exec and their options) that name a tool bare
-WRAP = r"(?:\"\$(?:SUDO|ENVBIN|UNSHARE)\"|sudo|env|unshare|nohup|timeout|exec)"
-OPT = r"(?:\s+(?:-[A-Za-z-]+|[A-Z_]+=\S*|\"\$\{[a-z_]+\[@\]\}\"))*"
-POS = r"(?:^|[;&|(]\s*|\$\(\s*|\bthen\s+|\bdo\s+)"
+# toolscan.py FILE WORD...: fail closed. A tool word that appears as a whole shell word anywhere in code (any wrapper, any option, any depth,
+# also inside a command substitution within quotes) is refused; the production scripts name every tool by variable, so a bare word is never legal.
 bad = []
 for n, ln in enumerate(open(sys.argv[1]).read().split("\n"), 1):
     s = ln.strip()
     if s.startswith("#") or "TEST-SUBST" in ln: continue
-    code = re.sub(r"\"[^\"]*\"|'[^']*'", lambda m: m.group(0) if m.group(0).startswith('"$') else '""', s)   # quoted text (messages) is not a command; "$VAR" words stay
+    def keep(m):
+        q = m.group(0)
+        return " ".join(re.findall(r"\$\((.*?)\)", q)) if q.startswith('"') else ""     # quoted text is data; a $(...) inside double quotes is code
+    code = re.sub(r"\"[^\"]*\"|'[^']*'", keep, s)
+    toks = re.split(r"[\s;&|()<>{}=$`]+", code)
     for w in sys.argv[2:]:
-        if re.search(POS + re.escape(w) + r"(?:\s|$)", code) or re.search(POS + WRAP + OPT + r"\s+" + re.escape(w) + r"(?:\s|$)", code):
-            bad.append("%s:%d %s" % (sys.argv[1], n, w))
-sys.exit("bare tool words at a command position: %r" % bad if bad else 0)
+        if w in toks: bad.append("%s:%d %s" % (sys.argv[1], n, w))
+sys.exit("bare tool words: %r" % bad if bad else 0)
 PY
 t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git, python3, openssl and shasum by variable (also as the operand of env, sudo or unshare)" python3 "$work/toolscan.py" "$BA_PROD" sha256sum go env sudo unshare melange git python3 openssl shasum
 t "rule 23" "release-sign-apks.sh names openssl, melange and python3 by variable" python3 "$work/toolscan.py" "$RS_REAL" openssl melange python3
@@ -950,8 +951,11 @@ src = open(sys.argv[1]).read()
 open(sys.argv[2] + "/mut-go.sh", "w").write(src.replace('"$GO_TOOL" version -m', 'go version -m'))
 open(sys.argv[2] + "/mut-env.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" env -i'))
 open(sys.argv[2] + "/mut-sum.sh", "w").write(src.replace('got=$("$SHA256SUM" ', 'got=$(sha256sum '))
+open(sys.argv[2] + "/mut-melange.sh", "w").write(src.replace('"$melange_bin"', 'melange', 1))
+open(sys.argv[2] + "/mut-timeout.sh", "w").write(src.replace('"$GO_TOOL" version -m', 'timeout 30 go version -m'))
+open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" nice -n 5 "$ENVBIN" -u X env -i'))
 PY
-for m in mut-go mut-env mut-sum; do
+for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-chain; do
   t "rule 23" "the tool-path assertion bites: the mutant $m (a bare tool where the fixed one is) is refused" bash -c "! python3 '$work/toolscan.py' '$work/$m.sh' sha256sum go env sudo unshare melange git python3 openssl shasum >/dev/null 2>&1"
 done
 
