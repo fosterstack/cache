@@ -59,13 +59,14 @@ gate a pipeline purely on the raw exit code** — a broken scan and a clean
 scan can both look like "exit 0" or both look like "exit 1" depending on
 flags, and conflating them ships a green gate that checks nothing.
 
-## The `-debug` variant
+## The `-debug` variant (releases before v0.3.0)
 
-The `:debug` tag adds a busybox shell for interactive troubleshooting; it is not the
-image you deploy. Scanning it shows more than the production image, because busybox
-itself carries a small package surface, and any known finding there that has no fix is
-published as a VEX statement rather than hidden. The production and `-fips` images
-never include busybox.
+Releases before v0.3.0 ship a `:debug` tag that adds a busybox shell for interactive
+troubleshooting; it is not the image you deploy. Scanning it shows more than the
+production image, because busybox itself carries a small package surface, and any
+known finding there that has no fix is published as a VEX statement rather than
+hidden. The production and `-fips` images never include busybox. v0.3.0 and later
+ship no debug image.
 
 ## Using our VEX files in your scanner
 
