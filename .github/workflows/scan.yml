@@ -73,17 +73,6 @@ jobs:
     with:
       mode: snapshot
 
-  # Check absorbs this call in PR 3 (stage-acceptance-artifacts.yml's handling of the digests JSON and of the artifact name dist is PR 3's change).
-  artifact-acceptance:
-    needs: build
-    permissions:
-      contents: read
-      packages: read
-    uses: ./.github/workflows/stage-acceptance-artifacts.yml
-    with:
-      dist-artifact: dist
-      expected-checksums: ${{ needs.build.outputs.digests }}
-
   # The required check `reproducibility` keeps its name. When `rebuild` fails GitHub SKIPS a job that needs it, and branch protection counts a skipped required check as
   # passing, so this job runs always() and fails unless rebuild's result is exactly success (the pattern of the `scan` aggregate below). Rebuild fails on any differing item.
   reproducibility:

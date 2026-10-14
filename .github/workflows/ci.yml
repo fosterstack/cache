@@ -256,6 +256,15 @@ jobs:
       - name: allowlist branch-scoping regressions (auditor suppression lane)
         run: bash bin/check-file-allowlist-test.sh
 
+      - name: suite guard (no tracked test file is empty; the guard's own regressions)
+        run: bash bin/suite-guard.sh files && bash bin/suite-guard-test.sh
+
+      - name: suite floors only rise (against the merge base on a pull request)
+        if: ${{ github.base_ref != '' }}
+        env:
+          BASE: ${{ github.base_ref }}
+        run: bash bin/suite-guard.sh floors-vs-base "$(git merge-base HEAD "origin/${BASE}")" test-evidence/suite-floors.json
+
       - name: branch sweep and local prune regressions
         run: bash bin/branch-sweep-test.sh
 
@@ -357,6 +366,10 @@ jobs:
         run: bash bin/chain-snapshot-test.sh
       - name: "the pinned Witness install (REQ-CHAIN-004-AC2, REQ-CHAIN-005-AC1)"
         run: bash bin/chain-install-witness-test.sh
+      - name: "Check's scripts: scan, FIPS, artifacts, guide, dispatcher, helper (REQ-CHAIN-006-AC3..AC7, AC9, AC11, AC12, AC15..AC17; REQ-PLAT-001-AC1)"
+        run: bash bin/chain-check-scripts-test.sh
+      - name: "Check's wiring: the stage grammar, the arm64 job, the dispatcher, the graph (REQ-CHAIN-006-AC1..AC3, AC8..AC14, AC17; red on the release job until PR 4 and the guide until cache-3f, known-red.json)"
+        run: bash bin/chain-check-wiring-test.sh
 
       - name: Dependabot reviewer regressions (row 75 — updates parsing, findings validation, mechanical decision)
         run: bash bin/dependabot-reviewer-test.sh
@@ -443,6 +456,14 @@ jobs:
             exit 1
           fi
           echo "VEX tripwire: golang-jwt absent from go.sum, as the published statement asserts."
+
+      # Round 1 F7: the floors of test-evidence/suite-floors.json are held at REAL counts. Every suite the file names runs again through the guard (stdin closed,
+      # its case count read from its own output, at or above its floor); --count-only because suites with known reds (known-red.json) exit non-zero by design:
+      # their reds are judged by their own steps above, here only that they still run and still count.
+      - name: every suite runs at or above its committed floor (real counts)
+        env:
+          CHAIN_TEST_REQUIRE_NETCUT: '1'
+        run: bash bin/suite-guard-run.sh all --count-only test-evidence/suite-floors.json .
 
   # Register row 75 (the #133 lesson: three ruleset edits, each silently stalled
   # Dependabot). The ruleset on main and .github/policy/required-checks.json must
@@ -570,14 +591,6 @@ jobs:
       # here, in PR CI. Approval is checked only at release admission.
       - name: frozen baseline consistency (approval-agnostic)
         run: go -C tools/requirements run . verify-freeze v0.2.1
-      # Repeatable semantic regressions for the authorization stage's
-      # acceptance-content policy (audit B02b): the extracted validator is
-      # exercised here against the frozen baseline with valid/empty/
-      # missing/skip/invalid/fail/duplicate/unknown fixtures, so a
-      # weakening of the policy is caught in PR CI, not only by an
-      # external probe.
-      - name: authorization acceptance-content policy regressions
-        run: bash bin/authorize-acceptance-check-test.sh
       # Repeatable regressions for the daily image rescan's merge,
       # classification and platform-enumeration logic (audit B04d/B04e/B04f):
       # the extracted bin/rescan-statement.py is exercised against real

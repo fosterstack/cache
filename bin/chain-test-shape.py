@@ -8,7 +8,7 @@ DESIGN RULE (PR 1's ten lost rounds): NO denylists, NO shell analysis, NO subseq
 GRAMMAR over an allowlist: a stage file is exactly the steps in JOBS, a stage script is exactly the lines of expected_lines(KIND),
 the job graph is exactly the keys and targets in CHAIN. Anything else is a fault by construction.
 
-  helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, `timeout 540` included
+  helper FILE                               REQ-CHAIN-004-AC2 (the Witness seam): bin/witnessed.sh is exactly the canonical helper, `timeout -k 20 540` included
   directwitness FILE...                     REQ-CHAIN-004-AC2: no `witness run` in any stage file or stage script (every call goes through the helper)
   stage FILE build|rebuild [ALLOWED.json]   REQ-CHAIN-004-AC1, AC2 / REQ-CHAIN-005-AC1, AC4
   script FILE KIND                          REQ-CHAIN-004-AC3, AC6, AC11 / REQ-CHAIN-005-AC2: FILE is exactly expected_lines(KIND)
@@ -406,7 +406,8 @@ def job(j, family, name, allowed):
 
 # ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
 STEPS = ("apk", "build", "rapk", "rebuild",
-         "snapshot-apk", "snapshot-build", "snapshot-rapk", "snapshot-rebuild")      # the closed list; the record is witness-DIR/STEP-collection.json
+         "snapshot-apk", "snapshot-build", "snapshot-rapk", "snapshot-rebuild",
+         "scanners", "acceptance", "runtime", "arm64")      # the closed list (PR 3 adds Check's three steps); the record is witness-DIR/STEP-collection.json
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # The identity token reaches Witness through a one-read process substitution, so no file holds it while the wrapped command runs (Witness loads its
 # signer before it runs the command: in-toto-witness cmd/run.go:51). SOURCE-CHECKED, one read: in-toto-witness cmd/keyloader.go:85 and
@@ -427,7 +428,7 @@ def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild) ;; '
+            'case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; '
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
             'mkdir -p "witness-${step#snapshot-}"'] + TOKEN + [
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
@@ -436,7 +437,7 @@ def witnessed_lines():
             "--signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com --signer-fulcio-oidc-client-id sigstore "
             "--signer-fulcio-token-path %s -t https://timestamp.sigstore.dev/api/v1/timestamp "
             "-a environment,git,material,product --env-filter-sensitive-vars %s "
-            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"' % (TOKEN_PATH, keys)]
+            '-o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"' % (TOKEN_PATH, keys)]
 
 
 def witness_seam(run, spec, family):
@@ -623,18 +624,12 @@ def graph(path):
 # FILE: the scanner steps and the other jobs (`manifests` of main-candidate-rescan.yml, edited by cache's REQ-REL-004-AC5) are cache's and not read here.
 SNAPSHOT_CALLER_PERMISSIONS = dict(PERM_ADMIT)       # the union of what the apk job (PERM_ADMIT) and the assemble job (PERM_PLAIN) of stage-build.yml request
 # THE ALLOWLIST (step-6 round 1, both seats: a deny-list of stage-file names is bypassed by `@ref`, `owner/repo/...` forms and by release.yml): in a proof
-# workflow the only jobs that carry a job-level `uses` are these, each calling EXACTLY the file named, whatever the form. artifact-acceptance is what
-# scan.yml legitimately calls today that is not Release (cache's job; PR 3, Check, moves it); main-candidate-rescan.yml calls Build only.
-CALLER_ALLOWLIST = {"build": "./.github/workflows/stage-build.yml", "rebuild": "./.github/workflows/stage-reproducibility.yml",
-                    "artifact-acceptance": "./.github/workflows/stage-acceptance-artifacts.yml"}
+# workflow the only jobs that carry a job-level `uses` are these, each calling EXACTLY the file named, whatever the form. PR 3 removed scan.yml's artifact-acceptance
+# (its stage is gone; Check checks the Linux-only archive set); main-candidate-rescan.yml calls Build only.
+CALLER_ALLOWLIST = {"build": "./.github/workflows/stage-build.yml", "rebuild": "./.github/workflows/stage-reproducibility.yml"}
 NOT_IN_FILE = {"main-candidate-rescan.yml": ("rebuild", "artifact-acceptance")}
 # scan.yml (the PR gate keeps rule 31's two-assembly reproducibility check) also calls Rebuild in snapshot mode after Build; main-candidate-rescan.yml does not
 SNAPSHOT_REBUILD_PERMISSIONS = dict(PERM_PLAIN)
-ACCEPTANCE_PERMISSIONS = {"contents": "read", "packages": "read"}       # scan.yml's artifact-acceptance grants at origin/chain-v030
-# its two required inputs keep their names with NEW values (cache-3f, option b, approved by the advisor): the artifact is Build's `dist`, and the
-# checksums input becomes the one-line digests JSON (it was the raw checksums.txt text). stage-acceptance-artifacts.yml's handling of that form is
-# PR 3's change (Check absorbs it).
-ACCEPTANCE_WITH = {"dist-artifact": "dist", "expected-checksums": "${{ needs.build.outputs.digests }}"}
 
 
 def ceiling(job_name, perm):
@@ -696,19 +691,6 @@ def callers(path):
                        % (SNAPSHOT_REBUILD_PERMISSIONS, rebuild.get("permissions")))
         if set(rebuild) - {"uses", "with", "permissions", "needs"}:
             bad.append("job rebuild: keys outside {uses, with, permissions, needs}: %s" % sorted(set(rebuild) - {"uses", "with", "permissions", "needs"}))
-    acceptance = jobs.get("artifact-acceptance")
-    if isinstance(acceptance, dict) and "uses" in acceptance and name != "main-candidate-rescan.yml":
-        # what scan.yml calls today that is not Release (cache's job; PR 3, Check, moves it): the same ceiling and key check as the other calls
-        if acceptance.get("permissions") != ACCEPTANCE_PERMISSIONS:
-            bad.append("job artifact-acceptance must hold exactly the permissions %s, got %s" % (ACCEPTANCE_PERMISSIONS, acceptance.get("permissions")))
-        bad += ceiling("artifact-acceptance", acceptance.get("permissions"))
-        if needs_of(acceptance) != ["build"]:
-            bad.append("job artifact-acceptance must need exactly build, got %s" % needs_of(acceptance))
-        if acceptance.get("with") != ACCEPTANCE_WITH:
-            bad.append("job artifact-acceptance must pass exactly with: %s, got %s" % (ACCEPTANCE_WITH, acceptance.get("with")))
-        if set(acceptance) - {"uses", "permissions", "needs", "with"}:
-            extra = sorted(set(acceptance) - {"uses", "permissions", "needs", "with"})
-            bad.append("job artifact-acceptance: keys outside {uses, permissions, needs, with} (no secrets, no if): %s" % extra)
     return bad
 
 

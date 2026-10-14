@@ -160,8 +160,6 @@ Outside this check, each a documented exclusion with its reason (row 78):
     --iidfile; the build itself (FROM lines, context, Dockerfile) is still fully checked;
   - a committed TEST HARNESS a step runs (tests/, *-test.sh): its probes are the very constructs this check refuses,
     as fixture data; it is not read recursively (it is committed and reviewed like any diff);
-  - /tmp/smoke-assert.sh in stage-acceptance-k8s.yml: the documented smoke commands of docs/kubernetes.md
-    (committed, reviewed), written by the step's own python heredoc; they assert against the kind cluster;
   - `runs-on` labels: GitHub-hosted runner images are GitHub's to build and cannot be named by digest;
   - Go tools installed by module version (`go install …@vX.Y.Z`): the module proxy serves them checksum-verified
     against the Go checksum database, so a version names fixed bytes;
@@ -2207,18 +2205,12 @@ def _drop_foreign_heredocs(text):
     return "\n".join(out)
 
 
-# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023):
-# Fenced (advisor 0084 (4)): exactly these two files of that one workflow; bin/k8s-harness-fence-test.sh proves both
-# are written only from docs/kubernetes.md at the checked-out commit (no env, no network, no other input), and any
-# other eval of a variable, anywhere, is refused by the variable-program rule.
-GENERATED_OK = {
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/smoke-assert.sh"):
-        "the documented smoke commands of docs/kubernetes.md (committed, reviewed), written by the step's own python "
-        "heredoc; they assert against the kind cluster and fetch nothing",
-    (".github/workflows/stage-acceptance-k8s.yml", "/tmp/pf-forward.sh"):
-        "the documented kubectl port-forward command of docs/kubernetes.md, written by the same heredoc; run verbatim "
-        "because rule 12 tests the customer's commands exactly as published",
-}
+# Documented exclusions of a non-committed script a step runs (each with its reason, handoff 0023): none now. The two generated scripts of the
+# Kubernetes harness (/tmp/pf-forward, /tmp/smoke-assert; advisor 0084 (4)) were excluded while the harness was a workflow step; it is now Check's
+# listed scripts (bin/acceptance-k8s.sh runs them, bin/acceptance-k8s-smoke.py writes them), which are judged by the chain judges, and the fence
+# facts are proven there by .github/agent/tests/k8s-harness-fence-test.sh. Any other eval of a variable, anywhere, is refused by the
+# variable-program rule; the branch below stays and is proven with an injected entry in that test.
+GENERATED_OK = {}
 
 
 BASE_SHA_REF = "${{ github.event.pull_request.base.sha }}"

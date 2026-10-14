@@ -293,13 +293,10 @@ for gone in ("acceptance-gradle.yml", "acceptance-maven.yml"):
     if os.path.exists(os.path.join(root, ".github/workflows", gone)):
         bad.append("%s still exists" % gone)
 rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
-calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", "")) and "stage-" not in str(v.get("uses", ""))]
-if calls != ["acceptance"] or rel["acceptance"].get("uses") != "./.github/workflows/acceptance.yml":
-    bad.append("release.yml does not call acceptance.yml once: %s" % calls)
-pred = (rel.get("acceptance-predicate") or {}).get("with") or {}
-if pred.get("gradle-results") != "${{ needs.acceptance.outputs.gradle-results }}" or \
-        pred.get("maven-results") != "${{ needs.acceptance.outputs.maven-results }}":
-    bad.append("the predicate does not receive both results")
+# REQ-CHAIN-006-AC10 (PR 3): the release chain no longer calls acceptance.yml (Check runs the shared suite scripts itself); the workflow stays for the PR gate
+calls = [j for j, v in rel.items() if "acceptance" in str(v.get("uses", ""))]
+if calls:
+    bad.append("release.yml still calls an acceptance workflow (Check runs the suites): %s" % calls)
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -391,10 +388,8 @@ else:
         for result in ("failure", "skipped", "cancelled", ""):
             if verdict(result) == 0:
                 bad.append("the reproducibility step passes when rebuild's result is %r" % result)
-a = jobs.get("artifact-acceptance") or {}
-if a.get("uses") != "./.github/workflows/stage-acceptance-artifacts.yml" or a.get("needs") != "build" or \
-        (a.get("with") or {}) != {"dist-artifact": "dist", "expected-checksums": "${{ needs.build.outputs.digests }}"}:
-    bad.append("artifact-acceptance changed: %s" % a)
+if "artifact-acceptance" in jobs:
+    bad.append("scan.yml still has artifact-acceptance (REQ-CHAIN-006-AC10: its stage is gone; Check checks the Linux-only archive set)")
 if os.path.exists(os.path.join(root, ".github/workflows/release-chain-pr.yml")):
     bad.append("release-chain-pr.yml still exists")
 rel = yaml.load(open(os.path.join(root, ".github/workflows/release.yml")), Loader=yaml.BaseLoader)["jobs"]
@@ -441,8 +436,6 @@ case_scan repro-extra-expression bad "s = d['jobs']['reproducibility']['steps'][
 case_scan repro-renamed          bad "d['jobs']['reproducibility']['name'] = 'reproducible'"
 case_scan repro-widened          bad "d['jobs']['reproducibility']['permissions'] = {'contents': 'read', 'packages': 'write'}"
 case_scan repro-not-after-rebuild bad "d['jobs']['reproducibility']['needs'] = 'build'"
-case_scan acceptance-lost        bad "d['jobs'].pop('artifact-acceptance')"
-case_scan acceptance-old-inputs  bad "d['jobs']['artifact-acceptance']['with'] = {'dist-artifact': 'dist-snapshot', 'expected-checksums': '\${{ needs.build.outputs.checksums }}'}"
 case_scan pr-types-closed        bad "d['on']['pull_request'] = {'types': ['closed']}"
 case_scan pr-branches-ignore     bad "d['on']['pull_request'] = {'branches-ignore': ['main']}"
 case_scan pr-paths               bad "d['on']['pull_request'] = {'paths': ['never/**']}"
@@ -463,15 +456,14 @@ case_scan repro-self-hosted      bad "d['jobs']['reproducibility']['runs-on'] = 
 # stages, and dependabot-auto-merge.yml (its events differ from ci.yml's) — and nothing else (no workflow sprawl).
 ratified="acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
-stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
-stage-authorize.yml stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
+stage-build.yml stage-promote.yml stage-reproducibility.yml stage-verify.yml
 stage-sign.yml supply-chain.yml"
 judge_set() {  # $1: the directory's entries as a JSON list (every entry, not only *.yml)
   python3 - "$1" "$ratified" <<'PY'
 import json, sys
 got, want = json.loads(sys.argv[1]), sys.argv[2].split()
-if len(want) != 24:
-    print("the ratified list is not 24 files"); sys.exit(1)
+if len(want) != 19:
+    print("the ratified list is not 19 files"); sys.exit(1)
 odd = [n for n in got if "\n" in n or "/" in n]
 extra, missing = sorted(set(got) - set(want)), sorted(set(want) - set(got))
 if odd or extra or missing or len(got) != len(set(got)):

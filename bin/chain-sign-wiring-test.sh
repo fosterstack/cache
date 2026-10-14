@@ -183,13 +183,7 @@ def judge_build(path):
 # a PR that rewrites a legacy file removes its row AND its pinned entry; adding or changing an entry here is a reviewed edit and is
 # refused by every other case (advisor ruling, Oct 10: the list is a pre-existing residual that can only shrink). Copied from the list at ae15a44.
 LEGACY_PINNED = {
-    ".github/workflows/stage-acceptance-artifacts.yml": "6db2e3c7ce2e9cde225d2fe805d7b9cd7756745962438fc6a9502d5c70dc6494",
-    ".github/workflows/stage-acceptance-egress.yml": "17491901c831abf89435b82cff5c794c4be3d581394bde316d21966b2b72a018",
-    ".github/workflows/stage-acceptance-k8s.yml": "727999814b7c7e561611f2c214b0ab12c5c922a99f79ca44eaaa214480f0ac60",
-    ".github/workflows/stage-acceptance-predicate.yml": "6fc4b5e514cb054c20f4cc56eeebf123fdda54ec9cc985ffef1922c72e8be4a8",
-    ".github/workflows/stage-authorize.yml": "2a0b7c7b6260a372d1d4f31c9de5fb78039b899aa9c4351065f658293523cfdf",
     ".github/workflows/stage-promote.yml": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393",
-    ".github/workflows/stage-verify.yml": "4bd41b1e9563c3d0c35f9b1ab2f2dff5085615d4d96e545ae1750704a22fdc78",
 }
 LEGACY_EXPECTED = set(LEGACY_PINNED)
 def sha256_of(path):
@@ -357,7 +351,7 @@ action_files, signing_files = _cts.action_files, _cts.signing_files   # ONE disc
 
 V022_WORKFLOWS = set("""acceptance.yml agent-review-gate.yml auditor.yml ci.yml codeql.yml dependabot-auto-merge.yml dependabot-reviewer.yml
 go-freshness.yml main-candidate-rescan.yml release.yml reserved-branch-guard.yml scan.yml scorecard.yml
-stage-acceptance-artifacts.yml stage-acceptance-egress.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
+stage-acceptance-artifacts.yml stage-promote.yml stage-acceptance-k8s.yml stage-acceptance-predicate.yml
 stage-admission.yml stage-authorize.yml stage-build.yml stage-image.yml stage-promote.yml stage-reproducibility.yml
 stage-verify.yml supply-chain.yml""".split())
 
@@ -2328,7 +2322,7 @@ probe sneak    stage-admission.yml  "stage-admission.yml running an unlisted bin
 probe supply   supply-chain.yml     "a provenance signer job in supply-chain.yml"           "printf '$SIGN_JOB' >> .github/workflows/supply-chain.yml"
 probe ci       ci.yml               "a provenance signer job in ci.yml"                     "printf '$SIGN_JOB' >> .github/workflows/ci.yml"
 probe composite .github/actions/probe "a provenance signer in a new composite action"         "mkdir -p .github/actions/probe; printf 'name: probe\nruns:\n  using: composite\n  steps:\n    - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.0.0\n      with:\n        subject-path: x\n' > .github/actions/probe/action.yml"
-probe comment  "legacy file changed" "a harmless comment added to a legacy file (it is then judged in full)" "printf '# a comment\n' >> .github/workflows/stage-verify.yml"
+probe comment  "legacy file changed" "a harmless comment added to a legacy file (it is then judged in full)" "printf '# a comment\n' >> .github/workflows/stage-promote.yml"
 # a LISTED script that a frozen file runs, turned into a provenance signer with its row and sha256 updated
 probe hoststep bin/chain-hostile-step.sh "bin/chain-hostile-step.sh (run by frozen stage-build.yml) made a provenance signer, its row and sha256 updated" \
   "printf 'cosign attest --type slsaprovenance --predicate p.json img\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh signs=provenance"
@@ -2420,23 +2414,23 @@ probe missing  "legacy file missing: .github/workflows/stage-promote.yml" "a lis
 # the legacy list can only SHRINK (advisor ruling, Oct 10): the suite pins each path AND its sha256, so a legacy file edited together with
 # its list hash, or a list entry given a new hash, is refused; a row is removed only together with its pinned entry here
 probe relisted "legacy hash is not the one this suite pins" "a legacy file edited TOGETHER with its sha256 in the list" \
-  "printf '# a comment\n' >> .github/workflows/stage-verify.yml; python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p))
+  "printf '# a comment\n' >> .github/workflows/stage-promote.yml; python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p))
 for r in d[\"files\"]:
     r[\"sha256\"]=hashlib.sha256(open(r[\"path\"],\"rb\").read()).hexdigest()
 json.dump(d,open(p,\"w\"))'"
 probe rehashed "legacy hash is not the one this suite pins" "a list entry given a different 64-hex hash for an unchanged file" \
   "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"][0][\"sha256\"]=\"1\"*64;json.dump(d,open(p,\"w\"))'"
 probe rowonly  "not list exactly the eleven" "one row removed from the list while the suite still pins it" \
-  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"]=[r for r in d[\"files\"] if r[\"path\"]!=\".github/workflows/stage-acceptance-egress.yml\"];json.dump(d,open(p,\"w\"))'"
+  "python3 -c 'import json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"]=[r for r in d[\"files\"] if r[\"path\"]!=\".github/workflows/stage-promote.yml\"];json.dump(d,open(p,\"w\"))'"
 probe addci    "not list exactly the eleven" "a row for an existing non-legacy file (ci.yml) with its true hash" \
   "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/ci.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/ci.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
 probe addsign  "not list exactly the eleven" "a row for stage-sign.yml with its true hash (it would freeze Sign's own findings)" \
   "python3 -c 'import hashlib,json;p=\".github/policy/legacy-stage-files.json\";d=json.load(open(p));d[\"files\"].append({\"path\":\".github/workflows/stage-sign.yml\",\"sha256\":hashlib.sha256(open(\".github/workflows/stage-sign.yml\",\"rb\").read()).hexdigest()});json.dump(d,open(p,\"w\"))'"
 # the shrink a rewriting PR makes: the row AND its pinned entry go (simulated on a copy of this suite's judge), the file is rewritten or deleted
-d=$(tracked_copy shrink); rm "$d/.github/workflows/stage-acceptance-egress.yml"
-python3 -c 'import json,sys;p=sys.argv[1]+"/.github/policy/legacy-stage-files.json";d=json.load(open(p));d["files"]=[r for r in d["files"] if r["path"]!=".github/workflows/stage-acceptance-egress.yml"];json.dump(d,open(p,"w"))' "$d"
-grep -v '^    "\.github/workflows/stage-acceptance-egress\.yml": "' "$work/judge.py" > "$work/judge-shrink.py"
-if cmp -s "$work/judge.py" "$work/judge-shrink.py"; then failn=$((failn + 1)); echo "FAIL shrink: the suite has no pinned entry for stage-acceptance-egress.yml to remove"
+d=$(tracked_copy shrink); rm "$d/.github/workflows/stage-promote.yml"
+python3 -c 'import json,sys;p=sys.argv[1]+"/.github/policy/legacy-stage-files.json";d=json.load(open(p));d["files"]=[r for r in d["files"] if r["path"]!=".github/workflows/stage-promote.yml"];json.dump(d,open(p,"w"));q=sys.argv[1]+"/.github/policy/id-token-jobs.json";e=json.load(open(q));e["jobs"]=[r for r in e["jobs"] if r["workflow"]!="stage-promote.yml"];json.dump(e,open(q,"w"))' "$d"
+grep -v '^    "\.github/workflows/stage-promote\.yml": "' "$work/judge.py" > "$work/judge-shrink.py"
+if cmp -s "$work/judge.py" "$work/judge-shrink.py"; then failn=$((failn + 1)); echo "FAIL shrink: the suite has no pinned entry for stage-promote.yml to remove"
 else rc=0; out=$(python3 "$work/judge-shrink.py" tree "$d") || rc=$?
   if [ "$rc" = 0 ]; then pass=$((pass + 1)); echo "ok   shrink: a row removed TOGETHER with its pinned entry (the file deleted) is accepted"; else failn=$((failn + 1)); echo "FAIL shrink: row + pinned entry removed was refused: ${out:0:300}"; fi; fi
 rm -f "$work/judge-shrink.py"
@@ -2604,7 +2598,7 @@ G=grep; printf 'x | %s --quiet y\n' "$G" > "$work/qp1.sh"; printf 'printf x \\\n
 [ -n "$(quiet_pipes "$work/qp2.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches a pipe continued with a backslash (and -qF)"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed a continued pipe"; }
 # the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
-[ "$rc" != 0 ] && grep -F -q "stage-verify.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
+[ "$rc" != 0 ] && grep -F -q "stage-promote.yml" <<< "$out" && ok_n=1 || ok_n=0
 if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.json deleted the same case judges the whole tree (red today on the legacy signers)"; else failn=$((failn + 1)); echo "FAIL deleting legacy-stage-files.json did not bring the legacy files back into the judge: rc=$rc ${out:0:200}"; fi
 # only TRACKED files are judged: an untracked file with a signer in a working copy is not part of what CI checks out
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )

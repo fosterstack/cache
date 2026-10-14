@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
 # bin/witnessed.sh STEP SCRIPT...  --  run one stage script under Witness (v0.3.0 rule 68; REQ-CHAIN-004-AC2).
 # The one place that holds the Witness flags. STEP is one of a CLOSED list: apk, build, rapk, rebuild (a release) and snapshot-apk, snapshot-build,
-# snapshot-rapk, snapshot-rebuild (the proof workflows' snapshot mode, REQ-CHAIN-004-AC12 and REQ-CHAIN-005-AC7). Anything else exits 2 before Witness runs.
+# snapshot-rapk, snapshot-rebuild (the proof workflows' snapshot mode, REQ-CHAIN-004-AC12 and REQ-CHAIN-005-AC7), and Check's three steps scanners, acceptance and
+# runtime and the arm64 job's arm64 (REQ-CHAIN-006-AC11, AC17). Anything else exits 2 before Witness runs.
 # The record is witness-DIR/STEP-collection.json, where DIR is STEP without a leading snapshot-: a snapshot job uploads the same directory as a release job,
 # and the snapshot marker is the step name inside the signed collection (every verifier refuses a snapshot- name, REQ-CHAIN-004-AC13).
 #  - The job's identity token goes into a shell variable (masked in the log), then the request variables are unset, so the wrapped script
 #    cannot ask for a second certificate; Witness gets the token through a one-read process substitution, so no file holds it.
-#  - The command runs under `timeout 540`: Fulcio's keyless certificate lives ten minutes and Witness checks it at the timestamp's time.
+#  - The command runs under `timeout -k 20 540`: Fulcio's keyless certificate lives ten minutes and Witness checks it at the timestamp's time; a command that
+#    ignores the TERM at 540 seconds is killed 20 seconds later, so it cannot hold the job past the certificate.
 #  - Attestors: environment, git, material and product only (never github, whose record embeds the raw token, and never slsa: Sign's alone).
 #  - Witness runs from the repository root (no working-directory flag), so product subjects are named relative to it.
-# The exact text of this file is judged by bin/chain-test-shape.py (helper); change both together.
+# The exact text of this file is judged by bin/chain-test-shape.py (helper), whose Check copy follows it; change both together together.
 set -euo pipefail
 step="$1"
 shift
-case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
+case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; *) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac
 mkdir -p "witness-${step#snapshot-}"
 tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)
 echo "::add-mask::$tok"
@@ -31,4 +33,4 @@ exec witness run --step "$step" \
   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN \
   --env-add-sensitive-key GH_TOKEN \
   --env-add-sensitive-key GITHUB_TOKEN \
-  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout 540 bash "$@"
+  -o "witness-${step#snapshot-}/$step-collection.json" -- timeout -k 20 540 bash "$@"

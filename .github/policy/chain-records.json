@@ -7,17 +7,7 @@
   },
   {
    "type": "https://witness.testifysec.com/attestation-collection/v0.1",
-   "claim": "what each Build and Rebuild step did and produced, signed keyless by Witness under the stage's own identity (apk, build, rapk, rebuild)",
-   "consumer": "rebuild"
-  },
-  {
-   "type": "https://fosterstack.com/attestations/acceptance/v1",
-   "claim": "the acceptance suites passed for the candidate digests (old chain, replaced by Check's Witness record in PR 3)",
-   "consumer": "release"
-  },
-  {
-   "type": "https://fosterstack.com/attestations/release-authorization/v1",
-   "claim": "the old authorization stage approved these digests for publication (old chain, removed in PR 4)",
+   "claim": "what each Build, Rebuild and Check step did and produced (apk, build, rapk, rebuild; scanners, acceptance, runtime: the scan, suite, FIPS and guide results for the exact candidate digests), signed keyless by Witness under the stage's own identity",
    "consumer": "release"
   },
   {

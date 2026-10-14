@@ -340,28 +340,28 @@ mappings:
   - ac: REQ-DEPLOY-002-AC1
     evidence:
       - { type: go-test, ref: "internal/cache:TestSecondOpenOnSameMetadataStoreDoesNotProceed" }
-  - ac: REQ-PLAT-001-AC1
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: six-archive set asserted, linux/amd64 binaries executed; darwin and arm64 execution are documented equivalents pending runner legs" }
-  - ac: REQ-PLAT-003-AC1
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: no shell in production/fips, /busybox/sh runs and /bin/sh absent in debug - against images assembled from the exact attested binaries" }
   - ac: REQ-PLAT-002-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: production/debug/fips serve cache traffic on linux/amd64 AND linux/arm64 (QEMU, fips authenticated); the REQ-PLAT-002 result is derived from a served-matrix file so a missing variant/arch fails; darwin is the documented equivalent" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-PLAT-003-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-FIPS-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-PLAT-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
   - ac: REQ-FIPS-002-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: three runtime postures asserted exactly - the validated-module fips build names the certificate, standard is off, and the forced-standard build reports mode-forced and NEVER claims the certificate (the over-claim the reviews flagged)" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
       - { type: go-test, ref: "internal/buildinfo:TestFIPSNoteIsTruthfulPerModeAndModule" }
   - ac: REQ-PRIV-001-AC1
     evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-egress.yml: tcpdump on the candidate netns from before startup through load/idle, in an ordinary and an --internal egress-denied network, asserting no DNS and no connection to any non-allowed address (loopback + the specific bridge gateway only), identical status/bytes across both policies, with negative controls that a real DNS/outbound attempt is observed" }
-  - ac: REQ-FIPS-001-AC1
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: GOFIPS140=v1.0.0 read from the artifact's embedded build info, plus active runtime posture" }
-  - ac: REQ-FIPS-001-AC2
-    evidence:
-      - { type: workflow-job, ref: ".github/workflows/stage-acceptance-artifacts.yml: the standard binary embeds NO GOFIPS140 selection - the module check distinguishes a mode-enabled impostor from the validated-module build" }
+      - { type: workflow-job, ref: ".github/workflows/stage-verify.yml: the runtime step runs bin/acceptance-egress.sh (bin/check-acceptance.sh egress), the old egress stage body unchanged" }
   - ac: REQ-REL-004-AC1
     evidence:
       - { type: shell-test, ref: "bin/vex-both-scanners-test.sh" }
@@ -1058,3 +1058,60 @@ mappings:
   - ac: REQ-BUILDTOOLS-001-AC10
     evidence:
       - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-CHAIN-006-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC13
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC14
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC17
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+      - { type: shell-test, ref: "bin/chain-check-wiring-test.sh" }
+  - ac: REQ-CHAIN-006-AC16
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }
+  - ac: REQ-CHAIN-006-AC15
+    evidence:
+      - { type: shell-test, ref: "bin/chain-check-scripts-test.sh" }

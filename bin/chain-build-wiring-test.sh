@@ -479,10 +479,12 @@ expect caught "AC1 stage-admission.yml still present" "still exists" workflows "
 expect ok "AC2 fixture: the known-good bin/witnessed.sh is exactly the canonical helper" "" helper "$work/witnessed.sh"
 expect ok "AC2 fixture: no stage file and no stage script names witness run" "" directwitness "$work/build.yml" "$work/rebuild.yml" "$work"/s-*.sh
 hm() { replace "$work/witnessed.sh" "$work/h_$1.sh" "$3" "$4" && expect caught "$2" "helper command" helper "$work/h_$1.sh"; return 0; }
-hm tnone   "AC2 no timeout (a build could outlive Fulcio's 10-minute certificate)" '-- timeout 540 bash "$@"' '-- bash "$@"'
-hm t600    "AC2 timeout 600 (past the certificate's life)" '-- timeout 540' '-- timeout 600'
-hm t0      "AC2 timeout 0 (no limit)" '-- timeout 540' '-- timeout 0'
-hm tvar    "AC2 the limit from a variable" '-- timeout 540' '-- timeout "$T"'
+hm tnone   "AC2 no timeout (a build could outlive Fulcio's 10-minute certificate)" '-- timeout -k 20 540 bash "$@"' '-- bash "$@"'
+hm t600    "AC2 timeout 600 (past the certificate's life)" '-- timeout -k 20 540' '-- timeout -k 20 600'
+hm t0      "AC2 timeout 0 (no limit)" '-- timeout -k 20 540' '-- timeout -k 20 0'
+hm tvar    "AC2 the limit from a variable" '-- timeout -k 20 540' '-- timeout -k 20 "$T"'
+hm tnok    "AC2 round 1: no kill-after (a command that ignores TERM would hold the job)" '-- timeout -k 20 540' '-- timeout 540'
+hm tk30    "AC2 round 1: another kill-after" '-- timeout -k 20 540' '-- timeout -k 30 540'
 hm tbefore "AC2 the timeout around Witness instead of the command (the certificate is requested before it starts)" 'exec witness run' \
        'exec timeout 540 witness run'
 hm furl    "AC2 another Fulcio address" 'https://fulcio.sigstore.dev' 'http://fulcio.evil.example'
@@ -505,7 +507,7 @@ hm ffileb "AC2 the token written to a file before the exec" 'echo "::add-mask::$
 hm fexport "AC2 the token exported into the wrapped command's environment" 'echo "::add-mask::$tok"' 'export tok\necho "::add-mask::$tok"'
 hm fnomask "AC2 the token is not masked in the log" 'echo "::add-mask::$tok"' ''
 hm fcat    "AC2 the token read through a second process substitution" '<(printf %s "$tok")' '<(cat <(printf %s "$tok"))'
-hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout 540 bash "$@"' '-- timeout 540 bash "$@" || true'
+hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout -k 20 540 bash "$@"' '-- timeout -k 20 540 bash "$@" || true'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
 hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
@@ -513,8 +515,8 @@ hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads w
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
     '"witness-${step#snapshot-}/$step-collection.json"' \
        '"witness-${step#snapshot-}/${step#snapshot-}-collection.json"'
-hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'snapshot-rapk|snapshot-rebuild)' \
-    'snapshot-rapk|snapshot-rebuild|snapshot-evil)'
+hm fsnapopen "AC12 the step list admits snapshot-evil (the snapshot names are a closed list)" 'snapshot-rapk|snapshot-rebuild|' \
+    'snapshot-rapk|snapshot-rebuild|snapshot-evil|'
 hm fkeep   "AC2 a comment ending in a backslash hides a copy of the token (bash runs the cp line)" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN' '# token kept \\ncp /dev/null "$RUNNER_TEMP/tok"\nunset ACTIONS_ID_TOKEN_REQUEST_TOKEN'
 { cat "$work/witnessed.sh"; echo "witness run --step x -- true"; } > "$work/h_second.sh"
@@ -917,8 +919,7 @@ printf '{"value":"FAKE-JWT-TOKEN-VALUE"}\n'
 EOF
   cat > "$1/fake/timeout" <<'EOF'
 #!/usr/bin/env bash
-echo "timeout $1" >> calls.log
-shift
+if [ "$1" = -k ]; then echo "timeout -k $2 $3" >> calls.log; shift 3; else echo "timeout $1" >> calls.log; shift; fi
 "$@" & pid=$!
 ( sleep "${FAKE_TIMEOUT_SECONDS:-2}"; kill "$pid" 2> /dev/null ) & killer=$!
 wait "$pid"; status=$?; kill "$killer" 2> /dev/null; exit $status
@@ -950,8 +951,8 @@ for tag in fixture real; do
   fi
   d="$work/h-$tag"; helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" apk); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 0 ] && [ -f "$d/witness-apk/apk-collection.json" ] && grep -Fq -- '--step apk' <<< "$calls" \
-     && grep -Fq -- '-- timeout 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout 540' <<< "$calls"; then
-    ok "AC2 $tag helper: the command runs through witness with timeout 540 and the record is written"
+     && grep -Fq -- '-- timeout -k 20 540 bash bin/wrapped.sh' <<< "$calls" && grep -Fxq 'timeout -k 20 540' <<< "$calls"; then
+    ok "AC2 $tag helper: the command runs through witness with timeout -k 20 540 and the record is written"
   else
     bad "AC2 $tag helper: rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-200)"
   fi
@@ -1544,7 +1545,7 @@ else:
     steps = r.get("steps") or []
     if len(steps) != 1 or "exit 1" not in str(steps[0].get("run", "")) or steps[0].get("uses") or "continue-on-error" in steps[0] or "continue-on-error" in r:
         bad.append("rc-refusal is not exactly one run step that exits 1")
-for jn in ("scans", "acceptance-artifacts", "acceptance", "acceptance-egress", "acceptance-k8s", "acceptance-predicate", "authorization", "promotion"):
+for jn in ("promotion",):   # PR 3 removed the other old publishing jobs; the stage jobs that remain (promotion, until PR 4) must skip an rc tag
     c = str((jobs.get(jn) or {}).get("if", ""))
     if "!inputs.dry-run" not in c or "!contains(github.ref_name, '-rc')" not in c: bad.append("%s does not skip an rc tag: %r" % (jn, c))
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
@@ -1556,7 +1557,7 @@ rcg() { # rcg ok|caught LABEL [sed-expr]
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
 rcg ok "the real release.yml refuses an rc tag (rc-refusal) and skips the old publishing path on it"
 rcg caught "promotion that does not skip an rc tag is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
-rcg caught "scans that does not skip an rc tag is caught" '/^  scans:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
+rcg caught "a promotion that does not skip an rc tag by the conjunct alone is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !inputs.dry-run//'
 rcg caught "an rc-refusal that no longer exits 1 is caught" '/^  rc-refusal:/,/^  [a-z]/ s/exit 1/true/'
 rcg caught "an rc-refusal that also runs on a final tag is caught" "/^  rc-refusal:/,/^  [a-z]/ s/ \&\& contains(github.ref_name, '-rc')//"
 rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-gone:/'
@@ -1661,7 +1662,7 @@ rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789ab
 # the committed list and the two suites' own wrapper
 rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull request event names the base and the body; locally the base is origin/chain-v030 and KNOWN_RED_ADD names new ids
 [ "$rc" = 0 ] && ok "known-red: the committed list is well formed and compares with the base" || bad "known-red: the committed test-evidence/known-red.json (exit $rc)"
-for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh; do
+for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
 # the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
@@ -1810,33 +1811,12 @@ printf 'on:\n  pull_request:\njobs:\n' > "$work/jobsnull.yml"
 expect caught "AC14 an empty jobs key is refused" "jobs must be a non-empty mapping" callers "$work/jobsnull.yml"
 printf 'on:\n  pull_request:\njobs:\n  build: nonsense\n' > "$work/jobscalar.yml"
 expect caught "AC14 a job that is not a mapping is refused" "is not a mapping" callers "$work/jobscalar.yml"
-ACC="  artifact-acceptance:\n    needs: build\n    permissions:\n      contents: read\n      packages: read\n"
-ACC="$ACC    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist\n"
-ACC="$ACC      expected-checksums: \${{ needs.build.outputs.digests }}\n"
+# REQ-CHAIN-006-AC10 (PR 3): scan.yml no longer calls an acceptance stage (stage-acceptance-artifacts.yml is gone; the Linux-only archive set is checked by Check, REQ-PLAT-001-AC1)
+ACC="  artifact-acceptance:\n    needs: build\n    permissions:\n      contents: read\n      packages: read\n    uses: ./.github/workflows/stage-acceptance-artifacts.yml\n    with:\n      dist-artifact: dist\n"
 replace "$work/caller.yml" "$work/a13.yml" "  scanners:" "${ACC}  scanners:" \
-  && expect ok "AC14 allowlist: artifact-acceptance (what scan.yml calls today that is not Release; PR 3 moves it) is accepted" "" callers "$work/a13.yml"
+  && expect caught "AC14 allowlist: an artifact-acceptance call of the deleted stage is refused (PR 3 removed it)" "allowlist" callers "$work/a13.yml"
 mkdir -p "$work/a14"; cp "$work/a13.yml" "$work/a14/main-candidate-rescan.yml"
 expect caught "AC14 allowlist: main-candidate-rescan.yml has no artifact-acceptance call" "allowlist" callers "$work/a14/main-candidate-rescan.yml"
-# artifact-acceptance gets the same ceiling and key check as the other calls (step-6 round 2, S4)
-cla() { replace "$work/a13.yml" "$work/$1.yml" "$3" "$4" && expect caught "$2" "$5" callers "$work/$1.yml"; return 0; }
-cla b1 "AC14 artifact-acceptance with packages: write" "      packages: read\n" "      packages: write\n" "static ceiling"
-cla b2 "AC14 artifact-acceptance with contents: write" "      contents: read\n      packages: read\n    uses: ./.github/workflows/stage-acceptance" \
-       "      contents: write\n      packages: read\n    uses: ./.github/workflows/stage-acceptance" "static ceiling"
-cla b3 "AC14 artifact-acceptance with an extra read grant (not exactly contents and packages read)" "      packages: read\n" \
-       "      packages: read\n      issues: read\n" "exactly the permissions"
-cla b4 "AC14 artifact-acceptance with secrets: inherit" "    with:\n      dist-artifact: dist\n" \
-       "    secrets: inherit\n    with:\n      dist-artifact: dist\n" "keys outside"
-cla b5 "AC14 artifact-acceptance with the OLD artifact name (dist-snapshot)" "      dist-artifact: dist\n" \
-       "      dist-artifact: dist-snapshot\n" \
-       "must pass exactly"
-cla b5b "AC14 artifact-acceptance whose expected-checksums is the old checksums output" "needs.build.outputs.digests" \
-        "needs.build.outputs.checksums" "must pass exactly"
-cla b5c "AC14 artifact-acceptance with a third input" "      dist-artifact: dist\n" "      dist-artifact: dist\n      mode: snapshot\n" "must pass exactly"
-cla b5d "AC14 artifact-acceptance with one input only" "      dist-artifact: dist\n" "" "must pass exactly"
-cla b5e "AC14 artifact-acceptance with no with block" \
-        "    with:\n      dist-artifact: dist\n      expected-checksums: \${{ needs.build.outputs.digests }}\n" "" "must pass exactly"
-cla b6 "AC14 artifact-acceptance with an if" "    with:\n      dist-artifact: dist\n" "    if: always()\n    with:\n      dist-artifact: dist\n" "keys outside"
-cla b7 "AC14 artifact-acceptance that needs nothing" "  artifact-acceptance:\n    needs: build\n" "  artifact-acceptance:\n" "must need exactly build"
 expect ok "AC14 fixture scan.yml: build then rebuild, both in snapshot mode" "" callers "$work/scanfx/scan.yml"
 expect ok "AC14 fixture main-candidate-rescan.yml: build only" "" callers "$work/rescanfx/main-candidate-rescan.yml"
 cl c14 "AC14 the build call is gone" "  build:\n" "  built:\n" "build is missing"
@@ -1888,7 +1868,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=656
+EXPECT=648
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

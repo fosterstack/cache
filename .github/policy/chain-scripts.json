@@ -93,8 +93,8 @@
       ],
       "runs": [],
       "signs": "other",
-      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout 540; a Witness collection is not a provenance statement",
-      "sha256": "1973b8bb2d459c39f06a982607fe340472fc9b9c5ca8cb362326f4e599a00221",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout -k 20 540; a Witness collection is not a provenance statement",
+      "sha256": "967d781576b1ee9f319a1df976a16c48f5384f582782c025293f7bbf572535c5",
       "reads_env": [
         "GH_TOKEN"
       ],
@@ -106,18 +106,22 @@
         "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
         "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
         "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
-        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh"
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh",
+        "scanners": "bin/check-phase-scanners.sh",
+        "acceptance": "bin/check-phase-acceptance.sh",
+        "runtime": "bin/check-phase-runtime.sh",
+        "arm64": "bin/check-phase-arm64.sh"
       },
       "exceptions": [
         {
           "rule": "launcher",
-          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout 540 bash \"$@\"",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout -k 20 540 bash \"$@\"",
           "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
         },
         {
           "rule": "witness-target",
-          "text": "timeout 540 bash \"$@\"",
-          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
+          "text": "timeout -k 20 540 bash \"$@\"",
+          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout -k 20 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
         },
         {
           "rule": "script-name",
@@ -355,6 +359,646 @@
       "signs": false,
       "reason": "Build and Rebuild guard (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7): runs only when mode is neither release nor snapshot and refuses",
       "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe"
+    },
+    {
+      "path": "bin/check-stage.sh",
+      "sha256": "dd0121ee69b09ecf037bca2a6a15d333e962a9de314ffd2147187ee480b790f4",
+      "tools": [
+        "bash",
+        "make",
+        "python3",
+        "script"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/check-scan.sh",
+        "bin/check-acceptance.sh",
+        "bin/check-fips.sh",
+        "bin/check-guide.sh",
+        "bin/check-artifacts.sh"
+      ],
+      "signs": false,
+      "reason": "Check's fixed dispatcher: makes the release policy for the tag, verifies Build and Sign, then runs the phase's check scripts (REQ-CHAIN-006-AC3)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-scan.sh",
+      "sha256": "05e66f33498608b570c36d94ae993cf09abebb3b4de71a319534a81b31efb797",
+      "tools": [
+        "find",
+        "python3",
+        "script",
+        "sed",
+        "source",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-osv-db.py",
+        "bin/check-bind.py",
+        "bin/check-osv-vex.py"
+      ],
+      "signs": false,
+      "reason": "Check's scanners phase: runs every scanner of .github/policy/scanners.json on the exact candidate digests and the archives (REQ-CHAIN-006-AC4, AC15)"
+    },
+    {
+      "path": "bin/check-fips.sh",
+      "sha256": "0f4e8a99308eacb828efb6be188ce31f6f9b23eab7ca7654001dd3eaeb903484",
+      "tools": [
+        "curl",
+        "docker",
+        "python3",
+        "sed",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-bind.py"
+      ],
+      "signs": false,
+      "reason": "Check's FIPS check: starts each candidate and reads /statusz (REQ-CHAIN-006-AC6)"
+    },
+    {
+      "path": "bin/check-acceptance.sh",
+      "sha256": "e4e68f95fd045da4878c68f71298306367f884143b12a420ec5af2d6151e7647",
+      "tools": [
+        "bash",
+        "docker",
+        "env",
+        "python3",
+        "script",
+        "sed",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/acceptance-serve.sh",
+        "bin/acceptance-gradle.sh",
+        "bin/acceptance-gradle-capped.sh",
+        "bin/acceptance-maven.sh",
+        "bin/acceptance-maven-capped.sh",
+        "bin/acceptance-egress.sh",
+        "bin/acceptance-k8s.sh",
+        "bin/check-bind.py"
+      ],
+      "signs": false,
+      "reason": "Check's acceptance wrapper: runs one shared suite script against the loaded production candidate (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/acceptance-$suite.sh",
+          "why": "the existence test of the suite script the wrapper is about to run (REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-guide.sh",
+      "sha256": "949848ef60ce70a0e55a474d764eef6eb172b59da2ed086f15cc5bf364ea95fd",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "gh",
+        "python3",
+        "sh",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-guide-plan.py"
+      ],
+      "signs": false,
+      "reason": "Check's customer-guide runner: runs the guide's verify commands against the candidate (REQ-CHAIN-006-AC7)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bash -o pipefail -c \"$run\" < /dev/null",
+          "why": "runs one customer-guide command that the planner judged runnable (verify forms and jq only, local operands; REQ-CHAIN-006-AC7)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-gradle.sh",
+      "sha256": "3981c8e18d28038f1683856caa31d5a01a774c5b67f994fd2aaec95e34166715",
+      "tools": [
+        "at",
+        "awk",
+        "bash",
+        "curl",
+        "find",
+        "script",
+        "sed",
+        "source",
+        "task",
+        "xargs"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Gradle acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain --info 2>&1",
+          "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "launcher",
+          "text": "xargs -0 sha256sum > /tmp/cold-outputs.sha256",
+          "why": "hashes the compiled outputs for the cold-versus-warm byte comparison (REQ-GRADLE-001-AC3); the suite body as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "script-name",
+          "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18095/ --no-daemon --console=plain",
+          "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "launcher",
+          "text": "xargs -0 sha256sum > /tmp/warm-outputs.sha256",
+          "why": "hashes the compiled outputs for the cold-versus-warm byte comparison (REQ-GRADLE-001-AC3); the suite body as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find . -path '*/build/classes/*' -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/cold-outputs.sha256",
+          "line_sha256": "7827ec695ecb49dea962c77f5731de79e62181d51477121c60ea1d7d6a61e34b",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find . -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +",
+          "line_sha256": "98594c45e2ba7dd4c95e92cd9e5ff06ace516c9d20c48771e9dd3509e90c2fae",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find . -path '*/build/classes/*' -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/warm-outputs.sha256",
+          "line_sha256": "302d6b11318b44b4a374dba72862f4761a74a564a607675890c232bc522f4fc2",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-gradle-capped.sh",
+      "sha256": "841f9506d4006d6587439726b1d85bcaaa2202dd6dcf72eb9cb3e570fef8af51",
+      "tools": [
+        "awk",
+        "bash",
+        "curl",
+        "find",
+        "sed",
+        "task"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Gradle capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "./gradlew build --build-cache -PcacheUrl=http://localhost:18096/ --no-daemon --console=plain --info 2>&1",
+          "why": "the sample project's own Gradle wrapper, run as acceptance.yml ran it (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  find \"/tmp/gradle-capped-${copy}\" -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +",
+          "line_sha256": "13f896d9a445ba039650005fcb779ebf30128cdc7c807fe201acfa07e80c5bfa",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "find /tmp/gradle-recovery -name build -type d -not -path '*/.gradle/*' -exec rm -rf {} +",
+          "line_sha256": "d9c076c8f7bde09da5672e4d89aca5aca209102a9080f56f84089a68e089053a",
+          "count": 1,
+          "why": "removes build outputs or hashes compiled outputs, as the suite body acceptance.yml ran (REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-maven.sh",
+      "sha256": "ea589e342cab0cbae1322566797005b62bf758392e64ce4c946df3829351d5ae",
+      "tools": [
+        "awk",
+        "bash",
+        "curl",
+        "env",
+        "sed"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Maven acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/acceptance-maven-capped.sh",
+      "sha256": "fa74e14adbc8c0f49a6422bd02746b5b816b1deb523c01906e947ad07bb57bde",
+      "tools": [
+        "awk",
+        "bash",
+        "curl",
+        "find"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the Maven capped-size acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/acceptance-egress.sh",
+      "sha256": "0038d29fbe3429cade41e9a264a718f8e1598fda37bc8a4fb556ef5507b6770f",
+      "tools": [
+        "at",
+        "awk",
+        "bash",
+        "command",
+        "curl",
+        "docker",
+        "env",
+        "exec",
+        "make",
+        "nc",
+        "python3",
+        "sed",
+        "sh",
+        "source",
+        "tar"
+      ],
+      "runs": [
+        "bin/analyze-egress-trace.py",
+        "bin/analyze-egress-trace-test.sh"
+      ],
+      "signs": false,
+      "reason": "the no-phone-home (egress) acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "./configure --disable-mpers LDFLAGS=\"-static -pthread\" >/dev/null",
+          "why": "builds the static strace inside a pinned container from a checksum-verified source tarball, as the old egress stage did (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  if ! docker run --rm -v \"$TRACE_BIN\":/trace:ro --entrypoint /trace/strace \"$DISTROLESS\" -V > /tmp/strace.ver 2>&1; then",
+          "line_sha256": "bcd2a19d1f7e3332ebf52f4cd3096a802eaf418a95ae129d046952bcfcbb417a",
+          "count": 1,
+          "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "  docker run -d --name \"fscache-cand-${label}\" --net \"container:fscache-net-${label}\" --cap-add=SYS_PTRACE --security-opt seccomp=unconfined --security-opt apparmor=unconfined -v \"$TRACE_BIN\":/trace:ro -v \"$TRACE_OUT\":/out --entrypoint /trace/strace \"$REF\" -f -e trace=network -yy -qq -o \"/out/${label}.strace\" \"$CANDIDATE_ENTRYPOINT\" >/dev/null",
+          "line_sha256": "772cea4f885d36e00c57847b4a38b117665ffe55472ee5db3f5379547b302fae",
+          "count": 1,
+          "why": "docker runs the static strace as the entrypoint of the candidate or of a libc-less proof image (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        },
+        {
+          "rule": "deny",
+          "line": "    make -j\"$(nproc)\" >/dev/null",
+          "line_sha256": "40f690988f6c576fb01cdaab34f5cab69c17a6b6140de9d0707e795a7aea8ca5",
+          "count": 1,
+          "why": "builds the static strace inside a pinned container, as the old egress stage did (REQ-PRIV-001-AC1, REQ-CHAIN-006-AC5)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-k8s.sh",
+      "sha256": "62cdd49af7da702f7100b663e17d58d12691fe1bcf8f2906b6ec09caea567751",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "curl",
+        "docker",
+        "env",
+        "eval",
+        "exec",
+        "kubectl",
+        "node",
+        "python3",
+        "sh",
+        "trap"
+      ],
+      "runs": [
+        "bin/install-kind.sh",
+        "bin/acceptance-k8s-manifests.py",
+        "bin/acceptance-k8s-smoke.py"
+      ],
+      "signs": false,
+      "reason": "the Kubernetes acceptance suite, shared with acceptance.yml (REQ-CHAIN-006-AC5, AC14)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bash /tmp/pf-forward >/tmp/pf.log 2>&1",
+          "why": "the documented port-forward command that the previous step extracted from docs/kubernetes.md (REQ-DEPLOY-003-AC1)"
+        },
+        {
+          "rule": "script-name",
+          "text": "bash /tmp/smoke-assert",
+          "why": "the documented smoke commands that the previous step extracted from docs/kubernetes.md (REQ-DEPLOY-003-AC1)"
+        }
+      ]
+    },
+    {
+      "path": "bin/acceptance-serve.sh",
+      "sha256": "0faec59065857571611a7a57c1e0edf44c6924572f8f5558415b31ad3053b3e0",
+      "tools": [
+        "curl",
+        "docker",
+        "env"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "starts the candidate as acceptance.yml's release-chain mode does (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/install-kind.sh",
+      "sha256": "d950a110760079bc22f9130294e5d62c27a923268cc25713dda8deed93269ff6",
+      "tools": [
+        "curl",
+        "kubectl",
+        "node",
+        "trap"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "installs kind and kubectl at exact versions against committed sha256 (REQ-CHAIN-006-AC14)"
+    },
+    {
+      "path": "bin/check-guide-plan.py",
+      "sha256": "1fe025098c384974dfcf3e1df0503fb01080b3d9bba40c8acfe040f8a8f2bd8d",
+      "tools": [
+        "at",
+        "command",
+        "gh",
+        "sh"
+      ],
+      "runs": [
+        "bin/check-guide.sh"
+      ],
+      "signs": false,
+      "reason": "the planner of bin/check-guide.sh: reads the customer guide and the cannot-run list, judges and substitutes every command (REQ-CHAIN-006-AC7)"
+    },
+    {
+      "path": "bin/check-osv-db.py",
+      "sha256": "3f2533f0e296d7e87eebe1940eded34a727b8aa284b2e35d410881002501486e",
+      "tools": [],
+      "runs": [
+        "bin/check-scan.sh"
+      ],
+      "signs": false,
+      "reason": "reads the osv-scanner databases the scan downloaded and reports source, newest record and digest of each (REQ-CHAIN-006-AC15)"
+    },
+    {
+      "path": "bin/acceptance-k8s-manifests.py",
+      "sha256": "d4c6fd00fd04599846a3ab5e89d2c40f7ccd80b36bd840122ecd070e2f8249c0",
+      "tools": [
+        "script"
+      ],
+      "runs": [
+        "bin/acceptance-k8s.sh"
+      ],
+      "signs": false,
+      "reason": "step 3 of the Kubernetes suite: extracts the documented manifests of docs/kubernetes.md (REQ-CHAIN-006-AC5)"
+    },
+    {
+      "path": "bin/acceptance-k8s-smoke.py",
+      "sha256": "eaa5fbaf1da334c58a43ddd5df30b17232377e1b61ab80a39fa9d65b8a08b81f",
+      "tools": [
+        "at",
+        "bash",
+        "command",
+        "curl",
+        "env",
+        "eval"
+      ],
+      "runs": [
+        "bin/acceptance-k8s.sh"
+      ],
+      "signs": false,
+      "reason": "step 5 of the Kubernetes suite: extracts the documented runner env block and smoke commands (REQ-CHAIN-006-AC5)",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "open(\"/tmp/pf-forward\", \"w\").write(\"#!/usr/bin/env bash\\n\" + pf_cmd + \"\\n\")",
+          "line_sha256": "4698a67fba883745bda0290df1ef8eeb2287fac40d5c5bb9a41a60a71f935041",
+          "count": 1,
+          "why": "the shebang line of a script the documented commands are written into under /tmp, which the suite then runs (REQ-DEPLOY-003-AC1)"
+        },
+        {
+          "rule": "deny",
+          "line": "lines = [\"#!/usr/bin/env bash\", \"set -euo pipefail\"]",
+          "line_sha256": "6d921fca730abf675a8d77fea71f98859bb078dec20ad551478405f8e6cc27c4",
+          "count": 1,
+          "why": "the shebang line of a script the documented commands are written into under /tmp, which the suite then runs (REQ-DEPLOY-003-AC1)"
+        }
+      ]
+    },
+    {
+      "path": "bin/analyze-egress-trace.py",
+      "sha256": "985d7385c9fae81ceda0c7751d503095c63e734b8c57cbe6a116ca47d0051f6c",
+      "tools": [
+        "awk"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "judges a candidate syscall trace for outbound traffic (the no-phone-home suite, REQ-PRIV-001-AC1)"
+    },
+    {
+      "path": "bin/analyze-egress-trace-test.sh",
+      "sha256": "5e41dda6c26fd7f1e13115dddf84358d8d27eb1a037de5fdad69c30ceb1c9060",
+      "tools": [
+        "python3",
+        "trap"
+      ],
+      "runs": [
+        "bin/analyze-egress-trace.py"
+      ],
+      "signs": false,
+      "reason": "the regression suite of the trace analyzer, run by the no-phone-home suite as control C",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "connect(4, {sa_family=AF_INET6, sin6_port=htons(80), inet_pton(AF_INET6, /* corrupt */ ), sin6_scope_id=0}, 28) = -1 ENETUNREACH",
+          "line_sha256": "e7665a6a05e69090841ff7c64f56dce7d6f2c8e9c59702c268855fa23061e25a",
+          "count": 1,
+          "why": "a fixture line of a syscall trace inside a heredoc: the comment marks are trace text, not a command (REQ-PRIV-001-AC1)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-phase-scanners.sh",
+      "sha256": "0eba74a24fcaefc173a068e6bd97f03493e8988ec6109b3a2c14f0601c7bf04c",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's scanners step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-acceptance.sh",
+      "sha256": "113c2da8fa43264754f1f4158b245583f8b9aa9a464653697de5f70c5da2831e",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's acceptance step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-phase-runtime.sh",
+      "sha256": "7abe1474108348e53b56066422e51220b81db9ec387817c638331cfa6ea0067d",
+      "tools": [
+        "bash"
+      ],
+      "runs": [
+        "bin/check-stage.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of Check's runtime step: one line into the dispatcher (REQ-CHAIN-006-AC1, AC3)"
+    },
+    {
+      "path": "bin/check-artifacts.sh",
+      "sha256": "7d77aefc27702bef4313eee641a499eded4e7f1f99506d0ec1264707c003f0fe",
+      "tools": [
+        "at",
+        "curl",
+        "docker",
+        "go",
+        "python3",
+        "sed",
+        "sh",
+        "tar",
+        "trap"
+      ],
+      "runs": [
+        "bin/check-image-platforms.py",
+        "bin/check-bind.py"
+      ],
+      "signs": false,
+      "reason": "Check's artifact checks: the amd64 binaries execute, the FIPS postures, no shell in the production and -fips images, platform entries and serving (REQ-PLAT-001-AC1, REQ-PLAT-002-AC1, REQ-PLAT-003-AC1, REQ-FIPS-001-AC1, AC2, REQ-FIPS-002-AC1)"
+    },
+    {
+      "path": "bin/check-image-platforms.py",
+      "sha256": "972ade07fcb526d19d59333e50c7fc7ffeb7eca5d31b3ac46faee7d13ea9e7fd",
+      "tools": [
+        "at"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "lists the platforms an OCI image archive carries (REQ-PLAT-002-AC1)"
+    },
+    {
+      "path": "bin/check-phase-arm64.sh",
+      "sha256": "6065475e20aac72ccd9ab6f0845e29fe7dc4a67c9dab194cfcdf33a5e8cb2711",
+      "tools": [
+        "bash",
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/check-artifacts.sh"
+      ],
+      "signs": false,
+      "reason": "the thin target of the check-arm64 job's arm64 step: one line into the artifact checks for linux/arm64 (REQ-CHAIN-006-AC17)",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py policy make --template .github/policy/release-policy.template.json --tag \"$GITHUB_REF_NAME\" --out policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        },
+        {
+          "rule": "script-name",
+          "text": "python3 -I -B bin/chain-verify.py stage-start --stage check --previous build --record witness-build/build-collection.json --digests witness-build/digests.json --policy policy.json",
+          "why": "Check verifies Build and Sign isolated (python3 -I -B), as PR 1's Sign step runs the verifier; the pinned lines are judged by the script judge of the Check wiring test (REQ-CHAIN-006-AC3)"
+        }
+      ]
+    },
+    {
+      "path": "bin/check-bind.py",
+      "sha256": "adeade6b12c7f7c4682a09cfdef29bd2d81955534acf476e7c41e7106a8563ad",
+      "tools": [],
+      "runs": [
+        "bin/chain_items.py"
+      ],
+      "signs": false,
+      "reason": "binds the image layouts and archives Check downloads to the digests Build recorded (round 1 F1); reads and hashes files, signs nothing"
+    },
+    {
+      "path": "bin/check-osv-vex.py",
+      "sha256": "10f8ea45340cf5fb1f14b39a0a269e75c5c81c6497c66a00166f48f4ed382c30",
+      "tools": [],
+      "runs": [
+        "bin/rescan-statement.py"
+      ],
+      "signs": false,
+      "reason": "applies the published VEX to osv-scanner findings with the daily rescan filter"
+    },
+    {
+      "path": "bin/rescan-statement.py",
+      "sha256": "b330cafa126bf35cf00ba797c736a5319a0128b4c41c7699c157c2e5486787c6",
+      "tools": [
+        "at",
+        "gh",
+        "go",
+        "make",
+        "python3",
+        "source"
+      ],
+      "runs": [
+        "bin/inspector-gate.py"
+      ],
+      "signs": false,
+      "reason": "the daily rescan statement; Check imports its VEX matcher",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "    # osv-scanner scan image/source : 0 clean, 1 findings, 127/128 (and any",
+          "line_sha256": "be19a58831171af0732e5fe3ad055aa91363be3a19a1d7c5a38dc330ebeb29a2",
+          "count": 1,
+          "why": "a comment naming osv-scanner's `scan image/source` subcommands; prose, not a path run from here"
+        },
+        {
+          "rule": "deny",
+          "line": "    busybox is not alpine/busybox or evil/busybox, and @scope/pkg is not pkg.\"\"\"",
+          "line_sha256": "bfba9fa0e1ca1350beb7bce6a46ff3726a9d14604f70b9758f3eb5fcb31375fd",
+          "count": 1,
+          "why": "a docstring's examples of package namespaces (alpine/busybox is not busybox); prose, not a command"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/rescan-statement-test.sh",
+          "why": "a comment naming the suite that exercises this file; never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "inspector-gate.py",
+          "why": "joins the file name to its own directory to load the PR gate's VEX matcher, which is the listed row bin/inspector-gate.py (one definition of a covered finding)"
+        }
+      ]
+    },
+    {
+      "path": "bin/inspector-gate.py",
+      "sha256": "25a0cdba9df3466d04296a8da3e3883961f280fbc8a8f6ea3b90be48eeb828d1",
+      "tools": [
+        "at",
+        "python3"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the PR gate; its VEX matcher is the one the rescan filter uses"
     }
   ],
   "ambient_env": [

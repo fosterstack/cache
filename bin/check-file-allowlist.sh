@@ -85,8 +85,6 @@ ALLOW_PATTERNS=(
   '^bin/check-version-literals\.sh$'
   '^bin/coverage-gate\.sh$'
   '^bin/check-workflow-permissions\.py$'
-  '^bin/authorize-acceptance-check\.py$'
-  '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'
   '^bin/rescan-statement-test\.sh$'
   '^bin/rescan-current-only-test\.sh$'
@@ -148,6 +146,19 @@ ALLOW_PATTERNS=(
   '^bin/chain-(bind|build-admit|build-wiring|install-witness|rebuild|snapshot)-test\.sh$'
   '^bin/chain-(test-(harness|shape)|known-red)\.py$'
   '^test-evidence/known-red\.json$'
+  # The v0.3.0 release chain, Check (PR 3): the check scripts and their two helpers, the shared acceptance suites (and the two helpers of the Kubernetes
+  # suite), the kind installer, and the Check suites with their shape judge
+  '^bin/check-(stage|scan|fips|artifacts|acceptance|guide)\.sh$'
+  '^bin/check-phase-(scanners|acceptance|runtime|arm64)\.sh$'
+  '^bin/check-(guide-plan|osv-db|image-platforms|bind|osv-vex)\.py$'
+  '^bin/acceptance-(gradle|gradle-capped|maven|maven-capped|egress|k8s|serve)\.sh$'
+  '^bin/acceptance-k8s-(manifests|smoke)\.py$'
+  '^bin/install-kind\.sh$'
+  # the suite guard: no empty test file, a printed case count held to a committed floor that only rises
+  '^bin/suite-guard(-run|-test)?\.sh$'
+  '^test-evidence/suite-floors\.json$'
+  '^bin/chain-check-(scripts|wiring)-test\.sh$'
+  '^bin/chain-check-shape\.py$'
   # The auditor implementation now lands (Round 8): sealed command scripts, the
   # shared library, and their parser unit tests, plus the parser-test runner.
   '^\.github/agent/bin/auditor-[a-z0-9-]+\.py$'
