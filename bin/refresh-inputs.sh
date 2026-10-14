@@ -302,7 +302,7 @@ live = {"production": load_live(tmp + "/production.lock.json"), "fips": load_liv
 live_mel = load_live(tmp + "/melange.lock.json")
 
 # ---- the archive's index is re-checked on EVERY run against build/locks/archive-index.sha256 ----
-# Damage is unconditional: a pointer target that does not hash to its own name, a plain pointer file that is not the recorded index, or a missing
+# Damage is unconditional: a stored index that does not hash to its own name, a pointer file that is not the recorded index, or a missing
 # pointer stops the job (a human must look). A pointer that is intact but NEWER than the record is the normal state while a refresh PR waits (the archive
 # is outside git, so it is always ahead of main until that PR is merged): then an open refresh PR of ours means "wait" (the guard below, nothing changed),
 # and with no such PR (it was closed unmerged) the run reconciles: it stores the verified live index and rewrites the record in a new PR.
@@ -378,13 +378,10 @@ for _a in ARCHS:
                 _p = "%s/%s" % (_idir, _f)
                 if os.path.islink(_p) or not os.path.isfile(_p) or hashlib.sha256(open(_p, "rb").read()).hexdigest() != _mm.group(1):
                     fail("the index file %s is a link, not a regular file, or does not hash to its own name (hash mismatch); restore it or delete it and run again" % _p)
-    if os.path.isfile(_cur) and not os.path.islink(_cur):
-        check_signature(_cur, _a, "legacy archived")   # a legacy plain pointer must be a SIGNED index, whatever the record says and before any early exit
-    if os.path.islink(_cur):
-        _t = os.path.realpath(_cur)
-        _mt = re.fullmatch(r"APKINDEX-([0-9a-f]{64})\.tar\.gz", os.path.basename(_t))
-        if not _mt or os.path.dirname(_t) != os.path.realpath(_idir) or not os.path.isfile(_t) or hashlib.sha256(open(_t, "rb").read()).hexdigest() != _mt.group(1):
-            fail("the archive's %s package index %s (via %s) does not hash to its name (hash mismatch): it was damaged or replaced; restore it or delete it and run again" % (_a, _t, _cur))
+    if os.path.islink(_cur):   # the pointer is a regular-file COPY of index/APKINDEX-<sha256>.tar.gz (REQ-REFRESH-001-AC13); a link is never followed
+        fail("the archive's %s pointer %s is a symlink; it must be a regular-file copy of its index/APKINDEX-<sha256>.tar.gz (symlink)" % (_a, _cur))
+    if os.path.isfile(_cur):
+        check_signature(_cur, _a, "legacy archived")   # the pointer must be a SIGNED index, whatever the record says and before any early exit
 _rec_path = repo + "/build/locks/archive-index.sha256"
 ahead = False
 ahead_info = []
@@ -414,19 +411,16 @@ if os.path.exists(_rec_path):
                 fail("the recorded %s package index %s is a symlink, not a regular file, or does not hash to its name (hash mismatch); assembly would refuse it: a human must look" % (_a, _rf))
         elif os.path.islink(_cur) or not os.path.isfile(_cur) or hashlib.sha256(open(_cur, "rb").read()).hexdigest() != _rec[_a]:
             fail("the recorded %s package index %s is missing (missing index) and the pointer is not a plain file holding it (hash mismatch); restore it from backup: a human must look" % (_a, _rf))
-        if os.path.islink(_cur):
-            _tgt = os.path.realpath(_cur)
-            _m = re.fullmatch(r"APKINDEX-([0-9a-f]{64})\.tar\.gz", os.path.basename(_tgt))
-            _ok = _m and os.path.dirname(_tgt) == os.path.realpath(_idir) and os.path.isfile(_tgt) \
-                and hashlib.sha256(open(_tgt, "rb").read()).hexdigest() == _m.group(1)
-            if not _ok:
-                fail("the archive's %s package index %s (via %s) does not hash to its name: it was damaged or replaced; restore it or delete it and run again (hash mismatch)" % (_a, _tgt, _cur))
-            if _m.group(1) != _rec[_a]:
-                ahead = True
-                ahead_info.append((_a, _m.group(1), _rec[_a]))
-        elif os.path.isfile(_cur):
-            if hashlib.sha256(open(_cur, "rb").read()).hexdigest() != _rec[_a]:
-                fail("the archive's %s package index %s is a plain file that is not the one recorded in build/locks/archive-index.sha256 (hash mismatch); it was replaced or damaged: a human must look" % (_a, _cur))
+        if os.path.isfile(_cur):
+            _ps = hashlib.sha256(open(_cur, "rb").read()).hexdigest()
+            if _ps != _rec[_a]:
+                # a copy that is not the record is the normal "ahead" state while a refresh PR waits, but only when it is the copy of a stored version
+                # (index/APKINDEX-<its sha256>.tar.gz exists; the directory scan above proved it hashes to its name)
+                if os.path.isfile("%s/APKINDEX-%s.tar.gz" % (_idir, _ps)) and not os.path.islink("%s/APKINDEX-%s.tar.gz" % (_idir, _ps)):
+                    ahead = True
+                    ahead_info.append((_a, _ps, _rec[_a]))
+                else:
+                    fail("the archive's %s package index %s is a plain file that is not the one recorded in build/locks/archive-index.sha256 (hash mismatch); it was replaced or damaged: a human must look" % (_a, _cur))
         else:
             fail("the archive has no %s package index at %s although a record exists (missing index); restore it from index/ and run again" % (_a, _cur))
 if ahead:
@@ -621,7 +615,7 @@ if not changed and os.path.exists(record_path) and not ahead:
 open_prs_guard("refresh")   # something will change: a waiting refresh PR means "wait", decided BEFORE the live index is downloaded and checked
 
 # the archive's package index is the ORIGINAL Wolfi-signed index (apko reads it from the archive without re-signing). It is kept
-# IMMUTABLE and VERSIONED by its sha256 (index/APKINDEX-<sha256>.tar.gz) and never overwritten; APKINDEX.tar.gz is only a pointer to
+# IMMUTABLE and VERSIONED by its sha256 (index/APKINDEX-<sha256>.tar.gz) and never overwritten; APKINDEX.tar.gz is a regular-file COPY (never a symlink) of
 # the newest one, and the digests are recorded in build/locks/archive-index.sha256. Each index must verify against the ARCHIVED key.
 def verify_index(path, arch):
     parts = check_signature(path, arch, "live")
@@ -654,12 +648,9 @@ for arch in ARCHS:
 for arch in ARCHS:
     vdir, cur = "%s/%s/index" % (archive, arch), "%s/%s/APKINDEX.tar.gz" % (archive, arch)
     cands = ["%s/APKINDEX-%s.tar.gz" % (vdir, index_parts[arch][1])]
-    if os.path.islink(cur):   # the previous pointer: its target must be an index inside index/ that hashes to its own name
-        tgt = os.path.realpath(cur)
-        m_ = re.fullmatch(r"APKINDEX-([0-9a-f]{64})\.tar\.gz", os.path.basename(tgt))
-        if not m_ or os.path.dirname(tgt) != os.path.realpath(vdir) or not os.path.isfile(tgt) or hashlib.sha256(open(tgt, "rb").read()).hexdigest() != m_.group(1):
-            fail("the previous pointer %s points to %s, which is not an index/APKINDEX-<sha256>.tar.gz that hashes to its name (hash mismatch); refusing, nothing changed" % (cur, tgt))
-    if os.path.exists(cur) and not os.path.islink(cur):
+    if os.path.islink(cur):   # defence in depth (the every-run check refuses it first): a pointer is never a link
+        fail("the previous pointer %s is a symlink; it must be a regular-file copy (symlink); refusing, nothing changed" % cur)
+    if os.path.exists(cur):
         check_signature(cur, arch, "legacy archived")   # a plain pointer is kept under its own digest only if it is a signed index (the archived Wolfi key)
         cands.append("%s/APKINDEX-%s.tar.gz" % (vdir, hashlib.sha256(open(cur, "rb").read()).hexdigest()))
     for c in cands:
@@ -684,18 +675,14 @@ for arch in ARCHS:
     part, sha = index_parts[arch]
     vdir, cur = "%s/%s/index" % (archive, arch), "%s/%s/APKINDEX.tar.gz" % (archive, arch)
     os.makedirs(vdir, exist_ok=True)
-    if os.path.exists(cur) and not os.path.islink(cur):   # a plain file from before: keep it under its own digest first
+    if os.path.exists(cur):   # the old pointer copy: keep it under its own digest first (a no-op when that version is already stored)
         keepold = "%s/APKINDEX-%s.tar.gz" % (vdir, hashlib.sha256(open(cur, "rb").read()).hexdigest())
         if not os.path.exists(keepold):
             place(cur, keepold)
     dest = "%s/APKINDEX-%s.tar.gz" % (vdir, sha)
     if not os.path.exists(dest):   # absent: write it atomically (a temp file in the same directory, then rename); an existing one was hashed above
         place(part, dest)
-    tmp_link = cur + ".new"
-    if os.path.lexists(tmp_link):
-        os.remove(tmp_link)
-    os.symlink(os.path.relpath(dest, os.path.dirname(cur)), tmp_link)
-    os.replace(tmp_link, cur)
+    place(dest, cur)   # the pointer is a regular-file COPY of the versioned index (same sha256), written atomically; never a symlink
 if record_path in changed:
     write_atomic(record_path, record_text)
 for kind in ("production", "fips"):

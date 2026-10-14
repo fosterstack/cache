@@ -759,7 +759,7 @@ mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/r
 t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c "grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^curl ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'"
 t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unpredictable name, so a planted symlink is never followed" bash -c "grep -q 'O_EXCL' '$RF' && grep -q 'secrets\\|token_hex\\|urandom' '$RF'"
 # the previous pointer's TARGET is hashed too
-mkrepo; mkdir -p "$work/ar/x86_64/index"; tgt="APKINDEX-$(printf 'a%.0s' $(seq 64)).tar.gz"; printf 'not the index' >"$work/ar/x86_64/index/$tgt"; rm -f "$work/ar/x86_64/APKINDEX.tar.gz"; ln -s "index/$tgt" "$work/ar/x86_64/APKINDEX.tar.gz"; before=$(treehash "$work/ar" "$work/rp")
+mkrepo; mkdir -p "$work/ar/x86_64/index"; tgt="APKINDEX-$live_sha_x.tar.gz"; cp "$fx/live/x86_64/APKINDEX.tar.gz" "$work/ar/x86_64/index/$tgt"; rm -f "$work/ar/x86_64/APKINDEX.tar.gz"; ln -s "index/$tgt" "$work/ar/x86_64/APKINDEX.tar.gz"; before=$(treehash "$work/ar" "$work/rp")
 run_s4 "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar" 2>/dev/null || true
 run_s4 env "${rfn[@]:1}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 31" "refresh: a pointer that is a symlink is refused whatever it points to (the pointer is a regular-file copy; AC13 amended): exit 1, names symlink, nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'symlink' '$work/log'"
@@ -938,7 +938,7 @@ for f in ("apko.base.lock.json", "apko-fips.base.lock.json"):
     json.dump(d, open("%s/build/locks/%s" % (rp, f), "w"), indent=2)
 P
 run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
-t "rule 31" "AC22: when the repointing leaves nothing to commit the run exits 0 without a PR and without a git add of an empty path" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq 'git .* add -- \$' '$CALLS' && test \"\$(readlink '$work/ar/x86_64/APKINDEX.tar.gz')\" = index/APKINDEX-$live_sha_x.tar.gz"
+t "rule 31" "AC22: when re-copying the pointer leaves nothing to commit the run exits 0 without a PR and without a git add of an empty path" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q '^gh pr create' '$CALLS' && ! grep -Eq 'git .* add -- \$' '$CALLS' && test ! -L '$work/ar/x86_64/APKINDEX.tar.gz' && cmp '$work/ar/x86_64/APKINDEX.tar.gz' '$work/ar/x86_64/index/APKINDEX-$live_sha_x.tar.gz'"
 # the open-PR guard runs as soon as the archive is found ahead, before any download: a failing download cannot turn a waiting PR into a red run
 mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"; day1b=$(grep -E '^git( -C [^ ]+)? checkout -b ' "$CALLS" | head -1 | sed 's/.*checkout -b //'); reset_repo_keep_archive
 run_s4 env GH_STUB_OPEN="$day1b" STUB_CURL_DIR="$work/nonexistent-live" "${rfn[@]:1}" STUB_CURL_DIR="$work/nonexistent-live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -1018,7 +1018,7 @@ import os, sys
 ar, rec = sys.argv[1:3]
 lines = []
 for a in ("x86_64", "aarch64"):
-    lines.append("%s sha256:%s\n" % (a, os.path.basename(os.path.realpath("%s/%s/APKINDEX.tar.gz" % (ar, a)))[len("APKINDEX-"):-len(".tar.gz")]))
+    lines.append("%s sha256:%s\n" % (a, __import__("hashlib").sha256(open("%s/%s/APKINDEX.tar.gz" % (ar, a), "rb").read()).hexdigest()))
 open(rec, "w").write("".join(lines))
 P
 run_s4 env GH_STUB_OPEN="$wb2" STUB_CURL_DIR="$work/nonexistent-live" "${rfn[@]:1}" STUB_CURL_DIR="$work/nonexistent-live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -1036,7 +1036,7 @@ mkrepo; run_s4 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/r
 python3 - "$work/ar" "$work/rp/build/locks/archive-index.sha256" <<'P'
 import os, sys
 ar, rec = sys.argv[1:3]
-open(rec, "w").write("".join("%s sha256:%s\n" % (a, os.path.basename(os.path.realpath("%s/%s/APKINDEX.tar.gz" % (ar, a)))[len("APKINDEX-"):-len(".tar.gz")]) for a in ("x86_64", "aarch64")))
+open(rec, "w").write("".join("%s sha256:%s\n" % (a, __import__("hashlib").sha256(open("%s/%s/APKINDEX.tar.gz" % (ar, a), "rb").read()).hexdigest()) for a in ("x86_64", "aarch64")))
 P
 victim=$(ls "$work/ar/x86_64"/*.apk | head -1); rm -f "$victim"
 run_s4 env GH_STUB_OPEN="$wb3" STUB_CURL_DIR="$work/nonexistent-live" "${rfn[@]:1}" STUB_CURL_DIR="$work/nonexistent-live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
@@ -1063,7 +1063,7 @@ for state in ahead equal; do
   if [ $state = equal ]; then python3 - "$work/ar" "$work/rp/build/locks/archive-index.sha256" <<'P'
 import os, sys
 ar, rec = sys.argv[1:3]
-open(rec, "w").write("".join("%s sha256:%s\n" % (a, os.path.basename(os.path.realpath("%s/%s/APKINDEX.tar.gz" % (ar, a)))[len("APKINDEX-"):-len(".tar.gz")]) for a in ("x86_64", "aarch64")))
+open(rec, "w").write("".join("%s sha256:%s\n" % (a, __import__("hashlib").sha256(open("%s/%s/APKINDEX.tar.gz" % (ar, a), "rb").read()).hexdigest()) for a in ("x86_64", "aarch64")))
 P
   fi
   old=$(ls "$work/ar/x86_64"/tzdata-2026a-r0.apk 2>/dev/null | head -1); [ -n "$old" ] || echo "FIXTURE: no old tzdata in the archive" >&2
