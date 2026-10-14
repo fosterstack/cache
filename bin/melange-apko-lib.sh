@@ -630,7 +630,8 @@ cat >"$stubs/unshare" <<'EOF'
 #!/bin/bash
 echo "unshare $*" >>"$CALLS"
 while [ $# -gt 0 ]; do case "$1" in -*) shift;; *) break;; esac; done
-case "$*" in *net-probe.py*) if [ -n "${STUB_PROBE_RC:-}" ]; then exit "$STUB_PROBE_RC"; elif [ -n "${STUB_UNSHARE_LEAKY:-}" ]; then exit 0; else exit 101; fi;; esac   # the stub plays the kernel: no route in a sealed namespace = ENETUNREACH (101)
+case "$*" in *net-probe.py*) { [ -x "$1" ] || type -P "$1" >/dev/null 2>&1; } || { echo "unshare: failed to execute $1: No such file or directory" >&2; exit 127; }   # the probe really resolves the program it is asked to run
+  if [ -n "${STUB_PROBE_RC:-}" ]; then exit "$STUB_PROBE_RC"; elif [ -n "${STUB_UNSHARE_LEAKY:-}" ]; then exit 0; else exit 101; fi;; esac   # the stub plays the kernel: no route in a sealed namespace = ENETUNREACH (101)
 [ -n "${STUB_UNSHARE_LEAKY:-}" ] || export FAKE_SEALED=1
 exec "$@"
 EOF
@@ -661,6 +662,7 @@ while [ $# -gt 0 ]; do case $1 in
   --runner|--keyring-append|--repository-append|--build-date|--workspace-dir|--apk-cache-dir|-k|-r|--env-file|--vars-file|--namespace) shift 2;;
   -*) shift;; *) recipe=$1; shift;; esac; done
 echo "ENV SDE=${SOURCE_DATE_EPOCH-unset}" >>"$CALLS"
+[ -n "${STUB_LOCKED_CACHE:-}" ] && [ -n "$cache" ] && { mkdir -p "$cache/x/y" && : >"$cache/x/y/f" && chmod 500 "$cache/x/y" "$cache/x"; }   # a tree the invoking user cannot remove (the cleanup fallback)
 echo "ENV CACHE=$( [ -n "$cache" ] && ls "$cache" 2>/dev/null | tr '\n' ' ')" >>"$CALLS"
 echo "ENV SECRETS=$(env | grep -Ec '(TOKEN|SECRET|PRIVATE|SIGNING_KEY)')" >>"$CALLS"
 echo "ENVNAMES=$(env | cut -d= -f1 | grep -Ev '^(STUB_|FAKE_|CALLS$|ImageOS$|ImageVersion$|PWD$|SHLVL$|_$|OLDPWD$)' | sort | tr '\n' ' ')" >>"$CALLS"
@@ -763,14 +765,15 @@ restricted_path_dir() {
     ln -s "$p" "$d/$n" || return 1
   done
 }
-# restricted_stub_wrapper OUT REAL PATH [PATH-WHEN-FIRST-ARGUMENT-IS-env]: a stub (REAL) that needs ordinary tools of its own runs through a
-# small wrapper that gives it PATH; the script under test keeps its restricted path. With the fourth argument the stub gets that path when its
-# first argument is the bare word env (what a copy that names env by bare name passes to sudo), so the bare name is resolved there too.
-restricted_stub_wrapper() {
-  { printf '#!/bin/bash\n'
-    if [ -n "${4:-}" ]; then printf 'case "${1:-}" in env) PATH=%q;; *) PATH=%q;; esac\n' "$4" "$3"; else printf 'PATH=%q\n' "$3"; fi
-    printf 'export PATH\nexec %q "$@"\n' "$2"
-  } >"$1"; chmod +x "$1"
+# restricted_stub_copy SRC DEST TOOLPATH: a copy of the stub SRC whose OWN dependencies (env, python3, ls, chmod) are shell functions calling them by
+# absolute path (python3 runs with TOOLPATH, which also holds openssl for the harness library), and whose `exec env -i` is by absolute path.
+# Every command the SCRIPT supplies to the stub (exec "$@") is resolved under the search path the stub was started with, which is the
+# script's own restricted one: no stub restores a wider path, and nothing depends on how the script spells the operand.
+restricted_stub_copy() {
+  local src=$1 dest=$2 tp=$3 e p l c body; e=$(command -v env) && p=$(command -v python3) && l=$(command -v ls) && c=$(command -v chmod) || return 1
+  body=$(tail -n +2 "$src"); body=${body//exec env -i/exec $(printf %q "$e") -i}
+  { head -n 1 "$src"; printf 'env() { %q "$@"; }\npython3() { PATH=%q %q "$@"; }\nls() { %q "$@"; }\nchmod() { %q "$@"; }\n' "$e" "$tp" "$p" "$l" "$c"; printf '%s\n' "$body"; } >"$dest"
+  chmod +x "$dest"
 }
 RUNNER=run_s
 rc() { cat "$work/rc"; }

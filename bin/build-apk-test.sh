@@ -1067,36 +1067,36 @@ done
 # scanner can close "every way a shell can spell a program name". The CONTROL is this section: the two scripts run with a search path that
 # holds ONLY the coreutils they use (plus the stub uname that plays Linux). A tool they name that is not in that directory cannot be
 # reached by a bare name, whatever the text spells (brace, quote, expansion, assembled word): it is "not found". The fixed-path tools are the
-# TEST-SUBST stubs (wrapped, so that each stub has the ordinary tools of its own; the wrapper is the harness, not the script).
+# TEST-SUBST stubs, as copies that call their own dependencies (env, python3, ls) by absolute path and resolve every command the script hands them
+# under the script's own restricted path (so a bare env or sudo operand is not found there either).
 # Stated residual, as REQ-BUILDAPK-001-AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's;
 # a program a script hands to a python subprocess (openssl in release-sign-apks.sh and bin/apk-tool.py) runs with an env whose PATH names no directory.
 RP_COREUTILS="awk basename cat cp cut dirname find grep head mkdir mktemp mv rm sed sort tail tr"   # what the two scripts call (read from the scripts, and every one is in a control run's trace)
-RP_STUBTOOLS="env python3 openssl ls"   # what the harness stubs (melange, sudo, the signing stub) call: on the stubs' path only, never on the scripts'
+RP_STUBTOOLS="env python3 openssl ls"   # what the harness stubs call, by absolute path or through python3 (which needs openssl): never on the scripts' path (sysctl is the stub the scripts name through sudo)
 BASH_BIN=$(command -v bash)
-rp="$work/rp" rps="$work/rp-stub" rpw="$work/rp-wrap" rpm="$work/rp-mut"; mkdir -p "$rpw" "$rpm"
-restricted_path_dir "$rp" $RP_COREUTILS && ln -s "$stubs/uname" "$rp/uname" || { echo "FIXTURE SETUP FAILED: restricted path"; exit 1; }
-restricted_path_dir "$rps" $RP_COREUTILS $RP_STUBTOOLS && ln -s "$stubs/uname" "$rps/uname" && ln -s "$stubs/sysctl" "$rps/sysctl" || { echo "FIXTURE SETUP FAILED: stub path"; exit 1; }
-restricted_stub_wrapper "$rpw/sudo" "$stubs/sudo" "$rps" "$rp"
-for w in unshare melange go; do restricted_stub_wrapper "$rpw/$w" "$stubs/$w" "$rps"; done
+rp="$work/rp" rps="$work/rp-stub" rpw="$work/rp-wrap" rpm="$work/rp-mut"; mkdir -p "$rpw" "$rpm" "$work/rp-tmp"
+restricted_path_dir "$rp" $RP_COREUTILS && ln -s "$stubs/uname" "$rp/uname" && ln -s "$stubs/sysctl" "$rp/sysctl" || { echo "FIXTURE SETUP FAILED: restricted path"; exit 1; }
+restricted_path_dir "$rps" $RP_COREUTILS $RP_STUBTOOLS || { echo "FIXTURE SETUP FAILED: stub path"; exit 1; }
+for w in sudo unshare melange go; do restricted_stub_copy "$stubs/$w" "$rpw/$w" "$rps" || { echo "FIXTURE SETUP FAILED: stub copy $w"; exit 1; }; done
 if real=$(command -v sha256sum 2>/dev/null); then printf '#!/bin/sh\nexec %s "$@"\n' "$real" >"$rpw/sha256sum"; else printf '#!/bin/sh\nexec %s -a 256 "$@"\n' "$(command -v shasum)" >"$rpw/sha256sum"; fi
 chmod +x "$rpw/sha256sum"
 t "AC9" "the restricted directory holds the coreutils and uname and none of melange, go, sudo, unshare, env, openssl, sha256sum, git, python3, apko" bash -c "
   for n in melange go sudo unshare env openssl sha256sum shasum git python3 apko; do [ ! -e '$rp'/\$n ] || exit 1; done
-  for n in $RP_COREUTILS uname; do [ -x '$rp'/\$n ] || exit 1; done; [ \$(ls '$rp' | wc -l) -eq \$(( \$(echo $RP_COREUTILS | wc -w) + 1 )) ]"
+  for n in $RP_COREUTILS uname sysctl; do [ -x '$rp'/\$n ] || exit 1; done; [ \$(ls '$rp' | wc -l) -eq \$(( \$(echo $RP_COREUTILS | wc -w) + 2 )) ]"
 rp_args=(--variant standard --arch x86_64 --version 0.3.0 --source-dir "$src" --repo "$fx/envrepo" --keyring "$kr"
   --go-archive "$fx/archive/go" --melange-lock "$fx/melange.lock")
 RP_GO=(STUB_BUILDINFO="$fx/sbom/ok.txt" STUB_GOVM_FILE="$work/govm-ok.txt")   # the go stub answers go version -m with the file that matches the build
 rp_extra=()   # KEY=VALUE entries the next restricted run adds to its (otherwise empty) environment
-rp_sealed() { python3 - "$work/rp-sealed.json" "$rps" "$CALLS" "$work/lib.py" "${rp_extra[@]}" <<'PYW'
+rp_sealed() { python3 - "$work/rp-sealed.json" "$rps" "$CALLS" "$work/lib.py" "$rp" "${rp_extra[@]}" <<'PYW'
 import json, sys
-c = {"PATH": sys.argv[2], "HOME": "/root", "LC_ALL": "C", "CALLS": sys.argv[3], "STUB_LIB": sys.argv[4], "FAKE_UNAME": "x86_64"}
-c.update(a.split("=", 1) for a in sys.argv[5:] if a.startswith(("STUB_", "FAKE_")))   # what the harness wrapper does for the unrestricted runs
+c = {"PATH": sys.argv[5], "HOME": "/root", "LC_ALL": "C", "CALLS": sys.argv[3], "STUB_LIB": sys.argv[4], "FAKE_UNAME": "x86_64"}
+c.update(a.split("=", 1) for a in sys.argv[6:] if a.startswith(("STUB_", "FAKE_")))   # what the harness wrapper does for the unrestricted runs
 json.dump({"closed": c, "from_environment": ["SOURCE_DATE_EPOCH"]}, open(sys.argv[1], "w"))
 PYW
 }
 # rp_build SCRIPT OUT: the build-apk copy SCRIPT with PATH=$rp and nothing else of the caller's environment; log in $work/rp.log, status in $work/rp.rc
 rp_ba() { local script=$1; shift; : >"$CALLS"; rp_sealed
-  env -i PATH="${RP_PATH:-$rp}" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 \
+  env -i PATH="${RP_PATH:-$rp}" HOME=/nonexistent LC_ALL=C TMPDIR="$work/rp-tmp" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 \
     TEST_SEALED_ENV="$work/rp-sealed.json" TEST_RECIPE="$fx/melange.yaml" TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_MELANGE="$rpw/melange" \
     TEST_GO="$rpw/go" TEST_SHA256SUM="$rpw/sha256sum" "${rp_extra[@]}" "$BASH_BIN" "$script" "$@" >"$work/rp.log" 2>&1 </dev/null
   echo $? >"$work/rp.rc"; }
@@ -1237,7 +1237,6 @@ if [ "$(id -u)" != 0 ]; then
     rp_build "$rpm/$m.sh" "$(mo)"
     t "AC9" "$m: sudo by bare name in the cleanup fallback is not found and no sudo rm was made" bash -c "grep -q 'sudo: command not found' '$work/rp.log' && ! grep -q '^sudo rm' '$CALLS'"
   done
-  chmod -R u+w "$work"/out.* 2>/dev/null; chmod -R u+w /tmp/tmp.* 2>/dev/null || true
 else echo "note: running as root: the cleanup-fallback scenario is skipped (rm cannot fail)"; ok; fi
 # 2c. a network-classified melange failure reaches the probe: sudo unshare -n python3 net-probe.py, exit 4
 rp_extra=("${RP_GO[@]}" STUB_NETATTEMPT=1); rp_build "$work/ba-copy.sh" "$(mo)"
