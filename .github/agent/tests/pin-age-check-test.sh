@@ -2971,5 +2971,20 @@ assert set(inv.inventory(comp)) == {"package:pypi/black@(unpinned)#step:c38ddd42
 assert set(inv.inventory(wf("x.tgz?download=${A}"))) == {"tool:o/r/x.tgz@v1.2.3"}
 PY
 
+CASE="release downloads behind variables, round 3 (seat B): reordered assignments, the spacing of a continued value inside the download line itself, and the literals of an expression in a latest/download URL are each part of the identity (REQ-SUP-001-AC2)"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys, json
+s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
+coll = lambda path, b, a: bool(inv.moved(inv.inventory({path: b}), inv.inventory({path: a})))
+dl = "curl https://github.com/o/r/releases/download/v1.2.3/${A}.tgz\n"
+for p in ("bin/x.sh", "bin/install-scanner.sh"):
+    assert coll(p, "A=x\nA=y\n" + dl + "A=z\n", "A=y\nA=x\n" + dl + "A=z\n"), p
+    cont = lambda n: 'curl "https://github.com/o/r/releases/download/v1.2.3/${A:-$(printf "%s" "x\\\n' + " " * n + '.tgz" | tr " " "_")}"\n'
+    assert coll(p, cont(2), cont(3)), p
+wf = lambda run: "on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: " + json.dumps(run) + "\n"
+latest = "curl https://github.com/o/r/releases/latest/download/${{ contains('a  b', 'a b') }}.tgz"
+assert coll(".github/workflows/ci.yml", wf(latest), wf(latest.replace("'a  b'", "'a b'")))
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
