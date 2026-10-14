@@ -2876,7 +2876,7 @@ kept, ruled = ac.split_base_inputs(moved, {"build/${var}/archive-keys.sha256"})
 assert len(kept) == 1 and not ruled
 PY
 
-CASE="two release downloads whose asset names differ only in the shell variable (or expression) they hold are two items, a changed variable is a moved item, and a concrete asset keeps its key (REQ-SUP-001-AC19: a row of one never rules the other)"
+CASE="two release downloads whose asset names differ only in the shell variable (or expression) they hold are two items, a changed variable is a moved item, and a concrete asset keeps its key (REQ-SUP-001-AC2: the check names every version that moved, a moved asset behind a variable included)"
 check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(spec); spec.loader.exec_module(inv)
