@@ -66,6 +66,8 @@ def suite_names(floors):
 def cmd_all(floors, root, count_only):
     if not os.path.isfile(floors) or os.path.getsize(floors) == 0:
         die("the floors file %s is empty or missing" % floors)
+    if os.path.islink(root) or not os.path.isdir(root):   # ROOT is a real directory, as `find ROOT` (physical) required: a link would lead outside it
+        die("the suite root %s is not a real directory (a symlink or missing)" % root)
     bad = 0
     for s in suite_names(floors):
         found = []

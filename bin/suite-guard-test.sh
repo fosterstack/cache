@@ -89,6 +89,9 @@ expect 1 "all: a suite named in the floors file that is not there fails" "gone-t
 # a symlink named for a suite is not a suite (the old shell runner selected regular files only): the only match is a link -> zero files -> fails
 mkdir -p "$work/lnk/bin"; ln -s "$work/s/good.sh" "$work/lnk/bin/a-test.sh"; printf '{"a-test.sh": 50}\n' > "$work/lnk/floors.json"
 expect 1 "all: a symlink named for a suite is not found as a suite" "0 files" -- all --count-only "$work/lnk/floors.json" "$work/lnk"
+# ROOT itself a symlink to a tree that holds the suite: not walked (find ROOT, physical, did not follow it)
+mkdir -p "$work/lnkroot-real/bin"; cp "$work/s/good.sh" "$work/lnkroot-real/bin/a-test.sh"; ln -s "$work/lnkroot-real" "$work/lnkroot"; printf '{"a-test.sh": 50}\n' > "$work/lnkroot-floors.json"
+expect 1 "all: a ROOT that is a symlink is refused" "not a real directory" -- all --count-only "$work/lnkroot-floors.json" "$work/lnkroot"
 
 # round 1 F7 (Codex B4): `all` runs each suite in an `||` context, where `set -e` is off; a suite below its floor must still fail the run
 printf '{"a-test.sh": 70}\n' > "$work/all/floors3.json"
@@ -128,7 +131,7 @@ expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- al
 # round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.py all), not only the floors file against the base
 if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.py all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
-EXPECT=54
+EXPECT=55
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
