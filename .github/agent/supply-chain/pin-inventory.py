@@ -230,7 +230,10 @@ def _uses(u, node, out, labels):
     if u.startswith("docker://"):
         out.append(_image_item(u[len("docker://"):]))
     elif u.startswith("./"):
-        out.append(Item("action", _local_name(raw), "(local)"))   # the RAW spelling is the identity: a padded reference is never the exact one (REQ-SUP-001-AC19). A local action outside the globs: its content is not read, so a new one cannot pass
+        it = Item("action", _local_name(raw), "(local)")
+        if isinstance(node.get("with"), dict) and node["with"]:
+            it.step = "with:" + hashlib.sha256(json.dumps(node["with"], sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()   # what a step hands a local action is part of the call: a changed value is a moved item
+        out.append(it)   # the RAW spelling is the identity: a padded reference is never the exact one (REQ-SUP-001-AC19). A local action outside the globs: its content is not read, so a new one cannot pass
     elif u and "${{" not in u:
         ref_path, _, ref = u.partition("@")
         repo = "/".join(ref_path.split("/")[:2])
@@ -316,6 +319,53 @@ _JOB_SUMS = [[]]
 _NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=~!]")
 
 
+_CONT = re.compile(r"(\\\n\s*)")
+_ASSIGN_LINE = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def _script_lines(text):
+    """(joined, raw) per logical line of a script: joined is the line with each backslash continuation folded to one space (what the readers match on),
+    raw keeps the continuation exactly as written, so a change of spacing inside a continued value is a change."""
+    parts = _CONT.split(text)
+    joined, raw, cj, cr = [], [], "", ""
+    for i, part in enumerate(parts):
+        if i % 2:
+            cj += " "; cr += part
+            continue
+        segs = part.split("\n")
+        for j, seg in enumerate(segs):
+            cj += seg; cr += seg
+            if j < len(segs) - 1:
+                joined.append(cj); raw.append(cr); cj = cr = ""
+    joined.append(cj); raw.append(cr)
+    return joined, raw
+
+
+def _assign_context(joined, raw):
+    """For each logical line: every assignment, in file order and as written, to the variables the line reads, and (transitively) to the variables those
+    assignments read. A later assignment, an indirect one (A=$B) and spacing inside a continued value are all part of a download's identity."""
+    byname = {}
+    for jl, rl in zip(joined, raw):
+        am = _ASSIGN_LINE.match(jl)
+        if am:
+            byname.setdefault(am.group(1), []).append((jl, rl))
+    refs = lambda t: set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", t))
+    out = []
+    for jl in joined:
+        seen, todo, rows = set(), sorted(refs(jl)), []
+        while todo:
+            v = todo.pop()
+            if v in seen or v not in byname:
+                seen.add(v)
+                continue
+            seen.add(v)
+            for j2, r2 in byname[v]:
+                rows.append(r2)
+                todo.extend(sorted(refs(j2) - seen))
+        out.append(sorted(set(rows)))
+    return out
+
+
 MAX_ITEMS_PER_STEP = 500
 MAX_ITEMS_PER_FILE = 5000
 MAX_LINES_PER_FILE = 20000
@@ -328,12 +378,16 @@ def _step(node, out, labels):
         raise RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
     run = node.get("run")
     if isinstance(run, str):
-        ctx = run + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]   # the step's RAW text: whitespace inside an expression literal selects a different asset
+        legacy = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
+        legacy_tag = "step:" + hashlib.sha256(legacy.encode("utf-8", "replace")).hexdigest()       # the identity every other placeholder item has always had: its key must not move
+        ctx = run + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign"))   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
         k = 0
         for it in out[n0:]:
-            if (_NONPIN.search(it.version or "") or "${" in (it.path or "")) and not it.step:
+            if "${" in (it.path or "") and not it.step:
                 k += 1
-                it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart     # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
+                it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart
+            elif _NONPIN.search(it.version or "") and not it.step:
+                it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
@@ -371,7 +425,9 @@ def _step_items(node, out, labels):
                 out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest(), "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
             sums = sorted(set(re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", run)) | set(_JOB_SUMS[0]))   # checksums, not image digests
-            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4) + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest() if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
+            tail = re.match(r"[^\s;|&]*", run[m.end(4):]).group(0)   # the asset name goes on past a quote: "tool-"${A}".tgz is a name behind a variable too
+            asset = m.group(4) + (tail if ("$" in tail or "`" in tail) else "")
+            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), asset + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest() if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for tail in _pip_tails(run):
             for p in _PIP_PIN.finditer(tail):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
@@ -457,16 +513,11 @@ def inventory(files):
             found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
             found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
-            sjoined = re.sub(r"\\\n\s*", " ", text).split("\n")
-            sassigns = {}
-            for ln in sjoined:
-                am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
-                if am:
-                    sassigns[am.group(1)] = am.group(2)
-            for ln, lid in zip(sjoined, _line_ids(text)):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it references
+            sjoined, sraw = _script_lines(text)
+            sctx = _assign_context(sjoined, sraw)
+            for ln, lid, actx in zip(sjoined, _line_ids(text), sctx):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
                 before = len(found)
-                srefs = {v: sassigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in sassigns}
-                _step({"run": ln, "env": srefs} if srefs else {"run": ln}, found, {})
+                _step({"run": ln, "_assign": actx} if actx else {"run": ln}, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
@@ -483,10 +534,15 @@ def inventory(files):
                 am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
                 if am:
                     assigns[am.group(1)] = am.group(2)
-            for ln, lid in zip(joined, _line_ids(text)):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
+            _j2, _raw2 = _script_lines(text)
+            gctx = _assign_context(_j2, _raw2) if len(_j2) == len(joined) else [[ln for ln in joined]] * len(joined)   # a line count that differs is read whole: fail closed
+            for ln, lid, actx in zip(joined, _line_ids(text), gctx):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
                 refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
                 before = len(found)
-                _step({"run": ln, "env": refs} if refs else {"run": ln}, found, {})
+                node = {"run": ln, "env": refs} if refs else {"run": ln}
+                if actx:
+                    node["_assign"] = actx
+                _step(node, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
                 if len(found) > MAX_ITEMS_PER_FILE:
