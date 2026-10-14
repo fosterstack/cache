@@ -749,6 +749,29 @@ kr="$fx/keyring/wolfi-signing.rsa.pub"
 
 run_s() { : >"$CALLS"; PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
 run_s2() { : >"$CALLS"; PATH="$stubs2:$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }   # adds a git stub: used for the refresh job only
+
+# ---------- restricted search path (REQ-BUILDAPK-001-AC9; reusable by any script test that must prove "no bare tool name") ---------------
+# restricted_path_dir DEST NAME...: DEST becomes a directory holding ONLY symlinks to the named programs, each resolved with `command -v`
+# on the current search path (so the same call works on a Mac and on a Linux runner). A script run with PATH=DEST can reach exactly those
+# programs by bare name and nothing else: a tool that is not listed is "not found", whatever way the script spells its name.
+restricted_path_dir() {
+  local d=$1 n p; shift; rm -rf "$d"; mkdir -p "$d" || return 1
+  for n in "$@"; do
+    p=$(command -v "$n" 2>/dev/null) || p=
+    case $p in /*) [ -x "$p" ] || p=;; *) p=;; esac
+    [ -n "$p" ] || { echo "restricted_path_dir: no program $n on this machine" >&2; return 1; }
+    ln -s "$p" "$d/$n" || return 1
+  done
+}
+# restricted_stub_wrapper OUT REAL PATH [PATH-WHEN-FIRST-ARGUMENT-IS-env]: a stub (REAL) that needs ordinary tools of its own runs through a
+# small wrapper that gives it PATH; the script under test keeps its restricted path. With the fourth argument the stub gets that path when its
+# first argument is the bare word env (what a copy that names env by bare name passes to sudo), so the bare name is resolved there too.
+restricted_stub_wrapper() {
+  { printf '#!/bin/bash\n'
+    if [ -n "${4:-}" ]; then printf 'case "${1:-}" in env) PATH=%q;; *) PATH=%q;; esac\n' "$4" "$3"; else printf 'PATH=%q\n' "$3"; fi
+    printf 'export PATH\nexec %q "$@"\n' "$2"
+  } >"$1"; chmod +x "$1"
+}
 RUNNER=run_s
 rc() { cat "$work/rc"; }
 toolrun() { grep -Eq '^(melange (build|sign)|apko (build|lock))' "$CALLS"; }
