@@ -198,6 +198,7 @@ job = d.get("jobs", {}).get("vendor")
 if not job: fail("ci.yml has no job named vendor")
 if job.get("name") != "vendor": fail("the job's check name is " + str(job.get("name")) + ", not vendor")
 if d.get("defaults"): fail("a workflow-level defaults block (a shell default can skip every step)")
+if d.get("env"): fail("a workflow-level env block (SHELLOPTS, BASH_ENV and the like change what a step runs)")
 ro = str(job.get("runs-on", ""))
 if not ro.startswith("ubuntu-") or "self-hosted" in ro: fail("runs-on " + ro)
 if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
@@ -253,7 +254,7 @@ f=bin/vendor-check.sh
 t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1 '$f' | grep -q '^#!' && git ls-files -s '$f' | grep -q '^100755'"
 t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
 t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
-cmdword='(^|[;&|({!]|(^|[[:space:]])(then|do|else|if|elif|while|until))[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]$`]*[[:space:]]+)*.?[A-Za-z0-9_./-]*(\$\(|`|\$\{?[A-Za-z_])'
+cmdword='(^|[;&|({!]|(^|[[:space:]])(then|do|else|if|elif|while|until))[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|[^[:space:]$`]*)[[:space:]]+)*[^[:space:]$`;|&()<>=]*(\$\(|`|\$\{?[A-Za-z_])'
 for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off "g$(printf o)" mod verify' "GOAUTH=off 'g\$(printf o)' mod verify" 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'GOAUTH=off g"$(printf o)" mod verify' 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'p"$cmd" arg'; do
   t AC11 "the substitution pattern flags: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
 done

@@ -58,8 +58,16 @@ fi
 [ -f "$src/go.mod" ] && [ -f "$src/go.sum" ] || die "$src holds no go.mod and go.sum next to vendor/"
 [ ! -L "$src/go.mod" ] && [ ! -L "$src/go.sum" ] || die "go.mod or go.sum is a link: a repair would land in its target and hide from the comparison"
 command -v go >/dev/null 2>&1 || die "go toolchain not found: the vendored tree cannot be regenerated" 1
+effflags=$(go env GOFLAGS 2>/dev/null) || die "go env GOFLAGS cannot be read" 1
+case $effflags in
+  ""|-mod=mod) ;;
+  *) die "the effective GOFLAGS (environment or go env file) is not empty or -mod=mod: a flag such as -modfile, -overlay or -o would change what is judged or where it is written" ;;
+esac
 command -v find diff cmp tar mktemp rm head >/dev/null 2>&1 || die "a required tool (find, diff, cmp, tar, mktemp, rm, head) is not found" 1
 
+emptyd=$(find "$src/vendor" -type d -empty -print -quit)
+[ $? -eq 0 ] || die "vendor/ could not be listed in full" 1
+[ -z "$emptyd" ] || die "vendor/ holds an empty directory: $emptyd" 1
 odd=$(find "$src/vendor" ! -type f ! -type d -print -quit)
 [ $? -eq 0 ] || die "vendor/ could not be listed in full" 1
 [ -z "$odd" ] || die "vendor/ holds a link or a special file: $odd" 1
@@ -78,6 +86,9 @@ tree="$scratch/tree"; mkdir "$tree" || die "no scratch tree" 1
 cmp -s "$src/go.mod" "$tree/go.mod" || die "go mod vendor changed go.mod: the committed go.mod is not what the vendored tree was made from" 1
 cmp -s "$src/go.sum" "$tree/go.sum" || die "go mod vendor changed go.sum: the committed go.sum is not what the vendored tree was made from" 1
 
+regenempty=$(find "$tree/vendor" -type d -empty -print -quit)
+[ $? -eq 0 ] || die "the regenerated vendor/ could not be listed in full" 1
+[ -z "$regenempty" ] || die "the regenerated vendor/ holds an empty directory: $regenempty" 1
 regenodd=$(find "$tree/vendor" -type f ! -perm 644 -print -quit)
 [ $? -eq 0 ] || die "the regenerated vendor/ could not be listed in full" 1
 [ -z "$regenodd" ] || die "the regenerated vendor/ holds a file whose mode is not 100644 (mode): $regenodd" 1
