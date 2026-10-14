@@ -94,8 +94,10 @@ mkdir -p "$work/lnkroot-real/bin"; cp "$work/s/good.sh" "$work/lnkroot-real/bin/
 expect 1 "all: a ROOT that is a symlink is refused" "not a real directory" -- all --count-only "$work/lnkroot-floors.json" "$work/lnkroot"
 # a floors key is a plain file name: a glob character, a separator or a line break is refused before anything runs
 mkdir -p "$work/gl/bin"; cp "$work/s/good.sh" "$work/gl/bin/a1-test.sh"
-printf '{"a[1]-test.sh": 50}\n' > "$work/gl/floors.json"
+printf '{"a1-test.sh": 50, "a[1]-test.sh": 50}\n' > "$work/gl/floors.json"
 expect 1 "all: a floors key with glob characters is refused" "plain file name" -- all --count-only "$work/gl/floors.json" "$work/gl"
+# and nothing ran first: the valid suite named before the bad key is not executed (the whole floors file is refused up front)
+if python3 -I "$runner" all --count-only "$work/gl/floors.json" "$work/gl" 2>&1 < /dev/null | grep -q 'count'; then bad "all: a valid suite ran before a bad floors key was refused"; else ok "all: no suite runs when a floors key is not a plain file name"; fi
 printf '{"a?-test.sh": 50}\n' > "$work/gl/floors2.json"
 expect 1 "all: a floors key with a ? is refused" "plain file name" -- all --count-only "$work/gl/floors2.json" "$work/gl"
 # ROOT inside a .git directory: nothing below it is a suite (the shell runner's -not -path '*/.git/*')
@@ -150,7 +152,7 @@ expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- al
 # round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.py all), not only the floors file against the base
 if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.py all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
-EXPECT=64
+EXPECT=65
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
