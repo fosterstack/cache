@@ -440,6 +440,7 @@ def main(argv=None):
     ap.add_argument("--json")
     ap.add_argument("--now")
     ap.add_argument("--min-days", type=float, default=MIN_DAYS)
+    ap.add_argument("--base-inputs", help="the base-inputs list (default: .github/policy/base-inputs.json beside this script's own checkout, the base branch in CI)")
     ap.add_argument("--exceptions", help="the rulings file (default: the one beside this script's own checkout, the base branch in CI)")
     a = ap.parse_args(argv)
     try:
@@ -549,6 +550,35 @@ def load_ruled_text(path, required=False):
     return out
 
 
+DEFAULT_BASE_INPUTS = os.path.normpath(os.path.join(HERE, "..", "..", "policy", "base-inputs.json"))
+
+
+def load_base_inputs(path, required=False):
+    """REQ-SUP-001-AC21: the set of paths .github/policy/base-inputs.json lists (read from the base branch's copy beside this script, never the pull request's tree).
+    A missing default file lists nothing; anything malformed raises RuntimeError (exit 2): never 'nothing exempted' and never 'everything'."""
+    if not os.path.exists(path):
+        if required:
+            raise RuntimeError(f"the base-inputs list {path} does not exist")
+        return set()
+    try:
+        with open(path) as f:
+            d = json.load(f, object_pairs_hook=_no_duplicate_keys, parse_constant=_no_constant)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"the base-inputs list {path} is unreadable: {e}")
+    lst = d.get("base_inputs") if isinstance(d, dict) else None
+    if not isinstance(lst, list) or not all(isinstance(x, str) and x for x in lst):
+        raise RuntimeError(f"{path}: base_inputs is not a list of non-empty paths")
+    return set(lst)
+
+
+def split_base_inputs(moved, paths):
+    """A (file) item whose path the list names is no item: its content is the repository's own base record. Exact path equality, nothing else."""
+    keep, ruled = [], []
+    for m in moved:
+        (ruled if (m.kind == "tool" and m.version == "(file)" and m.name.startswith("file:") and m.name[5:] in paths) else keep).append(m)
+    return keep, ruled
+
+
 UNPINNED_FORM = "an unpinned package install"
 LOCAL_CALL_FORM = "a local reusable workflow call"
 
@@ -618,6 +648,7 @@ def _run(a, moved, fx, now):
         else:
             added.append(k)
     moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20
+    moved, base_files = split_base_inputs(moved, load_base_inputs(a.base_inputs or DEFAULT_BASE_INPUTS, required=bool(a.base_inputs)))   # REQ-SUP-001-AC21
     moved, ruled_calls = split_ruled_local_calls(moved, rulings)                                                       # REQ-SUP-001-AC19: judged by the ruled row of ITS OWN line, never by another line's
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
@@ -631,6 +662,9 @@ def _run(a, moved, fx, now):
         rows.append({"item": f"unmeasured:{path}", "label": "", "ok": False, "proof": None,
                      "reason": f"{what} was added to {path} ({line[:100]}): this check cannot measure it, so a pull request that adds one is refused (use a pinned form it can measure)"})
         print(f"  FAIL unmeasured:{path}: {what} added: not measurable, refused")
+    for it in base_files:
+        rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"base input: {it.name[5:]} is listed in .github/policy/base-inputs.json"})
+        print(f"  ok   {it.key}: base input (REQ-SUP-001-AC21)")
     for it, ruling in ruled_calls:
         rows.append({"item": it.key, "label": "", "ok": True, "proof": None, "reason": f"ruled text: a local reusable workflow call in {it.src[0]}: {ruling[:200]}"})
         print(f"  ok   {it.key}: ruled text (REQ-SUP-001-AC19): {ruling[:200]}")

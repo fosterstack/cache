@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20, REQ-SUP-001-AC21
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -2771,6 +2771,63 @@ for k in keys(c("7158")) | keys(w("v205063")):
     tag = k.split("#", 1)[1] if "#" in k else ""
     if tag.startswith(("step:", "default:")):
         assert len(tag.split(":")[-1]) == 64, k
+PY
+
+# --- REQ-SUP-001-AC21: a file named by .github/policy/base-inputs.json is no item (orchestrator Oct 14: the plainest closed form, no pattern on names) ---------------
+# The list is read from the base branch's copy beside the script (CI: trusted/), or --base-inputs FILE; a file listed there is the repository's own base record
+# (its content change is the chain's base-input-changed signal). A missing list exempts nothing; a malformed one stops the check (exit 2).
+printf '%s\n' "sha256:aaaa  x" >"$work/bi-keys.sha256"
+newcase bi "
+import pathlib
+p = pathlib.Path('build/locks'); p.mkdir(parents=True, exist_ok=True)
+(p / 'archive-keys.sha256').write_text('wolfi-signing.rsa.pub sha256:' + 'a' * 64 + '\\n')
+(p / 'archive-index.sha256').write_text('x86_64 sha256:' + 'b' * 64 + '\\n')"
+bick() { # LISTFILE-or-empty [extra] -> rc, $work/bi.out
+  local lf=$1; shift; rc=0
+  if [ -n "$lf" ]; then python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --base-inputs "$lf" "$@" >"$work/bi.out" 2>&1 || rc=$?
+  else python3 "$chk" --root "$work/bi" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" "$@" >"$work/bi.out" 2>&1 || rc=$?; fi
+}
+printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", "build/locks/archive-index.sha256"]}' >"$work/bi-ok.json"
+printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-one.json"
+printf '%s' '{"base_inputs": ["build/locks/other.sha256", "./build/locks/archive-keys.sha256", "build/locks/../locks/archive-keys.sha256"]}' >"$work/bi-near.json"
+printf '%s' '{"base_inputs": "build/locks/archive-keys.sha256"}' >"$work/bi-str.json"
+printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", 7]}' >"$work/bi-int.json"
+printf '%s' '{"base_inputs": [], "base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-dup.json"
+printf '%s' 'not json' >"$work/bi-bad.json"
+bick ""
+CASE="AC21: with no list, two new checksum record files are items that cannot pass (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL tool:file:' "$work/bi.out")" -eq 2
+bick "$work/bi-ok.json"
+CASE="AC21: a list naming both files exempts both: exit 0, each reported as a base input"
+check test "$rc" -eq 0; check test "$(grep -c 'base input' "$work/bi.out")" -eq 2
+bick "$work/bi-one.json"
+CASE="AC21: a list naming one exempts exactly that one: the other still fails (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL tool:file:' "$work/bi.out")" -eq 1; check grep -q 'archive-index' "$work/bi.out"
+bick "$work/bi-near.json"
+CASE="AC21: near spellings (another name, ./ prefix, .. inside) exempt nothing: exact path equality only (exit 1)"
+check test "$rc" -eq 1; check test "$(grep -c 'FAIL tool:file:' "$work/bi.out")" -eq 2
+for f in bi-str bi-int bi-dup bi-bad; do
+  bick "$work/$f.json"
+  CASE="AC21: a malformed list ($f) stops the check, never 'nothing exempted' and never 'everything' (exit 2)"
+  check test "$rc" -eq 2
+done
+# a pull request's own list is never read: the default is the copy beside the script, not the tree under --root
+rm -rf "$work/bi2"; cp -R "$work/bi" "$work/bi2"
+( cd "$work/bi2" && mkdir -p .github/policy && cp "$work/bi-ok.json" .github/policy/base-inputs.json && git add -A && git -c user.name=t -c user.email=t@x commit -qm list )
+rc=0; python3 "$chk" --root "$work/bi2" --base HEAD~2 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/bi2.out" 2>&1 || rc=$?
+CASE="AC21: a list the pull request itself adds under --root exempts nothing (the default list is the base branch's copy beside the script): exit 1"
+check test "$rc" -eq 1
+CASE="AC21: only a checksum or version FILE item can be exempted: a download of the same path text from a workflow stays an item"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+class I:  # a tool item that is NOT a (file) item although its name mentions the path
+    kind = "tool"; name = "o/r/build/locks/archive-keys.sha256"; version = "v1.0.0"; src = None; key = "tool:o/r/build/locks/archive-keys.sha256@v1.0.0"
+class F:
+    kind = "tool"; name = "file:build/locks/archive-keys.sha256"; version = "(file)"; src = None
+    key = "tool:file:build/locks/archive-keys.sha256@(file)#content:x"
+kept, ruled = ac.split_base_inputs([I(), F()], {"build/locks/archive-keys.sha256"})
+assert [m.name for m in kept] == [I.name] and [m.name for m in ruled] == [F.name], (kept, ruled)
 PY
 
 echo "pin-age-check: $pass passed, $failn failed"
