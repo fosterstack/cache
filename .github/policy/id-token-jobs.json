@@ -19,12 +19,7 @@
   {
    "workflow": "main-candidate-rescan.yml",
    "job": "build",
-   "reason": "calls stage-build.yml (legacy, frozen), which holds the token for its own steps"
-  },
-  {
-   "workflow": "main-candidate-rescan.yml",
-   "job": "assemble",
-   "reason": "calls stage-image.yml (legacy, frozen), which holds the token for its own steps"
+   "reason": "calls stage-build.yml in snapshot mode; the caller's grants are a static ceiling (REQ-CHAIN-004-AC14)"
   },
   {
    "workflow": "main-candidate-rescan.yml",
@@ -43,28 +38,13 @@
   },
   {
    "workflow": "release.yml",
-   "job": "admission",
-   "reason": "calls stage-admission.yml (legacy, frozen)"
-  },
-  {
-   "workflow": "release.yml",
    "job": "build",
-   "reason": "calls stage-build.yml (legacy, frozen)"
+   "reason": "calls stage-build.yml: Build, whose Witness steps mint the keyless signing identity (REQ-CHAIN-004)"
   },
   {
    "workflow": "release.yml",
    "job": "sign",
    "reason": "calls stage-sign.yml: Sign, the one provenance signer (REQ-CHAIN-001)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "image",
-   "reason": "calls stage-image.yml (legacy, frozen)"
-  },
-  {
-   "workflow": "release.yml",
-   "job": "reproducibility",
-   "reason": "calls stage-reproducibility.yml (legacy, frozen)"
   },
   {
    "workflow": "release.yml",
@@ -107,24 +87,24 @@
    "reason": "calls stage-promote.yml (legacy, frozen)"
   },
   {
+   "workflow": "release.yml",
+   "job": "rebuild",
+   "reason": "calls stage-reproducibility.yml: Rebuild, whose Witness steps mint the keyless signing identity (REQ-CHAIN-005)"
+  },
+  {
    "workflow": "scan.yml",
    "job": "build",
-   "reason": "calls stage-build.yml (legacy, frozen) for the PR scan"
-  },
-  {
-   "workflow": "scan.yml",
-   "job": "assemble",
-   "reason": "calls stage-image.yml (legacy, frozen) for the PR scan"
-  },
-  {
-   "workflow": "scan.yml",
-   "job": "assemble-b",
-   "reason": "calls stage-image.yml (legacy, frozen) for the second image of the PR scan"
+   "reason": "calls stage-build.yml in snapshot mode for the PR scan; the caller's grants are a static ceiling (REQ-CHAIN-004-AC14)"
   },
   {
    "workflow": "scan.yml",
    "job": "scanner",
    "reason": "aws-actions/configure-aws-credentials: OIDC federation to the AWS Inspector role"
+  },
+  {
+   "workflow": "scan.yml",
+   "job": "rebuild",
+   "reason": "calls stage-reproducibility.yml in snapshot mode: the PR proof of reproducibility (REQ-CHAIN-005-AC7)"
   },
   {
    "workflow": "scorecard.yml",
@@ -137,24 +117,19 @@
    "reason": "legacy stage (frozen): actions/attest of the acceptance predicate; rewritten in PRs 2-4"
   },
   {
-   "workflow": "stage-admission.yml",
-   "job": "admit",
-   "reason": "legacy stage (frozen): actions/attest of source admission and the gitsign tag check; rewritten in PRs 2-4"
-  },
-  {
    "workflow": "stage-authorize.yml",
    "job": "authorize",
    "reason": "legacy stage (frozen): actions/attest of the release authorization; rewritten in PRs 2-4"
   },
   {
    "workflow": "stage-build.yml",
-   "job": "build",
-   "reason": "legacy stage (frozen): goreleaser, actions/attest and attest-build-provenance; rewritten in PR 2"
+   "job": "apk",
+   "reason": "Build, job apk: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-004); signs no provenance"
   },
   {
-   "workflow": "stage-image.yml",
+   "workflow": "stage-build.yml",
    "job": "assemble",
-   "reason": "legacy stage (frozen): image build, actions/attest and attest-build-provenance; rewritten in PRs 2-4"
+   "reason": "Build, job assemble: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-004); signs no provenance"
   },
   {
    "workflow": "stage-promote.yml",
@@ -163,8 +138,13 @@
   },
   {
    "workflow": "stage-reproducibility.yml",
-   "job": "reproduce",
-   "reason": "legacy stage (frozen): actions/attest of the rebuild; rewritten in PRs 2-4"
+   "job": "apk",
+   "reason": "Rebuild, job apk: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-005); signs no provenance"
+  },
+  {
+   "workflow": "stage-reproducibility.yml",
+   "job": "assemble",
+   "reason": "Rebuild, job assemble: the Witness wrapper fetches the identity token for the keyless record (REQ-CHAIN-005); signs no provenance"
   },
   {
    "workflow": "stage-sign.yml",

@@ -63,6 +63,7 @@ _common = load_sibling("chain_common")
 Refuse, b64d, b64e, load_json, parse_now, refuse, ssl, strict_json = (_common.Refuse, _common.b64d, _common.b64e, _common.load_json,
                                                                       _common.parse_now, _common.refuse, _common.ssl, _common.strict_json)
 chain_hostile = load_sibling("chain_hostile")
+chain_items = load_sibling("chain_items")
 
 PROV = "https://slsa.dev/provenance/v1"
 COLL = "https://witness.testifysec.com/attestation-collection/v0.1"
@@ -210,6 +211,11 @@ def first_cert_der(pem_text):
     return base64.b64decode(re.sub(r"-----(BEGIN|END) CERTIFICATE-----|\s", "", blocks[0]), validate=True), blocks
 
 
+# the ONE tag grammar of the chain (advisor 0383): vX.Y.Z or the release candidate vX.Y.Z-rcN, nothing else (no -RC1, -rc, -rc1x, -rc.1 or an rc in the middle);
+# the policy and the records carry the FULL tag string
+TAG_GRAMMAR = r"v[0-9]+\.[0-9]+\.[0-9]+(?:-rc[0-9]+)?"
+
+
 def policy_make(a):
     tpl = load_json(a.template, "template")
     d = os.path.dirname(os.path.abspath(a.template))
@@ -217,19 +223,21 @@ def policy_make(a):
     fulcio_p = a.fulcio_chain or os.path.join(d, "fulcio-chain.pem")
     tsa_p = a.tsa_chain or os.path.join(d, "tsa-chain.pem")
     rekor_p = a.rekor_key or os.path.join(d, "rekor.pub")
+    if re.match(r"(refs/tags/)?v0\.0\.0($|-)", a.tag or a.ref or ""):
+        refuse("policy", "snapshot version")      # no policy, hence no Sign or Release, can exist for a snapshot version (REQ-CHAIN-004-AC15)
     if a.tag:
-        if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", a.tag):
-            refuse("policy", "tag %r is not vX.Y.Z" % a.tag)
+        if not re.fullmatch(TAG_GRAMMAR, a.tag):
+            refuse("policy", "tag %r is not vX.Y.Z or vX.Y.Z-rcN" % a.tag)
         ref, tag, dry = "refs/tags/" + a.tag, a.tag, False
     else:
         ref = a.ref or ""
-        m = re.fullmatch(r"refs/tags/(v[0-9]+\.[0-9]+\.[0-9]+)", ref)
+        m = re.fullmatch(r"refs/tags/(%s)" % TAG_GRAMMAR, ref)
         if m:
             tag, dry = m.group(1), False
         elif ref.startswith("refs/heads/") and len(ref) > len("refs/heads/"):
             tag, dry = "", True
         else:
-            refuse("policy", "ref %r is neither refs/tags/vX.Y.Z nor a branch (tag)" % ref)
+            refuse("policy", "ref %r is neither refs/tags/vX.Y.Z[-rcN] nor a branch (tag)" % ref)
     trust = load_json(trust_p, "trust file")
     try:
         with open(fulcio_p) as f1, open(tsa_p) as f2, open(rekor_p) as f3:
@@ -309,6 +317,7 @@ def read_record(stage, path):
     ptype = dsse["payloadType"]
     if len(dsse["signatures"]) != 1:
         refuse(stage, "record must carry exactly one signature, it has %d" % len(dsse["signatures"]))
+    chain_items.check_record_names(stage, payload)       # a snapshot record or version, a name that is not the stage's: refused before any certificate
     return dsse, payload, ptype
 
 
@@ -645,6 +654,8 @@ def verify_record(pol, stage, rec_path, rekor_path, now, tmp):
     stamped = check_timestamp(stage, pol, entry, sig, leaf, now, tmp, expected_stamp_kind(ptype, payload))
     chain_valid_at(stage, chain, stamped)
     stmt, needs_rekor = check_record_type(stage, pol, ptype, payload)
+    if isinstance(stmt, dict) and stmt.get("predicateType") == COLL:
+        chain_items.check_record_env(stage, dsse, payload)      # REQ-CHAIN-004-AC8: no token variable or value in a verified Witness collection
     if needs_rekor:
         check_rekor(pol, stage, rekor_path, payload, sig, leaf_der, leaf)
     return stmt, payload, dsse
@@ -837,6 +848,7 @@ STARTS_FROM = {"rebuild": ("build",), "check": ("build",), "sign": ("build",), "
 def cmd_stage_start(a):
     if a.previous not in STARTS_FROM.get(a.stage, ()):
         refuse(a.previous, "stage %s does not start from the %s stage's record (stage)" % (a.stage, a.previous))
+    chain_items.check_digest_names(a.previous, a.digests)
     pol = load_json(a.policy, "policy")
     now = parse_now(a.now)
     if pol.get("dry_run"):
@@ -859,12 +871,12 @@ def cmd_stage_start(a):
 def make_policy_from_template(a, tpl_path):
     ref = os.environ.get("GITHUB_REF", "")
     ev = os.environ.get("GITHUB_EVENT_NAME", "")
-    is_tag = re.fullmatch(r"refs/tags/v[0-9]+\.[0-9]+\.[0-9]+", ref)
+    is_tag = re.fullmatch(r"refs/tags/%s" % TAG_GRAMMAR, ref)
     is_branch = ref.startswith("refs/heads/") and len(ref) > len("refs/heads/")
     if is_tag and ev == "workflow_dispatch":
         refuse("sign", "a workflow_dispatch on the tag %s is not a production run: production tags come from a push (tag)" % ref)
     if not (is_tag and ev == "push") and not (is_branch and ev == "workflow_dispatch"):
-        refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z nor a workflow_dispatch on a branch (tag)" % (ref, ev))
+        refuse("sign", "GITHUB_REF %r (event %r) is neither a pushed refs/tags/vX.Y.Z[-rcN] nor a workflow_dispatch on a branch (tag)" % (ref, ev))
     out = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
     out.close()
     ns = argparse.Namespace(template=tpl_path, tag=None, ref=ref, trust=a.trust, fulcio_chain=a.fulcio_chain, tsa_chain=a.tsa_chain, rekor_key=a.rekor_key, out=out.name)
@@ -890,6 +902,7 @@ def check_build_record(a):
             d_bytes = f.read()
     except OSError:
         refuse("sign", "digest file is missing or unreadable (format)")
+    chain_items.check_digest_bytes("build", d_bytes)       # a snapshot version in the list: refused before any certificate, from the bytes read once (REQ-CHAIN-004-AC15)
     # Build's record first, as stage build, under the policy's build identity (a dry-run policy is allowed for this)
     pol_b = dict(pol)
     pol_b.pop("dry_run", None)
@@ -1303,6 +1316,7 @@ def build_parser():
     hm.add_argument("--sign-record")
     hv = sub.add_parser("hostile-verdict")
     hv.add_argument("results")
+    chain_items.add_parsers(sub)
     return p
 
 
@@ -1321,6 +1335,8 @@ def main(argv):
             cmd_stage_start(a)
         elif a.cmd == "actions":
             cmd_actions(a)
+        elif a.cmd in chain_items.COMMANDS:
+            chain_items.COMMANDS[a.cmd](a)
         elif a.cmd == "hostile-row":
             chain_hostile.cmd_hostile_row(a)
         elif a.cmd == "hostile-collect":

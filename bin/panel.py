@@ -32,8 +32,8 @@ _gate_spec = importlib.util.spec_from_file_location(
 _gate = importlib.util.module_from_spec(_gate_spec)
 _gate_spec.loader.exec_module(_gate)
 
-VARIANTS = ("production", "debug", "fips")
-# rule 1, fixed here as in the workflow: Grype, Scout and Inspector on all six images; Google on linux/amd64 only
+VARIANTS = ("production", "fips")
+# rule 1, fixed here as in the workflow: Grype, Scout and Inspector on all four images (production and fips); Google on linux/amd64 only
 EXPECTED = {
     "grype": ["%s-%s" % (v, a) for v in VARIANTS for a in ("amd64", "arm64")],
     "scout": ["%s-%s" % (v, a) for v in VARIANTS for a in ("amd64", "arm64")],

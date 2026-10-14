@@ -18,28 +18,12 @@
    "sha256": "6fc4b5e514cb054c20f4cc56eeebf123fdda54ec9cc985ffef1922c72e8be4a8"
   },
   {
-   "path": ".github/workflows/stage-admission.yml",
-   "sha256": "d376ec4ebaae22a932d02ae4512abc5563d69d29462436e75ebe7d454a2c91a2"
-  },
-  {
    "path": ".github/workflows/stage-authorize.yml",
    "sha256": "2a0b7c7b6260a372d1d4f31c9de5fb78039b899aa9c4351065f658293523cfdf"
   },
   {
-   "path": ".github/workflows/stage-build.yml",
-   "sha256": "34c39aba901c2e7b6685bd1d9419fa420b21a578239e65364ea5ecaf3f7c5998"
-  },
-  {
-   "path": ".github/workflows/stage-image.yml",
-   "sha256": "450a303b13683bb78b8dbdf9f9ce147919c85c45e54551d0b171518d0b8160e2"
-  },
-  {
    "path": ".github/workflows/stage-promote.yml",
    "sha256": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393"
-  },
-  {
-   "path": ".github/workflows/stage-reproducibility.yml",
-   "sha256": "dc3b6e77e232c093c40a1991058c027cfa73a46569f9f68eb09a7079dfa1ad16"
   },
   {
    "path": ".github/workflows/stage-verify.yml",

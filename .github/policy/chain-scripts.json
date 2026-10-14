@@ -1,12 +1,13 @@
 {
   "_note": "The scripts a release-chain stage file may run (rule 66/67 grammar, advisor decision b, Oct 9): by path and sha256. Changing a listed script changes its hash: update the row in the same commit (python3 -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],\"rb\").read()).hexdigest())' PATH). The text scan over listed scripts over-reports by design; `tools` lists the denied words a script may contain, `runs` the listed scripts it may start.",
   "env_names": [
-    "DIGESTS"
+    "DIGESTS",
+    "MODE"
   ],
   "scripts": [
     {
       "path": "bin/chain-verify.py",
-      "sha256": "851b6beb25a140245de7bdde5063fa5e4a78f44d7ddcce4ddea7a09324d48cad",
+      "sha256": "c5cbc1abb9c844ffb453eeb9cfd351d0d81bce84d12c874a81f51955a7c4d9dd",
       "tools": [
         "make",
         "at",
@@ -31,14 +32,15 @@
     },
     {
       "path": "bin/install-scanner.sh",
-      "sha256": "ca7b02f3df53614a081edae2915c620ea6995bac1a6c0e52d64f5390ff325487",
+      "sha256": "2616fd2a436f2c6c28bf1610860c06865b8dd5a04fe3200421bc4f685a678c4e",
       "tools": [
-        "curl",
-        "trap",
-        "source",
-        "git",
         "at",
-        "tar"
+        "curl",
+        "git",
+        "go",
+        "source",
+        "tar",
+        "trap"
       ],
       "runs": [],
       "signs": "other",
@@ -76,6 +78,316 @@
       "runs": [],
       "signs": false,
       "reason": "imported by chain-verify.py: the dry run's judges (one row per hostile attempt, the token and key grading, the verdict); `at` is the word of the verifier's `refused at` lines it reads, not a command"
+    },
+    {
+      "path": "bin/witnessed.sh",
+      "tools": [
+        "script",
+        "command",
+        "timeout",
+        "at",
+        "git",
+        "curl",
+        "exec",
+        "bash"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the one Witness wrapper (rule 68, REQ-CHAIN-004-AC2): fetches the identity token, runs witness run once (attestors environment, git, material, product; never slsa) under timeout 540; a Witness collection is not a provenance statement",
+      "sha256": "1973b8bb2d459c39f06a982607fe340472fc9b9c5ca8cb362326f4e599a00221",
+      "reads_env": [
+        "GH_TOKEN"
+      ],
+      "arg_map": {
+        "apk": "bin/build-stage-apk.sh",
+        "build": "bin/build-stage-assemble.sh",
+        "rapk": "bin/build-stage-rebuild-apk.sh",
+        "rebuild": "bin/build-stage-rebuild-assemble.sh",
+        "snapshot-apk": "bin/build-stage-snapshot-apk.sh",
+        "snapshot-build": "bin/build-stage-snapshot-assemble.sh",
+        "snapshot-rapk": "bin/build-stage-snapshot-rebuild-apk.sh",
+        "snapshot-rebuild": "bin/build-stage-snapshot-rebuild-assemble.sh"
+      },
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "exec witness run --step \"$step\"   --signer-fulcio-url https://fulcio.sigstore.dev   --signer-fulcio-oidc-issuer https://token.actions.githubusercontent.com   --signer-fulcio-oidc-client-id sigstore   --signer-fulcio-token-path <(printf %s \"$tok\")   -t https://timestamp.sigstore.dev/api/v1/timestamp   -a environment,git,material,product   --env-filter-sensitive-vars   --env-add-sensitive-key 'ACTIONS_ID_TOKEN_REQUEST*'   --env-add-sensitive-key ACTIONS_RUNTIME_TOKEN   --env-add-sensitive-key GH_TOKEN   --env-add-sensitive-key GITHUB_TOKEN   -o \"witness-${step#snapshot-}/$step-collection.json\" -- timeout 540 bash \"$@\"",
+          "why": "REQ-CHAIN-004-AC2: the wrapper's one Witness call; exec replaces the wrapper by witness so the identity-token variables it unset stay unset"
+        },
+        {
+          "rule": "witness-target",
+          "text": "timeout 540 bash \"$@\"",
+          "why": "REQ-CHAIN-004-AC2 (ratified, rule 68 as amended): the wrapped command runs under timeout 540 because Fulcio's keyless certificate lives ten minutes; the target is one of the arg_map scripts, bound by the stage line"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/chain-test-shape.py",
+          "why": "a comment naming the helper that judges this file's exact text; it is never run from here"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-stage-apk.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/build-admit.py",
+        "bin/build-version-check.py",
+        "bin/chain-verify.py"
+      ],
+      "signs": false,
+      "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
+      "sha256": "3c7315296fe843b96aed848c3507680e22ffeeb9cea9ffaef46b7a2405a8d470",
+      "reads_env": [
+        "GH_TOKEN"
+      ]
+    },
+    {
+      "path": "bin/build-stage-assemble.sh",
+      "tools": [
+        "at",
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py"
+      ],
+      "signs": false,
+      "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
+      "sha256": "5fa22e9865bd996bbec13cf203f91949a3fc3f47ec7ab2507743d19ac5563cdc"
+    },
+    {
+      "path": "bin/build-stage-rebuild-apk.sh",
+      "tools": [
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
+      "signs": false,
+      "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
+      "sha256": "54324ab757e81752da108e53eb4eb9de4a483705b801199f8f1794785d8b9e3d"
+    },
+    {
+      "path": "bin/build-stage-rebuild-assemble.sh",
+      "tools": [
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py"
+      ],
+      "signs": false,
+      "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
+      "sha256": "52eca0cca35acc611ff5ad34142f6c580badee55784097dbb86fc06f13e8782c"
+    },
+    {
+      "path": "bin/build-admit.py",
+      "tools": [
+        "python3",
+        "command",
+        "gh",
+        "at",
+        "git",
+        "env",
+        "ssh",
+        "bash",
+        "source",
+        "script",
+        "go"
+      ],
+      "runs": [
+        "bin/admission-tag-signer.py",
+        "bin/install-scanner.sh"
+      ],
+      "signs": "other",
+      "reason": "verifies (never makes) the gitsign tag signature of a patch tag through bin/install-scanner.sh's gitsign and calls gh for GET-only reads",
+      "sha256": "8c6f3797dc5e051098649709dae6aeb97f1449f733bdc89cac6a8e205ea959f5",
+      "reads_env": [
+        "GH_TOKEN"
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "`git show REV:PATH`",
+          "why": "a docstring naming the path operand of git show; nothing is set"
+        }
+      ],
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "GO_BIN = \"/usr/local/bin/fscache-go/bin/go\"",
+          "line_sha256": "b0307bc8efcdaafbd89419f85d8a61f4af5918195bfe389b355fc0db4ba5b41f",
+          "count": 1,
+          "why": "the fixed install path of the checksum-pinned Go toolchain (bash bin/install-scanner.sh go); admission runs exactly this go for the freeze check, never the runner's"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-version-check.py",
+      "tools": [
+        "python3",
+        "go",
+        "at",
+        "env"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the version, revision and clean-tree check of a built binary or apk",
+      "sha256": "dadf64fc26c32813a4cca0028981006b8294226ab2fef7830f50f5e45a704dbc",
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "(--binary PATH | --apk-dir DIR",
+          "why": "the usage line of the module docstring naming a path operand; nothing is set"
+        },
+        {
+          "name": "PATH",
+          "text": "`go version -m PATH`",
+          "why": "a docstring naming the path operand of go version -m; nothing is set"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-archives.py",
+      "tools": [
+        "python3",
+        "at",
+        "tar"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "the four Linux archives from the apks (PROPOSED layout)",
+      "sha256": "28cb359a20c9affa0be33c599ef60074fef2c344a46309b51378c4033053a583"
+    },
+    {
+      "path": "bin/chain_items.py",
+      "tools": [
+        "script",
+        "at",
+        "python3",
+        "command"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
+      "sha256": "6d69d9dd3950648f903b53bbbe4ad58dc17effb1f9f8c81924a7a42bb922b6b0"
+    },
+    {
+      "path": "bin/build-stage-snapshot-apk.sh",
+      "tools": [
+        "at",
+        "git",
+        "grep",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
+      "signs": false,
+      "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
+      "sha256": "7b72a29cda313ec846a94f95ea638fc26dcdc6cf78bcd1921b905ba1b849d81a"
+    },
+    {
+      "path": "bin/build-stage-snapshot-assemble.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py"
+      ],
+      "signs": false,
+      "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify)",
+      "sha256": "b1437012bd97d644eeb530b207b6bf9bcc378b952fd2729ba9b67bdebe8279ed"
+    },
+    {
+      "path": "bin/build-stage-snapshot-rebuild-apk.sh",
+      "tools": [
+        "at",
+        "git",
+        "grep",
+        "make",
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py"
+      ],
+      "signs": false,
+      "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
+      "sha256": "1dfce5c4c3e1ce3840c94ac8053e5c605244786043e0a547b1619767e624e3df"
+    },
+    {
+      "path": "bin/build-stage-snapshot-rebuild-assemble.sh",
+      "tools": [
+        "python3"
+      ],
+      "runs": [
+        "bin/chain-verify.py",
+        "bin/build-archives.py"
+      ],
+      "signs": false,
+      "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot)",
+      "sha256": "388378561dd203bfef362990ee2efba517ba1d22d0b3d9da1898faf457219d1f"
+    },
+    {
+      "path": "bin/admission-tag-signer.py",
+      "tools": [
+        "source",
+        "ssh",
+        "git",
+        "at",
+        "just"
+      ],
+      "runs": [],
+      "signs": "other",
+      "reason": "the tag-signature route and the owner baselines (policy read from origin/main by bin/build-admit.py); names gitsign and git verify-tag, verifies and signs nothing",
+      "sha256": "bee0007945368f6c515b46e989b9f65a58eda3f7e59d25c66d3445c614c9708f"
+    },
+    {
+      "path": "bin/build-stage-refuse-mode.sh",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "Build and Rebuild guard (REQ-CHAIN-004-AC12, REQ-CHAIN-005-AC7): runs only when mode is neither release nor snapshot and refuses",
+      "sha256": "8c9b851b6b5819cb72d4182cd83c3596d6e50455ca0f13a3dc44c722b79fa0fe"
+    }
+  ],
+  "ambient_env": [
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/witnessed.sh",
+      "why": "the Witness wrapper receives the job's GH_TOKEN from the apk step's env and passes its environment to the stage script; it never reads it and names it only in the sensitive-key filter list",
+      "file": ".github/workflows/stage-build.yml",
+      "job": "apk"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/build-stage-apk.sh",
+      "why": "the stage script runs the admission script first and unsets GH_TOKEN right after, so cache's build scripts never see it (REQ-CHAIN-004-AC3, AC8)",
+      "file": ".github/workflows/stage-build.yml",
+      "job": "apk",
+      "handoff_line": "unset GH_TOKEN"
+    },
+    {
+      "name": "GH_TOKEN",
+      "script": "bin/build-admit.py",
+      "why": "admission reads GitHub (GET only) through gh, which inherits the token; the step's env is the only route the token has (REQ-CHAIN-004-AC8)",
+      "file": ".github/workflows/stage-build.yml",
+      "job": "apk"
+    }
+  ],
+  "pinned_steps": [
+    {
+      "file": ".github/workflows/stage-build.yml",
+      "job": "assemble",
+      "id": "digests",
+      "run": "echo \"digests=$(jq -c . digests.json)\" >> \"$GITHUB_OUTPUT\"",
+      "why": "REQ-CHAIN-004-AC2: the stage output Sign reads (the digests.json text); the one reviewed write into the job outputs"
     }
   ]
 }

@@ -319,6 +319,12 @@ def prov_predicate(ptype, predicate, raw=False):
     if raw: return predicate                                   # exactly as given, null included
     if ptype != PROV_URI: return predicate if predicate is not None else {}
     return dict(json.loads(json.dumps(SLSA_OK)), **(predicate or {}))
+# A Witness collection is named for the step that made it, and the verifier refuses a name that is not a release name of the stage that reads it
+# (REQ-CHAIN-004-AC13, closed names: build/apk for Build, rebuild/rapk for Rebuild). Every fixture is named for its stage; the Check fixtures keep
+# build, the one name that tests the identity refusals of a record presented to the wrong stage (the name check does not apply to the Check stage).
+COLLECTION_NAME = {"stage-reproducibility.yml": "rebuild"}
+
+
 def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, tsa="tsa", signed=True, repo=REPO, issuer=ISSUER,
            stmt="v1", dsse=DSSE, payload=None, config_wf="release.yml", config_ref=None, config_repo=None, no_config=False, no_issuer=False,
            coll_file=None, coll_variant=None, predicate=None, san_der=None, issuer_der=None, config_der=None, raw_predicate=False):
@@ -356,7 +362,7 @@ def record(name, wf, ref, ptype, subjects, ca="interm", start=None, end=None, ts
                     # the right file name but its digest set has only a gitoid, no sha256 key
                     "gitoidonly": [dict(subj[0], digest={k: v for k, v in subj[0]["digest"].items() if k != "sha256"}), subj[1]]}[coll_variant]
         att = [{"type": "https://witness.dev/attestations/%s/v0.1" % k, "attestation": {}} for k in ("environment", "git", "product", "command-run")]
-        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": "build", "attestations": att}, "subject": subj}).encode()
+        payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": {"name": COLLECTION_NAME.get(wf, "build"), "attestations": att}, "subject": subj}).encode()
     if payload is None:
         payload = json.dumps({"_type": STMT[stmt], "predicateType": ptype, "predicate": prov_predicate(ptype, predicate, raw_predicate),
                               "subject": [{"name": k, "digest": {"sha256": v.split(":", 1)[1] if v.startswith("sha256:") else v}} for k, v in subjects.items()]}).encode()
@@ -480,7 +486,7 @@ add("build_coll", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digest
 _t = open(p("sign_prov.json")).read(); open(p("sign_dupkey.json"), "w").write(_t.replace('"payloadType"', '"payloadType": "x", "payloadType"', 1))
 _j = json.load(open(p("sign_prov.json"))); _j["signatures"] = _j["signatures"] * 2; json.dump(_j, open(p("sign_2sig.json"), "w"))
 add("sign_utf8", STAGES["sign"], T, PROV, D, san_der="30048602ff41")
-add("build_badsubj", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {}, "subject": ["x", 5]}).encode())
+add("build_badsubj", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": ["x", 5]}).encode())
 add("build_coll_v1", STAGES["build"], T, COLL, None, stmt="v1", coll_file="digests.json")
 add("build_coll_scan", STAGES["build"], T, COLL, None, stmt="v0.1", coll_file="digests.json", config_wf="scan.yml")   # stage-build.yml called from scan.yml, not release.yml
 add("build_coll_nostamp", STAGES["build"], T, COLL, None, tsa=None, stmt="v0.1", coll_file="digests.json")
@@ -828,7 +834,17 @@ def _stmt(pt, subj, st="v1"): return json.dumps({"_type": STMT[st], "predicateTy
 add("sign_badname", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": [], "digest": {"sha256": "a" * 64}}]))
 add("sign_baddigest", STAGES["sign"], T, PROV, None, payload=_stmt(PROV, [{"name": "apk", "digest": ["x"]}]))
 dj("rekor-badsubj.json", {"entries": [entry("sign_badname", 50), entry("sign_baddigest", 51)]})
-add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_stmt(COLL, [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}], "v0.1"))
+add("build_baddigest", STAGES["build"], T, COLL, None, stmt="v0.1", payload=json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build"}, "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": ["x"]}]}).encode())
+# AC8 (Codex A/B r2): a SIGNED collection whose environment record names a token variable is refused by the next stage's verifier (verify and stage-start),
+# whichever ACTIONS_ID_TOKEN_REQUEST_ name it is, not from a fixed list; the same record without the variable is accepted
+def _envrec(var):
+    att = [{"type": "https://witness.dev/attestations/environment/v0.1", "attestation": {"variables": {var: "x"}}}]
+    return json.dumps({"_type": STMT["v0.1"], "predicateType": COLL, "predicate": {"name": "build", "attestations": att},
+                       "subject": [{"name": "https://witness.dev/attestations/product/v0.1/file:digests.json", "digest": {"sha256": "1" * 64}}]}).encode()
+add("build_env_custom", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_ID_TOKEN_REQUEST_CUSTOM"))
+add("build_env_gh", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("GH_TOKEN"))
+add("build_env_runtime", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("ACTIONS_RUNTIME_URL"))
+add("build_env_clean", STAGES["build"], T, COLL, None, stmt="v0.1", payload=_envrec("HOSTNAME"))
 # ---- Codex security round 3 ----
 # (X2) every envelope field has its JSON type; a wrong one is a refusal ("envelope"), never a traceback
 for _nm, _ed in (("ptype_num", lambda r: r.__setitem__("payloadType", 5)), ("ptype_null", lambda r: r.__setitem__("payloadType", None)),
@@ -1138,6 +1154,11 @@ expect_ok     "002-AC3 a Witness stage record needs no Rekor entry" verify $(V) 
 expect_refuse "002-AC3 a Witness record is checked for the timestamp instead" "timestamp" verify $(V) --stage build $(rec build_coll_nostamp)
 
 # ---- REQ-CHAIN-003-AC2: only the standard record types, exact strings ------------------------------------------------
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_ID_TOKEN_REQUEST_CUSTOM (the whole prefix, not a fixed list)" "build|actions_id_token_request_custom" verify $(V) --stage build $(rec build_env_custom)
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names GH_TOKEN" "build|gh_token" verify $(V) --stage build $(rec build_env_gh)
+expect_refuse "004-AC8 verify refuses a signed Build record whose environment names ACTIONS_RUNTIME_URL" "build|actions_runtime_url" verify $(V) --stage build $(rec build_env_runtime)
+expect_ok "004-AC8 control: a signed Build record with an ordinary environment variable passes verify" verify $(V) --stage build $(rec build_env_clean)
+expect_refuse "004-AC8 stage-start refuses the same record as the previous stage's" "build|actions_id_token_request_custom" $(ST rebuild build) $(rec build_env_custom) --digests "$work/digests.json"
 expect_ok     "003-AC2 the Witness collection type (Statement v0.1, as Witness writes it) is allowed" verify $(V) --stage build $(rec build_coll)
 expect_ok     "003-AC2 the Witness collection type in a Statement v1 is allowed" verify $(V) --stage build $(rec build_coll_v1)
 expect_ok     "003-AC2 SLSA provenance v1 is allowed" verify $(V) --stage sign $(rec sign_prov) $(R)
@@ -1253,7 +1274,21 @@ GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 templa
 # ---- production vs dry run (round 5): the ref shapes, the dry-run mode, and Release's tag-pinned refusal of any branch record ----------
 TPR() { echo sign --check --signer cosign --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" \
   --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json" --out "$work/sd/$2"; }
-GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/v0.3.0-rc1 is not vX.Y.Z and is refused (even with a Build record signed at that ref)" "tag" $(TPR build_coll_rc tagrc)
+CBR() { echo check-build-record --build-record "$work/$1.json" --template "$work/template.json" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --now "$NOW" --digests "$work/digests.json"; }
+GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_ok "001-AC2/rc: refs/tags/v0.3.0-rc1 is a release-candidate tag (vX.Y.Z-rcN, advisor 0383): Sign makes the per-tag policy for the FULL tag and Build's record signed at that ref verifies" $(CBR build_coll_rc)
+GITHUB_REF=refs/tags/v0.3.0 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: an rc Build record presented for the final tag is refused" "v0.3.0-rc1|v0.3.0" $(CBR build_coll_rc)
+GITHUB_REF=refs/tags/v0.3.0-rc1 GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: a final-tag Build record presented for the rc tag is refused" "v0.3.0" $(CBR build_coll)
+for t in v0.3.0-RC1 v0.3.0-rc v0.3.0-rc1x v0.3.0-rc.1 v0.3.0rc1 v0.3.0-rc1-rc1 v0.3.0-1rc1 v0.3.0-rc-1 v0.3-rc1; do
+  GITHUB_REF=refs/tags/$t GITHUB_EVENT_NAME=push expect_refuse "001-AC2/rc: the near-miss ref $t is not a tag of the grammar and is refused by Sign" "tag" $(TPR build_coll_rc tagnm)
+  expect_refuse "002-AC2/rc: policy make --tag $t is refused" "tag" policy make --template "$work/template.json" --tag "$t" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
+  expect_refuse "002-AC2/rc: policy make --ref refs/tags/$t is refused" "tag" policy make --template "$work/template.json" --ref "refs/tags/$t" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
+done
+rc=0; run policy make --template "$work/template.json" --tag v0.3.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-rc.json" || rc=$?
+[ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p["tag"]=="v0.3.0-rc1" and p["ref"]=="refs/tags/v0.3.0-rc1" and not p.get("dry_run") and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/tags/v0.3.0-rc1") else 1)' "$work/policy-rc.json" && ok "002-AC2/rc: policy make --tag v0.3.0-rc1 carries the FULL tag and ref, and its Sign identity ends @refs/tags/v0.3.0-rc1" || bad "002-AC2/rc: policy for v0.3.0-rc1 (exit $rc)"
+rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-rc-ref.json" || rc=$?
+[ "$rc" = 0 ] && cmp -s "$work/policy-rc.json" "$work/policy-rc-ref.json" && ok "002-AC2/rc: policy make --ref refs/tags/v0.3.0-rc1 is the same policy as --tag v0.3.0-rc1" || bad "002-AC2/rc: --ref rc differs from --tag rc (exit $rc)"
+expect_refuse "002-AC2/rc: the final-tag policy refuses a Build record signed at the rc ref (and the reverse is the case above)" "v0.3.0-rc1|v0.3.0" verify $(V) --stage build $(rec build_coll_rc)
+expect_refuse "002-AC2/rc: the snapshot version in the rc grammar (v0.0.0-rc1) has no policy" "snapshot" policy make --template "$work/template.json" --tag v0.0.0-rc1 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
 GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: refs/tags/x is refused" "tag" $(TPR build_coll_tagx tagx)
 GITHUB_REF=refs/heads/x GITHUB_EVENT_NAME=push expect_refuse "001-AC2 production: a branch on a push event is refused" "tag" $(TPR build_coll_branchx branchx)
 GITHUB_REF=refs/tags/x GITHUB_EVENT_NAME=workflow_dispatch expect_refuse "001-AC2 a workflow_dispatch on a tag that is not vX.Y.Z is refused (dry run is for branches)" "tag" $(TPR build_coll_tagx dispx)
@@ -1282,7 +1317,7 @@ assert not st["predicate"].get("dryRun"), st["predicate"]
 PY
 rc=0; run policy make --template "$work/template.json" --ref refs/heads/hostile-proof/x --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-br.json" || rc=$?
 [ "$rc" = 0 ] && python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); sys.exit(0 if p.get("dry_run") is True and p["stages"]["sign"]["identity"].endswith("stage-sign.yml@refs/heads/hostile-proof/x") else 1)' "$work/policy-br.json" && ok "002-AC2 policy make --ref <branch> makes a dry_run policy whose identities end @ that ref" || bad "002-AC2 policy make --ref <branch> (exit $rc)"
-for r in refs/tags/v0.3.0-rc1 refs/tags/x refs/pull/1/merge; do
+for r in refs/tags/x refs/pull/1/merge; do
   expect_refuse "002-AC2 policy make --ref $r is refused" "tag" policy make --template "$work/template.json" --ref "$r" --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-bad.json"
 done
 rc=0; run policy make --template "$work/template.json" --ref refs/tags/v0.3.0 --trust "$work/trust.json" --fulcio-chain "$work/fulcio-chain.pem" --tsa-chain "$work/tsa-chain.pem" --rekor-key "$work/rekor.pub" --out "$work/policy-reftag.json" || rc=$?
@@ -1795,7 +1830,7 @@ leakfiles=$( { grep -r -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" "$work
                find "$PWD" -maxdepth 3 -type f -newer "$MARK" -not -path '*/.git/*' -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true
                find "${TMPDIR:-/tmp}" -maxdepth 3 -type f -newer "$MARK" -not -path "$work/*" -print0 2> /dev/null | xargs -0 grep -l -F -e "$SENT_TOK" -e "$SENT_URL" -e "$SENT_CIT" 2> /dev/null || true; } | sort -u)
 if [ -z "$leakfiles" ]; then ok "001-AC3 the token sentinels appear in no file written under the work dir, the current directory or the temp dir"; else bad "001-AC3 a token sentinel was written to: $(echo "$leakfiles" | head -3 | tr '\n' ' ')"; fi
-EXPECT=640
+EXPECT=677
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

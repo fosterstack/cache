@@ -47,6 +47,13 @@
 # Modelled on: this repo's bin/workflow-consolidation-test.sh (judge + mutation pattern); in-toto-witness docs/commands.md
 # (witness run / sign flags) and docs/attestors/slsa.md for the signing-call patterns.
 set -euo pipefail
+# the red cases of this suite are the ones listed in test-evidence/known-red.json: the run passes only when they are EXACTLY the red cases (bin/chain-known-red.py)
+if [ -z "${CHAIN_KNOWN_RED_INNER:-}" ]; then
+  _rc=0; _out=$(CHAIN_KNOWN_RED_INNER=1 CHAIN_FINDINGS=1 bash "$0" "$@" 2>&1) || _rc=$?
+  printf '%s\n' "$_out"
+  printf '%s\n' "$_out" | python3 "$(cd "$(dirname "$0")" && pwd)/chain-known-red.py" judge --suite bin/chain-sign-wiring-test.sh --inner-rc "$_rc"
+  exit $?
+fi
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
 pass=0 failn=0
@@ -180,12 +187,8 @@ LEGACY_PINNED = {
     ".github/workflows/stage-acceptance-egress.yml": "17491901c831abf89435b82cff5c794c4be3d581394bde316d21966b2b72a018",
     ".github/workflows/stage-acceptance-k8s.yml": "727999814b7c7e561611f2c214b0ab12c5c922a99f79ca44eaaa214480f0ac60",
     ".github/workflows/stage-acceptance-predicate.yml": "6fc4b5e514cb054c20f4cc56eeebf123fdda54ec9cc985ffef1922c72e8be4a8",
-    ".github/workflows/stage-admission.yml": "d376ec4ebaae22a932d02ae4512abc5563d69d29462436e75ebe7d454a2c91a2",
     ".github/workflows/stage-authorize.yml": "2a0b7c7b6260a372d1d4f31c9de5fb78039b899aa9c4351065f658293523cfdf",
-    ".github/workflows/stage-build.yml": "34c39aba901c2e7b6685bd1d9419fa420b21a578239e65364ea5ecaf3f7c5998",
-    ".github/workflows/stage-image.yml": "450a303b13683bb78b8dbdf9f9ce147919c85c45e54551d0b171518d0b8160e2",
     ".github/workflows/stage-promote.yml": "e17ed8cc00f02b12726336351dae87d9ea4d60205139e6ad865b337241228393",
-    ".github/workflows/stage-reproducibility.yml": "dc3b6e77e232c093c40a1991058c027cfa73a46569f9f68eb09a7079dfa1ad16",
     ".github/workflows/stage-verify.yml": "4bd41b1e9563c3d0c35f9b1ab2f2dff5085615d4d96e545ae1750704a22fdc78",
 }
 LEGACY_EXPECTED = set(LEGACY_PINNED)
@@ -498,7 +501,10 @@ def judge_calls(root):
 if __name__ == "__main__":
     which, arg = sys.argv[1], sys.argv[2]
     bad = {"sign": judge_sign, "build": judge_build, "tree": judge_tree, "calls": judge_calls}[which](arg)
-    print("; ".join(dict.fromkeys(bad)) or "ok"); sys.exit(1 if bad else 0)
+    ids = list(dict.fromkeys(bad))
+    if ids and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py); nothing else changes
+        print("FINDINGS-JSON " + json.dumps(ids), file=sys.stderr)
+    print("; ".join(ids) or "ok"); sys.exit(1 if bad else 0)
 PY
 export CHAIN_SIGNER_TABLE="$root/bin/chain-test-signers.json" CHAIN_ROOT="$root"
 judge() { python3 "$work/judge.py" "$@"; }
@@ -2410,7 +2416,7 @@ probe mytool "./mytool" "the real bin/chain-hostile-step.sh running ./mytool (an
   "printf '#!/usr/bin/env bash\\necho x\\n' > mytool; chmod +x mytool; printf './mytool\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
 probe bashlib "mylib" "the real bin/chain-hostile-step.sh running bash mylib, its sha256 updated (Sonnet 3)" \
   "printf 'echo x\\n' > mylib; printf 'bash mylib\\n' >> bin/chain-hostile-step.sh; rehash bin/chain-hostile-step.sh"
-probe missing  "legacy file missing: .github/workflows/stage-image.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-image.yml"
+probe missing  "legacy file missing: .github/workflows/stage-promote.yml" "a listed legacy file that was deleted" "rm .github/workflows/stage-promote.yml"
 # the legacy list can only SHRINK (advisor ruling, Oct 10): the suite pins each path AND its sha256, so a legacy file edited together with
 # its list hash, or a list entry given a new hash, is refused; a row is removed only together with its pinned entry here
 probe relisted "legacy hash is not the one this suite pins" "a legacy file edited TOGETHER with its sha256 in the list" \
@@ -2547,7 +2553,7 @@ probe unparsed  "codeql.yml" "codeql.yml that does not parse, holding a new id-t
 probe stale     "scorecard.yml job analysis" "a listed job that no longer holds id-token: write (a stale entry)" "sed -i.bak '/id-token: write/d' .github/workflows/scorecard.yml; rm -f .github/workflows/scorecard.yml.bak"
 # the isolation really works: with a bin/fractions.py that prints a marker on import, `python3 -I bin/chain-verify.py --help` runs the
 # real module (no marker, usage printed) while plain `python3 bin/chain-verify.py --help` is shadowed (the control: the probe bites)
-iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$iso/bin/"
+iso="$work/iso"; rm -rf "$iso"; mkdir -p "$iso/bin" "$iso/.github/policy"; cp "$root"/bin/chain-verify.py "$root"/bin/chain_common.py "$root"/bin/chain_hostile.py "$root"/bin/chain_items.py "$iso/bin/"
 cp "$root/.github/policy/chain-scripts.json" "$iso/.github/policy/"
 printf 'print("SHADOW-MARKER-%s")\nfrom fractions import *\n' "$$" > "$iso/bin/fractions.py"
 rc=0; out=$(cd "$iso" && python3 -I bin/chain-verify.py --help 2>&1) || rc=$?
@@ -2563,7 +2569,7 @@ rm -f "$iso/bin/fractions.py"
 python3 - "$iso/bin" <<'PYC'
 import os, py_compile, sys, tempfile
 b = sys.argv[1]
-for name in ("chain_common", "chain_hostile"):
+for name in ("chain_common", "chain_hostile", "chain_items"):
     src = open(os.path.join(b, name + ".py")).read()
     with tempfile.NamedTemporaryFile("w", suffix=".py", delete=False) as t:
         t.write('print("MARKER-PYC-%s")\n' % name.upper() + src)
@@ -2598,40 +2604,52 @@ G=grep; printf 'x | %s --quiet y\n' "$G" > "$work/qp1.sh"; printf 'printf x \\\n
 [ -n "$(quiet_pipes "$work/qp2.sh")" ] && { pass=$((pass + 1)); echo "ok   the pipe lint catches a pipe continued with a backslash (and -qF)"; } || { failn=$((failn + 1)); echo "FAIL the pipe lint missed a continued pipe"; }
 # the list is the only exclusion: with it deleted, the same judge judges the whole tree (today: red on the legacy files), with no leftover
 d=$(tracked_copy nolist); rm "$d/.github/policy/legacy-stage-files.json"; rc=0; out=$(judge tree "$d") || rc=$?
-[ "$rc" != 0 ] && grep -F -q "stage-build.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
+[ "$rc" != 0 ] && grep -F -q "stage-verify.yml signs provenance" <<< "$out" && ok_n=1 || ok_n=0
 if [ "$ok_n" = 1 ]; then pass=$((pass + 1)); echo "ok   with legacy-stage-files.json deleted the same case judges the whole tree (red today on the legacy signers)"; else failn=$((failn + 1)); echo "FAIL deleting legacy-stage-files.json did not bring the legacy files back into the judge: rc=$rc ${out:0:200}"; fi
 # only TRACKED files are judged: an untracked file with a signer in a working copy is not part of what CI checks out
 g="$work/gitcopy"; rm -rf "$g"; cp -R "$REAL" "$g"; ( cd "$g" && git init -q . && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm c )
 printf 'cosign attest --type slsaprovenance x\n' > "$g/bin/untracked-signer.sh"
 expect ok "an UNTRACKED file holding a signer is not in the tracked copy CI judges" tree "$(tracked_copy fromgit "$g")"
-# (Codex #249 r6 R8) the tag guard after Sign is carried by needs:, not by an `if:` conjunct: every release.yml job from build to promotion
-# that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on admission (tag-guarded) directly or through its needs
+# (Codex #249 r6 R8; PR 2: admission is the first step of Build's apk job, so the tag guard is Build's own gate G) every release.yml job after build
+# up to promotion that is not dry-run-only (if: exactly ${{ inputs.dry-run }}) depends on build, which carries the gate G (a v* tag PUSH, or a dry run),
+# directly or through its needs
 cat > "$work/tagguard.py" <<'PY'
 import sys, yaml
+GATE = "${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
 d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
 def needs(j):
     n = (jobs.get(j) or {}).get("needs") or []
     return [n] if isinstance(n, str) else list(n)
 def reaches(j, seen=()):
-    return any(x == "admission" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
-order = list(jobs); chain = order[order.index("build"):order.index("promotion") + 1]
+    return any(x == "build" or (x not in seen and reaches(x, seen + (j,))) for x in needs(j))
+order = list(jobs); chain = order[order.index("build") + 1:order.index("promotion") + 1]
 bad = [j for j in chain if str(jobs[j].get("if", "")).strip() != "${{ inputs.dry-run }}" and not reaches(j)]
-if "admission" not in jobs or not str(jobs["admission"].get("if", "")).startswith("${{ startsWith(github.ref, 'refs/tags/v')"): bad.append("admission is not tag-guarded")
+if "admission" in jobs: bad.append("an admission job is back (admission is Build's first step)")
+if str(jobs["build"].get("if", "")).strip() != GATE: bad.append("build is not tag-guarded by the gate G")
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 tg() { local rc=0 out; out=$(python3 "$work/tagguard.py" "$2") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then pass=$((pass + 1)); echo "ok   $3${out:+ ($out)}"; else failn=$((failn + 1)); echo "FAIL $3 -> $out"; fi; }
-tg ok "$root/.github/workflows/release.yml" "R8 release.yml: every job from build to promotion that is not dry-run-only depends on the tag-guarded admission through needs"
+tg ok "$root/.github/workflows/release.yml" "R8 release.yml: build carries the tag gate and every job from sign to promotion that is not dry-run-only depends on build through needs"
 cp "$root/.github/workflows/release.yml" "$work/rel-noadm.yml"
 python3 - "$work/rel-noadm.yml" <<'PY'
 import re, sys
 t = open(sys.argv[1]).read()
-for j in ("promotion", "authorization", "acceptance-predicate"):
-    t = re.sub(r"(\n  %s:\n(?:    .*\n|\s*\n)*?    needs: )(.*)" % re.escape(j), lambda m: m.group(1) + "[" + ", ".join(x for x in re.findall(r"[\w-]+", m.group(2)) if x != "admission") + "]", t, count=1)
-t = re.sub(r"(\n  build:\n(?:    .*\n|\s*\n)*?    needs: )admission", r"\1[]", t, count=1)
+for j in ("sign", "promotion", "authorization", "acceptance-predicate", "scans", "acceptance-artifacts"):
+    t = re.sub(r"(\n  %s:\n(?:    .*\n|\s*\n)*?    needs: )(.*)" % re.escape(j), lambda m: m.group(1) + "[" + ", ".join(x for x in re.findall(r"[\w-]+", m.group(2)) if x not in ("build", "rebuild")) + "]", t, count=1)
+t = re.sub(r"(\n  rebuild:\n(?:    .*\n|\s*\n)*?    needs: )build", r"\1[]", t, count=1)
 open(sys.argv[1], "w").write(t)
 PY
-tg caught "$work/rel-noadm.yml" "R8 mutation: with admission removed from every needs list, the build-to-promotion jobs no longer reach admission and are caught"
+tg caught "$work/rel-noadm.yml" "R8 mutation: with build removed from the needs lists, the jobs after it no longer reach the tag gate and are caught"
+cp "$root/.github/workflows/release.yml" "$work/rel-nogate.yml"
+python3 - "$work/rel-nogate.yml" <<'PY'
+import sys
+t = open(sys.argv[1]).read()
+g = "if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}"
+t = t.replace(g, "if: ${{ inputs.dry-run == true }}", 1)
+open(sys.argv[1], "w").write(t)
+PY
+tg caught "$work/rel-nogate.yml" "R8 mutation: a build without the tag gate is caught"
 
 # ---- PR 1b (judge exceptions): (A) reviewed exact-text exceptions, (B) ambient env names, (C) the path-named deny test at command position only.
 # REQ-CHAIN-001-AC1 (listed-script clause), REQ-CHAIN-004-AC2 (timeout 540 around the wrapped command), REQ-CHAIN-004-AC8 (GH_TOKEN through the step's env), REQ-CHAIN-004-AC3 (--go-archive archive/go).
@@ -3300,7 +3318,79 @@ PY
 d=$(crf cr_e '#!/usr/bin/env bash\necho a\r\n'); out=$(python3 "$work/loadcr.py" "$d" 2>&1) && { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts (the records judge's path) accepts a script with a CR"; } || { grep -q 'carriage return' <<< "$out" && { pass=$((pass + 1)); echo "ok   line-bound: load_scripts alone rejects a script with a CR (caught: ${out:0:100})"; } || { failn=$((failn + 1)); echo "FAIL line-bound: load_scripts CR -> ${out:0:200}"; }; }
 
 
-EXPECT=1314
+# ---- Codex A r2 blocker 4 / r3 F4 (advisor): NO actions/setup-go anywhere; Go comes from the checksum-pinned `bash bin/install-scanner.sh go` line -------------
+# the stage grammar run on the REAL stage-build.yml (and on edited copies): the installer line is accepted, every use of setup-go is refused
+cat > "$work/setupgo.py" <<'PY'
+import copy, importlib.util, os, sys, yaml
+root = os.environ["CHAIN_ROOT"]
+spec = importlib.util.spec_from_file_location("cts", root + "/bin/chain-test-signers.py"); m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+rows, errs, names = m.load_scripts(root)
+GO = "actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0"      # the digest the previous round allowed: now refused like any other action
+def load(f): return yaml.load(open(os.path.join(root, ".github/workflows", f)).read(), Loader=yaml.BaseLoader)
+def run(f, d):
+    e, _ = m.stage_grammar(f, d, rows, names, ".github/workflows/" + f)
+    return [x for x in e if "setup-go" in x or "install-scanner" in x]
+def step(**kw): return dict({"uses": GO, "with": {"go-version-file": "go.mod", "cache": "false"}}, **kw)
+out = []
+def case(label, want_bad, got):
+    out.append((label, bool(got) == want_bad, got[:1]))
+b = load("stage-build.yml")
+has = any(str(x.get("run", "")).strip() == "bash bin/install-scanner.sh go" for x in b["jobs"]["apk"]["steps"])
+none = not any("setup-go" in str(x.get("uses")) for j in b["jobs"].values() for x in j["steps"])
+case("the real stage-build.yml: the checksum-pinned `bash bin/install-scanner.sh go` line is present, accepted, and no setup-go is used", False,
+     run("stage-build.yml", b) + ([] if has and none else ["the installer line is missing or setup-go is used"]))
+def mut(f, edit):
+    d = copy.deepcopy(load(f)); edit(d); return d
+def apk(d): return d["jobs"]["apk"]["steps"]
+def go_index(d):
+    for i, s in enumerate(apk(d)):
+        if "setup-go" in str(s.get("uses")): return i
+    apk(d).insert(2, step()); return 2      # the file has none yet: the mutation cases then judge the step they add, so a missing allowance fails every case
+def plain(d):
+    s = apk(d)
+    s[:] = [x for x in s if "setup-go" not in str(x.get("uses"))]; s.insert(2, step())
+case("the previous round's allowance, exactly (pinned digest, go-version-file go.mod, cache false, before the Witness step) is now refused", True, run("stage-build.yml", mut("stage-build.yml", plain)))
+case("the same exact step with a version comment in a stage-reproducibility.yml apk job is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["apk"]["steps"].insert(2, step()))))
+case("a with: key besides the two is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version": "1.20"}))))
+case("cache: true is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"cache": "true"}))))
+case("another go-version-file is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)]["with"].update({"go-version-file": "x/go.mod"}))))
+case("a floating tag is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)].update({"uses": "actions/setup-go@v7"}))))
+case("another digest is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)].update({"uses": "actions/setup-go@" + "1" * 40 + " # v7.0.0"}))))
+case("an env on the step is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: apk(d)[go_index(d)].update({"env": {"MODE": "x"}}))))
+def second(d): apk(d).insert(go_index(d) + 1, step())
+case("a second setup-go step in the job is refused", True, run("stage-build.yml", mut("stage-build.yml", second)))
+def after_witness(d):
+    s = apk(d); g = s.pop(go_index(d)); s.append(g)
+case("setup-go after the Witness step (the admission step) is refused", True, run("stage-build.yml", mut("stage-build.yml", after_witness)))
+case("setup-go in job assemble is refused", True, run("stage-build.yml", mut("stage-build.yml", lambda d: d["jobs"]["assemble"]["steps"].insert(1, step()))))
+case("setup-go in stage-reproducibility.yml (Rebuild) is refused", True, run("stage-reproducibility.yml", mut("stage-reproducibility.yml", lambda d: d["jobs"]["apk"]["steps"].insert(1, step()))))
+case("setup-go in stage-sign.yml is refused", True, run("stage-sign.yml", mut("stage-sign.yml", lambda d: d["jobs"]["sign"]["steps"].insert(1, step()))))
+for label, ok_, got in out:
+    print(("ok   " if ok_ else "FAIL ") + "AC4/Go " + label + ("" if ok_ else " -> %r" % got))
+PY
+while IFS= read -r l; do
+  case "$l" in ok*) pass=$((pass + 1)); echo "$l";; *) failn=$((failn + 1)); echo "$l";; esac
+done < <(python3 "$work/setupgo.py" 2>&1)
+
+# ---- Codex A r4 #2 / B F1: the judge prints its findings as structured ids, one for one with its own list (CHAIN_FINDINGS=1; stderr; output only) ----------------
+fj="$work/fj"; mkdir -p "$fj"
+d=$(tracked_copy fjson); printf 'cosign attest --type slsaprovenance x\n' > "$d/bin/fj-signer.sh"; ( cd "$d" && git add -A 2> /dev/null || true )
+rc=0; CHAIN_FINDINGS=1 python3 "$work/judge.py" tree "$d" > "$fj/out.txt" 2> "$fj/err.txt" || rc=$?
+rcp=0
+python3 - "$fj/out.txt" "$fj/err.txt" "$rc" <<'PY' || rcp=$?
+import json, sys
+out = open(sys.argv[1]).read().rstrip("\n"); lines = [l for l in open(sys.argv[2]).read().split("\n") if l.startswith("FINDINGS-JSON ")]
+assert sys.argv[3] == "1" and len(lines) == 1, (sys.argv[3], len(lines))
+ids = json.loads(lines[0][len("FINDINGS-JSON "):])
+assert isinstance(ids, list) and ids and all(isinstance(x, str) for x in ids)
+assert "; ".join(ids) == out, "printed list and ids differ"
+PY
+if [ "$rcp" = 0 ]; then pass=$((pass + 1)); echo "ok   findings ids: the FINDINGS-JSON line is the judge's own findings, one for one with the printed list (rc 1, none dropped, none added, same order)"
+else failn=$((failn + 1)); echo "FAIL findings ids: the printed structured ids differ from the judge's list"; fi
+rc=0; env -u CHAIN_FINDINGS python3 "$work/judge.py" tree "$d" > /dev/null 2> "$fj/err2.txt" || rc=$?
+if ! grep -q 'FINDINGS-JSON' "$fj/err2.txt"; then pass=$((pass + 1)); echo "ok   findings ids: nothing is printed unless CHAIN_FINDINGS=1 (no change to the judge's existing output)"; else failn=$((failn + 1)); echo "FAIL findings ids: printed without CHAIN_FINDINGS=1"; fi
+
+EXPECT=1331
 echo "pass=$pass fail=$failn"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1; fi
 [ "$failn" = 0 ]

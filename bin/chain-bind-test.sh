@@ -1,0 +1,499 @@
+#!/usr/bin/env bash
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC13, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC9, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC7 — the assemble job binds every file it uses to the verified record (rule 58); digests.json and items.json are what an honest merge writes; Rebuild binds the same way
+# Written before the bind, items-apk and items-merge subcommands existed (tests before implementation, step 4); they are bin/chain_items.py now.
+#
+# The REAL chain-verify.py subcommands that bin/chain-test-harness.py only fakes. Needs: python3, ubuntu-24.04 or macOS. No network, no keys.
+# Records are DSSE envelopes built here (the shape of bin/chain-rebuild-test.sh): `bind` and `items-*` never check a signature, because the
+# `verify` line that runs right before `bind` in the stage script does that (the script order is pinned in bin/chain-build-wiring-test.sh).
+# Every command runs from the repository root of a throw-away tree with RELATIVE paths, as the stage scripts do.
+#
+# THE CLI THIS TEST ASSUMES (the implementer matches it; anything else is a change to this header first):
+#   chain-verify.py bind --step apk|rapk|snapshot-apk|snapshot-rapk --record REC.json --dir DIR --as PREFIX      (--dir and --as are relative paths)
+#     REC.json   the Witness collection of the apk matrix job (step apk, Build) or of the Rebuild apk job (step rapk). Its Statement holds product
+#                subjects https://witness.dev/attestations/product/v0.1/file:PREFIX/<path relative to DIR> with digests {sha256, gitoid...}.
+#                Witness runs from the repo root, so the artifact DIR is the job's `out` and PREFIX is out (in-toto-witness
+#                docs/tutorials/artifact-policy.md:58-70).
+#     exit 0 only when EVERY regular file under DIR is the product the record holds under PREFIX/<its path> with the same sha256, and the record
+#     holds no product under PREFIX/ that has no file in DIR. Exit 1, first stderr line `refused at <build|rebuild>: <cause>: <paths>` (the paths
+#     it names, space separated, as PREFIX/<path>), cause one of
+#       digest   a file's sha256 differs from the product's; a file has no product; a product has no file; two products for one name;
+#                a subject of another kind (material) for the name does not count; a product with no sha256 key
+#       step     the record's collection name is not the --step (an apk record of Rebuild given to Build, and the reverse)
+#       empty    DIR holds no file
+#       symlink  DIR holds a symbolic link, to a file or to a directory, dangling or not (what it points at is not what the record covers)
+#       hidden   DIR holds a file or directory whose name starts with a dot. upload-artifact leaves hidden files out of an artifact by default, so a
+#                dotfile in out/ would be a product with no file after the upload: refused here instead of relied on
+#       record   the file is not a DSSE envelope of a Witness collection
+#     Exit 2 (usage, never a pass): an unreadable record, a missing option, --dir or --as absolute or holding `..`, an unknown --step.
+#   chain-verify.py items-apk --out-dir out/ARCH --result FILE
+#     reads the apks in out/ARCH by their names (fscache-VERSION-r0.apk for standard, fscache-fips-VERSION-r0.apk for fips; exactly one each) and
+#     writes the fragment {"arch","items"}. The apk item is `python3 bin/apk-tool.py digest APK`, run from the working directory (cache's tool, by
+#     name: the sections it covers are cache's to change; this test only needs it to differ from the whole-file sha256 and to ignore the signature).
+#     The binary item is the sha256 of the stdout of `python3 bin/apk-tool.py cat APK usr/bin/fscache`. The modules SBOM and the inputs manifest
+#     items are read from out/ (the parent of --out-dir), and the index item from out/ARCH/APKINDEX.tar.gz. A file or directory whose name starts
+#     with a dot under out/ is refused (exit 1, cause hidden), like bind.
+#   chain-verify.py items-merge --fragment F... --images DIR --archives DIR --version V --archive DIR [--digests FILE] --items FILE
+#     merges the fragments and adds the image, manifest, lock and SBOM items from DIR (the files assemble-image.sh writes), the archive items from
+#     --archives (the four Linux archives, goreleaser's names) and archive-checksums from --archive; writes --items and (optionally) --digests.
+#     Exit 1 with nothing written, first line `refused at build: <cause>: <names>`: digest (two fragments naming one item with different values),
+#     arch (the fragments are not exactly one for x86_64 and one for aarch64: a missing or a doubled architecture is named), missing (an input file
+#     is missing), unexpected (a fragment names an item the committed list does not have).
+# PROPOSED/UNVERIFIED: the items layout (bin/chain-test-harness.py documents the oracle) and the file names of the archives.
+exec python3 - "$(cd "$(dirname "$0")/.." && pwd)" <<'PY'
+import atexit, base64, hashlib, importlib.util, json, os, shutil, subprocess, sys, tempfile
+
+root = sys.argv[1]
+CV = root + "/bin/chain-verify.py"
+spec = importlib.util.spec_from_file_location("h", root + "/bin/chain-test-harness.py")
+h = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(h)
+work = tempfile.mkdtemp()
+atexit.register(shutil.rmtree, work, ignore_errors=True)      # a failing or aborted run leaves nothing in TMPDIR
+passed = failed = 0
+PRODUCT = "https://witness.dev/attestations/product/v0.1/file:"
+MATERIAL = "https://witness.dev/attestations/material/v0.1/file:"
+FILES = {"x86_64/fscache-0.3.0-r0.apk": b"SIG:assembly\napk-x", "x86_64/APKINDEX.tar.gz": b"index", "items-apk.json": b"{}"}
+
+
+def check(label, ok, detail=""):
+    global passed, failed
+    if ok:
+        passed += 1
+        print("ok   " + label)
+    else:
+        failed += 1
+        print("FAIL %s %s" % (label, detail))
+
+
+def run(args, cwd):
+    if not os.path.exists(CV):
+        return 127, "", "bin/chain-verify.py does not exist (RED)"
+    try:
+        p = subprocess.run([sys.executable, CV] + args, capture_output=True, text=True, cwd=cwd, timeout=60)
+    except subprocess.TimeoutExpired:
+        return 124, "", "timed out after 60 seconds"
+    return p.returncode, p.stdout, p.stderr
+
+
+def record(path, subjects, name="apk"):
+    statement = {"_type": "https://in-toto.io/Statement/v0.1", "predicateType": "https://witness.testifysec.com/attestation-collection/v0.1",
+                 "subject": subjects, "predicate": {"name": name, "attestations": []}}
+    payload = base64.b64encode(json.dumps(statement).encode()).decode()
+    json.dump({"payloadType": "application/vnd.in-toto+json", "payload": payload, "signatures": []}, open(path, "w"))
+
+
+def subject(name, data, kind=PRODUCT, sha_key=True):
+    digest = {"gitoid:sha1": "gitoid:blob:sha1:" + "0" * 40}
+    if sha_key:
+        digest["sha256"] = hashlib.sha256(data).hexdigest()
+    return {"name": kind + name, "digest": digest}
+
+
+def tree(name, files=FILES):
+    """A throw-away repository root with the artifact in dir/ and the record in rec.json."""
+    d = "%s/%s" % (work, name)
+    shutil.rmtree(d, ignore_errors=True)
+    os.makedirs(d + "/dir")
+    for rel, data in files.items():
+        os.makedirs(os.path.dirname("%s/dir/%s" % (d, rel)), exist_ok=True)
+        open("%s/dir/%s" % (d, rel), "wb").write(data)
+    return d
+
+
+def good_subjects(files=FILES):
+    return [subject("out/" + rel, data) for rel, data in files.items()]
+
+
+def bind(label, d, want_rc, cause=None, names=None, step="apk", **override):
+    """Run bind from the root d with relative paths, and judge the exit code, the first line and the exact set of paths it names."""
+    args = {"--step": step, "--record": "rec.json", "--dir": "dir", "--as": "out"}
+    args.update({"--" + k: v for k, v in override.items()})
+    rc, out, err = run(["bind"] + [x for kv in args.items() for x in kv], d)
+    first = err.split("\n", 1)[0]
+    ok = rc == want_rc and "Traceback" not in err
+    if want_rc == 1:
+        ok = ok and first.startswith("refused at %s: %s: " % ("rebuild" if step in ("rapk", "snapshot-rapk") else "build", cause))
+        ok = ok and (names is None or set(first.split(": ", 2)[2].split()) == set(names))
+    check(label, ok, "exit %s, first line %r" % (rc, first[:160]))
+
+
+check("bin/chain-verify.py exists", os.path.exists(CV), "(RED: not implemented yet; every case below needs it)")
+# ---- bind ----------------------------------------------------------------------------------------------------------------------------
+APK, INDEX, FRAG = "out/x86_64/fscache-0.3.0-r0.apk", "out/x86_64/APKINDEX.tar.gz", "out/items-apk.json"
+d = tree("ok")
+record(d + "/rec.json", good_subjects())
+bind("bind: every file is the product the record holds", d, 0)
+
+d = tree("flip")
+record(d + "/rec.json", good_subjects())
+open(d + "/dir/x86_64/fscache-0.3.0-r0.apk", "ab").write(b"x")
+bind("bind: one changed byte in a file is refused and names it", d, 1, "digest", [APK])
+
+d = tree("nosubject")
+record(d + "/rec.json", [s for s in good_subjects() if not s["name"].endswith("items-apk.json")])
+bind("bind: a file with no product in the record is refused", d, 1, "digest", [FRAG])
+
+d = tree("nofile")
+record(d + "/rec.json", good_subjects() + [subject("out/x86_64/extra.apk", b"e")])
+bind("bind: a product with no file in the artifact is refused", d, 1, "digest", ["out/x86_64/extra.apk"])
+
+d = tree("material")
+record(d + "/rec.json", [subject("out/" + r, b, MATERIAL if r == "items-apk.json" else PRODUCT) for r, b in FILES.items()])
+bind("bind: a material subject of the right name is not the product", d, 1, "digest", [FRAG])
+
+d = tree("two")
+record(d + "/rec.json", good_subjects() + [subject("out/items-apk.json", b"other")])
+bind("bind: two products for one name are refused", d, 1, "digest", [FRAG])
+
+d = tree("bak")
+record(d + "/rec.json", [subject("out/" + r + (".bak" if r == "items-apk.json" else ""), b) for r, b in FILES.items()])
+bind("bind: a product named items-apk.json.bak does not cover items-apk.json", d, 1, "digest", [FRAG, FRAG + ".bak"])
+
+d = tree("nosha")
+record(d + "/rec.json", [subject("out/" + r, b, sha_key=(r != "items-apk.json")) for r, b in FILES.items()])
+bind("bind: a product with a gitoid digest and no sha256 is refused", d, 1, "digest", [FRAG])
+
+d = tree("wrongstep")
+record(d + "/rec.json", good_subjects(), name="rapk")
+bind("bind: a Rebuild apk record (step rapk) given to Build (--step apk) is refused", d, 1, "step", ["rapk"])
+d = tree("wrongstep2")
+record(d + "/rec.json", good_subjects(), name="apk")
+bind("bind: a Build apk record given to Rebuild (--step rapk) is refused", d, 1, "step", ["apk"], step="rapk")
+d = tree("rapk")
+record(d + "/rec.json", good_subjects(), name="rapk")
+bind("bind: the Rebuild step accepts its own record", d, 0, step="rapk")
+
+# REQ-CHAIN-004-AC12 / REQ-CHAIN-005-AC7: a snapshot build's record is named snapshot-apk, a snapshot Rebuild's snapshot-rapk; bind takes each
+# under its own step only
+d = tree("snapok")
+record(d + "/rec.json", good_subjects(), name="snapshot-apk")
+bind("bind: the snapshot step accepts its own record (snapshot-apk)", d, 0, step="snapshot-apk")
+# the 0.0.0 refusal belongs to the VERIFIERS only: bind must ACCEPT the files of a real snapshot run, which are all 0.0.0 (a wrong implementation
+# that refused the version in the shared record reader would break every snapshot run while every refusal test stayed green)
+FILES_SNAP = {"x86_64/fscache-0.0.0_rc1-r0.apk": b"SIG:assembly\napk-s", "x86_64/fscache-fips-0.0.0_rc1-r0.apk": b"SIG:assembly\napk-sf",
+              "x86_64/APKINDEX.tar.gz": b"index", "items-apk.json": b"{}"}
+for step, name in (("snapshot-apk", "snapok0"), ("snapshot-rapk", "snaprapk0")):
+    d = tree(name, FILES_SNAP)
+    record(d + "/rec.json", good_subjects(FILES_SNAP), name=step)
+    bind("bind: --step %s accepts a record whose files are fscache-0.0.0_rc1-r0.apk (the version refusal is the verifiers')" % step, d, 0, step=step)
+d = tree("snapwrong1")
+record(d + "/rec.json", good_subjects(), name="apk")
+bind("bind: a release apk record given to the snapshot step is refused as another step", d, 1, "step", ["apk"], step="snapshot-apk")
+d = tree("snapwrong2")
+record(d + "/rec.json", good_subjects(), name="snapshot-apk")
+bind("bind: a snapshot record given to the release step (--step apk) is refused as another step", d, 1, "step", ["snapshot-apk"])
+d = tree("snaprapk")
+record(d + "/rec.json", good_subjects(), name="snapshot-rapk")
+bind("bind: the snapshot Rebuild step accepts its own record (snapshot-rapk)", d, 0, step="snapshot-rapk")
+d = tree("snaprapk2")
+record(d + "/rec.json", good_subjects(), name="snapshot-rapk")
+bind("bind: a snapshot-rapk record given to the release Rebuild step (--step rapk) is refused as another step", d, 1, "step", ["snapshot-rapk"], step="rapk")
+d = tree("snaprapk3")
+record(d + "/rec.json", good_subjects(), name="rapk")
+bind("bind: a release rapk record given to the snapshot Rebuild step is refused as another step", d, 1, "step", ["rapk"], step="snapshot-rapk")
+d = tree("snapevil")
+record(d + "/rec.json", good_subjects(), name="snapshot-evil")
+bind("bind: snapshot-evil is not a step (the snapshot names are a closed list): a usage error", d, 2, step="snapshot-evil")
+
+d = tree("prefix")
+record(d + "/rec.json", [subject("other/" + r, b) for r, b in FILES.items()])
+bind("bind: the same bytes under another prefix are not the files of --as out", d, 1, "digest", [APK, INDEX, FRAG])
+
+d = tree("empty", {})
+record(d + "/rec.json", good_subjects())
+bind("bind: an empty artifact directory is refused", d, 1, "empty")
+
+d = tree("link")
+record(d + "/rec.json", good_subjects())
+os.symlink("/etc/passwd", d + "/dir/x86_64/link")
+bind("bind: a symbolic link to a file is refused", d, 1, "symlink", ["out/x86_64/link"])
+d = tree("dirlink")
+record(d + "/rec.json", good_subjects())
+os.symlink("/etc", d + "/dir/x86_64/etc")
+bind("bind: a symbolic link to a directory is refused (it is not walked into)", d, 1, "symlink", ["out/x86_64/etc"])
+d = tree("dangling")
+record(d + "/rec.json", good_subjects())
+os.symlink("/nonexistent/target", d + "/dir/x86_64/gone")
+bind("bind: a dangling symbolic link is refused", d, 1, "symlink", ["out/x86_64/gone"])
+
+HIDDEN = dict(FILES, **{".secret": b"s"})
+d = tree("hidden", HIDDEN)
+record(d + "/rec.json", good_subjects(HIDDEN))
+bind("bind: a dotfile in the artifact is refused even when the record holds it (upload-artifact would drop it)", d, 1, "hidden", ["out/.secret"])
+HIDDIR = dict(FILES, **{"x86_64/.cache/x": b"s"})
+d = tree("hiddendir", HIDDIR)
+record(d + "/rec.json", good_subjects(HIDDIR))
+bind("bind: a dot directory in the artifact is refused", d, 1, "hidden", ["out/x86_64/.cache"])
+
+d = tree("bare")
+json.dump({"_type": "x", "predicate": {}}, open(d + "/rec.json", "w"))
+bind("bind: a record that is not a DSSE envelope is refused", d, 1, "record")
+d = tree("unreadable")
+bind("bind: an unreadable record is a usage error, never a pass", d, 2)
+d = tree("abs")
+record(d + "/rec.json", good_subjects())
+bind("bind: an absolute --as is a usage error", d, 2, **{"as": "/out"})
+d = tree("absdir")
+record(d + "/rec.json", good_subjects())
+bind("bind: an absolute --dir is a usage error", d, 2, dir=d + "/dir")
+d = tree("dots")
+record(d + "/rec.json", good_subjects())
+bind("bind: a --dir holding .. is a usage error", d, 2, dir="dir/../dir")
+d = tree("step")
+record(d + "/rec.json", good_subjects())
+bind("bind: an unknown --step is a usage error", d, 2, step="build")
+
+
+# ---- items-apk: the apk digest is cache's `apk-tool.py digest`, not the whole-file sha256 ---------------------------------------------------
+def apk_tree(name, tag="v0.3.0", key="assembly", edit=None):
+    """A throw-away root with out/x86_64 laid out as the apk job leaves it, and the fake apk-tool in bin/."""
+    d = "%s/%s" % (work, name)
+    shutil.rmtree(d, ignore_errors=True)
+    for rel, data in h.out_files("x86_64", tag).items():
+        if rel.endswith(".apk"):
+            data = h.apk_bytes("fips" if "fips" in rel else "standard", "x86_64", tag, key)
+        h.write("%s/out/%s" % (d, rel), data)
+    h.write(d + "/bin/apk-tool.py", h.FAKE_APKTOOL, 0o755)
+    if edit:
+        edit(d)
+    return d
+
+
+def fragment_of(d):
+    rc, out, err = run(["items-apk", "--out-dir", "out/x86_64", "--result", "frag.json"], d)
+    return rc, (json.load(open(d + "/frag.json")) if rc == 0 and os.path.exists(d + "/frag.json") else None), err
+
+
+def flip_a_byte(d):
+    open(d + "/out/x86_64/fscache-0.3.0-r0.apk", "ab").write(b"!")
+
+
+def add_second_apk(d):
+    h.write(d + "/out/x86_64/fscache-0.3.1-r0.apk", h.apk_bytes("standard", "x86_64", "v0.3.1"))
+
+
+def add_dotfile(d):
+    h.write(d + "/out/.cache/x", b"s")
+
+
+d1 = apk_tree("apk1")
+rc, frag1, err = fragment_of(d1)
+whole = hashlib.sha256(open(d1 + "/out/x86_64/fscache-0.3.0-r0.apk", "rb").read()).hexdigest()
+check("items-apk: the items are exactly the oracle's (apk by apk-tool digest, binary by apk-tool cat), and the apk item is not the whole-file sha256",
+      rc == 0 and frag1 == h.fragment("x86_64", "v0.3.0") and frag1["items"]["apk-standard-x86_64"] != "sha256:" + whole, "exit %s %s" % (rc, err[:120]))
+rc, frag2, err = fragment_of(apk_tree("apk2", key="release"))
+check("items-apk: the same apk re-signed with another key has the same apk and binary items (the signature is not covered)",
+      rc == 0 and frag1 and frag2 and frag1["items"] == frag2["items"], "exit %s" % rc)
+rc, frag3, err = fragment_of(apk_tree("apk3", edit=flip_a_byte))
+check("items-apk: one changed byte outside the signature changes the apk and the binary item",
+      rc == 0 and frag1 and frag3 and all(frag1["items"][k] != frag3["items"][k] for k in ("apk-standard-x86_64", "binary-standard-x86_64")), "exit %s" % rc)
+rc, frag4, err = fragment_of(apk_tree("apk4", tag="v0.3.0-rc1"))
+check("items-apk: a release candidate's apk (fscache-0.3.0_rc1-r0.apk, PROPOSED) is found by its variant",
+      rc == 0 and frag4 == h.fragment("x86_64", "v0.3.0-rc1"), "exit %s %s" % (rc, err[:120]))
+rc, frag4b, err = fragment_of(apk_tree("apk4b", tag="v0.0.0-rc.1"))
+check("items-apk: a SNAPSHOT build's apks (fscache-0.0.0_rc1-r0.apk and the fips one) are found and itemized (the 0.0.0 refusal is the verifiers')",
+      rc == 0 and frag4b == h.fragment("x86_64", "v0.0.0-rc.1"), "exit %s %s" % (rc, err[:120]))
+rc, frag5, err = fragment_of(apk_tree("apk5", edit=add_second_apk))
+check("items-apk: two standard apks in one directory are refused (exactly one per variant)",
+      rc == 1 and err.startswith("refused at build"), "exit %s %s" % (rc, err[:100]))
+rc, frag6, err = fragment_of(apk_tree("apk6", edit=add_dotfile))
+check("items-apk: a dot directory under out/ is refused (upload-artifact would drop it)",
+      rc == 1 and err.startswith("refused at build: hidden: "), "exit %s %s" % (rc, err[:100]))
+
+
+# ---- items-merge ---------------------------------------------------------------------------------------------------------------------------
+def merge_tree(name, tag="v0.3.0"):
+    d = "%s/%s" % (work, name)
+    shutil.rmtree(d, ignore_errors=True)
+    for runner, arch, _ in h.RUNNERS:
+        h.write("%s/apk/%s/items-apk.json" % (d, runner), json.dumps(h.fragment(arch, tag)))
+    for image in h.IMAGES:
+        o = h.image_outputs(image, tag)
+        for rel, data in h.layout_files(image, tag).items():
+            h.write("%s/out/%s/%s" % (d, image, rel), data)
+        h.write("%s/out/%s.digest" % (d, image), o["digest"] + "\n")
+        h.write("%s/out/%s.manifests" % (d, image), "\n".join(o["manifests"]) + "\n")
+        h.write("%s/out/%s.full.lock.json" % (d, image), o["lock"])
+        h.write("%s/out/%s-sbom/sbom.json" % (d, image), o["sbom"])
+    for _, (file, data) in h.archive_files(tag).items():
+        h.write("%s/dist/%s" % (d, file), data)
+    h.write(d + "/archive/keys/wolfi-signing.rsa.pub", "w")
+    h.write(d + "/archive/x86_64/pkg-1.apk", "p1")
+    return d
+
+
+def do_merge(d, fragments=None, tag="v0.3.0"):
+    fragments = fragments or ["apk/%s/items-apk.json" % runner for runner, _, _ in h.RUNNERS]
+    args = ["items-merge"] + [x for f in fragments for x in ("--fragment", f)]
+    args += ["--images", "out", "--archives", "dist", "--version", tag[1:], "--archive", "archive", "--digests", "digests.json", "--items", "items.json"]
+    return run(args, d)
+
+
+def refused(label, d, result, cause, name=None):
+    rc, out, err = result
+    first = err.split("\n", 1)[0]
+    written = [f for f in ("items.json", "digests.json") if os.path.exists(d + "/" + f)]
+    ok = rc == 1 and first.startswith("refused at build: %s: " % cause) and (name is None or name in first.split()) and not written and "Traceback" not in err
+    check(label, ok, "exit %s, first line %r, files written: %s" % (rc, first[:120], written))
+
+
+d = merge_tree("m1")
+rc, out, err = do_merge(d)
+expected_items, expected_digests = h.expected(d, "assemble", "items", "v0.3.0"), h.expected(d, "assemble", "digests", "v0.3.0")
+got_items = json.load(open(d + "/items.json")) if os.path.exists(d + "/items.json") else None
+got_digests = json.load(open(d + "/digests.json")) if os.path.exists(d + "/digests.json") else None
+check("items-merge: items.json is exactly the oracle's 29 items",
+      rc == 0 and got_items == expected_items and len(expected_items) == 29, "exit %s %s" % (rc, err[:120]))
+check("items-merge: digests.json is exactly the oracle's: 2 images, 4 apks, 4 archives, each equal to its item",
+      rc == 0 and got_digests == expected_digests and len(expected_digests) == 10, "exit %s" % rc)
+
+
+# B1 (Codex B r2): Build's stage output is `jq -c . digests.json` through a command substitution, and Sign writes that text with printf '%s'. The file the
+# Witness product hashes must therefore BE those bytes (compact, no trailing newline), or Sign's byte binding refuses every release. The test hashes what Sign
+# actually receives and runs the REAL verifier comparison on it.
+original = open(d + "/digests.json", "rb").read() if os.path.exists(d + "/digests.json") else b""
+transported = subprocess.run(["jq", "-c", "."], input=original, capture_output=True).stdout.rstrip(b"\n")      # the stage output text, as Sign's printf writes it
+check("items-merge: digests.json is byte-identical to what the stage output transports to Sign (compact JSON, no trailing newline)",
+      rc == 0 and original != b"" and original == transported, "%d bytes written, %d transported" % (len(original), len(transported)))
+_cv = importlib.util.spec_from_file_location("cv", root + "/bin/chain-verify.py"); cv = importlib.util.module_from_spec(_cv)
+sys.path.insert(0, root + "/bin"); _cv.loader.exec_module(cv)
+stmt = {"subject": [{"name": cv.PRODUCT, "digest": {"sha256": hashlib.sha256(original).hexdigest()}}]}      # the product the Witness record holds for the file
+try:
+    cv.digest_compare("build", stmt, transported, json.loads(transported)); bound = True
+except cv.Refuse:
+    bound = False
+check("items-merge: Sign's byte binding (digest_compare, the real verifier) accepts the text the stage output carries", bound, "refused")
+
+
+def edit_fragment(d, runner, edit):
+    path = "%s/apk/%s/items-apk.json" % (d, runner)
+    fragment = json.load(open(path))
+    edit(fragment)
+    h.write(path, json.dumps(fragment))
+
+
+d = merge_tree("m2")
+edit_fragment(d, "ubuntu-24.04-arm", lambda f: f["items"].update({"modules-sbom-standard": "sha256:" + "0" * 64}))
+refused("items-merge: two fragments with different values for one item are refused and nothing is written", d, do_merge(d), "digest", "modules-sbom-standard")
+d = merge_tree("m3")
+edit_fragment(d, "ubuntu-24.04", lambda f: f["items"].update({"unlisted-item": "sha256:" + "0" * 64}))
+refused("items-merge: an item that is not on the committed list is refused", d, do_merge(d), "unexpected", "unlisted-item")
+d = merge_tree("m4")
+os.remove(d + "/out/fips.manifests")
+refused("items-merge: a missing image file is refused", d, do_merge(d), "missing", "fips.manifests")
+def edit_manifests(d, image, edit):
+    path = "%s/out/%s.manifests" % (d, image)
+    lines = [l for l in open(path).read().split("\n") if l.strip()]
+    h.write(path, "\n".join(edit(lines)) + "\n")
+
+
+d = merge_tree("m4a")
+edit_manifests(d, "production", lambda L: [L[0].split()[0] + " sha256:" + "9" * 64] + L)
+refused("items-merge: an architecture repeated in <image>.manifests is refused (a later line must not overwrite the first digest)", d, do_merge(d), "manifests", "production.manifests")
+d = merge_tree("m4b")
+edit_manifests(d, "fips", lambda L: L[:1])
+refused("items-merge: an architecture missing from <image>.manifests is refused", d, do_merge(d), "manifests", "fips.manifests")
+d = merge_tree("m4c")
+edit_manifests(d, "fips", lambda L: L + ["s390x sha256:" + "8" * 64])
+refused("items-merge: an architecture outside amd64 and arm64 in <image>.manifests is refused", d, do_merge(d), "manifests", "fips.manifests")
+d = merge_tree("m4d")
+edit_manifests(d, "production", lambda L: [L[0] + " extra"] + L[1:])
+refused("items-merge: a malformed line in <image>.manifests is refused, never a traceback", d, do_merge(d), "manifests", "production.manifests")
+# Build's images artifact ships each variant as an OCI LAYOUT directory out/<variant>/ (oci-layout, index.json, blobs/), so the digest does not change between
+# Build and a push (real crane runs: a docker-format tarball push changes the digest, a layout directory keeps it). PROPOSED/UNVERIFIED: cache P5 decides the
+# shape of assemble-image.sh's output; the judge pins this one.
+def layout_refused(label, edit, fragment):
+    dd = merge_tree("lay-" + label.split()[0])
+    edit(dd)
+    refused("items-merge: " + label, dd, do_merge(dd), "layout", fragment)
+
+
+def child_digest(image, arch):
+    return h.image_outputs(image, "v0.3.0")["children"][arch][0]
+
+
+def flip_sidecar(dd):          # the sidecar names another amd64 child than the index blob does
+    p = dd + "/out/production.manifests"; lines = open(p).read().split("\n")
+    lines[0] = "amd64 sha256:" + "5" * 64; open(p, "w").write("\n".join(lines))
+
+
+def drop_child(dd):
+    os.remove("%s/out/production/blobs/sha256/%s" % (dd, child_digest("production", "arm64").split(":")[1]))
+
+
+def corrupt_child(dd):
+    open("%s/out/fips/blobs/sha256/%s" % (dd, child_digest("fips", "amd64").split(":")[1]), "ab").write(b" ")
+
+
+def non_json_index(dd):
+    # an index blob that is not JSON (the old test oracle's shape), with a descriptor and a name that match
+    blob = b"image|production|not json"; dg = hashlib.sha256(blob).hexdigest()
+    shutil.rmtree(dd + "/out/production/blobs"); h.write("%s/out/production/blobs/sha256/%s" % (dd, dg), blob)
+    h.write(dd + "/out/production/index.json", json.dumps({"manifests": [{"digest": "sha256:" + dg}]}))
+    h.write(dd + "/out/production.digest", "sha256:" + dg + "\n")
+
+
+def drop_layout(dd, image="production"):
+    shutil.rmtree("%s/out/%s" % (dd, image))
+
+
+d = merge_tree("lay-ok")
+rc, out, err = do_merge(d)
+check("items-merge: the digest Build records equals the descriptor of the image index in the uploaded layout (production and fips)",
+      rc == 0 and json.load(open(d + "/items.json"))["image-production"] == h.image_outputs("production", "v0.3.0")["digest"], "exit %s %s" % (rc, err[:120]))
+layout_refused("a docker-save tarball shape (manifest.json at the root, no oci-layout) is refused", lambda dd: (os.remove(dd + "/out/production/oci-layout"),
+               h.write(dd + "/out/production/manifest.json", "[]")), "production")
+layout_refused("a layout directory missing for a variant (only the old <variant>.tar file) is refused", lambda dd: (drop_layout(dd), h.write(dd + "/out/production.tar", "tar")), "production")
+def other_digest(dd):
+    p = dd + "/out/fips/index.json"; ix = json.load(open(p)); ix["manifests"][0]["digest"] = "sha256:" + "7" * 64; open(p, "w").write(json.dumps(ix))
+layout_refused("an index.json whose descriptor is not the recorded digest is refused", other_digest, "fips")
+def two_descriptors(dd):
+    p = dd + "/out/fips/index.json"; ix = json.load(open(p)); ix["manifests"] = ix["manifests"] * 2; open(p, "w").write(json.dumps(ix))
+layout_refused("an index.json with two descriptors is refused", two_descriptors, "fips")
+def no_blob(dd):
+    hexd = h.image_outputs("production", "v0.3.0")["digest"].split(":", 1)[1]; os.remove("%s/out/production/blobs/sha256/%s" % (dd, hexd))
+layout_refused("a layout whose index blob is missing is refused", no_blob, "production")
+def bad_blob(dd):
+    hexd = h.image_outputs("production", "v0.3.0")["digest"].split(":", 1)[1]; open("%s/out/production/blobs/sha256/%s" % (dd, hexd), "ab").write(b"x")
+layout_refused("a layout whose blob does not hash to its name is refused", bad_blob, "production")
+def bad_version(dd):
+    open(dd + "/out/production/oci-layout", "w").write('{"imageLayoutVersion": "2.0.0"}')
+layout_refused("an oci-layout file of another version is refused", bad_blob if False else bad_version, "production")
+# Codex A r3 F3: the sidecar digests are bound to the platform descriptors of the parsed index blob, and the child blobs exist and hash to their names
+d = merge_tree("idx-ok")
+rc, out, err = do_merge(d)
+ix = json.loads(open("%s/out/production/blobs/sha256/%s" % (d, h.image_outputs("production", "v0.3.0")["digest"].split(":")[1])).read())
+check("items-merge: the oracle's image index is real OCI JSON with a linux/amd64 and a linux/arm64 descriptor equal to the sidecar",
+      rc == 0 and sorted((m["platform"]["architecture"], m["platform"]["os"]) for m in ix["manifests"]) == [("amd64", "linux"), ("arm64", "linux")]
+      and sorted(m["digest"] for m in ix["manifests"]) == sorted(l.split()[1] for l in h.image_outputs("production", "v0.3.0")["manifests"]), "exit %s" % rc)
+layout_refused("a sidecar digest that is not the index's platform descriptor is refused", flip_sidecar, "production")
+layout_refused("a child manifest blob that is missing is refused", drop_child, "production")
+layout_refused("a child manifest blob that does not hash to its name is refused", corrupt_child, "fips")
+layout_refused("an index blob that is not JSON is refused", non_json_index, "production")
+d = merge_tree("m5")
+os.remove(d + "/dist/" + h.archive_files("v0.3.0")["archive-fips-linux-arm64"][0])
+refused("items-merge: a missing archive is refused", d, do_merge(d), "missing", "archive-fips-linux-arm64")
+d = merge_tree("m6")
+refused("items-merge: the same architecture twice (aarch64 missing) is refused and the missing architecture is named", d,
+        do_merge(d, ["apk/ubuntu-24.04/items-apk.json"] * 2), "arch", "aarch64")
+d = merge_tree("m6b")
+refused("items-merge: one architecture only (aarch64 missing) is refused and named", d, do_merge(d, ["apk/ubuntu-24.04/items-apk.json"]), "arch", "aarch64")
+d = merge_tree("m8", "v0.0.0-rc.1")
+rc, out, err = do_merge(d, tag="v0.0.0-rc.1")
+check("items-merge: a snapshot build's files (version 0.0.0-rc.1, archives fscache_0.0.0-rc.1_linux_*) merge to the oracle's items",
+      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.0.0-rc.1"),
+      "exit %s %s" % (rc, err[:100]))
+d = merge_tree("m7", "v0.3.0-rc1")
+rc, out, err = do_merge(d, tag="v0.3.0-rc1")
+check("items-merge: a release candidate's files merge to the oracle's items (PROPOSED names)",
+      rc == 0 and os.path.exists(d + "/items.json") and json.load(open(d + "/items.json")) == h.expected(d, "assemble", "items", "v0.3.0-rc1"),
+      "exit %s %s" % (rc, err[:100]))
+
+shutil.rmtree(work, ignore_errors=True)
+EXPECT = 70
+print("pass=%d fail=%d" % (passed, failed))
+if passed + failed != EXPECT:
+    print("FAIL case count %d != expected %d (a case was skipped or added)" % (passed + failed, EXPECT))
+    sys.exit(1)
+sys.exit(1 if failed else 0)
+PY
