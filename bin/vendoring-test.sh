@@ -113,6 +113,14 @@ rc AC2 "an -o set through GOENV's file is refused (2)" 2 env -u GOFLAGS GOENV="$
 rc AC2 "an unknown argument exits 2" 2 vc --frobnicate
 rc AC2 "two arguments exit 2" 2 vc "$work/fx-clean" extra
 rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
+mkcase noperm; chmod 000 "$work/fx-noperm/vendor"
+rc AC2 "a tree whose vendor/ cannot be read is a failure, never a pass (1)" 1 vc "$work/fx-noperm"
+chmod 755 "$work/fx-noperm/vendor"
+for pair in "symfile:link.go" "symdir:depl" "fifo:pipe" "emptydir:sub" "add:extra.go" "dot:.hidden" "dotdir:.github"; do
+  c=${pair%%:*}; nm=${pair#*:}
+  rc AC2 "($c case) refused (1)" 1 vc "$work/fx-$c"
+  says AC2 "($c case) the failure names the offending path $nm" "$nm"
+done
 mkdir -p "$work/nogo"; cp -R "$fx/vendor" "$work/nogo/vendor"
 rc AC2 "a tree with vendor/ but no go.mod or go.sum exits 2" 2 vc "$work/nogo"
 # fail closed: a proxy that cannot serve the module, and a toolchain that is not there, are failures, never a pass
@@ -200,7 +208,7 @@ if job.get("name") != "vendor": fail("the job's check name is " + str(job.get("n
 if d.get("defaults"): fail("a workflow-level defaults block (a shell default can skip every step)")
 if d.get("env"): fail("a workflow-level env block (SHELLOPTS, BASH_ENV and the like change what a step runs)")
 ro = str(job.get("runs-on", ""))
-if not ro.startswith("ubuntu-") or "self-hosted" in ro: fail("runs-on " + ro)
+if ro not in ("ubuntu-latest", "ubuntu-24.04", "ubuntu-22.04"): fail("runs-on " + ro + " is not a GitHub-hosted ubuntu label")
 if set(job) - {"name", "runs-on", "permissions", "steps"}: fail("job keys beyond name, runs-on, permissions, steps: " + str(sorted(job)))
 if job.get("permissions") != {"contents": "read"}: fail("permissions " + str(job.get("permissions")))
 steps = job.get("steps", [])
@@ -247,21 +255,94 @@ mutate checkout-ref 's = s.replace("          fetch-depth: 0\n", "          fetc
 mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "          fetch-depth: 0\n          repository: o/r\n", 1)'
 mutate env-shellopts 's = s.replace("jobs:\n", "env:\n  SHELLOPTS: noexec\njobs:\n", 1)'
 mutate env-bash-env 's = s.replace("jobs:\n", "env:\n  BASH_ENV: /dev/null\njobs:\n", 1)'
+mutate runner-private 's = s.replace("  vendor:\n    name: vendor\n    runs-on: ubuntu-latest\n", "  vendor:\n    name: vendor\n    runs-on: ubuntu-private\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
 f=bin/vendor-check.sh
 t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1 '$f' | grep -q '^#!' && git ls-files -s '$f' | grep -q '^100755'"
-t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
+t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Za-z0-9_]*|PYTHON[A-Za-z0-9_]*)[+]?=' '$f'"
 t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
-cmdword='(^|[;&|({!]|(^|[[:space:]])(then|do|else|if|elif|while|until))[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|[^[:space:]$`]*)[[:space:]]+)*[^[:space:]$`;|&()<>=]*(\$\(|`|\$\{?[A-Za-z_])'
-for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off "g$(printf o)" mod verify' "GOAUTH=off 'g\$(printf o)' mod verify" 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'GOAUTH=off g"$(printf o)" mod verify' 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'p"$cmd" arg'; do
-  t AC11 "the substitution pattern flags: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
+# the command-word judge reads the script as shell words (quotes, $( ), ${ } and backticks nest inside a word), skips assignment prefixes and
+# the words after case/for, and flags any command word that holds an expansion
+cat >"$work/cmdword.py" <<'CMDWORD_PY'
+import re, sys
+KW = {"then", "do", "else", "if", "elif", "while", "until", "time", "!", "{", "}", "case", "for", "select", "in", "esac", "fi", "done"}
+ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*\+?=")
+OPS = ";&|(){}<>"
+def lex(line):
+    """words and operators of one line; quotes, $( ), ${ } and backticks nest inside a word"""
+    i, n, toks = 0, len(line), []
+    while i < n:
+        c = line[i]
+        if c.isspace():
+            i += 1; continue
+        if c == "#":
+            break
+        if c in OPS:
+            j = i + 1
+            while j < n and line[j] in OPS and line[j] == c and c in "&|;<>":
+                j += 1
+            toks.append(("op", line[i:j])); i = j; continue
+        j, word = i, ""
+        while j < n and not line[j].isspace() and line[j] not in OPS:
+            ch = line[j]
+            if ch in "'\"":
+                k = j + 1
+                while k < n and line[k] != ch:
+                    if ch == '"' and line[k] == "\\": k += 1
+                    k += 1
+                j = k + 1; continue
+            if ch == "`":
+                k = line.find("`", j + 1); j = n if k < 0 else k + 1; continue
+            if ch == "$" and line[j + 1:j + 2] in ("(", "{"):
+                op, cl = ("(", ")") if line[j + 1] == "(" else ("{", "}")
+                d, k = 1, j + 2
+                while k < n and d:
+                    d += line[k] == op; d -= line[k] == cl; k += 1
+                j = k; continue
+            if ch == "\\": j += 1
+            j += 1
+        toks.append(("word", line[i:j])); i = j
+    return toks
+def findings(text):
+    out = []
+    for n, raw in enumerate(text.split("\n"), 1):
+        toks = lex(raw.strip())
+        pos, skip = True, False
+        for kind, t in toks:
+            if skip:
+                skip = False; continue
+            if kind == "op":
+                if t[0] in "<>":
+                    skip = True
+                else:
+                    pos = True
+                continue
+            if pos and t in ("case", "for", "select"):
+                pos = False; continue
+            if pos and t in KW:
+                continue
+            if pos and ASSIGN.match(t):
+                continue
+            if pos:
+                if "$" in t or "`" in t:
+                    out.append((n, "command word built by expansion: " + t))
+                pos = False
+    return out
+if __name__ == "__main__":
+    fs = findings(sys.argv[2] if sys.argv[1] == "-c" else open(sys.argv[1]).read())
+    for n, m in fs:
+        print("%d: %s" % (n, m))
+    sys.exit(1 if fs else 0)
+CMDWORD_PY
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off g"$(printf o)" mod verify' "AUDIT_LABEL='two words' GOAUTH=off \"g\$(printf o)\" mod verify" 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'p"$cmd" arg' 'case $x in a) $(echo y);; esac'; do
+  tn AC11 "the command-word judge flags: $line" python3 "$work/cmdword.py" -c "$line"
 done
-for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"'; do
-  tn AC11 "the substitution pattern leaves alone: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
+for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"' '[ "$(cd "$self/.." && pwd -P)" = "$(pwd -P)" ] || die x' 'cat "$a" >&2; die "go mod verify failed" 1' 'case $x in -*) die y;; esac' 'self=${0%/*}; [ "$self" != "$0" ] || self=.'; do
+  t AC11 "the command-word judge leaves alone: $line" python3 "$work/cmdword.py" -c "$line"
 done
-t AC11 "$f builds no command word by substitution or variable" bash -c "[ -e '$f' ] && ! grep -Ev '^[[:space:]]*#' '$f' | grep -Eq '$cmdword'"
+t AC11 "$f builds no command word by substitution or variable" python3 "$work/cmdword.py" "$f"
 rc AC11 "vendor-check.sh exits 2 outside the repository root" 2 bash -c "cd '$work' && bash '$bin_vc'"
 # the root is the directory the script itself sits in, never a stand-in file of the same name
 mkdir -p "$work/impostor/bin"; cp "$bin_vc" "$work/impostor/bin/vendor-check.sh"
