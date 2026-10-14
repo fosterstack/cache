@@ -8,7 +8,7 @@
 # Exit codes: 0 identical (or the narrow no-vendor case below) | 1 a difference is named, or the check could not be completed (no go
 # toolchain, a failed go mod verify or go mod vendor, a tree or a base that cannot be read in full) | 2 refused: not run from the
 # repository root, an unknown argument, an unreadable tree, a go.mod or go.sum that is a link, a vendor path that is not a vendor/ directory at the top, or a tree without
-# go.mod, go.sum or vendor/. It writes nothing but its scratch directory, and it only compares: no token, no commit. The Go environment
+# go.mod, go.sum or vendor/. It writes nothing but its scratch directory and the Go tool's own caches, and it only compares: no token, no commit; GOAUTH is set to off, so the Go tool reads no .netrc and runs no auth command. The Go environment
 # (GOPROXY, GOFLAGS, GOSUMDB) is the caller's, so a CI run uses the checksum database and a fixture run uses a file proxy.
 #
 # The one pass without a comparison: vendor/ is absent from the tree AND absent from origin/main (no path with a vendor component),
@@ -23,6 +23,7 @@ self=${0%/*}; [ "$self" != "$0" ] || self=.
 src=${1:-.}
 case $src in -*) die "unknown argument $src";; esac
 [ -d "$src" ] && [ -r "$src" ] || die "the tree $src is not a readable directory"
+src=$(cd "$src" 2>/dev/null && pwd -P) || die "the tree $src cannot be resolved to a physical directory"
 
 scratch=""
 cleanup() { local rc=$?; set +e; [ -z "$scratch" ] || { chmod -R u+w "$scratch" 2>/dev/null; rm -rf "$scratch"; }; exit $rc; }
@@ -34,9 +35,11 @@ if [ ! -d "$src/vendor" ] || [ -L "$src/vendor" ]; then
   [ $? -eq 0 ] || die "the tree $src could not be listed in full" 1
   [ -z "$found" ] || die "a vendor path that is not a vendor/ directory at the top of the tree: $found"
   git -C "$src" rev-parse --git-dir >/dev/null 2>&1 || die "no vendor/ here, and $src is not a git tree to read origin/main from" 1
+  top=$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)
+  [ "$top" = "$src" ] || die "no vendor/ here, and $src is not the top of its git tree: a subdirectory is never judged as the whole tree"
   git -C "$src" rev-parse --verify --quiet "origin/main^{commit}" >/dev/null 2>&1 || die "no vendor/ here, and origin/main cannot be read" 1
   scratch=$(mktemp -d) || die "no scratch directory" 1
-  git -C "$src" ls-tree -r -z --name-only origin/main >"$scratch/base.z" 2>/dev/null || die "origin/main cannot be listed" 1
+  git -C "$src" ls-tree -r -z --full-tree --name-only origin/main >"$scratch/base.z" 2>/dev/null || die "origin/main cannot be listed" 1
   tr '\0' '\n' <"$scratch/base.z" >"$scratch/base.txt" || die "origin/main listing cannot be read" 1
   grep -E '(^|/)vendor(/|$)' "$scratch/base.txt" >"$scratch/base.hit"
   case $? in
@@ -66,8 +69,8 @@ modeodd=$(find "$src/vendor" -type f ! -perm 644 -print -quit)
 scratch=$(mktemp -d) || die "no scratch directory" 1
 tree="$scratch/tree"; mkdir "$tree" || die "no scratch tree" 1
 ( cd "$src" && tar -cf - --exclude=./.git --exclude=./vendor . ) | ( cd "$tree" && tar -xf - ) || die "cannot copy $src" 1
-( cd "$tree" && go mod verify ) >"$scratch/verify.log" 2>&1 || { cat "$scratch/verify.log" >&2; die "go mod verify failed" 1; }
-( umask 022; cd "$tree" && go mod vendor ) >"$scratch/vendor.log" 2>&1 || { cat "$scratch/vendor.log" >&2; die "go mod vendor failed" 1; }
+( cd "$tree" && GOAUTH=off go mod verify ) >"$scratch/verify.log" 2>&1 || { cat "$scratch/verify.log" >&2; die "go mod verify failed" 1; }
+( umask 022; export GOAUTH=off; cd "$tree" && go mod vendor ) >"$scratch/vendor.log" 2>&1 || { cat "$scratch/vendor.log" >&2; die "go mod vendor failed" 1; }
 cmp -s "$src/go.mod" "$tree/go.mod" || die "go mod vendor changed go.mod: the committed go.mod is not what the vendored tree was made from" 1
 cmp -s "$src/go.sum" "$tree/go.sum" || die "go mod vendor changed go.sum: the committed go.sum is not what the vendored tree was made from" 1
 
