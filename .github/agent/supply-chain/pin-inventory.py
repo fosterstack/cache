@@ -222,6 +222,44 @@ def _input_fed(item):
     return not _PLAIN_VERSION.fullmatch(item.version) or any(m in item.key for m in ("${{", "${var}", "(variable)", "(expression)"))
 
 
+_INPUT = re.compile(r"\binputs\s*(?:\.|\[)", re.I)
+_INSTALLER_WORD = re.compile(r"(?<![\w.-])(?:pip[0-9.]*|pipx|uv|npm|npx|yarn|pnpm|gem|go|cargo|curl|wget|docker|apt|apt-get|apk|brew|helm|kubectl|conda|cosign|grype|syft)(?![\w.-])")
+
+
+def _inputs_confined(doc):
+    """True when the callee refers to its caller's inputs only where no version can be selected by name: an `if:` condition, a step `name:`, or a step `env:` value
+    whose variable name the same step's own uses/with/run text does not mention (a script the step runs reads it; that script is a file of this tree, read and
+    pinned like any other). An input in uses:, with:, run:, a container, a matrix or a job-level key is a version a caller could steer (REQ-SUP-001-AC19)."""
+    def has(n):
+        return bool(_INPUT.search(json.dumps(n, default=str))) if n is not None else False
+    for job in (doc.get("jobs") or {}).values():
+        if not isinstance(job, dict):
+            return False
+        for k, v in job.items():
+            if k in ("if", "name", "needs", "permissions", "timeout-minutes", "concurrency", "outputs"):
+                continue
+            if k == "steps":
+                continue
+            if has(v):
+                return False
+        for st in job.get("steps") or []:
+            if not isinstance(st, dict):
+                return False
+            env = st.get("env") if isinstance(st.get("env"), dict) else {}
+            rest = {k: v for k, v in st.items() if k not in ("if", "name", "env")}
+            if has(rest) or (st.get("env") is not None and not isinstance(st.get("env"), dict) and has(st.get("env"))):
+                return False
+            text = json.dumps(rest, default=str)
+            for name, val in env.items():
+                if not has(val):
+                    continue
+                n = re.escape(str(name))
+                bare = re.sub(r'\\"\$\{?' + n + r'\}?\\"', "", text)    # the quoted-argument form "$NAME" / "${NAME}" is the safe way to hand it to a script
+                if re.search(r"\$\{?" + n + r"(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])" + n + r"(?![A-Za-z0-9_])", bare) or _INSTALLER_WORD.search(text):
+                    return False
+    return not has({k: v for k, v in doc.items() if k not in ("jobs", "on")})
+
+
 _CALLEE_MODE = [False]   # True while a callee is being judged: no call inside it is exempted, so a relay, a cycle or a self-call is never plain
 
 
@@ -233,6 +271,8 @@ def _callee_is_plain(path, text):
     except yaml.YAMLError:
         return False
     if not isinstance(doc, dict) or not isinstance(doc.get("jobs"), dict):
+        return False
+    if not _inputs_confined(doc):
         return False
     on = doc.get("on")
     if not (on == "workflow_call" or (isinstance(on, list) and "workflow_call" in on) or (isinstance(on, dict) and "workflow_call" in on)):

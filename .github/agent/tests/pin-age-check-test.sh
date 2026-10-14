@@ -2574,5 +2574,61 @@ lck m12
 CASE="AC19: a callee that hands a caller input to an installer through an input nobody classified (python-version-file) is not exempted (exit 1)"
 check test "$rc" -eq 1; check grep -q 'action:local:./.github/workflows/callee.yml' "$work/m12.out"
 
+# round 4 of the review: an input may appear in a callee only in an if:, a name:, or an env: value handed to a script as a quoted argument
+cat >"$work/callee-uses.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@${{ inputs.version }}
+EOF
+lcallc m14 './.github/workflows/callee.yml' $'    with:\n      version: stable\n' "$work/callee-uses.yml"
+lck m14
+CASE="AC19: an input in a remote uses: reference (which the inventory cannot read) keeps the call an item whatever the caller passes (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:./.github/workflows/callee.yml' "$work/m14.out"
+cat >"$work/callee-goenv.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      suffix:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          TOOL_SUFFIX: ${{ inputs.suffix }}
+        run: go install github.com/example/tool@v1.0.0`printenv TOOL_SUFFIX`
+EOF
+lcallc m15 './.github/workflows/callee.yml' $'    with:\n      suffix: -alpha\n' "$work/callee-goenv.yml"
+lck m15
+CASE="AC19: an input handed through env to an installer command in the same step keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+cat >"$work/callee-envarg.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - name: the mode is release or snapshot
+        if: ${{ inputs.mode == 'release' }}
+        env:
+          MODE: ${{ inputs.mode }}
+        run: bash bin/refuse-mode.sh "$MODE"
+EOF
+lcallc m16 './.github/workflows/callee.yml' $'    with:\n      mode: release\n' "$work/callee-envarg.yml"
+lck m16
+CASE="AC19: an input in an if: and in an env value handed to a script as a quoted argument is the allowed shape (exit 0)"
+check test "$rc" -eq 0
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
