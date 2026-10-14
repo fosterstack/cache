@@ -615,6 +615,8 @@ cat >"$stubs/sudo" <<'EOF'
 echo "sudo $*" >>"$CALLS"
 keep=0
 while [ $# -gt 0 ]; do case "$1" in -E|--preserve-env) keep=1; shift;; -u) shift 2;; -n|-H|-S) shift;; --) shift; break;; *) break;; esac; done
+resolves() { case "$1" in */*) [ -f "$1" ] && [ -x "$1" ];; *) type -P "$1" >/dev/null 2>&1;; esac; }   # as exec would: a bare name by the search path only, a name with a slash as a path
+[ -z "${1:-}" ] || resolves "$1" || { echo "sudo: $1: command not found" >&2; exit 127; }   # before any log-only success below: an operand that does not resolve is never a silent success
 [ "${1:-}" = mkdir ] && [ "${2:-}" != -p ] && [ -n "${STUB_SUDO_FAIL_MKDIR:-}" ] && { echo "stub sudo: mkdir failed (exists)" >&2; exit 1; }
 if [ "${1:-}" = ln ] && [ -n "${STUB_LN_FAIL_AT:-}" ]; then
   n=$(cat "$CALLS.ln" 2>/dev/null || echo 0); n=$((n+1)); echo $n >"$CALLS.ln"
@@ -630,7 +632,7 @@ cat >"$stubs/unshare" <<'EOF'
 #!/bin/bash
 echo "unshare $*" >>"$CALLS"
 while [ $# -gt 0 ]; do case "$1" in -*) shift;; *) break;; esac; done
-case "$*" in *net-probe.py*) { [ -x "$1" ] || type -P "$1" >/dev/null 2>&1; } || { echo "unshare: failed to execute $1: No such file or directory" >&2; exit 127; }   # the probe really resolves the program it is asked to run
+case "$*" in *net-probe.py*) { case "$1" in */*) [ -f "$1" ] && [ -x "$1" ];; *) type -P "$1" >/dev/null 2>&1;; esac; } || { echo "unshare: failed to execute $1: No such file or directory" >&2; exit 127; }   # the probe really resolves the program it is asked to run
   if [ -n "${STUB_PROBE_RC:-}" ]; then exit "$STUB_PROBE_RC"; elif [ -n "${STUB_UNSHARE_LEAKY:-}" ]; then exit 0; else exit 101; fi;; esac   # the stub plays the kernel: no route in a sealed namespace = ENETUNREACH (101)
 [ -n "${STUB_UNSHARE_LEAKY:-}" ] || export FAKE_SEALED=1
 exec "$@"
