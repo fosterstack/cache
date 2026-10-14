@@ -1,0 +1,2 @@
+PLACEHOLDER: the real public half of the release key is committed by a human in the first chain release PR (docs/apk-signing-key.md).
+This file is deliberately NOT a key; nobody holds a private half of it, and release-sign-apks.sh refuses every release until it is replaced.
