@@ -5,37 +5,12 @@
    "id": "KR-SIGN-1",
    "suite": "bin/chain-sign-wiring-test.sh",
    "case": "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)",
-   "reason": "the real-tree judge still finds the missing cache files (bin/build-apk.sh, bin/assemble-image.sh, bin/apk-tool.py, archive/): the build-stage scripts run them and `runs` entries must be listed rows",
+   "reason": "the real-tree judge still finds the missing cache files (bin/build-apk.sh, bin/assemble-image.sh, bin/apk-tool.py, archive/): the build-stage scripts run them and `runs` entries must be listed rows; PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
    "green_by": "cache P4/P5",
    "findings": [
-    "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-snapshot-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-version-check.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/chain_items.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list"
-   ]
-  },
-  {
-   "id": "KR-SIGN-2",
-   "suite": "bin/chain-sign-wiring-test.sh",
-   "case": "shrink: row + pinned entry removed was refused",
-   "reason": "the same real-tree findings (missing cache scripts) make the shrink probe red",
-   "green_by": "cache P4/P5",
-   "findings": [
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
+    "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
     "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
     "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
     "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
@@ -61,9 +36,12 @@
    "id": "KR-SIGN-3",
    "suite": "bin/chain-sign-wiring-test.sh",
    "case": "an UNTRACKED file holding a signer is not in the tracked copy CI judges",
-   "reason": "the same real-tree findings (missing cache scripts)",
+   "reason": "the same real-tree findings (missing cache scripts); PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
    "green_by": "cache P4/P5",
    "findings": [
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
+    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
+    "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
     "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
     "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
     "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
@@ -86,31 +64,6 @@
    ]
   },
   {
-   "id": "KR-BUILD-1",
-   "suite": "bin/chain-build-wiring-test.sh",
-   "case": "005-AC5 the real release.yml chain jobs",
-   "reason": "release.yml still has the old promotion job and lacks the release job: PR 4 replaces it with Release (PR 3 replaced the old scans, acceptance and authorization jobs with check)",
-   "green_by": "PR 4 (the release job; PR 3 replaced the old scans, acceptance and authorization jobs with check)",
-   "findings": [
-    "workflow-level permissions must be exactly contents: read (every job asks for what it needs), got {'contents': 'write', 'id-token': 'write', 'attestations': 'write', 'packages': 'write', 'checks': 'read', 'statuses': 'read', 'pull-requests': 'read'}",
-    "chain job release is missing (the job id is the stage name, so a failure names it)",
-    "job promotion has a job-level uses (./.github/workflows/stage-promote.yml): only the five chain jobs call a workflow",
-    "job promotion is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job rc-refusal is not one of the five chain jobs or the allowed non-chain jobs ['decide', 'patch-failed', 'patch-notes'] plus hostile-*",
-    "job patch-failed must need exactly ['build', 'check', 'rebuild', 'release', 'sign'], got ['build', 'check', 'promotion', 'rebuild', 'sign']"
-   ]
-  },
-  {
-   "id": "KR-CHECK-1",
-   "suite": "bin/chain-check-wiring-test.sh",
-   "case": "the real release.yml runs check beside rebuild, check needs build only, and the release job needs exactly check, rebuild and sign",
-   "reason": "release.yml has no job named release yet: PR 4 replaces the old promotion job with Release (the check, rebuild and sign needs are already as the judge pins them)",
-   "green_by": "PR 4",
-   "findings": [
-    "release.yml has no job release"
-   ]
-  },
-  {
    "id": "KR-CHECK-2",
    "suite": "bin/chain-check-wiring-test.sh",
    "case": "rule 79 on the real guide: it exists and its cannot-run list is a valid exact-text list (AC7; RED until cache-3f's guide exists)",
@@ -126,6 +79,18 @@
    "case": "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case",
    "reason": "the cutover pull request (chain-v030 to main) needs this list empty AND every hosted check green on hosted runners, not only the suite cases: build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; the case is red while any entry exists, and listed itself until then",
    "green_by": "cutover (the last entry removed)"
+  },
+  {
+   "id": "KR-RECORDS-1",
+   "suite": "bin/chain-records-test.sh",
+   "case": "the real repository: every produced record type has a row with a claim and a stage consumer",
+   "reason": "the same three cache scripts: Release's rows list bin/apk-tool.py, bin/release-sign-apks.sh and bin/vendor-provenance.py in `runs`, and they are not listed rows of chain-scripts.json until cache lands them; the entry shrinks by one finding as each lands",
+   "green_by": "cache P4/P5 (bin/apk-tool.py, bin/release-sign-apks.sh) and the vendoring PR (bin/vendor-provenance.py)",
+   "findings": [
+    "chain-scripts.json: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
+    "chain-scripts.json: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
+    "chain-scripts.json: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed"
+   ]
   }
  ]
 }

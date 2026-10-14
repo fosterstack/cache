@@ -1,17 +1,12 @@
 name: Release
 
-# The release chain (release-chain-design.md): build once, verify by
-# digest, promote by digest. Each stage is a reusable workflow with its
-# own OIDC identity; one signed predicate per stage on exit, one
-# verification per stage on entry; subjects are sha256 digests emitted
-# by the stage that produced the bytes, never resolved from a registry
-# after the fact. Tag mode is the only path that pushes anything, and
-# promotion (the final stage) is the only path that can make anything
-# public — and only after the authorization stage has verified the
-# whole graph. Releases build ONLY here; `goreleaser release` (without
-# --snapshot) is never invoked anywhere else.
+# The release chain (release-chain-design.md; v0.3.0 rules 50 to 71): build once, verify by digest, publish by digest. Each stage is a reusable
+# workflow with its own OIDC identity; one signed record per stage (Witness, and Sign's provenance), one verification per stage on entry; subjects
+# are sha256 digests emitted by the stage that produced the bytes, never resolved from a registry after the fact. Tag mode is the only path that
+# pushes anything, and Release (the final stage) is the only path that can make anything public, and only after it has verified every earlier
+# stage's record. Releases build ONLY here; `goreleaser release` (without --snapshot) is never invoked anywhere else.
 #
-# build -> { sign, rebuild } ; { build, sign } -> check ; { check, rebuild, sign } -> promotion (PR 4 renames it release)
+# build -> { sign, rebuild } ; { build, sign } -> check ; { check, rebuild, sign } -> release
 
 on:
   push:
@@ -32,17 +27,10 @@ on:
         type: boolean
         default: false
 
-# Caller grants must COVER every called job's requests, or the run is a
-# startup_failure with zero jobs. checks/statuses: read are for the
-# admission stage's required-check verification.
+# Every job asks for what it needs (v0.3.0 rule 56: only the Release job holds write access to packages and the repository's releases). The
+# workflow default is read-only; a caller's grants must COVER what the called stage requests, or the run is a startup_failure with zero jobs.
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
-  packages: write
-  checks: read
-  statuses: read
-  pull-requests: read   # admission verifies pull_request-scoped checks on the merged-PR head (R01)
+  contents: read
 
 jobs:
   # ---------------------------------------------------------------------------------------------------------------
@@ -112,7 +100,7 @@ jobs:
           # every variant of the release must scan: one that cannot is "unknown" (no at-once cut), never an empty
           # release (Codex #159 r1, B2)
           ver="${SINCE#v}"; rel=(); ok=1
-          for t in "$ver" "$ver-debug" "$ver-fips"; do
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
             if grype "ghcr.io/${GITHUB_REPOSITORY}:${t}" -o json > "$RUNNER_TEMP/rel-${t}.json"; then rel+=("$RUNNER_TEMP/rel-${t}.json")
             else echo "::warning::the release image ${t} could not be scanned"; ok=0; fi
           done
@@ -235,8 +223,10 @@ jobs:
             echo "::error::the latest release could not be scanned: its fixes cannot be listed, so no patch"; exit 1
           fi
           ver="${SINCE#v}"
-          var=(--variant-grype "=$RUNNER_TEMP/rel-${ver}.json" --variant-grype "debug=$RUNNER_TEMP/rel-${ver}-debug.json"
-               --variant-grype "fips=$RUNNER_TEMP/rel-${ver}-fips.json")
+          var=()
+          for t in $(python3 bin/patch-decide.py variants --version "$ver"); do
+            v="${t#"$ver"}"; var+=(--variant-grype "${v#-}=$RUNNER_TEMP/rel-${t}.json")   # "", "debug" or "fips": the variant name the notes use
+          done
           base=(); if [ -f "$RUNNER_TEMP/base-ok" ]; then for f in "$RUNNER_TEMP"/base-*.json; do base+=(--base-grype "$f"); done; fi
           old=(); if git show "${SINCE}:.vex/fosterstack-cache.openvex.json" > "$RUNNER_TEMP/vex-old.json" 2>/dev/null; then
             old=(--vex-old "$RUNNER_TEMP/vex-old.json"); fi
@@ -352,8 +342,7 @@ jobs:
   # bin/chain-build-wiring-test.sh (an exact grammar for this graph). The gate G is the same text on build and sign: the chain
   # starts on a v* tag PUSH, or in a dry-run dispatch on any branch (a manual dispatch on an existing v* tag is not a release
   # run). Rebuild has no `if`: it runs after Build through `needs`, and a skipped Build skips it.
-  # Check (PR 3) replaced the old scans, acceptance and authorization jobs; `promotion` is the OLD last stage that PR 4 replaces with Release,
-  # and until then the graph test of this file stays red.
+  # Check (PR 3) replaced the old scans, acceptance and authorization jobs; Release (PR 4) replaced the old promotion job.
   build:
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || inputs.dry-run == true }}
     permissions:
@@ -394,16 +383,18 @@ jobs:
       id-token: write
     uses: ./.github/workflows/stage-verify.yml
 
-  promotion:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run && !contains(github.ref_name, '-rc') }}   # needs Sign, so a branch run never reaches it (bin/chain-hostile-test.sh); PR 4's release job takes its if from the graph judge
+  # Release (rules 56, 57, 64, 69, 71; REQ-CHAIN-007): the only job that holds a registry credential, the apk signing key or write access to packages and
+  # releases. It needs exactly Check, Rebuild and Sign (rule 70; it reaches Build through Check), has no `if` that survives a failed or skipped predecessor
+  # (a dry run publishes nothing, a branch run is not a release, and a skipped Build skips it through `needs`), passes no secrets to the stage (the environment named release holds them)
+  # and creates no tag.
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') && !inputs.dry-run }}
     needs: [check, rebuild, sign]
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
     uses: ./.github/workflows/stage-promote.yml
-    with:
-      baseline-version: ${{ needs.admission.outputs.baseline }}
-      digests: ${{ needs.image.outputs.digests }}
-      dist-artifact: dist-release
-      expected-checksums: ${{ needs.build.outputs.checksums }}
-    secrets: inherit
 
   # The dry run's judges (v0.3.0 rules 52a, 59; REQ-CHAIN-001-AC5): every attempt of the hostile Build step is judged by the REAL
   # verifier against the policy made for this run's own ref, and one positive control (this run's genuine Sign output) must be
@@ -492,21 +483,11 @@ jobs:
       - name: every hostile attempt refused with its own cause, the positive control accepted
         run: python3 bin/chain-verify.py hostile-verdict hostile-results/hostile-results.json
 
-  # An rc tag fails closed here until PR 4's verify-and-stop exists (advisor 0383): this job refuses it, and the old publishing path below skips it, so no
-  # registry credential step runs on an rc tag. It runs only on an rc-tag push.
-  rc-refusal:
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc') && !inputs.dry-run }}
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-      - run: echo "::error::a release-candidate tag is verified by the signed rc run and never published (Release is PR 4)" >&2; exit 1
-
   # REQ-REL-009-AC10 (rule 7): a failed stage of a release run opens ONE issue; that attempt is abandoned (nothing here or
   # anywhere re-runs it) and the next daily decide tries again once the cause is fixed.
   patch-failed:
     if: ${{ failure() && startsWith(github.ref, 'refs/tags/v') && github.event_name != 'workflow_dispatch' && !inputs.dry-run }}
-    needs: [build, sign, rebuild, check, promotion]
+    needs: [build, sign, rebuild, check, release]
     runs-on: ubuntu-latest
     permissions:
       contents: read

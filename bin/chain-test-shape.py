@@ -407,7 +407,8 @@ def job(j, family, name, allowed):
 # ---- THE RULE 68 SEAM (three functions) -----------------------------------------------------------------------------------------------
 STEPS = ("apk", "build", "rapk", "rebuild",
          "snapshot-apk", "snapshot-build", "snapshot-rapk", "snapshot-rebuild",
-         "scanners", "acceptance", "runtime", "arm64")      # the closed list (PR 3 adds Check's three steps); the record is witness-DIR/STEP-collection.json
+         "scanners", "acceptance", "runtime", "arm64",
+         "release-verify", "release-apks", "release-publish", "release-sign", "release-assets", "release-postverify")      # the closed list (PR 3 adds Check's three steps, PR 4 the six of Release); the record is witness-DIR/STEP-collection.json
 # (DIR is STEP without a leading snapshot-, so a snapshot job uploads the same directories as a release job; the file name carries the snapshot marker)
 # The identity token reaches Witness through a one-read process substitution, so no file holds it while the wrapped command runs (Witness loads its
 # signer before it runs the command: in-toto-witness cmd/run.go:51). SOURCE-CHECKED, one read: in-toto-witness cmd/keyloader.go:85 and
@@ -420,17 +421,20 @@ TOKEN = [
     'tok=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value)',
     'echo "::add-mask::$tok"',
 ]
+# the one extra token the step release-sign alone holds (advisor ruling, Oct 12; REQ-CHAIN-007-AC15): fetched with audience sigstore, masked, exported as
+# SIGSTORE_ID_TOKEN; a failed or empty fetch stops the helper before anything runs
+SIGTOK = ["unset SIGSTORE_ID_TOKEN", 'if [ "$step" = release-sign ]; then sig=$(curl -sSf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r .value); [ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; echo "::add-mask::$sig"; export SIGSTORE_ID_TOKEN="$sig"; fi']
 TOKEN_PATH = '<(printf %s "$tok")'
-SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]   # never github (raw OIDC token) or slsa (Sign's alone)
+SENSITIVE = ["ACTIONS_ID_TOKEN_REQUEST*", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "APK_RELEASE_SIGNING_KEY", "DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "SIGSTORE_ID_TOKEN"]   # never github (raw OIDC token) or slsa (Sign's alone)
 
 
 def witnessed_lines():
     """The exact lines of bin/witnessed.sh (backslash continuations are joined before comparing: the committed file may break the long line)."""
     keys = " ".join("--env-add-sensitive-key %s" % ("'%s'" % k if "*" in k else k) for k in SENSITIVE)
     return ["set -euo pipefail", 'step="$1"', "shift",
-            'case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64) ;; '
+            'case "$step" in apk|build|rapk|rebuild|snapshot-apk|snapshot-build|snapshot-rapk|snapshot-rebuild|scanners|acceptance|runtime|arm64|release-verify|release-apks|release-publish|release-sign|release-assets|release-postverify) ;; '
             '*) echo "witnessed: unknown step $step" >&2; exit 2 ;; esac',
-            'mkdir -p "witness-${step#snapshot-}"'] + TOKEN + [
+            'mkdir -p "witness-${step#snapshot-}"'] + TOKEN + SIGTOK + [
             "unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL",
             "unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL",
             'exec witness run --step "$step" --signer-fulcio-url https://fulcio.sigstore.dev '

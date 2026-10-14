@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 166, 6   # 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 170, 6   # 170: 166 + the 4 PR 4a patterns (Release step scripts and the post-publish planner, the crane pin test, the Release suites and their judge); 166: 164 + build-apk-helper.py and build/sealed-env.json (main, #325); 164: 163 + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015, main); 163: main's 138 + the release-chain patterns of PR 1, PR 2 (known-red line included) and PR 3 (the chain-v030 take of main removed the review-record allowances)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "188e7d65af07ec588b7dc19e69590686fa75a6c4e6cd9b885c9d1251fd9ac2a6"
+PINNED_SHA256 = "739331b72c4931baf612ee1bbc73d31bcafd1188e30306e5214318f70e1b279a"
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -768,6 +768,10 @@ run pass "feature/x" "REQ-GUIDE-001: the cannot-run list" "docs/verify-release.c
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-miss refused" "docs/verify-release.cannot-run.json.bak" "docs/verify-release.cannot-run.jsonx" "docs/verify-release.cannot-run.yaml" "docs/x/verify-release.cannot-run.json" "./docs/verify-release.cannot-run.json" "verify-release.cannot-run.json" "docs/verify-release.cannot-runXjson" "docs/verify-release.cannot-run.json/" "x/docs/verify-release.cannot-run.json" "docs/../verify-release.cannot-run.json" "docs/verify-release.cannot-run.json "
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
+
+# round 1 (Codex B1): every Release script and helper of REQ-CHAIN-007 is a tracked file the allowlist admits, and near misses are not
+passfam "feature/x" "REQ-CHAIN-007: the Release scripts and helpers" "bin/release-verify.sh" "bin/release-apks.sh" "bin/release-publish.sh" "bin/release-sign.sh" "bin/release-assets.sh" "bin/release-postverify.sh" "bin/release-postverify.py" "bin/release-metadata.py" "bin/release-layout.py"
+runeach fail "feature/x" "REQ-CHAIN-007: Release helper near-misses refused" "bin/release-layout.py.bak" "bin/release-layout.pyx" "bin/Release-Layout.py" "bin/release-other.py" "bin/sub/release-layout.py" "./bin/release-layout.py"
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
 runeach fail "feature/x" "v030: vendor/ files are NOT admitted yet" "vendor/modules.txt" "vendor/golang.org/x/text/a.go"

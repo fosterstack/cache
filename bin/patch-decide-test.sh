@@ -538,6 +538,33 @@ check("AC8w VEX: added, changed and removed statements, unchanged ones left out"
     {"cve": "CVE-9", "status": "not_affected", "change": "removed"}], vc)
 check("AC8w VEX: no old document (first patch) lists every statement as added",
       [v["change"] for v in P.vex_changes(None, vdoc(("CVE-1", "affected")))] == ["added"])
+# round 1 (Codex A, R2): the statement's scope and fields are compared, not only the CVE's status
+def sdoc(*st):
+    return {"statements": [dict({"vulnerability": {"name": n}, "status": stt, "products": [{"@id": pid}]}, **extra) for n, stt, pid, extra in st]}
+A_ = "pkg:oci/cache@sha256:" + "a" * 64; B_ = "pkg:oci/cache@sha256:" + "b" * 64
+vs = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: the same CVE and status for another product is a removed and an added statement, naming the scope",
+      sorted((v["change"], v.get("scope")) for v in vs) == [("added", B_), ("removed", A_)], vs)
+vj = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"justification": "vulnerable_code_not_present"})),
+                   sdoc(("CVE-1", "not_affected", A_, {"justification": "component_not_present"})))
+check("R2 VEX: a changed justification is a change", [v["change"] for v in vj] == ["changed justification"], vj)
+vi = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "x"})), sdoc(("CVE-1", "not_affected", A_, {"impact_statement": "y"})))
+check("R2 VEX: a changed impact statement is a change", [v["change"] for v in vi] == ["changed impact statement"], vi)
+vm = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "affected", B_, {})), sdoc(("CVE-1", "not_affected", A_, {}), ("CVE-1", "not_affected", B_, {})))
+check("R2 VEX: two statements for one CVE are both kept (one does not overwrite the other)",
+      [(v["change"], v.get("scope")) for v in vm] == [("changed from affected", B_)], vm)
+def adoc(assoc):   # one statement whose products each carry subcomponents: assoc = {product: [subcomponent, ...]}
+    return {"statements": [{"vulnerability": {"name": "CVE-1"}, "status": "affected",
+                            "products": [{"@id": p, "subcomponents": [{"@id": c} for c in cs]} for p, cs in assoc.items()]}]}
+vsw = P.vex_changes(adoc({"P": ["A"], "Q": ["B"]}), adoc({"P": ["B"], "Q": ["A"]}))
+check("R2 VEX: moving subcomponents between products is a scope change (the product and its subcomponents stay associated)", vsw != [], vsw)
+vco = P.vex_changes(adoc({"P": ["urn:a,urn:b"]}), adoc({"P": ["urn:a", "urn:b"]}))
+check("R2 VEX: one component id that contains a comma is not two components", vco != [], vco)
+vdual = P.vex_changes({"statements": adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]},
+                      {"statements": [dict(s_, status="not_affected") for s_ in adoc({"P": ["a,b"]})["statements"] + adoc({"P": ["a", "b"]})["statements"]]})
+check("R2 VEX: two scopes that differ only by how ids are split are displayed as two different scopes", len(vdual) == 2 and vdual[0]["scope"] != vdual[1]["scope"], vdual)
+vu = P.vex_changes(sdoc(("CVE-1", "not_affected", A_, {})), sdoc(("CVE-1", "not_affected", A_, {})))
+check("R2 VEX: an identical statement is no change", vu == [], vu)
 pub = "## v0.2.2 — patch release\n\n### Behavior changes\n- Go 1.27: a request with more than 500 header values is rejected with 431 before it reaches the cache (owner accepted; advisor 0115).\n"
 check("0135 an entry an earlier patch published is not published again (tag message or CHANGELOG.md)",
       P.unpublished(ents, pub) == ["Second change, one line (advisor 0130)."], P.unpublished(ents, pub))
@@ -667,6 +694,15 @@ check("B01 gather_commits records each file's new mode; a mode-only chmod +x is 
 for f, want in ((".github/workflows/unreviewed/ci.yml", "dirty"), (".github/workflows/sub/auditor.yml", "dirty"), (".github/workflows/ci.yml", "neutral")):
     got = P.classify(c("x", [f], diffs={f: "+note: data\n"}))
     check("B02 %s is %s (reviewed workflows by full path)" % (f, want), got[0] == want, got)
+# --- AC3 (immediate cut): the images of the latest release are the ones that exist for its version (v0.3.0 dropped the debug variant)
+import subprocess
+def variants(ver):
+    r = subprocess.run([sys.executable, sys.argv[1], "variants", "--version", ver], capture_output=True, text=True); return r.returncode, r.stdout.split()
+for ver, want in (("0.2.2", ["0.2.2", "0.2.2-debug", "0.2.2-fips"]), ("0.1.0", ["0.1.0", "0.1.0-debug", "0.1.0-fips"]), ("0.3.0", ["0.3.0", "0.3.0-fips"]), ("0.3.1", ["0.3.1", "0.3.1-fips"]),
+                  ("0.10.0", ["0.10.0", "0.10.0-fips"]), ("1.0.0", ["1.0.0", "1.0.0-fips"]), ("0.2.10", ["0.2.10", "0.2.10-debug", "0.2.10-fips"])):
+    rc, got = variants(ver); check("AC3 the images scanned for release %s are exactly %s" % (ver, want), rc == 0 and got == want, (rc, got))
+for bad in ("v0.3.0", "0.3", "0.3.0-rc1", "", "0.3.0 -debug", "x.y.z"):
+    rc, got = variants(bad); check("AC3 a version that is not X.Y.Z (%r) is refused and prints nothing" % bad, rc != 0 and got == [], (rc, got))
 print("patch-decide: %d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)
 PY

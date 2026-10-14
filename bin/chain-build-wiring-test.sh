@@ -510,6 +510,9 @@ hm fcat    "AC2 the token read through a second process substitution" '<(printf 
 hm fignore "AC2 a failure of the witnessed command is ignored" '-- timeout -k 20 540 bash "$@"' '-- timeout -k 20 540 bash "$@" || true'
 hm fnounset "AC2 the identity-token variables are not unset before the wrapped command runs" \
    'unset ACTIONS_ID_TOKEN_REQUEST_TOKEN ACTIONS_ID_TOKEN_REQUEST_URL' ''
+hm sigall "AC15 a helper that gives the sigstore token to every step but one (not to release-sign alone) is refused" 'if [ "$step" = release-sign ]; then sig=' 'if [ "$step" != apk ]; then sig='
+hm signomask "AC15 a helper that exports the sigstore token without masking it is refused" 'echo "::add-mask::$sig"; export' 'export'
+hm signofail "AC15 a helper that does not stop on an empty sigstore token is refused" '[ -n "$sig" ] && [ "$sig" != null ] || { echo "witnessed: no identity token for release-sign" >&2; exit 1; }; ' ''
 hm fnounsetrt "AC2 the runtime-token variables are not unset before the wrapped command runs" 'unset ACTIONS_RUNTIME_TOKEN ACTIONS_RUNTIME_URL\n' ''
 hm fsnapdir "AC12 a snapshot record would go to its own directory (the uploads would miss it)" 'mkdir -p "witness-${step#snapshot-}"' 'mkdir -p "witness-$step"'
 hm fsnapout "AC12 the record of a snapshot step is written under the release name (nothing marks it as a snapshot)" \
@@ -915,6 +918,10 @@ EOF
   cat > "$1/fake/curl" <<'EOF'
 #!/usr/bin/env bash
 echo curl >> calls.log
+n=$(grep -c '^curl$' calls.log)
+[ "${CURL_FAIL_AT:-0}" != "$n" ] || exit 22
+[ "${CURL_EMPTY_AT:-0}" != "$n" ] || { printf '{"value":""}\n'; exit 0; }
+[ "${CURL_NULL_AT:-0}" != "$n" ] || { printf '{"value":null}\n'; exit 0; }
 printf '{"value":"FAKE-JWT-TOKEN-VALUE"}\n'
 EOF
   cat > "$1/fake/timeout" <<'EOF'
@@ -982,6 +989,44 @@ for tag in fixture real; do
   else
     bad "AC12 $tag helper: snapshot-evil -> rc=$rc calls=$calls"
   fi
+  # round 1 (Codex A F1, B B2; advisor ruling 3): release-sign alone receives one masked sigstore token as SIGSTORE_ID_TOKEN; nothing else does
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign); printed=$(cat "$d/helper.out" "$d/helper.err" 2> /dev/null || true)
+  if [ "$rc" = 0 ] && grep -qx 'SIGSTORE_ID_TOKEN=FAKE-JWT-TOKEN-VALUE' "$d/wrapped-env.txt" \
+     && ! grep -q '^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt" \
+     && [ "$(grep -c '^::add-mask::FAKE-JWT-TOKEN-VALUE$' <<< "$printed" || true)" = 2 ] \
+     && [ "$(grep -c 'FAKE-JWT-TOKEN-VALUE' <<< "$printed" || true)" = 2 ]; then
+    ok "AC15 $tag helper: release-sign's command receives SIGSTORE_ID_TOKEN, no request variable, and every printed copy of a token is an add-mask line"
+  else
+    bad "AC15 $tag helper: release-sign -> rc=$rc env=$(grep -c 'SIGSTORE\|ACTIONS' "$d/wrapped-env.txt" 2> /dev/null) printed=$(grep -c FAKE <<< "$printed")"
+  fi
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-assets SIGSTORE_ID_TOKEN=INHERITED-SENTINEL)
+  if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|INHERITED-SENTINEL' "$d/wrapped-env.txt"; then
+    ok "AC15 $tag helper: a SIGSTORE_ID_TOKEN already in the environment is cleared for every step (only the helper's own minted token reaches release-sign)"
+  else
+    bad "AC15 $tag helper: an inherited SIGSTORE_ID_TOKEN reached a step that is not release-sign (rc=$rc)"
+  fi
+  helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign SIGSTORE_ID_TOKEN=INHERITED-SENTINEL)
+  if [ "$rc" = 0 ] && grep -qx 'SIGSTORE_ID_TOKEN=FAKE-JWT-TOKEN-VALUE' "$d/wrapped-env.txt" && ! grep -q INHERITED-SENTINEL "$d/wrapped-env.txt"; then
+    ok "AC15 $tag helper: an inherited SIGSTORE_ID_TOKEN is replaced by the helper's own for release-sign"
+  else
+    bad "AC15 $tag helper: release-sign kept an inherited SIGSTORE_ID_TOKEN (rc=$rc)"
+  fi
+  for other in release-publish release-assets apk; do
+    helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" $other)
+    if [ "$rc" = 0 ] && ! grep -q 'SIGSTORE_ID_TOKEN\|^ACTIONS_ID_TOKEN_REQUEST\|^ACTIONS_RUNTIME' "$d/wrapped-env.txt"; then
+      ok "AC15 $tag helper: the step $other has no identity token and no request variable in its environment"
+    else
+      bad "AC15 $tag helper: $other's environment holds an identity token variable (rc=$rc)"
+    fi
+  done
+  for what in "CURL_FAIL_AT=2" "CURL_EMPTY_AT=2" "CURL_NULL_AT=2"; do
+    helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" release-sign "$what"); calls=$(cat "$d/calls.log" 2> /dev/null || true)
+    if [ "$rc" != 0 ] && ! grep -q '^wrapped ' <<< "$calls" && ! grep -q '^witness ' <<< "$calls"; then
+      ok "AC15 $tag helper: release-sign stops (nothing runs, nothing exported) when its sigstore token fetch fails or is empty ($what)"
+    else
+      bad "AC15 $tag helper: $what -> rc=$rc calls=$(tr '\n' '|' <<< "$calls" | cut -c1-160)"
+    fi
+  done
   helper_tree "$d" "$helper_script"; rc=$(helper_run "$d" evil); calls=$(cat "$d/calls.log" 2> /dev/null || true)
   if [ "$rc" = 2 ] && ! grep -q '^witness ' <<< "$calls"; then
     ok "AC2 $tag helper: an unknown step name exits 2 before witness is called"
@@ -1530,24 +1575,17 @@ for kind in assemble rebuild-assemble; do
     else bad "AC12/rc $kind: near-miss $nm: rc=$rc images=$(n_calls '^image ' "$rd") $(head -c 120 "$rd/stage.err" 2> /dev/null | tr '\n' ' ')"; fi
   done
 done
-# Codex A r2 blocker 1: an rc tag FAILS CLOSED at Release until PR 4's verify-and-stop exists. A job rc-refusal runs on an rc-tag push and exits 1; the old
-# publishing path (the five jobs that start it, and promotion) is skipped on an rc tag, so nothing reaches a registry credential step (advisor 0383)
+# Release candidates (advisor 0383/0386, PR 4, REQ-CHAIN-007-AC14): PR 2 failed an rc tag closed with a job rc-refusal until Release's verify-and-stop existed.
+# It exists now: the release job runs on an rc tag push (its `if` does not exclude rc, so release-verify runs) and ends after release-verify through the
+# per-step condition of stage-promote.yml (bin/chain-release-wiring-test.sh); the rc-refusal job is gone, and the release job is the only publishing path.
 cat > "$work/rcgate.py" <<'PY'
 import sys, yaml
 d = yaml.load(open(sys.argv[1]).read(), Loader=yaml.BaseLoader); jobs = d.get("jobs") or {}
-RC = "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc')"
 bad = []
-r = jobs.get("rc-refusal")
-if not r: bad.append("rc-refusal job missing")
-else:
-    if str(r.get("if", "")).strip() != "${{ %s && !inputs.dry-run }}" % RC: bad.append("rc-refusal if is not the rc-tag push condition: %r" % r.get("if"))
-    if r.get("needs") or r.get("uses") or r.get("environment") or r.get("permissions") != {"contents": "read"}: bad.append("rc-refusal has needs, uses, environment or other permissions")
-    steps = r.get("steps") or []
-    if len(steps) != 1 or "exit 1" not in str(steps[0].get("run", "")) or steps[0].get("uses") or "continue-on-error" in steps[0] or "continue-on-error" in r:
-        bad.append("rc-refusal is not exactly one run step that exits 1")
-for jn in ("promotion",):   # PR 3 removed the other old publishing jobs; the stage jobs that remain (promotion, until PR 4) must skip an rc tag
-    c = str((jobs.get(jn) or {}).get("if", ""))
-    if "!inputs.dry-run" not in c or "!contains(github.ref_name, '-rc')" not in c: bad.append("%s does not skip an rc tag: %r" % (jn, c))
+if "rc-refusal" in jobs: bad.append("an rc-refusal job is still there: Release's verify-and-stop replaces it (an rc tag must reach release-verify)")
+c = str((jobs.get("release") or {}).get("if", "")).strip()
+if "-rc" in c or "contains(" in c: bad.append("the release job's if excludes an rc tag (%r): release-verify would not run on it" % c)
+if "!inputs.dry-run" not in c or "startsWith(github.ref, 'refs/tags/v')" not in c: bad.append("the release job's if lost the dry-run or the tag conjunct: %r" % c)
 print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
 PY
 rcg() { # rcg ok|caught LABEL [sed-expr]
@@ -1555,12 +1593,12 @@ rcg() { # rcg ok|caught LABEL [sed-expr]
   if [ -n "${3:-}" ]; then sed -e "$3" "$root/.github/workflows/release.yml" > "$f"; else cp "$root/.github/workflows/release.yml" "$f"; fi
   out=$(python3 "$work/rcgate.py" "$f") || rc=$?
   if { [ "$1" = ok ] && [ "$rc" = 0 ]; } || { [ "$1" = caught ] && [ "$rc" != 0 ]; }; then ok "AC12/rc $2${out:+ ($out)}"; else bad "AC12/rc $2 -> $out"; fi; }
-rcg ok "the real release.yml refuses an rc tag (rc-refusal) and skips the old publishing path on it"
-rcg caught "promotion that does not skip an rc tag is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !contains(github.ref_name, .-rc.)//'
-rcg caught "a promotion that does not skip an rc tag by the conjunct alone is caught" '/^  promotion:/,/^  [a-z]/ s/ \&\& !inputs.dry-run//'
-rcg caught "an rc-refusal that no longer exits 1 is caught" '/^  rc-refusal:/,/^  [a-z]/ s/exit 1/true/'
-rcg caught "an rc-refusal that also runs on a final tag is caught" "/^  rc-refusal:/,/^  [a-z]/ s/ \&\& contains(github.ref_name, '-rc')//"
-rcg caught "a missing rc-refusal job is caught" 's/^  rc-refusal:/  rc-refusal-gone:/'
+rcg ok "the real release.yml has no rc-refusal job and its release job runs on an rc tag (verify-and-stop)"
+rcg caught "a release job that excludes an rc tag is caught" "/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run }}/ \&\& !inputs.dry-run \&\& !contains(github.ref_name, '-rc') }}/"
+rcg caught "a release job without the dry-run conjunct is caught" '/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run//'
+rcg caught "a release job that runs always() (it would run after a failed Check) is caught" '/^  release:/,/^  [a-z]/ s/ if: ${{ startsWith(github.ref, .refs\/tags\/v.) \&\& !inputs.dry-run }}/ if: ${{ always() }}/'
+rcg caught "a release job that spells the rc exclusion another way is caught" "/^  release:/,/^  [a-z]/ s/ \&\& !inputs.dry-run }}/ \&\& !inputs.dry-run \&\& !endsWith(github.ref_name, 'rc1') \&\& !contains(github.ref_name, 'rc') }}/"
+rcg caught "a restored rc-refusal job is caught" 's/^  patch-failed:/  rc-refusal:\n    runs-on: ubuntu-24.04\n    steps:\n      - run: exit 1\n  patch-failed:/'
 # ---- the known-red list (advisor, #299): test-evidence/known-red.json and bin/chain-known-red.py -------------------------------------------------------
 # The two chain suites whose red cases are expected (this one and bin/chain-sign-wiring-test.sh) judge their own output against the list: the CI step
 # passes only when the set of red cases EQUALS the list. The helper is proven here on synthetic output and a throw-away git repository.
@@ -1662,18 +1700,92 @@ rc=0; ( cd "$kg" && python3 "$KR" base-check --base 0123456789abcdef0123456789ab
 # the committed list and the two suites' own wrapper
 rc=0; python3 "$KR" base-check > /dev/null 2>&1 || rc=$?       # CI: the pull request event names the base and the body; locally the base is origin/chain-v030 and KNOWN_RED_ADD names new ids
 [ "$rc" = 0 ] && ok "known-red: the committed list is well formed and compares with the base" || bad "known-red: the committed test-evidence/known-red.json (exit $rc)"
-for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh; do
+for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/chain-check-wiring-test.sh bin/chain-records-test.sh; do
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
 # the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1..3 and KR-BUILD-1 carry their structured findings (19, 19, 19 and the graph's)" || bad "known-red: the real-suite entries lack their structured findings"
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1 and KR-SIGN-3 carry their structured findings (22 each: 19 plus PR 4's three cache scripts; KR-SIGN-2 left with the legacy-list probes, KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
 import json, sys
 e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
-for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3", "KR-BUILD-1"):
+for k in ("KR-SIGN-1", "KR-SIGN-3"):
     f = e[k].get("findings")
     assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
-for k in ("KR-SIGN-1", "KR-SIGN-2", "KR-SIGN-3"): assert len(e[k]["findings"]) == 19, (k, len(e[k]["findings"]))
+for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 22, (k, len(e[k]["findings"]))
 PY
+# PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
+# listed rows yet. The judge accepts exactly those findings, refuses any other (the entry cannot grow silently) and any missing one (it shrinks only by an edit that
+# a pull request body names), and the cutover check covers it. The suite's own wrapper prints the findings as structured ids right before its FAIL line.
+KRE="bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py"
+RECCASE="the real repository: every produced record type has a row with a claim and a stage consumer"
+recids() { python3 - "$@" <<'PY'
+import json, sys
+print("FINDINGS-JSON " + json.dumps(["chain-scripts.json: chain-scripts.json: %s runs '%s', which is not listed" % (("bin/release-apks.sh" if "apk" in p else "bin/release-sign.sh"), p) for p in sys.argv[1:]]))
+PY
+}
+rec_run() { # rec_run LABEL WANT-EXIT PATHS...  : the records suite's output with those findings, judged against the committed list
+  local label=$1 want=$2 rc=0 out; shift 2
+  out=$( { recids "$@"; echo "FAIL $RECCASE -> chain-scripts.json: x"; echo "pass=96 fail=1"; } | python3 "$KR" judge --suite bin/chain-records-test.sh --list "$root/test-evidence/known-red.json" --inner-rc 1 2>&1) || rc=$?
+  if [ "$rc" = "$want" ]; then ok "known-red records: $label"; else bad "known-red records: $label (exit $rc, wanted $want: ${out:0:200})"; fi; }
+rec_run "exactly the entry's three cache scripts are accepted" 0 bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py
+rec_run "a fourth finding (a script the entry does not name) is refused: the entry cannot grow" 1 bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py bin/other.py
+rec_run "a missing finding (one script landed, the entry not shrunk) is refused" 1 bin/apk-tool.py bin/release-sign-apks.sh
+rec_run "a different set of the same size is refused" 1 bin/apk-tool.py bin/release-sign-apks.sh bin/other.py
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red records: KR-RECORDS-1 names the three cache scripts, in the records suite, with structured findings" || bad "known-red records: no KR-RECORDS-1 entry with the three findings"
+import json, sys
+e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}["KR-RECORDS-1"]
+assert e["suite"] == "bin/chain-records-test.sh" and e["case"].startswith("the real repository: every produced record type")
+f = e["findings"]
+assert len(f) == 3 and all(p in "".join(f) for p in ("bin/apk-tool.py", "bin/release-sign-apks.sh", "bin/vendor-provenance.py")), f
+PY
+# ---- advisor ruling (finding 5): no suite reads or writes a fixed host path under /tmp --------------------------------------------------------------------
+# A stray /tmp/x once changed a verdict. Every file a chain suite makes or reads lives in its own mktemp -d ($work). This guard reads the suites' own shell and Python
+# text: a redirection, a file command or an open() whose target is a literal /tmp/ path outside any quote is a violation. Fixture TEXT (a workflow or a script held in
+# quotes, a command a judge must refuse) is data and is not flagged. The guard is proven on mutated lines, then applied to the suites.
+cat > "$work/tmpguard.py" <<'GUARDTXT'
+import re, sys
+FILE_CMD = r"(?:^|[;&|(]|\bthen\b|\bdo\b)\s*(?:cp|mv|rm|mkdir|touch|tee|cat|ln|chmod|install|sed|head|tail|python3|bash|source)\b[^;&|#]*"
+def unquoted(line):
+    out, q = [], None
+    for i, ch in enumerate(line):
+        if q:
+            if ch == q: q = None
+            out.append(" ")
+        elif ch in "\"'": q = ch; out.append(" ")
+        else: out.append(ch)
+    return "".join(out)
+CODE_HEREDOC = {"PY", "PYT", "PYF", "PYEOF", "PYX", "PYJ"}   # a heredoc with one of these delimiters is Python CODE and is read; any other heredoc is data (a workflow text, a script body)
+def violations(text):
+    bad, end = [], None
+    for n, l in enumerate(text.split("\n"), 1):
+        if end is not None:
+            if l.strip() == end: end = None
+            continue
+        m = re.search(r"<<-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?\s*$", l.rstrip()) or re.search(r"<<-?\s*[\"']?([A-Za-z_][A-Za-z0-9_]*)[\"']?\s", l)
+        if m and m.group(1) not in CODE_HEREDOC and "<<<" not in l:
+            end = m.group(1)
+        raw = l.strip()
+        if raw.startswith("#"): continue
+        u = unquoted(l)
+        # a literal /tmp path in the UNQUOTED part of the line, as a redirection or an operand of a file command; a "$TMPDIR/..." or "$work/..." is not literal
+        if re.search(r"(?:>>?|<|2>)\s*/tmp/\S", u) or re.search(FILE_CMD + r"(?<![\w$])/tmp/\S", u):
+            bad.append(n)
+        # Python file access to a literal /tmp path: open("/tmp/..."), Path("/tmp/..."), os.makedirs("/tmp/...")
+        if re.search(r"\b(?:open|Path|makedirs|mkdir|remove|unlink|rmtree|copy|copyfile|listdir|isfile|exists)\(\s*[rbf]*[\"']/tmp/", l):
+            bad.append(n)
+    return bad
+if sys.argv[1] == "--selftest":
+    ok = ["cat > /tmp/x <<EOF", "echo hi > /tmp/leak", "cp a /tmp/b", "rm -f /tmp/x", "python3 - < /tmp/in", 'open("/tmp/x", "w").write("y")', "mkdir -p /tmp/d"]
+    fine = ['cat > "$work/x"', "echo '/tmp/x is data'", 'printf "%s" "cp a /tmp/b" > "$work/t"', "# cp a /tmp/b", 'x="$TMPDIR/y"', "d=$(mktemp -d)", 'run "cosign verify <I> > /tmp/x"']
+    miss = [l for l in ok if not violations(l)]
+    over = [l for l in fine if violations(l)]
+    print("; ".join(["not caught: " + m for m in miss] + ["flagged: " + o for o in over]) or "ok"); sys.exit(1 if miss or over else 0)
+bad = []
+for f in sys.argv[1:]:
+    for n in violations(open(f).read()): bad.append("%s:%d" % (f, n))
+print("; ".join(bad) or "ok"); sys.exit(1 if bad else 0)
+GUARDTXT
+out=$(python3 "$work/tmpguard.py" --selftest 2>&1) && ok "no fixed /tmp path: the guard catches redirections, file commands and open() on /tmp and leaves fixture text alone" || bad "no fixed /tmp path: the guard itself is wrong: $out"
+out=$(cd "$root" && python3 "$work/tmpguard.py" bin/chain-*-test.sh bin/release-patch-wiring-test.sh bin/install-scanner-test.sh bin/patch-decide-test.sh 2>&1) && ok "no fixed /tmp path: no chain suite reads or writes a literal /tmp path (every file lives in its own mktemp -d)" || bad "no fixed /tmp path: $out"
 # the cutover condition, itself expected red until the list is empty (KR-CUTOVER lists this case)
 rc=0; python3 "$KR" empty --list "$root/test-evidence/known-red.json" > /dev/null 2>&1 || rc=$?
 [ "$rc" = 0 ] && ok "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case" || bad "KNOWN-RED cutover: test-evidence/known-red.json lists no expected-red case (still has entries)"
@@ -1868,7 +1980,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=648
+EXPECT=677
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

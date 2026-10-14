@@ -32,31 +32,6 @@
    "reason": "old chain: signs the image-build predicate; removed in PR 2"
   },
   {
-   "file": "stage-promote.yml",
-   "tool": "actions/attest",
-   "reason": "old chain: signs the publication-outcomes predicate; replaced in PR 4"
-  },
-  {
-   "file": "stage-promote.yml",
-   "tool": "cosign attest",
-   "reason": "old chain: attests the published images (SBOM, VEX); replaced in PR 4"
-  },
-  {
-   "file": "stage-promote.yml",
-   "tool": "cosign sign-blob",
-   "reason": "old chain: signs the release files; replaced in PR 4"
-  },
-  {
-   "file": "stage-promote.yml",
-   "tool": "cosign sign",
-   "reason": "old chain: signs the public images in both registries; replaced in PR 4"
-  },
-  {
-   "file": "stage-promote.yml",
-   "tool": "sigstore actions",
-   "reason": "old chain: installs cosign for the promotion stage; replaced in PR 4"
-  },
-  {
    "file": "stage-reproducibility.yml",
    "tool": "actions/attest",
    "reason": "old chain: signs the reproducibility predicate; replaced by Rebuild's Witness record in PR 2"
