@@ -50,6 +50,8 @@ jobs:
         run: go mod verify
       - name: vendor/ is what go mod vendor regenerates
         run: bash bin/vendor-check.sh
+      - name: dependency-provenance.json lists the modules of vendor/ with the hashes of go.sum (REQ-VEND-001-AC4)
+        run: python3 bin/vendor-provenance.py check --vendor-dir vendor --go-sum go.sum --provenance dependency-provenance.json
 
   # test-strategy.md §6: the coverage RATCHET. Fails when total statement
   # coverage of non-excluded Go code drops below the committed floor
@@ -309,6 +311,9 @@ jobs:
 
       - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
         run: bash bin/vendoring-test.sh </dev/null
+
+      - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
+        run: bash bin/vendor-provenance-test.sh </dev/null
 
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.

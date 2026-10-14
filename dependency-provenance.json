@@ -1,0 +1,145 @@
+{
+  "modules": [
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=",
+      "license": "MIT",
+      "origin": {
+        "tag": "v1.0.1",
+        "url": "https://github.com/beorn7/perks"
+      },
+      "path": "github.com/beorn7/perks",
+      "version": "v1.0.1"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=",
+      "license": "MIT",
+      "origin": {
+        "tag": "v2.3.0",
+        "url": "https://github.com/cespare/xxhash"
+      },
+      "path": "github.com/cespare/xxhash/v2",
+      "version": "v2.3.0"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=",
+      "license": "BSD-3-Clause",
+      "origin": {
+        "commit": "a7dc8b61c822528f973a5e4e7b272055c6fdb43e",
+        "url": "https://github.com/munnerz/goautoneg"
+      },
+      "path": "github.com/munnerz/goautoneg",
+      "version": "v0.0.0-20191010083416-a7dc8b61c822"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:JnJkREXzWxUdCuPFpIWZiPispT9xVV59uiuyR2bPlnU=",
+      "license": "Apache-2.0",
+      "origin": {
+        "tag": "v1.24.1",
+        "url": "https://github.com/prometheus/client_golang"
+      },
+      "path": "github.com/prometheus/client_golang",
+      "version": "v1.24.1"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:O0jaTVAYNxTHYInEPFJt5I3+sN8zqBtVMPTB1qyxiEo=",
+      "license": "Apache-2.0",
+      "origin": {
+        "tag": "v0.6.3",
+        "url": "https://github.com/prometheus/client_model"
+      },
+      "path": "github.com/prometheus/client_model",
+      "version": "v0.6.3"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:1HvjP4D5oL3t8RsPlwxA9onvvStjtIHYE5XuuwOi/PY=",
+      "license": "Apache-2.0",
+      "origin": {
+        "tag": "v0.70.1",
+        "url": "https://github.com/prometheus/common"
+      },
+      "path": "github.com/prometheus/common",
+      "version": "v0.70.1"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:GljZCt+zSTS+NZq88cyQ1LjZ+RCHp3uVuabBWA5+OJI=",
+      "license": "Apache-2.0",
+      "origin": {
+        "tag": "v0.21.1",
+        "url": "https://github.com/prometheus/procfs"
+      },
+      "path": "github.com/prometheus/procfs",
+      "version": "v0.21.1"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:S7GAl7Fxv12yohbwFfIbQCGDWbQbtDGPET4P/bD4lxU=",
+      "license": "MIT",
+      "origin": {
+        "tag": "v1.5.0",
+        "url": "https://github.com/etcd-io/bbolt"
+      },
+      "path": "go.etcd.io/bbolt",
+      "version": "v1.5.0"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=",
+      "license": "BSD-3-Clause",
+      "origin": {
+        "tag": "v0.47.0",
+        "url": "https://go.googlesource.com/sys"
+      },
+      "path": "golang.org/x/sys",
+      "version": "v0.47.0"
+    },
+    {
+      "checksum_log": {
+        "included": true,
+        "log": "sum.golang.org"
+      },
+      "go_sum_hash": "h1:pJOKDDOyeXErUroCihFAd5LQuwXBSpVnKGrj5o/fwxc=",
+      "license": "BSD-3-Clause",
+      "origin": {
+        "tag": "v1.36.12",
+        "url": "https://go.googlesource.com/protobuf"
+      },
+      "path": "google.golang.org/protobuf",
+      "version": "v1.36.12"
+    }
+  ],
+  "schema": "fosterstack/dependency-provenance/v1"
+}
