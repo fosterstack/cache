@@ -218,11 +218,12 @@ def _exempt_local_call(raw, job):
 
 
 def _uses(u, node, out, labels):
+    raw = u
     u = u.strip()
     if u.startswith("docker://"):
         out.append(_image_item(u[len("docker://"):]))
     elif u.startswith("./"):
-        out.append(Item("action", "local:" + _hide(u), "(local)"))   # a local action outside the globs: its content is not read, so a new one cannot pass
+        out.append(Item("action", "local:" + _hide(raw if raw != u else u), "(local)"))   # the RAW spelling is the identity: a padded reference is never the exact one (REQ-SUP-001-AC19). A local action outside the globs: its content is not read, so a new one cannot pass
     elif u and "${{" not in u:
         ref_path, _, ref = u.partition("@")
         repo = "/".join(ref_path.split("/")[:2])
@@ -420,7 +421,7 @@ def _walk(node, out, labels, path="", in_step=False):
                     n0 = len(out)
                     _walk(job, out, labels, "job:" + k)
                     if isinstance(job, dict) and isinstance(job.get("uses"), str) and job["uses"].strip().startswith("./"):
-                        mine = [it for it in out[n0:] if it.version == "(local)" and it.name == "local:" + _hide(job["uses"].strip()) and not it.step]
+                        mine = [it for it in out[n0:] if it.version == "(local)" and it.name == "local:" + _hide(job["uses"]) and not it.step]
                         if mine and _exempt_local_call(job["uses"], job):
                             for it in mine:
                                 out.remove(it)       # REQ-SUP-001-AC19: the called file is inventoried itself

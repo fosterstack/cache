@@ -1918,7 +1918,7 @@ LINES = {   # key -> the flattened line of pull request 271 (be20423) the row is
     "e40f62c4290cc6dc": "# ---- P3 review round 2 (Sonnet extras): pointer, certified.txt shape, index tied to the locks, datahash, ranges, curl flags, openssl -----------------------------",
 }
 SAFE = {"echo", "printf", "tee", "cat", "exit", "fi"}
-rows = json.load(open(sys.argv[1]))["unmeasured_text"]
+rows = [r for r in json.load(open(sys.argv[1]))["unmeasured_text"] if r["form"] != "a local reusable workflow call"]   # those name an item, not a text line (AC19)
 assert sorted(r["key"] for r in rows) == sorted(LINES), "a committed row has no harmless-line entry in this test (add the line and its reason)"
 for r in rows:
     line = LINES[r["key"]]
@@ -1973,9 +1973,13 @@ CASE="AC16: the committed unmeasured_text rows load, and each has exactly file, 
 check python3 - "$chk" "$root/.github/supply-chain-exceptions.json" <<'PY'
 import importlib.util, json, re, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
-rows = json.load(open(sys.argv[2]))["unmeasured_text"]
+allrows = json.load(open(sys.argv[2]))["unmeasured_text"]
 loaded = ac.load_ruled_text(sys.argv[2], required=True)
-assert rows and len(loaded) == len(rows), (len(rows), len(loaded))
+assert allrows and len(loaded) == len(allrows), (len(allrows), len(loaded))
+calls = [r for r in allrows if r["form"] == "a local reusable workflow call"]    # REQ-SUP-001-AC19: rows that name an item (its whole-identity hash), ruled by the orchestrator
+for r in calls:
+    assert r["key"] == r["line"] and re.fullmatch(r"[0-9a-f]{16}", r["key"]) and r["file"].startswith(".github/workflows/") and r["ruling"].startswith("local reusable workflow call; "), r
+rows = [r for r in allrows if r["form"] != "a local reusable workflow call"]
 forms = {"a download"} | {w for _, w in ac.inv._UNMEASURED}
 for r in rows:
     assert set(r) - {"count"} == {"file", "form", "key", "line", "ruling"} and (type(r.get("count", 1)) is int and 1 <= r.get("count", 1) <= 100), r
@@ -2690,6 +2694,22 @@ lcallc w3 './.github/workflows/callee.yml' $'    with:\n      mode: debug\n' "$w
 rc=0; python3 "$chk" --root "$work/w3" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-ok.json" >"$work/w3r.out" 2>&1 || rc=$?
 CASE="AC19 closed form: editing the with: block voids the row (the identity carries the block's hash): exit 1"
 check test "$rc" -eq 1
+
+# round 6 of the review: a padded reference is a different identity, so the row of the exact call never rules it
+for pad in '" ./.github/workflows/callee.yml"' '"./.github/workflows/callee.yml "'; do
+  printf '%s' "$pad" >"$work/lcall.uses"
+  printf '%s' $'    with:\n      mode: release\n' >"$work/lcall.with"
+  n="pad$(printf '%s' "$pad" | cksum | cut -d' ' -f1)"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee-w.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ' + pathlib.Path(r'$work/lcall.uses').read_text() + '\n    with:\n      mode: release\n')"
+  rc=0; python3 "$chk" --root "$work/$n" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/lc-ok.json" >"$work/$n.out" 2>&1 || rc=$?
+  CASE="AC19: the exact call's row does not rule the padded spelling $pad of the same call (exit 1)"
+  check test "$rc" -eq 1
+done
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
