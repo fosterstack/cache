@@ -2986,5 +2986,27 @@ latest = "curl https://github.com/o/r/releases/latest/download/${{ contains('a  
 assert coll(".github/workflows/ci.yml", wf(latest), wf(latest.replace("'a  b'", "'a b'")))
 PY
 
+CASE="release downloads behind variables, round 4 findings: a variable after a quote that closed the URL, a name with a command substitution or backticks or a positional parameter, and assignments in the forms A=x B=old, export A=x B=old and declare -r A= are each part of the identity and refused (REQ-SUP-001-AC2)"
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+import importlib.util, sys, json, datetime as dt
+def load(n, p):
+    s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+inv, age = load("inv", sys.argv[1]), load("age", sys.argv[2])
+url = "https://github.com/o/r/releases/download/v1.2.3/"
+wf = lambda run: {".github/workflows/x.yml": "on: push\nenv:\n  A: old\n  B: new\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: " + json.dumps(run) + "\n"}
+b1a, b1b = wf('curl "' + url + 'tool-"${A}.tgz'), wf('curl "' + url + 'tool-"${B}.tgz')
+assert inv.moved(inv.inventory(b1a), inv.inventory(b1b))
+now = dt.datetime(2026, 10, 14, tzinfo=dt.timezone.utc)
+for name in ("$(uname -m).tgz", "`uname -m`.tgz", "$1.tgz", "$((1+1)).tgz"):
+    it = next(iter(inv.inventory(wf("curl " + url + "tool-" + name)).values()))
+    assert it.step, (name, it.key)
+    assert not age.judge_item(it, [("2026-09-01T00:00:00Z", "pr-clock")], now)[0], name
+    assert age.live_proofs(it, ".") == [], name
+dl = "curl " + url + "${B}.tgz\n"
+for path in ("bin/x.sh", "bin/install-scanner.sh"):
+    for pre in ("A=x B=", "export A=x B=", "declare -r B=", "export UNUSED=fixed B="):
+        assert inv.moved(inv.inventory({path: pre + "old\n" + dl}), inv.inventory({path: pre + "new\n" + dl})), (path, pre)
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
