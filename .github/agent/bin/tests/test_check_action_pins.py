@@ -148,7 +148,8 @@ class Main(unittest.TestCase):
         d = repo({".github/workflows/w.yml": HEAD + f"    steps:\n      - uses: actions/checkout@{SHA} # v7.0.1\n",
                   "README.md": "not read\n", ".git/x.yml": "uses: [\n",
                   ".github/agent/bin/check-action-pins.py": "",
-                  "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": ""})   # the gate's committed programs
+                  "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
+                  "bin/scan-no-workflow-call-test.sh": ""})   # the gate's committed programs
         table = {"/repos/actions/checkout/git/ref/tags/v7.0.1":
                  {"ref": "refs/tags/v7.0.1", "object": {"type": "commit", "sha": SHA}}}
         with open(GATE) as fh:  # the gate's own pins answer truthfully too
@@ -407,7 +408,8 @@ class LiteralRunnerMatrix(unittest.TestCase):
 
     STUB = "#!/usr/bin/env bash\nset -euo pipefail\n:\n"
     FILES = {".github/agent/bin/auditor-review-gate.py": "", ".github/agent/bin/check-action-pins.py": "",
-             "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",   # the gate's committed programs
+             "bin/check-file-allowlist.sh": "", ".github/agent/tests/pin-wiring-test.sh": "",
+             "bin/scan-no-workflow-call-test.sh": "",   # the gate's committed programs
              **dict.fromkeys(["bin/build.sh", "bin/witnessed.sh", "bin/build-stage-apk.sh", "bin/build-stage-rebuild-apk.sh",
                               "bin/install-scanner.sh", "bin/build-stage-refuse-mode.sh", "bin/build-stage-snapshot-apk.sh",
                               "bin/build-stage-snapshot-rebuild-apk.sh"], STUB)}

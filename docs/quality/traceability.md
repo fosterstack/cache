@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 80 |
-| Acceptance criteria | 264 |
+| Active requirements | 81 |
+| Acceptance criteria | 267 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 248 |
+| ACs with mapped evidence | 251 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 34 |
+| Confidence: implementation-only | 35 |
 
 ## Cache protocol
 
@@ -940,6 +940,20 @@ The primary auditor for single audits shall be vendor A by default; vendor B tak
 | REQ-SCAN-014-AC3 | Given a seat change; when it happens; then the daily CVE auditor stays with its configured provider | unit |  | approved | 1 item(s) |
 | REQ-SCAN-014-AC4 | Given public text about audits, debates, scores and seats; when it is written (issues, PRs, evidence, logs, the score file); then it says primary/second auditor or vendor A/vendor B; vendor and model names come only from variables | unit |  | approved | 1 item(s) |
 
+### REQ-SCAN-015 — The scanner cloud identities cannot be reached through a caller
+
+The two workflow files that carry the scanner cloud identities (scan.yml and main-candidate-rescan.yml) shall never be callable as reusable workflows, because the cloud trust is pinned to the file and not to its caller: neither declares on: workflow_call, and no workflow or action references either one in a uses:.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: .github/workflows/scan.yml; .github/workflows/main-candidate-rescan.yml; bin/scan-no-workflow-call-test.sh*
+
+> AC3's last clause (reworded, advisor-accepted Oct 13, outbox note 2026-10-13-pipeline-req-scan-015-ac3-clause.md; it formerly required a review record bound to the script's content) names a review that this repository's gate does not judge as a record: the trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's pin checker, allowlist guard, pin-wiring judge and this scanner guard over the head as git objects and judges no review record (the record mechanism was retired with the gate rewrite, cache#303). The second review that a change to bin/scan-no-workflow-call-test.sh needs is enforced outside this repository by the private review tooling before merge (the same reading as REQ-AUD-018 AC3); that the main branch ruleset REQUIRES the check is not checkable from the repository and is an inspection item for the owner's settings. The guard rejects a repeated mapping key and any file it cannot read as one workflow document (fail closed), because a later key would otherwise hide an earlier declaration.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-SCAN-015-AC1 | Given the workflow files that carry the scanner cloud identities (scan.yml, main-candidate-rescan.yml); when the repository's workflows are read; then neither declares on: workflow_call and no workflow references either by uses: (local ./.github/workflows/<file> or <repo>/.github/workflows/<file>@ref); a change that adds either fails the check | ci-workflow |  | approved | 1 item(s) |
+| REQ-SCAN-015-AC2 | Given a pull request that changes .github/workflows/ci.yml; when the trusted review gate judges its ci.yml; then the allowlist job carries exactly the scanner guard step (named, the single run line, unconditional and unweakened) or the gate fails | ci-workflow |  | approved | 2 item(s) |
+| REQ-SCAN-015-AC3 | Given a pull request into the default branch; when the trusted review gate judges it; then the review gate runs the default branch's guard over the pull request head read as git objects, so a pull request cannot weaken the guard on disk; any head the guard cannot read as one regular workflow or action file fails; and a change to bin/scan-no-workflow-call-test.sh clears the independent second review before merge, enforced outside the repository | ci-workflow |  | approved | 2 item(s) |
+
 ## Licensing
 
 ### REQ-LIC-001 — MIT core, nothing withheld
@@ -1026,7 +1040,7 @@ The auditor shall keep everything auditor-related in the auditor directory, hold
 
 *Introduced v0.3.0 · tier community · confidence implementation-only · source: auditor directory bin/auditor-layout-check.py; auditor directory tests/coverage-gate.sh; .github/workflows/agent-review-gate.yml; .github/workflows/ci.yml*
 
-> The `then` text of AC1, AC2 and AC3 is a PARAPHRASE of the ratified sentences with the literal auditor path replaced by 'the auditor directory' (the layout check forbids that literal in this file); the VERBATIM ratified sentences are quoted in the comments above the three entries in test-evidence/mappings.yaml, which is exempt from the layout check. The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's action-pin checker, allowlist guard and pin-wiring judge over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the owner's settings. AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (owner, Oct 2) and bin/patch-decide.py with its test (owner, Oct 3). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements. Gate-workflow digest set (bootstrap of the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly two digests, both taken by its gate_digest (action pins masked): adcfd54f (the gate workflow on main) and 699abb31 (the gate workflow of #316), so #316 can pass main's copy of the checker; a later change removes the old digest and leaves one. A third digest fails with a message naming both accepted ones. RESIDUAL by design: during the window a revert to adcfd54f passes too; the window closes when the later change leaves one.
+> The `then` text of AC1, AC2 and AC3 is a PARAPHRASE of the ratified sentences with the literal auditor path replaced by 'the auditor directory' (the layout check forbids that literal in this file); the VERBATIM ratified sentences are quoted in the comments above the three entries in test-evidence/mappings.yaml, which is exempt from the layout check. The second review that AC3 requires is enforced outside this repository, by the private review tooling, before merge. The trusted verdict auditor-review-gate (agent-review-gate.yml, always the default branch's copy) runs main's action-pin checker, allowlist guard, pin-wiring judge and scanner guard over the pull request head, read as git objects; it judges no review record and reads no substitute. That the main branch ruleset REQUIRES the checks is not checkable from the repository and is an inspection item for the owner's settings. AC1 exemptions in the layout check beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries), plus mappings.yaml and unmapped.yaml (owner, Oct 2) and bin/patch-decide.py with its test (owner, Oct 3). The coverage gate's exclusion list (coverage-exclusions.txt in the auditor directory) is not in the AC2 text, so "100% coverage" is read as zero uncovered eligible statements. Gate-workflow digest set (bootstrap of the scanner guard, cache PR #316): the pin checker (bin/check-action-pins.py in the auditor directory) pins the gate workflow by GATE_WORKFLOW_SHA256, a frozen set of exactly two digests, both taken by its gate_digest (action pins masked): adcfd54f (the gate workflow on main) and 699abb31 (the gate workflow of #316), so #316 can pass main's copy of the checker; a later change removes the old digest and leaves one. A third digest fails with a message naming both accepted ones. RESIDUAL by design: during the window a revert to adcfd54f passes too; the window closes when the later change leaves one.
 
 | AC | Given / When / Then | Verification | Blocking | Status | Evidence |
 |---|---|---|---|---|---|
