@@ -928,62 +928,83 @@ sys.exit("PY3 calls without -I: %r" % bad if bad else 0)
 P
 cat >"$work/toolscan.py" <<'PY'
 import re, sys
-# toolscan.py FILE WORD...: fail closed. A shell lexer with quote removal (m'elang'e is the word melange) and a stack for command
-# substitution: $( ... ) and backticks are code at any nesting depth, also inside double quotes. Any word equal to a tool word, in code, is refused:
-# the production scripts name every tool by variable, so a bare word is never legal. Quoted text is one word (a message is never a tool word).
-def words(s):
-    out, cur, st, depth, i = [], "", ["code"], [0], 0   # st: "code" | "dq" | "sq" | "sub" | "bt"; depth: open ( inside the innermost sub
+# toolscan.py FILE WORD...: fail closed. The production scripts may contain ONLY the shell constructs they use today (the closed list below);
+# any other construct, and any bare tool word, makes the scan refuse. Nothing here tries to understand an unknown construct.
+# Closed list, in code outside quotes: plain words; "..." and '...' quoting; $name $@ $* $# $? $$ $! $- $N; ${...} (no nested braces);
+# $( ... ) with balanced parentheses; ( ) | & ; < > ; a standalone { and } and !; the case pattern *) ; [[ ... ]] tests; # comments; <<'TAG' heredocs.
+# Refused, always: backticks, $'..', $"..", brace expansion, a glob character outside the case pattern, a backslash outside quotes (continuations are
+# joined first), an unquoted heredoc tag, eval, source, alias, builtin, command, and a quote or substitution still open at the end of a line.
+REFUSE = {"eval", "source", "alias", "builtin", "command"}
+def scan(s):
+    """return (words, code): the shell words after quote removal, and the unquoted code text with quoted strings as Q"""
+    out, cur, st, depth, i, code = [], "", ["code"], [0], 0, []
     def flush():
         nonlocal cur
         if cur: out.append(cur)
-        if cur == "case" and ("sub" in st or "bt" in st): out.append("<unresolved>")   # a case pattern's ) cannot be told from the end of the substitution: refuse
+        if cur == "case" and ("sub" in st or "bt" in st): out.append("<unresolved>")
         cur = ""
     while i < len(s):
-        c, m = s[i], st[-1]
+        c, m, i0 = s[i], st[-1], i
         if m == "sq":
             if c == "'": st.pop()
             else: cur += c
         elif m == "dq":
-            if s.startswith("$(", i): flush(); st.append("sub"); depth.append(0); i += 1
-            elif s.startswith("${", i): flush(); st.append("pe"); depth.append(0); i += 1
+            if s.startswith("$(", i): flush(); st.append("sub"); depth.append(0); i += 1; code.append("$(")
+            elif s.startswith("${", i): flush(); st.append("pe"); depth.append(0); i += 1; code.append("${")
             elif c == "`": out.append("<unresolved>")
             elif c == "\\" and i + 1 < len(s): cur += s[i + 1]; i += 1
             elif c == '"': st.pop()
             else: cur += c
-        else:                                        # code, sub, bt: all are code
-            if s.startswith("$'", i) or s.startswith('$"', i) or c == "`": out.append("<unresolved>")   # ANSI-C or locale quoting and backticks decode text into words: refused, never parsed
-            elif c == "'": st.append("sq")
-            elif c == '"': st.append("dq")
-            elif s.startswith("${", i): flush(); st.append("pe"); depth.append(0); i += 1
-            elif m == "pe" and c == "}": flush(); st.pop(); depth.pop()
-            elif m == "pe" and c in ":-=+?#%/^,!@[]": flush()          # inside ${...} an operator ends a word: the default word of ${X:-melange} is a word
-            elif s.startswith("$(", i): flush(); st.append("sub"); depth.append(0); i += 1
-            elif c == "`":
-                flush()
-                if m == "bt": st.pop()
-                else: st.append("bt")
-            elif m == "sub" and c == "(": flush(); depth[-1] += 1       # a subshell, a group or arithmetic: balanced inside the substitution
+        else:
+            if s.startswith("$'", i) or s.startswith('$"', i) or c == "`": out.append("<unresolved>")
+            elif c == "'": st.append("sq"); code.append("Q")
+            elif c == '"': st.append("dq"); code.append("Q")
+            elif s.startswith("${", i): flush(); st.append("pe"); depth.append(0); i += 1; code.append("${")
+            elif m == "pe" and c == "}": flush(); st.pop(); depth.pop(); code.append("}")
+            elif m == "pe" and c in ":-=+?#%/^,!@[]": flush(); code.append(c)
+            elif s.startswith("$(", i): flush(); st.append("sub"); depth.append(0); i += 1; code.append("$(")
+            elif m == "sub" and c == "(": flush(); depth[-1] += 1; code.append(c)
             elif m == "sub" and c == ")":
-                flush()
+                flush(); code.append(c)
                 if depth[-1] > 0: depth[-1] -= 1
                 else: st.pop(); depth.pop()
-            elif c == "\\" and i + 1 < len(s): cur += s[i + 1]; i += 1
-            elif c == "#" and not cur: break
-            elif c in " \t;&|()<>{}=$": flush()
-            else: cur += c
+            elif c == "$" and i + 1 < len(s) and s[i + 1] in "@*#?!$-0123456789": cur += s[i:i + 2]; code.append("$" + s[i + 1]); i += 1   # a special parameter is one word: $# is not a comment
+            elif c == "\\": out.append("<unresolved>")
+            elif c == "#" and not cur and m != "pe": break
+            elif c in " \t;&|()<>{}=$": flush(); code.append(c)
+            else: cur += c; code.append(c)
         i += 1
     flush()
-    if st != ["code"]: out.append("<unresolved>")     # a quote or substitution still open at the end of the line: fail closed
-    return out
+    if st != ["code"]: out.append("<unresolved>")
+    return out, "".join(code)
+def closed_ok(t):
+    t = re.sub(r"\[\[.*?\]\]", " T ", t)
+    t = re.sub(r"\$\{[^{}]*\}", "V", t)
+    if re.search(r"(?<![\s;(])\{|\{(?!\s)", t): return False                 # brace expansion
+    t = re.sub(r"(^|[\s;])\*\)", " ", t)                                       # the catch-all case pattern
+    t = re.sub(r"\bcase\s.*?\sin\s+\S*?\)", " ", t)                          # the patterns of a one-line case
+    t = re.sub(r"\$\?", "S", t)
+    t = re.sub(r"(^|[\s;(])!(?=\s|$)", " ", t)
+    if re.search(r"[*?^!\[\]]", t.replace("$@", "").replace("$*", "").replace("$#", "").replace("$$", "").replace("$!", "").replace("$-", "")) and re.search(r"[*?^]", t): return False
+    if re.search(r"\$(?![A-Za-z_0-9@*#?!$(-])", t): return False             # $' $" $[ and a lone $
+    return True
 bad = []
-REFUSE = {"eval", "source", "alias", "builtin", "command"}     # constructs that build a command from text: never in the build scripts
-text = open(sys.argv[1]).read().replace("\\\n", "")        # backslash-newline is removed by the shell before it splits words: join the lines the same way
-for n, ln in enumerate(text.split("\n"), 1):
+text = open(sys.argv[1]).read().replace("\\\n", "")        # backslash-newline is removed by the shell before it splits words
+lines, tag = text.split("\n"), None
+for n, ln in enumerate(lines, 1):
+    if tag is not None:
+        if ln.strip() == tag: tag = None
+        continue                                              # the body of a quoted heredoc is data for the program it feeds
     if "TEST-SUBST" in ln: continue
-    ws = words(ln.strip())
+    m = re.search(r"<<-?\s*(['\"])(\w+)\1", ln)
+    if m: tag = m.group(2)
+    elif re.search(r"<<-?\s*\w", ln) and "<<<" not in ln:
+        bad.append("%s:%d unquoted heredoc" % (sys.argv[1], n)); continue
+    ws, code = scan(ln.strip())
     if any(w in REFUSE for w in ws): ws.append("<unresolved>")
+    if not closed_ok(code): ws.append("<unresolved>")
     bad += ["%s:%d %s" % (sys.argv[1], n, w) for w in sys.argv[2:] + ["<unresolved>"] if w in ws]
-sys.exit("bare tool words: %r" % bad if bad else 0)
+sys.exit("refused: %r" % bad if bad else 0)
 PY
 t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git, python3, openssl and shasum by variable (also as the operand of env, sudo or unshare)" python3 "$work/toolscan.py" "$BA_PROD" sha256sum go env sudo unshare melange git python3 openssl shasum
 t "rule 23" "release-sign-apks.sh names openssl, melange and python3 by variable" python3 "$work/toolscan.py" "$RS_REAL" openssl melange python3
@@ -1006,9 +1027,14 @@ open(sys.argv[2] + "/mut-btick.sh", "w").write(src.replace('"$UNSHARE" -n "$mela
 open(sys.argv[2] + "/mut-ansic.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', "\"$UNSHARE\" -n $'m\\x65lange'"))
 open(sys.argv[2] + "/mut-default.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "${NOPE:-melange}"'))
 open(sys.argv[2] + "/mut-eval.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', 'eval "$UNSHARE" -n "$melange_bin"'))
+open(sys.argv[2] + "/mut-brace.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n mela{n..n}ge'))
+open(sys.argv[2] + "/mut-bracen.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$( mela{n..n}ge --version )"'))
+open(sys.argv[2] + "/mut-glob.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n m?lange'))
+open(sys.argv[2] + "/mut-hash.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$#" ; melange'))
+open(sys.argv[2] + "/mut-heredoc.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$melange_bin" <<EOF\n$(melange)\nEOF\n'))
 open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" nice -n 5 "$ENVBIN" -u X env -i'))
 PY
-for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-cont mut-btick mut-ansic mut-default mut-eval mut-chain; do
+for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-cont mut-btick mut-ansic mut-default mut-eval mut-brace mut-bracen mut-glob mut-hash mut-heredoc mut-chain; do
   t "rule 23" "the mutant $m differs from the production script" bash -c "! cmp -s '$BA_PROD' '$work/$m.sh'"
   t "rule 23" "the tool-path assertion bites: the mutant $m (a bare tool where the fixed one is) is refused" bash -c "! python3 '$work/toolscan.py' '$work/$m.sh' sha256sum go env sudo unshare melange git python3 openssl shasum >/dev/null 2>&1"
 done
