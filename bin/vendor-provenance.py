@@ -307,6 +307,8 @@ def cmd_evidence(argv):
     if not EPOCH.fullmatch(date) or len(date) > len(str(MAX_EPOCH)) or int(date) > MAX_EPOCH:
         refuse("--date must be epoch digits (0 to %d), not %r" % (MAX_EPOCH, date))
     out_dir = a["--out"]
+    if ".." in out_dir.split(os.sep):
+        refuse("--out %s holds a '..' component" % out_dir)
     if os.path.lexists(out_dir) and not os.path.isdir(out_dir):
         refuse("--out %s exists and is not a directory" % out_dir)
     praw = read_regular(a["--provenance"], "provenance")
@@ -319,21 +321,26 @@ def cmd_evidence(argv):
            "govulncheck": {"sha256": hashlib.sha256(graw).hexdigest()},
            "date": {"epoch": int(date), "utc": day}}
     text = json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n"
-    missing, d = [], os.path.abspath(out_dir)       # the directories this run creates, outermost first: removed again, if empty, on a failure
+    chain, d = [], out_dir.rstrip("/") or "."       # the missing directories, nearest the existing ancestor last; made one at a time, only what THIS run makes is ever removed
     while not os.path.lexists(d):
-        missing.insert(0, d)
-        d = os.path.dirname(d)
-    final = os.path.join(out_dir, "vendor-evidence.json")
-    tmp = None
+        chain.append(d)
+        d = os.path.dirname(d) or "."
+    created, dfd, name = [], None, None
     try:
-        os.makedirs(out_dir, exist_ok=True)
-        for _ in range(8):                  # a sibling temporary file this run created itself (exclusive, unpredictable name), replaced into place only once complete
-            cand = os.path.join(out_dir, ".vendor-evidence.json.tmp-" + os.urandom(8).hex())
+        for p in reversed(chain):
             try:
-                fd = os.open(cand, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+                os.mkdir(p)
+            except FileExistsError:         # another run made it first: not ours
+                continue
+            created.append(p)
+        dfd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY)   # every file operation below goes through this open directory, never through a path that can be retargeted
+        for _ in range(8):                  # a temporary file this run creates itself (exclusive, unpredictable name), replaced into place only once complete
+            cand = ".vendor-evidence.json.tmp-" + os.urandom(8).hex()
+            try:
+                fd = os.open(cand, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644, dir_fd=dfd)
             except FileExistsError:
                 continue
-            tmp = cand
+            name = cand
             break
         else:
             raise OSError("no unused temporary name in %s" % out_dir)
@@ -341,19 +348,22 @@ def cmd_evidence(argv):
             fh.write(text)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, final)
+        os.replace(name, "vendor-evidence.json", src_dir_fd=dfd, dst_dir_fd=dfd)
     except BaseException:
-        if tmp is not None:                 # only a file this run created
+        if name is not None and dfd is not None:    # only a file this run created, in the directory it was created in
             try:
-                os.unlink(tmp)
+                os.unlink(name, dir_fd=dfd)
             except OSError:
                 pass
-        for d in reversed(missing):
+        for p in reversed(created):                 # only directories this run made, innermost first; one that cannot be removed does not stop the rest
             try:
-                os.rmdir(d)
+                os.rmdir(p)
             except OSError:
-                break
+                pass
         raise
+    finally:
+        if dfd is not None:
+            os.close(dfd)
     return 0
 
 
