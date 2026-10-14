@@ -81,6 +81,15 @@ rc AC2 "(byte case) the failure names the changed path" 1 vc "$work/fx-byte"
 says AC2 "(byte case) the failure names dep.go" "dep.go"
 rc AC2 "(exec case) the failure names the mode" 1 vc "$work/fx-exec"
 says AC2 "(exec case) the failure says mode" "mode"
+mkcase lnksum;  cp "$work/fx-lnksum/go.sum" "$work/lnksum-target" && rm "$work/fx-lnksum/go.sum" && ln -s "$work/lnksum-target" "$work/fx-lnksum/go.sum"
+rc AC2 "a go.sum that is a link is refused (2): a repair would land in the link's target and hide from the comparison" 2 vc "$work/fx-lnksum"
+mkcase lnkmod;  cp "$work/fx-lnkmod/go.mod" "$work/lnkmod-target" && rm "$work/fx-lnkmod/go.mod" && ln -s "$work/lnkmod-target" "$work/fx-lnkmod/go.mod"
+rc AC2 "a go.mod that is a link is refused (2)" 2 vc "$work/fx-lnkmod"
+# a toolchain whose regenerated files are not mode 644 (whatever the umask): the regenerated tree is judged for mode too
+realgo=$(command -v go); mkdir -p "$work/modego"
+printf '#!/bin/sh\n"%s" "$@"; rc=$?; if [ "$1 $2" = "mod vendor" ]; then find vendor -name dep.go -exec chmod 600 {} +; fi; exit $rc\n' "$realgo" >"$work/modego/go"; chmod 755 "$work/modego/go"
+rc AC2 "regenerated files that are not mode 644 are refused (1)" 1 env PATH="$work/modego:$PATH" bash "$bin_vc" "$work/fx-clean"
+( umask 077; rc AC2 "a caller's umask 077 does not change the verdict on a clean tree (0)" 0 vc "$work/fx-clean" )
 rc AC2 "an unknown argument exits 2" 2 vc --frobnicate
 rc AC2 "two arguments exit 2" 2 vc "$work/fx-clean" extra
 rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
@@ -193,6 +202,8 @@ mutate step-if-always 's = s.replace("      - name: vendor/ is what go mod vendo
 mutate job-env-goflags 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor\n    env:\n      GOFLAGS: -mod=mod\n", 1)'
 mutate shell-override 's = s.replace("        run: bash bin/vendor-check.sh\n", "        shell: bash {0}\n        run: bash bin/vendor-check.sh\n", 1)'
 mutate unpinned-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod", "      - uses: actions/setup-go@v7\n        with:\n          go-version-file: go.mod", 1)'
+mutate defaults-shell 's = s.replace("jobs:\n", "defaults:\n  run:\n    shell: \x27bash -c \"exit 0\" {0}\x27\njobs:\n", 1)'
+mutate job-renamed 's = s.replace("  vendor:\n    name: vendor\n", "  vendor:\n    name: vendor-skipped\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
@@ -200,8 +211,8 @@ f=bin/vendor-check.sh
 t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1 '$f' | grep -q '^#!' && git ls-files -s '$f' | grep -q '^100755'"
 t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
 t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
-cmdword='(^|[;&|({]|[[:space:]](then|do|else))[[:space:]]*(\$\(|`|\$\{?[A-Za-z_])'
-for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )'; do
+cmdword='(^|[;&|({]|[[:space:]](then|do|else))[[:space:]]*[A-Za-z0-9_./-]*(\$\(|`|\$\{?[A-Za-z_])'
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg'; do
   t AC11 "the substitution pattern flags: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
 done
 for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"'; do
