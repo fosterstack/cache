@@ -6,6 +6,7 @@
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
 cd "$root"   # the driver runs from the repository root only (it names its helpers by literal repo-relative paths)
+unset GITHUB_ACTIONS   # the suite is the same on a runner (where it is set) and on a workstation: a test that needs it sets it on its own call
 # The production scripts have NO test hook (REQ-BUILDAPK-001-AC3): the tests below run COPIES of bin/build-apk.sh and bin/release-sign-apks.sh in
 # which exactly the lines ending in TEST-SUBST are replaced (tool locations, the sealed data file, the recipes, the keys directory) and which are
 # checked to differ in no other line. The copies take their stubs and per-call settings from TEST_* variables and a sealed environment the
