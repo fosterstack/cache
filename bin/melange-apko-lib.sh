@@ -78,7 +78,7 @@
 #     /work/archive/..., then git checkout -b refresh/..., commit, push that branch, gh pr create. Exit 3 = Wolfi key changed.
 # ---------------------------------------------------------------------------------------------------------------
 # RULE -> ASSERTION GROUP (the rules are the ratified v0.3.0 rules; the groups below say where each is asserted)
-#  11  recipes build fscache from source (no Dockerfile/FROM/buildx/goreleaser), native arch only (driver refuses a foreign arch)
+#  11  recipes build fscache from source (the recipes are the only build input), native arch only (driver refuses a foreign arch)
 #  12  Go from go.dev: fetch steps with checksums, no Wolfi go apk, GOTOOLCHAIN=local, go.mod go line <= archived Go, tarball
 #      pre-seeded from the archive into the cache dir, tamper/missing refused
 #  13  FIPS recipe: GOFIPS140=v1.0.0 and a proof that the binary records v1.0.0-c2097c7c; standard recipe has no GOFIPS140
@@ -549,7 +549,7 @@ elif mode == "dependabot":
     d = load()
     for u in d["updates"]:
         assert not re.search(r"apko|melange|apk|lock|/build/locks", json.dumps(u), re.I), u
-        assert u["directory"] in ("/", "/build/docker", "/.github/agent"), u["directory"]   # build/docker stays until the Dockerfile goes
+        assert u["directory"] in ("/", "/.github/agent"), u["directory"]
 elif mode == "wf":
     d = load(); on = d.get(True) or d.get("on"); jobs = d["jobs"]; j = jobs[arg]; blob = json.dumps(j)
     if arg == "refresh":
