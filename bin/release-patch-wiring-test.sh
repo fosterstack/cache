@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13
+# proves: REQ-REL-009-AC3, REQ-REL-009-AC5, REQ-REL-009-AC8, REQ-REL-009-AC10, REQ-REL-009-AC13, REQ-CHAIN-001-AC6
 # Automatic patch releases in release.yml (owner RATIFIED Oct 2; advisor 0051/0055/0056/0057), PR B:
 # - push to main and a daily schedule run ONLY the decide job; the release chain starts only on a v* tag (admission is
 #   guarded to tags, every other stage needs it);
@@ -52,6 +52,8 @@ if dec.get("permissions") != {"contents": "read", "checks": "read", "id-token": 
     bad.append("decide's own token is not contents read + checks read + id-token + issues: %s" % dec.get("permissions"))
 if d.get("concurrency"):
     bad.append("a workflow-level concurrency group would serialize the tag chain with decide (it must be decide's own)")
+if set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}:
+    bad.append("decide has keys beyond the reviewed ones (a job-level defaults or env changes how every step runs): %s" % sorted(set(dec) - {"if", "concurrency", "runs-on", "environment", "permissions", "outputs", "steps"}))
 steps = dec.get("steps") or []
 text = "\n".join(s.get("run") or "" for s in steps)
 if "bin/install-scanner.sh gitsign" not in text:
@@ -101,6 +103,9 @@ if len(gated) != 3 or ungated:
 if wait and gated and names.index(wait[0].get("name")) > min(names.index(g) for g in gated if g in names):
     bad.append("the wait comes after signing")
 co = [s for s in steps if str(s.get("uses", "")).startswith("actions/checkout@")]
+# the checkout supplies the code the marker gate runs: no other repository, ref or path, no env, nothing beyond the two reviewed inputs
+if len(co) != 1 or set(co[0]) - {"name", "uses", "with"} or set(co[0].get("with") or {}) != {"fetch-depth", "persist-credentials"}:
+    bad.append("decide's checkout has keys or inputs beyond uses and with fetch-depth/persist-credentials (a repository, ref, path or env would change whose code runs): %s" % (co[0] if co else None))
 if not co or (co[0].get("with") or {}).get("fetch-depth") != "0":
     bad.append("decide's checkout is shallow (a queued run must see every tag, including the earlier run's)")
 if not co or (co[0].get("with") or {}).get("persist-credentials") != "false":
@@ -123,6 +128,14 @@ facts = [s for s in steps if s.get("id") == "facts"]
 if not dstep or '--released "$RUNNER_TEMP/released.json"' not in dstep[0]["run"] or not facts or \
         "gh release list --exclude-drafts" not in facts[0]["run"] or "released.json" not in facts[0]["run"]:
     bad.append("decide's baseline is not the latest published release")
+# REQ-CHAIN-001-AC6 (advisor Oct 12): the step right after the checkout refuses, naming the marker, unless the committed rc-proof marker validates for the
+# commit being tagged; it is a plain run step (no `if`, no continue-on-error, no env), so a failure ends the job before anything is decided or tagged
+_RCP = 'python3 bin/patch-decide.py rc-proof --marker .github/policy/rc-proof.json --commit "$GITHUB_SHA"'
+_rcs = [s for s in steps if "patch-decide.py rc-proof" in (s.get("run") or "")]
+if len(_rcs) != 1 or len(steps) < 2 or steps[1] is not _rcs[0] or str(steps[0].get("uses", "")).split("@")[0] != "actions/checkout":
+    bad.append("decide's first step after the checkout is not the rc-proof marker check (exactly one such step)")
+elif set(_rcs[0]) - {"name", "run"} or "\n".join(l.strip() for l in _rcs[0]["run"].strip().splitlines() if l.strip() and not l.strip().startswith("#")) not in (_RCP, "set -euo pipefail\n" + _RCP):
+    bad.append("the rc-proof step is not exactly `%s` (no if, no continue-on-error, no env): %s" % (_RCP, _rcs[0]))
 scan = [s for s in steps if "patch-decide.py removed" in (s.get("run") or "")]
 # REQ-REL-009-AC3 (advisor 0389): the immediate cut scans the images that exist for the latest release's version (patch-decide.py variants: v0.3.0 dropped
 # the debug variant), never a literal -debug tag, and the notes read a variant's scan only when that scan was made
@@ -333,6 +346,23 @@ case_ real                    ok  ""
 case_ chain-on-main           bad "$J['build'].pop('if')"
 case_ decide-anywhere         bad "$D['if'] = '\${{ always() }}'"
 case_ decide-no-env           bad "$D.pop('environment')"
+case_ rcproof-absent          bad "$D.__setitem__('steps', [s for s in $D['steps'] if 'rc-proof' not in (s.get('run') or '')])"
+case_ rcproof-conditional     bad "[s.__setitem__('if', 'always()') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-continue        bad "[s.__setitem__('continue-on-error', 'true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-env             bad "[s.__setitem__('env', {'X': '1'}) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-late            bad "(lambda L: L.append(L.pop(1)))($D['steps'])"
+case_ rcproof-other-marker    bad "[s.__setitem__('run', s['run'].replace('.github/policy/rc-proof.json', 'docs/rc-proof.json')) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-no-commit       bad "[s.__setitem__('run', s['run'].replace(' --commit \"\$GITHUB_SHA\"', '')) for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-swallowed       bad "[s.__setitem__('run', s['run'] + ' || true') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-job-defaults    bad "$D.__setitem__('defaults', {'run': {'shell': \"bash -c 'bash {0}; exit 0'\"}})"
+case_ rcproof-job-env         bad "$D.__setitem__('env', {'BASH_ENV': '/dev/null'})"
+case_ rcproof-wf-defaults     bad "d.__setitem__('defaults', {'run': {'shell': \"bash -c 'bash {0}; exit 0'\"}})"
+case_ rcproof-wf-env          bad "d.__setitem__('env', {'BASH_ENV': '/dev/null'})"
+case_ rcproof-step-shell      bad "[s.__setitem__('shell', 'bash -c \"bash {0}; exit 0\"') for s in $D['steps'] if 'rc-proof' in (s.get('run') or '')]"
+case_ rcproof-checkout-repo   bad "[s.__setitem__('with', dict(s['with'], repository='example/alternate-release-code')) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ rcproof-checkout-ref    bad "[s.__setitem__('with', dict(s['with'], ref='refs/heads/alternate-release-code')) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ rcproof-checkout-path   bad "[s.__setitem__('with', dict(s['with'], path='elsewhere')) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
+case_ rcproof-checkout-env    bad "[s.__setitem__('env', {'GIT_DIR': '/tmp/x'}) for s in $D['steps'] if str(s.get('uses','')).startswith('actions/checkout@')]"
 case_ decide-writes           bad "$D['permissions']['contents'] = 'write'"
 case_ app-widened             bad "[s['with'].__setitem__('permission-pull-requests', 'write') for s in $D['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
 case_ token-to-decide-step    bad "[s.setdefault('env', {}).__setitem__('GH_TOKEN', '\${{ steps.app-token.outputs.token }}') for s in $D['steps'] if 'patch-decide.py decide' in (s.get('run') or '')]"

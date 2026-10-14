@@ -23,10 +23,10 @@ import subprocess
 import sys
 import tempfile
 
-# The ten checks, in order. Each is the counterpart of a step of the old stage-admission.yml (bin/chain-admission-old-steps.txt).
+# The eleven checks, in order. Each is the counterpart of a step of the old stage-admission.yml (bin/chain-admission-old-steps.txt).
 CHECKS = [
     "tag-ref", "tag-syntax", "policy-from-main", "tag-annotated", "tag-signature",
-    "commit-signature", "ancestor-of-main", "required-checks", "baseline", "admission-evidence",
+    "commit-signature", "ancestor-of-main", "required-checks", "baseline", "rc-proof", "admission-evidence",
 ]
 
 TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?")  # fullmatch: no trailing newline slips through
@@ -39,6 +39,9 @@ ISSUER = "https://token.actions.githubusercontent.com"
 # the Go toolchain of go.mod, installed and checksum-pinned by `bash bin/install-scanner.sh go` (its fixed directory is <dest>/fscache-go, dest /usr/local/bin):
 # the freeze check runs THIS Go, never the runner's own `go`, which may be older than go.mod; GOTOOLCHAIN=local, so nothing is downloaded
 GO_BIN = "/usr/local/bin/fscache-go/bin/go"
+RC_MARKER = ".github/policy/rc-proof.json"      # read from origin/main with bin/chain-bytes-sha.py of origin/main, only for a final or patch tag (REQ-CHAIN-001-AC6)
+RC_BYTES = "bin/chain-bytes-sha.py"
+RC_TAG_SYNTAX = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+-rc[0-9]+")
 SIGNER = "bin/admission-tag-signer.py"
 INSTALLER = "bin/install-scanner.sh"
 # the policy inputs read from origin/main, each copied into the policy directory under its file name
@@ -462,7 +465,31 @@ def check_baseline(ctx):
         raise Refusal("baseline", "release baseline invalid: " + "; ".join(errs))
 
 
-# ---------------------------------------------------------------- 10. admission-evidence
+# ---------------------------------------------------------------- 10. rc-proof (REQ-CHAIN-001-AC6, advisor Oct 12)
+
+def check_rc_proof(ctx):
+    """A final or patch tag is admitted only when the committed marker of origin/main validates for the tagged commit: it names an rc tag that is an
+    ancestor, and the chain files of the commit hash to its sha (bin/chain-bytes-sha.py check-marker, main's copy). A release candidate tag is exempt (it is how
+    the proof is made). A missing marker is a refusal, never a skip."""
+    if RC_TAG_SYNTAX.fullmatch(ctx.tag):
+        return
+    marker = git_show("origin/main:" + RC_MARKER)
+    if marker is None:
+        raise Refusal("rc-proof", "the rc-proof marker %s is not on origin/main: no final or patch tag is admitted without a recorded green rc run of these chain files" % RC_MARKER)
+    script = git_show("origin/main:" + RC_BYTES)
+    if script is None:
+        raise Refusal("rc-proof", "%s is not on origin/main, so the marker cannot be checked" % RC_BYTES)
+    marker_path = os.path.join(ctx.policy, "rc-proof.json")
+    script_path = os.path.join(ctx.policy, os.path.basename(RC_BYTES))
+    for path, data in ((marker_path, marker), (script_path, script)):
+        with open(path, "wb") as fh:
+            fh.write(data)
+    rc, _, err = run_cmd(["python3", script_path, "check-marker", "--marker", marker_path, "--commit", ctx.sha, "--repo", "."])
+    if rc != 0:
+        raise Refusal("rc-proof", "the rc-proof marker %s does not validate for %s: %s" % (RC_MARKER, ctx.sha, one_line(text(err), 300)))
+
+
+# ---------------------------------------------------------------- 11. admission-evidence
 
 def check_admission_evidence(ctx, out_path):
     """Write the canonical admission.json (sorted keys, jq -S layout) so its digest is stable."""
@@ -516,6 +543,7 @@ def admit(out_path, go_bin=GO_BIN):
         check_ancestor_of_main(ctx)
         check_required_checks(ctx)
         check_baseline(ctx)
+        check_rc_proof(ctx)
         check_admission_evidence(ctx, out_path)
         print("admitted %s (%s): signed by %s (%s), %d required checks green, baseline %s" %
               (ctx.tag, ctx.sha, ctx.principal, ctx.method, len(ctx.verified), ctx.base))

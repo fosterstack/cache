@@ -160,6 +160,8 @@ ALLOW_PATTERNS=(
   '^bin/install-kind\.sh$'
   '^bin/chain-check-(scripts|wiring)-test\.sh$'
   '^bin/chain-check-shape\.py$'
+  # The rc-proof marker helper (REQ-CHAIN-001-AC6): the one definition of the chain-file set.
+  '^bin/chain-bytes-sha\.py$'
   # Release (PR 4): the six Witness-step scripts and the post-publish planner, the crane pin test, and the Release wiring and script tests with their judge.
   '^bin/release-(verify|apks|publish|sign|assets|postverify)\.sh$'
   '^bin/release-(postverify|metadata|layout)\.py$'

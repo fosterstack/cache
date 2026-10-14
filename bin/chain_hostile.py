@@ -12,7 +12,10 @@ import tempfile
 from chain_common import b64d, refuse, ssl, strict_json
 
 
-ATTEMPTS = ["mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance", "call_sign_from_other_workflow"]
+# exactly five runtime cases (REQ-CHAIN-001-AC5, G2): the sixth case of rule 52a/0334, a second workflow calling stage-sign.yml, would need a throwaway workflow
+# file that the no-sprawl rule forbids; it is judged by Sign's caller check in the static judge and by the offline hostile test, never by a row here.
+# A row for it, or for any other name, is an extra row; a missing row for any of the five is an error.
+ATTEMPTS = ["mint_sign_cert", "read_sign_token", "read_sign_key", "hand_sign_code", "forge_provenance"]
 ALL_ROWS = ATTEMPTS + ["positive_control"]
 ROW_STAGES = ("runner", "build", "sign", "rebuild", "check", "release")
 # (allowed stages, cause words) per attempt; a refusal counts only when stage and cause fit
@@ -22,7 +25,6 @@ FITS = {
     "read_sign_key": (("runner",), ("nothing usable",)),
     "hand_sign_code": (("sign",), ("digest", "format")),
     "forge_provenance": (("sign", "release"), ("identity", "stage-sign.yml", "signature", "root")),
-    "call_sign_from_other_workflow": (("sign", "release"), ("release.yml", "build config")),
 }
 MISSING = ("no such file", "does not exist", "missing", "not found")
 UNREAD = ("cannot read", "unreadable", "permission denied")
@@ -205,10 +207,16 @@ def cmd_hostile_verdict(a):
     errs, by = [], {}
     if not rows:
         errs.append("error: no attempt rows (attempt)")
+    if not isinstance(rows, list):
+        errs.append("error: attempts is not a list (row)")
+        rows = []
     for r in rows:
+        if not isinstance(r, dict):
+            errs.append("error: an attempt row is not an object (row)")
+            continue
         n = r.get("attempt")
         if n not in ALL_ROWS:
-            errs.append("error: %r is not one of the six attempts or the positive control" % n)
+            errs.append("error: %r is not one of the five attempts or the positive control" % n)
         elif n in by:
             errs.append("error: duplicate row for %s" % n)
         else:
@@ -221,14 +229,14 @@ def cmd_hostile_verdict(a):
             errs.append("error: %s: the outcome was not judged by the verifier (judged_by %r)" % (n, r.get("judged_by")))
             continue
         if n == "positive_control":
-            if r.get("outcome") != "accepted" or r.get("exit_code") != 0:
+            if r.get("outcome") != "accepted" or type(r.get("exit_code")) is not int or r.get("exit_code") != 0:
                 errs.append("error: positive_control must be accepted (exit 0) by the same policy: %s" % r.get("reason"))
             continue
         if r.get("outcome") != "refused":
             errs.append("error: %s was %s: the system accepted a hostile attempt" % (n, r.get("outcome")))
             continue
-        if r.get("exit_code") in (0, None):
-            errs.append("error: %s: outcome refused contradicts exit code %r" % (n, r.get("exit_code")))
+        if type(r.get("exit_code")) is not int or r.get("exit_code") != 1:
+            errs.append("error: %s: outcome refused needs the verifier's refusal exit status 1, not %r (exit)" % (n, r.get("exit_code")))
             continue
         stage, reason = r.get("stage"), str(r.get("reason") or "")
         if stage not in ROW_STAGES:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6 — the flags; PR 1's verify cases cover the identity
+# proves: REQ-CHAIN-004-AC12, REQ-CHAIN-004-AC14, REQ-CHAIN-005-AC7, REQ-CHAIN-004-AC1, REQ-CHAIN-004-AC2, REQ-CHAIN-004-AC3, REQ-CHAIN-004-AC6, REQ-CHAIN-004-AC8, REQ-CHAIN-004-AC9, REQ-CHAIN-004-AC10, REQ-CHAIN-004-AC11, REQ-CHAIN-005-AC1, REQ-CHAIN-005-AC2, REQ-CHAIN-005-AC4, REQ-CHAIN-005-AC5, REQ-CHAIN-005-AC6, REQ-CHAIN-001-AC6 — the flags; PR 1's verify cases cover the identity
 # Written before the implementation (step 4): the stage files, bin/build-stage-KIND.sh x4, bin/witnessed.sh, bin/chain_items.py (bind, items-apk,
 # items-merge, record-env, rebuild-compare), bin/build-admit.py, bin/install-scanner.sh witness. The real-tree graph case stays red until PRs 3 and 4.
 #
@@ -1643,6 +1643,37 @@ krj 1 "a duplicate entry id is refused" "$work/kr/dup.json" $'pass=1 fail=0' "tw
 rc=0; python3 "$KR" empty --list "$work/kr/list.json" > /dev/null 2>&1 || rc=$?; [ "$rc" = 1 ] && ok "known-red cutover: a non-empty list fails" || bad "known-red cutover: non-empty list gave exit $rc"
 printf '{"entries":[]}\n' > "$work/kr/empty.json"
 rc=0; python3 "$KR" empty --list "$work/kr/empty.json" > /dev/null 2>&1 || rc=$?; [ "$rc" = 0 ] && ok "known-red cutover: an empty list passes" || bad "known-red cutover: empty list gave exit $rc"
+# cutover prep (advisor Oct 12, REQ-CHAIN-001-AC6): the cutover PR's check is `empty-except KR-CUTOVER` (every other entry gone; KR-CUTOVER alone means "rc proof
+# pending"); the marker PR's check stays `empty` (a fully empty list, KR-CUTOVER removed with the marker)
+ent() { printf '{"id":"%s","suite":"s.sh","case":"c%s","reason":"r","green_by":"g"}' "$1" "$1"; }
+printf '{"entries":[%s]}\n' "$(ent KR-CUTOVER)" > "$work/kr/only-cutover.json"
+printf '{"entries":[%s,%s]}\n' "$(ent KR-CUTOVER)" "$(ent KR-OTHER)" > "$work/kr/cutover-other.json"
+printf '{"entries":[%s]}\n' "$(ent KR-OTHER)" > "$work/kr/other.json"
+krx() { # krx WANT LABEL LIST ARGS... : the exit status of chain-known-red.py empty... (and, for a refusal, the word the first line names)
+  local want=$1 label=$2 list=$3 rc=0; shift 3
+  python3 "$KR" "$@" --list "$list" > "$work/kr/x.out" 2> "$work/kr/x.err" || rc=$?
+  if [ "$rc" = "$want" ] && ! grep -q Traceback "$work/kr/x.err"; then ok "known-red cutover prep: $label"; else bad "known-red cutover prep: $label (exit $rc, wanted $want: $(head -c 150 "$work/kr/x.out" "$work/kr/x.err" | tr '\n' ' '))"; fi; }
+krx 0 "empty-except KR-CUTOVER passes when KR-CUTOVER alone is listed (rc proof pending)" "$work/kr/only-cutover.json" empty-except KR-CUTOVER
+krx 0 "empty-except KR-CUTOVER passes on an empty list" "$work/kr/empty.json" empty-except KR-CUTOVER
+krx 1 "empty-except KR-CUTOVER fails while another entry is listed" "$work/kr/cutover-other.json" empty-except KR-CUTOVER
+krx 1 "empty-except KR-CUTOVER fails when another entry alone is listed" "$work/kr/other.json" empty-except KR-CUTOVER
+python3 "$KR" empty-except KR-CUTOVER --list "$work/kr/cutover-other.json" > "$work/kr/x.out" 2>&1 || true
+grep -F -q KR-OTHER "$work/kr/x.out" && ok "known-red cutover prep: the refusal names the entry that is still listed" || bad "known-red cutover prep: the refusal does not name KR-OTHER"
+krx 1 "empty (the marker PR) still fails while KR-CUTOVER alone is listed: the list must be fully empty" "$work/kr/only-cutover.json" empty
+krx 2 "empty-except with no entry id is a usage error" "$work/kr/only-cutover.json" empty-except
+krx 2 "empty-except with two ids is a usage error" "$work/kr/only-cutover.json" empty-except KR-CUTOVER KR-OTHER
+krx 1 "an unreadable list fails closed under empty-except" "$work/kr/does-not-exist.json" empty-except KR-CUTOVER
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red cutover prep: KR-CUTOVER carries the accepted reason (every OTHER entry gone, this entry alone stays, removed by the marker PR)" || bad "known-red cutover prep: KR-CUTOVER's reason is not the accepted text"
+import json, sys
+ents = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
+if "KR-CUTOVER" not in ents:        # the marker PR removes the entry (the list is then empty): that completed state is the one this case allows
+    sys.exit(0 if not ents else 1)
+e = ents["KR-CUTOVER"]
+want = ("the cutover pull request (chain-v030 to main) needs every other entry of this list gone AND every hosted check green on hosted runners, not only the suite cases: "
+        "build and apk (both legs), scan, reproducibility, allowlist (including every step it skips), pin-age and coverage; this entry alone stays after the cutover and means "
+        "'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, which changes exactly the marker file and the removal of this one entry, and until then no final or patch tag runs the chain")
+sys.exit(0 if e["reason"] == want and e["case"].startswith("KNOWN-RED cutover:") else 1)
+PY
 # an entry added since the merge base is refused unless the PR body names it
 kg="$work/kr/repo"; rm -rf "$kg"; mkdir -p "$kg/test-evidence"
 ( cd "$kg" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
@@ -1980,7 +2011,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=677
+EXPECT=687
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1
