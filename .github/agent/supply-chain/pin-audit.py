@@ -1215,7 +1215,7 @@ def main(argv=None):
                 fx = json.load(open(a.fixtures))
             except (OSError, ValueError) as e:
                 raise Fail(f"unreadable fixtures: {e}")
-        now = age.parse_time(a.now) if a.now else dt.datetime.now(dt.timezone.utc)
+        now = age.parse_time(a.now, True) if a.now else dt.datetime.now(dt.timezone.utc)
         if now is None:
             raise Fail("--now is not an ISO time")
         gh = Gh(a.gh)

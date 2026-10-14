@@ -218,7 +218,7 @@ def _input_fed(item):
     return any(m in item.key for m in ("${{", "${var}", "(variable)", "(expression)"))
 
 
-_CALLEE = {}   # (path, text hash) -> True when a call of that workflow file is no item (cached: a file is judged once per inventory)
+_CALLEE_MODE = [False]   # True while a callee is being judged: no call inside it is exempted, so a relay, a cycle or a self-call is never plain
 
 
 def _callee_is_plain(path, text):
@@ -233,22 +233,23 @@ def _callee_is_plain(path, text):
     on = doc.get("on")
     if not (on == "workflow_call" or (isinstance(on, list) and "workflow_call" in on) or (isinstance(on, dict) and "workflow_call" in on)):
         return False
-    saved = (_TREE[0], _ENV_CTX[0], _JOB_SUMS[0])
+    saved = (_TREE[0], _FILES[0], _ENV_CTX[0], _JOB_SUMS[0], _CALLEE_MODE[0])
+    _CALLEE_MODE[0] = True
     try:
         items = inventory({path: text})
-        if any(_input_fed(i) for i in items.values()):
+        if any(_input_fed(i) or i.version == "(local)" for i in items.values()):   # a local call left inside it forwards inputs the tree-level view cannot follow
             return False
         return not any(True for _ in unmeasured_occurrences({path: text}))
     except RuntimeError:
         return False
     finally:
-        _TREE[0], _ENV_CTX[0], _JOB_SUMS[0] = saved
+        _TREE[0], _FILES[0], _ENV_CTX[0], _JOB_SUMS[0], _CALLEE_MODE[0] = saved
 
 
 def _exempt_local_call(raw, job):
     """REQ-SUP-001-AC19: a job calling exactly ./.github/workflows/<plain name>.yml (the raw value, unstripped), a workflow of this tree that is plain
     (above), with no digit in any value of its with: block, is no item: the called file is inventoried itself."""
-    if not _LOCAL_CALL.fullmatch(raw) or raw[2:] not in _TREE[0]:
+    if _CALLEE_MODE[0] or not _LOCAL_CALL.fullmatch(raw) or raw[2:] not in _TREE[0]:
         return False
     if any(re.search(r"\d", s) for s in _scalars(job.get("with"))):
         return False

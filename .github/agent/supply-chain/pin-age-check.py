@@ -40,7 +40,7 @@ inv = _load("pin-inventory")
 tobs = _load("tag_observer")
 
 
-def parse_time(s):
+def parse_time(s, clock=False):
     """ISO 8601 -> aware datetime, or None when it is not one."""
     if not isinstance(s, str):
         return None
@@ -58,8 +58,8 @@ def parse_time(s):
         hh, mm = int(tz[1:3]), int(tz[-2:])
         d = d - sign * dt.timedelta(hours=hh, minutes=mm)
     d = d.replace(tzinfo=dt.timezone.utc)
-    if frac:
-        d += dt.timedelta(seconds=1)   # a fractional second is rounded UP: a time is never earlier than it was published (AC3: short of 7 days is young)
+    if frac and not clock:
+        d += dt.timedelta(seconds=1)   # a publication time's fractional second is rounded UP, a clock's (clock=True) is truncated: an age is never over-counted (AC3)
     return d
 
 
@@ -444,7 +444,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         fx = json.load(open(a.fixtures)) if a.fixtures else None
-        now = parse_time(a.now) if a.now else (parse_time((fx or {}).get("now")) if fx and fx.get("now") else dt.datetime.now(dt.timezone.utc))
+        now = parse_time(a.now, True) if a.now else (parse_time((fx or {}).get("now"), True) if fx and fx.get("now") else dt.datetime.now(dt.timezone.utc))
         if now is None:
             raise ValueError("--now is not an ISO time")
         base_items = inv.load_at(a.root, a.base)
@@ -561,12 +561,15 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
     """The (script path, line id) pairs of the unpinned-package occurrences the head ADDS that a base-branch row rules, within the row's count. Shared by this check and
     pin-audit.py, so the one required job judges a ruled line once."""
     rulings = load_ruled_text(exceptions_path, required=False)
+    in_base = _occurrences(root, base)
     out = set()
     for k, per in _unmeasured_counts(root, base, head).items():
         if k[1] != UNPINNED_FORM:
             continue
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in per]
-        if all(r and n <= r[1] for r, n in zip(rs, per.values())):
+        # a line the base already holds is never ruled here: an item of that line may have moved because an assignment it reads changed, and a copy of
+        # the line cannot be told from it (the occurrence is still reported; the item keeps failing)
+        if all(r and n <= r[1] and not in_base.get(k, {}).get(lh) for r, (lh, n) in zip(rs, per.items())):
             out.update((k[0], lh) for lh in per)
     return out
 
@@ -574,18 +577,16 @@ def ruled_unpinned_lines(root, base, head, exceptions_path):
 def _run(a, moved, fx, now):
     rulings = load_ruled_text(a.exceptions or DEFAULT_EXCEPTIONS, required=bool(a.exceptions))   # before the scan: a malformed list stops the check
     lines = _unmeasured_counts(a.root, a.base, a.head)
-    added, ruled, ruled_lines = [], [], set()
+    added, ruled = [], []
     for k in sorted(lines):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
-            if k[1] == UNPINNED_FORM:
-                ruled_lines.update((k[0], lh) for lh in lines[k])
         else:
             added.append(k)
-    moved = drop_ruled_unpinned(moved, ruled_lines)   # REQ-SUP-001-AC20: judged by the ruled row of ITS OWN line, never by another line's
+    moved = drop_ruled_unpinned(moved, ruled_unpinned_lines(a.root, a.base, a.head, a.exceptions or DEFAULT_EXCEPTIONS))   # REQ-SUP-001-AC20: judged by the ruled row of ITS OWN line, never by another line's
     if not moved and not added:
         print("pin-age: no pin moved (nothing to measure)")
         rows = []

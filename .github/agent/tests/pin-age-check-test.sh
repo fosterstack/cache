@@ -2446,5 +2446,113 @@ assert not ok, why
 assert ac.live_proofs(I(), "/nonexistent") == []
 PY
 
+# --- round 2 of the review of PR 329: state between calls, a relay, a self-call, an identical copy, a fractional clock -------------------------------------
+cat >"$work/callee2.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/cache@$SHA5 # v4.2.0
+EOF
+newcase two "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+(w / 'callee2.yml').write_text(pathlib.Path(r'$work/callee2.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c1:\n    uses: ./.github/workflows/callee.yml\n  c2:\n    uses: ./.github/workflows/callee2.yml\n')"
+lck two
+CASE="AC19: two different plain callees in one tree are BOTH exempted: no state of the first judgement leaks into the second (exit 0)"
+check test "$rc" -eq 0; check bash -c "! grep -q 'action:local:' '$work/two.out'"
+# the second call already in the base, the first added in the head: the unchanged second must not move
+rm -rf "$work/two2"; cp -R "$base" "$work/two2"
+( cd "$work/two2" && python3 - "$work" <<'PY'
+import pathlib, subprocess, sys
+work = sys.argv[1]
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(work + '/callee.yml').read_text())
+(w / 'callee2.yml').write_text(pathlib.Path(work + '/callee2.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c2:\n    uses: ./.github/workflows/callee2.yml\n')
+g = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@x", *a], check=True)
+g("add", "-A"); g("commit", "-qm", "b")
+c.write_text(c.read_text() + '  c1:\n    uses: ./.github/workflows/callee.yml\n')
+g("add", "-A"); g("commit", "-qm", "h")
+PY
+)
+lck two2
+CASE="AC19: adding one exempt call beside an unchanged one moves nothing (exit 0): the unchanged call keeps its exemption"
+check test "$rc" -eq 0
+# a relay: caller -> relay -> leaf, the relay forwarding an input to an installer version in the leaf
+cat >"$work/leaf.yml" <<EOF
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  i:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@$SHA4 # v6.1.0
+        with:
+          python-version: \${{ inputs.version }}
+EOF
+cat >"$work/relay.yml" <<'EOF'
+on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+jobs:
+  forward:
+    uses: ./.github/workflows/leaf.yml
+    with:
+      version: ${{ inputs.version }}
+EOF
+newcase relay "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'leaf.yml').write_text(pathlib.Path(r'$work/leaf.yml').read_text())
+(w / 'relay.yml').write_text(pathlib.Path(r'$work/relay.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/relay.yml\n    with:\n      version: latest\n')"
+lck relay
+CASE="AC19: a relay that forwards an input to another local workflow is not exempted (a version could be steered through it): the call stays an item (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:./.github/workflows/relay.yml' "$work/relay.out"
+printf 'on: workflow_call\njobs:\n  j:\n    uses: ./.github/workflows/selfcall.yml\n' >"$work/selfcall.yml"
+newcase selfc "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'selfcall.yml').write_text(pathlib.Path(r'$work/selfcall.yml').read_text())
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/selfcall.yml\n')"
+lck selfc
+CASE="AC19: a workflow that calls itself terminates and is not exempted (exit 1, no crash)"
+check test "$rc" -eq 1; check bash -c "! grep -qi 'traceback\|recursion' '$work/selfc.out'"
+# AC20: an identical copy added beside an unchanged install line whose assignment changed
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=requests' 'pip install "$DEPS"' >"$work/cp-base.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'DEPS=flask' 'pip install "$DEPS"' 'pip install "$DEPS"' >"$work/cp-head.sh"
+rm -rf "$work/cp"; cp -R "$base" "$work/cp"
+( cd "$work/cp" && cp "$work/cp-base.sh" bin/cp-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm b3 && cp "$work/cp-head.sh" bin/cp-test.sh && git add -A && git -c user.name=t -c user.email=t@x commit -qm h3 )
+pkrows "$work/pk-cp.json" count2 bin/cp-test.sh 'pip install "$DEPS"'
+rc=0; python3 "$chk" --root "$work/cp" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/pk-cp.json" >"$work/cp.out" 2>&1 || rc=$?
+CASE="AC20: an identical copy of a line the base already holds is never ruled away with the unchanged one whose assignment moved (exit 1)"
+check test "$rc" -eq 1
+audfx cp "$work/aud-cp.fx.json" 2>/dev/null || true
+# AC3: a fractional measurement clock is truncated, a fractional publication time rounded up
+CASE="AC3: now = ...:00.500Z against a publication at ...:01Z is NOT seven full days (publication rounds up, the clock down): too young"
+check python3 - "$chk" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
+class I: kind="package"; name="pypi/x"; version="1.0.0"; label=""; path=""
+now = ac.parse_time("2026-10-14T12:00:00.500Z", True)
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:01Z", "pypi")], now)
+assert not ok, why
+ok, why, _ = ac.judge_item(I(), [("2026-10-07T12:00:00Z", "pypi")], now)
+assert ok, why
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
