@@ -149,6 +149,7 @@ def stage_text(family):
             out += "      - name: the mode is release or snapshot\n        env:\n          MODE: ${{ inputs.mode }}\n        run: %s\n" % S.MODE_GUARD_RUN
         out += "      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n"
         if sp.get("setup_go"): out += "      - name: install Go (pinned by checksum)\n        run: %s\n" % S.INSTALL_GO
+        for tl in sp.get("tools", ()): out += "      - name: install %s (pinned by checksum)\n        run: %s\n" % (tl.rsplit(" ", 1)[1], tl)
         for name, path in sp["down"]: out += "      - uses: %s # v5.0.0\n        with:\n          name: %s\n          path: %s\n" % (DOWNLOAD, name, path)
         out += witness_block(sp)
         if sp.get("expose"): out += "      - id: digests\n        name: expose digests.json as the stage output\n        run: %s\n" % S.EXPOSE
@@ -293,6 +294,18 @@ st s_adm_snap "AC8 admission.json uploaded in a snapshot run too (no admission r
 GOINST='      - name: install Go (pinned by checksum)\n        run: bash bin/install-scanner.sh go\n'
 WINST='      - name: install Witness (pinned by checksum)\n        run: bash bin/install-scanner.sh witness\n'
 st s_go_gone  "AC4 the Go toolchain install of admission is missing from Build's apk job" "install-scanner.sh go" "$GOINST" ''
+MELINST='      - name: install melange (pinned by checksum)\n        run: bash bin/install-build-tools.sh melange\n'
+APKINST='      - name: install apko (pinned by checksum)\n        run: bash bin/install-build-tools.sh apko\n'
+st s_bt_gone   "004-AC3 the melange install is missing from Build's apk job (rule 62: the VM runs melange)" "install-build-tools.sh melange" "$MELINST" ''
+st s_bt_apko   "004-AC3 the apko install is missing from Build's assemble job" "install-build-tools.sh apko" "$APKINST" ''
+st s_bt_both   "004-AC3 the apk job installs apko too (an apk job installs melange only; each job installs only the tool it runs)" "install-build-tools.sh" "$MELINST" "$MELINST$APKINST"
+st s_bt_asm    "004-AC3 the assemble job installs melange too (an assemble job installs apko only)" "install-build-tools.sh" "$APKINST" "$MELINST$APKINST"
+st s_bt_swap   "004-AC3 the assemble job installs melange in place of apko" "install-build-tools.sh" "$APKINST" "$MELINST"
+st s_bt_early  "004-AC3 the build tools installed BEFORE Witness (rule 68: Witness first)" "install-" "$WINST" "$MELINST$WINST"
+st s_bt_other  "004-AC3 another install command in place of melange's (not the pinned installer)" "install-build-tools.sh melange" 'run: bash bin/install-build-tools.sh melange' 'run: bash bin/install-scanner.sh melange'
+st s_bt_tool   "004-AC3 a third build tool through the same installer" "download-artifact" "$APKINST" "$APKINST      - name: install helm\n        run: bash bin/install-build-tools.sh helm\n"
+st s_bt_dest   "004-AC3 the installer given another destination" "install-build-tools.sh melange" 'install-build-tools.sh melange' 'install-build-tools.sh melange /tmp/bin'
+st s_bt_env    "004-AC3 an env on the installer step (a token or secret could reach it before admission)" "install-build-tools.sh apko" "$APKINST" '      - name: install apko (pinned by checksum)\n        env:\n          K: ${{ secrets.X }}\n        run: bash bin/install-build-tools.sh apko\n'
 st s_go_first "AC4 Go installed BEFORE Witness (rule 68: Witness first)" "install-scanner.sh" "$WINST$GOINST" "$GOINST$WINST"
 st s_go_other "AC4 the Go install line names another target" "install-scanner.sh go" 'install-scanner.sh go' 'install-scanner.sh go 1.20'
 st s_go_curl  "AC4 Go downloaded by hand instead of the pinned installer" "install-scanner.sh go" 'run: bash bin/install-scanner.sh go' 'run: curl -sSL https://go.dev/dl/go1.27.2.linux-amd64.tar.gz | tar xz -C /usr/local'
@@ -680,6 +693,10 @@ replace "$LR" "$work/lf_ver.sh" '--variant production --version "${GITHUB_REF_NA
 replace "$work/build.yml" "$work/lf_apko.yml" 'run: bash bin/witnessed.sh build bin/build-stage-assemble.sh' \
        'run: bash bin/witnessed.sh build bin/build-stage-assemble.sh && apko build build/apko.yaml fscache:x out.tar' && expect caught \
        "AC11 a stage workflow names apko in a run step" apko lockflow "$LA" "$LR" "$work/lf_apko.yml"
+replace "$work/build.yml" "$work/lf_apkoi.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko --version 9' && expect caught \
+       "AC11 the apko installer line with an extra argument is not the one admitted line" apko lockflow "$LA" "$LR" "$work/lf_apkoi.yml"
+replace "$work/build.yml" "$work/lf_apkoj.yml" 'run: bash bin/install-build-tools.sh apko' 'run: bash bin/install-build-tools.sh apko && apko build build/apko.yaml fscache:x out.tar' && expect caught \
+       "AC11 apko run in the installer step's own command line is refused" apko lockflow "$LA" "$LR" "$work/lf_apkoj.yml"
 # ---- the scripts are listed with their sha256 (PR 1's chain-scripts.json design) --------------------------------------------------------------
 mkdir -p "$work/listed/bin"
 for k in $KINDS
@@ -1674,6 +1691,17 @@ want = ("the cutover pull request (chain-v030 to main) needs every other entry o
         "'rc proof pending': it is removed by the pull request that commits the marker of REQ-CHAIN-001-AC6, which changes exactly the marker file and the removal of this one entry, and until then no final or patch tag runs the chain")
 sys.exit(0 if e["reason"] == want and e["case"].startswith("KNOWN-RED cutover:") else 1)
 PY
+# REQ-CHAIN-004-AC3, REQ-CHAIN-005-AC1 and REQ-CHAIN-004-AC11 say what the stage files do (advisor T62 text, Oct 12; Codex 4b-3 r1): the installs, and the one apko exception
+python3 - "$root/requirements/requirements.yaml" <<'PY' && ok "004-AC3/AC11, 005-AC1 text: each job installs only its tool by the pinned installer line, and AC11's names-apko clause carries exactly that exception" || bad "004-AC3/AC11, 005-AC1 text: the installer wording or AC11's exception is missing"
+import sys, yaml
+R = {r["id"]: r for r in yaml.safe_load(open(sys.argv[1]))["requirements"]}
+def then(rid, n): return next(a for a in R[rid]["acceptance_criteria"] if a["id"] == "%s-AC%d" % (rid, n))["then"]
+t3, t11, t5 = then("REQ-CHAIN-004", 3), then("REQ-CHAIN-004", 11), then("REQ-CHAIN-005", 1)
+assert "the apk job installs melange only and the assemble job apko only, each by the pinned installer line (`bash bin/install-build-tools.sh melange` or `bash bin/install-build-tools.sh apko`) as one step right after the Witness (and Go) install and so before admission, with no env and no secret" in t3
+assert "its apk job installs melange only and its assemble job apko only, as REQ-CHAIN-004-AC3 says of Build" in t5
+assert "no stage file or stage script names apko except the one pinned installer line of REQ-CHAIN-004-AC3 (`bash bin/install-build-tools.sh apko`), passes a lock," in t11
+assert "no stage file or stage script names apko, passes a lock," not in t11
+PY
 # an entry added since the merge base is refused unless the PR body names it
 kg="$work/kr/repo"; rm -rf "$kg"; mkdir -p "$kg/test-evidence"
 ( cd "$kg" && git init -q . && git config user.email t@t && git config user.name t && git config commit.gpgsign false \
@@ -2011,7 +2039,7 @@ expect ok "AC11/005-AC6 the real Build and Rebuild assemble scripts agree and th
        "$root/.github/workflows/stage-reproducibility.yml"
 expect ok "AC1 the real workflow directory: no file added beyond stage-sign.yml, stage-image.yml and stage-admission.yml gone (rules 50, 52, 61)" "" \
        workflows "$root/.github/workflows"
-EXPECT=687
+EXPECT=700
 echo "pass=$pass fail=$failn"
 if [ "$EXPECT" != 0 ] && [ $((pass + failn)) != "$EXPECT" ]; then
   echo "FAIL case count $((pass + failn)) != expected $EXPECT (a case was skipped or added)"; exit 1

@@ -91,6 +91,33 @@
       "reason": "the chain-file set defined once (the release and stage workflows, the listed scripts, the policy files but the marker) and the rc-proof marker's local checks (REQ-CHAIN-001-AC6); loaded by chain-verify.py rc-proof, run by build-admit.py (from origin/main) and patch-decide.py rc-proof; reads git objects with git cat-file and ls-tree, runs no listed script and signs nothing; `at` is the word of its `refused at` line"
     },
     {
+      "path": "bin/install-build-tools.sh",
+      "sha256": "4703b2ee829fa12247e1abd1c1fcdaeacece6fb495a1a172e100a58505ae4267",
+      "tools": [
+        "at",
+        "command",
+        "curl",
+        "find",
+        "tar",
+        "trap"
+      ],
+      "runs": [],
+      "signs": "other",
+      "exceptions": [
+        {
+          "rule": "launcher",
+          "text": "command -v sha256sum >/dev/null 2>&1",
+          "why": "a feature test only: `command -v` prints where sha256sum is and launches nothing; the installer picks sha256sum or shasum for the checksum of the archive it fetched"
+        },
+        {
+          "rule": "script-name",
+          "text": "$(uname -m) in",
+          "why": "the operand of `case $(uname -m) in`: a pattern match on this machine's architecture name (x86_64 or aarch64), never run as a command"
+        }
+      ],
+      "reason": "installs melange or apko from its exact pinned release (version and sha256 on each tool-and-architecture download line, compared BEFORE unpacking, fixed destination /usr/local/bin); curl downloads the one archive and tar unpacks it; signs nothing (it names no signing tool); run by Build's and Rebuild's jobs right after the Witness and Go installs, before admission, with no secret"
+    },
+    {
       "path": "bin/witnessed.sh",
       "tools": [
         "script",
