@@ -1069,7 +1069,7 @@ done
 # reached by a bare name, whatever the text spells (brace, quote, expansion, assembled word): it is "not found". The fixed-path tools are the
 # TEST-SUBST stubs (wrapped, so that each stub has the ordinary tools of its own; the wrapper is the harness, not the script).
 # Stated residual, as REQ-BUILDAPK-001-AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's;
-# and a program a script hands to a python subprocess with its own env is resolved by that interpreter's default path, not by PATH.
+# a program a script hands to a python subprocess (openssl in release-sign-apks.sh and bin/apk-tool.py) runs with an env whose PATH names no directory.
 RP_COREUTILS="awk basename cat cp cut dirname find grep head mkdir mktemp mv rm sed sort tail tr"   # what the two scripts call (read from the scripts, and every one is in a control run's trace)
 RP_STUBTOOLS="env python3 openssl ls"   # what the harness stubs (melange, sudo, the signing stub) call: on the stubs' path only, never on the scripts'
 BASH_BIN=$(command -v bash)
@@ -1233,6 +1233,25 @@ rs_refused rs-openssl2 openssl "openssl called by bare name (assembly public key
 rs_refused rs-git git "git called by bare name (inserted call) is not found"
 rs_refused rs-sha256sum sha256sum "sha256sum called by bare name (inserted call) is not found"
 for m in rs-brace rs-quote rs-printf rs-append; do rs_refused $m melange "melange assembled by $m is not found"; done
+# the python subprocess sites: a bare "openssl" there must not resolve (an env without PATH would make python search its default path)
+mkdir -p "$rpm/here"
+python3 - "$work/rs-copy.sh" "$rpm" "$root/bin/apk-tool.py" <<'PYM'
+import sys
+src = open(sys.argv[1]).read(); out = sys.argv[2]
+a = '[sys.argv[2], "rsa", "-pubout"'
+assert src.count(a) == 1
+open(out + "/rs-pyopenssl.sh", "w").write(src.replace(a, '["openssl", "rsa", "-pubout"'))
+tool = open(sys.argv[3]).read()
+b = 'r = subprocess.run([_openssl(), "dgst"'
+assert tool.count(b) == 1
+open(out + "/here/apk-tool.py", "w").write(tool.replace(b, 'r = subprocess.run(["openssl", "dgst"'))
+lines = src.split("\n"); n = [i for i, l in enumerate(lines) if l.startswith("here=") and "TEST-SUBST" in l]
+assert len(n) == 1
+lines[n[0]] = "here=%s/here   # TEST-SUBST" % out
+open(out + "/rs-tool-openssl.sh", "w").write("\n".join(lines))
+PYM
+rs_refused rs-pyopenssl openssl "openssl by bare name in the key-derivation subprocess is not found"
+rs_refused rs-tool-openssl openssl "openssl by bare name in apk-tool.py's verify subprocess is not found"
 
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
