@@ -40,7 +40,7 @@ set -euo pipefail
 python3 bin/acceptance-k8s-smoke.py
 )
 
-# stage-acceptance-k8s.yml, job k8s, step 6: load a pinned curl image for the runner client pod
+# stage-acceptance-k8s.yml, job k8s, step 6: load a pinned client image for the runner client pod
 step_06() (
 set -euo pipefail
 docker pull -q "$CLIENT_IMAGE"
@@ -85,7 +85,7 @@ kubectl exec fscache-runner -- sh -c '
 step_10() (
 set -euo pipefail
 # Run the documented port-forward verbatim (backgrounded for CI),
-# then the documented curl smoke commands with their doc-declared
+# then the documented smoke commands with their doc-declared
 # expected results.
 bash /tmp/pf-forward >/tmp/pf.log 2>&1 &   # the documented command, written by the step above
 pf=$!

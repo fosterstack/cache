@@ -741,7 +741,7 @@
     },
     {
       "path": "bin/acceptance-k8s.sh",
-      "sha256": "62cdd49af7da702f7100b663e17d58d12691fe1bcf8f2906b6ec09caea567751",
+      "sha256": "34e6aeb3d97af29732a7148ba9f610d15595d52e10975efcc98ae77f621571aa",
       "tools": [
         "at",
         "bash",
