@@ -80,6 +80,7 @@ ALLOW_PATTERNS=(
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
   '^bin/branch-sweep-test\.sh$'
+  '^bin/scan-no-workflow-call-test\.sh$'
   '^bin/local-prune\.sh$'
   '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
