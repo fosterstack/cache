@@ -135,6 +135,12 @@ for nm in "vendor/a	b.go" "vendor/caf$(printf '\303\251').go" 'vendor/a"b.go'; d
       && git update-ref refs/remotes/origin/main HEAD && git rm -rq --cached vendor && rm -rf vendor && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm rmq ) >/dev/null 2>&1
   rc AC2 "a vendor path with an unusual name on origin/main is found (1): $(printf '%s' "$nm" | tr '\t' '~')" 1 vc "$work/g-quoted"
 done
+mkgit alias;    mkdir -p "$work/g-alias/pkg/vendor" && echo x >"$work/g-alias/pkg/vendor/x.go"; ln -sfn "$work/g-alias" "$work/alias"
+rc AC2 "a ROOT that is a link to a tree with a nested vendor path is judged through the link: refused (2)" 2 vc "$work/alias"
+mkgit subroot
+( cd "$work/g-subroot" && mkdir -p vendor sub && echo x >vendor/x && echo x >sub/x && git add -A && git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm v \
+    && git update-ref refs/remotes/origin/main HEAD ) >/dev/null 2>&1
+rc AC2 "a ROOT that is a subdirectory of its git tree is refused (2), never judged as the whole tree" 2 vc "$work/g-subroot/sub"
 mkgit nested;   mkdir -p "$work/g-nested/pkg/vendor" && echo x >"$work/g-nested/pkg/vendor/x.go"
 rc AC2 "a vendor path below the top, none at the top: full check, refused (2)" 2 vc "$work/g-nested"
 mkgit vfile;    echo x >"$work/g-vfile/vendor"
@@ -213,8 +219,8 @@ f=bin/vendor-check.sh
 t AC11 "$f has a shebang and mode 100755 in git" bash -c "[ -e '$f' ] && head -1 '$f' | grep -q '^#!' && git ls-files -s '$f' | grep -q '^100755'"
 t AC11 "$f assigns none of PATH IFS BASH_ENV ENV LD_* PYTHON*" bash -c "[ -e '$f' ] && ! grep -Eq '(^|[^A-Za-z0-9_])(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)[+]?=' '$f'"
 t AC11 "$f runs no python3 -c and no here-document interpreter" bash -c "[ -e '$f' ] && ! grep -Eq 'python3? +-c|python3? +-( |$)|<<' '$f'"
-cmdword='(^|[;&|({]|[[:space:]](then|do|else))[[:space:]]*[A-Za-z0-9_./-]*(\$\(|`|\$\{?[A-Za-z_])'
-for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg'; do
+cmdword='(^|[;&|({!]|(^|[[:space:]])(then|do|else|if|elif|while|until))[[:space:]]*[A-Za-z0-9_./-]*(\$\(|`|\$\{?[A-Za-z_])'
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)'; do
   t AC11 "the substitution pattern flags: $line" bash -c "printf '%s\n' \"\$1\" | grep -Eq \"\$2\"" _ "$line" "$cmdword"
 done
 for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"'; do
