@@ -95,6 +95,11 @@ cp -R "$work/modcache" "$work/modcache-bad"; chmod -R u+w "$work/modcache-bad"
 find "$work/modcache-bad" -name dep.go -exec sh -c 'echo "// altered" >>"$1"' _ {} \;
 rc AC2 "a module cache that go mod verify refuses is a failure (1)" 1 env GOMODCACHE="$work/modcache-bad" bash "$bin_vc" "$work/fx-clean"
 says AC2 "(verify failure) the failure names go mod verify" "go mod verify failed"
+cp "$fx/go.mod" "$work/fx-clean/alternate.mod"; cp "$fx/go.sum" "$work/fx-clean/alternate.sum"
+rc AC2 "GOFLAGS that redirects the module file (-modfile) is refused (2): the committed go.sum is what is judged" 2 env GOFLAGS='-mod=mod -modfile=alternate.mod' bash "$bin_vc" "$work/fx-clean"
+rc AC2 "GOFLAGS with -overlay is refused (2)" 2 env GOFLAGS='-mod=mod -overlay=x.json' bash "$bin_vc" "$work/fx-clean"
+rc AC2 "GOFLAGS with -o is refused (2)" 2 env GOFLAGS='-o=/tmp/x' bash "$bin_vc" "$work/fx-clean"
+rc AC2 "an empty GOFLAGS is accepted (0)" 0 env GOFLAGS= bash "$bin_vc" "$work/fx-clean"
 rc AC2 "an unknown argument exits 2" 2 vc --frobnicate
 rc AC2 "two arguments exit 2" 2 vc "$work/fx-clean" extra
 rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
