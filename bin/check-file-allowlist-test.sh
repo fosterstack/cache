@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 144, 6   # 144: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json, the vendor/ subtree (REQ-VENDOR-001, advisor Oct 12)
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 143, 6   # 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "106a823bcb6caaeb0434aad612ab98c81a5a4c61a1f0e36098a09a468376c6b4"   # + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard and the vendor/ subtree patterns outside the v0.3.0 region
+PINNED_SHA256 = "73cb3a176cc02e824637fc15a6c9b6b34be5d03b0a5fd764629ba2b117d61c7a"   # + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -669,7 +669,7 @@ hkexpect fail "hook: squash merge adding an unlisted file is rejected (no MERGE_
 
 # --- v0.3.0 build-chain paths: one exact pattern per path family (PR 1 of the v0.3.0 plan) ----------------
 # Each family: the intended path(s) pass; near-misses (extra segment, other extension, uppercase, traversal,
-# one directory up, a sibling name) are refused. vendor/ is admitted by one subtree pattern (see the vendor cases below).
+# one directory up, a sibling name) are refused. vendor/ is NOT admitted yet.
 passfam "feature/x" "v030: dependency-provenance.json at the repo root" "dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json nested is refused"        "tools/dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json uppercase is refused"     "Dependency-Provenance.json"
@@ -742,14 +742,6 @@ passfam "feature/x" "REQ-BUILDAPK-001: the build-apk helper and the sealed envir
 runeach fail "feature/x" "REQ-BUILDAPK-001: near-miss siblings refused" "bin/build-apk-helper.sh" "bin/build-apk-helpers.py" "bin/Build-Apk-Helper.py" "build/sealed-env.yaml" "build/sealed-env.json.bak" "build/locks/sealed-env.json" "build/sealed_env.json" "bin/sealed-env.json"
 passfam "feature/x" "REQ-TEST-001: the suite guard, its runner, its test and the floors file" "bin/suite-guard.sh" "bin/suite-guard-run.sh" "bin/suite-guard-test.sh" "test-evidence/suite-floors.json"
 runeach fail "feature/x" "REQ-TEST-001: near-miss siblings refused" "bin/suite-guard.py" "bin/suite-guard-other.sh" "bin/suite-guard-run-test.sh" "bin/Suite-Guard.sh" "bin/suite-guards.sh" "test-evidence/suite-floors.json.bak" "test-evidence/sub/suite-floors.json" "test-evidence/suite-floor.json" "suite-floors.json"
-# the vendored tree (go mod vendor output; advisor ruling Oct 12: one subtree pattern, regenerate-and-compare is the guard):
-# any depth of plain path components under vendor/, nothing else. A path component outside [A-Za-z0-9._-] (space, newline,
-# a glob or shell character) is refused; the pattern is not a bare '^vendor/', which would admit a newline path.
-runeach pass "feature/x" "vendor: the vendored tree is admitted" "vendor/modules.txt" "vendor/github.com/x/y/z.go" "vendor/golang.org/x/sys/unix/zerrors_linux_amd64.go" "vendor/github.com/a/b/LICENSE" "vendor/github.com/a/b/.gitignore"
-runeach fail "feature/x" "vendor: near-miss and unplain paths refused" "vendors/x" "xvendor/x" "docs/vendor/x" "vendor" "vendor/" "Vendor/x" "vendor/a b" "vendor/a;b" "vendor/a*b" "vendor/a\$b" "vendor/a'b" "bin/vendor/x"
-nul fail "vendor: a path with an embedded newline is one refused path (NUL mode)" 1 'vendor/a\nb\0'
-nul fail "vendor: a newline path whose second line is another vendor path is refused (NUL mode)" 1 'vendor/a\nvendor/b\0'
-nul pass "vendor: a plain path passes (NUL mode)" 1 'vendor/github.com/x/y/z.go\0vendor/modules.txt\0'
 passfam "feature/x" "v030: the archive scripts and their test" "bin/archive-push.sh" "bin/archive-pull.sh" "bin/archive-verify.py" "bin/archive-test.sh"
 passfam "feature/x" "v030: the secret-scanning config" ".github/secret_scanning.yml"
 runeach fail "feature/x" "v030: near-miss siblings refused" "bin/melange-apko-test.sh" "bin/archive-push.py" "bin/archive-verify.sh" "bin/archive-pull.py" "bin/archive-test.py" "bin/oci-digest.sh" "bin/net-probe.sh" "bin/build-helpers.sh" "bin/archive-list.sh" ".github/secret_scanning.yaml" ".github/secret-scanning.yml" ".github/Secret_Scanning.yml" "build/archive.json" "secret_scanning.yml"
@@ -777,8 +769,8 @@ runeach fail "feature/x" "REQ-GUIDE-001: verify-release.cannot-run.json near-mis
 passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-guide-test.sh"
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
 
-# The vendored tree was deferred here until the PR that adds it; it is admitted by the vendor/ subtree pattern above
-# (advisor ruling Oct 12), with its near-misses refused there.
+# Deferred (not admitted until the PR that adds them): the vendored tree.
+runeach fail "feature/x" "v030: vendor/ files are NOT admitted yet" "vendor/modules.txt" "vendor/golang.org/x/text/a.go"
 
 echo "----"
 echo "check-file-allowlist: $pass passed, $fail failed"
