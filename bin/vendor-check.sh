@@ -17,7 +17,8 @@ set -uo pipefail
 
 die() { echo "vendor-check.sh: $1" >&2; exit "${2:-2}"; }
 
-[ -f bin/vendor-check.sh ] || die "run it from the repository root"
+self=${0%/*}; [ "$self" != "$0" ] || self=.
+[ -f bin/vendor-check.sh ] && [ "$(cd "$self/.." 2>/dev/null && pwd -P)" = "$(pwd -P)" ] || die "run it from the repository root"
 [ $# -le 1 ] || die "usage: bin/vendor-check.sh [ROOT]"
 src=${1:-.}
 case $src in -*) die "unknown argument $src";; esac
@@ -57,7 +58,7 @@ odd=$(find "$src/vendor" ! -type f ! -type d -print -quit)
 dotted=$(find "$src/vendor" -name '.*' -print -quit)
 [ $? -eq 0 ] || die "vendor/ could not be listed in full" 1
 [ -z "$dotted" ] || die "vendor/ holds a path with a dot component: $dotted" 1
-modeodd=$(find "$src/vendor" -type f \( -perm -u+x -o -perm -g+x -o -perm -o+x \) -print -quit)
+modeodd=$(find "$src/vendor" -type f ! -perm 644 -print -quit)
 [ $? -eq 0 ] || die "vendor/ could not be listed in full" 1
 [ -z "$modeodd" ] || die "vendor/ holds a file whose mode is not 100644 (mode): $modeodd" 1
 
