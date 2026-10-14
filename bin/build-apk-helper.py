@@ -11,9 +11,8 @@ interpreter run on a variable path).
   build-apk-helper.py sealed-env DATAFILE
       prints the closed list of the privileged melange call's variables as NAME=value items, each ended by a NUL byte: the entries
       of DATAFILE's "closed", then each of its "from_environment" names read from this process (exit 1 when one is missing).
-      With FSCACHE_TEST_MODE=1 (the test harness only) it also passes the names in "test_mode_inherit" with this process's
-      value, and the variables whose name starts with a "test_mode_prefixes" entry or is a "test_mode_names" entry.
-      DATAFILE is read as a closed object: any other key or value type is refused (exit 1).
+      Nothing else is ever passed: there is no test mode, no inherited name and no prefix rule (REQ-BUILDAPK-001-AC3). DATAFILE is read as a
+      closed object: any other key or value type is refused (exit 1).
 
 Exit codes: 0 ok | 1 failed | 2 usage.
 """
@@ -54,7 +53,7 @@ def recipe_facts(recipe, goarch, outfile):
 def sealed_env(datafile):
     try:
         d = json.load(open(datafile))
-        keys = {"closed", "from_environment", "test_mode_inherit", "test_mode_prefixes", "test_mode_names"}
+        keys = {"closed", "from_environment"}
         if not isinstance(d, dict) or set(d) != keys:
             return 1
         fixed = d["closed"]
@@ -70,12 +69,6 @@ def sealed_env(datafile):
         if name not in os.environ:
             return 1
         out.append("%s=%s" % (name, os.environ[name]))
-    if os.environ.get("FSCACHE_TEST_MODE") == "1":
-        for name in d["test_mode_inherit"]:
-            out = [("%s=%s" % (name, os.environ[name])) if x.startswith(name + "=") else x for x in out]
-        for name in os.environ:
-            if name.startswith(tuple(d["test_mode_prefixes"])) or name in d["test_mode_names"]:
-                out.append("%s=%s" % (name, os.environ[name]))
     sys.stdout.buffer.write(b"".join(x.encode() + b"\0" for x in out))
     return 0
 

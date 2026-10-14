@@ -4,8 +4,7 @@
     "HOME": "/root",
     "LC_ALL": "C"
   },
-  "from_environment": ["SOURCE_DATE_EPOCH"],
-  "test_mode_inherit": ["PATH"],
-  "test_mode_prefixes": ["STUB_", "FAKE_"],
-  "test_mode_names": ["CALLS", "ImageOS", "ImageVersion", "STUB_LIB"]
+  "from_environment": [
+    "SOURCE_DATE_EPOCH"
+  ]
 }

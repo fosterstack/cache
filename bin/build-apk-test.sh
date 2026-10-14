@@ -6,7 +6,55 @@
 # unshare, melange or apko (the harness refuses to run on a non-Linux host unless the stubs are in front).
 . "$(cd "$(dirname "$0")" && pwd)/melange-apko-lib.sh"
 cd "$root"   # the driver runs from the repository root only (it names its helpers by literal repo-relative paths)
-export FSCACHE_TEST_MODE=1   # --recipe (and the release-sign key directory, through the wrapper) work only in test mode
+# The production scripts have NO test hook (REQ-BUILDAPK-001-AC3): the tests below run COPIES of bin/build-apk.sh and bin/release-sign-apks.sh in
+# which exactly the lines ending in TEST-SUBST are replaced (tool locations, the sealed data file, the recipes, the keys directory) and which are
+# checked to differ in no other line. The copies take their stubs and per-call settings from TEST_* variables and a sealed environment the
+# wrapper writes from the harness's STUB_/FAKE_ variables: that is the harness's business, never the production script's.
+cat >"$work/mkcopy.py" <<'PY'
+import re, sys
+src, out = sys.argv[1:3]
+subst = dict(a.split("=", 1) for a in sys.argv[3:])
+lines = open(src).read().split("\n")
+seen, res = set(), []
+for ln in lines:
+    m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=.*#\s*TEST-SUBST", ln)
+    if m:
+        n = m.group(1)
+        if n not in subst:
+            sys.exit("no substitution given for %s" % n)
+        seen.add(n); res.append("%s=%s   # TEST-SUBST" % (n, subst[n]))
+    else:
+        res.append(ln)
+if seen != set(subst):
+    sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
+open(out, "w").write("\n".join(res))
+PY
+python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$work/ba-copy.sh" \
+  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
+  'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
+  'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' || { echo "FIXTURE SETUP FAILED: build-apk copy"; exit 1; }
+cat >"$work/ba.sh" <<EOF
+#!/bin/bash
+# the test wrapper of bin/build-apk.sh: --recipe X becomes TEST_RECIPE, the harness's STUB_/FAKE_ variables become entries of a sealed data file
+args=(); while [ \$# -gt 0 ]; do case "\$1" in --recipe) export TEST_RECIPE="\$2"; shift 2;; *) args+=("\$1"); shift;; esac; done
+export TEST_SEALED_ENV="$work/sealed-test.json"
+python3 - "\$TEST_SEALED_ENV" <<'PYW'
+import json, os, sys
+closed = {"PATH": os.environ["PATH"], "HOME": "/root", "LC_ALL": "C"}
+for k, v in os.environ.items():
+    if k.startswith(("STUB_", "FAKE_")) or k in ("CALLS", "ImageOS", "ImageVersion"):
+        closed[k] = v
+json.dump({"closed": closed, "from_environment": ["SOURCE_DATE_EPOCH"]}, open(sys.argv[1], "w"))
+PYW
+exec bash "$work/ba-copy.sh" "\${args[@]}"
+EOF
+chmod +x "$work/ba.sh"; BA_PROD=$BA; BA="$work/ba.sh"
+export FSCACHE_ROOT="$root"   # lib.mkapk signs a fixture apk with the committed (non-secret) assembly key found here
+mkdir -p "$work/keysfx"
+python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy.sh" \
+  'here='"$root"'/bin' 'root='"$root" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'KEYS_DIR='"$work"'/keysfx' \
+  || { echo "FIXTURE SETUP FAILED: release-sign copy"; exit 1; }
+chmod +x "$work/rs-copy.sh" "$work/ba-copy.sh"
 # ---- begin verbatim sections ----
 # ---- P4 review round 1 (Opus): setup added after the mechanical split --------------------------------------------------------------
 rev=$(git -C "$src" rev-parse HEAD)
@@ -114,7 +162,7 @@ sn "rule 20" "melange's own SBOM is not disabled" 'disable-sbom|sbom=false|--sbo
 sn "rule 31" "the recipe is passed to melange as a bare file name (cwd = the render dir): a temp path would enter the apk's own SBOM and break byte-reproducibility" '^melange build [^ ]*/[^ ]*\.yaml' "${bae[@]}" "$BA" "${ba_args[@]}" --out "$(mo)"   # real-run finding Oct 9: the SBOM name/SPDXID held /tmp/tmp.XXXX/render/melange.yaml
 sn "rule 23" "no token, secret or key variable reaches melange's environment" '^ENV SECRETS=[1-9]' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 GITHUB_TOKEN=canary-token ACTIONS_ID_TOKEN_REQUEST_TOKEN=canary "$BA" "${ba_args[@]}" --out "$(mo)"
 sd "rule 11" "the fips variant is built from the fips recipe" '^melange build .*melange-fips\.yaml|^melange build .*melange-fips[^ ]*\.yaml' "${bae[@]}" "$BA" "${ba_args[@]}" --variant fips --recipe "$fx/melange-fips.yaml" --out "$(mo)"
-t "rule 11" "build-apk.sh picks build/melange.yaml for standard and build/melange-fips.yaml for fips by default" bash -c "grep -q 'build/melange.yaml\|melange\.yaml' '$BA' && grep -q 'melange-fips.yaml' '$BA'"
+t "rule 11" "build-apk.sh picks build/melange.yaml for standard and build/melange-fips.yaml for fips by default" bash -c "grep -q 'build/melange.yaml\|melange\.yaml' '$BA_PROD' && grep -q 'melange-fips.yaml' '$BA_PROD'"
 # rendering
 rd="$work/render"; mkdir -p "$rd"
 t "rule 11" "--render-dir writes the recipe with the version, no @VERSION@ left" bash -c "
@@ -214,7 +262,7 @@ mkrsa() { openssl genrsa 2048 2>/dev/null >"$1.raw"; if grep -q 'BEGIN PRIVATE K
 mkrsa "$work/release.rsa"
 # release signing compares the key's public half with build/keys/release.rsa.pub: tests use a fixture keys dir (test mode only; recorded in the script's own test-mode gate)
 mkdir -p "$work/keysfx"; cp "$root/build/keys/assembly.rsa" "$root/build/keys/assembly.rsa.pub" "$work/keysfx/"; openssl rsa -in "$work/release.rsa" -pubout -out "$work/keysfx/release.rsa.pub" 2>/dev/null
-printf '#!/bin/sh\nexec env FSCACHE_TEST_MODE=1 "%s" "$@" --keys-dir "%s"\n' "$RS" "$work/keysfx" >"$work/rs-wrap.sh"; chmod +x "$work/rs-wrap.sh"; RS_REAL=$RS; RS="$work/rs-wrap.sh"
+RS_REAL=$RS; RS="$work/rs-copy.sh"
 sd "rule 22" "release signing: same contents in Build and Rebuild -> melange sign with the release key" "^melange sign .*--signing-key [^ ]*/key/release\.rsa .*fscache-0\.3\.0-r0\.apk" "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"   # pkg/cli/sign.go:159-174
 run_s "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsC" --key "$work/release.rsa"
 if [ "$(rc)" != 0 ] && [ "$(rc)" != 127 ] && ! grep -Eq '^melange sign' "$CALLS" && grep -q 'fscache-0.3.0-r0.apk' "$work/log"; then ok; else bad "rule 22" "release signing: contents differ between Build and Rebuild -> refused, nothing signed, apk named"; fi
@@ -222,7 +270,7 @@ mkdir -p "$work/rsD"; sr "rule 22" "release signing: a Rebuild directory with no
 sr "rule 22" "release signing refuses the assembly key (nothing a customer trusts is signed with it)" 'assembly' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$root/build/keys/assembly.rsa"
 
 # ===== rule 17 18: key policy ===========================================================================================
-t "rule 17" "build-apk.sh names the committed assembly key (build/keys/assembly.rsa) as the only key it signs with" bash -c "test -f '$BA' && grep -q 'build/keys/assembly.rsa' '$BA'"
+t "rule 17" "build-apk.sh names the committed assembly key (build/keys/assembly.rsa) as the only key it signs with" bash -c "test -f '$BA_PROD' && grep -q 'build/keys/assembly.rsa' '$BA_PROD'"
 t "rule 22" "build/keys/assembly.rsa and assembly.rsa.pub start with the NON-SECRET header line, then a PEM block" bash -c "for f in assembly.rsa assembly.rsa.pub; do p='$root/build/keys/'\$f; test -f \$p && head -1 \$p | grep -Fq 'NON-SECRET assembly key, public by design, ratified rule 22; signs nothing a customer trusts' && grep -q -- '-----BEGIN ' \$p || exit 1; done"
 t "rule 22" "the assembly key pair and the public release key are committed" bash -c "test -s '$root/build/keys/assembly.rsa' && test -s '$root/build/keys/assembly.rsa.pub' && test -s '$root/build/keys/release.rsa.pub'"
 t "rule 15" "build/locks/melange.lock holds name=version lines equal to the recipe's environment" bash -c "python3 - '$root' <<'P'
@@ -433,8 +481,8 @@ t "rule 40" "build-apk: a failure WITHOUT any network text is exit 1 even though
 # ---- P4 round 3 (Opus + Sonnet): the key must be THE release key, the inputs are copied before any check, signers are checked early ---------------------
 freshrs() { cp "$pr/a.apk" "$work/rsA/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsB/x86_64/fscache-0.3.0-r0.apk"; }   # earlier tests signed rsA in place
 freshrs
-sr "rule 22" "release signing with the committed placeholder public key refuses every key (no release until a human commits the real public half), saying the committed release public key is not a readable key yet" 'not a readable public key' env -u FSCACHE_TEST_MODE "$RS_REAL" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
-sr "rule 22" "--keys-dir (a test hook) is refused outside test mode" 'test mode|FSCACHE_TEST_MODE' env -u FSCACHE_TEST_MODE "$RS_REAL" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa" --keys-dir "$work/keysfx"
+sr "rule 22" "release signing with the committed placeholder public key refuses every key (no release until a human commits the real public half), saying the committed release public key is not a readable key yet" 'not a readable public key' "$RS_REAL" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
+sr "rule 22" "release-sign-apks.sh has no --keys-dir: another keys directory cannot be named by any call, test mode or not" 'unknown argument' "$RS_REAL" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa" --keys-dir "$work/keysfx"
 mkdir -p "$work/other"; mkrsa "$work/other/release.rsa"
 freshrs
 sr "rule 22" "a valid RSA key named release.rsa whose public half is not build/keys/release.rsa.pub is refused (it is not the stored key)" 'does not match' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/other/release.rsa"
@@ -465,7 +513,7 @@ if [ "$(id -u)" != 0 ]; then
 fi
 
 # ---- snapshot-4 round 4 (Sonnet/Opus P4) ----------------------------------------------------------------------------------------------------------------------
-sr "rule 11" "--recipe (a test hook) is refused outside test mode: the committed recipe is the only one a real build uses" 'test mode|FSCACHE_TEST_MODE' env -u FSCACHE_TEST_MODE SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA" "${ba_args[@]}" --out "$(mo)"
+sr "rule 11" "build-apk.sh has no --recipe: the committed recipe is the only one a production call uses, test mode or not" 'unknown argument' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "$BA_PROD" "${ba_args[@]}" --out "$(mo)"
 run_s env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_ENV_EXTRA=bash=5.2-r0 "$BA" "${ba_args[@]}" --out "$(mo)"
 t "rule 15" "a package in the apk's build environment that is not in the melange lock fails the build (the inputs manifest cannot be made)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'bash' '$work/log'"
 { printf '%s\n' "/some/path/usr/bin/fscache: go1.99.0"; tail -n +2 "$fx/sbom/ok.txt"; } >"$work/govm-toolchain.txt"
@@ -685,15 +733,15 @@ t "rule 31" "standard then fips into ONE --out (the chain's call order): both va
 # a thin bash entry that names only literal repo-relative listed scripts, the sealed environment as committed data, the inline
 # Python in a listed helper, no assignment of a protected name, run from the repository root only.
 HP="$root/bin/build-apk-helper.py" SE="$root/build/sealed-env.json"
-t "chain" "the entry has a shebang and mode 100755" bash -c "head -n 1 '$BA' | grep -q '^#!/usr/bin/env bash\$' && test -x '$BA'"
-t "chain" "the entry assigns none of the protected names (PATH, BASH_ENV, ENV, LD_*, PYTHON*, NODE_OPTIONS, IFS, CDPATH, PROMPT_COMMAND, PS4, SHELLOPTS, BASHOPTS): the judge's own pattern finds no assignment anywhere in the text, comments included" python3 - "$BA" <<'P'
+t "chain" "the entry has a shebang and mode 100755" bash -c "head -n 1 '$BA_PROD' | grep -q '^#!/usr/bin/env bash\$' && test -x '$BA_PROD'"
+t "chain" "the entry assigns none of the protected names (PATH, BASH_ENV, ENV, LD_*, PYTHON*, NODE_OPTIONS, IFS, CDPATH, PROMPT_COMMAND, PS4, SHELLOPTS, BASHOPTS): the judge's own pattern finds no assignment anywhere in the text, comments included" python3 - "$BA_PROD" <<'P'
 import re, sys
 t = open(sys.argv[1]).read()
 rx = re.compile(r"(?<![\w$])(?:(?:export|local|readonly|typeset)\s+|declare\s+(?:-\w+\s+)?)?(PATH|BASH_ENV|ENV|LD_[A-Z0-9_]+|PYTHON[A-Z0-9_]*|NODE_OPTIONS|IFS|CDPATH|PROMPT_COMMAND|PS4|SHELLOPTS|BASHOPTS)\+?=")
 m = rx.search(t)
 sys.exit("assigns %s at offset %d" % (m.group(1), m.start()) if m else 0)
 P
-t "chain" "the entry mentions none of the protected names outside a pure \$NAME read (comments and strings included)" python3 - "$BA" <<'P'
+t "chain" "the entry mentions none of the protected names outside a pure \$NAME read (comments and strings included)" python3 - "$BA_PROD" <<'P'
 import re, sys
 t = open(sys.argv[1]).read()
 phrase = "no Go toolchain on PATH in CI"   # the one message an existing case fixes by name; the row lists it as an env_mentions entry
@@ -703,17 +751,17 @@ rx = re.compile(r"(?<![A-Za-z0-9_])(PATH|BASH_ENV|ENV|LD_[A-Za-z0-9_]+|PYTHON[A-
 bad = [m.group(1) for m in rx.finditer(t) if not (t[max(0, m.start() - 1):m.start()] == "$" or (t[max(0, m.start() - 2):m.start()] == "${" and t[m.end():m.end() + 1] == "}"))]
 sys.exit("mentions %s" % sorted(set(bad)) if bad else 0)
 P
-t "chain" "no python3 -c, no python3 - (stdin), no here-document: the inline Python lives in the listed helper" python3 - "$BA" <<'P'
+t "chain" "no python3 -c, no python3 - (stdin), no here-document: the inline Python lives in the listed helper" python3 - "$BA_PROD" <<'P'
 import re, sys
 t = open(sys.argv[1]).read()
 bad = re.findall(r"python3?\s+-c\b|python3?\s+-(?:\s|$)|<<-?\s*['\"]?[A-Za-z_]", t)
 sys.exit("found %r" % bad if bad else 0)
 P
-t "chain" "every interpreter call is handed a literal repo-relative listed file (no variable path, no command substitution)" python3 - "$BA" "$root" <<'P'
+t "chain" "every interpreter call is handed a literal repo-relative listed file (no variable path, no command substitution)" python3 - "$BA_PROD" "$root" <<'P'
 import os, re, sys
 t, root = open(sys.argv[1]).read(), sys.argv[2]
 bad, seen = [], []
-for m in re.finditer(r"(?m)^[^#\n]*?(?<![\w./-])(?:python3?|bash|sh)\s+(\S+)", t):
+for m in re.finditer(r"(?m)^[^#\n]*?(?<![\w./-])(?:python3?|bash|sh|\"\$PY3\")\s+(\S+)", t):
     w = m.group(1)
     seen.append(w)
     if not re.fullmatch(r"bin/[A-Za-z0-9._-]+\.(?:py|sh)", w) or not os.path.isfile(os.path.join(root, w)):
@@ -721,32 +769,32 @@ for m in re.finditer(r"(?m)^[^#\n]*?(?<![\w./-])(?:python3?|bash|sh)\s+(\S+)", t
 need = {"bin/apk-tool.py", "bin/go-module-sbom.py", "bin/net-probe.py", "bin/build-apk-helper.py"}
 sys.exit("bad %r" % bad if bad else ("missing calls %r" % sorted(need - set(seen)) if need - set(seen) else 0))
 P
-t "chain" "no command word is built by substitution or an absolute path, and no \$here or \$root remains" python3 - "$BA" <<'P'
+t "chain" "no command word is built by substitution or an absolute path, and no \$here or \$root remains" python3 - "$BA_PROD" <<'P'
 import re, sys
 t = open(sys.argv[1]).read()
 bad = re.findall(r"(?m)^\s*(?:\$\(|`|/)\S*|\$here\b|\$root\b|\$\{here\}|\$\{root\}", t)
 sys.exit("found %r" % bad if bad else 0)
 P
 t "chain" "run from anywhere but the repository root: refused, exit 2, naming the repository root, no tool run" bash -c "
-  : >'$CALLS'; cd '$work' && env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' FSCACHE_TEST_MODE=1 \
+  : >'$CALLS'; cd '$work' && env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' \
     '$BA' ${ba_args[*]} --out $(mo) >'$work/elsewhere.log' 2>&1 </dev/null; r=\$?
   test \$r = 2 && grep -qi 'repository root' '$work/elsewhere.log' && ! grep -Eq '^(melange|sudo|sysctl|unshare) ' '$CALLS'"
 t "chain" "a missing melange is a named failure (exit 1) saying the chain installs it, and neither the script nor its output names bin/install-build-tools.sh (the row's runs lists only what the script runs)" bash -c "
   nm='$work/stubs-nomelange'; rm -rf \"\$nm\"; mkdir -p \"\$nm\"; for f in '$stubs'/*; do case \$(basename \$f) in melange) ;; *) cp -p \$f \"\$nm/\";; esac; done
-  : >'$CALLS'; env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 PATH=\"\$nm\":\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' FSCACHE_TEST_MODE=1 \
+  : >'$CALLS'; env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 PATH=\"\$nm\":\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' TEST_MELANGE=\"\$nm/melange\" \
     '$BA' ${ba_args[*]} --out $(mo) >'$work/nomelange.log' 2>&1 </dev/null; r=\$?
   test \$r = 1 && grep -qi 'melange is not installed (the chain installs it before this step)' '$work/nomelange.log' \
-    && ! grep -q 'install-build-tools' '$work/nomelange.log' && ! grep -q 'install-build-tools' '$BA'"
+    && ! grep -q 'install-build-tools' '$work/nomelange.log' && ! grep -q 'install-build-tools' '$BA_PROD'"
 t "chain" "the sealed environment is committed data: exactly the rule 23 list (a closed PATH, HOME=/root, LC_ALL=C, SOURCE_DATE_EPOCH from the environment), nothing else" python3 - "$SE" <<'P'
 import json, sys
 d = json.load(open(sys.argv[1]))
 want_env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LC_ALL": "C"}
 assert d["closed"] == want_env, d["closed"]
 assert d["from_environment"] == ["SOURCE_DATE_EPOCH"], d["from_environment"]
-assert set(d) == {"closed", "from_environment", "test_mode_inherit", "test_mode_prefixes", "test_mode_names"}, sorted(d)
+assert set(d) == {"closed", "from_environment"}, sorted(d)   # no test_mode_* key: nothing but these two is read
 P
-t "chain" "the helper's sealed-env prints exactly the four closed entries, NUL-separated, outside test mode" bash -c "
-  env -u FSCACHE_TEST_MODE SOURCE_DATE_EPOCH=$SDE STUB_X=1 FAKE_X=1 python3 '$HP' sealed-env '$SE' | python3 -c \"
+t "chain" "the helper's sealed-env prints exactly the four closed entries, NUL-separated, whatever STUB_/FAKE_ variables or FSCACHE_TEST_MODE the caller has" bash -c "
+  env SOURCE_DATE_EPOCH=$SDE STUB_X=1 FAKE_X=1 python3 '$HP' sealed-env '$SE' | python3 -c \"
 import sys
 v = sys.stdin.buffer.read().split(b'\\0')
 assert v[-1] == b'', v
@@ -757,6 +805,86 @@ t "chain" "the helper's build-date turns SOURCE_DATE_EPOCH into the ISO time and
 t "chain" "the helper's recipe-facts reads the package name, this architecture's Go tarball and pin and the pinned environment from the committed recipe" bash -c "
   python3 '$HP' recipe-facts '$root/build/melange.yaml' amd64 '$work/facts.txt' && grep -q '^name=fscache\$' '$work/facts.txt' && grep -Eq '^file=go[0-9.]+\.linux-amd64\.tar\.gz\$' '$work/facts.txt' \
   && grep -Eq '^sha=[0-9a-f]{64}\$' '$work/facts.txt' && grep -q '^pin=busybox=' '$work/facts.txt'"
+
+# ===== round 1 of the review of PR 341: real signature verification, no test hook in the production scripts ====================================
+# apk-tool.py verify: the signature member's BYTES are checked against a public key, the name alone is never a verdict (REQ-BUILDAPK-001-AC4, AC7)
+AKEY="$root/build/keys/assembly.rsa" APUB="$root/build/keys/assembly.rsa.pub"
+openssl genrsa -out "$work/other.rsa" 2048 2>/dev/null; openssl rsa -in "$work/other.rsa" -pubout -out "$work/other.rsa.pub" 2>/dev/null
+python3 - "$work" "$AKEY" "$work/other.rsa" <<'P'
+import sys
+sys.path.insert(0, sys.argv[1]); import lib
+w, akey, okey = sys.argv[1:4]
+f = {"usr/bin/fscache": b"bin"}
+lib.mkapk(w + "/v/good.apk", "fscache", "0.3.0-r0", f, signkey=akey)                       # RSA (sha1), signed with the committed assembly key
+lib.mkapk(w + "/v/good256.apk", "fscache", "0.3.0-r0", f, sigalg="RSA256", signkey=akey)   # RSA256
+lib.mkapk(w + "/v/other.apk", "fscache", "0.3.0-r0", f, signkey=okey)                      # signed by ANOTHER key but named assembly.rsa.pub
+lib.mkapk(w + "/v/unsigned.apk", "fscache", "0.3.0-r0", f, signer=None)
+import os
+os.environ["STUB_FAKE_SIG"] = "1"
+lib.mkapk(w + "/v/fake.apk", "fscache", "0.3.0-r0", f)                                     # the member name is right, the bytes are text
+# a good signature over a DIFFERENT control section: the signature stream of good.apk in front of the control and data of another package
+g = open(w + "/v/good.apk", "rb").read()
+os.environ.pop("STUB_FAKE_SIG")
+lib.mkapk(w + "/v/evil-src.apk", "evil", "6.6.6-r0", f, signer=None)
+e = open(w + "/v/evil-src.apk", "rb").read()
+import zlib
+def first_stream_len(b):
+    d = zlib.decompressobj(31); d.decompress(b); return len(b) - len(d.unused_data)
+open(w + "/v/swapped.apk", "wb").write(g[:first_stream_len(g)] + e)
+P
+vf() { python3 "$root/bin/apk-tool.py" verify "$@"; }
+t "rule 22" "apk-tool verify: an apk signed with the committed assembly key verifies against assembly.rsa.pub (RSA, sha1) and prints the name" bash -c "test \"\$(python3 '$root/bin/apk-tool.py' verify '$work/v/good.apk' '$APUB')\" = verified:assembly.rsa.pub"
+t "rule 22" "apk-tool verify: the RSA256 (sha256) form verifies too" bash -c "python3 '$root/bin/apk-tool.py' verify '$work/v/good256.apk' '$APUB' >/dev/null"
+fails "rule 22" "apk-tool verify: an apk signed by another key under the assembly key's NAME does not verify (exit 1)" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/other.apk" "$APUB"
+fails "rule 22" "apk-tool verify: a member named .SIGN.RSA.assembly.rsa.pub holding text is not a signature (exit 1)" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/fake.apk" "$APUB"
+fails "rule 22" "apk-tool verify: a good signature in front of another package's control section does not verify" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/swapped.apk" "$APUB"
+fails "rule 22" "apk-tool verify: an unsigned apk has nothing to verify (exit 1)" 'unsigned|nothing to verify' python3 "$root/bin/apk-tool.py" verify "$work/v/unsigned.apk" "$APUB"
+fails "rule 22" "apk-tool verify: the right apk against the wrong public key does not verify" 'does not verify' python3 "$root/bin/apk-tool.py" verify "$work/v/good.apk" "$work/other.rsa.pub"
+# the drivers verify, not read names
+run_s env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_FAKE_SIG=1 "$BA" "${ba_args[@]}" --out "$(mo)"
+t "rule 22" "build-apk.sh: a build whose apk carries the right signature NAME over bytes that are not a signature is refused (exit 1) naming the verification" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'does not verify' '$work/log'"
+t "rule 22" "build-apk.sh: the same build with the real signature passes (the control for the refusal above)" bash -c "run() { env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' '$BA' ${ba_args[*]} --out $(mo) >'$work/ctl.log' 2>&1 </dev/null; }; run && ! grep -qi 'does not verify' '$work/ctl.log'"
+# release signing: both sides and the result are verified
+python3 - "$work" <<'P'
+import os, shutil, sys
+sys.path.insert(0, sys.argv[1]); import lib
+w = sys.argv[1]
+for side in ("fkA", "fkB"):
+    os.makedirs("%s/%s/x86_64" % (w, side), exist_ok=True)
+os.environ["STUB_FAKE_SIG"] = "1"
+lib.mkapk(w + "/fkA/x86_64/fscache-0.3.0-r0.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"bin"})
+os.environ.pop("STUB_FAKE_SIG")
+lib.mkapk(w + "/fkB/x86_64/fscache-0.3.0-r0.apk", "fscache", "0.3.0-r0", {"usr/bin/fscache": b"bin"})
+for side in ("fkC", "fkD"):   # a good pair, for the release-signing run whose signing tool leaves a bad signature
+    lib.mkapk("%s/%s/x86_64/fscache-0.3.0-r0.apk" % (w, side), "fscache", "0.3.0-r0", {"usr/bin/fscache": b"bin"})
+P
+sr "rule 22" "release signing: a Build apk with the assembly NAME over a fake signature is refused (exit 2, nothing signed): the name is not a signature" 'does not verify' "$RS" --build-dir "$work/fkA" --rebuild-dir "$work/fkB" --key "$work/release.rsa"
+run_s env STUB_FAKE_SIG=1 "$RS" --build-dir "$work/fkC" --rebuild-dir "$work/fkD" --key "$work/release.rsa"
+t "rule 22" "release signing: a signing tool that leaves a signature that does not verify against release.rsa.pub is refused after signing (exit 1), nothing replaced" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'does not verify' '$work/log'"
+# no test hook in the production scripts, and the test copies differ from them only on the TEST-SUBST lines
+t "rule 11" "production bin/build-apk.sh, bin/release-sign-apks.sh and bin/build-apk-helper.py hold no test hook: no FSCACHE_TEST_MODE, no --recipe, no --keys-dir, no STUB_/FAKE_ name, no test_mode" bash -c "! grep -En 'FSCACHE_TEST_MODE|--recipe|--keys-dir|STUB_|FAKE_|test_mode' '$BA_PROD' '$RS_REAL' '$HP' | grep -v '^[^:]*:[0-9]*:#'"
+t "rule 11" "the test copy of build-apk.sh differs from the production file in the TEST-SUBST lines only" python3 - "$BA_PROD" "$work/ba-copy.sh" <<'P'
+import re, sys
+a, b = open(sys.argv[1]).read().split("\n"), open(sys.argv[2]).read().split("\n")
+assert len(a) == len(b), (len(a), len(b))
+sub = re.compile(r"#\s*TEST-SUBST")
+diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+assert diff and all(sub.search(a[i]) and sub.search(b[i]) for i in diff), [a[i] for i in diff if not sub.search(a[i])]
+P
+t "rule 22" "the test copy of release-sign-apks.sh differs from the production file in the TEST-SUBST lines only" python3 - "$RS_REAL" "$work/rs-copy.sh" <<'P'
+import re, sys
+a, b = open(sys.argv[1]).read().split("\n"), open(sys.argv[2]).read().split("\n")
+assert len(a) == len(b), (len(a), len(b))
+sub = re.compile(r"#\s*TEST-SUBST")
+diff = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
+assert diff and all(sub.search(a[i]) and sub.search(b[i]) for i in diff), [a[i] for i in diff if not sub.search(a[i])]
+P
+t "rule 23" "production sealed environment: FAKE_SIGNING_KEY, STUB_RELEASE_TOKEN and FSCACHE_TEST_MODE in the caller's environment never reach the melange call" bash -c "
+  env SOURCE_DATE_EPOCH=$SDE FSCACHE_TEST_MODE=1 FAKE_SIGNING_KEY=canary STUB_RELEASE_TOKEN=canary python3 '$HP' sealed-env '$SE' | python3 -c \"
+import sys
+v = sys.stdin.buffer.read().split(b'\\0')
+assert not any(b'canary' in x or b'TEST_MODE' in x for x in v), v\""
+
 
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

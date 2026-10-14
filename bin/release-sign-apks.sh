@@ -17,21 +17,25 @@
 # signature other than the assembly key's (no tool run).
 set -euo pipefail
 
-here=$(cd "$(dirname "$0")" && pwd)
-root=$(cd "$here/.." && pwd)
+here=$(cd "$(dirname "$0")" && pwd)   # TEST-SUBST
+root=$(cd "$here/.." && pwd)          # TEST-SUBST
 die() { echo "release-sign-apks.sh: $1" >&2; exit "${2:-2}"; }
+# fixed locations, no test hook in this file: bin/build-apk-test.sh runs a COPY in which exactly the lines ending in TEST-SUBST are replaced and
+# checks that the copy differs from this file in no other line (REQ-BUILDAPK-001-AC7, AC8)
+PY3=/usr/bin/python3            # TEST-SUBST
+MELANGE=/usr/local/bin/melange  # TEST-SUBST (where bin/install-build-tools.sh melange puts it)
+KEYS_DIR=$root/build/keys       # TEST-SUBST
 
-a= b= key= keysdir=
+a= b= key=
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || die "missing value for $1"
   case $1 in
-    --build-dir) a=$2;; --rebuild-dir) b=$2;; --key) key=$2;; --keys-dir) keysdir=$2;;
+    --build-dir) a=$2;; --rebuild-dir) b=$2;; --key) key=$2;;
     *) die "unknown argument: $1";;
   esac
   shift 2
 done
-if [ -n "$keysdir" ] && [ "${FSCACHE_TEST_MODE:-}" != 1 ]; then die "--keys-dir is a test hook and is allowed only in test mode (FSCACHE_TEST_MODE=1); the real run uses the committed build/keys"; fi
-keysdir=${keysdir:-$root/build/keys}
+keysdir=$KEYS_DIR
 [ -d "$a" ] || die "--build-dir is not a directory: $a"
 [ -d "$b" ] || die "--rebuild-dir is not a directory: $b"
 [ ! -L "$key" ] || die "--key is a symlink; refusing (the key is read from a regular file, never through a link)"
@@ -50,7 +54,7 @@ orig_a=$a; ca=$tmp/build; cb=$tmp/rebuild; keyfile=$key; key=$tmp/key/release.rs
 # ONE PEM block, labelled exactly RSA PRIVATE KEY, with no headers (so not encrypted), no CR, and its public half is derived from that one block.
 # The assembly key is recognised by its public half (not by its bytes or file name), derived the same way from the committed files.
 derive_pub() { # <private key file>  -> the public key (PEM) of its single RSA PRIVATE KEY block, or exit 2 with the reason
-  python3 - "$1" <<'PY'
+  "$PY3" - "$1" <<'PY'
 import base64, re, subprocess, sys
 path = sys.argv[1]
 def _tlv(b, i, end):
@@ -145,22 +149,24 @@ while IFS= read -r rel; do
 done < <(cd "$cb" && LC_ALL=C find . -name '*.apk' -type f | sort)
 for rel in "${apks[@]}"; do   # both sides come from the assembly-key build: anything else was signed by somebody else
   for side in "$ca" "$cb"; do
-    sg=$(python3 "$here/apk-tool.py" signer "$side/$rel") || die "cannot read the signer of ${rel#./}"
+    sg=$("$PY3" "$here/apk-tool.py" signer "$side/$rel") || die "cannot read the signer of ${rel#./}"
     [ "$sg" = assembly.rsa.pub ] || die "${rel#./} is signed by '$sg', not assembly.rsa.pub: Build and Rebuild must both carry the assembly key's signature"
+    "$PY3" "$here/apk-tool.py" verify "$side/$rel" "$keysdir/assembly.rsa.pub" >/dev/null || die "the signature of ${rel#./} does not verify against the committed assembly.rsa.pub: a signature name is not a signature"
   done
 done
 bad=0
 for rel in "${apks[@]}"; do
-  python3 "$here/apk-tool.py" same "$ca/$rel" "$cb/$rel" || { echo "release-sign-apks.sh: ${rel#./} differs between Build and Rebuild" >&2; bad=1; }
+  "$PY3" "$here/apk-tool.py" same "$ca/$rel" "$cb/$rel" || { echo "release-sign-apks.sh: ${rel#./} differs between Build and Rebuild" >&2; bad=1; }
 done
 [ $bad = 0 ] || die "Build and Rebuild disagree; nothing was signed" 1
-melange_bin=$(command -v melange) || die "melange is not installed (bin/install-build-tools.sh melange)" 1
+melange_bin=$MELANGE; [ -x "$melange_bin" ] || die "melange is not installed at $MELANGE (bin/install-build-tools.sh melange)" 1
 # sign the private copies, check each signer, and only when every one succeeded replace the originals: a failure leaves Build's directory untouched
 for rel in "${apks[@]}"; do
   [ ! -e "$orig_a/$rel.new" ] || die "$orig_a/$rel.new already exists (a leftover or a planted file); refusing, nothing in $orig_a was changed"
   "$melange_bin" sign --signing-key "$key" "$ca/$rel" || die "melange sign failed for ${rel#./}; nothing in $orig_a was changed" 1
-  signer=$(python3 "$here/apk-tool.py" signer "$ca/$rel") || die "cannot read the signer of the signed ${rel#./}; nothing in $orig_a was changed" 1
+  signer=$("$PY3" "$here/apk-tool.py" signer "$ca/$rel") || die "cannot read the signer of the signed ${rel#./}; nothing in $orig_a was changed" 1
   [ "$signer" = release.rsa.pub ] || die "${rel#./} is signed by '$signer', not release.rsa.pub; nothing in $orig_a was changed" 1
+  "$PY3" "$here/apk-tool.py" verify "$ca/$rel" "$keysdir/release.rsa.pub" >/dev/null || die "the signature of the signed ${rel#./} does not verify against the committed release.rsa.pub; nothing in $orig_a was changed" 1
 done
 # stage every replacement next to its original FIRST (any failure here leaves the originals alone), then rename them all
 for rel in "${apks[@]}"; do
@@ -172,6 +178,7 @@ for rel in "${apks[@]}"; do
 done
 staged=()
 for rel in "${apks[@]}"; do   # the final directory itself is checked
-  [ "$(python3 "$here/apk-tool.py" signer "$orig_a/$rel")" = release.rsa.pub ] || die "after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory" 1
+  [ "$("$PY3" "$here/apk-tool.py" signer "$orig_a/$rel")" = release.rsa.pub ] || die "after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory" 1
+  "$PY3" "$here/apk-tool.py" verify "$orig_a/$rel" "$keysdir/release.rsa.pub" >/dev/null || die "after replacing, the signature of ${rel#./} in $orig_a does not verify against release.rsa.pub; discard the directory" 1
 done
 echo "signed ${#apks[@]} apk(s) with the release key"
