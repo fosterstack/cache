@@ -7,7 +7,7 @@
 #
 # Exit codes: 0 identical (or the narrow no-vendor case below) | 1 a difference is named, or the check could not be completed (no go
 # toolchain, a failed go mod verify or go mod vendor, a tree or a base that cannot be read in full) | 2 refused: not run from the
-# repository root, an unknown argument, an unreadable tree, a go.mod or go.sum that is a link, a vendor path that is not a vendor/ directory at the top, or a tree without
+# repository root, a GOFLAGS that is not empty or -mod=mod, an unknown argument, an unreadable tree, a go.mod or go.sum that is a link, a vendor path that is not a vendor/ directory at the top, or a tree without
 # go.mod, go.sum or vendor/. It writes nothing but its scratch directory and the Go tool's own caches, and it only compares: no token, no commit; GOAUTH is set to off, so the Go tool reads no .netrc and runs no auth command. The Go environment
 # (GOPROXY, GOFLAGS, GOSUMDB) is the caller's, so a CI run uses the checksum database and a fixture run uses a file proxy.
 #
@@ -22,6 +22,10 @@ self=${0%/*}; [ "$self" != "$0" ] || self=.
 [ $# -le 1 ] || die "usage: bin/vendor-check.sh [ROOT]"
 src=${1:-.}
 case $src in -*) die "unknown argument $src";; esac
+case ${GOFLAGS:-} in
+  ""|-mod=mod) ;;
+  *) die "GOFLAGS is not empty or -mod=mod: a flag such as -modfile, -overlay or -o would change what is judged or where it is written" ;;
+esac
 [ -d "$src" ] && [ -r "$src" ] || die "the tree $src is not a readable directory"
 src=$(cd "$src" 2>/dev/null && pwd -P) || die "the tree $src cannot be resolved to a physical directory"
 
