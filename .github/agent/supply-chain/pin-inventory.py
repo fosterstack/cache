@@ -117,6 +117,7 @@ class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
+        self.raw = None  # a file item's repository path, exactly as git names it (name goes through _hide(); REQ-SUP-001-AC21 compares this)
         self.src = None  # (script path, line id) of the script line that made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to that line
 
     @property
@@ -461,7 +462,8 @@ def inventory(files):
                 for it in found[before:]:
                     it.src = (path, lid)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
-            found = [Item("tool", "file:" + path, "(file)")]   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
+            found = [Item("tool", "file:" + path, "(file)")]
+            found[0].raw = path   # a version file or a checksum file: its content is the identity (a replaced asset behind the same URL moves the item)
             found[0].step = "content:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()      # what an installer's *-version-file selects: a changed content is a changed key
         elif path.endswith(".sh"):
             found = []

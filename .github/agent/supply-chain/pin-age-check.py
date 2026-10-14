@@ -572,10 +572,11 @@ def load_base_inputs(path, required=False):
 
 
 def split_base_inputs(moved, paths):
-    """A (file) item whose path the list names is no item: its content is the repository's own base record. Exact path equality, nothing else."""
+    """A (file) item whose repository path the list names is no item: its content is the repository's own base record. Exact equality with the path as git
+    names it (Item.raw), never with the display name, which _hide() rewrites."""
     keep, ruled = [], []
     for m in moved:
-        (ruled if (m.kind == "tool" and m.version == "(file)" and m.name.startswith("file:") and m.name[5:] in paths) else keep).append(m)
+        (ruled if (m.kind == "tool" and m.version == "(file)" and m.raw is not None and m.raw in paths) else keep).append(m)
     return keep, ruled
 
 

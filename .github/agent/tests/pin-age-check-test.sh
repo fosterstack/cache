@@ -2822,12 +2822,44 @@ check python3 - "$chk" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib.util.module_from_spec(spec); spec.loader.exec_module(ac)
 class I:  # a tool item that is NOT a (file) item although its name mentions the path
-    kind = "tool"; name = "o/r/build/locks/archive-keys.sha256"; version = "v1.0.0"; src = None; key = "tool:o/r/build/locks/archive-keys.sha256@v1.0.0"
+    kind = "tool"; name = "o/r/build/locks/archive-keys.sha256"; version = "v1.0.0"; src = None; raw = None; key = "tool:o/r/build/locks/archive-keys.sha256@v1.0.0"
 class F:
-    kind = "tool"; name = "file:build/locks/archive-keys.sha256"; version = "(file)"; src = None
+    kind = "tool"; name = "file:build/locks/archive-keys.sha256"; version = "(file)"; src = None; raw = "build/locks/archive-keys.sha256"
     key = "tool:file:build/locks/archive-keys.sha256@(file)#content:x"
 kept, ruled = ac.split_base_inputs([I(), F()], {"build/locks/archive-keys.sha256"})
 assert [m.name for m in kept] == [I.name] and [m.name for m in ruled] == [F.name], (kept, ruled)
+PY
+
+# round 1 of the review of PR 340 (both seats): the exact path is the one git names, not the display name; and the day-7 rerun applies the same decision
+CASE="AC21: a listed placeholder-looking path (build/\${var}/archive-keys.sha256) never exempts a different real path (build/\$OTHER/archive-keys.sha256), through the real inventory"
+check python3 - "$chk" "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys
+def load(n, p):
+    s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+ac, inv = load("ac", sys.argv[1]), load("inv", sys.argv[2])
+items = inv.inventory({"build/$OTHER/archive-keys.sha256": "x\n", "build/locks/archive-keys.sha256": "y\n"})
+file_items = [i for i in items.values() if i.version == "(file)"]
+assert len(file_items) == 2 and all(i.raw for i in file_items)
+kept, ruled = ac.split_base_inputs(file_items, {"build/${var}/archive-keys.sha256", "build/locks/archive-keys.sha256"})
+assert [i.raw for i in ruled] == ["build/locks/archive-keys.sha256"] and [i.raw for i in kept] == ["build/$OTHER/archive-keys.sha256"], (kept, ruled)
+PY
+CASE="AC21: the day-7 rerun applies the trusted list too: a held pull request that changes a listed file and a package that has since aged is re-run, an unlisted file keeps it held"
+check python3 - "$here/../supply-chain/pin-audit.py" "$work/bi-ok.json" <<'PY'
+import importlib.util, sys, os, datetime as dt
+s = importlib.util.spec_from_file_location("pa", sys.argv[1]); pa = importlib.util.module_from_spec(s); s.loader.exec_module(pa)
+age, inv = pa.age, pa.inv
+age.DEFAULT_BASE_INPUTS = sys.argv[2]
+class Net:
+    def __init__(self, moved): self._m = moved
+    def prs(self): return [{"number": 1, "title": "t", "run_id": 7, "moved": self._m}]
+    def proofs(self, it, base=None, head="HEAD"): return [("2026-09-01T00:00:00Z", "pypi")] if it.kind == "package" else []
+class Gh:
+    def __init__(self): self.calls = []
+    def run(self, *a, **k): self.calls.append(a)
+now = dt.datetime(2026, 10, 14, 12, tzinfo=dt.timezone.utc)
+for moved, want in ((["package:pypi/x@1.0.0", "tool:file:build/locks/archive-keys.sha256@(file)"], 1), (["package:pypi/x@1.0.0", "tool:file:build/locks/unlisted.sha256@(file)"], 0)):
+    gh = Gh(); pa.rerun_held(gh, Net(moved), now)
+    assert len([c for c in gh.calls if c[:2] == ("run", "rerun")]) == want, (moved, gh.calls)
 PY
 
 echo "pin-age-check: $pass passed, $failn failed"
