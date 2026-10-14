@@ -2950,5 +2950,26 @@ wfk = {".github/workflows/ci.yml": "on: push\njobs:\n  j:\n    runs-on: ubuntu-l
 assert set(inv.inventory(wfk)) == {"package:pypi/black@(unpinned)#step:875cc02f02e6bc952fc1bca71c436657c10fc7e27058713fbd137cf0aed5eed8"}
 PY
 
+CASE="release downloads behind variables, round 3 findings: assignment ORDER, a name holding \$( ) with a space, composite input context kept apart from other items' keys, and a query variable that is not part of the name (REQ-SUP-001-AC2)"
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+import importlib.util, sys, datetime as dt
+def load(n, p):
+    s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+inv, age = load("inv", sys.argv[1]), load("age", sys.argv[2])
+url = "https://github.com/o/r/releases/download/v1.2.3/"
+dl = 'curl "' + url + '${A}.tgz" -o x\n'
+for path in ("bin/x.sh", "bin/install-scanner.sh"):
+    assert inv.moved(inv.inventory({path: "B=x\nA=$B\nB=y\n" + dl}), inv.inventory({path: "B=y\nA=$B\nB=x\n" + dl})), path
+wf = lambda asset: {".github/workflows/ci.yml": "on: push\nenv:\n  A: x\n  B: y\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: curl \"" + url + asset + "\" -o x\n"}
+a, b = wf('$(printf %s "$A").tgz'), wf('$(printf %s "$B").tgz')
+assert set(inv.inventory(a)) != set(inv.inventory(b))
+it = next(iter(inv.inventory(b).values()))
+assert "${" in it.path and "printf %s" in it.path, it.path
+assert not age.judge_item(it, [("2026-09-01T00:00:00Z", "pr-clock")], dt.datetime(2026, 10, 14, tzinfo=dt.timezone.utc))[0]
+comp = {".github/actions/x/action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: pip install black\n"}
+assert set(inv.inventory(comp)) == {"package:pypi/black@(unpinned)#step:c38ddd42b810871e60f5080663fe9d5d899dd5a38d61c1563b41a1b78a56eed5"}
+assert set(inv.inventory(wf("x.tgz?download=${A}"))) == {"tool:o/r/x.tgz@v1.2.3"}
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
