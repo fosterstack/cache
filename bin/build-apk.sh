@@ -43,6 +43,9 @@ GIT=/usr/bin/git                # TEST-SUBST
 SUDO=/usr/bin/sudo              # TEST-SUBST
 UNSHARE=/usr/bin/unshare        # TEST-SUBST
 MELANGE=/usr/local/bin/melange  # TEST-SUBST (the chain installs it there)
+GO_TOOL=/usr/local/bin/fscache-go/bin/go  # TEST-SUBST (bin/install-scanner.sh go puts the pinned toolchain there)
+SHA256SUM=/usr/bin/sha256sum    # TEST-SUBST
+ENVBIN=/usr/bin/env             # TEST-SUBST
 SEALED_ENV=build/sealed-env.json  # TEST-SUBST
 RECIPE_STANDARD=$PWD/build/melange.yaml  # TEST-SUBST
 RECIPE_FIPS=$PWD/build/melange-fips.yaml  # TEST-SUBST
@@ -92,7 +95,7 @@ case $um in x86_64|amd64) host=x86_64;; aarch64|arm64) host=aarch64;; *) host=$u
 apkver=${version/-rc./_rc}; apkver=${apkver/-rc/_rc}   # the apk version syntax for a pre-release: 0.3.0-rc1 -> 0.3.0_rc1, 0.0.0-rc.1 -> 0.0.0_rc1; the Go stamp says v$version
 
 [[ ${SOURCE_DATE_EPOCH:-} =~ ^[0-9]{1,12}$ ]] || die "SOURCE_DATE_EPOCH must be set to digits (the commit time, at most 12 digits)"
-build_date=$("$PY3" bin/build-apk-helper.py build-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date"
+build_date=$("$PY3" -I -B bin/build-apk-helper.py build-date "$SOURCE_DATE_EPOCH" 2>/dev/null) || die "SOURCE_DATE_EPOCH $SOURCE_DATE_EPOCH is not a date"
 [ -z "${APK_RELEASE_SIGNING_KEY:-}" ] || die "the release signing key must not be in a build's environment (APK_RELEASE_SIGNING_KEY is set)"
 if [ -n "${GOPROXY+x}" ] && [ "${GOPROXY}" != off ]; then die "GOPROXY must be off or unset (its value is not printed: it can carry a credential)"; fi
 for p in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
@@ -124,11 +127,12 @@ trap cleanup EXIT
 
 goarch=amd64; [ "$arch" = aarch64 ] && goarch=arm64
 # recipe facts: the package name, this arch's Go tarball and pin, and the pinned build environment
-"$PY3" bin/build-apk-helper.py recipe-facts "$recipe" "$goarch" "$tmp/recipe.facts" || die "cannot read the recipe $recipe"
+"$PY3" -I -B bin/build-apk-helper.py recipe-facts "$recipe" "$goarch" "$tmp/recipe.facts" || die "cannot read the recipe $recipe"
 pkg=$(sed -n 's/^name=//p' "$tmp/recipe.facts"); gofile=$(sed -n 's/^file=//p' "$tmp/recipe.facts"); gosha=$(sed -n 's/^sha=//p' "$tmp/recipe.facts")
 
 [ -f "$goarch_dir/$gofile" ] || die "the Go archive $goarch_dir has no $gofile (rule 12: Go comes from the archive)"
-if type -P sha256sum >/dev/null 2>&1; then got=$(sha256sum "$goarch_dir/$gofile" | cut -d' ' -f1); else got=$(shasum -a 256 "$goarch_dir/$gofile" | cut -d' ' -f1); fi
+[ -x "$SHA256SUM" ] || die "sha256sum is not installed at $SHA256SUM" 1
+got=$("$SHA256SUM" "$goarch_dir/$gofile" | cut -d' ' -f1)
 [ "$got" = "$gosha" ] || die "sha256 checksum of $gofile ($got) differs from the recipe's pin ($gosha)"
 
 # the recipe's pinned build environment must be in the melange lock (rule 15), name for name and version for version
@@ -162,7 +166,7 @@ melange_bin=$MELANGE; [ -x "$melange_bin" ] || die "melange is not installed (th
 # the environment of the privileged melange call is passed EXPLICITLY as a closed list (never whatever sudo's env_reset happens to keep):
 # the committed build/sealed-env.json, printed by the helper as NUL-ended items; nothing else survives
 sealed=()
-while read -r -d '' item; do sealed+=("$item"); done < <("$PY3" bin/build-apk-helper.py sealed-env "$SEALED_ENV") || true
+while read -r -d '' item; do sealed+=("$item"); done < <("$PY3" -I -B bin/build-apk-helper.py sealed-env "$SEALED_ENV") || true
 [ "${#sealed[@]}" -ge 4 ] || die "the sealed environment could not be made (build/sealed-env.json, SOURCE_DATE_EPOCH)" 1
 set +e
 ( cd "$rdir" && "$SUDO" env -i "${sealed[@]}" "$UNSHARE" -n "$melange_bin" "${margs[@]}" 2>"$tmp/melange.err" )
@@ -171,7 +175,7 @@ set -e
 cat "$tmp/melange.err" >&2   # complete once the command has exited; no race with a process substitution
 if [ $rc -ne 0 ]; then
   if grep -Eqi 'ENETUNREACH|network is unreachable|dial tcp|no such host|name resolution|Name or service not known|could not resolve host' "$tmp/melange.err" 2>/dev/null; then
-    set +e; "$SUDO" unshare -n "$PY3" bin/net-probe.py >/dev/null 2>&1; probe=$?; set -e
+    set +e; "$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1; probe=$?; set -e
     if [ "$probe" = 101 ]; then die "a network attempt was made inside the sealed melange call (the probe confirms the namespace has no route); the build must use only declared inputs" 4; fi
     die "melange failed with a network error, but the probe says the namespace is not sealed (exit $probe); fix the seal first" 1
   fi
@@ -182,11 +186,11 @@ fi
 apk=$out/$arch/$pkg-$apkver-r0.apk
 vsfx=; [ "$variant" = fips ] && vsfx=-fips   # standard and fips build into ONE --out: the fips files must not overwrite the standard ones
 [ -f "$apk" ] || die "melange did not produce $apk" 1
-signer=$("$PY3" bin/apk-tool.py signer "$apk") || die "cannot read the signer of $apk" 1
+signer=$("$PY3" -I -B bin/apk-tool.py signer "$apk") || die "cannot read the signer of $apk" 1
 [ "$signer" = assembly.rsa.pub ] || die "$apk is signed by '$signer', not assembly.rsa.pub: the assembly key is the only build signer" 1
 # the name is only a label: the signature itself must verify against the committed public half of the assembly key (REQ-BUILDAPK-001-AC4)
-"$PY3" bin/apk-tool.py verify "$apk" build/keys/assembly.rsa.pub >/dev/null || die "the signature of $apk does not verify against the committed build/keys/assembly.rsa.pub: the apk is not signed with the assembly key" 1
-"$PY3" bin/apk-tool.py cat "$apk" usr/share/fscache/buildinfo.txt >"$tmp/buildinfo.txt" || die "$apk has no usr/share/fscache/buildinfo.txt" 1
+"$PY3" -I -B bin/apk-tool.py verify "$apk" build/keys/assembly.rsa.pub >/dev/null || die "the signature of $apk does not verify against the committed build/keys/assembly.rsa.pub: the apk is not signed with the assembly key" 1
+"$PY3" -I -B bin/apk-tool.py cat "$apk" usr/share/fscache/buildinfo.txt >"$tmp/buildinfo.txt" || die "$apk has no usr/share/fscache/buildinfo.txt" 1
 grep -Fq '(devel)' "$tmp/buildinfo.txt" && die "the binary says (devel): the source was not stamped" 1
 grep -Eq 'vcs\.modified=true' "$tmp/buildinfo.txt" && die "the binary was built from a modified (dirty) tree (vcs.modified=true)" 1
 # rule 24: the main module must carry exactly the version being built (a tag v$version in the workspace), and the revision must be the
@@ -203,8 +207,9 @@ else
   [ -z "$fipsvals" ] || die "the standard binary records GOFIPS140 ($fipsvals); only the fips variant may" 1
 fi
 # buildinfo.txt is written by the recipe; when a Go toolchain is found it is checked against the packaged binary itself (the toolchain line and the module list)
-"$PY3" bin/apk-tool.py cat "$apk" usr/bin/fscache >"$tmp/fscache.bin" || die "$apk has no usr/bin/fscache" 1
-gorc=0; gov=$(env GOTOOLCHAIN=local GOFLAGS= GOENV=off go version -m "$tmp/fscache.bin" 2>"$tmp/go.err") || gorc=$?
+"$PY3" -I -B bin/apk-tool.py cat "$apk" usr/bin/fscache >"$tmp/fscache.bin" || die "$apk has no usr/bin/fscache" 1
+gorc=0; gov=
+if [ -x "$GO_TOOL" ]; then gov=$("$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off "$GO_TOOL" version -m "$tmp/fscache.bin" 2>"$tmp/go.err") || gorc=$?; else gorc=127; fi
 if [ $gorc -eq 0 ]; then
   [ "$(printf '%s\n' "$gov" | head -n 1 | sed 's/^[^:]*: //')" = "$(head -n 1 "$tmp/buildinfo.txt" | sed 's/^[^:]*: //')" ] || die "the Go toolchain in buildinfo.txt ($(head -n 1 "$tmp/buildinfo.txt" | sed 's/^[^:]*: //')) differs from the one go version -m reports for the packaged binary ($(printf '%s\n' "$gov" | head -n 1 | sed 's/^[^:]*: //'))" 1
   [ "$(printf '%s\n' "$gov" | tail -n +2)" = "$(tail -n +2 "$tmp/buildinfo.txt")" ] || die "buildinfo.txt in the apk differs from 'go version -m' of the packaged binary: the recorded build information is not the binary's own" 1
@@ -217,7 +222,7 @@ else
 fi
 
 # ---- 6. the module SBOM and the inputs manifest ----
-"$PY3" bin/go-module-sbom.py --modules "$src/vendor/modules.txt" --provenance "$src/dependency-provenance.json" \
+"$PY3" -I -B bin/go-module-sbom.py --modules "$src/vendor/modules.txt" --provenance "$src/dependency-provenance.json" \
   --buildinfo "$tmp/buildinfo.txt" --out "$out/fscache-modules$vsfx.spdx.json" || die "the Go module list does not match the binary (see above)" 1
-"$PY3" bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" --out "$out/inputs-manifest$vsfx.json" || die "the inputs manifest could not be made (see above)" 1
+"$PY3" -I -B bin/apk-tool.py inputs-manifest --apk "$apk" --melange-lock "$mlock" --out "$out/inputs-manifest$vsfx.json" || die "the inputs manifest could not be made (see above)" 1
 echo "built $apk"

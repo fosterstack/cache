@@ -23,6 +23,7 @@ die() { echo "release-sign-apks.sh: $1" >&2; exit "${2:-2}"; }
 # fixed locations, no test hook in this file: bin/build-apk-test.sh runs a COPY in which exactly the lines ending in TEST-SUBST are replaced and
 # checks that the copy differs from this file in no other line (REQ-BUILDAPK-001-AC7, AC8)
 PY3=/usr/bin/python3            # TEST-SUBST
+OPENSSL=/usr/bin/openssl        # TEST-SUBST
 MELANGE=/usr/local/bin/melange  # TEST-SUBST (where bin/install-build-tools.sh melange puts it)
 KEYS_DIR=$root/build/keys       # TEST-SUBST
 
@@ -54,7 +55,7 @@ orig_a=$a; ca=$tmp/build; cb=$tmp/rebuild; keyfile=$key; key=$tmp/key/release.rs
 # ONE PEM block, labelled exactly RSA PRIVATE KEY, with no headers (so not encrypted), no CR, and its public half is derived from that one block.
 # The assembly key is recognised by its public half (not by its bytes or file name), derived the same way from the committed files.
 derive_pub() { # <private key file>  -> the public key (PEM) of its single RSA PRIVATE KEY block, or exit 2 with the reason
-  "$PY3" - "$1" <<'PY'
+  "$PY3" -I - "$1" "$OPENSSL" <<'PY'
 import base64, re, subprocess, sys
 path = sys.argv[1]
 def _tlv(b, i, end):
@@ -114,7 +115,7 @@ try:
 except Exception as ex:
     refuse("--key %s: the block is not exactly one PKCS#1 RSA private key (%s); refusing" % (path, ex))
 block = "\n".join(lines[b[0]:e[0] + 1]) + "\n"
-r = subprocess.run(["openssl", "rsa", "-pubout", "-passin", "pass:"], input=block.encode(), capture_output=True)
+r = subprocess.run([sys.argv[2], "rsa", "-pubout", "-passin", "pass:"], input=block.encode(), capture_output=True, env={"LC_ALL": "C"})
 if r.returncode != 0:
     refuse("--key %s is not a readable RSA private key (openssl: %s)" % (path, r.stderr.decode(errors="replace").strip()[:100]))
 sys.stdout.write(r.stdout.decode())
@@ -122,11 +123,11 @@ PY
 }
 keypub=$(derive_pub "$key") || exit 2   # the private copy
 asmpub=$(derive_pub "$keysdir/assembly.rsa") || die "the committed assembly key $keysdir/assembly.rsa cannot be read"
-asmpub2=$(openssl rsa -pubin -in "$keysdir/assembly.rsa.pub" -pubout 2>/dev/null) || die "the committed $keysdir/assembly.rsa.pub cannot be read"
+asmpub2=$("$OPENSSL" rsa -pubin -in "$keysdir/assembly.rsa.pub" -pubout 2>/dev/null) || die "the committed $keysdir/assembly.rsa.pub cannot be read"
 if [ "$keypub" = "$asmpub" ] || [ "$keypub" = "$asmpub2" ]; then die "refusing the assembly key (its public half is build/keys/assembly.rsa.pub): nothing a customer trusts is signed with it (rule 22)"; fi
 [ "$(basename "$keyfile")" = release.rsa ] || die "--key must be a file named release.rsa: melange names the signature after the key file, and the committed public key is build/keys/release.rsa.pub"
 
-relpub=$(openssl rsa -pubin -in "$keysdir/release.rsa.pub" -pubout 2>/dev/null) || die "$keysdir/release.rsa.pub is not a readable public key (the committed placeholder, until a human commits the real public half of the release key); no release can be signed yet"
+relpub=$("$OPENSSL" rsa -pubin -in "$keysdir/release.rsa.pub" -pubout 2>/dev/null) || die "$keysdir/release.rsa.pub is not a readable public key (the committed placeholder, until a human commits the real public half of the release key); no release can be signed yet"
 [ "$keypub" = "$relpub" ] || die "the public half of --key does not match $keysdir/release.rsa.pub: this is not the stored release key"
 
 # fail closed on anything but plain files: a symlink anywhere, an apk that is not a regular file, and an apk only one side has
@@ -149,14 +150,14 @@ while IFS= read -r rel; do
 done < <(cd "$cb" && LC_ALL=C find . -name '*.apk' -type f | sort)
 for rel in "${apks[@]}"; do   # both sides come from the assembly-key build: anything else was signed by somebody else
   for side in "$ca" "$cb"; do
-    sg=$("$PY3" "$here/apk-tool.py" signer "$side/$rel") || die "cannot read the signer of ${rel#./}"
+    sg=$("$PY3" -I -B "$here/apk-tool.py" signer "$side/$rel") || die "cannot read the signer of ${rel#./}"
     [ "$sg" = assembly.rsa.pub ] || die "${rel#./} is signed by '$sg', not assembly.rsa.pub: Build and Rebuild must both carry the assembly key's signature"
-    "$PY3" "$here/apk-tool.py" verify "$side/$rel" "$keysdir/assembly.rsa.pub" >/dev/null || die "the signature of ${rel#./} does not verify against the committed assembly.rsa.pub: a signature name is not a signature"
+    "$PY3" -I -B "$here/apk-tool.py" verify "$side/$rel" "$keysdir/assembly.rsa.pub" >/dev/null || die "the signature of ${rel#./} does not verify against the committed assembly.rsa.pub: a signature name is not a signature"
   done
 done
 bad=0
 for rel in "${apks[@]}"; do
-  "$PY3" "$here/apk-tool.py" same "$ca/$rel" "$cb/$rel" || { echo "release-sign-apks.sh: ${rel#./} differs between Build and Rebuild" >&2; bad=1; }
+  "$PY3" -I -B "$here/apk-tool.py" same "$ca/$rel" "$cb/$rel" || { echo "release-sign-apks.sh: ${rel#./} differs between Build and Rebuild" >&2; bad=1; }
 done
 [ $bad = 0 ] || die "Build and Rebuild disagree; nothing was signed" 1
 melange_bin=$MELANGE; [ -x "$melange_bin" ] || die "melange is not installed at $MELANGE (bin/install-build-tools.sh melange)" 1
@@ -164,9 +165,9 @@ melange_bin=$MELANGE; [ -x "$melange_bin" ] || die "melange is not installed at 
 for rel in "${apks[@]}"; do
   [ ! -e "$orig_a/$rel.new" ] || die "$orig_a/$rel.new already exists (a leftover or a planted file); refusing, nothing in $orig_a was changed"
   "$melange_bin" sign --signing-key "$key" "$ca/$rel" || die "melange sign failed for ${rel#./}; nothing in $orig_a was changed" 1
-  signer=$("$PY3" "$here/apk-tool.py" signer "$ca/$rel") || die "cannot read the signer of the signed ${rel#./}; nothing in $orig_a was changed" 1
+  signer=$("$PY3" -I -B "$here/apk-tool.py" signer "$ca/$rel") || die "cannot read the signer of the signed ${rel#./}; nothing in $orig_a was changed" 1
   [ "$signer" = release.rsa.pub ] || die "${rel#./} is signed by '$signer', not release.rsa.pub; nothing in $orig_a was changed" 1
-  "$PY3" "$here/apk-tool.py" verify "$ca/$rel" "$keysdir/release.rsa.pub" >/dev/null || die "the signature of the signed ${rel#./} does not verify against the committed release.rsa.pub; nothing in $orig_a was changed" 1
+  "$PY3" -I -B "$here/apk-tool.py" verify "$ca/$rel" "$keysdir/release.rsa.pub" >/dev/null || die "the signature of the signed ${rel#./} does not verify against the committed release.rsa.pub; nothing in $orig_a was changed" 1
 done
 # stage every replacement next to its original FIRST (any failure here leaves the originals alone), then rename them all
 for rel in "${apks[@]}"; do
@@ -178,7 +179,7 @@ for rel in "${apks[@]}"; do
 done
 staged=()
 for rel in "${apks[@]}"; do   # the final directory itself is checked
-  [ "$("$PY3" "$here/apk-tool.py" signer "$orig_a/$rel")" = release.rsa.pub ] || die "after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory" 1
-  "$PY3" "$here/apk-tool.py" verify "$orig_a/$rel" "$keysdir/release.rsa.pub" >/dev/null || die "after replacing, the signature of ${rel#./} in $orig_a does not verify against release.rsa.pub; discard the directory" 1
+  [ "$("$PY3" -I -B "$here/apk-tool.py" signer "$orig_a/$rel")" = release.rsa.pub ] || die "after replacing, ${rel#./} in $orig_a is not signed by release.rsa.pub; discard the directory" 1
+  "$PY3" -I -B "$here/apk-tool.py" verify "$orig_a/$rel" "$keysdir/release.rsa.pub" >/dev/null || die "after replacing, the signature of ${rel#./} in $orig_a does not verify against release.rsa.pub; discard the directory" 1
 done
 echo "signed ${#apks[@]} apk(s) with the release key"

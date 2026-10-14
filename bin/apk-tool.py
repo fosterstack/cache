@@ -258,11 +258,20 @@ def cmd_signer(a):
     print(m.group(1))
 
 
+def _openssl():
+    """The OpenSSL this check trusts: a fixed location, never whatever the caller's search path holds (REQ-BUILDAPK-001-AC4)."""
+    import os
+    for p in ("/usr/bin/openssl", "/opt/homebrew/bin/openssl", "/usr/local/bin/openssl"):
+        if os.access(p, os.X_OK):
+            return p
+    refuse("openssl is not installed at a fixed location (/usr/bin/openssl)")
+
+
 def cmd_verify(a):
     """The signer command reads a NAME; this checks the bytes: openssl dgst verifies the member's RSA signature over the control stream exactly as
     stored (REQ-BUILDAPK-001-AC4, AC7). PUBKEY may carry comment lines before its PEM block; the first PUBLIC KEY block is the key."""
     import os, subprocess, tempfile
-    sig, ctrl, _ = sections(a[0])
+    sig, ctrl, data = sections(a[0])
     names = list(members(sig[1])) if sig else []
     if len(names) != 1:
         refuse("%s is %s: nothing to verify" % (a[0], "unsigned" if not names else "signed by %d members" % len(names)), 1)
@@ -270,6 +279,14 @@ def cmd_verify(a):
     if not m:
         refuse("%s: the signature member %s is not .SIGN.RSA.<name> or .SIGN.RSA256.<name>" % (a[0], names[0]), 1)
     alg = {"RSA": "sha1", "RSA256": "sha256"}[m.group(1)]
+    # the signature covers the control stream, whose .PKGINFO names the data stream by its sha256 (datahash): the data is part of what was signed only
+    # through that line, so exactly one datahash must be present and must equal the sha256 of the stream as stored
+    pkginfo = members(ctrl[1]).get(".PKGINFO", b"").decode("utf-8", "replace")
+    dh = re.findall(r"(?m)^datahash\s*=\s*([0-9a-f]{64})\s*$", pkginfo)
+    if len(dh) != 1 or len(re.findall(r"(?m)^datahash\b", pkginfo)) != 1:
+        refuse("%s: the control section has no single datahash line: the data section is not bound to the signature" % a[0], 1)
+    if dh[0] != hashlib.sha256(data[0]).hexdigest():
+        refuse("%s: the data section does not match the datahash the signature covers" % a[0], 1)
     try:
         text = open(a[1]).read()
     except (OSError, UnicodeDecodeError) as e:
@@ -282,8 +299,8 @@ def cmd_verify(a):
             with open(os.path.join(d, n), "wb") as f:
                 f.write(b)
         try:
-            r = subprocess.run(["openssl", "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "sig.bin"),
-                                os.path.join(d, "ctrl.bin")], capture_output=True, text=True, stdin=subprocess.DEVNULL)
+            r = subprocess.run([_openssl(), "dgst", "-" + alg, "-verify", os.path.join(d, "key.pem"), "-signature", os.path.join(d, "sig.bin"),
+                                os.path.join(d, "ctrl.bin")], capture_output=True, text=True, stdin=subprocess.DEVNULL, env={"LC_ALL": "C"})
         except OSError as e:
             refuse("cannot run openssl: %s" % e)
     if r.returncode != 0 or "Verified OK" not in r.stdout:

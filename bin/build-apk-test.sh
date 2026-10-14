@@ -29,9 +29,11 @@ if seen != set(subst):
     sys.exit("substitutions with no TEST-SUBST line: %s" % sorted(set(subst) - seen))
 open(out, "w").write("\n".join(res))
 PY
+printf '#!/bin/sh\nif command -v sha256sum >/dev/null 2>&1; then exec sha256sum "$@"; else exec shasum -a 256 "$@"; fi\n' >"$work/sha256sum"; chmod +x "$work/sha256sum"   # the copy's SHA256SUM (macOS has shasum only)
 python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$work/ba-copy.sh" \
   'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
   'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
+  'GO_TOOL=${TEST_GO:-'"$stubs"'/go}' 'SHA256SUM=${TEST_SHA256SUM:-'"$work"'/sha256sum}' 'ENVBIN='"$(command -v env)" \
   'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' || { echo "FIXTURE SETUP FAILED: build-apk copy"; exit 1; }
 cat >"$work/ba.sh" <<EOF
 #!/bin/bash
@@ -52,7 +54,7 @@ chmod +x "$work/ba.sh"; BA_PROD=$BA; BA="$work/ba.sh"
 export FSCACHE_ROOT="$root"   # lib.mkapk signs a fixture apk with the committed (non-secret) assembly key found here
 mkdir -p "$work/keysfx"
 python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy.sh" \
-  'here='"$root"'/bin' 'root='"$root" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'KEYS_DIR='"$work"'/keysfx' \
+  'here='"$root"'/bin' 'root='"$root" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'KEYS_DIR='"$work"'/keysfx' \
   || { echo "FIXTURE SETUP FAILED: release-sign copy"; exit 1; }
 chmod +x "$work/rs-copy.sh" "$work/ba-copy.sh"
 # ---- begin verbatim sections ----
@@ -487,7 +489,12 @@ mkdir -p "$work/other"; mkrsa "$work/other/release.rsa"
 freshrs
 sr "rule 22" "a valid RSA key named release.rsa whose public half is not build/keys/release.rsa.pub is refused (it is not the stored key)" 'does not match' "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/other/release.rsa"
 run_s "$RS" --build-dir "$work/rsA" --rebuild-dir "$work/rsB" --key "$work/release.rsa"
-t "rule 22" "melange is given a PRIVATE COPY of the key and of the apks (nothing read twice from a path another process could swap)" bash -c "grep '^melange sign' '$CALLS' | grep -q -- '--signing-key ${TMPDIR:-/tmp}' || grep '^melange sign' '$CALLS' | grep -v -- '--signing-key $work/release.rsa ' | grep -q -- '--signing-key /' ; ! grep '^melange sign' '$CALLS' | grep -q '$work/rsA'"
+t "rule 22" "melange is given a PRIVATE COPY of the key and of the apks (nothing read twice from a path another process could swap): a signing call exists, its key is not the original path, it is the copy under a private key/ directory, its apk is not Build's path" bash -c "
+  l=\$(grep '^melange sign' '$CALLS' | head -n 1)
+  [ -n \"\$l\" ] \
+    && ! printf '%s' \"\$l\" | grep -q -- '--signing-key $work/release.rsa ' \
+    && printf '%s' \"\$l\" | grep -Eq -- '--signing-key [^ ]*/key/release.rsa ' \
+    && ! printf '%s' \"\$l\" | grep -q '$work/rsA'"
 mkdir -p "$work/rsR1/x86_64" "$work/rsR2/x86_64"; cp "$pr/b.apk" "$work/rsR1/x86_64/fscache-0.3.0-r0.apk"; cp "$pr/a.apk" "$work/rsR2/x86_64/fscache-0.3.0-r0.apk"
 sr "rule 22" "release signing: a Build apk already signed by anything but assembly.rsa.pub is refused early, naming the signer" 'assembly\.rsa\.pub' "$RS" --build-dir "$work/rsR1" --rebuild-dir "$work/rsR2" --key "$work/release.rsa"
 sr "rule 22" "release signing: a Rebuild apk signed by anything but assembly.rsa.pub is refused early" 'assembly\.rsa\.pub' "$RS" --build-dir "$work/rsR2" --rebuild-dir "$work/rsR1" --key "$work/release.rsa"
@@ -688,6 +695,11 @@ for phrase in "dial tcp: lookup go.dev on 10.0.0.1:53: no such host" "Resolving 
 done
 # residual (Codex round 9 finding 3, accepted by the advisor Oct 10): the classification of an ordinary failure against a network attempt relies on a narrow stderr match;
 # 'Connection refused', 'No route to host' and 'Operation not permitted' are NOT classified as network attempts (the wide pattern over-matched ordinary failures such as bwrap EPERM)
+# the overlap, stated exactly (round 2 of PR 341): a message that ALSO carries 'dial tcp' (Go's dialer) IS probed, whatever follows it: the classifier is
+# the word list in the AC, not the cause of the failure
+for phrase in "dial tcp 192.0.2.1:443: connect: connection refused" "dial tcp 192.0.2.1:443: connect: no route to host"; do
+  se "rule 40" "build-apk.sh: '$phrase' carries the word dial tcp: it is probed (exit 4 when the probe confirms), the overlap of the AC5 word list and a refused/no-route cause" 4 'network attempt' env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_NETATTEMPT=1 STUB_NETTEXT="$phrase" "$BA" "${ba_args[@]}" --out "$(mo)"
+done
 for phrase in "bwrap: Operation not permitted" "connect: Connection refused" "connect: No route to host"; do
   sx "rule 40" "build-apk.sh: '$phrase' is an ordinary failure, not a confirmed network attempt (non-zero, not 4): the documented residual" ne4 env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 STUB_NETATTEMPT=1 STUB_NETTEXT="$phrase" "$BA" "${ba_args[@]}" --out "$(mo)"
 done
@@ -761,7 +773,7 @@ t "chain" "every interpreter call is handed a literal repo-relative listed file 
 import os, re, sys
 t, root = open(sys.argv[1]).read(), sys.argv[2]
 bad, seen = [], []
-for m in re.finditer(r"(?m)^[^#\n]*?(?<![\w./-])(?:python3?|bash|sh|\"\$PY3\")\s+(\S+)", t):
+for m in re.finditer(r"(?m)^[^#\n]*?(?<![\w./-])(?:python3?|bash|sh|\"\$PY3\"(?:\s+-[IB])*)\s+(\S+)", t):
     w = m.group(1)
     seen.append(w)
     if not re.fullmatch(r"bin/[A-Za-z0-9._-]+\.(?:py|sh)", w) or not os.path.isfile(os.path.join(root, w)):
@@ -886,5 +898,45 @@ v = sys.stdin.buffer.read().split(b'\\0')
 assert not any(b'canary' in x or b'TEST_MODE' in x for x in v), v\""
 
 
+
+# ---- round 2 of the review of PR 341: tools by fixed path, isolated interpreters, the data stream bound to the signature ----------------------------------------
+hp="$work/hostile-bin"; mkdir -p "$hp"
+printf '#!/bin/sh\necho "Verified OK"; exit 0\n' >"$hp/openssl"; chmod +x "$hp/openssl"
+t "rule 22" "apk-tool verify: an openssl placed first on the caller's search path that answers 'Verified OK' is never run: a fake signature still does not verify" bash -c "
+  ! env PATH='$hp':\$PATH python3 '$root/bin/apk-tool.py' verify '$work/v/fake.apk' '$APUB' >/dev/null 2>&1"
+t "rule 22" "apk-tool verify: a changed data stream (its sha256 no longer the datahash the signed control section names) does not verify, though the control signature is intact" python3 - "$work" "$root" "$AKEY" "$APUB" <<'P'
+import subprocess, sys, zlib
+w, root, akey, apub = sys.argv[1:5]
+g = open(w + "/v/good.apk", "rb").read()
+d = zlib.decompressobj(31); d.decompress(g); n1 = len(g) - len(d.unused_data)            # end of the signature stream
+d2 = zlib.decompressobj(31); d2.decompress(g[n1:]); n2 = n1 + (len(g) - n1 - len(d2.unused_data))   # end of the control stream
+sys.path.insert(0, w); import lib
+data = lib.gz(lib.tarb([("usr/bin/fscache", b"EVIL")]))
+open(w + "/v/payload.apk", "wb").write(g[:n2] + data)
+r = subprocess.run([sys.executable, root + "/bin/apk-tool.py", "verify", w + "/v/payload.apk", apub], capture_output=True, text=True)
+assert r.returncode == 1 and "datahash" in r.stderr, (r.returncode, r.stderr)
+P
+t "rule 23" "every python3 call of build-apk.sh and release-sign-apks.sh runs isolated (-I): PYTHONPATH, user site and startup files of the caller are never read" python3 - "$BA_PROD" "$RS_REAL" <<'P'
+import re, sys
+bad = []
+for p in sys.argv[1:]:
+    for n, ln in enumerate(open(p).read().split("\n"), 1):
+        if ln.lstrip().startswith("#"): continue
+        for m in re.finditer(r"\"\$PY3\"(.{0,8})", ln):
+            if not re.match(r"\s+-I\b", m.group(1)): bad.append("%s:%d" % (p, n))
+sys.exit("PY3 calls without -I: %r" % bad if bad else 0)
+P
+t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git and python3 by variable, release-sign-apks.sh names openssl and melange by variable" python3 - "$BA_PROD" "$RS_REAL" <<'P'
+import re, sys
+bad = []
+for p, words in ((sys.argv[1], ("sha256sum", "go", "env", "sudo", "unshare", "melange", "git", "python3", "openssl", "shasum")), (sys.argv[2], ("openssl", "melange", "python3"))):
+    for n, ln in enumerate(open(p).read().split("\n"), 1):
+        s = ln.strip()
+        if s.startswith("#") or "TEST-SUBST" in ln: continue
+        code = re.sub(r"\"[^\"]*\"|'[^']*'", '""', s)       # quoted text (messages) is not a command
+        for w in words:
+            if re.search(r"(?:^|[;&|(]\s*|\$\(\s*|\bthen\s+|\bdo\s+)%s\s" % re.escape(w), code): bad.append("%s:%d %s" % (p, n, w))
+sys.exit("bare tool words at a command position: %r" % bad if bad else 0)
+P
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
