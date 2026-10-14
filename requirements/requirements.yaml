@@ -2954,11 +2954,11 @@ requirements:
         verification: { method: unit, release_blocking: false }
         status: approved
       # NEW, PROPOSED (handoff 0431 read-back 2026-10-14-cache-readback-behavioural-path-proof.md): awaiting the owner's ratification.
-      # The read-back called it AC7; AC7 and AC8 are already taken in this requirement, so it is AC9. The status below is "approved" only
+      # The read-back called it AC7 (the python-subprocess residual was closed by the advisor's ruling, same PR); AC7 and AC8 are already taken in this requirement, so it is AC9. The status below is "approved" only
       # because the schema allows one status under an approved baseline; it is not ratified until the owner says so.
       - id: REQ-BUILDAPK-001-AC9
         given: "bin/build-apk.sh and bin/release-sign-apks.sh"
         when: "each runs in the test with a search path that holds only the coreutils it uses and none of the tools it names (melange, go, sudo, unshare, env, openssl, sha256sum, git, python3, apko)"
-        then: "a run with every fixed-path tool in place completes exactly as the run with the ordinary search path does, and a copy that calls any named tool by bare name, however the name is spelled or assembled, fails with that tool 'not found'; STATED RESIDUAL as AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's, and a tool a script hands to a python subprocess is resolved by that interpreter's own default path"
+        then: "a run with every fixed-path tool in place completes exactly as the run with the ordinary search path does, and a copy that calls any named tool by bare name, however the name is spelled or assembled, fails with that tool 'not found'; this holds for the tools the scripts hand to a python subprocess as well (such a subprocess runs with a search path that names no directory); STATED RESIDUAL as AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's"
         verification: { method: unit, release_blocking: false }
         status: approved
