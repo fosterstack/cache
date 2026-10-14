@@ -8,8 +8,8 @@ ship anyway, the reason is a statement in
 ## The rule
 
 No VEX statement, no exception, no push. The release gate blocks on a known CVE at
-**any** severity; a published VEX statement is the only thing that changes that
-outcome.
+**any** severity; a published VEX statement is the only exception, and the gate
+applies it to Grype's results (the OSV-Scanner scans run without VEX input).
 
 A tool-specific ignore — a `.snyk` policy entry, a scanner suppression, anything of
 that shape — **must reference the statement ID that governs it** and may never stand
@@ -19,14 +19,16 @@ from someone quietly turning a scanner down.
 ## How it is consumed
 
 One document, many statements: adding an exception appends to `statements[]` and
-increments the document's `version`. Both scanners read this file in the release
-gate and in the daily rescan, so an exception applies identically at release time and
-for the life of the shipped bytes:
+increments the document's `version`. Grype reads this file in the release gate
+(`--vex` on the `grype` command in `.github/workflows/stage-verify.yml`) and in the
+daily rescan, so the same exception covers Grype's results at release time and for the
+life of the shipped bytes. The OSV-Scanner scans in the release gate run without it: an OSV
+finding blocks a release even when a statement covers it.
 
-| Scanner | How |
+| Scanner in the release gate | How it reads this file |
 |---|---|
-| Trivy | `TRIVY_VEX` environment variable |
-| Grype | `vex:` input to `anchore/scan-action` |
+| Grype | `--vex` on the `grype` command |
+| OSV-Scanner | not at all: no VEX input in the gate |
 
 It ships as a release asset, so anyone auditing an artifact gets our claims alongside
 the SBOM and the provenance rather than having to take the scan result on faith.
@@ -62,8 +64,9 @@ All three files are listed, with their sha256, in the release's `release-manifes
 which the release already signs and attaches to every image. That is how to check a
 downloaded file is ours — no separate signature.
 
-Our own pipeline keeps filtering every scanner's results against
-`fosterstack-cache.openvex.json` itself; the generated forms are for customers' tools.
+Our own pipeline filters Grype's release-gate results against
+`fosterstack-cache.openvex.json` itself, and the daily rescan filters its findings
+against it in `bin/rescan-statement.py`; the generated forms are for customers' tools.
 
 ## Writing a statement
 
