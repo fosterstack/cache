@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18
+# proves: REQ-SUP-001-AC2, REQ-SUP-001-AC3, REQ-SUP-001-AC16, REQ-SUP-001-AC18, REQ-SUP-001-AC19, REQ-SUP-001-AC20
 # The pin age check (owner ratified Oct 5, rule 1; advisor 0172/0175): a pull request that moves an action pin, or the version of a tool, image or
 # package a workflow downloads, fails unless that version has been public 7 days by a SERVER-SIDE time. Proved offline: each case builds a small git
 # repository (a base commit and a head commit that moves one thing) and runs the real check against a fixtures file that stands in for the servers.
@@ -2106,6 +2106,157 @@ CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, t
 check iso "$q" "$q/agent/tests" "$q/root" ibt inventory "$q/root/bin/install-build-tools.sh"
 CASE="REQ-SUP-001-AC18 isolation: under a path with an apostrophe and a space, the variable-version mutant still fails on the REAL diagnostic"
 check iso "$q" "$q/agent/tests" "$q/root" ibt_refused variable 'not a measurable pin.*v[$][{]var[}]'
+
+# --- REQ-SUP-001-AC19: a local reusable-workflow call (advisor, Oct 14; ops/docs/ratify/2026-10-13-advisor-latitude-costs-and-stale-wording.md, question 2) ---
+# The exact form `uses: ./.github/workflows/<name>.yml`, with that file in the tree and read as a workflow, is no item: the called file is inventoried
+# itself. Any other local form stays an item that cannot pass. A `with:` that passes a version-shaped value keeps the call an item (the callee may feed
+# it to an installer, and nothing in the callee's file would move): refused as before.
+cat >"$work/callee.yml" <<EOF
+on: workflow_call
+jobs:
+  k:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@$SHA1 # v4.1.0
+EOF
+# lcall NAME USES [WITH-BLOCK]: a copy of base whose head adds .github/workflows/callee.yml and a job `c` in ci.yml calling USES (the pieces travel in files)
+lcall() {
+  local n=$1 uses=$2 with=${3:-}
+  printf '%s' "$uses" >"$work/lcall.uses"; printf '%s' "$with" >"$work/lcall.with"
+  newcase "$n" "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text())
+c = w / 'ci.yml'
+uses = pathlib.Path(r'$work/lcall.uses').read_text()
+with_ = pathlib.Path(r'$work/lcall.with').read_text()
+c.write_text(c.read_text() + '  c:\n    uses: ' + uses + '\n' + with_)"
+}
+lck() { runck "$1" '{"times": {}}'; }
+lcall l1 './.github/workflows/callee.yml'
+lck l1
+CASE="AC19: a call of ./.github/workflows/<name>.yml whose file is in the tree is no item: exit 0 and nothing moved"
+check test "$rc" -eq 0; check grep -qi 'no pin moved' "$work/l1.out"
+lcall l2 './.github/workflows/callee.yml' $'    with:\n      mode: release\n      digests: ${{ needs.j.outputs.digests }}\n'
+lck l2
+CASE="AC19: a call whose with: holds only plain words and expressions without a version-shaped token is no item either (exit 0)"
+check test "$rc" -eq 0
+lcall l3 './.github/workflows/callee.yml' $'    with:\n      tool-version: 9.9.9\n'
+lck l3
+CASE="AC19: a with: value that is a version (9.9.9) keeps the call an item that cannot pass: exit 1, the local call is named"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/l3.out"
+lcall l4 './.github/workflows/callee.yml' $'    with:\n      tool-version: ${{ inputs.v || \'9.9.9\' }}\n'
+lck l4
+CASE="AC19: an expression that holds a version literal inside it keeps the call an item (exit 1)"
+check test "$rc" -eq 1; check grep -q 'action:local:' "$work/l4.out"
+lcall l5 './.github/workflows/callee.yml' $'    with:\n      pin: v2.17.1\n'
+lck l5
+CASE="AC19: a v-prefixed version value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+lcall l6 './.github/workflows/callee.yml' $'    with:\n      digest: sha256:'"$(printf '7%.0s' $(seq 64))"$'\n'
+lck l6
+CASE="AC19: a digest value keeps the call an item (exit 1)"
+check test "$rc" -eq 1
+i=0
+for form in './other/callee.yml' './.github/workflows/sub/callee.yml' './.github/workflows/../callee.yml' './.github/workflows/callee.yml@main' './.github/workflows/missing.yml' './.github/workflows/callee.txt' './.github/actions/local'; do
+  i=$((i+1)); lcall "lx$i" "$form"; lck "lx$i"
+  CASE="AC19: the form '$form' is not the exact local workflow call: it is not exempted (exit 1)"
+  check test "$rc" -eq 1
+done
+newcase lmoved "
+import pathlib
+w = pathlib.Path('.github/workflows')
+(w / 'callee.yml').write_text(pathlib.Path(r'$work/callee.yml').read_text().replace('$SHA1', '$NEW1'))
+c = w / 'ci.yml'
+c.write_text(c.read_text() + '  c:\n    uses: ./.github/workflows/callee.yml\n')"
+runck lmoved "{\"times\": {\"action:actions/checkout@$NEW1\": {\"time\": \"$YOUNG\", \"source\": \"observer\"}}}"
+CASE="AC19: the called file is inventoried by its own rules: a young action pin inside it still FAILS (exit 1) though the call itself is no item"
+check test "$rc" -eq 1; check grep -q "action:actions/checkout@$NEW1" "$work/lmoved.out"
+
+# --- REQ-SUP-001-AC20: a ruled row for an unpinned package named by a script line (advisor Oct 14: option B; the AC16 mechanism, no parser) ---
+# A script line whose pip install names a package with no version is an item that cannot pass. The base branch's exceptions file may rule that line exactly like
+# AC16's text lines: {file, form "an unpinned package install", key = line = 16-hex hash of the whole flattened line, ruling[, count]}. Only a script (*.sh)
+# outside .github/agent/ can be ruled; the same text in a workflow step, or in a script under .github/agent/, fails as before.
+pk_line="       'run: |\\n          bash bin/witnessed.sh apk bin/build-stage-apk.sh\\n          pip install requests'"
+pyk() { python3 -c 'import sys; print("import pathlib\npathlib.Path(%r).write_text(%r)" % (sys.argv[1], sys.argv[2]))' "$1" "$2"; }
+# pkrows OUT MODE FILE LINE: the exceptions file, hashes computed here, independent of the check
+pkrows() {
+  python3 - "$1" "$2" "$3" "$4" <<'PY'
+import hashlib, json, sys
+out, mode, f, line = sys.argv[1:5]
+H = lambda s: hashlib.sha256(s.encode("utf-8", "replace")).hexdigest()[:16]
+h = H(" ".join(line.split()))
+row = {"file": f, "form": "an unpinned package install", "key": h, "line": h,
+       "ruling": "test fixture: the quoted text is input to a judge test and is never executed; advisor ruling Oct 13"}
+rows = [row]
+if mode == "none": rows = []
+elif mode == "wronghash": row["key"] = row["line"] = ("0" if h[0] != "0" else "1") + h[1:]
+elif mode == "wrongfile": row["file"] = "bin/other-test.sh"
+elif mode == "wrongform": row["form"] = "a download"
+elif mode == "count2": row["count"] = 2
+elif mode == "ok": pass
+else: raise SystemExit("unknown mode " + mode)
+json.dump({"_format": "t", "exceptions": [], "unmeasured_text": rows}, open(out, "w"), indent=2)
+PY
+}
+pkck() { # REPO MODE FILE LINE -> rc, $work/pk.out
+  local repo=$1 mode=$2 f=$3 line=$4; pkrows "$work/pk-$repo-$mode.json" "$mode" "$f" "$line"; rc=0
+  python3 "$chk" --root "$work/$repo" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --json "$work/pk.json" --exceptions "$work/pk-$repo-$mode.json" >"$work/pk.out" 2>&1 || rc=$?
+}
+newcase pk "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$pk_line
+")"
+pkck pk none bin/judge-test.sh "$pk_line"
+CASE="AC20: with no row, the added script line that names an unpinned package fails (exit 1): a pull request that adds one is refused"
+check test "$rc" -eq 1
+pkck pk ok bin/judge-test.sh "$pk_line"
+CASE="AC20: a base-branch row (file, form, key and line hash, ruling) for that exact line passes: exit 0, reported as ruled text with the ruling"
+check test "$rc" -eq 0; check grep -q 'ruled text' "$work/pk.out"; check grep -q 'is never executed' "$work/pk.out"
+pkck pk wronghash bin/judge-test.sh "$pk_line"
+CASE="AC20: a row whose hash is off by one digit does not apply (exit 1)"
+check test "$rc" -eq 1
+pkck pk wrongfile bin/judge-test.sh "$pk_line"
+CASE="AC20: a row for another file does not apply (exit 1)"
+check test "$rc" -eq 1
+pkck pk wrongform bin/judge-test.sh "$pk_line"
+CASE="AC20: a row with another form does not apply (exit 1)"
+check test "$rc" -eq 1
+newcase pkedit "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+${pk_line/requests/requests2}
+")"
+pkrows "$work/pk-orig.json" ok bin/judge-test.sh "$pk_line"
+rc=0; python3 "$chk" --root "$work/pkedit" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" --exceptions "$work/pk-orig.json" >"$work/pk.out" 2>&1 || rc=$?
+CASE="AC20: editing the ruled line voids its row (the whole-line hash changes): exit 1"
+check test "$rc" -eq 1
+newcase pktwo "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$pk_line
+$pk_line
+")"
+pkck pktwo ok bin/judge-test.sh "$pk_line"
+CASE="AC20: two copies of a line ruled with count 1 fail (exit 1): the row names one occurrence"
+check test "$rc" -eq 1
+pkck pktwo count2 bin/judge-test.sh "$pk_line"
+CASE="AC20: the same two copies ruled with count 2 pass (exit 0)"
+check test "$rc" -eq 0
+newcase pkwf "
+import pathlib
+c = pathlib.Path('.github/workflows/ci.yml')
+c.write_text(c.read_text() + '      - run: pip install requests\n')"
+pkck pkwf ok .github/workflows/ci.yml "      - run: pip install requests"
+CASE="AC20: the same package text in a WORKFLOW step cannot be ruled (a row for the workflow file does not apply): exit 1"
+check test "$rc" -eq 1
+newcase pkpinned "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+pip install fixture-pkg==3.1.4 --hash=sha256:aaaa
+")"
+rc=0; python3 "$chk" --root "$work/pkpinned" --base HEAD~1 --head HEAD --fixtures "$work/none.fx.json" --now "$NOW" >"$work/pk.out" 2>&1 || rc=$?
+CASE="AC20: a pinned package line is not an unpinned-package occurrence: no row is asked for (the pin itself is measured as before: exit 1, no fixture age)"
+check test "$rc" -eq 1; check grep -q 'pypi/fixture-pkg@3.1.4' "$work/pk.out"
+newcase pkff "$(pyk bin/judge-test.sh "#!/usr/bin/env bash
+$(printf 'pip install requests\f')
+")"
+pkck pkff ok bin/judge-test.sh "pip install requests"
+CASE="AC20: a line holding whitespace other than space or tab (a form feed) can never be ruled: exit 1"
+check test "$rc" -eq 1
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
