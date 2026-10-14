@@ -328,11 +328,12 @@ def _step(node, out, labels):
         raise RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
     run = node.get("run")
     if isinstance(run, str):
-        ctx = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
-        tag = "step:" + hashlib.sha256(ctx.encode("utf-8", "replace")).hexdigest()
+        ctx = run + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]   # the step's RAW text: whitespace inside an expression literal selects a different asset
+        k = 0
         for it in out[n0:]:
             if (_NONPIN.search(it.version or "") or "${" in (it.path or "")) and not it.step:
-                it.step = tag     # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
+                k += 1
+                it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart     # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
@@ -456,9 +457,16 @@ def inventory(files):
             found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
             found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
-            for ln, lid in zip(re.sub(r"\\\n\s*", " ", text).split("\n"), _line_ids(text)):   # and the rest of the script like any other: an appended download is seen
+            sjoined = re.sub(r"\\\n\s*", " ", text).split("\n")
+            sassigns = {}
+            for ln in sjoined:
+                am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
+                if am:
+                    sassigns[am.group(1)] = am.group(2)
+            for ln, lid in zip(sjoined, _line_ids(text)):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it references
                 before = len(found)
-                _step({"run": ln}, found, {})
+                srefs = {v: sassigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in sassigns}
+                _step({"run": ln, "env": srefs} if srefs else {"run": ln}, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
@@ -508,12 +516,17 @@ def inventory(files):
             except yaml.YAMLError as e:
                 mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
                 raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
-            _walk(doc, found, labels, "")
+            if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
+                _ENV_CTX[0] = "inputs:" + json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
+            try:
+                _walk(doc, found, labels, "")
+            finally:
+                _ENV_CTX[0] = ""
             for it in found:
                 if it.src is None:
                     it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
         for it in found:
-            if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
+            if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "${" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
                 while True:
                     it.step = re.sub(r"~\d+$", "", it.step or "") + f"~{n}"
