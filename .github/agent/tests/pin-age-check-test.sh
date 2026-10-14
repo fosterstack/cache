@@ -2737,6 +2737,13 @@ spec = importlib.util.spec_from_file_location("ac", sys.argv[1]); ac = importlib
 assert ac.unresolved_call_rows(sys.argv[2], "HEAD", sys.argv[3]) == []
 bad = ac.unresolved_call_rows(sys.argv[2], "HEAD", sys.argv[4])
 assert len(bad) == 1, bad
+# a correct key with a wrong line rules nothing, so it is unresolved (the consumer looks up (file, form, h, h))
+import json, copy
+d = json.load(open(sys.argv[3])); r = d["unmeasured_text"][0]; r["line"] = ("0" if r["line"][0] != "0" else "1") * 64
+import tempfile
+with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+    f.write(json.dumps(d)); f.flush()
+    assert len(ac.unresolved_call_rows(sys.argv[2], "HEAD", f.name)) == 1
 PY
 CASE="full sha256: every committed local-call row is a 64-hex key equal to its line, and a ruling that starts with the call phrase"
 check python3 - "$root/.github/supply-chain-exceptions.json" <<'PY'

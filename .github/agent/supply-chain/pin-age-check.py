@@ -558,13 +558,15 @@ def _item_hash(item):
 
 
 def unresolved_call_rows(root, rev, exceptions_path):
-    """The local-call rows of the exceptions file that name no item of the tree at rev (a row that rules nothing): [] when every one resolves to exactly one item."""
-    rows = [(k, v) for k, v in load_ruled_text(exceptions_path, required=True).items() if k[1] == LOCAL_CALL_FORM]
+    """The local-call rows of the exceptions file that would rule NO item of the tree at rev, judged by the very tuple split_ruled_local_calls() looks up
+    ((file, form, h, h) for an eligible item: kind action, version (local), with an origin file): [] when every row resolves to exactly one item."""
+    rows = [k for k in load_ruled_text(exceptions_path, required=True) if k[1] == LOCAL_CALL_FORM]
     have = {}
-    for key, it in inv.load_at(root, rev).items():
-        if it.version == "(local)" and it.src:
-            have.setdefault((it.src[0], hashlib.sha256(key.encode("utf-8", "replace")).hexdigest()), []).append(key)
-    return [k for k, _ in rows if len(have.get((k[0], k[2]), [])) != 1]
+    for it in inv.load_at(root, rev).values():
+        if it.kind == "action" and it.version == "(local)" and it.src:
+            h = _item_hash(it)
+            have.setdefault((it.src[0], LOCAL_CALL_FORM, h, h), []).append(it.key)
+    return [k for k in rows if len(have.get(k, [])) != 1]
 
 
 def split_ruled_local_calls(moved, rulings):
