@@ -111,7 +111,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 138, 6
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 139, 6   # 139: + ^bin/scan-no-workflow-call-test\.sh$ (REQ-SCAN-015)
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -158,7 +158,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "b2a1b9b91549087974ec187ba8dc6c767d9885f75179c4e7bca0a65d560c6841"
+PINNED_SHA256 = "a74f941fd3e06ec657440de548ee69930ea6e67877034278747a30f4e122b861"   # + the REQ-SCAN-015 scanner guard pattern
 if rstart and rend:
     import hashlib
     _b = _rawlines
