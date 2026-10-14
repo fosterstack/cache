@@ -5,6 +5,9 @@
 #   run [--count-only] FLOORS SUITE PATH   runs `bash PATH` with stdin closed, requires a case count at or above the floor of SUITE, and (unless
 #                                          --count-only, for a suite with known reds) a zero exit; prints `suite-guard: SUITE: count N (floor F) rc=R`
 #   all [--count-only] FLOORS [ROOT]       runs every suite the floors file names (key = file name, found once under ROOT) through `run`; any failure fails
+# What this runs: only files named by key in the committed floors file, each found exactly once as a regular file (never a symlink) under ROOT; the pin
+# checker reads this file's one literal command line in ci.yml, not the suites it dispatches (the documented other-language boundary: the suites are
+# the repository's committed tests, each held by the suite guard's floors and by their own review).
 import json
 import os
 import subprocess
@@ -68,7 +71,8 @@ def cmd_all(floors, root, count_only):
         found = []
         for dp, dn, fn in os.walk(root):
             dn[:] = [d for d in dn if d != ".git"]
-            if s in fn and os.path.isfile(os.path.join(dp, s)):
+            q = os.path.join(dp, s)
+            if s in fn and os.path.isfile(q) and not os.path.islink(q):   # a regular file, as `find -type f` selected: a symlink named for a suite is no suite
                 found.append(os.path.join(dp, s))
         if len(found) != 1:
             print("suite-guard: the floors file names %s, which is %d files under %s (it must be exactly one)" % (s, len(found), root), file=sys.stderr)

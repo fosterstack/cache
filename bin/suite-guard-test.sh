@@ -86,6 +86,9 @@ expect 1 "all: a known-red suite fails the run unless --count-only" "exited" -- 
 expect 0 "all --count-only: every suite runs, prints its count and passes its floor" "a-test.sh: count 60" -- all --count-only "$work/all/floors.json" "$work/all"
 printf '{"a-test.sh": 50, "gone-test.sh": 5}\n' > "$work/all/floors2.json"
 expect 1 "all: a suite named in the floors file that is not there fails" "gone-test.sh" -- all --count-only "$work/all/floors2.json" "$work/all"
+# a symlink named for a suite is not a suite (the old shell runner selected regular files only): the only match is a link -> zero files -> fails
+mkdir -p "$work/lnk/bin"; ln -s "$work/s/good.sh" "$work/lnk/bin/a-test.sh"; printf '{"a-test.sh": 50}\n' > "$work/lnk/floors.json"
+expect 1 "all: a symlink named for a suite is not found as a suite" "0 files" -- all --count-only "$work/lnk/floors.json" "$work/lnk"
 
 # round 1 F7 (Codex B4): `all` runs each suite in an `||` context, where `set -e` is off; a suite below its floor must still fail the run
 printf '{"a-test.sh": 70}\n' > "$work/all/floors3.json"
@@ -123,9 +126,9 @@ expect 1 "all: a floors file with no suite in it fails" "floors" -- all --count-
 expect 1 "all: a floors file that is a list, not an object, fails" "floors" -- all --count-only "$work/list-floors.json" "$work"
 expect 1 "all: a floors file whose floor is not an integer fails" "floors" -- all --count-only "$work/str-floors.json" "$work"
 # round 1 F7: CI runs the suites against their floors at real counts (bin/suite-guard-run.py all), not only the floors file against the base
-if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.sh all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
+if grep -Eq 'run: python3 -I bin/suite-guard-run\.py all( --count-only)? test-evidence/suite-floors\.json' "$root/.github/workflows/ci.yml"; then ok "ci.yml: a step runs bin/suite-guard-run.py all against test-evidence/suite-floors.json (real counts)"; else bad "ci.yml has no step running bin/suite-guard-run.sh all against the floors file"; fi
 
-EXPECT=53
+EXPECT=54
 echo "suite-guard: $pass passed, $failn failed"
 if [ $((pass + failn)) != "$EXPECT" ]; then echo "FAIL case count $((pass + failn)) != expected $EXPECT"; exit 1; fi
 [ "$failn" = 0 ]
