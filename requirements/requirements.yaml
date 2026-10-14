@@ -3036,7 +3036,7 @@ requirements:
       - id: REQ-REFRESH-001-AC13
         given: "the refresh changed something and downloaded the live package index for each architecture"
         when: "bin/refresh-inputs.sh refresh stores it"
-        then: "each index must verify against the archived Wolfi key and list every locked package (name, version and checksum), otherwise the run fails closed naming the index and changes nothing; it is stored byte for byte as index/APKINDEX-<sha256>.tar.gz, and an existing file under that name must hash to that name or the run fails closed; APKINDEX.tar.gz becomes a relative symlink to the newest, the previous index stays in the archive, and build/locks/archive-index.sha256 records one sha256 line per architecture (rules 31, 32, 47)"
+        then: "each index must verify against the archived Wolfi key and list every locked package (name, version and checksum), otherwise the run fails closed naming the index and changes nothing; it is stored byte for byte as index/APKINDEX-<sha256>.tar.gz, and an existing file under that name must hash to that name or the run fails closed; APKINDEX.tar.gz becomes a regular-file copy of the newest (the same sha256 as that index/APKINDEX-<sha256>.tar.gz, written atomically; never a symlink, and a symlink found there is refused), the previous index stays in the archive, and build/locks/archive-index.sha256 records one sha256 line per architecture (rules 31, 32, 47)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-REFRESH-001-AC14
