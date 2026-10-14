@@ -945,13 +945,18 @@ def words(s):
             else: cur += c
         elif m == "dq":
             if s.startswith("$(", i): flush(); st.append("sub"); depth.append(0); i += 1
-            elif c == "`": flush(); st.append("bt")
+            elif s.startswith("${", i): flush(); st.append("pe"); depth.append(0); i += 1
+            elif c == "`": out.append("<unresolved>")
             elif c == "\\" and i + 1 < len(s): cur += s[i + 1]; i += 1
             elif c == '"': st.pop()
             else: cur += c
         else:                                        # code, sub, bt: all are code
-            if c == "'": st.append("sq")
+            if s.startswith("$'", i) or s.startswith('$"', i) or c == "`": out.append("<unresolved>")   # ANSI-C or locale quoting and backticks decode text into words: refused, never parsed
+            elif c == "'": st.append("sq")
             elif c == '"': st.append("dq")
+            elif s.startswith("${", i): flush(); st.append("pe"); depth.append(0); i += 1
+            elif m == "pe" and c == "}": flush(); st.pop(); depth.pop()
+            elif m == "pe" and c in ":-=+?#%/^,!@[]": flush()          # inside ${...} an operator ends a word: the default word of ${X:-melange} is a word
             elif s.startswith("$(", i): flush(); st.append("sub"); depth.append(0); i += 1
             elif c == "`":
                 flush()
@@ -971,9 +976,12 @@ def words(s):
     if st != ["code"]: out.append("<unresolved>")     # a quote or substitution still open at the end of the line: fail closed
     return out
 bad = []
-for n, ln in enumerate(open(sys.argv[1]).read().split("\n"), 1):
+REFUSE = {"eval", "source", "alias", "builtin", "command"}     # constructs that build a command from text: never in the build scripts
+text = open(sys.argv[1]).read().replace("\\\n", "")        # backslash-newline is removed by the shell before it splits words: join the lines the same way
+for n, ln in enumerate(text.split("\n"), 1):
     if "TEST-SUBST" in ln: continue
     ws = words(ln.strip())
+    if any(w in REFUSE for w in ws): ws.append("<unresolved>")
     bad += ["%s:%d %s" % (sys.argv[1], n, w) for w in sys.argv[2:] + ["<unresolved>"] if w in ws]
 sys.exit("bare tool words: %r" % bad if bad else 0)
 PY
@@ -993,9 +1001,14 @@ open(sys.argv[2] + "/mut-nestq.sh", "w").write(src.replace('"$UNSHARE" -n "$mela
 open(sys.argv[2] + "/mut-subshell.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$( (true); melange --version)"'))
 open(sys.argv[2] + "/mut-arith.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$( (( 1 )); melange --version )"'))
 open(sys.argv[2] + "/mut-case.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "$( case x in x) melange ;; esac )"'))
+open(sys.argv[2] + "/mut-cont.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n mela\\\nnge'))
+open(sys.argv[2] + "/mut-btick.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "`printf %s \\`melange --version\\``"'))
+open(sys.argv[2] + "/mut-ansic.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', "\"$UNSHARE\" -n $'m\\x65lange'"))
+open(sys.argv[2] + "/mut-default.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', '"$UNSHARE" -n "${NOPE:-melange}"'))
+open(sys.argv[2] + "/mut-eval.sh", "w").write(src.replace('"$UNSHARE" -n "$melange_bin"', 'eval "$UNSHARE" -n "$melange_bin"'))
 open(sys.argv[2] + "/mut-chain.sh", "w").write(src.replace('"$SUDO" "$ENVBIN" -i', '"$SUDO" nice -n 5 "$ENVBIN" -u X env -i'))
 PY
-for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-chain; do
+for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-nestq mut-subshell mut-arith mut-case mut-cont mut-btick mut-ansic mut-default mut-eval mut-chain; do
   t "rule 23" "the mutant $m differs from the production script" bash -c "! cmp -s '$BA_PROD' '$work/$m.sh'"
   t "rule 23" "the tool-path assertion bites: the mutant $m (a bare tool where the fixed one is) is refused" bash -c "! python3 '$work/toolscan.py' '$work/$m.sh' sha256sum go env sudo unshare melange git python3 openssl shasum >/dev/null 2>&1"
 done
