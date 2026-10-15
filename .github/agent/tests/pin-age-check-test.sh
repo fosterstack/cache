@@ -2973,7 +2973,7 @@ assert "${" in it.path and "printf %s" in it.path, it.path
 assert not age.judge_item(it, [("2026-09-01T00:00:00Z", "pr-clock")], dt.datetime(2026, 10, 14, tzinfo=dt.timezone.utc))[0]
 comp = {".github/actions/x/action.yml": "name: x\nruns:\n  using: composite\n  steps:\n    - shell: bash\n      run: pip install black\n"}
 assert set(inv.inventory(comp)) == {"package:pypi/black@(unpinned)#step:c38ddd42b810871e60f5080663fe9d5d899dd5a38d61c1563b41a1b78a56eed5"}
-assert set(inv.inventory(wf("x.tgz?download=${A}"))) == {"tool:o/r/x.tgz@v1.2.3"}
+assert all(it.step for it in inv.inventory(wf("x.tgz?download=${A}")).values())   # a quoted string holding a variable is unresolved (whole-file identity): fail-closed, advisor 0442
 PY
 
 CASE="release downloads behind variables, round 3 (seat B): reordered assignments, the spacing of a continued value inside the download line itself, and the literals of an expression in a latest/download URL are each part of the identity (REQ-SUP-001-AC2)"
@@ -3153,7 +3153,7 @@ for run in ("eval 'curl \"''" + url + "tool;${VAR}.tgz''\"'",
     it = next(iter(b.values()))
     assert not age.judge_item(it, [("2026-09-01T00:00:00Z", "github-release")], dt.datetime(2026, 10, 14, tzinfo=dt.timezone.utc))[0], run
 ok = tree("A", 'curl "' + url + 'x.tgz?download=${A}"')
-assert set(inv.inventory(ok)) == {"tool:o/r/x.tgz@v1.2.3"}, sorted(inv.inventory(ok))
+assert all(it.step for it in inv.inventory(ok).values()), sorted(inv.inventory(ok))   # fail-closed: no refinement for a quoted word that is the URL (advisor 0442)
 PY
 
 echo "pin-age-check: $pass passed, $failn failed"
