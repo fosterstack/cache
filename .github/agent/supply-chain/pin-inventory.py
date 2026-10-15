@@ -860,6 +860,13 @@ def _key_fetch_ok(files, path, before, flat, after):
     by sha256sum, shasum -a 256 or openssl dgst -sha256, so nothing uses the file before it is compared."""
     if not path.endswith(".sh") or _KEY_FP not in files:
         return False
+    fp_lines = files[_KEY_FP].split("\n")
+    if fp_lines and fp_lines[-1] == "":
+        fp_lines = fp_lines[:-1]
+    if not fp_lines or not all(re.fullmatch(r"[0-9a-f]{64}", x) for x in fp_lines):
+        return False                                   # a blank or partial pattern line would make a substring match succeed for everything
+    if sum(ln.count("(") + ln.count("{") - ln.count(")") - ln.count("}") for ln in before) != 0:
+        return False                                   # the fetch sits inside a subshell or a block whose failure may be swallowed
     m = _KEY_LINE.fullmatch(flat.strip())
     if not m:
         return False
@@ -888,10 +895,15 @@ def _key_fetch_ok(files, path, before, flat, after):
             return False
     nxt = " ".join(next((ln for ln in after if ln.strip() and not ln.lstrip().startswith("#")), "").split())
     out = re.escape(m.group("out"))
-    fail = r"(?:die\b[^;&|]*|exit [1-9][0-9]*)"
-    shape_a = r'sha256sum "' + out + r'" \| cut -d" " -f1 \| grep -qx?Ff build/locks/archive-keys\.sha256 \|\| ' + fail
+    fail = r'(?:die(?: "[^"$`\\]*")?(?: [0-9]+)?|exit [1-9][0-9]*)'
+    shape_a = r'sha256sum "' + out + r'" \| cut -d" " -f1 \| grep -qxFf build/locks/archive-keys\.sha256 \|\| ' + fail
     shape_b = r'grep -qxF "\$\(sha256sum "' + out + r'" \| cut -d" " -f1\)" build/locks/archive-keys\.sha256 \|\| ' + fail
-    return re.fullmatch(shape_a, nxt) is not None or re.fullmatch(shape_b, nxt) is not None
+    if re.fullmatch(shape_a, nxt) is None and re.fullmatch(shape_b, nxt) is None:
+        return False
+    if re.search(r"\|\| die\b", nxt):
+        body = [ln for ln in before if re.search(r"^\s*die\(\)\s*\{", ln)]
+        return len(body) == 1 and bool(re.search(r"\bexit\b", body[0]))   # die is defined once, on one line, and exits
+    return True
 
 
 # Owner rule 48 (Oct 9: "New Wolfi packages get no 7-day wait; signature checks and archiving still apply"), advisor message Oct 15 (handoff 0452 addition):
@@ -903,7 +915,7 @@ _PY_LIT_URL = re.compile(r"https://packages\.wolfi\.dev/os/[A-Za-z0-9_./+~-]*(?:
 
 
 def _py_heredocs(text):
-    """[(first_line_number_of_the_body, body_text)] for every quoted here-document of a shell script (<<'TAG' ... TAG)."""
+    """[(header_line, body_text)] for every quoted here-document of a shell script (<<'TAG' ... TAG), with the command line that opens it."""
     out, lines, i = [], text.split("\n"), 0
     while i < len(lines):
         m = re.search(r"<<-?\s*'([A-Za-z_][A-Za-z0-9_]*)'", lines[i])
@@ -911,24 +923,80 @@ def _py_heredocs(text):
             tag, j = m.group(1), i + 1
             while j < len(lines) and lines[j].strip() != tag:
                 j += 1
-            out.append((i + 2, "\n".join(lines[i + 1:j])))
+            out.append((lines[i], "\n".join(lines[i + 1:j])))
             i = j
         i += 1
     return out
 
 
-def _py_name_uses(node, var):
-    return any(isinstance(n, ast.Name) and n.id == var for n in ast.walk(node))
+_PY_INTERPRETER = re.compile(r"(?:^|[\s;&|(])(?:/usr/bin/python3|python3)\s+(?:-[IB]\s+)*-(?:\s|<<)")
 
 
-def _py_fetch_ok(stmt, body, idx):
-    """stmt is body[idx]. Accept `r = subprocess.run(["/usr/bin/curl", <known flags>, "-o", VAR, URL], stdout=.., stderr=..)` where URL is a literal
-    on https://packages.wolfi.dev/os/ (one optional `% NAME`) or `e["url"]` preceded in the same block by an executed `if not e["url"].startswith(
-    "https://packages.wolfi.dev/os/"): <fail>`; and, within the next three statements of the SAME block, a call of verify or verify_index on VAR with
-    no use or reassignment of VAR in between."""
+def _py_bound_names(tree):
+    """{name: [kind, ...]} of every way a name is bound anywhere in the module; kinds: 'def', 'import', 'store', 'other'."""
+    b = {}
+
+    def add(n, k):
+        b.setdefault(n, []).append(k)
+    for n in ast.walk(tree):
+        if isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            add(n.id, "store")
+        elif isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            add(n.name, "def")
+            for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs + ([n.args.vararg] if n.args.vararg else []) + ([n.args.kwarg] if n.args.kwarg else []):
+                add(a.arg, "other")
+        elif isinstance(n, ast.ClassDef):
+            add(n.name, "other")
+        elif isinstance(n, ast.Lambda):
+            for a in n.args.args + n.args.kwonlyargs + n.args.posonlyargs:
+                add(a.arg, "other")
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            for al in n.names:
+                add((al.asname or al.name).split(".")[0], "import")
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            add(n.name, "other")
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
+            for nm in n.names:
+                add(nm, "other")
+    return b
+
+
+def _py_terminates(fn):
+    last = fn.body[-1] if fn.body else None
+    if isinstance(last, ast.Raise):
+        return True
+    return bool(isinstance(last, ast.Expr) and isinstance(last.value, ast.Call) and isinstance(last.value.func, ast.Attribute)
+                and last.value.func.attr == "exit" and isinstance(last.value.func.value, ast.Name) and last.value.func.value.id == "sys")
+
+
+def _py_trusted(tree, used):
+    """subprocess and sys are only imported (once each, `import X`), fail and every verifier in `used` are each defined exactly once at module level and never
+    rebound, and fail ends in sys.exit or raise."""
+    b = _py_bound_names(tree)
+    top = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
+    for mod in ("subprocess", "sys"):
+        if b.get(mod) != ["import"] or not any(isinstance(n, ast.Import) and any(a.name == mod and not a.asname for a in n.names) for n in tree.body):
+            return False
+    for fn in {"fail"} | set(used):
+        if b.get(fn) != ["def"] or fn not in top:
+            return False
+    return _py_terminates(top["fail"])
+
+
+def _py_is_fail_call(st):
+    return isinstance(st, ast.Expr) and isinstance(st.value, ast.Call) and isinstance(st.value.func, ast.Name) and st.value.func.id == "fail"
+
+
+def _py_fetch_ok(stmts, idx):
+    """stmts[idx] is `r = subprocess.run(["/usr/bin/curl", <known flags>, "-o", VAR, URL], stdout=sys.std*)` followed IMMEDIATELY by
+    `if r.returncode != 0: fail(...)` and then `verify(VAR, ...)` or `verify_index(VAR, ...)` with only plain arguments. URL is a literal on
+    https://packages.wolfi.dev/os/ (one optional `% NAME`) or e["url"], then the statement just before the fetch (only Name assignments to names other than e,
+    and os.makedirs calls, may sit between) is the executed guard `if not e["url"].startswith("https://packages.wolfi.dev/os/"): fail(...)`.
+    Returns the verifier name used, or None."""
+    stmt = stmts[idx]
     if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)):
         return None
-    call = stmt.value
+    rname, call = stmt.targets[0].id, stmt.value
     if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "run"
             and isinstance(call.func.value, ast.Name) and call.func.value.id == "subprocess" and len(call.args) == 1 and isinstance(call.args[0], ast.List)):
         return None
@@ -948,63 +1016,79 @@ def _py_fetch_ok(stmt, body, idx):
     vals = [f.value for f in flags]
     if "--proto" not in vals or vals[vals.index("--proto") + 1:vals.index("--proto") + 2] != ["=https"]:
         return None
+    literal = False
     if isinstance(url, ast.BinOp) and isinstance(url.op, ast.Mod) and isinstance(url.left, ast.Constant) and isinstance(url.left.value, str) \
             and _PY_LIT_URL.fullmatch(url.left.value) and url.left.value.count("%s") == 1 and isinstance(url.right, ast.Name):
-        pass
+        literal = True
     elif isinstance(url, ast.Constant) and isinstance(url.value, str) and _PY_LIT_URL.fullmatch(url.value) and "%" not in url.value:
-        pass
-    elif isinstance(url, ast.Subscript) and isinstance(url.value, ast.Name) and url.value.id == "e" and isinstance(url.slice, ast.Constant) \
-            and url.slice.value == "url":
-        def guard(s):
-            t = s.test if isinstance(s, ast.If) else None
-            if not (isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not) and isinstance(t.operand, ast.Call)
-                    and isinstance(t.operand.func, ast.Attribute) and t.operand.func.attr == "startswith"
-                    and isinstance(t.operand.func.value, ast.Subscript) and isinstance(t.operand.func.value.value, ast.Name)
-                    and t.operand.func.value.value.id == "e" and isinstance(t.operand.func.value.slice, ast.Constant)
-                    and t.operand.func.value.slice.value == "url" and len(t.operand.args) == 1 and isinstance(t.operand.args[0], ast.Constant)
-                    and t.operand.args[0].value == "https://packages.wolfi.dev/os/"):
-                return False
-            return bool(s.body) and all(isinstance(x, (ast.Raise, ast.Expr)) for x in s.body) and not s.orelse and any(
-                isinstance(x, ast.Raise) or (isinstance(x, ast.Expr) and isinstance(x.value, ast.Call)
-                                             and isinstance(x.value.func, (ast.Name, ast.Attribute))) for x in s.body)
-        if not any(guard(x) for x in body[:idx]):
-            return None
-    else:
+        literal = True
+    elif not (isinstance(url, ast.Subscript) and isinstance(url.value, ast.Name) and url.value.id == "e" and isinstance(url.slice, ast.Constant)
+              and url.slice.value == "url"):
         return None
-    for nxt in body[idx + 1:idx + 4]:
-        if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Call) and isinstance(nxt.value.func, ast.Name) \
-                and nxt.value.func.id in _PY_VERIFIERS and nxt.value.args and isinstance(nxt.value.args[0], ast.Name) and nxt.value.args[0].id == var:
-            return stmt
-        if _py_name_uses(nxt, var):
-            return None                                # a use or reassignment of the file before the verify call
-    return None
+    if not literal:
+        j = idx - 1
+        while j >= 0 and ((isinstance(stmts[j], ast.Assign) and len(stmts[j].targets) == 1 and isinstance(stmts[j].targets[0], ast.Name)
+                           and stmts[j].targets[0].id not in ("e", "subprocess", "sys", "fail", "verify", "verify_index"))
+                          or (isinstance(stmts[j], ast.Expr) and isinstance(stmts[j].value, ast.Call) and isinstance(stmts[j].value.func, ast.Attribute)
+                              and stmts[j].value.func.attr == "makedirs")):
+            j -= 1
+        g = stmts[j] if j >= 0 else None
+        t = g.test if isinstance(g, ast.If) else None
+        if not (t is not None and isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not) and isinstance(t.operand, ast.Call)
+                and isinstance(t.operand.func, ast.Attribute) and t.operand.func.attr == "startswith"
+                and isinstance(t.operand.func.value, ast.Subscript) and isinstance(t.operand.func.value.value, ast.Name)
+                and t.operand.func.value.value.id == "e" and isinstance(t.operand.func.value.slice, ast.Constant)
+                and t.operand.func.value.slice.value == "url" and len(t.operand.args) == 1 and isinstance(t.operand.args[0], ast.Constant)
+                and t.operand.args[0].value == "https://packages.wolfi.dev/os/" and len(g.body) == 1 and _py_is_fail_call(g.body[0]) and not g.orelse):
+            return None
+    if idx + 2 >= len(stmts):
+        return None
+    chk, ver = stmts[idx + 1], stmts[idx + 2]
+    if not (isinstance(chk, ast.If) and isinstance(chk.test, ast.Compare) and isinstance(chk.test.left, ast.Attribute) and chk.test.left.attr == "returncode"
+            and isinstance(chk.test.left.value, ast.Name) and chk.test.left.value.id == rname and len(chk.test.ops) == 1 and isinstance(chk.test.ops[0], ast.NotEq)
+            and len(chk.test.comparators) == 1 and isinstance(chk.test.comparators[0], ast.Constant) and chk.test.comparators[0].value == 0
+            and len(chk.body) == 1 and _py_is_fail_call(chk.body[0]) and not chk.orelse):
+        return None
+    if not (isinstance(ver, ast.Expr) and isinstance(ver.value, ast.Call) and isinstance(ver.value.func, ast.Name) and ver.value.func.id in _PY_VERIFIERS
+            and ver.value.args and isinstance(ver.value.args[0], ast.Name) and ver.value.args[0].id == var and not ver.value.keywords
+            and all(isinstance(a, (ast.Name, ast.Constant)) or (isinstance(a, ast.Subscript) and isinstance(a.value, ast.Name)) for a in ver.value.args)):
+        return None
+    return ver.value.func.id
 
 
 def _py_wolfi_download_lines(path, text):
     """The set of whitespace-normalised source lines of accepted download statements, each only when EVERY occurrence of that exact line in the file is accepted
-    and the line holds that one statement alone."""
+    and the statement sits alone on its line."""
     if not path.endswith(".sh"):
         return set()
     accepted, total = {}, {}
-    for first, body in _py_heredocs(text):
+    for header, body in _py_heredocs(text):
+        if not _PY_INTERPRETER.search(header) or header.count("<<") != 1:
+            continue
         try:
             tree = ast.parse(body)
         except SyntaxError:
             continue
         src = body.split("\n")
-        def walk(stmts):
+        found = []
+
+        def walk(stmts, in_try):
             for i, st in enumerate(stmts):
-                ok = _py_fetch_ok(st, stmts, i)
-                if ok is not None and st.lineno == st.end_lineno:
-                    same = [x for x in stmts if x is not st and getattr(x, "lineno", None) == st.lineno]
-                    if not same:
-                        key = " ".join(src[st.lineno - 1].split())
-                        accepted[key] = accepted.get(key, 0) + 1
-                for fld in ("body", "orelse", "finalbody"):
+                v = None if in_try else _py_fetch_ok(stmts, i)
+                if v is not None and st.lineno == st.end_lineno and not [x for x in stmts if x is not st and getattr(x, "lineno", None) == st.lineno]:
+                    found.append((" ".join(src[st.lineno - 1].split()), v))
+                for fld in ("body", "orelse", "finalbody", "handlers"):
                     sub = getattr(st, fld, None)
-                    if isinstance(sub, list) and sub and isinstance(sub[0], ast.stmt):
-                        walk(sub)
-        walk(tree.body)
+                    if isinstance(sub, list) and sub:
+                        if fld == "handlers":
+                            for h in sub:
+                                walk(h.body, True)
+                        elif isinstance(sub[0], ast.stmt):
+                            walk(sub, in_try or isinstance(st, (ast.Try, ast.With)))
+        walk(tree.body, False)
+        if found and _py_trusted(tree, {v for _, v in found}):
+            for key, _v in found:
+                accepted[key] = accepted.get(key, 0) + 1
     for ln in text.split("\n"):
         key = " ".join(ln.split())
         if key in accepted:
@@ -1034,7 +1118,7 @@ def unmeasured_occurrences(files):
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
                 if re.search(r"\b(?:curl|wget)\b", seg) and not plain and not _key_fetch_ok(files, path, [" ".join(x.split()) for x in _lines[:_li]], flat,
-                                              [" ".join(x.split()) for x in _lines[_li + 1:_li + 12]]) \
+                                              [" ".join(x.split()) for x in _lines[_li + 1:]]) \
                         and not (flat.strip() in _py_ok):
                     yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":" + _hide(seg)[:100]), flat, bashlike
             if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line

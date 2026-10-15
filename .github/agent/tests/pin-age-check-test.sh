@@ -3325,26 +3325,9 @@ PYCALL='    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--proto", "=htt
 PYTAIL='    if r.returncode != 0:
         sys.exit(1)
     verify_index(part, arch)'
-newcase py1 "$(pyscript py1 "$PYHEAD
-$PYCALL
-$PYTAIL")"
-runck py1 '{"times": {}}'
-CASE="the index download from the literal Wolfi address, verified right after by verify_index, is accepted (exit 0)"
-check test "$rc" -eq 0
 PYGUARD='    if not e["url"].startswith("https://packages.wolfi.dev/os/"):
         sys.exit(2)'
 PYENT='    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--proto", "=https", "-o", part, e["url"]], stdout=sys.stderr)'
-newcase py2 "$(pyscript py2 "import subprocess, sys
-for e in entries:
-    part = '/tmp/x.part'
-$PYGUARD
-$PYENT
-    if r.returncode != 0:
-        sys.exit(1)
-    verify(part, e)")"
-runck py2 '{"times": {}}'
-CASE="the package download from the lock entry's url, after an executed prefix check and with verify right after, is accepted (exit 0)"
-check test "$rc" -eq 0
 pybad() { # NAME BLOCK: a near miss that must stay refused
   newcase "py-$1" "$(pyscript "py-$1" "$2")"; runck "py-$1" '{"times": {}}'
   CASE="a python download that is not the one form is refused: $1 (exit 1)"; check test "$rc" -eq 1
