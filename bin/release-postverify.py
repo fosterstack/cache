@@ -29,8 +29,9 @@ def refuse(msg):
     sys.exit(1)
 
 
-def form_error(c):
-    """None when the command is a pipe of verify forms and jq with at least one verify form, else why not."""
+def form_error(c, jq_only=False):
+    """None when the command is a pipe of verify forms and jq with at least one verify form, else why not. With jq_only the command is a pure jq
+    pipe (judged by jq_files after this): only the character-level refusals apply, because jq opens no network and no repository."""
     if "`" in c:
         return "a backquote"
     quote, i = None, 0
@@ -69,7 +70,7 @@ def form_error(c):
             return "shell syntax other than a pipe: %s" % w
         else:
             segs[-1].append(w)
-    for w in toks:
+    for w in ([] if jq_only else toks):
         w = w[len("oci://"):] if w.startswith("oci://") else w
         if "://" not in w and (re.match(r"^[A-Za-z0-9.-]+\.[A-Za-z]+(:[0-9]+)?/", w) or "@sha256:" in w):
             return "it names a repository literally (%s); only the two constant repositories, through <IMAGE_REF> and <IMAGE_REF_FIPS>" % w
@@ -82,12 +83,13 @@ def form_error(c):
             verify = True
         else:
             return "`%s` is not a verify form or jq" % " ".join(s[:3])
-    return None if verify else "no verify form in it"
+    return None if (verify or jq_only) else "no verify form in it"
 
 # ---- jq-only commands (REQ-CHAIN-007-AC20): a CLOSED grammar, fail closed -----------------------------------------------------------
 # A jq-only command is accepted only when it is spelled in this small grammar and every file it reads is a plain file name that an EARLIER
 # verify form of the list named as a file operand (and, at run time, only after that verify exited 0). Whatever the grammar does not name is
 # refused, so no option, module, program file, glob or combined flag can make jq read what nothing verified.
+PHM = lambda m: "\u2039" + m.group(1) + "\u203a"   # a placeholder is a marker no plain file name can equal (never PH_X, which a file could be called)
 JQ_FLAGS = ("-e", "-r", "-c", "-S", "--exit-status", "--raw-output", "--compact-output", "--sort-keys")   # each a separate word: no -er, no -L., no -f
 JQ_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 JQ_FILE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")   # a plain name in release-published/: no slash, glob, brace, tilde, $, space or placeholder
@@ -158,27 +160,46 @@ def jq_filter_why(f, names):
     return None
 
 
+def all_jq(c):
+    """True when every pipe segment of the command is a jq call and nothing else (no ; < > & ( ))."""
+    try:
+        lx = shlex.shlex(PH.sub(PHM, c), posix=True, punctuation_chars=True)
+        lx.whitespace_split = True
+        toks = list(lx)
+    except ValueError:
+        return False
+    segs, ok = [[]], True
+    for w in toks:
+        if w == "|":
+            segs.append([])
+        elif w and all(ch in "();<>|&" for ch in w):
+            return False
+        else:
+            segs[-1].append(w)
+    return bool(toks) and all(sg and sg[0] == "jq" for sg in segs)
+
+
 def jq_files(c):
-    """The files a command made ONLY of jq reads, or (None, why). Grammar: jq [flags from JQ_FLAGS | --arg NAME VALUE]... 'filter' FILE...
+    """The files a command made ONLY of jq reads, or (None, why, None). Returns (files, None, argv segments). Grammar: jq [flags from JQ_FLAGS | --arg NAME VALUE]... 'filter' FILE...
     for the first segment; each later segment of a pipe is jq [flags] 'filter' with no file."""
     try:
-        lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
+        lx = shlex.shlex(PH.sub(PHM, c), posix=True, punctuation_chars=True)
         lx.whitespace_split = True
         toks = list(lx)
     except ValueError as e:
-        return None, "unparseable: %s" % e
+        return None, "unparseable: %s" % e, None
     segs = [[]]
     for w in toks:
         if w == "|":
             segs.append([])
         elif all(ch in "();<>|&" for ch in w):
-            return None, "shell syntax other than a pipe: %s" % w
+            return None, "shell syntax other than a pipe: %s" % w, None
         else:
             segs[-1].append(w)
     files = []
     for n, seg in enumerate(segs):
         if not seg or seg[0] != "jq":
-            return None, "not a jq-only command"
+            return None, "not a jq-only command", None
         words, i, names, filt = seg[1:], 0, set(), None
         while i < len(words):
             w = words[i]
@@ -187,29 +208,29 @@ def jq_files(c):
                     i += 1
                 elif w == "--arg":
                     if i + 2 >= len(words) or not JQ_NAME.match(words[i + 1]):
-                        return None, "--arg needs a plain name and a value"
+                        return None, "--arg needs a plain name and a value", None
                     names.add(words[i + 1])
                     i += 3
                 elif w.startswith("-"):
-                    return None, "the jq option %s is not in the closed set" % w
+                    return None, "the jq option %s is not in the closed set" % w, None
                 else:
                     why = jq_filter_why(w, names)
                     if why:
-                        return None, "the jq filter uses %s, which is not in the closed grammar" % why
+                        return None, "the jq filter uses %s, which is not in the closed grammar" % why, None
                     filt = w
                     i += 1
             else:
                 if n != 0:
-                    return None, "a later jq of a pipe names a file (%s)" % w
+                    return None, "a later jq of a pipe names a file (%s)" % w, None
                 if not JQ_FILE.match(w):
-                    return None, "the file operand %r is not a plain file name of release-published/" % w
+                    return None, "the file operand %r is not a plain file name of release-published/" % w, None
                 files.append(w)
                 i += 1
         if filt is None:
-            return None, "a jq with no filter"
+            return None, "a jq with no filter", None
     if not files:
-        return None, "it reads no file (stdin is not a verified input)"
-    return files, None
+        return None, "it reads no file (stdin is not a verified input)", None
+    return files, None, segs
 
 
 def verify_files(c):
@@ -218,7 +239,7 @@ def verify_files(c):
     as its value (so it never licenses a file)."""
     out = set()
     try:
-        lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
+        lx = shlex.shlex(PH.sub(PHM, c), posix=True, punctuation_chars=True)
         lx.whitespace_split = True
         toks = list(lx)
     except ValueError:
@@ -248,6 +269,25 @@ def verify_files(c):
                     i += 1
         seg = []
     return out
+
+
+def run_jq(run):
+    """Runs a judged jq-only command WITHOUT a shell: the validated words are the argv, so no expansion (brace, glob, tilde, variable) can add an
+    option or a file after the check. Every jq of a pipe must exit 0 (pipefail)."""
+    files, why, segs = jq_files(run)
+    if files is None:
+        print("release-postverify: %s" % why, file=sys.stderr)
+        return 1
+    procs, prev = [], subprocess.DEVNULL
+    for n, argv in enumerate(segs):
+        last = n == len(segs) - 1
+        p = subprocess.Popen(argv, stdin=prev, stdout=None if last else subprocess.PIPE, cwd=ASSETS)
+        if prev is not subprocess.DEVNULL:
+            prev.close()
+        prev = p.stdout
+        procs.append(p)
+    rcs = [p.wait() for p in procs]
+    return 0 if all(r == 0 for r in rcs) else next(r for r in rcs if r != 0)
 
 
 def main():
@@ -287,20 +327,22 @@ def main():
         values = dict(base, IMAGE_REF="%s@%s" % (reg, digests["image-production"]), IMAGE_REF_FIPS="%s@%s" % (reg, digests["image-fips"]))
         verified = []   # (index, words) of the verify forms before the current command
         for ci, c in enumerate(cmds):
-            why = form_error(c)
             jq_need = None
-            if why == "no verify form in it":
-                files, jwhy = jq_files(c)
+            if all_jq(c):
+                why = form_error(c, jq_only=True)
+                if why:
+                    refuse("`%s` is not an allowed verify form (%s)" % (c, why))
+                files, jwhy, _ = jq_files(c)
                 if files is None:
-                    refuse("`%s` is not an allowed verify form (%s; a jq-only command needs an earlier verify of its file: %s)" % (c, why, jwhy))
+                    refuse("`%s` is not an allowed verify form (a jq-only command needs an earlier verify of its file: %s)" % (c, jwhy))
                 for f in files:
                     if not any(f in names for _, names in verified):
-                        refuse("`%s` is not an allowed verify form (%s): no earlier command of the list is a verify form that names %s" % (c, why, f))
+                        refuse("`%s` is not an allowed verify form (no verify form in it): no earlier command of the list is a verify form that names %s" % (c, f))
                 jq_need = files
-                why = None
-            if why:
-                refuse("`%s` is not an allowed verify form (%s)" % (c, why))
-            if jq_need is None:
+            else:
+                why = form_error(c)
+                if why:
+                    refuse("`%s` is not an allowed verify form (%s)" % (c, why))
                 verified.append((ci, verify_files(c)))
             used = set(PH.findall(c))
             if reg != REPOSITORIES[0] and not used & {"IMAGE_REF", "IMAGE_REF_FIPS"}:
@@ -323,7 +365,10 @@ def main():
             print("::error::post-publish verification failed against %s: `%s` was not run: the earlier verify of %s did not pass" % (reg, c, ", ".join(jq_need)), file=sys.stderr, flush=True)
             continue
         print("release-postverify: [%s] $ %s" % (reg, run), flush=True)
-        rc = subprocess.run(["bash", "-o", "pipefail", "-c", run], stdin=subprocess.DEVNULL, cwd=ASSETS).returncode
+        if jq_need is not None:
+            rc = run_jq(run)
+        else:
+            rc = subprocess.run(["bash", "-o", "pipefail", "-c", run], stdin=subprocess.DEVNULL, cwd=ASSETS).returncode
         if rc != 0:
             failed.append((reg, c, rc))
             print("::error::post-publish verification failed against %s: `%s` exited %d" % (reg, c, rc), file=sys.stderr, flush=True)
