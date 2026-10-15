@@ -471,6 +471,11 @@ jobs:
       - name: install the pinned kind binary
         run: ./bin/install-scanner.sh kind
 
+      - name: pin pip (hash-checked)
+        run: |
+          python3 -m pip install --quiet --require-hashes --only-binary=:all: --break-system-packages -r .github/agent/pip-requirements.txt
+          python3 -m pip --version
+
       - name: install the provider SDK (hash-pinned)
         run: |
           python3 -m pip install --quiet --break-system-packages --require-hashes --only-binary=:all: -r bin/persona-uat-requirements.txt
