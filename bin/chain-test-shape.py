@@ -240,7 +240,13 @@ INSTALL_GO = "bash bin/install-scanner.sh go"
 # destination /usr/local/bin), one step, right after the Witness (and Go) install and so before admission; no secret, the same way as Witness and Go
 INSTALL_MELANGE = "bash bin/install-build-tools.sh melange"
 INSTALL_APKO = "bash bin/install-build-tools.sh apko"
-PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO)
+# REQ-CHAIN-004-AC16 (advisor ACs 10-13, Oct 15; owner rules 3 and 9): every job builds from archive/, so each installs the checksum-pinned crane (fixed
+# destination /usr/local/bin, where bin/archive-pull.sh names it) and pulls the archive by the digest committed in build/archive.json, into archive/, as two
+# steps of their own after the build tools and before the downloads and the Witness step; a failed pull fails the job (no if, no continue-on-error, no env)
+INSTALL_CRANE = "bash bin/install-scanner.sh crane"
+ARCHIVE_PULL = "bash bin/archive-pull.sh --pointer build/archive.json --out archive"
+ARCHIVE_SCRIPTS = ("bin/archive-pull.sh", "bin/archive-verify.py")      # the files the pull step runs: rows of chain-scripts.json with their sha256
+PRE_INSTALLS = ("bash bin/install-scanner.sh witness", INSTALL_GO, INSTALL_MELANGE, INSTALL_APKO, INSTALL_CRANE, ARCHIVE_PULL)
 # The guard step has NO `if` and runs a listed script that judges the raw mode string, case-sensitively: GitHub's `==` and `!=` in an expression compare
 # case-insensitively ('Release' == 'release' is true), so an `if` could not tell a mixed-case mode from the exact one (Codex A r1 F6). The mode reaches the
 # script as a whole "$MODE" argument of a step env (MODE is in env_names of chain-scripts.json).
@@ -375,6 +381,11 @@ def job(j, family, name, allowed):
         s = steps[i] if i < len(steps) else {}; i += 1
         if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
             bad.append("step %d must be exactly: run %s (the checksum-pinned build tool this job uses and no other, right after the Witness and Go installs, before admission; no env, no secret)" % (i, cmd))
+    for cmd in (INSTALL_CRANE, ARCHIVE_PULL):       # REQ-CHAIN-004-AC16: the pinned crane, then the archive pull, each a step of a name and a run and nothing else
+        s = steps[i] if i < len(steps) else {}; i += 1
+        if set(s) - {"run", "name"} or str(s.get("run") or "").strip() != cmd:
+            bad.append("step %d must be exactly: run %s (REQ-CHAIN-004-AC16: the archive is pulled by its committed digest right after the build tools of "
+                       "bin/install-build-tools.sh and before the downloads; no env, no if, no continue-on-error, no other argument, no other install)" % (i, cmd))
     for nm, path_ in spec["down"]:
         s = steps[i] if i < len(steps) else {}; i += 1
         if (set(s) - {"uses", "with", "name"} or not pinned(s.get("uses"), "actions/download-artifact", allowed)
@@ -509,6 +520,24 @@ def lockflow(files):
                 j["steps"] = [s for s in j["steps"] if not (isinstance(s, dict) and set(s) <= {"name", "run"} and str(s.get("run") or "").strip() == INSTALL_APKO)]
         if re.search(r"\bapko\b", json.dumps(d)):
             bad.append("%s: names apko (only bin/assemble-image.sh may run it, always with the lock)" % f)
+    return bad
+
+
+def archive_listed(path, root):
+    """REQ-CHAIN-004-AC16: the files the stage's pull step runs are rows of chain-scripts.json with the committed file's sha256."""
+    bad = []
+    try:
+        rows = {r.get("path"): r for r in json.load(open(path)).get("scripts", [])}
+    except (OSError, ValueError):
+        return ["%s is unreadable" % path]
+    for p in ARCHIVE_SCRIPTS:
+        r = rows.get(p)
+        if r is None: bad.append("%s is not a row of chain-scripts.json" % p); continue
+        try:
+            h = hashlib.sha256(open(root + "/" + p, "rb").read()).hexdigest()
+        except OSError:
+            bad.append("%s is listed but missing" % p); continue
+        if r.get("sha256") != h: bad.append("%s: the listed sha256 is not the committed file's" % p)
     return bad
 
 
@@ -766,7 +795,7 @@ if __name__ == "__main__":
         print("missing file: %s" % sys.argv[2]); sys.exit(1)
     bad = {"stage": lambda: stage(sys.argv[2], sys.argv[3], sys.argv[4] if len(sys.argv) > 4 else None), "script": lambda: script(sys.argv[2], sys.argv[3]),
            "lockflow": lambda: lockflow(sys.argv[2:]), "graph": lambda: graph(sys.argv[2]), "recordenv": lambda: recordenv(sys.argv[2]),
-           "listed": lambda: listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
+           "listed": lambda: listed(sys.argv[2], sys.argv[3]), "archive-listed": lambda: archive_listed(sys.argv[2], sys.argv[3]), "helper": lambda: helper(sys.argv[2]), "workflows": lambda: workflows(sys.argv[2]),
             "callers": lambda: callers(sys.argv[2]),
             "directwitness": lambda: directwitness(sys.argv[2:])}[cmd]()
     if bad and os.environ.get("CHAIN_FINDINGS") == "1":      # output only: the structured ids the known-red judge compares (bin/chain-known-red.py)
