@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-IMAGE-001-AC1, REQ-IMAGE-001-AC2, REQ-IMAGE-001-AC3, REQ-IMAGE-001-AC4, REQ-IMAGE-001-AC5, REQ-IMAGE-001-AC6, REQ-IMAGE-001-AC7, REQ-IMAGE-001-AC8, REQ-IMAGE-001-AC9, REQ-IMAGE-001-AC10, REQ-IMAGE-001-AC11, REQ-BUILDTOOLS-002-AC1, REQ-BUILDTOOLS-002-AC2, REQ-BUILDTOOLS-002-AC3
+# proves: REQ-IMAGE-001-AC1, REQ-IMAGE-001-AC2, REQ-IMAGE-001-AC3, REQ-IMAGE-001-AC4, REQ-IMAGE-001-AC5, REQ-IMAGE-001-AC6, REQ-IMAGE-001-AC7, REQ-IMAGE-001-AC8, REQ-IMAGE-001-AC9, REQ-IMAGE-001-AC10, REQ-IMAGE-001-AC11, REQ-IMAGE-001-AC12, REQ-BUILDTOOLS-002-AC1, REQ-BUILDTOOLS-002-AC2, REQ-BUILDTOOLS-002-AC3
 # Tests of the PR: apko configs, image assembly, lock and sealed-build proofs, OCI index digest.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -1073,6 +1073,34 @@ PY
     mkdir "$CHAIN_BINDER_KEEP" && cp -R "$bo" "$CHAIN_BINDER_KEEP/std" && cp -R "$bo2" "$CHAIN_BINDER_KEEP/apko" && cp "$work/binder-digests.json" "$CHAIN_BINDER_KEEP/std.digests.json" && cp "$work/binder-digests2.json" "$CHAIN_BINDER_KEEP/apko.digests.json"
   fi
 fi
+# ===== REQ-IMAGE-001-AC12 and AC10 (owner-ratified build-script rules 1 and 2, Oct 14 2026): tests first, RED until the scripts are converted ======
+# The production files carry no test hook and bin/assemble-image.sh has none of the five test-only options. Run-time proof for the options: the real
+# script runs from the repository root with a search path of coreutils and a uname that says Linux, so a refused option is refused before any tool.
+imgs_scripts="bin/assemble-image.sh bin/lock-proof.sh bin/sealed-proof.sh bin/apko-lock.sh"
+# ---- AC12: no test hook in any of the four scripts -------------------------------------------------------------------------------
+for s in $imgs_scripts; do
+  if [ ! -f "$root/$s" ]; then bad AC12 "$s exists"; continue; fi
+  if grep -Eq 'FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR|TEST-SUBST|TEST_MODE|test mode' "$root/$s"; then
+    bad AC12 "$s mentions a test hook or test mode ($(grep -Eo 'FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR|TEST-SUBST|TEST_MODE|test mode' "$root/$s" | sort -u | tr '\n' ' '))"
+  else ok; fi
+done
+
+# ---- AC10: the five options do not exist, in any mode ----------------------------------------------------------------------------
+imgs_rp="$work/imgs_rp"; mkdir -p "$imgs_rp"
+for c in awk basename cat cp cut dirname find grep head mkdir mktemp mv rm sed sort tail tr pwd; do
+  p=$(command -v "$c") && [ -x "$p" ] && ln -s "$p" "$imgs_rp/$c"
+done
+printf '#!/bin/sh\necho Linux\n' >"$imgs_rp/uname"; chmod +x "$imgs_rp/uname"
+bash_bin=$(command -v bash)
+for opt in --apko-config --base-lock --render-dir --index-record --key-record; do
+  for mode in "" 1; do
+    log="$work/opt.log"
+    ( cd "$root" && env -i PATH="$imgs_rp" ${mode:+FSCACHE_TEST_MODE=$mode} SOURCE_DATE_EPOCH=1700000000 \
+        "$bash_bin" bin/assemble-image.sh --variant production --version 0.3.0 "$opt" /nonexistent >"$log" 2>&1 </dev/null ); rc=$?
+    if [ "$rc" = 2 ] && grep -Eqi "unknown (argument|option)" "$log"; then ok
+    else bad AC10 "assemble-image.sh $opt${mode:+ (test mode set)} is not refused as an unknown option (exit $rc: $(tail -1 "$log" | cut -c1-160))"; fi
+  done
+done
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

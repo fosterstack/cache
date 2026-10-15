@@ -1023,6 +1023,10 @@ mappings:
   - ac: REQ-IMAGE-001-AC10
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
   - ac: REQ-IMAGE-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC12
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
