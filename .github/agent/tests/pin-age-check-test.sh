@@ -3181,5 +3181,56 @@ runck vnd4 '{"times": {}}'
 CASE="the same script under Vendor/ (another case) is still refused (exit 1)"
 check test "$rc" -eq 1
 
+# --- handoff 0452, exception 2 (owner ratified Oct 15): the signing-key fetch is accepted only as a fixed https URL on packages.wolfi.dev (path /os/wolfi-signing.rsa.pub),
+#     written to a named file, in a script that compares that file with the committed build/locks/archive-keys.sha256 before any use; any other fetch stays refused
+keyscript() { # NAME FETCHLINE [AFTERLINE] [HEADER]: a python snippet that writes bin/fetch-key.sh and the committed fingerprint file
+  python3 - "$1" "$2" "${3-}" "${4-}" <<'PY'
+import json, sys
+name, fetch, after, header = sys.argv[1:5]
+body = "#!/usr/bin/env bash\nset -euo pipefail\n" + (header + "\n" if header else "") + 't=$(mktemp -d)\n' + fetch + "\n" + (after if after else 'sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qxFf build/locks/archive-keys.sha256\n')
+print("import pathlib\nroot = pathlib.Path('.')\n(root / 'bin').mkdir(exist_ok=True)\n(root / 'build/locks').mkdir(parents=True, exist_ok=True)\n"
+      "(root / 'bin/fetch-key.sh').write_text(" + json.dumps(body) + ")\n"
+      "(root / 'build/locks/archive-keys.sha256').write_text('" + "a" * 64 + "\\n')")
+PY
+}
+KURL='https://packages.wolfi.dev/os/wolfi-signing.rsa.pub'
+newcase key1 "$(keyscript key1 "curl -fsSL --proto =https --tlsv1.2 -o \"\$t/k.pub\" $KURL")"
+runck key1 '{"times": {}}'
+CASE="the Wolfi signing-key fetch (fixed URL, named output, compared with the committed fingerprint) is accepted (exit 0)"
+check test "$rc" -eq 0
+newcase key2 "$(keyscript key2 'WOLFI=https://packages.wolfi.dev/os
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
+runck key2 '{"times": {}}'
+CASE="the same fetch through one literal assignment of the base URL is accepted (exit 0)"
+check test "$rc" -eq 0
+for v in "other-host:curl -fsSL -o \"\$t/k.pub\" https://packages.example.com/os/wolfi-signing.rsa.pub" \
+         "other-path:curl -fsSL -o \"\$t/k.pub\" https://packages.wolfi.dev/os/other.rsa.pub" \
+         "http:curl -fsSL -o \"\$t/k.pub\" http://packages.wolfi.dev/os/wolfi-signing.rsa.pub" \
+         "piped:curl -fsSL https://packages.wolfi.dev/os/wolfi-signing.rsa.pub | sh" \
+         "no-output-file:curl -fsSL https://packages.wolfi.dev/os/wolfi-signing.rsa.pub" \
+         "second-url:curl -fsSL -o \"\$t/k.pub\" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub https://evil.example/x" \
+         "resolve-option:curl -fsSL --resolve packages.wolfi.dev:443:10.0.0.1 -o \"\$t/k.pub\" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub" \
+         "env-url:curl -fsSL -o \"\$t/k.pub\" \"\$WOLFI/wolfi-signing.rsa.pub\""; do
+  nm=${v%%:*}; fl=${v#*:}
+  newcase "key-$nm" "$(keyscript "key-$nm" "$fl")"
+  runck "key-$nm" '{"times": {}}'
+  CASE="a key fetch that is not the one form is refused: $nm (exit 1)"
+  check test "$rc" -eq 1
+done
+newcase key-nofp "$(keyscript key-nofp "curl -fsSL -o \"\$t/k.pub\" $KURL" 'cp "$t/k.pub" /tmp/used.pub')"
+runck key-nofp '{"times": {}}'
+CASE="a fetch whose script never compares the file with build/locks/archive-keys.sha256 is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-twice "$(keyscript key-twice 'WOLFI=https://packages.wolfi.dev/os
+WOLFI=https://evil.example/os
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
+runck key-twice '{"times": {}}'
+CASE="the base URL variable assigned twice is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-wget "$(keyscript key-wget "wget -q -O \"\$t/k.pub\" $KURL")"
+runck key-wget '{"times": {}}'
+CASE="wget of the same fixed URL to a named file is accepted (exit 0)"
+check test "$rc" -eq 0
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
