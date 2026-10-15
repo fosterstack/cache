@@ -863,6 +863,12 @@ PY
 
 fips-module)
   [ -n "$goroot" ] || die "--go-root is required"
+  # The refresh and this check edit the same recipe files in one working tree and their pull requests are opened only after the archive is stored: a
+  # second plan would be built on the first one's uncommitted edits. With a plan already staged this check stages nothing and runs again tomorrow.
+  if [ -n "$plan_dir" ] && [ -d "$plan_dir" ] && ! dir_empty "$plan_dir"; then
+    echo "fips-module: a pull request is already staged in $plan_dir; the certified-module check stages nothing now and runs again tomorrow (each pull request is built from the committed files alone)"
+    exit 0
+  fi
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"

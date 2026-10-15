@@ -1272,6 +1272,17 @@ mkrepo; rm -rf "$work/ar-boot"; printf 'wolfi-signing.rsa.pub sha256:%s\nwolfi-s
 run_s2 env "${rfe[@]:1}" "$RF" bootstrap --repo-dir "$work/rp" --archive "$work/ar-boot"
 t "AC30" "bootstrap: a repeated or malformed key line is exit 3 and writes nothing" bash -c "test \"\$(cat '$work/rc')\" = 3 && ! test -e '$work/ar-boot'"
 
+# round 1 of the second review (R1): the refresh and the certified-module check edit the same recipe files in one working tree, and their pull requests are opened
+# only after the archive is stored; a second staged plan would be built on the first one's uncommitted edits. So a certified-module check that finds a refresh
+# plan already staged stages nothing (it runs again tomorrow): each pull request is built from the committed files alone.
+echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
+fr; rm -rf "$work/plan-x"; mkdir -p "$work/plan-x/1-refresh"; printf 'refresh/00000001\n' >"$work/plan-x/1-refresh/branch"
+h_before=$(shasum -a 256 "$work/rp3/build/melange-fips.yaml" | cut -d' ' -f1)
+run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
+t "AC29" "fips-module --plan-dir with a refresh plan already staged: exit 0 saying so, no second plan, the recipe not edited" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'already staged' '$work/log' && test \"\$(ls '$work/plan-x' | wc -l)\" -eq 1 && test \"\$(shasum -a 256 '$work/rp3/build/melange-fips.yaml' | cut -d' ' -f1)\" = '$h_before'"
+fr; rm -rf "$work/plan-f"
+run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-f"
+t "AC29" "fips-module --plan-dir into an empty plan directory still stages its pull request (exit 0, one plan)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(ls '$work/plan-f' | wc -l)\" -eq 1"
 # key-check (the first step of the daily job, before any tool is installed, any registry is touched or any token is minted): the live key must be the pinned one
 mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp"
