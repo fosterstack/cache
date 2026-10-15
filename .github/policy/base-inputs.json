@@ -1,0 +1,14 @@
+{
+  "comment": [
+    "The base inputs of the image (rules 61 and 62; advisor Oct 12): there is no base image and no image recipe file; apko assembles the image from committed locks.",
+    "A change in a file listed here since the latest release is the \"base input changed\" signal: bin/patch-decide.py classifies a commit that changes only these",
+    "(and neutral files) as a fix, and the decide job of release.yml prints them (patch-decide.py base-moved). The names are cache-ce's: the apko base lock of each",
+    "variant, the melange lock, the Wolfi archive key and index records, and the fips module record. The recipes (build/apko*.yaml, build/melange*.yaml) declare the",
+    "build and are build inputs, not base signals. A path listed here that is not on main yet is the cache lane's to land (known-red entry KR-BASE-LOCKS)."
+  ],
+  "base_inputs": [
+    "build/locks/melange.lock",
+    "build/locks/archive-keys.sha256",
+    "build/locks/fips-module.txt"
+  ]
+}

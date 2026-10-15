@@ -187,12 +187,19 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
 
-  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ is admitted by the PR that adds it.
+  # The vendored dependency tree (REQ-VEND-001): names only. Every directory component starts with a letter, digit, _, +, ~ or @ (no dot
+  # directory, no .github, no .git); only the FINAL component may start with one dot (a dot file go mod vendor itself produces, such as
+  # .gitignore). A name is judged here and the CONTENT is judged by bin/vendor-check.sh, which the required `vendor` job in ci.yml runs
+  # on every pull request: this pattern never lands without that check.
+  '^vendor/([A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*/)*\.?[A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*$'
+
+  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ has its own subtree pattern above (REQ-VEND-001).
   # Vendoring: the dependency record (root), the regenerate-and-compare script, the provenance tool, their test.
   '^dependency-provenance\.json$'
   '^bin/vendor-check\.sh$'
   '^bin/vendor-provenance\.py$'
   '^bin/vendoring-test\.sh$'
+  '^bin/vendor-provenance-test\.sh$'
   # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
   # (build/apko.yaml, build/apko-fips.yaml).
   '^build/melange(-fips)?\.yaml$'
