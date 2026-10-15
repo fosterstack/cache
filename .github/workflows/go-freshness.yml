@@ -196,6 +196,11 @@ jobs:
         with:
           persist-credentials: false   # the App token, via gh, is the only push credential
 
+      # Rule 6: the very first thing is the key. Before any tool is installed, any registry is touched, any archive is pulled or any token is minted,
+      # the live Wolfi signing key must be the one pinned in build/locks/archive-keys.sha256 (a difference, a missing or repeated line: exit 3, a human looks).
+      - name: check the live Wolfi key against the pinned one
+        run: ./bin/refresh-inputs.sh key-check --repo-dir "$GITHUB_WORKSPACE"
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.27'

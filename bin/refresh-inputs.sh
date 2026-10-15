@@ -80,6 +80,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$repo" ] && [ -d "$repo" ] || die "--repo-dir must be an existing directory"
+case $cmd in key-check) [ -z "$archive$goroot$pr_author$plan_dir$archive_digest" ] || die "key-check takes only --repo-dir";; esac
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
 tmp=$(/usr/bin/mktemp -d)
@@ -87,6 +88,28 @@ cleanup() { local rc=$?; set +e; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $r
 trap cleanup EXIT
 
 case $cmd in
+key-check)
+  # The first step of the daily job, before any tool is installed, any registry is touched or any token is minted: the live Wolfi signing key must be
+  # the key pinned in build/locks/archive-keys.sha256. A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
+  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
+import hashlib, re, sys
+repo, live = sys.argv[1:3]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+print("key-check: the live Wolfi signing key is the pinned one")
+PY
+  ;;
+
 bootstrap)
   # The archive does not exist yet (build/archive.json is absent on main). The one trust anchor is the key line committed in
   # build/locks/archive-keys.sha256: the live Wolfi key is fetched, its sha256 must be that line, and only then is it the new archive's
@@ -124,7 +147,7 @@ open-pr)
   [ -n "$plan_dir" ] && [ -d "$plan_dir" ] || die "--plan-dir must be an existing directory"
   if [ -n "$archive_digest" ]; then
     case $archive_digest in sha256:????????????????????????????????????????????????????????????????) ;; *) die "--archive-digest must be sha256:<64 hex>";; esac
-    [ -z "$(printf '%s' "${archive_digest#sha256:}" | tr -d '0-9a-f')" ] || die "--archive-digest must be sha256:<64 lower-case hex>"
+    case ${archive_digest#sha256:} in *[!0-9a-f]*) die "--archive-digest must be sha256:<64 lower-case hex>";; esac
     [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
   fi
   /usr/bin/python3 -I -B - "$repo" "$plan_dir" "$archive" "$archive_digest" "$(cd "$HERE" && pwd)" "$tmp" <<'PY' || exit $?
