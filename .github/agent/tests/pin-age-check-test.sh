@@ -3426,5 +3426,136 @@ $PYTAIL"
 pybad comment-shaped-after-real-download "import subprocess
 subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"https://example.org/x\"])  # r = subprocess.run([\"/usr/bin/curl\", \"-o\", part, \"https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz\" % arch]); verify_index(part, arch)"
 
+# --- review round 3 of PR 358 (both seats): the python form is a template, with trusted bindings; the key form scans the whole script and compares exactly
+PYB='import subprocess, sys
+def fail(m):
+    print(m)
+    sys.exit(1)
+def verify(path, e):
+    pass
+def verify_index(path, arch):
+    pass'
+PYLOOP='for e in entries:
+    part = "/tmp/" + e["name"]'
+PYGD='    if not e["url"].startswith("https://packages.wolfi.dev/os/"):
+        fail("host")'
+PYRUN='    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--proto", "=https", "-o", part, e["url"]], stdout=sys.stderr)
+    if r.returncode != 0:
+        fail("download")
+    verify(part, e)'
+newcase py3 "$(pyscript py3 "$PYB
+$PYLOOP
+$PYGD
+$PYRUN")"
+runck py3 '{"times": {}}'
+CASE="the full template (trusted bindings, guard, fetch, return-code check, verify) is accepted (exit 0)"
+check test "$rc" -eq 0
+pybad guard-prints-only "$PYB
+$PYLOOP
+    if not e[\"url\"].startswith(\"https://packages.wolfi.dev/os/\"):
+        print('bad host')
+$PYRUN"
+pybad url-replaced-after-guard "$PYB
+$PYLOOP
+$PYGD
+    e = {'url': 'https://example.invalid/x'}
+$PYRUN"
+pybad url-mutated-after-guard "$PYB
+$PYLOOP
+$PYGD
+    e['url'] = 'https://example.invalid/x'
+$PYRUN"
+pybad conditional-continue-before-verify "$PYB
+$PYLOOP
+$PYGD
+    r = subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"--proto\", \"=https\", \"-o\", part, e[\"url\"]], stdout=sys.stderr)
+    if skip:
+        continue
+    verify(part, e)"
+pybad try-swallows-verify "$PYB
+$PYLOOP
+$PYGD
+    try:
+        r = subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"--proto\", \"=https\", \"-o\", part, e[\"url\"]], stdout=sys.stderr)
+        verify(part, e)
+    except Exception:
+        pass"
+pybad verify-is-lambda "import subprocess, sys
+verify = lambda *a: None
+def fail(m):
+    sys.exit(1)
+$PYLOOP
+$PYGD
+$PYRUN"
+pybad verify-rebound "$PYB
+verify = print
+$PYLOOP
+$PYGD
+$PYRUN"
+pybad subprocess-rebound "$PYB
+subprocess = other
+$PYLOOP
+$PYGD
+$PYRUN"
+pybad verify-argument-consumes "$PYB
+$PYLOOP
+$PYGD
+    r = subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"--proto\", \"=https\", \"-o\", part, e[\"url\"]], stdout=sys.stderr)
+    verify(part, consume(part))"
+pybad fail-does-not-exit "import subprocess, sys
+def fail(m):
+    print(m)
+def verify(path, e):
+    pass
+$PYLOOP
+$PYGD
+$PYRUN"
+newcase py-c-interpreter "$(python3 - <<'PYW'
+import json
+body = "#!/usr/bin/env bash\nset -euo pipefail\n/usr/bin/python3 -c 'exec(input())' <<'PYX'\nimport subprocess, sys\npart='/tmp/x'\nr = subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"--proto\", \"=https\", \"-o\", part, \"https://packages.wolfi.dev/os/x\"], stdout=sys.stderr)\nverify(part, e)\nPYX\n"
+print("import pathlib\nroot = pathlib.Path('.')\n(root / 'bin').mkdir(exist_ok=True)\n(root / 'bin/pull.sh').write_text(" + json.dumps(body) + ")")
+PYW
+)"
+runck py-c-interpreter '{"times": {}}'
+CASE="a heredoc fed to python3 -c (not the program text) is refused (exit 1)"
+check test "$rc" -eq 1
+# key side
+newcase key-reassign-far-below "$(keyscript key-reassign-far-below 'WOLFI=https://packages.wolfi.dev/os
+for i in 1 2; do
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"
+sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qxFf build/locks/archive-keys.sha256 || exit 1
+# 1
+# 2
+# 3
+# 4
+# 5
+# 6
+# 7
+# 8
+# 9
+# 10
+# 11
+# 12
+WOLFI=https://example.org/os
+done')"
+runck key-reassign-far-below '{"times": {}}'
+CASE="the base URL reassigned beyond the old twelve-line window is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-grep-not-exact "$(keyscript key-grep-not-exact 'curl -fsSL -o "$t/k.pub" '"$KURL" 'sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qFf build/locks/archive-keys.sha256 || exit 1')"
+runck key-grep-not-exact '{"times": {}}'
+CASE="grep -qFf without -x (substring match) is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-die-with-substitution "$(keyscript key-die-with-substitution 'curl -fsSL -o "$t/k.pub" '"$KURL" 'sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qxFf build/locks/archive-keys.sha256 || die "$(cp "$t/k.pub" /tmp/used.pub)"')"
+runck key-die-with-substitution '{"times": {}}'
+CASE="a failure branch that runs a substitution is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-in-subshell-or-true "$(keyscript key-in-subshell-or-true '(
+curl -fsSL -o "$t/k.pub" '"$KURL"'
+sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qxFf build/locks/archive-keys.sha256 || exit 1
+) || true')"
+runck key-in-subshell-or-true '{"times": {}}'
+CASE="the fetch and comparison inside a subshell whose failure is ignored are refused (exit 1)"
+check test "$rc" -eq 1
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
