@@ -1099,7 +1099,7 @@ def _literal_path_vars(script):
     for c in _mask_shell(joined)[0]:                     # comments gone; a command boundary inside a quoted string is not one
         if esc:                                          # the character after a backslash is never a delimiter (single quotes keep it literal)
             esc = False
-            scan.append("_" if q and c in ";&|\n" else c)
+            scan.append("_" if c in ";&|\n" else c)
             continue
         if c == "\\" and q != "'":
             esc = True
@@ -1116,6 +1116,10 @@ def _literal_path_vars(script):
     scan = "".join(scan)
     if _LIT_TAINT.search(scan):
         return {}                                        # a computed write target, a nameref, allexport or a startup file: the name may be written where no mention shows
+    plain = re.sub(r"\\\n", " ", _mask_shell(script)[1])
+    if (re.search(r"(?<![\w.-])(read|mapfile|readarray|getopts|unset|let|select|eval|wait|declare|typeset|local|readonly|export|trap|coproc|function|"
+                  r"shopt|enable|alias|builtin|command)(?![\w.-])|[\w-]+\s*\(\s*\)", plain)):
+        return {}                                        # the plain form only (advisor, Oct 15): no function, trap or variable-writing builtin in the script
     if re.search(r"(?<![\w.-])enable(?![\w.-])", script):
         return {}                                        # enable -n can remove the builtin the assignment form relies on
     if "`" in script or re.search(r"(?<![\w.-])(printf|builtin|command|unset|trap)\s*\(\s*\)|(?<![\w.-])function\s+(printf|builtin|command|unset|trap)(?![\w.-])", script):
@@ -1168,11 +1172,16 @@ def _rewrite_step(script, shell):
     return _rewrite_consts(script) if _plain_bash_shell(shell) else script
 
 
+_JOB_NO_INFER = [False]      # set per job by check_runs: a step writes a startup or shell-option variable (GITHUB_ENV, BASH_ENV, ENV, SHELLOPTS, BASHOPTS)
+
+
 def _rewrite_consts(script):
     """Each script of an inlined job text is read on its own (the marker lines _run_scripts puts between them): a name that one script holds in
     the closed form is replaced by its literal path in THAT script's text only, so another script that merely reads $NAME still names a program
     by a variable (advisor 0440 (1); a script is a process of its own, it never inherits another script's shell variables)."""
     out = []
+    if _JOB_NO_INFER[0]:
+        return script
     for seg in script.split(SCRIPT_MARK):
         for name, path in _literal_path_vars(seg).items():
             seg = re.sub(r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])", lambda _m, p=path: p, seg)
@@ -2626,6 +2635,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     def read(raw):
         return _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", raw))))
     posix = [not item[2] or re.match(r"^(bash|sh)(\s|$)", item[2]) for item in scripts]
+    _JOB_NO_INFER[0] = any(re.search(r"GITHUB_ENV|(?<![\w.-])(BASH_ENV|ENV|SHELLOPTS|BASHOPTS)\b", item[1]) for item in scripts)
     # steps of one job share a workspace: a file changed in ANY step of the job counts (Sonnet #164 r6, NEW-7); the
     # committed scripts they run are part of it (Codex #164 r2, C11)
     job0 = "\n".join(read(_rewrite_step(item[1], item[2])) for item, ok in zip(scripts, posix) if ok)
