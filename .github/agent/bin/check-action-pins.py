@@ -1056,6 +1056,34 @@ def _whole_word_read(nc, bl, start, end):
     return (start == 0 or nc[start - 1] in " \t\n;&|(") and (end >= n or nc[end] in " \t\n;&|)")
 
 
+def _unquoted_top_level(text, pos):
+    """True when text[pos] is outside every quotation and every $( ) substitution (they nest: a double quote opens inside $( ) again)."""
+    stack, i = ["top"], 0
+    while i < pos:
+        c, ctx = text[i], stack[-1]
+        if c == "\\" and ctx != "sq":
+            i += 2
+            continue
+        if ctx == "sq":
+            if c == "'":
+                stack.pop()
+        elif text.startswith("$(", i) and ctx in ("top", "sub", "dq"):
+            stack.append("sub")
+            i += 2
+            continue
+        elif ctx == "dq":
+            if c == '"':
+                stack.pop()
+        elif c == "'":
+            stack.append("sq")
+        elif c == '"':
+            stack.append("dq")
+        elif c == ")" and ctx == "sub":
+            stack.pop()
+        i += 1
+    return stack == ["top"]
+
+
 def _literal_path_vars(script):
     """The program variables a script holds in the ONE closed form (owner's rules 4 and 9 of Oct 14, advisor 0440 (1)): the script
     assigns the name exactly once, at top level before any function, compound command, heredoc, eval or source, with `NAME=/abs/path`
@@ -1067,7 +1095,16 @@ def _literal_path_vars(script):
         return {}                                        # sourced: the caller's namerefs, functions and variables reach it
     joined = re.sub(r"\\\n", " ", script)
     scan, q = [], None
+    esc = False
     for c in _mask_shell(joined)[0]:                     # comments gone; a command boundary inside a quoted string is not one
+        if esc:                                          # the character after a backslash is never a delimiter (single quotes keep it literal)
+            esc = False
+            scan.append("_" if q and c in ";&|\n" else c)
+            continue
+        if c == "\\" and q != "'":
+            esc = True
+            scan.append(c)
+            continue
         if q:
             scan.append("_" if c in ";&|\n" else c)
             if c == q:
@@ -1090,6 +1127,10 @@ def _literal_path_vars(script):
     found = {}
     for m in re.finditer(r"^(?:([A-Za-z_]\w*)=|printf -v ([A-Za-z_]\w*) %s )(/[^\s;&|<>()$`\"'\\]*)[ \t]*$", nc, re.M):
         name, path = m.group(1) or m.group(2), m.group(3)
+        if not _unquoted_top_level(nc, m.start()):
+            continue                                     # inside a quotation or a $( ) substitution, however nested: text, not an assignment
+        if re.search(r"(?<![\w.-])-[A-Za-z]+" + name + r"(?![A-Za-z0-9_])", nc):
+            continue                                     # a compact option argument (printf -vG, read -aG) writes the name
         if bl[m.start():m.end()] != nc[m.start():m.end()]:
             continue                                     # the line sits inside a quoted string: data, not an assignment
         if not _CONST_PATH.fullmatch(path) or any(c in ("..", ".") for c in path.split("/")):
@@ -1117,9 +1158,14 @@ def _literal_path_vars(script):
     return found
 
 
+def _plain_bash_shell(shell):
+    """The step runs under plain bash: no shell key, or `bash` with at most -e -u -x -o pipefail and the {0} placeholder (-a, -i, --rcfile ... are not plain)."""
+    return not shell or bool(re.fullmatch(r"bash( -[euxo]+( pipefail)?)?( \{0\})?", shell.strip()))
+
+
 def _rewrite_step(script, shell):
-    """_rewrite_consts for a step's own text: only a step that bash runs (no shell key, or bash): `sh` is dash, which has no printf -v."""
-    return _rewrite_consts(script) if not shell or re.fullmatch(r"bash( -[euxo]+( pipefail)?)?( \{0\})?", shell.strip()) else script
+    """_rewrite_consts for a step's own text: only a step that bash runs plainly: `sh` is dash, which has no printf -v."""
+    return _rewrite_consts(script) if _plain_bash_shell(shell) else script
 
 
 def _rewrite_consts(script):
@@ -2600,7 +2646,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(read(raw))))
         bases = item[6] if len(item) > 6 else ()
         more, also = _run_scripts(read(_rewrite_step(raw, item[2])), tree, moved, 0, where, job0, bases,
-                                         bool(item[2]) and _rewrite_step("G=/a\n", item[2]) == "G=/a\n") if ok else ("", [])
+                                         not _plain_bash_shell(item[2])) if ok else ("", [])
         # each script is read on its own, as written (before ${NAME:-word} is read away): its literal-path variables are replaced in it alone
         inlined.append((_rewrite_consts(more), also))
 

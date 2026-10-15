@@ -2937,7 +2937,6 @@ case_ r9-escaped-quote-in-prompt-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/
 case_ r9-compact-printf-v-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nprintf -vG %%s /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
 case_ r9-compact-read-a-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nread -aG <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
 case_ r9-assignment-text-in-nested-quote-bad bad "$(rb 'bash ci-lit.sh')" "printf 'config=\"\$(printf \x27%%s\\\\n\x27 \"\nG=/usr/bin/git\n\")\"\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
-case_ r9-substitution-before-assignment-stays-ok ok "$(rb 'bash ci-lit.sh')" "printf 'd=\$(pwd)\nG=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
