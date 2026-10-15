@@ -1969,6 +1969,16 @@ for name, want in EXPECT.items():
         bad.append("%s: %r != %r" % (name, got, want))
 print("\n".join(bad)); sys.exit(1 if bad else 0)
 P
+# round 9: a package locked twice at the SAME version with different checksums is not merged either: one of the two cannot match the single apk file
+python3 - "$BL" "$work/dupck.lock.json" <<'P'
+import copy, json, sys
+d = json.load(open(sys.argv[1])); e = copy.deepcopy(d["contents"]["packages"][0])
+e["data"] = dict(e["data"], checksum="sha256-" + "0" * 43 + "=")
+d["contents"]["packages"].append(e)
+json.dump(d, open(sys.argv[2], "w"))
+P
+( cd "$air" && bash bin/apko-lock.sh verify-archive --lock "$work/dupck.lock.json" --archive "$fx/archive" >"$work/dupck.out" 2>&1; echo $? >"$work/dupck.rc" )
+t "AC5" "apko-lock.sh verify-archive refuses a lock that lists one package at the same version twice with different checksums (one entry cannot match the single apk file), naming a data/checksum mismatch" bash -c "test \"\$(cat '$work/dupck.rc')\" != 0 && grep -Eqi 'does not match|differs|checksum|datahash' '$work/dupck.out'"
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
