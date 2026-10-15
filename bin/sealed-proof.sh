@@ -94,12 +94,12 @@ if "$SUDO" "$UNSHARE" -n "$BASHBIN" -c "$probe" >/dev/null 2>&1; then
   die "the probe reached outside from inside 'sudo unshare -n': the network cut leaks (escaped)"
 fi
 
-# rule 42 (d): the archive must be the one whose package index the repository recorded; the record then names exactly that index
-"$PY3" -I -B bin/oci-digest.py check-index build/locks/archive-index.sha256 "$archive" >/dev/null || die "the archive's package index is not the one recorded in build/locks/archive-index.sha256 (archive index)" 1
 cp -RP "$src" "$tmp/src-copy"; inside_tmp "$tmp/src-copy"   # the throwaway copies and their guards come FIRST, before any driver runs
 cp -RP "$archive" "$tmp/arch-nopkg"; inside_tmp "$tmp/arch-nopkg"
 [ -f "$tmp/arch-nopkg/$victim" ] && [ ! -L "$tmp/arch-nopkg/$victim" ] || die "the base lock's first package $victim is not a regular file in the archive"
 inside_tmp "$(dirname "$tmp/arch-nopkg/$victim")"
+# rule 42 (d): the archive must be the one whose package index the repository recorded; the record then names exactly that index
+"$PY3" -I -B bin/oci-digest.py check-index build/locks/archive-index.sha256 "$archive" >/dev/null || die "the archive's package index is not the one recorded in build/locks/archive-index.sha256 (archive index)" 1
 
 # ---- rule 39: the real drivers ----
 apkdir=$out/apk; imgdir=$out/image

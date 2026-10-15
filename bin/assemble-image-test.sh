@@ -65,6 +65,7 @@ case "\$variant" in fips) cf=apko-fips.yaml; lk=apko-fips.base.lock.json;; *) cf
 cd "\$air" && exec bash bin/assemble-image.sh "\${args[@]}"
 WRAP
 chmod +x "$work/ai.sh"; AI="$work/ai.sh"
+export ImageOS=ubuntu24 ImageVersion=20261004.327.1   # sealed-proof refuses to run without the runner image (rule 42); tests that need it unset say so
 # ---- the proofs: copies of lock-proof.sh and sealed-proof.sh (TEST-SUBST lines only) and of build-apk.sh (as bin/build-apk-test.sh does), run by a
 # wrapper that builds a per-call fixture repository root: the options the proofs no longer have (--apko-config, --assemble-script, --build-script, the
 # forwarded --base-lock/--index-record/--key-record, --recipe) become files and substituted variables of that root. $LP and $SP are the wrappers;
@@ -102,6 +103,12 @@ def put(src, dst):
 def put_exe(src, name):
     p = proot + "/bin/" + name
     os.remove(p); shutil.copy2(src, p)
+def put_negative_only(src, name, marker):
+    """the stand-in driver runs only in the proof's negative runs (their paths hold MARKER); every other call gets the real copy"""
+    real = proot + "/bin/" + name + ".real"
+    os.rename(proot + "/bin/" + name, real)
+    open(proot + "/bin/" + name, "w").write('#!/bin/bash\nhere=$(cd "$(dirname "$0")" && pwd)\ncase " $* " in *"%s"*) exec "%s" "$@";; esac\nexec bash "$here/%s.real" "$@"\n' % (marker, ab(src), name))
+    os.chmod(proot + "/bin/" + name, 0o755)
 def fixture_opts(words, variant):
     """pull the options the assembler no longer has out of WORDS and put them where the fixture root keeps them"""
     cfg, lk = ("apko-fips.yaml", "apko-fips.base.lock.json") if variant == "fips" else ("apko.yaml", "apko.base.lock.json")
@@ -136,8 +143,8 @@ else:
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--build-script": put_exe(ab(args[i + 1]), "build-apk.sh"); i += 2
-        elif a == "--assemble-script": put_exe(ab(args[i + 1]), "assemble-image.sh"); i += 2
+        if a == "--build-script": put_negative_only(args[i + 1], "build-apk.sh", "/src-copy"); i += 2
+        elif a == "--assemble-script": put_negative_only(args[i + 1], "assemble-image.sh", "/arch-nopkg"); i += 2
         elif a == "--build-args":
             w = shlex.split(args[i + 1]); j = 0; keep = []
             while j < len(w):
@@ -536,7 +543,7 @@ t "rule 36" "lock-proof (real assembly): the record holds the positive control, 
 import hashlib, json, sys
 d = json.load(open(sys.argv[1])); ai = sys.argv[2]
 assert d['positive_control'] == 'ok', d
-assert d['assemble_script'] == ai and d['assemble_script_sha256'] == hashlib.sha256(open(ai, 'rb').read()).hexdigest(), d
+assert d['assemble_script'].endswith('/bin/assemble-image.sh') and d['assemble_script_sha256'] == hashlib.sha256(open(d['assemble_script'], 'rb').read()).hexdigest(), d
 assert set(d['cases']) >= {'missing-package', 'missing-index', 'tampered-package', 'live-packages'}, d
 for c in d['cases'].values(): assert c['result'] == 'failed-as-required' and c['exit'] == 2 and c['reason'], c
 P"
@@ -551,16 +558,16 @@ t "rule 36" "lock-proof: an unrelated apk that sorts first in the archive is NOT
 printf 'x' >"$work/lp-unrel/x86_64/aaa-tiny-1-r0.apk"
 run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/lp-unrel" "${lp_args[@]}"
 t "rule 36" "lock-proof: a tiny apk in the archive never causes a traceback" bash -c "! grep -q Traceback '$work/log'"
-sr "rule 36" "lock-proof refuses --assemble-script outside test mode (exit 2)" 'test mode|FSCACHE_TEST_MODE' env -u FSCACHE_TEST_MODE "$LP" --out "$(mo)" --archive "$fx/archive" --assemble-script "$work/alwaysok.sh" "${lp_args[@]}"
 # sealed-proof: scripts only in test mode, recorded; unknown runner version refused outside test mode; quoted args; epoch overflow
-sf "rule 41" "sealed-proof refuses --build-script outside test mode" 'are allowed only in test mode' env -u FSCACHE_TEST_MODE ImageOS=ubuntu24 ImageVersion=20260901 "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/alwaysok.sh" "${sp_common[@]}"
 spo=$(mo); run_s "${spe[@]}" "$SP" --out "$spo" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
-t "rule 42" "sealed-proof: the record says whether test mode was on, and names the two driver scripts with their sha256" bash -c "python3 - '$spo/sealed-record.json' '$BA' '$AI_PROD' <<'P'
+t "rule 42" "sealed-proof: the record names the two real drivers with their sha256 and the archive index used, and has no test-mode field (REQ-IMAGE-001-AC7 d)" bash -c "python3 - '$spo/sealed-record.json' '$BA' '$AI_PROD' <<'P'
 import hashlib, json, sys
 d = json.load(open(sys.argv[1]))
-assert d['test_mode'] is True, d
-for k, path in (('build_script', sys.argv[2]), ('assemble_script', sys.argv[3])):
-    assert d[k] == path and d[k + '_sha256'] == hashlib.sha256(open(path, 'rb').read()).hexdigest(), (k, d)
+assert 'test_mode' not in d, d
+assert d['build_script'] == 'bin/build-apk.sh' and d['assemble_script'] == 'bin/assemble-image.sh', d
+for k in ('build_script_sha256', 'assemble_script_sha256'): assert len(d[k]) == 64, d
+assert set(d['archive_index']) == {'x86_64', 'aarch64'} and all(v.startswith('sha256:') for v in d['archive_index'].values()), d
+assert d['archive_index_record'] == 'build/locks/archive-index.sha256', d
 P"
 sf "rule 42" "sealed-proof: with no ImageOS/ImageVersion in the environment the runner version is unknown -> refused outside test mode (rule 42 records the runner image)" 'ImageOS|ImageVersion' env -u FSCACHE_TEST_MODE -u ImageOS -u ImageVersion "${aie[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
 mkdir -p "$work/with space"; cp "$idxrec" "$work/with space/idx.record"
@@ -623,7 +630,7 @@ sf "rule 41" "sealed-proof: an image build that fails for an UNRELATED reason wi
 # the sudo control: a probe that works as the user must also work under sudo, otherwise a failure inside unshare proves nothing
 sf "rule 40" "sealed-proof: a probe that succeeds as the user but fails under plain sudo (control) fails the proof naming sudo" 'sudo' env ONLY_OUTSIDE=1 "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -n "${ONLY_OUTSIDE:-}"' "${sp_common[@]}"
 run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' "${sp_common[@]}"
-t "rule 40" "sealed-proof: the control order is outside, then sudo bash -c, then sudo unshare -n bash -c" bash -c "a=\$(grep -n '^sudo bash -c' '$CALLS' | head -1 | cut -d: -f1); b=\$(grep -n '^sudo .*unshare -n bash -c' '$CALLS' | head -1 | cut -d: -f1); test -n \"\$a\" && test -n \"\$b\" && test \"\$a\" -lt \"\$b\""
+t "rule 40" "sealed-proof: the control order is outside, then sudo bash -c, then sudo unshare -n bash -c" bash -c "a=\$(grep -n '^sudo [^ ]*bash -c' '$CALLS' | head -1 | cut -d: -f1); b=\$(grep -n '^sudo .*unshare -n [^ ]*bash -c' '$CALLS' | head -1 | cut -d: -f1); test -n \"\$a\" && test -n \"\$b\" && test \"\$a\" -lt \"\$b\""
 # lock-proof: the missing-index case removes the recorded named index too; it never writes through a symlinked victim; it hands the assembler no overrides it does not need
 mkarch "$work/lp-ver"; mkversioned "$work/lp-ver"
 run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/lp-ver" "${lp_args[@]}"
@@ -642,14 +649,14 @@ cat >"$work/argvlog.sh" <<'S'
 #!/bin/sh
 ARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done
 echo "$@" >>"$ARGV_LOG"
-case " $* " in *" --apko-config "*live.yaml*) echo "assemble-image.sh: the config names a live repository or address" >&2; exit 2;; esac
+if grep -q "packages.wolfi.dev" build/apko.yaml 2>/dev/null; then echo "assemble-image.sh: the config names a live repository or address" >&2; exit 2; fi
 for a in "$@"; do case "$a" in */lp-archive-ok) exit 0;; esac; done
 case " $* " in *a-missing-package*) echo "apko-lock.sh: $VICTIM is not in the archive" >&2; exit 2;; *a-missing-index*) echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2;; *a-tampered*) echo "apko-lock.sh: $VICTIM: data section does not match the lock" >&2; exit 2;; esac
 exit 0
 S
 chmod +x "$work/argvlog.sh"; cp -R "$fx/archive" "$work/lp-archive-ok"
 rm -f "$work/argv.log"; VICTIM=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["contents"]["packages"],key=lambda e:(e["name"],e["architecture"]))[0];print("%s-%s.apk"%(e["name"],e["version"]))' "$BL"); lpo4=$(mo); run_s env VICTIM="$VICTIM" ARGV_LOG="$work/argv.log" "$LP" --out "$lpo4" --archive "$work/lp-archive-ok" --assemble-script "$work/argvlog.sh" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL"
-t "rule 36" "lock-proof without --apko-config: the assembler gets no --apko-config for the control and the first three cases, only the live-packages case gets a temp config, and the record says which case used an override" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c -- '--apko-config' '$work/argv.log')\" = 1 && grep -- '--apko-config' '$work/argv.log' | grep -q 'live.yaml' && python3 -c \"import json,glob,sys; d=json.load(open('$lpo4/lock-proof.json')); assert d['override_cases']==['live-packages'], d\""
+t "rule 36" "lock-proof: the assembler is never given --apko-config (the live-packages case changes the config of its own repository root copy), and the record says which case used an override" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q -- '--apko-config' '$work/argv.log' && python3 -c \"import json,glob,sys; d=json.load(open('$lpo4/lock-proof.json')); assert d['override_cases']==['live-packages'], d\""
 cat >"$work/idxcheck.sh" <<'S'
 #!/bin/sh
 ARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done
@@ -657,7 +664,7 @@ ARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done
 all="$*"
 arch=
 while [ $# -gt 0 ]; do [ "$1" = --archive ] && arch=$2; shift; done
-case " $all " in *live.yaml*) echo "assemble-image.sh: the config names a live repository" >&2; exit 2;; esac
+if grep -q "packages.wolfi.dev" build/apko.yaml 2>/dev/null; then echo "assemble-image.sh: the config names a live repository" >&2; exit 2; fi
 case "$arch" in
   *a-missing-index*) for d in "$arch"/x86_64/ "$arch"/aarch64/; do if [ ! -e "$d/APKINDEX.tar.gz" ] && [ ! -L "$d/APKINDEX.tar.gz" ] && ! ls "$d"index/APKINDEX-* >/dev/null 2>&1; then echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2; fi; done; exit 0;;
   *a-missing-package*) echo "apko-lock.sh: $VICTIM is not in the archive" >&2; exit 2;;
@@ -746,7 +753,7 @@ sr2 "rule 42" "sealed-proof: ImageOS/ImageVersion set to 'unknown' are refused o
 # ---- snapshot-4 round 4 (Opus P5) -----------------------------------------------------------------------------------------------------------------------------
 # the proofs supply the paths themselves; a pass-through argument cannot put a reason into an error message
 for bad in --archive --out --render-dir --apko-config; do
-  sr2 "rule 36" "lock-proof refuses $bad after -- (the proof supplies it; a forwarded value could be printed back as a 'reason')" 'supplied by|after --' run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL" "$bad" "x/ca-certificates-bundle-20260101-r0.apk does not match APKINDEX live repository"
+  sr2 "rule 36" "lock-proof refuses $bad after -- (the proof supplies it; a forwarded value could be printed back as a 'reason')" 'supplied by|after --' run_s "${aie[@]}" bash -c 'cd "$0" && exec "$@"' "$air" "$air/bin/lock-proof.sh" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$BL" "$bad" "x/ca-certificates-bundle-20260101-r0.apk does not match APKINDEX live repository"
 done
 for bad in --source-dir --out --render-dir; do
   sr2 "rule 41" "sealed-proof refuses $bad in --build-args" 'supplied by' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --source-dir "$src" --archive "$fx/archive" --build-args "--variant standard --arch x86_64 $bad x" --assemble-args "--variant production --version 0.3.0"
@@ -827,7 +834,7 @@ for e in pk:
 json.dump(lk, open(d + "/plus.lock.json", "w"))
 P
 VP=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["contents"]["packages"],key=lambda e:(e["name"],e["architecture"]))[0];print("%s-%s.apk"%(e["name"],e["version"]))' "$work/plus/plus.lock.json")
-printf '#!/bin/sh\nARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done\ncase " $* " in *a-missing-package*) echo "apko-lock.sh: %s is not in the archive" >&2; echo "assemble-image.sh: the archive does not satisfy the base lock" >&2; exit 2;; *a-missing-index*) echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2;; *a-tampered*) echo "apko-lock.sh: %s: data section does not match the lock" >&2; exit 2;; *live.yaml*) echo "assemble-image.sh: the config names a live repository" >&2; exit 2;; esac\nexit 0\n' "$VP" "$VP" >"$work/plus-asm.sh"; chmod +x "$work/plus-asm.sh"
+printf '#!/bin/sh\nARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done\ncase " $* " in *a-missing-package*) echo "apko-lock.sh: %s is not in the archive" >&2; echo "assemble-image.sh: the archive does not satisfy the base lock" >&2; exit 2;; *a-missing-index*) echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2;; *a-tampered*) echo "apko-lock.sh: %s: data section does not match the lock" >&2; exit 2;; esac\nif grep -q packages.wolfi.dev build/apko.yaml 2>/dev/null; then echo "assemble-image.sh: the config names a live repository" >&2; exit 2; fi\nexit 0\n' "$VP" "$VP" >"$work/plus-asm.sh"; chmod +x "$work/plus-asm.sh"
 run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/plus/archive" --assemble-script "$work/plus-asm.sh" --apko-config "$fx/apko.yaml" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$work/plus/plus.lock.json" --index-record "$idxrec" --key-record "$keyrec"
 t "rule 36" "lock-proof: a victim named a++c is matched literally (regex characters in a package name are not a reason to fail)" test "$(cat "$work/rc")" = 0
 t "rule 36" "lock-proof keeps the whole reason line in its record (cut after the match, 400 characters)" bash -c "grep -q 'cut -c1-400' '$LP_PROD'"
@@ -1035,7 +1042,7 @@ done
 # forwarded records outside test mode are refused BEFORE any copy
 for opt in --base-lock --index-record --key-record; do
   case $opt in --base-lock) val="$BL";; --index-record) val="$idxrec";; --key-record) val="$keyrec";; esac
-  sr2 "rule 36" "lock-proof refuses a forwarded $opt outside test mode (exit 2) before any copy" 'test mode' run_s env -u FSCACHE_TEST_MODE "${aie[@]}" "$LP" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" "$opt" "$val"
+  sr2 "rule 36" "lock-proof refuses a forwarded $opt in every mode (exit 2) before any copy" 'supplied by|after --' run_s "${aie[@]}" bash -c 'cd "$0" && exec "$@"' "$air" "$air/bin/lock-proof.sh" --out "$(mo)" --archive "$fx/archive" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" "$opt" "$val"
   t "rule 36" "...$opt: exit 2 and no assembler call" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -q 'assemble' '$CALLS'"
 done
 # a leaf of --out that already exists (a link to elsewhere) is never written through
@@ -1188,10 +1195,10 @@ t "chain" "no refusal, comment or message of assemble-image.sh, oci-digest.py, a
 
 # ===== advisor (Oct 12): the proofs run as the chain will run them: from the repository root only ====================================
 # lock-proof.sh and sealed-proof.sh exit 2 naming the repository root, before any tool, from anywhere else; from the root they work
-for drv_ in "$LP" "$SP"; do
+for drv_ in "$air/bin/lock-proof.sh" "$air/bin/sealed-proof.sh"; do
   mkdir -p "$work/elsewhere-p"
   : >"$CALLS"
-  if [ "$drv_" = "$LP" ]; then dargs_=(--out "$work/elsewhere-p/o" --archive "$fx/archive" "${lp_args[@]}"); else dargs_=(--out "$work/elsewhere-p/o" --probe true --source-dir "$src" --archive "$fx/archive"); fi
+  if [ "$drv_" = "$air/bin/lock-proof.sh" ]; then dargs_=(--out "$work/elsewhere-p/o" --archive "$fx/archive" "${lp_args[@]}"); else dargs_=(--out "$work/elsewhere-p/o" --probe true --source-dir "$src" --archive "$fx/archive"); fi
   ( cd "$work/elsewhere-p" && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$drv_" "${dargs_[@]}" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
   if [ "$(rc)" = 2 ] && grep -Eqi 'repository root' "$work/log" && grep -Eqi 'usage|run from' "$work/log" && ! toolrun; then ok; else bad "chain" "$(basename "$drv_") run from another working directory exits 2 naming the repository root and how to run it, before any tool (exit $(rc))"; fi
 done
