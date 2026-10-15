@@ -269,6 +269,20 @@
       "key": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
       "line": "6ad5a49fad2db1816e35d1520fabea64d69cf90ef1e4083153ba251967190aa5",
       "ruling": "local reusable workflow call; inputs reviewed in the PR that added them; advisor ruling Oct 14"
+    },
+    {
+      "file": "bin/refresh-inputs-test.sh",
+      "form": "a download",
+      "key": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
+      "line": "99057ac9634caaa646bb8cc9a98c2964199e00a63063ae02e08b96bdb544d596",
+      "ruling": "text, not a command: the one line of the refresh test that names the fetch tool, a printf -v of a constant word; every other line of the suite uses the variable; handoff 0432"
+    },
+    {
+      "file": "bin/refresh-inputs.sh",
+      "form": "a download",
+      "key": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
+      "line": "d728b24554ec94550e6e2e18c48f03f3f1571d15826f3701ad9f24f17b0cae1b",
+      "ruling": "text, not a command: the fetch tool's fixed-path line of the daily input refresh job, a printf -v of a constant path, replaced by a stub in the test copy; the Wolfi live fetch it names is ruled by owner rule 48 (no 7-day hold on Wolfi) and verified per rules 32 and 28; handoff 0429/0432"
     }
   ]
 }

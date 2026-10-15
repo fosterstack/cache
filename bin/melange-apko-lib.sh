@@ -615,6 +615,8 @@ cat >"$stubs/sudo" <<'EOF'
 echo "sudo $*" >>"$CALLS"
 keep=0
 while [ $# -gt 0 ]; do case "$1" in -E|--preserve-env) keep=1; shift;; -u) shift 2;; -n|-H|-S) shift;; --) shift; break;; *) break;; esac; done
+resolves() { case "$1" in */*) [ -f "$1" ] && [ -x "$1" ];; *) type -P "$1" >/dev/null 2>&1;; esac; }   # as exec would: a bare name by the search path only, a name with a slash as a path
+[ -z "${1:-}" ] || resolves "$1" || { echo "sudo: $1: command not found" >&2; exit 127; }   # before any log-only success below: an operand that does not resolve is never a silent success
 [ "${1:-}" = mkdir ] && [ "${2:-}" != -p ] && [ -n "${STUB_SUDO_FAIL_MKDIR:-}" ] && { echo "stub sudo: mkdir failed (exists)" >&2; exit 1; }
 if [ "${1:-}" = ln ] && [ -n "${STUB_LN_FAIL_AT:-}" ]; then
   n=$(cat "$CALLS.ln" 2>/dev/null || echo 0); n=$((n+1)); echo $n >"$CALLS.ln"
@@ -630,7 +632,8 @@ cat >"$stubs/unshare" <<'EOF'
 #!/bin/bash
 echo "unshare $*" >>"$CALLS"
 while [ $# -gt 0 ]; do case "$1" in -*) shift;; *) break;; esac; done
-case "$*" in *net-probe.py*) if [ -n "${STUB_PROBE_RC:-}" ]; then exit "$STUB_PROBE_RC"; elif [ -n "${STUB_UNSHARE_LEAKY:-}" ]; then exit 0; else exit 101; fi;; esac   # the stub plays the kernel: no route in a sealed namespace = ENETUNREACH (101)
+case "$*" in *net-probe.py*) { case "$1" in */*) [ -f "$1" ] && [ -x "$1" ];; *) type -P "$1" >/dev/null 2>&1;; esac; } || { echo "unshare: failed to execute $1: No such file or directory" >&2; exit 127; }   # the probe really resolves the program it is asked to run
+  if [ -n "${STUB_PROBE_RC:-}" ]; then exit "$STUB_PROBE_RC"; elif [ -n "${STUB_UNSHARE_LEAKY:-}" ]; then exit 0; else exit 101; fi;; esac   # the stub plays the kernel: no route in a sealed namespace = ENETUNREACH (101)
 [ -n "${STUB_UNSHARE_LEAKY:-}" ] || export FAKE_SEALED=1
 exec "$@"
 EOF
@@ -661,6 +664,7 @@ while [ $# -gt 0 ]; do case $1 in
   --runner|--keyring-append|--repository-append|--build-date|--workspace-dir|--apk-cache-dir|-k|-r|--env-file|--vars-file|--namespace) shift 2;;
   -*) shift;; *) recipe=$1; shift;; esac; done
 echo "ENV SDE=${SOURCE_DATE_EPOCH-unset}" >>"$CALLS"
+[ -n "${STUB_LOCKED_CACHE:-}" ] && [ -n "$cache" ] && { mkdir -p "$cache/x/y" && : >"$cache/x/y/f" && chmod 500 "$cache/x/y" "$cache/x"; }   # a tree the invoking user cannot remove (the cleanup fallback)
 echo "ENV CACHE=$( [ -n "$cache" ] && ls "$cache" 2>/dev/null | tr '\n' ' ')" >>"$CALLS"
 echo "ENV SECRETS=$(env | grep -Ec '(TOKEN|SECRET|PRIVATE|SIGNING_KEY)')" >>"$CALLS"
 echo "ENVNAMES=$(env | cut -d= -f1 | grep -Ev '^(STUB_|FAKE_|CALLS$|ImageOS$|ImageVersion$|PWD$|SHLVL$|_$|OLDPWD$)' | sort | tr '\n' ' ')" >>"$CALLS"
@@ -749,6 +753,30 @@ kr="$fx/keyring/wolfi-signing.rsa.pub"
 
 run_s() { : >"$CALLS"; PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }
 run_s2() { : >"$CALLS"; PATH="$stubs2:$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" "$@" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc"; }   # adds a git stub: used for the refresh job only
+
+# ---------- restricted search path (REQ-BUILDAPK-001-AC9; reusable by any script test that must prove "no bare tool name") ---------------
+# restricted_path_dir DEST NAME...: DEST becomes a directory holding ONLY symlinks to the named programs, each resolved with `command -v`
+# on the current search path (so the same call works on a Mac and on a Linux runner). A script run with PATH=DEST can reach exactly those
+# programs by bare name and nothing else: a tool that is not listed is "not found", whatever way the script spells its name.
+restricted_path_dir() {
+  local d=$1 n p; shift; rm -rf "$d"; mkdir -p "$d" || return 1
+  for n in "$@"; do
+    p=$(command -v "$n" 2>/dev/null) || p=
+    case $p in /*) [ -x "$p" ] || p=;; *) p=;; esac
+    [ -n "$p" ] || { echo "restricted_path_dir: no program $n on this machine" >&2; return 1; }
+    ln -s "$p" "$d/$n" || return 1
+  done
+}
+# restricted_stub_copy SRC DEST TOOLPATH: a copy of the stub SRC whose OWN dependencies (env, python3, ls, chmod) are shell functions calling them by
+# absolute path (python3 runs with TOOLPATH, which also holds openssl for the harness library), and whose `exec env -i` is by absolute path.
+# Every command the SCRIPT supplies to the stub (exec "$@") is resolved under the search path the stub was started with, which is the
+# script's own restricted one: no stub restores a wider path, and nothing depends on how the script spells the operand.
+restricted_stub_copy() {
+  local src=$1 dest=$2 tp=$3 e p l c body; e=$(command -v env) && p=$(command -v python3) && l=$(command -v ls) && c=$(command -v chmod) || return 1
+  body=$(tail -n +2 "$src"); body=${body//exec env -i/exec $(printf %q "$e") -i}
+  { head -n 1 "$src"; printf 'env() { %q "$@"; }\npython3() { PATH=%q %q "$@"; }\nls() { %q "$@"; }\nchmod() { %q "$@"; }\n' "$e" "$tp" "$p" "$l" "$c"; printf '%s\n' "$body"; } >"$dest"
+  chmod +x "$dest"
+}
 RUNNER=run_s
 rc() { cat "$work/rc"; }
 toolrun() { grep -Eq '^(melange (build|sign)|apko (build|lock))' "$CALLS"; }
