@@ -444,7 +444,7 @@ def die(msg, code=1):
     sys.exit(code)
 
 
-def load(path):
+def load(path, allow_dup=None):
     try:
         d = json.load(open(path))
         pk = d["contents"]["packages"]
@@ -461,9 +461,9 @@ def load(path):
         except (KeyError, TypeError, ValueError):
             die("malformed lock entry %d in %s (%s): name, version, architecture and the control and data checksums are required" % (i, path, e.get("name", "?") if isinstance(e, dict) else "?"), 2)
     seen = {}
-    for e in pk:   # a set comparison would silently merge a repeated entry: an entry that is the same in EVERY field is listed once at most
-        k = key(e)   # (entries that differ in a checksum are different entries: compare and arch-check report those by name)
-        if k in seen:
+    for e in pk:   # a set comparison would silently merge a repeated entry: a lock names each (package, version, architecture) once
+        k = (e["name"], e["version"], e["architecture"])
+        if k in seen and e["name"] != allow_dup:   # allow_dup: compare counts the entries of OUR apk itself and names "exactly one" (the checks that follow)
             die("the lock file %s lists %s %s (%s) more than once" % (path, k[0], k[1], k[2]), 2)
         seen[k] = True
     return d, pk
@@ -493,7 +493,7 @@ def compare(argv):
     base_p, full_p, o = argv[0], argv[1], opts(argv[2:], ("--apk",))
     apk = o.get("--apk") or die("--apk NAME is required", 2)
     _, bpk = load(base_p)
-    _, fpk = load(full_p)
+    _, fpk = load(full_p, allow_dup=apk)
     if any(e["name"] == apk for e in bpk):
         die("the base lock %s already holds %s; the base lock must not hold our apk" % (base_p, apk), 2)
     ours = [e for e in fpk if e["name"] == apk]

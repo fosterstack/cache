@@ -1969,16 +1969,25 @@ for name, want in EXPECT.items():
         bad.append("%s: %r != %r" % (name, got, want))
 print("\n".join(bad)); sys.exit(1 if bad else 0)
 P
-# round 9: a package locked twice at the SAME version with different checksums is not merged either: one of the two cannot match the single apk file
-python3 - "$BL" "$work/dupck.lock.json" <<'P'
+# round 9: a package locked twice at the SAME version is refused by the reader whatever differs between the two entries (data checksum, either order, the
+# package's own top-level checksum, a signature checksum without a range): verify-archive checks the apk bytes only, so the reader must not tell them apart
+python3 - "$BL" "$work" <<'P'
 import copy, json, sys
-d = json.load(open(sys.argv[1])); e = copy.deepcopy(d["contents"]["packages"][0])
-e["data"] = dict(e["data"], checksum="sha256-" + "0" * 43 + "=")
-d["contents"]["packages"].append(e)
-json.dump(d, open(sys.argv[2], "w"))
+d0 = json.load(open(sys.argv[1])); w = sys.argv[2]
+def write(name, edit, front=False):
+    d = copy.deepcopy(d0); e = copy.deepcopy(d["contents"]["packages"][0]); edit(e)
+    d["contents"]["packages"].insert(0, e) if front else d["contents"]["packages"].append(e)
+    json.dump(d, open("%s/dupv-%s.lock.json" % (w, name), "w"))
+write("data-last", lambda e: e.__setitem__("data", dict(e["data"], checksum="sha256-" + "0" * 43 + "=")))
+write("data-first", lambda e: e.__setitem__("data", dict(e["data"], checksum="sha256-" + "0" * 43 + "=")), front=True)
+write("toplevel", lambda e: e.__setitem__("checksum", "Q1" + "A" * 27 + "="))
+write("sigsum", lambda e: e.__setitem__("signature", {"checksum": "sha256-" + "1" * 43 + "=", "range": ""}))
 P
-( cd "$air" && bash bin/apko-lock.sh verify-archive --lock "$work/dupck.lock.json" --archive "$fx/archive" >"$work/dupck.out" 2>&1; echo $? >"$work/dupck.rc" )
-t "AC5" "apko-lock.sh verify-archive refuses a lock that lists one package at the same version twice with different checksums (one entry cannot match the single apk file), naming a data/checksum mismatch" bash -c "test \"\$(cat '$work/dupck.rc')\" != 0 && grep -Eqi 'does not match|differs|checksum|datahash' '$work/dupck.out'"
+for v_ in data-last data-first toplevel sigsum; do
+  ( cd "$air" && bash bin/apko-lock.sh verify-archive --lock "$work/dupv-$v_.lock.json" --archive "$fx/archive" >"$work/dupv-$v_.out" 2>&1; echo $? >"$work/dupv-$v_.rc" )
+  ( cd "$air" && bash bin/apko-lock.sh arch-check "$work/dupv-$v_.lock.json" >"$work/dupv-$v_.out2" 2>&1; echo $? >"$work/dupv-$v_.rc2" )
+  t "AC5" "a lock with the first package listed twice at one version ($v_ differs) is refused by verify-archive AND arch-check (exit 2, 'more than once')" bash -c "test \"\$(cat '$work/dupv-$v_.rc')\" = 2 && test \"\$(cat '$work/dupv-$v_.rc2')\" = 2 && grep -q 'more than once' '$work/dupv-$v_.out' && grep -q 'more than once' '$work/dupv-$v_.out2'"
+done
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
