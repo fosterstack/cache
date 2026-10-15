@@ -31,12 +31,16 @@ The FIPS build says so at startup, so the property is observable rather than
 taken on trust:
 
 ```json
-{"msg":"fscache: starting","fips140":"active (Go validated module, CMVP cert #5247)", ...}
+{"msg":"fscache: starting","fips140":"active (Go validated module ..., CMVP cert #5247)", ...}
 ```
 
-Standard builds report `"fips140":"off"`. `/statusz` reports the same field.
-An assessor can confirm which build is running from the process log and the
-install path, without access to your build pipeline.
+Standard builds report `"fips140":"off"`. `/statusz` carries the same
+information as two fields: `fips140` (a boolean) and `fips140_note` (the same
+text, with the module version in it). Running a standard build with `GODEBUG=fips140=on` does not claim the
+certificate: the note then reads `active (fips140 mode forced at runtime; not
+the validated-module build)`. An assessor can confirm which build is running
+from the process log and the install path, without access to your build
+pipeline.
 
 **Container images are multi-arch** (`linux/amd64` + `linux/arm64`), so
 `docker pull` resolves the right one automatically — including on Apple
