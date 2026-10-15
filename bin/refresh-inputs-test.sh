@@ -1132,9 +1132,9 @@ for e in d["contents"]["packages"]:
     if e["name"] == "busybox": e["version"] = "9.9.9-r0"
 json.dump(d, open(sys.argv[2], "w"))
 P
-for dmg in truncate flip delete swapdata; do
+for dmg in truncate flip delete swapdata trailer; do
   mkrepo; wbm=; mkdir -p "$work/ar"; f="$work/ar/x86_64/busybox-$bbv.apk"; [ -f "$f" ] || echo "FIXTURE: no archived busybox-$bbv.apk" >&2
-  case $dmg in truncate) head -c 100 "$f" >"$f.cut"; mv "$f.cut" "$f";; flip) python3 - "$f" <<'P'
+  case $dmg in trailer) head -c "$(( $(wc -c <"$f") - 8 ))" "$f" >"$f.cut"; mv "$f.cut" "$f";; truncate) head -c 100 "$f" >"$f.cut"; mv "$f.cut" "$f";; flip) python3 - "$f" <<'P'
 import sys
 p = sys.argv[1]; b = bytearray(open(p, "rb").read()); b[len(b)//2] ^= 0xFF; open(p, "wb").write(bytes(b))
 P
@@ -1152,6 +1152,42 @@ SWAP
 done
 mkrepo; run_s4 env GH_STUB_OPEN="refresh/00000000" STUB_LOCK_MEL="$work/live-mel-moved.json" "${rfn[@]:1}" STUB_LOCK_MEL="$work/live-mel-moved.json" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 27" "AC17 probe A (control): the same run with the archive undamaged waits (exit 0, the open PR)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log'"
+# ---- round 1 of the second review (both seats named these; the fixes are tests-first) ----------------------------------------------------------
+# AC21: locks that disagree ONLY in the package identity checksum or the signature checksum are refused like a data-checksum disagreement
+for fld in identity signature; do
+python3 - "$work/ln.json" "$work/ln-$fld.json" "$fld" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d["contents"]["packages"]:
+    if e["name"] == "tzdata" and e["architecture"] == "x86_64":
+        if sys.argv[3] == "identity": e["checksum"] = "Q1" + "A" * 27
+        else: e["signature"] = {"range": e.get("signature", {}).get("range", ""), "checksum": "sha1-" + "A" * 27}
+json.dump(d, open(sys.argv[2], "w"))
+P
+mkrepo; before=$(treehash "$work/ar" "$work/rp")
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$work/ln.json" STUB_LOCK_FIPS="$work/ln-$fld.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "rule 48" "AC21: production and FIPS locks that differ only in the $fld checksum of one package are refused (exit 1, 'disagree'), nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'disagree' '$work/log' && test \"\$(cat '$work/rc')\" = 1"
+t "rule 48" "AC21: ...$fld checksum disagreement: archive and repo unchanged" test "$(treehash "$work/ar" "$work/rp")" = "$before"
+done
+# AC18: the melange lock already holds the live resolution but the recipes are stale (a run was interrupted between the two writes): the next run regenerates them
+mkrepo
+python3 - "$work/rp/build/locks/melange.lock" "$fx/live-mel-new.lock.json" <<'P'
+import json, sys
+live = json.load(open(sys.argv[2]))["contents"]["packages"]
+names = {e["name"]: e["version"] for e in live if e["architecture"] == "x86_64"}
+assert names.get("zlib") == "1.3.2-r0", names.get("zlib")
+open(sys.argv[1], "w").write("".join("%s=%s\n" % kv for kv in sorted(names.items())))   # the lock is exactly the live resolution; the recipes were not regenerated
+P
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "rule 21" "AC18: a lock that is already current with recipes that are not (an interrupted run) is repaired by the next run: exit 0 and the recipes carry zlib=1.3.2-r0" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml'"
+t "rule 21" "AC18: ...after the repair the generator --check passes" gcheck "$work/rp"
+# the archive directory itself is not a symlink (every directory on the way into the archive is a real directory)
+mkrepo; mkdir -p "$work/ar-root-out"; mv "$work/ar" "$work/ar-root-out/real"; ln -s "$work/ar-root-out/real" "$work/ar"; before=$(treehash "$work/rp")
+run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "rule 31" "AC18: an archive directory that is itself a symlink is refused before any write (exit 1, names symlink)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'symlink' '$work/log' && test \"\$(treehash '$work/ar-root-out/real' '$work/rp' 2>/dev/null | wc -l)\" -ge 0"
+rm -f "$work/ar"; mv "$work/ar-root-out/real" "$work/ar"
+# AC23 (rule 4): no utility is called by bare name anywhere in the script (rm, mkdir, dirname, cat and sed included; builtins or fixed paths)
+t "rule 4" "AC23: bin/refresh-inputs.sh calls no utility by bare name (rm, mkdir, dirname, cat, sed are fixed paths or builtins)" bash -c "! grep -nE '^[^#]*(^|[;&|(]|[$][(])[[:space:]]*(rm|mkdir|dirname|cat|sed)[[:space:]]' '$RF_PROD'"
 # B (AC22): a legacy plain pointer must be a signed index BEFORE any early exit, also when it equals the record
 for path in open-changed open-same none-same; do
   mkrepo
