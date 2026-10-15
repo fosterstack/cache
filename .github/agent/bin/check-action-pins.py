@@ -178,6 +178,7 @@ import json
 import os
 import pathlib
 import re
+import secrets
 import subprocess
 import sys
 import urllib.parse
@@ -653,15 +654,9 @@ ALIASING = re.compile(r"(?<![\w.-])(alias|expand_aliases)(?![\w.-])")
 PARAM_WORD = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*])(:?)([-=+?])([^{}]*)\}")
 
 
-_DEFAULTED = set()      # every name a ${NAME:-word} / ${NAME:=word} / ... expansion was read away from: such a name is never a literal path
-
-
 def _expand_defaults(text):
-    def word(m):
-        _DEFAULTED.add(m.group(1))
-        return m.group(4)
     while True:   # each pass removes at least one ${...}: it ends
-        new = PARAM_WORD.sub(word, text)
+        new = PARAM_WORD.sub(lambda m: m.group(4), text)
         if new == text:
             return new
         text = new
@@ -1026,8 +1021,21 @@ def _command_words(toks):
     return words
 
 
-SCRIPT_MARK = "#@@fscache-script-boundary@@"   # a comment line between the scripts of one inlined job text: each script's own assignments count for it alone
+SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between the scripts of one inlined job text: each script's own assignments count for it
+#                                                     alone; chosen per run, so no repository text can carry it (a script that wrote the line itself would
+#                                                     otherwise split its own function or branch in two)
+_NO_NAME = {"REPLY", "MAPFILE", "OPTARG", "OPTIND", "OPTERR", "COMPREPLY", "BASH_REMATCH", "PIPESTATUS", "RANDOM", "SECONDS", "LINENO", "PWD", "OLDPWD",
+            "UID", "EUID", "PPID", "SHELLOPTS", "BASHOPTS", "PATH", "IFS", "HOME", "SHELL", "ENV", "BASH_ENV"}   # set by the shell or read by it: never a program name
 _CONST_PATH = re.compile(r"/[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
+
+
+def _whole_word_read(text, start, end):
+    """The expansion at text[start:end] is a whole shell word: nothing glued to it but an optional pair of double quotes."""
+    if start and text[start - 1] == '"':
+        start -= 1
+    if end < len(text) and text[end] == '"':
+        end += 1
+    return (start == 0 or text[start - 1] in " \t\n;&|(") and (end >= len(text) or text[end] in " \t\n;&|)")
 
 
 def _literal_path_vars(script):
@@ -1049,16 +1057,22 @@ def _literal_path_vars(script):
         if re.search(r"<<|[{}()]|(?<![\w.-])(if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|coproc)(?![\w.-])",
                      bl[:m.start()]):
             continue                                     # not at top level: after a block, a function, a heredoc or a subshell
-        mentions = [x.start() for x in re.finditer(r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])", bl)
-                    if not bl[:x.start()].endswith(("$", "${"))]
-        if mentions != [m.start(1) if m.group(1) else m.start(2)]:
+        if name in _NO_NAME or name.startswith(("BASH", "FUNC", "COMP")):
+            continue                                     # a name the shell itself writes (read with no name sets REPLY, mapfile MAPFILE, getopts OPTARG)
+        # every mention of the name, quotes and all (a quoted target `printf -v "G"` or the same name inside a child script's text counts): exactly one
+        # that is the assignment itself, and every other one a `$NAME` / `${NAME}` that is a whole word of its own (a program or an argument),
+        # never a part of a default word, a pattern or a substring expansion
+        if [x.start() for x in re.finditer(r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])", nc)
+            if not nc[:x.start()].endswith(("$", "${"))] != [m.start(1) if m.group(1) else m.start(2)]:
             continue
+        if any(not _whole_word_read(nc, x.start(), x.end()) for x in re.finditer(r"\$(?:\{" + name + r"\}|" + name + r"(?![A-Za-z0-9_]))", nc)):
+            continue                                     # a read that is a part of a longer word (a default word, a pattern, a path built around it)
         if re.search(r"\$\{" + name + r"(:?[=+?-]|\[|[#%/^,@!])|\$\{!", nc):
             continue                                     # a default-assigning or indirect expansion naming it
         if re.search(r"\$\{?" + name + r"(?![A-Za-z0-9_])", nc[:m.start()]):
             continue                                     # read before it was assigned
-        if name in _DEFAULTED:
-            continue                                     # a default or assigning expansion of it was read away before this text got here
+        if re.search(r"(&&|\|\||\|&?)\s*$", nc[:m.start()]):
+            continue                                     # the end of the line before is an and-or list or a pipe: the assignment may never run, or runs in a subshell
         found[name] = path
     return found
 
@@ -1079,8 +1093,6 @@ def _commands(script, depth=0):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
-    if depth == 0:
-        script = _rewrite_consts(script)
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
     if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
@@ -2516,7 +2528,7 @@ def check_runs(where_job, scripts, bad, tree=None):
     # committed scripts they run are part of it (Codex #164 r2, C11)
     job0 = "\n".join(read(item[1]) for item, ok in zip(scripts, posix) if ok)
     for item, ok in zip(scripts, posix):
-        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(re.sub(r"\\\n", "", item[1]))))
+        marked = _drop_foreign_heredocs(_decode_dollar_quotes(_mark_defaults(_rewrite_consts(re.sub(r"\\\n", "", item[1])))))
         for t in (_commands(marked) if ok else []):
             if t[0] == "__variable_program__" and PARAM_WORD.search(item[1]):
                 bad.append(f"{item[0]}: a program is named by a variable with a default ({t[1]}); bash runs the "
@@ -2531,7 +2543,9 @@ def check_runs(where_job, scripts, bad, tree=None):
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(read(raw))))
         bases = item[6] if len(item) > 6 else ()
-        inlined.append(_run_scripts(read(raw), tree, moved, 0, where, job0, bases) if ok else ("", []))
+        more, also = _run_scripts(read(raw), tree, moved, 0, where, job0, bases) if ok else ("", [])
+        # each script is read on its own, as written (before ${NAME:-word} is read away): its literal-path variables are replaced in it alone
+        inlined.append((_rewrite_consts(more), also))
 
     job_text = job0 + "".join("\n" + read(m) for m, _ in inlined if m)
     # every committed script read for this job must run as committed: nothing in the job, its -c / eval strings or the
@@ -2555,7 +2569,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         wdir = item[3] if len(item) > 3 else None
         bad += [f"{where}: {x}" for x in also]
         own = read(raw)
-        raw = raw + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own
+        raw = _rewrite_consts(raw) + ("\n" + more if more else "")     # the scripts' commands are checked as this step's own (the step's own text too, as written)
         text = read(raw)
         own_nc = _mask_shell(text)[0]         # the step's text AND the committed scripts it runs, without comments, for reading a literal value (r24)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(text)))
