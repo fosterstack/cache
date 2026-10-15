@@ -39,11 +39,20 @@ MKTEMP=/usr/bin/mktemp          # TEST-SUBST
 
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 
-usage() { die "usage: $SELF refresh --repo-dir DIR --archive DIR | $SELF fips-module --go-root DIR --repo-dir DIR"; }
+usage() { die "usage: $SELF refresh --repo-dir DIR --archive DIR [--plan-dir DIR] | $SELF fips-module --go-root DIR --repo-dir DIR [--plan-dir DIR] | $SELF open-pr --plan-dir DIR --repo-dir DIR [--archive DIR --archive-digest sha256:HEX] | $SELF bootstrap --repo-dir DIR --archive DIR"; }
 
 # open_pr BRANCH TITLE BODY PATH...: branch, commit, push the branch (never main), open the PR (never merge it)
 open_pr() {
   local branch=$1 title=$2 body=$3; shift 3
+  if [ -n "$plan_dir" ] && [ "$cmd" != open-pr ]; then   # staged: the pull request is written down and opened later by `open-pr`, once the archive is stored (rules 6 and 7)
+    local seq pd
+    mkdir -p "$plan_dir" || die "could not create $plan_dir" 1
+    seq=$(( $(ls -1 "$plan_dir" | wc -l) + 1 )); pd=$plan_dir/$seq-$cmd
+    mkdir -p "$pd" && printf '%s\n' "$branch" >"$pd/branch" && printf '%s\n' "$title" >"$pd/title" && printf '%s\n' "$body" >"$pd/body" \
+      && printf '%s\n' "$@" >"$pd/paths" || die "could not write the plan to $plan_dir" 1
+    echo "planned: $branch (opened later by open-pr)"
+    return 0
+  fi
   local base=$branch n=1
   # a branch name already taken on the remote (a closed or merged PR) gets a -2, -3, ... suffix instead of a failed push
   while [ -n "$("$GIT" -C "$repo" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" ]; do
@@ -63,13 +72,15 @@ open_pr() {
 }
 
 cmd=${1:-}; [ -n "$cmd" ] || usage; shift
-repo= archive= goroot= pr_author=
+repo= archive= goroot= pr_author= plan_dir= archive_digest=
 while [ $# -gt 0 ]; do
   case $1 in
     --repo-dir) [ $# -ge 2 ] || usage; repo=$2; shift 2;;
     --archive) [ $# -ge 2 ] || usage; archive=$2; shift 2;;
     --go-root) [ $# -ge 2 ] || usage; goroot=$2; shift 2;;
     --pr-author) [ $# -ge 2 ] || usage; pr_author=$2; shift 2;;
+    --plan-dir) [ $# -ge 2 ] || usage; plan_dir=$2; shift 2;;
+    --archive-digest) [ $# -ge 2 ] || usage; archive_digest=$2; shift 2;;
     *) die "unknown argument: $1";;
   esac
 done
@@ -81,6 +92,101 @@ cleanup() { local rc=$?; set +e; rm -rf "$tmp" 2>/dev/null || true; exit $rc; } 
 trap cleanup EXIT
 
 case $cmd in
+bootstrap)
+  # The archive does not exist yet (build/archive.json is absent on main). The one trust anchor is the key line committed in
+  # build/locks/archive-keys.sha256: the live Wolfi key is fetched, its sha256 must be that line, and only then is it the new archive's
+  # key. A missing or repeated line, or a different key, stops for a human (exit 3): there is no trust on first use.
+  [ -n "$archive" ] || die "--archive is required"
+  if [ -e "$archive" ] || [ -L "$archive" ]; then
+    { [ -d "$archive" ] && [ ! -L "$archive" ] && [ -z "$(ls -A "$archive")" ]; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
+  fi
+  "$CURL" -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  "$PY3" -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
+import hashlib, os, re, sys
+repo, live, archive = sys.argv[1:4]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+raw = open(live, "rb").read()
+if hashlib.sha256(raw).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+os.makedirs(archive + "/keys", exist_ok=True)
+with open(archive + "/keys/wolfi-signing.rsa.pub", "xb") as f:
+    f.write(raw); f.flush(); os.fsync(f.fileno())
+print("bootstrap: the archive was seeded with the pinned Wolfi signing key")
+PY
+  ;;
+
+open-pr)
+  # Opens the pull requests that `refresh` / `fips-module --plan-dir` staged, after the archive was stored. The refresh pull request also carries
+  # build/archive.json, the pointer naming the stored digest (advisor 0440 (3)). Nothing is opened unless every plan validates first.
+  [ -n "$plan_dir" ] && [ -d "$plan_dir" ] || die "--plan-dir must be an existing directory"
+  if [ -n "$archive_digest" ]; then
+    case $archive_digest in sha256:????????????????????????????????????????????????????????????????) ;; *) die "--archive-digest must be sha256:<64 hex>";; esac
+    [ -z "$(printf '%s' "${archive_digest#sha256:}" | tr -d '0-9a-f')" ] || die "--archive-digest must be sha256:<64 lower-case hex>"
+    [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
+  fi
+  "$PY3" -I -B - "$repo" "$plan_dir" "$archive" "$archive_digest" "$(cd "$(dirname "$0")" && pwd)" "$tmp" <<'PY' || exit $?
+import json, os, re, subprocess, sys
+repo, plan_dir, archive, digest, BINDIR, tmp = sys.argv[1:7]
+def fail(msg, code=2): print("refresh-inputs.sh: " + msg, file=sys.stderr); sys.exit(code)
+plans = []
+for name in sorted(os.listdir(plan_dir), key=lambda n: (int(n.split("-")[0]) if n.split("-")[0].isdigit() else 10**9, n)):
+    d = plan_dir + "/" + name
+    if not os.path.isdir(d): fail("plan %s is not a directory" % name)
+    try:
+        branch, title, body = (open(d + "/" + f).read().rstrip("\n") for f in ("branch", "title", "body"))
+        paths = [l for l in open(d + "/paths").read().split("\n") if l]
+    except OSError as e:
+        fail("plan %s is incomplete (%s)" % (name, e))
+    if not re.fullmatch(r"refresh/[A-Za-z0-9._-]+", branch): fail("plan %s names the branch %r, not one under refresh/" % (name, branch))
+    if not paths: fail("plan %s names no file" % name)
+    for p in paths:
+        if p.startswith("/") or ".." in p.split("/") or not os.path.isfile(repo + "/" + p): fail("plan %s names %r, which is not a file of the repository" % (name, p))
+    plans.append((branch, title, body, paths, branch.startswith("refresh/fips-module-")))
+if not plans:
+    print("open-pr: nothing planned, nothing opened"); open(tmp + "/ncount", "w").write("0\n"); sys.exit(0)
+if digest and not any(not p[4] for p in plans):
+    print("open-pr: the plan holds no refresh pull request, so the pointer is not written")
+out = []
+for branch, title, body, paths, fips in plans:
+    if digest and not fips:
+        r = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/archive-verify.py", "make-pointer", "--dir", archive, "--digest", digest,
+                            "--out", repo + "/build/archive.json"], capture_output=True, text=True)
+        if r.returncode != 0: fail("the pointer for %s could not be made: %s" % (digest, (r.stderr or r.stdout).strip()), 1)
+        paths = paths + ["build/archive.json"]
+        body += "\n\nThe archive was stored in our registry at %s; this pull request moves build/archive.json to it." % digest
+    out.append("\0".join([branch, title, body] + paths))
+open(tmp + "/plans", "w").write("\n\1\n".join(out))
+open(tmp + "/ncount", "w").write("%d\n" % len(out))
+PY
+  [ "$(cat "$tmp/ncount" 2>/dev/null || echo 0)" != 0 ] || exit 0
+  # the validated plans, one open_pr each, in plan order
+  "$PY3" -I -B - "$tmp/plans" "$tmp" <<'PY' || exit $?
+import sys
+parts = open(sys.argv[1]).read().split("\n\1\n")
+for i, p in enumerate(parts, 1):
+    f = p.split("\0")
+    open("%s/p%d.branch" % (sys.argv[2], i), "w").write(f[0])
+    open("%s/p%d.title" % (sys.argv[2], i), "w").write(f[1])
+    open("%s/p%d.body" % (sys.argv[2], i), "w").write(f[2])
+    open("%s/p%d.paths" % (sys.argv[2], i), "w").write("\n".join(f[3:]) + "\n")
+PY
+  n=$(cat "$tmp/ncount"); i=1; rc_all=0
+  while [ "$i" -le "$n" ]; do
+    paths=(); while IFS= read -r l; do [ -n "$l" ] && paths+=("$l"); done <"$tmp/p$i.paths"
+    open_pr "$(cat "$tmp/p$i.branch")" "$(cat "$tmp/p$i.title")" "$(cat "$tmp/p$i.body")" "${paths[@]}" || rc_all=1
+    i=$((i+1))
+  done
+  exit $rc_all
+  ;;
+
 refresh)
   [ -n "$archive" ] && [ -d "$archive" ] || die "--archive must be an existing directory"
   archived_key=$archive/keys/wolfi-signing.rsa.pub

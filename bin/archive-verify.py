@@ -6,6 +6,7 @@
   archive-verify.py artifact --pointer FILE        print the artifact the pointer names
   archive-verify.py pack --dir DIR --layout DIR    write an OCI layout; print REPO@sha256:<manifest digest>
   archive-verify.py unpack --pointer FILE --layout DIR --out DIR
+  archive-verify.py make-pointer --dir DIR --digest sha256:HEX --out FILE   write the pointer naming that artifact and DIR's files
 
 Exit codes: 0 ok, 1 verification failed (names the file), 2 refused (bad input).
 This file reads nothing from its caller's surroundings and runs no other program; it uses hashlib, json, os, re and sys only.
@@ -135,6 +136,25 @@ def cmd_artifact(a):
     print("%s@%s" % (REPO, digest))
 
 
+def cmd_make_pointer(a):
+    digest = a["--digest"]
+    if not re.match(r"^sha256:[0-9a-f]{64}$", digest):
+        die("--digest must be sha256:<64 lower-case hex>")
+    have, odd = scan(a["--dir"])
+    if odd:
+        die("%s holds what a pointer cannot name:\n  %s" % (a["--dir"], "\n  ".join(sorted(odd))), 1)
+    if not have:
+        die("%s holds no file" % a["--dir"], 1)
+    doc = {"schema": 1, "artifact": "%s@%s" % (REPO, digest), "files": [{"name": n, "sha256": have[n]} for n in sorted(have)]}
+    out = a["--out"]
+    tmp = "%s.tmp-%s" % (out, os.urandom(8).hex())
+    with open(tmp, "x", encoding="utf-8") as f:
+        f.write(json.dumps(doc, indent=1) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, out)
+
+
 def put(layout, data):
     h = sha(data)
     with open(os.path.join(layout, "blobs", "sha256", h), "wb") as f:
@@ -257,12 +277,14 @@ def cmd_unpack(a):
 
 def main(argv):
     if len(argv) < 2:
-        die("usage: archive-verify.py verify|pointer-check|artifact|pack|unpack ...")
+        die("usage: archive-verify.py verify|pointer-check|artifact|pack|unpack|make-pointer ...")
     cmd, rest = argv[1], argv[2:]
     allowed = {"verify": ("--pointer", "--dir", "--pushed-digest"), "pointer-check": ("--pointer",), "artifact": ("--pointer",),
-               "pack": ("--dir", "--layout"), "unpack": ("--pointer", "--layout", "--out")}
+               "pack": ("--dir", "--layout"), "unpack": ("--pointer", "--layout", "--out"),
+               "make-pointer": ("--dir", "--digest", "--out")}
     required = {"verify": ("--pointer", "--dir"), "pointer-check": ("--pointer",), "artifact": ("--pointer",),
-                "pack": ("--dir", "--layout"), "unpack": ("--pointer", "--layout", "--out")}
+                "pack": ("--dir", "--layout"), "unpack": ("--pointer", "--layout", "--out"),
+                "make-pointer": ("--dir", "--digest", "--out")}
     if cmd not in allowed:
         die("unknown command %s" % cmd)
     a = {}
@@ -275,7 +297,8 @@ def main(argv):
     for r in required[cmd]:
         if r not in a:
             die("%s is required" % r)
-    {"verify": cmd_verify, "pointer-check": cmd_pointer_check, "artifact": cmd_artifact, "pack": cmd_pack, "unpack": cmd_unpack}[cmd](a)
+    {"verify": cmd_verify, "pointer-check": cmd_pointer_check, "artifact": cmd_artifact, "pack": cmd_pack, "unpack": cmd_unpack,
+     "make-pointer": cmd_make_pointer}[cmd](a)
 
 
 if __name__ == "__main__":

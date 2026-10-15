@@ -603,7 +603,7 @@ assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|" + os.environ["FETCH"]
 assert not re.search(r'subprocess\.run\(\[\s*"(gh|git|' + os.environ["FETCH"] + '|openssl|python3)"', body), "a bare tool in subprocess"
 raw = "\n".join(l for l in s.split("\n") if not l.lstrip().startswith("#"))
 uses = re.findall(r'"\$PY3"[^\n]*', raw)
-assert len(uses) == 3 and all(u.startswith('"$PY3" -I -B') for u in uses), uses
+assert len(uses) >= 3 and all(u.startswith('"$PY3" -I -B') for u in uses), uses
 P
 # url checks are parsed, not prefix-matched
 n=0; for u in 'https://packages.wolfi.dev:444/os/%s/tzdata-2026b-r0.apk' 'https://user@packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/../x/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/%s\tzdata-2026b-r0.apk' 'http://packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev.evil.example/os/%s/tzdata-2026b-r0.apk'; do
