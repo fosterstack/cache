@@ -2762,5 +2762,36 @@ case_ r33-b1-ampersand-append-redirect-to-a-quoted-name-bad bad "$(rb 'curl -fsS
           sudo install -m 0755 "/tmp/my tool" /usr/local/bin/tool
           tool --version')"
 
+
+# --- handoff 0440 (1): a program held in a variable counts as literal only in the closed form: the same script assigns it exactly once, at top level before
+#     any function or compound command, to a literal absolute path (NAME=/abs or printf -v NAME %s /abs); the rewritten command is judged by the usual rules
+case_ lit-var-ok ok "$(rb 'bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-lit.sh"
+case_ lit-var-braced-ok ok "$(rb 'bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\${GIT}\" status\n' > ci-lit.sh"
+case_ lit-printf-v-ok ok "$(rb 'bash ci-lit.sh')" "printf 'printf -v CURL %s /usr/bin/true   # TEST-SUBST\n\"\$CURL\" --version\n' > ci-lit.sh"
+case_ lit-var-before-functions-ok ok "$(rb 'bash ci-lit.sh')" "printf 'PY3=/usr/bin/python3\ndie() { echo \"\$1\" >&2; exit 2; }\n\"\$PY3\" -I -B script.py\n' > ci-lit.sh"
+case_ lit-var-behind-sudo-ok ok "$(rb 'bash ci-lit.sh')" "printf 'T=/usr/bin/git\nsudo \"\$T\" status\n' > ci-lit.sh"
+case_ lit-var-docker-unpinned-bad bad "$(rb 'bash ci-lit.sh')" "printf 'D=/usr/bin/docker\n\"\$D\" run alpine:latest\n' > ci-lit.sh"
+case_ lit-var-python-inline-bad bad "$(rb 'bash ci-lit.sh')" "printf 'P=/usr/bin/python3\n\"\$P\" -c \"import os\"\n' > ci-lit.sh"
+case_ lit-var-reassigned-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nG=/tmp/x\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-exported-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nexport G\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-read-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nread G\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-for-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nfor G in /tmp/a; do \"\$G\" a; done\n' > ci-lit.sh"
+case_ lit-var-used-before-assigned-bad bad "$(rb 'bash ci-lit.sh')" "printf '\"\$G\" a\nG=/usr/bin/git\n' > ci-lit.sh"
+case_ lit-var-relative-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=git\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-dot-relative-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=./git\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-traversal-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/../../tmp/x\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-in-function-bad bad "$(rb 'bash ci-lit.sh')" "printf 'f() {\nG=/usr/bin/git\n}\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-in-branch-bad bad "$(rb 'bash ci-lit.sh')" "printf 'if true; then G=/usr/bin/git; fi\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-in-subshell-bad bad "$(rb 'bash ci-lit.sh')" "printf '(G=/usr/bin/git)\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-substitution-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=\$(command -v git)\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-default-expansion-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=\${G:-/usr/bin/git}\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-declare-bad bad "$(rb 'bash ci-lit.sh')" "printf 'declare G=/usr/bin/git\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-env-prefix-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nG=/tmp/evil \"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-unassigned-bad bad "$(rb 'bash ci-lit.sh')" "printf '\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-two-literals-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nH=/usr/bin/curl\nG=/usr/bin/curl\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-array-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=(/usr/bin/git)\n\"\$G\" a\n' > ci-lit.sh"
+case_ lit-var-indirect-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nH=G\n\"\${!H}\" a\n' > ci-lit.sh"
+case_ lit-var-eval-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\neval \"G=/tmp/x\"\n\"\$G\" a\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
