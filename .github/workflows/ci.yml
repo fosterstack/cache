@@ -309,6 +309,11 @@ jobs:
 
       - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
         run: bash bin/vendoring-test.sh </dev/null
+      - name: apk build driver and release signing regressions
+        run: bash bin/build-apk-test.sh
+
+      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
+        run: python3 bin/gen-recipes.py --check
 
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.

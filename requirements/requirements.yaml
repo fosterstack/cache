@@ -2858,7 +2858,7 @@ requirements:
       - id: REQ-BUILDTOOLS-001-AC5
         given: "the recipe template build/melange.yaml.tmpl, the generator bin/gen-recipes.py and the two committed recipes build/melange.yaml and build/melange-fips.yaml"
         when: "bin/gen-recipes.py --check runs"
-        then: "it exits 0 only when both committed recipes are byte-for-byte what the generator makes from the template; the template holds no GOFIPS140, no tab, carriage return or NUL, and no placeholder outside the named set (NAME, DESCRIPTION, FIPS_EXPORT, FIPS_PROOF); the FIPS recipe differs from the regular one only by the generator's two fixed constants (the GOFIPS140 export line and its proof line), the name and the description; any other difference exits 1 printing it (an extra step, GOFLAGS, GOTOOLCHAIN, a Go checksum); the template's sha256 must equal the constant TEMPLATE_SHA256 in the generator, else it exits 1 saying the template changed and the pin must be updated in the same reviewed change; a missing file exits 2 naming it (rule 21; advisor reading: both recipes are generated from one reviewed, sha256-pinned template and differ only in the package name, the description and the two FIPS lines; CI meets rule 21 by checking both committed recipes are byte-for-byte the generator's output and the template matches its pin; behaviour parity rests on the reviewed, pinned template; build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs; mandatory in CI) is the final control)"
+        then: "it exits 0 only when both committed recipes are byte-for-byte what the generator makes from the template; the template holds no GOFIPS140, no tab, carriage return or NUL, and no placeholder outside the named set (NAME, DESCRIPTION, PACKAGES, FIPS_EXPORT, FIPS_PROOF) and the literal build-time placeholder @VERSION@; the FIPS recipe differs from the regular one only by the generator's two FIPS lines (the GOFIPS140 export line and its proof line, taken from the generator's data), the name and the description; any other difference exits 1 printing it (an extra step, GOFLAGS, GOTOOLCHAIN, a Go checksum); the template's sha256 must equal the constant TEMPLATE_SHA256 in the generator, else it exits 1 saying the template changed and the pin must be updated in the same reviewed change; a missing file exits 2 naming it (rule 21; advisor reading: both recipes are generated from one reviewed, sha256-pinned template and differ only in the package name, the description and the two FIPS lines; CI meets rule 21 by checking both committed recipes are byte-for-byte the generator's output and the template matches its pin; behaviour parity rests on the reviewed, pinned template; build-apk.sh's check of the packaged binary (GOFIPS140 stamp, version, vcs; mandatory in CI) is the final control)"
         verification: { method: unit, release_blocking: false }
         status: approved
       - id: REQ-BUILDTOOLS-001-AC6
@@ -2923,5 +2923,67 @@ requirements:
         given: "bin/vendor-check.sh"
         when: "the release chain's script judge scans it"
         then: "it is named by a literal repository-relative path, has a shebang and mode 100755, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no here-document interpreter, builds no command word by substitution, and exits 2 when not run from the repository root"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+  - id: REQ-BUILDAPK-001
+    title: The apk is built by melange from vendored source, sealed from the network, assembly-signed
+    statement: >
+      The fscache apk, regular and FIPS, shall be built by melange from two recipe files of identical source that differ only in the FIPS setting, from vendored Go code, the Go toolchain from the archive and build tools pinned by version, with the network cut at the kernel; it shall be signed during Build and Rebuild with a committed non-secret assembly key, and signed with the release key only by the Release job after Build and Rebuild produce the same package contents.
+    source: [build/melange.yaml, build/melange-fips.yaml, bin/build-apk.sh, bin/release-sign-apks.sh, build/keys/assembly.rsa, build/keys/assembly.rsa.pub, build/keys/release.rsa.pub]
+    tier: community
+    introduced: v0.3.0
+    origin: v0.3.0 rules 11-13, 15, 17-24, 38a, 40, 62 and 85 (owner, Oct 9 2026, "ratify all"; ops/docs/ratify/2026-10-09-v030-rules.md)
+    confidence: implementation-only
+    notes: >
+      Real-run evidence for this group is PENDING the runner proof; the seal (rules 38-41) is not counted as proven until then; the earlier Addenda A-C ran on an older commit of the scripts.
+      Tested with stub melange, sudo and unshare; the real melange run, the bubblewrap runner and the kernel seal will be proven on the Linux runner (rule 41 sealed proof). build/keys/release.rsa.pub is a placeholder file: the PR that commits the real public half must change the placeholder test and the key-shape test. The three-step recipes (setup, build, record, stamp) generated from build/melange.yaml.tmpl have NOT been run with real melange yet: the runner proof is pending. build/locks/melange.lock holds the whole resolved build-tool closure (resolved against live Wolfi on 2026-10-09 by real apko) and the recipes pin the same list; the daily refresh job keeps both current. The Go stamp check needs the version tag v<version> at the source HEAD in the workspace; a real melange run with a tagged source (0.3.0-rc.1) produced fscache-0.3.0_rc1-r0.apk, so melange accepts the underscore pre-release version.
+      Known residuals, listed for the reviewers and not hidden: (1) release signing stages each signed apk as a .new file next to the original and renames after; a crash between the cp and the rename leaves a stray .new that the next run refuses to overwrite (a window, not a wrong release); (2) the X_OK check of the tool directory is not tested; (3) a write through a symlinked PARENT of --out is not refused beyond the directory itself; (4) a value forwarded into an error message is echoed back unescaped (an echo class, no code path acts on it). The real melange runs are pending the runner proof. Ordinary-failure vs network-attempt classification relies on a narrow stderr match; Connection refused / No route to host / Operation not permitted are not classified as AC5 network attempts (Codex round 9 finding 3, accepted as residual by the advisor Oct 10: the wide pattern over-matches ordinary failures such as bwrap EPERM).
+    acceptance_criteria:
+      - id: REQ-BUILDAPK-001-AC1
+        given: "the two committed recipes build/melange.yaml and build/melange-fips.yaml"
+        when: "they are read"
+        then: "each builds ./cmd/fscache from the vendored source with -trimpath and no Dockerfile (rule 11), takes Go 1.27.2 from go.dev through one sha256-pinned fetch step per architecture with GOTOOLCHAIN=local, GOFLAGS=-mod=vendor, GOPROXY=off and CGO_ENABLED=0 (rule 12), uses only local repositories and name=version pins for its build environment (rule 15), writes go version -m to usr/share/fscache/buildinfo.txt (rule 20), stamps the tree and refuses a (devel) or modified binary (rule 24); only the FIPS recipe sets GOFIPS140=v1.0.0 and proves the binary records GOFIPS140=v1.0.0-c2097c7c (rule 13); bin/gen-recipes.py --check passes (both recipes equal the generator's output and the template matches its pin, rule 21)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDAPK-001-AC2
+        given: "bin/build-apk.sh is run with an architecture other than the host's, a version that is not exactly X.Y.Z, X.Y.Z-rcN (numbers without leading zeros, N digits without a leading zero and no dot) or the one snapshot version 0.0.0-rc.1, no, a non-numeric or an impossible SOURCE_DATE_EPOCH, --signing-key, APK_RELEASE_SIGNING_KEY or a proxy in the environment, a GOPROXY other than the exact value off, a non-local or missing --repo, a missing keyring, a source directory without vendor/ or .git, a Go tarball missing from the archive or with the wrong sha256, or a melange lock that lacks a pin of the recipe"
+        when: "it starts"
+        then: "it exits 2 naming the problem before any tool runs (rules 11, 12, 15, 17, 19, 23, 24, 31, 38a)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDAPK-001-AC3
+        given: "a valid bin/build-apk.sh run"
+        when: "it builds"
+        then: "it pre-seeds the Go tarball in melange's cache dir as sha256:<hex>, runs sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 and then melange build under sudo unshare -n with the bubblewrap runner, the archive repository and Wolfi key, --build-date from SOURCE_DATE_EPOCH and the committed assembly key, with no container, no network address, no proxy, no skip-signature flag, SBOM not disabled, and no token or key variable in melange's environment (rules 12, 15, 17, 19, 20, 22, 23, 31, 38a, 62); the script has no test hook: it names python3, git, sudo, unshare and melange by fixed path, reads no variable of the caller beyond SOURCE_DATE_EPOCH, the names it refuses above and GITHUB_ACTIONS (which only decides whether a missing Go toolchain is fatal), runs every interpreter isolated (python3 -I), names openssl, sha256sum, go, env, sudo, unshare and melange by fixed path, and passes the melange call only the closed list of build/sealed-env.json; STATED RESIDUAL: the process environment the script starts in (the search path for the coreutils it calls, a shell startup file named by BASH_ENV) is the invoking chain stage's: a stage file sets none of them (REQ-CHAIN-001-AC1) and the runner image provides the rest, so the script closes what it can name (the tools above) and states the rest"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDAPK-001-AC4
+        given: "a finished build"
+        when: "the apk is checked"
+        then: "it is accepted only if its signature verifies against the committed build/keys/assembly.rsa.pub (the signature bytes are verified: a signature member's name alone is no signature, and the .PKGINFO datahash the signature covers must equal the sha256 of the data stream) and names assembly.rsa.pub, if its binary says neither (devel) nor vcs.modified=true, if its main module version is exactly v<version> (a pseudo-version or another tag is refused) and its vcs.revision is the source's HEAD (a missing or foreign revision is refused), if the fips variant records exactly one GOFIPS140 value, v1.0.0-c2097c7c, and the standard variant records none, if the buildinfo.txt in the apk equals go version -m of the packaged binary (checked when a Go toolchain is on PATH; otherwise the run says it is not verified), and if bin/go-module-sbom.py accepts the module list; it then writes the apk (version X.Y.Z, X.Y.Z_rcN for X.Y.Z-rcN, or 0.0.0_rc1 for the snapshot version) with an index, fscache-modules.spdx.json and inputs-manifest.json, and two builds of the same inputs give the same bytes (rules 13, 15, 20, 22, 24, 31)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDAPK-001-AC5
+        given: "the sealed melange call fails with a network error in its output"
+        when: "bin/build-apk.sh judges the failure"
+        then: "it runs bin/net-probe.py under sudo unshare -n after the failed call and exits 4 (the failure text shows ENETUNREACH, network is unreachable, dial tcp, no such host, a name-resolution failure or could not resolve host; a refused connection, a blocked connection and no route are NOT probed when the standard error of the melange call carries none of those words (a message that also says dial tcp is probed, whatever follows it); the classifier reads that standard error only: an ordinary failure is a stated residual) naming the network attempt only if the probe exits 101; a probe that is not 101 gives a non-zero exit that is not 4; an ordinary failure runs no probe and is not 4; success runs no probe (rule 40)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDAPK-001-AC6
+        given: "bin/build-apk.sh --print-source-date-epoch --source-dir DIR"
+        when: "DIR is a git checkout, and then a directory with no git history"
+        then: "it prints the commit time of HEAD, and refuses the directory with no git history with exit 2 (rules 24, 31)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDAPK-001-AC7
+        given: "bin/release-sign-apks.sh with a Build and a Rebuild output directory and a key"
+        when: "it runs"
+        then: "it signs each released apk with melange sign and that key only when every apk has a counterpart in Rebuild (and no apk only Rebuild has) with the same control AND data sections; it signs nothing and names the apk when they differ (exit 1), when a counterpart is missing or extra, or when anything is a symlink or not a regular file (exit 2); the key file must be named release.rsa and hold exactly one PEM block labelled RSA PRIVATE KEY (no headers, no CR, no second block), its public half is derived from that one block, and the assembly key is refused whatever its bytes or file name; it first verifies the signature bytes of every Build and Rebuild apk against the committed assembly.rsa.pub, signs copies, checks that each carries a signature that verifies against the committed release.rsa.pub, and replaces Build's apks only when all succeeded; it has no option and no variable that names another keys directory (rules 17, 22)"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-BUILDAPK-001-AC8
+        given: "the key files build/keys/assembly.rsa, build/keys/assembly.rsa.pub and build/keys/release.rsa.pub"
+        when: "they are read"
+        then: "the assembly pair is committed and starts with the line saying it is a non-secret assembly key that signs nothing a customer trusts; the third file, release.rsa.pub, holds no key and no PEM block (plain placeholder text) until a human commits the real public half of the release signing key; release signing refuses with 'not a readable public key' while it is a placeholder; and no private key text appears under build/keys except in the committed non-secret assembly.rsa (rules 22, 17)"
         verification: { method: unit, release_blocking: false }
         status: approved
