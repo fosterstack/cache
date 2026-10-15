@@ -321,7 +321,7 @@ def cmd_evidence(argv):
            "govulncheck": {"sha256": hashlib.sha256(graw).hexdigest()},
            "date": {"epoch": int(date), "utc": day}}
     text = json.dumps(doc, sort_keys=True, separators=(",", ":")) + "\n"
-    chain, d = [], out_dir.rstrip("/") or "."       # the missing directories (nearest the existing ancestor last); the existing ancestor is opened once and held
+    chain, d = [], out_dir.rstrip("/") or ("/" if out_dir.startswith("/") else ".")       # the missing directories (nearest the existing ancestor last); the existing ancestor is opened once and held
     while not os.path.lexists(d):
         chain.append(d)
         d = os.path.dirname(d) or "."
