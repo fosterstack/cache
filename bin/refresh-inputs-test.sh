@@ -14,11 +14,11 @@ printf -v FETCH %s curl
 export FETCH
 rfd=$(mktemp -d "$work/rf.XXXXXX")   # this file's own scratch: the stub tool dispatchers and the two script copies
 mkdir -p "$rfd/tools" "$rfd/rfcopy/bin" "$rfd/rfcopy-nossl/bin"
-for t_ in python3 "$FETCH" git gh apko openssl cmp mktemp; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$rfd/tools/$t_"; chmod +x "$rfd/tools/$t_"; done
+for t_ in python3 "$FETCH" git gh apko openssl cmp mktemp rm mkdir; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$rfd/tools/$t_"; chmod +x "$rfd/tools/$t_"; done
 python3 - "$RF_PROD" "$rfd" <<'P'
 import os, re, shutil, sys
 prod, work = sys.argv[1:3]
-names = {"PY3": "python3", "CURL": os.environ["FETCH"], "GIT": "git", "GH": "gh", "APKO": "apko", "OPENSSL": "openssl", "CMP": "cmp", "MKTEMP": "mktemp"}
+names = {"PY3": "python3", "CURL": os.environ["FETCH"], "GIT": "git", "GH": "gh", "APKO": "apko", "OPENSSL": "openssl", "CMP": "cmp", "MKTEMP": "mktemp", "RM": "rm", "MKDIR": "mkdir"}
 for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"OPENSSL": "/nonexistent/openssl"})):
     out = []; seen = set()
     for ln in open(prod).read().split("\n"):
@@ -583,23 +583,23 @@ t "rule 48" "refresh: ...two datahash lines: archive and repo unchanged" test "$
 # no test hook in the production script; the test copy differs from it on the TEST-SUBST lines only (REQ-REFRESH-001-AC23)
 sr2() { local ac=$1 d=$2 kw=$3; shift 3; "$@"; if [ "$(rc)" = 2 ] && grep -Eqi -- "$kw" "$work/log"; then ok; else bad "$ac" "$d (exit $(rc), wanted 2 naming '$kw')"; fi; }
 t "AC23" "refresh-inputs.sh has no test hook: no REFRESH_OPENSSL and no FSCACHE_TEST_MODE in the production file" bash -c "! grep -Eq 'REFRESH_OPENSSL|FSCACHE_TEST_MODE|FSCACHE_[A-Z_]+' '$RF_PROD'"
-t "AC23" "the test copy of refresh-inputs.sh differs from the production file in the TEST-SUBST lines only (and replaces all eight)" python3 - "$RF_PROD" "$RF" <<'P'
+t "AC23" "the test copy of refresh-inputs.sh differs from the production file in the TEST-SUBST lines only (and replaces all ten)" python3 - "$RF_PROD" "$RF" <<'P'
 import re, sys
 a = open(sys.argv[1]).read().split("\n"); b = open(sys.argv[2]).read().split("\n")
 sub = re.compile(r"#\s*TEST-SUBST")
 assert len(a) == len(b), "line count differs"
 d = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
-assert len(d) == 8 and all(sub.search(a[i]) and sub.search(b[i]) for i in d), "differs outside TEST-SUBST lines: %s" % d
+assert len(d) == 10 and all(sub.search(a[i]) and sub.search(b[i]) for i in d), "differs outside TEST-SUBST lines: %s" % d
 P
-t "AC23" "refresh-inputs.sh names its download tool, git, gh, apko, openssl, python3, cmp and mktemp by fixed absolute path, and runs every python3 with -I -B" python3 - "$RF_PROD" <<'P'
+t "AC23" "refresh-inputs.sh names its download tool, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by fixed absolute path, and runs every python3 with -I -B" python3 - "$RF_PROD" <<'P'
 import os, re, sys
 s = open(sys.argv[1]).read()
 for v, want in (("PY3", "/usr/bin/python3"), ("CURL", "/usr/bin/" + os.environ["FETCH"]), ("GIT", "/usr/bin/git"), ("GH", "/usr/bin/gh"), ("APKO", "/usr/local/bin/apko"),
-                ("OPENSSL", "/usr/bin/openssl"), ("CMP", "/usr/bin/cmp"), ("MKTEMP", "/usr/bin/mktemp")):
+                ("OPENSSL", "/usr/bin/openssl"), ("CMP", "/usr/bin/cmp"), ("MKTEMP", "/usr/bin/mktemp"), ("RM", "/bin/rm"), ("MKDIR", "/bin/mkdir")):
     pat = r"(?m)^printf -v %s %%s %s\s+# TEST-SUBST" if v == "CURL" else r"(?m)^%s=%s\s+# TEST-SUBST"   # the download tool's line is a printf -v (a fixed-path text line, ruled by the committed rows)
     assert re.search(pat % (v, re.escape(want)), s), v
 body = "\n".join(re.sub(r'"[^"\n]*"', '""', l) for l in s.split("\n") if not l.lstrip().startswith("#"))
-assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|" + os.environ["FETCH"] + r"|git|gh|apko|openssl|cmp|mktemp)\s", body), "a bare tool word is run"
+assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|" + os.environ["FETCH"] + r"|git|gh|apko|openssl|cmp|mktemp|rm|mkdir)\s", body), "a bare tool word is run"
 assert not re.search(r'subprocess\.run\(\[\s*"(gh|git|' + os.environ["FETCH"] + '|openssl|python3)"', body), "a bare tool in subprocess"
 raw = "\n".join(l for l in s.split("\n") if not l.lstrip().startswith("#"))
 uses = re.findall(r'"\$PY3"[^\n]*', raw)
@@ -1132,9 +1132,9 @@ for e in d["contents"]["packages"]:
     if e["name"] == "busybox": e["version"] = "9.9.9-r0"
 json.dump(d, open(sys.argv[2], "w"))
 P
-for dmg in truncate flip delete swapdata; do
+for dmg in truncate flip delete swapdata trailer; do
   mkrepo; wbm=; mkdir -p "$work/ar"; f="$work/ar/x86_64/busybox-$bbv.apk"; [ -f "$f" ] || echo "FIXTURE: no archived busybox-$bbv.apk" >&2
-  case $dmg in truncate) head -c 100 "$f" >"$f.cut"; mv "$f.cut" "$f";; flip) python3 - "$f" <<'P'
+  case $dmg in trailer) head -c "$(( $(wc -c <"$f") - 8 ))" "$f" >"$f.cut"; mv "$f.cut" "$f";; truncate) head -c 100 "$f" >"$f.cut"; mv "$f.cut" "$f";; flip) python3 - "$f" <<'P'
 import sys
 p = sys.argv[1]; b = bytearray(open(p, "rb").read()); b[len(b)//2] ^= 0xFF; open(p, "wb").write(bytes(b))
 P
@@ -1152,6 +1152,54 @@ SWAP
 done
 mkrepo; run_s4 env GH_STUB_OPEN="refresh/00000000" STUB_LOCK_MEL="$work/live-mel-moved.json" "${rfn[@]:1}" STUB_LOCK_MEL="$work/live-mel-moved.json" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 27" "AC17 probe A (control): the same run with the archive undamaged waits (exit 0, the open PR)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'earlier' '$work/log'"
+# ---- round 1 of the second review (both seats named these; the fixes are tests-first) ----------------------------------------------------------
+# AC21: locks that disagree ONLY in the package identity checksum or the signature checksum are refused like a data-checksum disagreement
+for fld in identity signature; do
+python3 - "$work/ln.json" "$work/ln-$fld.json" "$fld" <<'P'
+import json, sys
+d = json.load(open(sys.argv[1]))
+for e in d["contents"]["packages"]:
+    if e["name"] == "tzdata" and e["architecture"] == "x86_64":
+        if sys.argv[3] == "identity": e["checksum"] = "Q1" + "A" * 27
+        else: e["signature"] = {"range": e.get("signature", {}).get("range", ""), "checksum": "sha1-" + "A" * 27}
+json.dump(d, open(sys.argv[2], "w"))
+P
+mkrepo; before=$(treehash "$work/ar" "$work/rp")
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$work/ln.json" STUB_LOCK_FIPS="$work/ln-$fld.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "rule 48" "AC21: production and FIPS locks that differ only in the $fld checksum of one package are refused (exit 1, 'disagree'), nothing changed" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'disagree' '$work/log' && test \"\$(cat '$work/rc')\" = 1"
+t "rule 48" "AC21: ...$fld checksum disagreement: archive and repo unchanged" test "$(treehash "$work/ar" "$work/rp")" = "$before"
+done
+# AC18: the melange lock already holds the live resolution but the recipes are stale (a run was interrupted between the two writes): the next run regenerates them
+mkrepo
+python3 - "$work/rp/build/locks/melange.lock" "$fx/live-mel-new.lock.json" <<'P'
+import json, sys
+live = json.load(open(sys.argv[2]))["contents"]["packages"]
+names = {e["name"]: e["version"] for e in live if e["architecture"] == "x86_64"}
+assert names.get("zlib") == "1.3.2-r0", names.get("zlib")
+open(sys.argv[1], "w").write("".join("%s=%s\n" % kv for kv in sorted(names.items())))   # the lock is exactly the live resolution; the recipes were not regenerated
+P
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel-new.lock.json" STUB_CURL_DIR="$fx/live" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "rule 21" "AC18: a lock that is already current with recipes that are not (an interrupted run) is repaired by the next run: exit 0 and the recipes carry zlib=1.3.2-r0" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange.yaml' && grep -q 'zlib=1.3.2-r0' '$work/rp/build/melange-fips.yaml'"
+t "rule 21" "AC18: ...after the repair the generator --check passes" gcheck "$work/rp"
+# the archive directory itself is not a symlink (every directory on the way into the archive is a real directory)
+mkrepo; mkdir -p "$work/ar-root-out"; mv "$work/ar" "$work/ar-root-out/real"; ln -s "$work/ar-root-out/real" "$work/ar"; before=$(treehash "$work/rp")
+run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "rule 31" "AC18: an archive directory that is itself a symlink is refused before any write (exit 1, names symlink)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -qi 'symlink' '$work/log' && test \"\$(treehash '$work/ar-root-out/real' '$work/rp' 2>/dev/null | wc -l)\" -ge 0"
+rm -f "$work/ar"; mv "$work/ar-root-out/real" "$work/ar"
+# AC23 (rule 4): no utility is called by bare name anywhere in the script (rm, mkdir, dirname, cat and sed included; builtins or fixed paths)
+t "rule 4" "AC23: bin/refresh-inputs.sh calls no utility by bare name (rm, mkdir, dirname, cat, sed, ls, wc are fixed paths, builtins or parameter expansions)" python3 - "$RF_PROD" <<'P'
+import re, sys
+inh = None; bad = []
+for n, l in enumerate(open(sys.argv[1]).read().split("\n"), 1):
+    if inh:                                   # the python heredocs are not shell commands
+        if l.strip() == inh: inh = None
+        continue
+    m = re.search(r"<<'(\w+)'", l)
+    if m: inh = m.group(1)
+    if l.lstrip().startswith("#"): continue
+    if re.search(r"(?:^|[;&|(]|\$\(|\bthen |\bdo |\belse )\s*(?:rm|mkdir|dirname|cat|sed|ls|wc)\s", re.sub(r"#\s*TEST-SUBST.*$", "", l)): bad.append("%d: %s" % (n, l.strip()[:100]))
+assert not bad, bad
+P
 # B (AC22): a legacy plain pointer must be a signed index BEFORE any early exit, also when it equals the record
 for path in open-changed open-same none-same; do
   mkrepo

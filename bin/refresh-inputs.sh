@@ -34,6 +34,10 @@ GIT=/usr/bin/git                # TEST-SUBST
 GH=/usr/bin/gh                  # TEST-SUBST
 APKO=/usr/local/bin/apko        # TEST-SUBST (bin/install-build-tools.sh apko puts it there)
 OPENSSL=/usr/bin/openssl        # TEST-SUBST
+RM=/bin/rm                      # TEST-SUBST
+MKDIR=/bin/mkdir                # TEST-SUBST
+case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # this script's directory, without dirname
+dir_empty() { local e; for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do { [ -e "$e" ] || [ -L "$e" ]; } && return 1; done; return 0; }   # no ls
 CMP=/usr/bin/cmp                # TEST-SUBST
 MKTEMP=/usr/bin/mktemp          # TEST-SUBST
 
@@ -46,9 +50,9 @@ open_pr() {
   local branch=$1 title=$2 body=$3; shift 3
   if [ -n "$plan_dir" ] && [ "$cmd" != open-pr ]; then   # staged: the pull request is written down and opened later by `open-pr`, once the archive is stored (rules 6 and 7)
     local seq pd
-    mkdir -p "$plan_dir" || die "could not create $plan_dir" 1
-    seq=$(( $(ls -1 "$plan_dir" | wc -l) + 1 )); pd=$plan_dir/$seq-$cmd
-    mkdir -p "$pd" && printf '%s\n' "$branch" >"$pd/branch" && printf '%s\n' "$title" >"$pd/title" && printf '%s\n' "$body" >"$pd/body" \
+    "$MKDIR" -p "$plan_dir" || die "could not create $plan_dir" 1
+    seq=1; for _e in "$plan_dir"/*; do [ -e "$_e" ] && seq=$((seq+1)); done; pd=$plan_dir/$seq-$cmd
+    "$MKDIR" -p "$pd" && printf '%s\n' "$branch" >"$pd/branch" && printf '%s\n' "$title" >"$pd/title" && printf '%s\n' "$body" >"$pd/body" \
       && printf '%s\n' "$@" >"$pd/paths" || die "could not write the plan to $plan_dir" 1
     echo "planned: $branch (opened later by open-pr)"
     return 0
@@ -88,7 +92,7 @@ done
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
 tmp=$("$MKTEMP" -d)
-cleanup() { local rc=$?; set +e; rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
+cleanup() { local rc=$?; set +e; "$RM" -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
 trap cleanup EXIT
 
 case $cmd in
@@ -98,7 +102,7 @@ bootstrap)
   # key. A missing or repeated line, or a different key, stops for a human (exit 3): there is no trust on first use.
   [ -n "$archive" ] || die "--archive is required"
   if [ -e "$archive" ] || [ -L "$archive" ]; then
-    { [ -d "$archive" ] && [ ! -L "$archive" ] && [ -z "$(ls -A "$archive")" ]; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
+    { [ -d "$archive" ] && [ ! -L "$archive" ] && dir_empty "$archive"; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
   fi
   "$CURL" -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
   "$PY3" -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
@@ -132,7 +136,7 @@ open-pr)
     [ -z "$(printf '%s' "${archive_digest#sha256:}" | tr -d '0-9a-f')" ] || die "--archive-digest must be sha256:<64 lower-case hex>"
     [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
   fi
-  "$PY3" -I -B - "$repo" "$plan_dir" "$archive" "$archive_digest" "$(cd "$(dirname "$0")" && pwd)" "$tmp" <<'PY' || exit $?
+  "$PY3" -I -B - "$repo" "$plan_dir" "$archive" "$archive_digest" "$(cd "$HERE" && pwd)" "$tmp" <<'PY' || exit $?
 import json, os, re, subprocess, sys
 repo, plan_dir, archive, digest, BINDIR, tmp = sys.argv[1:7]
 def fail(msg, code=2): print("refresh-inputs.sh: " + msg, file=sys.stderr); sys.exit(code)
@@ -166,7 +170,8 @@ for branch, title, body, paths, fips in plans:
 open(tmp + "/plans", "w").write("\n\1\n".join(out))
 open(tmp + "/ncount", "w").write("%d\n" % len(out))
 PY
-  [ "$(cat "$tmp/ncount" 2>/dev/null || echo 0)" != 0 ] || exit 0
+  nc=0; read -r nc <"$tmp/ncount" 2>/dev/null || nc=0
+  [ "$nc" != 0 ] || exit 0
   # the validated plans, one open_pr each, in plan order
   "$PY3" -I -B - "$tmp/plans" "$tmp" <<'PY' || exit $?
 import sys
@@ -178,10 +183,10 @@ for i, p in enumerate(parts, 1):
     open("%s/p%d.body" % (sys.argv[2], i), "w").write(f[2])
     open("%s/p%d.paths" % (sys.argv[2], i), "w").write("\n".join(f[3:]) + "\n")
 PY
-  n=$(cat "$tmp/ncount"); i=1; rc_all=0
+  n=$nc; i=1; rc_all=0
   while [ "$i" -le "$n" ]; do
     paths=(); while IFS= read -r l; do [ -n "$l" ] && paths+=("$l"); done <"$tmp/p$i.paths"
-    open_pr "$(cat "$tmp/p$i.branch")" "$(cat "$tmp/p$i.title")" "$(cat "$tmp/p$i.body")" "${paths[@]}" || rc_all=1
+    open_pr "$(<"$tmp/p$i.branch")" "$(<"$tmp/p$i.title")" "$(<"$tmp/p$i.body")" "${paths[@]}" || rc_all=1
     i=$((i+1))
   done
   exit $rc_all
@@ -206,7 +211,7 @@ refresh)
   done
 
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
-  mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
+  "$MKDIR" -p "$tmp/production" "$tmp/fips" "$tmp/melange"
   "$PY3" -I -B - "$repo" "$tmp" <<'PY'
 import sys, yaml
 repo, tmp = sys.argv[1:3]
@@ -226,7 +231,7 @@ PY
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
 
-  "$PY3" -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$(dirname "$0")" && pwd)" "$GH" "$CURL" "$OPENSSL" <<'PY' || exit $?
+  "$PY3" -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" "$CURL" "$OPENSSL" <<'PY' || exit $?
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
 GH, CURL, OPENSSL = sys.argv[6:9]   # fixed locations, named by the shell part above
@@ -288,6 +293,8 @@ def inflate(rest, what, cap=None):
     data = d.decompress(rest, cap + 1)
     if len(data) > cap or d.unconsumed_tail:
         fail("%s decompresses to more than 128 MiB (too large; refusing before anything is checked)" % what)
+    if not d.eof:
+        fail("%s is not a complete gzip stream (its trailer is missing); a human must look" % what)
     used = len(rest) - len(d.unused_data) - len(d.unconsumed_tail)
     return rest[:used], data, d.unused_data
 
@@ -350,7 +357,10 @@ def verify(path, e):
 
 
 def ident(e):
-    return (e["name"], e["version"], e["architecture"], e["control"]["checksum"], e["data"]["checksum"])
+    # every field a lock records about the bytes: the package identity checksum, the signature, control and data checksums and their ranges
+    sig = e.get("signature") or {}
+    return (e["name"], e["version"], e["architecture"], e.get("checksum"), sig.get("checksum"), sig.get("range"),
+            e["control"]["checksum"], e["control"].get("range"), e["data"]["checksum"], e["data"].get("range"))
 
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
@@ -595,6 +605,8 @@ if ahead or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) fo
 
 def check_dirs():
     """every directory on the way into the archive is a real directory, nothing sits where a temporary name goes"""
+    if os.path.islink(archive.rstrip("/") or archive):
+        fail("%s is a symlink; the archive directory itself must be a real directory (nothing was written)" % archive)
     for arch in ARCHS:
         for comp in ("%s/%s" % (archive, arch), "%s/%s/index" % (archive, arch)):
             if os.path.islink(comp):
@@ -689,21 +701,23 @@ if sorted(old_mel) != new_mel:
     for n, v in sorted(old_names.items()):
         if mel_names.get(n) != v:
             notes.append("%s %s is no longer in live Wolfi's resolution (melange build tools); the archived copy is kept" % (n, v))
-    # the recipes are GENERATED from the template and the two data files (the melange lock and the FIPS module file): the job edits only the lock, then asks the
-    # generator what the recipes become. The template and its pin are never touched by an automated change.
-    gen_dir = tmp + "/gen"
-    os.makedirs(gen_dir, exist_ok=True)
-    open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
-    r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
-                         "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
-    if r_.returncode != 0:
-        fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
-    for rf in ("melange.yaml", "melange-fips.yaml"):
-        path = "%s/build/%s" % (repo, rf)
-        out = open("%s/%s" % (gen_dir, rf)).read()
-        if out != open(path).read():
-            recipes[path] = out
-            changed.append(path)
+# the recipes are regenerated and compared on EVERY run, whether or not the lock changed: a run interrupted between the lock write and the recipe writes is
+# repaired by the next one (the lock is already current, the recipes are not)
+# the recipes are GENERATED from the template and the two data files (the melange lock and the FIPS module file): the job edits only the lock, then asks the
+# generator what the recipes become. The template and its pin are never touched by an automated change.
+gen_dir = tmp + "/gen"
+os.makedirs(gen_dir, exist_ok=True)
+open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
+r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
+                     "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
+if r_.returncode != 0:
+    fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
+for rf in ("melange.yaml", "melange-fips.yaml"):
+    path = "%s/build/%s" % (repo, rf)
+    out = open("%s/%s" % (gen_dir, rf)).read()
+    if out != open(path).read():
+        recipes[path] = out
+        changed.append(path)
 
 for n in notes:
     print("note: " + n)
@@ -828,9 +842,9 @@ open(tmp + "/sig", "w").write(sig)
 open(tmp + "/body", "w").write(body)
 PY
   [ -s "$tmp/changed" ] || exit 0
-  branch="refresh/$(cat "$tmp/sig")"
+  branch="refresh/$(<"$tmp/sig")"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/changed"
-  open_pr "$branch" "Refresh the image inputs against live Wolfi (daily job)" "$(cat "$tmp/body")" "${paths[@]}"
+  open_pr "$branch" "Refresh the image inputs against live Wolfi (daily job)" "$(<"$tmp/body")" "${paths[@]}"
   ;;
 
 fips-module)
@@ -838,7 +852,7 @@ fips-module)
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  "$PY3" -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$(dirname "$0")" && pwd)" "$GH" <<'PY' || exit $?
+  "$PY3" -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
 goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR = sys.argv[1:7]
 GH = sys.argv[7]
@@ -956,7 +970,7 @@ open(tmp + "/new", "w").write(newest + "\n" + cur + "\n")
 print("a newer certified module: %s (the FIPS build uses %s)" % (newest, cur))
 PY
   [ -s "$tmp/new" ] || exit 0
-  newest=$(sed -n 1p "$tmp/new"); cur=$(sed -n 2p "$tmp/new")
+  { IFS= read -r newest; IFS= read -r cur; } <"$tmp/new"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/paths"
   open_pr "refresh/fips-module-$newest" "Move the FIPS build to the newer certified Go Cryptographic Module $newest" \
     "The daily check found $newest in Go's own certified-module file; the FIPS build used $cur. This pull request was only opened, not merged. It goes through all the normal checks and the rebuild-from-archive test; there is no shortcut." \
