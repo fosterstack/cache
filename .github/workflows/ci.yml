@@ -319,6 +319,8 @@ jobs:
 
       - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
         run: bash bin/vendor-provenance-test.sh </dev/null
+      - name: image assembly, lock proof and sealed proof regressions
+        run: bash bin/assemble-image-test.sh
 
       # Row 78: every action reference is a full commit digest with its version in
       # a comment, and each comment resolves to the pinned commit. A tag or branch reference fails.

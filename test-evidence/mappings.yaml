@@ -960,6 +960,15 @@ mappings:
   - ac: REQ-VEND-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/vendor-provenance-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
   - ac: REQ-VEND-001-AC2
     evidence:
       - { type: shell-test, ref: "bin/vendoring-test.sh" }
@@ -1027,3 +1036,40 @@ mappings:
   - ac: REQ-BUILDAPK-001-AC9
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-IMAGE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
