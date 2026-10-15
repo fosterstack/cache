@@ -2,10 +2,11 @@
 # proves: REQ-ARCHIVE-001-AC1, REQ-ARCHIVE-001-AC2, REQ-ARCHIVE-001-AC3, REQ-ARCHIVE-001-AC4, REQ-ARCHIVE-001-AC5, REQ-ARCHIVE-001-AC6, REQ-ARCHIVE-001-AC7, REQ-ARCHIVE-001-AC8, REQ-ARCHIVE-001-AC9
 # Tests of the archive tooling: bin/archive-push.sh, bin/archive-pull.sh, bin/archive-verify.py (REQ-ARCHIVE-001; rules 26, 27, 29, 30, 38a, 38b, 44).
 # Offline: crane is a stub that serves a directory registry and records its argv; nothing here touches a network. The production scripts
-# name their tools by fixed path (TEST-SUBST lines); the suite runs a COPY in which exactly those lines point at dispatchers, and checks
-# that the copy differs from the production file in no other line.
+# name every tool by its literal fixed path at the call; the suite runs a COPY in which each occurrence of one of the four fixed paths is replaced, one
+# for one, by a dispatcher, and checks that the copy differs from the production file in nothing else. The scripts run from the repository root.
 set -uo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root" || exit 1   # the scripts name their helper as bin/archive-verify.py: they run from the repository root, as in production
 work=$(mktemp -d); trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "${work:?}"' EXIT
 pass=0 failn=0
 ok()  { pass=$((pass+1)); }
@@ -40,20 +41,16 @@ echo "denied" >&2; exit 1
 STUB
 chmod +x "$work/tools/crane" "$work/tools/crane-fail"
 for t_ in python3 mktemp rm; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$work/tools/$t_"; chmod +x "$work/tools/$t_"; done
-mkcopy() {   # mkcopy DIR [FILE OLD NEW]: a copy of the three production files with the TEST-SUBST lines replaced; optionally one mutation
+mkcopy() {   # mkcopy DIR [FILE OLD NEW]: a copy of the three production files with each occurrence of a fixed tool path replaced by its dispatcher; optionally one mutation
   local d=$1; mkdir -p "$d"
   python3 - "$root/bin" "$d" "$work/tools" "${2:-}" "${3:-}" "${4:-}" <<'P'
 import os, re, sys
 src, dst, tools, mfile, old, new = sys.argv[1:7]
-names = {"PY3": "python3", "CRANE": "crane", "MKTEMP": "mktemp", "RM": "rm"}
+paths = {"/usr/bin/python3": "python3", "/usr/local/bin/crane": "crane", "/usr/bin/mktemp": "mktemp", "/bin/rm": "rm"}
 for f in ("archive-push.sh", "archive-pull.sh", "archive-verify.py"):
-    out = []
-    for row in open(src + "/" + f).read().split("\n"):
-        m = re.match(r"^([A-Z0-9_]+)=.*#\s*TEST-SUBST", row)
-        if "TEST-SUBST" in row and "bin/archive-verify.py" in row:
-            row = row.replace("bin/archive-verify.py", dst + "/archive-verify.py")
-        out.append("%s=%s/%s   # TEST-SUBST" % (m.group(1), tools, names[m.group(1)]) if m and m.group(1) in names else row)
-    s = "\n".join(out)
+    s = open(src + "/" + f).read()
+    for path, n in paths.items():
+        s = re.sub(r"(?<![\w./-])%s(?![\w.-])" % re.escape(path), lambda m, n=n: tools + "/" + n, s)
     if f == mfile:
         assert s.count(old) == 1, (f, old, s.count(old))
         s = s.replace(old, new)
@@ -161,7 +158,7 @@ det_push_digest() { reset; run env STUB_PUSH_PRINT="$REPO@$ZERO" "$1/archive-pus
 t AC2 "crane reporting another digest than the one computed: exit 1, nothing on stdout, the message names the reported digest" det_push_digest "$CP"
 mkcopy "$work/cpf"; python3 - "$work/cpf/archive-push.sh" "$work/tools/crane-fail" <<'P'
 import re, sys
-s = open(sys.argv[1]).read(); s = re.sub(r"(?m)^CRANE=.*$", "CRANE=%s   # TEST-SUBST" % sys.argv[2], s); open(sys.argv[1], "w").write(s)
+s = open(sys.argv[1]).read(); s = re.sub(r"\S+/tools/crane(?!-)", sys.argv[2], s); open(sys.argv[1], "w").write(s)
 P
 reset; run "$work/cpf/archive-push.sh" --dir "$fx"
 t AC2 "a crane push that fails: exit 1, nothing on stdout" bash -c "test '$(rc)' = 1 && ! test -s '$work/o'"
@@ -382,11 +379,13 @@ PY
 TOOLS="crane python3 python mktemp rm mv cp cat dirname readlink sha256sum shasum openssl git gh tar gzip find sed awk env"
 t AC9 "no bare tool word in archive-push.sh (every tool is named by a variable holding a fixed path)" python3 "$work/toolscan.py" "$PUSH" $TOOLS
 t AC9 "no bare tool word in archive-pull.sh" python3 "$work/toolscan.py" "$PULL" $TOOLS
-t AC9 "each shell script defines its tools as absolute paths on lines marked TEST-SUBST (PY3, MKTEMP, RM and CRANE)" python3 - "$PUSH" "$PULL" <<'P'
+t AC9 "each shell script names its tools by their literal fixed absolute path at the call (python3, mktemp, rm and crane) and no variable holds a program" python3 - "$PUSH" "$PULL" <<'P'
 import re, sys
 for p in sys.argv[1:]:
-    d = dict(re.findall(r"^([A-Z0-9_]+)=(/\S+)\s+#\s*TEST-SUBST", open(p).read(), re.M))
-    assert set(d) == {"PY3", "CRANE", "MKTEMP", "RM"}, (p, d)
+    s = open(p).read()
+    for want in ("/usr/bin/python3", "/usr/bin/mktemp", "/bin/rm", "/usr/local/bin/crane"): assert want in s, (p, want)
+    assert not re.search(r"(?m)^(PY3|CRANE|MKTEMP|RM)=", s), p
+    assert not re.search(r"\"\$\{?(PY3|CRANE|MKTEMP|RM)\}?\"", s), p
 P
 t AC9 "every python3 call is python3 -I -B" python3 - "$PUSH" "$PULL" <<'P'
 import re, sys
@@ -394,27 +393,30 @@ n = 0
 for p in sys.argv[1:]:
     for ln in open(p).read().split("\n"):
         if ln.lstrip().startswith("#"): continue
-        for m in re.finditer(r"\"\$PY3\"(.{0,12})", ln):
+        for m in re.finditer(r"/usr/bin/python3(.{0,12})", ln):
             n += 1; assert re.match(r"\s+-I\s+-B\b", m.group(1)), (p, ln)
 assert n >= 3, n
 P
 t AC9 "archive-verify.py runs no subprocess and opens no socket (hashlib, json, os, re, sys only)" bash -c "! grep -Eq '^ *(import|from) +(subprocess|socket|urllib|http|ssl|shutil|tempfile|ctypes|requests)' '$VER' && grep -Eq '^import' '$VER'"
 t AC9 "no test hook: neither script mentions a test mode or a TEST_ or ARCHIVE_ variable" bash -c "! grep -v TEST-SUBST '$PUSH' '$PULL' '$VER' | grep -En 'TEST_MODE|FSCACHE_TEST|ARCHIVE_[A-Z]+|TEST_[A-Z]+'"
-t AC9 "the copy the suite runs differs from each production file only in lines marked TEST-SUBST" python3 - "$root/bin" "$CP" <<'P'
-import sys
+t AC9 "the copy the suite runs differs from each production file ONLY in occurrences of the four fixed paths, each replaced one for one by the dispatcher of that tool (any other byte difference fails)" python3 - "$root/bin" "$CP" "$work/tools" <<'P'
+import re, sys
+paths = {"python3": "/usr/bin/python3", "crane": "/usr/local/bin/crane", "mktemp": "/usr/bin/mktemp", "rm": "/bin/rm"}
+pa = re.compile(r"(?<![\w./-])(%s)(?![\w.-])" % "|".join(re.escape(p) for p in paths.values()))
+pb = re.compile(r"(?<![\w./-])%s/(%s)(?![\w.-])" % (re.escape(sys.argv[3]), "|".join(paths)))
 for f in ("archive-push.sh", "archive-pull.sh", "archive-verify.py"):
-    a = open(sys.argv[1] + "/" + f).read().split("\n"); b = open(sys.argv[2] + "/" + f).read().split("\n")
-    assert len(a) == len(b), f
-    for x, y in zip(a, b):
-        assert x == y or ("TEST-SUBST" in x and "TEST-SUBST" in y), (f, x, y)
+    a = open(sys.argv[1] + "/" + f).read(); b = open(sys.argv[2] + "/" + f).read()
+    fa = pa.findall(a); fb = pb.findall(b)
+    assert [paths[n] for n in fb] == fa, (f, fa, fb)
+    assert pb.sub(lambda m: paths[m.group(1)], b) == a, f
 P
-t AC9 "each shell script names its helper by the literal path bin/archive-verify.py on a TEST-SUBST line (run from the repository root): no variable, no substitution, no directory lookup" python3 - "$PUSH" "$PULL" <<'P'
+t AC9 "each shell script names its helper by the literal path bin/archive-verify.py (run from the repository root): no variable, no substitution, no directory lookup" python3 - "$PUSH" "$PULL" <<'P'
 import re, sys
 for p in sys.argv[1:]:
     s = open(p).read()
     assert "VERIFY" not in s and "$(cd" not in s and "BASH_SOURCE" not in s, p
     rows = [r for r in s.split("\n") if "archive-verify.py" in r and not r.lstrip().startswith("#")]
-    assert rows and all("bin/archive-verify.py" in r and "TEST-SUBST" in r and '"$PY3" -I -B bin/archive-verify.py' in r for r in rows), (p, rows)
+    assert rows and all("bin/archive-verify.py" in r and "/usr/bin/python3 -I -B bin/archive-verify.py" in r for r in rows), (p, rows)
 P
 t AC9 "the shell scripts set -euo pipefail" bash -c "grep -q '^set -euo pipefail' '$PUSH' && grep -q '^set -euo pipefail' '$PULL'"
 
@@ -441,18 +443,18 @@ mut extra-unchecked archive-verify.py 'extra = sorted(set(have) - set(want))' 'e
 mut half-pull-overwrites archive-pull.sh '[ ! -e "$out" ] && [ ! -L "$out" ]' 'true' det_half
 mut half-pull-missing archive-verify.py 'missing = sorted(set(want) - set(have))' 'missing = []' det_half
 mut pushed-digest-unchecked archive-verify.py 'if pushed is not None and pushed != digest:' 'if False:' det_pushed
-for spec in "m-crane|archive-push.sh|\"\$CRANE\" push \"\$tmp/layout\"|crane push \"\$tmp/layout\"" \
-            "m-crane-q|archive-pull.sh|\"\$CRANE\" pull --format oci|cr'an'e pull --format oci" \
-            "m-mktemp|archive-pull.sh|\"\$MKTEMP\" -d|mktemp -d" \
-            "m-rm|archive-push.sh|\"\$RM\" -rf \"\$tmp\"|rm -rf \"\$tmp\"" \
-            "m-nest|archive-pull.sh|\"\$CRANE\" pull --format oci|\"\$(true \$(printf x); crane pull)\" --format oci"; do
+for spec in "m-crane|archive-push.sh|$work/tools/crane push \"\$tmp/layout\"|crane push \"\$tmp/layout\"" \
+            "m-crane-q|archive-pull.sh|$work/tools/crane pull --format oci|cr'an'e pull --format oci" \
+            "m-mktemp|archive-pull.sh|$work/tools/mktemp -d|mktemp -d" \
+            "m-rm|archive-push.sh|$work/tools/rm -rf \"\$tmp\"|rm -rf \"\$tmp\"" \
+            "m-nest|archive-pull.sh|$work/tools/crane pull --format oci|\"\$(true \$(printf x); crane pull)\" --format oci"; do
   IFS='|' read -r n f old new <<<"$spec"
   if ! mkcopy "$work/mt-$n" "$f" "$old" "$new" 2>"$work/mkerr"; then bad AC9 "tool mutant $n: $(tail -1 "$work/mkerr")"; continue; fi
   if cmp -s "$work/mt-$n/$f" "$CP/$f"; then bad AC9 "tool mutant $n equals the original"; continue; fi
   if python3 "$work/toolscan.py" "$work/mt-$n/$f" $TOOLS >/dev/null 2>&1; then bad AC9 "the tool-path scan misses the mutant $n"; else ok; fi
 done
-mkcopy "$work/mt-py" archive-pull.sh '"$PY3" -I -B '"$work/mt-py"'/archive-verify.py unpack' '"$PY3" '"$work/mt-py"'/archive-verify.py unpack'
-t AC9 "the -I -B assertion bites: a python3 call without them is found" bash -c "grep -v '^ *#' '$work/mt-py/archive-pull.sh' | grep -Eq '\"\\\$PY3\" +[^-]'"
+mkcopy "$work/mt-py" archive-pull.sh "$work/tools/python3 -I -B bin/archive-verify.py unpack" "$work/tools/python3 bin/archive-verify.py unpack"
+t AC9 "the -I -B assertion bites: a python3 call without them is found" bash -c "grep -v '^ *#' '$work/mt-py/archive-pull.sh' | grep -Eq 'tools/python3 +[^-]'"
 
 echo "archive-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

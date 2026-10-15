@@ -18,18 +18,18 @@ for t_ in python3 "$FETCH" git gh apko openssl cmp mktemp rm mkdir; do printf '#
 python3 - "$RF_PROD" "$rfd" <<'P'
 import os, re, shutil, sys
 prod, work = sys.argv[1:3]
-names = {"PY3": "python3", "CURL": os.environ["FETCH"], "GIT": "git", "GH": "gh", "APKO": "apko", "OPENSSL": "openssl", "CMP": "cmp", "MKTEMP": "mktemp", "RM": "rm", "MKDIR": "mkdir"}
-for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"OPENSSL": "/nonexistent/openssl"})):
-    out = []; seen = set()
-    for ln in open(prod).read().split("\n"):
-        m = re.match(r"^(?:printf -v )?([A-Z0-9_]+)(?:=| %s ).*#\s*TEST-SUBST", ln)   # NAME=path, or the printf -v form of the download tool's line
-        if m and m.group(1) in names:
-            seen.add(m.group(1)); out.append("%s=%s   # TEST-SUBST" % (m.group(1), over.get(m.group(1), work + "/tools/" + names[m.group(1)])))
-        else:
-            out.append(ln)
-    assert seen == set(names), sorted(set(names) - seen)
+# the production script names every tool by its literal fixed path at the call; the copy is the same bytes with each occurrence of one of the ten fixed
+# paths replaced, one for one, by the dispatcher of that tool (REQ-REFRESH-001-AC23)
+paths = {"/usr/bin/python3": "python3", "/usr/bin/" + os.environ["FETCH"]: os.environ["FETCH"], "/usr/bin/git": "git", "/usr/bin/gh": "gh", "/usr/local/bin/apko": "apko",
+         "/usr/bin/openssl": "openssl", "/usr/bin/cmp": "cmp", "/usr/bin/mktemp": "mktemp", "/bin/rm": "rm", "/bin/mkdir": "mkdir"}
+text = open(prod).read()
+for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"/usr/bin/openssl": "/nonexistent/openssl"})):
+    out = text
+    for path, name in paths.items():
+        assert re.search(r"(?<![\w./-])%s(?![\w.-])" % re.escape(path), out), "the production file never names " + path
+        out = re.sub(r"(?<![\w./-])%s(?![\w.-])" % re.escape(path), lambda m, n=name, o=over, pth=path: o.get(pth, work + "/tools/" + n), out)
     dst = "%s/%s/bin" % (work, d)
-    open(dst + "/refresh-inputs.sh", "w").write("\n".join(out)); os.chmod(dst + "/refresh-inputs.sh", 0o755)
+    open(dst + "/refresh-inputs.sh", "w").write(out); os.chmod(dst + "/refresh-inputs.sh", 0o755)
     for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh", "archive-verify.py"):
         shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
 P
@@ -583,27 +583,36 @@ t "rule 48" "refresh: ...two datahash lines: archive and repo unchanged" test "$
 # no test hook in the production script; the test copy differs from it on the TEST-SUBST lines only (REQ-REFRESH-001-AC23)
 sr2() { local ac=$1 d=$2 kw=$3; shift 3; "$@"; if [ "$(rc)" = 2 ] && grep -Eqi -- "$kw" "$work/log"; then ok; else bad "$ac" "$d (exit $(rc), wanted 2 naming '$kw')"; fi; }
 t "AC23" "refresh-inputs.sh has no test hook: no REFRESH_OPENSSL and no FSCACHE_TEST_MODE in the production file" bash -c "! grep -Eq 'REFRESH_OPENSSL|FSCACHE_TEST_MODE|FSCACHE_[A-Z_]+' '$RF_PROD'"
-t "AC23" "the test copy of refresh-inputs.sh differs from the production file in the TEST-SUBST lines only (and replaces all ten)" python3 - "$RF_PROD" "$RF" <<'P'
-import re, sys
-a = open(sys.argv[1]).read().split("\n"); b = open(sys.argv[2]).read().split("\n")
-sub = re.compile(r"#\s*TEST-SUBST")
-assert len(a) == len(b), "line count differs"
-d = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
-assert len(d) == 10 and all(sub.search(a[i]) and sub.search(b[i]) for i in d), "differs outside TEST-SUBST lines: %s" % d
+t "AC23" "the test copy of refresh-inputs.sh differs from the production file ONLY in occurrences of the ten fixed paths, each replaced one for one by the dispatcher of that tool (any other byte difference fails)" python3 - "$RF_PROD" "$RF" "$rfd/tools" <<'P'
+import os, re, sys
+a = open(sys.argv[1]).read(); b = open(sys.argv[2]).read(); tools = sys.argv[3]
+paths = {"python3": "/usr/bin/python3", os.environ["FETCH"]: "/usr/bin/" + os.environ["FETCH"], "git": "/usr/bin/git", "gh": "/usr/bin/gh", "apko": "/usr/local/bin/apko",
+         "openssl": "/usr/bin/openssl", "cmp": "/usr/bin/cmp", "mktemp": "/usr/bin/mktemp", "rm": "/bin/rm", "mkdir": "/bin/mkdir"}
+pa = re.compile(r"(?<![\w./-])(%s)(?![\w.-])" % "|".join(re.escape(p) for p in sorted(paths.values(), key=len, reverse=True)))
+pb = re.compile(r"(?<![\w./-])%s/(%s)(?![\w.-])" % (re.escape(tools), "|".join(re.escape(n) for n in paths)))
+fa = pa.findall(a); fb = pb.findall(b)
+assert len(fa) == len(fb) and [paths[n] for n in fb] == fa, ("occurrences differ", len(fa), len(fb))
+assert pb.sub(lambda m: paths[m.group(1)], b) == a, "the copy differs from the production file in more than the ten fixed paths"
+assert set(fa) == set(paths.values()), sorted(set(paths.values()) - set(fa))
 P
-t "AC23" "refresh-inputs.sh names its download tool, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by fixed absolute path, and runs every python3 with -I -B" python3 - "$RF_PROD" <<'P'
+t "AC23" "refresh-inputs.sh names its download tool, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by their literal fixed absolute path at the call (no variable holds a program), and runs every python3 with -I -B" python3 - "$RF_PROD" <<'P'
 import os, re, sys
 s = open(sys.argv[1]).read()
-for v, want in (("PY3", "/usr/bin/python3"), ("CURL", "/usr/bin/" + os.environ["FETCH"]), ("GIT", "/usr/bin/git"), ("GH", "/usr/bin/gh"), ("APKO", "/usr/local/bin/apko"),
-                ("OPENSSL", "/usr/bin/openssl"), ("CMP", "/usr/bin/cmp"), ("MKTEMP", "/usr/bin/mktemp"), ("RM", "/bin/rm"), ("MKDIR", "/bin/mkdir")):
-    pat = r"(?m)^printf -v %s %%s %s\s+# TEST-SUBST" if v == "CURL" else r"(?m)^%s=%s\s+# TEST-SUBST"   # the download tool's line is a printf -v (a fixed-path text line, ruled by the committed rows)
-    assert re.search(pat % (v, re.escape(want)), s), v
-body = "\n".join(re.sub(r'"[^"\n]*"', '""', l) for l in s.split("\n") if not l.lstrip().startswith("#"))
-assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|" + os.environ["FETCH"] + r"|git|gh|apko|openssl|cmp|mktemp|rm|mkdir)\s", body), "a bare tool word is run"
-assert not re.search(r'subprocess\.run\(\[\s*"(gh|git|' + os.environ["FETCH"] + '|openssl|python3)"', body), "a bare tool in subprocess"
-raw = "\n".join(l for l in s.split("\n") if not l.lstrip().startswith("#"))
-uses = re.findall(r'"\$PY3"[^\n]*', raw)
-assert len(uses) >= 3 and all(u.startswith('"$PY3" -I -B') for u in uses), uses
+for want in ("/usr/bin/python3", "/usr/bin/" + os.environ["FETCH"], "/usr/bin/git", "/usr/bin/gh", "/usr/local/bin/apko", "/usr/bin/openssl", "/usr/bin/cmp", "/usr/bin/mktemp", "/bin/rm", "/bin/mkdir"):
+    assert want in s, want
+code = [l for l in s.split("\n") if not l.lstrip().startswith("#")]
+inh = None; bad = []
+for n, l in enumerate(code, 1):
+    if inh:
+        if l.strip() == inh: inh = None
+        continue
+    m = re.search(r"<<'(\w+)'", l)
+    if m: inh = m.group(1)
+    if re.search(r"(?:^|[;&|(]|\$\(|\bthen |\bdo |\belse |\|\| |&& |! )\s*\"?\$\{?(PY3|CURL|GIT|GH|APKO|OPENSSL|CMP|MKTEMP|RM|MKDIR)\}?\"?\s", l): bad.append("%d: %s" % (n, l.strip()[:90]))
+    if re.match(r"^(?:printf -v )?(PY3|CURL|GIT|GH|APKO|OPENSSL|CMP|MKTEMP|RM|MKDIR)(?:=| %s )", l): bad.append("assignment: " + l[:60])
+assert not bad, bad
+uses = re.findall(r"/usr/bin/python3[^\n]*", "\n".join(code))
+assert len(uses) >= 3 and all(u.startswith("/usr/bin/python3 -I -B") for u in uses), uses
 P
 # url checks are parsed, not prefix-matched
 n=0; for u in 'https://packages.wolfi.dev:444/os/%s/tzdata-2026b-r0.apk' 'https://user@packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/../x/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/%s\tzdata-2026b-r0.apk' 'http://packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev.evil.example/os/%s/tzdata-2026b-r0.apk'; do
