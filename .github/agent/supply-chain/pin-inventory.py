@@ -873,6 +873,31 @@ def _key_fetch_ok(files, path, text, seg, flat):
     return _KEY_FP in after and bool(re.search(r"sha256sum|openssl[ \t]+dgst|shasum|\bcmp\b", after))
 
 
+# Owner rule 48 (Oct 9: "New Wolfi packages get no 7-day wait; signature checks and archiving still apply"), advisor message Oct 15 (handoff 0452 addition):
+# the refresh job's two python downloads. Host and verifier names are hard-coded here, never read from the script.
+_PY_FETCH = re.compile(r'subprocess\.run\(\[\s*"/usr/bin/curl"\s*,(?P<argv>.*?)"-o"\s*,\s*(?P<var>[A-Za-z_]\w*)\s*,\s*(?P<url>e\["url"\]|"https://packages\.wolfi\.dev/os/[A-Za-z0-9_./%+~-]*"(?:\s*%\s*[A-Za-z_]\w*)?)\s*\]')
+_PY_BAD_OPT = re.compile(r'"(--url|--connect-to|--resolve|-x|--proxy|-K|--config|--next|-T|--upload-file)"')
+_PY_VERIFIERS = ("verify", "verify_index")
+
+
+def _py_wolfi_download_ok(path, flat, later, upto_text):
+    """One python download of the refresh job, accepted only as: argv holding --proto =https, a named -o variable, no destination-changing option, a URL that is
+    a literal on https://packages.wolfi.dev/os/ or the lock entry's e["url"] (then the script holds the host check as literals BEFORE the fetch), and a call of
+    verify or verify_index on that same variable within the next three statements."""
+    if not path.endswith(".sh"):
+        return False
+    m = _PY_FETCH.search(flat)
+    if not m or '"--proto"' not in m.group("argv") or '"=https"' not in m.group("argv") or _PY_BAD_OPT.search(flat):
+        return False
+    if m.group("url") == 'e["url"]':
+        if not ('WOLFI_URL = "https://packages.wolfi.dev/os/"' in upto_text and 'hostname != "packages.wolfi.dev"' in upto_text
+                and re.search(r"startswith\(WOLFI_URL\)", upto_text)):
+            return False
+    var = re.escape(m.group("var"))
+    nxt = [l for l in later if l and not l.lstrip().startswith("#")][:3]
+    return any(re.search(r"(?<![\w.])(?:" + "|".join(_PY_VERIFIERS) + r")\(\s*" + var + r"\b", l) for l in nxt)
+
+
 def unmeasured_occurrences(files):
     """Each unmeasured occurrence as (key, the WHOLE flattened line it was found in, bashlike): the line binds a ruled-text row (REQ-SUP-001-AC16) to the
     line, not to the one downloader segment the key hashes. bashlike is False when the line holds whitespace other than a space or a tab, or was joined from
@@ -882,7 +907,8 @@ def unmeasured_occurrences(files):
             continue  # .github/agent/ is covered by the independent second review (and its tests quote such commands as fixtures)
         mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
         tainted = mark in text
-        for line in re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n"):
+        _lines = re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n")
+        for _li, line in enumerate(_lines):
             bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
             if not tainted:
                 line = line.replace(mark, "")
@@ -892,7 +918,8 @@ def unmeasured_occurrences(files):
             for seg in re.split(r"\s*(?:;|&&|\|\||\|)\s*", flat):    # each downloader invocation on its own: a release URL elsewhere on the line excuses nothing
                 urls = re.findall(r"https?://[^\s'\"]+", _hide(seg))
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
-                if re.search(r"\b(?:curl|wget)\b", seg) and not plain and not _key_fetch_ok(files, path, text, seg, flat):
+                if re.search(r"\b(?:curl|wget)\b", seg) and not plain and not _key_fetch_ok(files, path, text, seg, flat) \
+                        and not _py_wolfi_download_ok(path, flat, [" ".join(x.split()) for x in _lines[_li + 1:_li + 12]], "\n".join(_lines[:_li])):
                     yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":" + _hide(seg)[:100]), flat, bashlike
             if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line
                 probe = []
