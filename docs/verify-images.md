@@ -5,8 +5,9 @@ GitHub's own CI — not by us claiming it, by a chain you can check yourself
 in under a minute, with `cosign` and `gh` plus standard tools (`curl`,
 `sed`, `jq`, `base64`, `sha256sum` or `shasum`).
 
-Every command for v0.3.0 and later below is `cosign`, `sha256sum` and `jq` <!-- pinned: historical -->
-and is fully anonymous: no GitHub token, no registry login. Only the
+No command for v0.3.0 and later below needs a GitHub token or a registry <!-- pinned: historical -->
+login: they resolve the release and fetch files with `curl`, and check them
+with `cosign`, `sha256sum` or `shasum`, `jq` and `base64`. Only the
 `gh attestation verify` commands of the earlier chain (marked "before
 v0.3.0") read GitHub's attestation API and need a token. Resolve the <!-- pinned: historical -->
 current release once and the rest parameterize themselves:
@@ -64,7 +65,7 @@ Rekor entry `provenance.rekor.json`. The signer to pin is
 with the issuer `https://token.actions.githubusercontent.com`. The provenance
 names each image (`production` and `-fips`) by digest; compare those with the
 digest of the image you pulled. The step-by-step commands are in the
-[v0.3.0 release guide](verify-release.md). <!-- pinned: historical -->
+v0.3.0 release guide, `docs/verify-release.md` (it lands with the v0.3 release branch; the commands in it are TO-VERIFY until a release candidate has run them). <!-- pinned: historical -->
 
 What neither step tells you, stated so nobody over-reads them: whether the
 artifact was scanned or tested. Those are separate statements, made by other
@@ -92,11 +93,14 @@ entry, and the release carries the file with its bundle:
 `<variant>.sbom.json` and `<variant>.full.lock.json` for `production` and
 `fips`, `vendor-evidence.json`, `dependency-list.json`, `policy.json` (its
 bundle is `release-policy.bundle`), `checksums.txt` and
-`release-files.sha256`. Verify one the same way as `checksums.txt` in
-section 4: `cosign verify-blob --bundle FILE.bundle` with the pinned
-identity. How to verify a Witness record itself (the `*-collection.json`
-files) is in the release guide ([v0.3.0 release guide](verify-release.md)); the <!-- pinned: historical -->
-commands there are TO-VERIFY until a release candidate has run them.
+`release-files.sha256`. Each bundle is named after its file with `.bundle`
+added (`vendor-evidence.json.bundle`, `production.sbom.json.bundle`), except
+the policy's, `release-policy.bundle`. Verify one the same way as
+`checksums.txt` in section 4: `cosign verify-blob --bundle NAME.bundle FILE`
+with the pinned identity. How to verify a Witness record itself (the `*-collection.json`
+files) is in the v0.3.0 release guide, `docs/verify-release.md` (it lands with the <!-- pinned: historical -->
+v0.3 release branch); the commands there are TO-VERIFY until a release
+candidate has run them.
 
 ### The release manifest
 
@@ -128,8 +132,10 @@ verify-blob` and `sha256sum -c` commands for that list are in
 downloaded files against the manifest:
 
 ```sh
-gh release download v${VER} --repo fosterstack/cache \
-  -p 'fosterstack-cache*' -p release-manifest.json
+for f in release-manifest.json fosterstack-cache.openvex.json \
+           "fosterstack-cache-v${VER}.csaf.json" "fosterstack-cache-v${VER}.inspector-filters.json"; do
+  curl -fsSLO "https://github.com/fosterstack/cache/releases/download/v${VER}/${f}"
+done
 
 jq -r '.payload' manifest-att.json | base64 -d \
   | jq -r '.predicate.vex[] | "\(.sha256)  \(.file)"' > vex.sha256
