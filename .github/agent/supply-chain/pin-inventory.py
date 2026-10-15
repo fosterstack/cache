@@ -836,89 +836,39 @@ def _line_ids(text):
     return ids
 
 
-_VENDOR_WORD = re.compile(r"""(?:^|[\s"'=(:/<>]|-[A-Za-z])(?:\./)?vendor(?:/|\.[A-Za-z_])""")
-_VENDOR_BARE = re.compile(r"""(?:^|\s)["']?(?:\./)?vendor["']?(?=\s|$|;|&|\|)""")
-_VENDOR_TOOLS = re.compile(r"^(?:\S*/)?bin/(?:vendor-check\.sh|vendor-provenance\.py|vendor-provenance-test\.sh|vendoring-test\.sh)$")
-_EXECUTORS = re.compile(r"(?:python[0-9.]*|pypy[0-9]*|perl|ruby|node|nodejs|deno|bun|php|lua|bash|sh|dash|zsh|ksh|fish|csh|tcsh|busybox|source|\.|exec|eval|make|gmake|ninja|cmake|"
-                        r"docker|podman|buildah|nerdctl|pip[0-9.]*|pipx|uv|poetry|conda|npm|npx|yarn|pnpm|cargo|mvn|gradle|ant|java|dotnet|gem|bundle|rake|"
-                        r"helm|kubectl|terraform|ansible[a-z-]*|apk|apt|apt-get|dnf|yum|doas|su|xargs|nohup|timeout|chroot|unshare|bwrap|"
-                        r"melange|apko|crane|cosign|gh|curl|wget|install|patch|ld|gcc|cc|g\+\+|clang|rustc|swift|awk|gawk|mawk|ex|vi|vim|m4|make)")
-_WRAPPER_VALUE_OPTS = {"sudo": {"-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"}, "nice": {"-n"}, "env": {"-u", "-C", "-S"}, "timeout": {"-s", "-k"}, "command": set(), "time": {"-f", "-o"}}
+# The top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001; owner exception 1 of Oct 15). That premise is held by a
+# FILE-LEVEL rule, not by reading commands: a non-comment line of a scanned file outside vendor/ that names the vendored folder (a path under vendor/, a bare vendor
+# word; `go mod vendor` and -mod=vendor are the tool's own words) is an unmeasured occurrence unless the file is one of these exact paths. A new workflow or script that
+# names vendor/ is therefore refused until a security-tier change lists it here: a human gate on every new consumer, with no shell syntax to spell around.
+_VENDOR_NAMING_FILES = frozenset("""
+.github/workflows/ci.yml
+.github/workflows/release.yml
+bin/assemble-image-test.sh
+bin/build-apk-test.sh
+bin/build-apk.sh
+bin/build-helpers-test.sh
+bin/check-file-allowlist-test.sh
+bin/check-file-allowlist.sh
+bin/dependabot-reviewer-test.sh
+bin/melange-apko-lib.sh
+bin/patch-decide-test.sh
+bin/sealed-proof.sh
+bin/vendor-check.sh
+bin/vendor-provenance-test.sh
+bin/vendoring-test.sh
+bin/vex-forms-test.sh
+bin/vex-scope-test.sh
+""".split())
+_VENDOR_NAMED = re.compile(r"""(?:^|[^\w.-])(?:\./)?vendor(?:/|(?![\w-]))""")
+_VENDOR_TOOLWORD = re.compile(r"""(?:mod\s+|-mod=)vendor""")
 
 
-def _split_unquoted(line):
-    """Split a flattened line at ; && || | outside single and double quotes (a quoted printf body is one word)."""
-    out, cur, q, i = [], [], None, 0
-    while i < len(line):
-        c = line[i]
-        if q:
-            cur.append(c)
-            if c == "\\" and q == '"' and i + 1 < len(line):
-                cur.append(line[i + 1])
-                i += 1
-            elif c == q:
-                q = None
-        elif c in "'\"":
-            q = c
-            cur.append(c)
-        elif c == ";" or c == "|" or (c == "&" and line[i:i + 2] == "&&"):
-            out.append("".join(cur))
-            cur = []
-            i += 1 if c != "&" and line[i:i + 2] not in ("||",) else 1
-            if line[i:i + 1] in ("&", "|") and c in "&|":
-                i += 1
-            continue
-        else:
-            cur.append(c)
-        i += 1
-    out.append("".join(cur))
-    return [x for x in out if x.strip()]
-
-
-def _vendor_consumed(seg):
-    """The top-level vendor/ is skipped by this inventory because nothing runs from it (REQ-VEND-001): a non-comment command segment that names a vendor path
-    (vendor/..., ./vendor/..., -Cvendor/..., <vendor/..., a vendor.x module, -C vendor) whose command word, after env assignments, group openers and wrappers
-    (sudo, env, nice, time, command, exec ... with their options and option values), is an interpreter, shell, build tool, container tool, installer, fetcher,
-    awk or sed, `go run|install|generate|tool` or `find -exec`, or is itself a script path, is refused; entering vendor/ (`cd`, `pushd`, `working-directory:`)
-    is refused whatever follows. Reads, listings, copies and compiles are not. The repository's own vendor tools are exempt only as the command itself."""
-    s = seg.strip()
+def _names_vendor(line):
+    s = line.strip()
     if s.startswith("#"):
         return False
     s = re.sub(r"\s#.*$", "", s)
-    s = re.sub(r"^(?:-\s+)?run:\s*[|>]?[-+]?\s*[\"']?", "", s)                    # `- run: cd vendor/x` is the command `cd vendor/x`
-    if re.match(r"^(?:-\s+)?(?:cd|pushd)\s+[\"']?(?:\./)?vendor(?:/|[\"']?(?:\s|$|;|&))", s) or re.match(r"^(?:-\s+)?working-directory:\s*[\"']?(?:\./)?vendor(?:/|[\"']?$)", s):
-        return True
-    if not (_VENDOR_WORD.search(s) or _VENDOR_BARE.search(s)):
-        return False
-    s = re.sub(r"^(?:-\s+)?(?:run:\s*)?[|>]?[-+]?\s*[\"']?", "", s)
-    words = s.replace("(", " ").replace("{", " ").split()
-    i = 0
-    while i < len(words):
-        t = words[i]
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=\S*", t) or t in ("!", "if", "then", "do", "elif", "else", "while", "until", "--"):
-            i += 1
-        elif t in _WRAPPER_VALUE_OPTS or t in ("exec",):
-            vals = _WRAPPER_VALUE_OPTS.get(t, set())
-            i += 1
-            while i < len(words) and words[i].startswith("-"):
-                i += 2 if words[i] in vals else 1
-        else:
-            break
-    words = words[i:]
-    if not words:
-        return True                                                  # nothing classifiable before the vendor path
-    w = words[0].strip("\"'")
-    if _VENDOR_TOOLS.match(w) or (len(words) > 1 and re.fullmatch(r"(?:\S*/)?(?:bash|sh|python3?)", w) and _VENDOR_TOOLS.match(words[1].strip("\"'"))):
-        return False
-    base = w.rsplit("/", 1)[-1]
-    if base == "go":
-        sub = next((x for x in words[1:] if not x.startswith("-")), "")
-        return sub in ("run", "install", "generate", "tool") or any(x.startswith("-C") for x in words[1:3])
-    if base == "find":
-        return any(x in ("-exec", "-execdir", "-ok", "-okdir") for x in words)
-    if base.endswith((".sh", ".bash", ".py", ".pl", ".rb")) or (w.startswith(("./", "/")) and not re.fullmatch(r"/(?:usr/)?bin/[a-z]+", w)):
-        return True
-    return _EXECUTORS.fullmatch(base) is not None
+    return _VENDOR_NAMED.search(_VENDOR_TOOLWORD.sub("", s)) is not None
 
 
 def unmeasured_occurrences(files):
@@ -947,10 +897,8 @@ def unmeasured_occurrences(files):
                 _step({"run": flat}, probe, {})
                 if any(i.kind == "package" and i.version == "(unpinned)" for i in probe):
                     yield (path, "an unpinned package install", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike
-            for _seg in _split_unquoted(flat):
-                if _vendor_consumed(_seg):
-                    yield (path, "a vendored file run or installed from", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike
-                    break
+            if path not in _VENDOR_NAMING_FILES and _names_vendor(line):
+                yield (path, "a line that names the vendored folder", hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike
             for rx, what in _UNMEASURED:
                 if rx.search(flat):
                     yield (path, what, hashlib.sha256(flat.encode("utf-8", "replace")).hexdigest() + ":" + _hide(flat)[:100]), flat, bashlike  # the WHOLE line decides identity (its hash), never a truncation

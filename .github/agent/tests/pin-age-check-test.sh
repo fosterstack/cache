@@ -3181,58 +3181,60 @@ runck vnd4 '{"times": {}}'
 CASE="the same script under Vendor/ (another case) is still refused (exit 1)"
 check test "$rc" -eq 1
 
-# --- review round 5 of PR 358 (both seats): the vendor/ skip is safe only while nothing outside vendor/ runs or installs from it; a line that does is refused (exit 1)
-vcase() { # NAME 'CALLER LINE' want: base has no caller, head adds one workflow step
-  python3 - "$1" "$2" <<'PY' > "$work/vc-$1.py"
+# --- the vendor/ skip is safe only while nothing outside vendor/ runs or installs from it. Held by a FILE-LEVEL rule (advisor, Oct 15, after eight rounds on command
+#     scanning): a non-comment line of a scanned file outside vendor/ that names the vendored folder is refused unless the file is one of the exact listed paths.
+vfile() { # NAME PATH 'LINE': base has no such file; head adds PATH (a .sh script, or a workflow step line) naming LINE
+  python3 - "$1" "$2" "$3" <<'PY' > "$work/vc-$1.py"
 import json, sys
-name, line = sys.argv[1:3]
+name, path, line = sys.argv[1:4]
+body = ("on: push\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: " + line + "\n") if path.endswith(".yml") else ("#!/bin/sh\n" + line + "\n")
 print("import pathlib\nroot = pathlib.Path('.')\n(root / 'vendor/example.test/dep').mkdir(parents=True, exist_ok=True)\n"
       "(root / 'vendor/example.test/dep/install.sh').write_text('go install example.test/tool@v1.2.3\\n')\n"
-      "(root / 'vendor/example.test/dep/requirements.txt').write_text('left-pad==1.2.3\\n')\n"
-      "(root / '.github/workflows').mkdir(parents=True, exist_ok=True)\n"
-      "(root / '.github/workflows/w.yml').write_text('on: push\\njobs:\\n  j:\\n    runs-on: ubuntu-latest\\n    steps:\\n      - run: ' + " + json.dumps(line) + " + '\\n')")
+      "p = root / " + json.dumps(path) + "\np.parent.mkdir(parents=True, exist_ok=True)\np.write_text(" + json.dumps(body) + ")")
 PY
   newcase "vc-$1" "$(cat "$work/vc-$1.py")"; runck "vc-$1" '{"times": {}}'
 }
-for v in "run-script:bash vendor/example.test/dep/install.sh" \
-         "env-option:env -i python3 vendor/example.test/dep/run.py" \
-         "sudo-user:sudo -u root bash vendor/example.test/dep/run.sh" \
-         "command-dashdash:command -- bash vendor/example.test/dep/run.sh" \
-         "nice-value:nice -n 5 bash vendor/example.test/dep/run.sh" \
-         "cd-then-run:cd vendor/example.test/dep \&\& bash install.sh" \
-         "make-attached-C:make -Cvendor/example.test/dep" \
-         "go-C-run:go -C vendor/example.test/dep run ." \
-         "awk-program:awk -f vendor/example.test/dep/p.awk" \
-         "busybox-sh:busybox sh vendor/example.test/dep/run.sh" \
-         "subshell-group:( bash vendor/example.test/dep/run.sh )" \
-         "helper-in-comment:bash vendor/example.test/dep/run.sh # bin/vendor-check.sh" \
-         "helper-as-argument:bash vendor/example.test/dep/lint.sh bin/vendor-check.sh" \
-         "redirect-in:bash <vendor/example.test/dep/install.sh" \
-         "docker-bare-vendor:docker build vendor" \
-         "find-exec:find vendor/example.test/dep -name install.sh -exec bash {} \\;" \
-         "make-C:make -C vendor/example.test/dep" \
-         "python-version-suffix:python3.12 vendor/example.test/dep/run.py" \
-         "python-module:python3 -m vendor.example.test.dep.run" \
-         "python-option-first:python3 -W ignore vendor/example.test/dep/run.py" \
-         "go-run-flag-first:go run -mod=vendor vendor/example.test/dep/tool.go" \
-         "docker-build-context:docker build vendor/example.test/dep" \
-         "pip-constraint:pip install --require-hashes -r requirements.txt -c vendor/example.test/dep/constraints.txt" \
-         "pip-constraint-long:pip install --constraint=vendor/example.test/dep/constraints.txt -r requirements.txt" \
-         "run-dotslash:./vendor/example.test/dep/install.sh" \
-         "source-script:source vendor/example.test/dep/install.sh" \
-         "pip-requirements:pip install --require-hashes -r vendor/example.test/dep/requirements.txt" \
-         "go-run:go run vendor/example.test/dep/tool.go"; do
-  vcase "${v%%:*}" "${v#*:}"
-  CASE="a workflow step that runs or installs from vendor/ is refused: ${v%%:*} (exit 1)"
+for v in "run-script:bash vendor/example.test/dep/install.sh" "make-C:make -C vendor/example.test/dep" "python-module:python3 -m vendor.example.test.dep.run" \
+         "cd-group:(cd vendor/example.test/dep \&\& make)" "sudo-long:sudo --user root bash vendor/example.test/dep/install.sh" \
+         "abs-env:/usr/bin/env bash vendor/example.test/dep/install.sh" "process-subst:diff expected.txt <(bash vendor/example.test/dep/generate.sh)" \
+         "sed-program:sed -f vendor/example.test/dep/transform.sed input.txt" "redirect-first:2>/dev/null bash vendor/example.test/dep/install.sh" \
+         "pip-constraint:pip install -r requirements.txt -c vendor/example.test/dep/constraints.txt" "docker-bare:docker build vendor" \
+         "list-only:ls vendor/" "cp-bare:cp -R vendor /tmp/v" "quoted-assign:CFLAGS=\"-O2 -g\" bash vendor/example.test/dep/install.sh"; do
+  vfile "${v%%:*}" .github/workflows/w.yml "${v#*:}"
+  CASE="a new workflow step that names the vendored folder is refused, whatever the command: ${v%%:*} (exit 1)"
+  check test "$rc" -eq 1
+  vfile "sh-${v%%:*}" tools/new.sh "${v#*:}"
+  CASE="a new script that names the vendored folder is refused: ${v%%:*} (exit 1)"
   check test "$rc" -eq 1
 done
-for v in "build-mod-vendor:go build -mod=vendor ./cmd/fscache" "vendor-check:bash bin/vendor-check.sh" "list:ls vendor/" \
-         "ls-dot:ls ./vendor/example.test" "find:find vendor/example.test -type f" "cmp:cmp vendor/modules.txt /tmp/m.txt" "mod-vendor:go mod vendor" \
-         "test-d:test -d vendor/example.test" "grep:grep -rn foo vendor/example.test"; do
-  vcase "ok-${v%%:*}" "${v#*:}"
-  CASE="a plain mention of vendor/ that does not run or install from it is not refused: ${v%%:*} (exit 0)"
+vfile flow-style .github/workflows/w.yml '{run: "bash vendor/example.test/dep/install.sh"}'
+CASE="a flow-style step that names the vendored folder is refused (exit 1)"
+check test "$rc" -eq 1
+for v in "tool-flag:go build -mod=vendor ./cmd/fscache" "go-mod-vendor:go mod vendor" "vendor-check:bash bin/vendor-check.sh" "comment:# vendor/ is skipped" "trailing-comment:ls /tmp # vendor/x"; do
+  vfile "ok-${v%%:*}" tools/new.sh "${v#*:}"
+  CASE="a line that does not name the vendored folder (the tool's own words, a comment) is not refused: ${v%%:*} (exit 0)"
   check test "$rc" -eq 0
 done
+vfile listed-file bin/vendor-check.sh 'ls vendor/'
+CASE="a file on the exact list may name the vendored folder (exit 0)"
+check test "$rc" -eq 0
+python3 - "$root" <<'PY'
+import importlib.util, sys
+sys.path.insert(0, ".")
+root = sys.argv[1]
+spec = importlib.util.spec_from_file_location("pi", root + "/.github/agent/supply-chain/pin-inventory.py"); m = importlib.util.module_from_spec(spec); sys.modules["pi"] = m; spec.loader.exec_module(m)
+files = {**m.tree_files(root, None), **m.tree_scripts(root, None)}
+hits = [k for k, _, _ in m.unmeasured_occurrences(files) if k[1] == "a line that names the vendored folder"]
+assert not hits, hits[:3]
+naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/")) and (p.startswith(".github/") or p.endswith(".sh"))
+          and any(m._names_vendor(l) for l in t.split("\n"))}
+extra = set(m._VENDOR_NAMING_FILES) - naming - {"bin/vendor-provenance-test.sh"}
+assert not extra, "listed but names nothing: %s" % sorted(extra)
+missing = naming - set(m._VENDOR_NAMING_FILES)
+assert not missing, "names vendor but not listed: %s" % sorted(missing)
+PY
+CASE="today's tree passes the rule and the exact list holds no path that names nothing"
+check test $? -eq 0
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
