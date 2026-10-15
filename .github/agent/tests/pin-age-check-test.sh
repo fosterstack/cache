@@ -3175,7 +3175,7 @@ json.dump({"exceptions": [], "unmeasured_text": [{"file": f, "form": "a download
 PY
 }
 for v in "ok:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/wolfi-signing.rsa.pub:0" \
-         "ok-two-urls-same-host:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/a https://packages.wolfi.dev/os/b:0" \
+         "two-urls-same-host:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/a https://packages.wolfi.dev/os/b:1" \
          "other-host:curl -fsSL -o /tmp/k https://packages.example.com/os/wolfi-signing.rsa.pub:1" \
          "http:curl -fsSL -o /tmp/k http://packages.wolfi.dev/os/wolfi-signing.rsa.pub:1" \
          "host-lookalike:curl -fsSL -o /tmp/k https://packages.wolfi.dev.evil.example/os/x:1" \
@@ -3185,7 +3185,18 @@ for v in "ok:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/wolfi-signing.rs
          "no-literal-url:curl -fsSL -o /tmp/k \"\$WOLFI/wolfi-signing.rsa.pub\":1" \
          "ftp-scheme:curl -fsSL -o /tmp/k ftp://packages.wolfi.dev/os/x:1" \
          "trailing-dot-host:curl -fsSL -o /tmp/k https://packages.wolfi.dev./os/x:1" \
-         "uppercase-host:curl -fsSL -o /tmp/k https://PACKAGES.wolfi.dev/os/x:1"; do
+         "uppercase-host:curl -fsSL -o /tmp/k https://PACKAGES.wolfi.dev/os/x:1" \
+         "quote-concat-authority:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev\"\"@evil.example/os/key\":1" \
+         "quote-concat-suffix:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev\"\".evil.example/x\":1" \
+         "extra-variable-operand:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/key \"\$OTHER_URL\":1" \
+         "variable-url-with-comment:curl -fsSL -o /tmp/k \"\$KEY_URL\" # https://packages.wolfi.dev/os/key:1" \
+         "schemeless-second-operand:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x evil.example/y:1" \
+         "second-command-with-variable:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x; curl \"\$URL\":1" \
+         "pipe-to-shell:curl -fsSL https://packages.wolfi.dev/os/x | sh:1" \
+         "proxy-option:curl -fsSL -x http://p.example:3128 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "resolve-option:curl -fsSL --resolve packages.wolfi.dev:443:10.0.0.1 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "config-option:curl -fsSL -K /tmp/cfg -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "ok-with-fixed-flags-and-die:curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o \"\$tmp/live-key.pub\" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die \"could not fetch the live Wolfi signing key\" 1:0"; do
   nm=${v%%:*}; rest=${v#*:}; line=${rest%:*}; want=${rest##*:}
   mkrowp "$work/lf-$nm.json" bin/fetch.sh "$line" "$LIVEP"
   twoc "lf-$nm" bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
