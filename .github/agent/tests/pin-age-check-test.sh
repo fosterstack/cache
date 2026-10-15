@@ -3229,8 +3229,56 @@ CASE="the base URL variable assigned twice is refused (exit 1)"
 check test "$rc" -eq 1
 newcase key-wget "$(keyscript key-wget "wget -q -O \"\$t/k.pub\" $KURL")"
 runck key-wget '{"times": {}}'
-CASE="wget of the same fixed URL to a named file is accepted (exit 0)"
-check test "$rc" -eq 0
+CASE="wget is not the ratified fetch: refused (exit 1)"
+check test "$rc" -eq 1
+for v in "extra-var-url:curl -fsSL -o \"\$t/k.pub\" $KURL \"\$OTHER_URL\"" \
+         "extra-bare-host:curl -fsSL -o \"\$t/k.pub\" $KURL evil.example/file" \
+         "ftp-second:curl -fsSL -o \"\$t/k.pub\" $KURL ftp://evil.example/file" \
+         "suffix-on-literal:curl -fsSL -o \"\$t/k.pub\" ${KURL}.other" \
+         "attached-K:curl -fsSL -Kconfig.txt -o \"\$t/k.pub\" $KURL" \
+         "attached-x:curl -fsSL -xproxy.example -o \"\$t/k.pub\" $KURL" \
+         "cluster-x:curl -fsSLx proxy.example -o \"\$t/k.pub\" $KURL" \
+         "output-stdout:curl -fsSL -o - $KURL" \
+         "two-fetches:curl -fsSL -o \"\$t/k.pub\" $KURL; curl -fsSL -o \"\$t/k2.pub\" $KURL"; do
+  nm=${v%%:*}; fl=${v#*:}
+  newcase "key2-$nm" "$(keyscript "key2-$nm" "$fl")"
+  runck "key2-$nm" '{"times": {}}'
+  CASE="a key fetch with something added or attached is refused: $nm (exit 1)"
+  check test "$rc" -eq 1
+done
+newcase key-comment-verify "$(keyscript key-comment-verify "curl -fsSL -o \"\$t/k.pub\" $KURL" '# sha256sum "$t/k.pub" build/locks/archive-keys.sha256
+cp "$t/k.pub" /tmp/used.pub')"
+runck key-comment-verify '{"times": {}}'
+CASE="a comment that mentions the comparison is no comparison: refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-echo-verify "$(keyscript key-echo-verify "curl -fsSL -o \"\$t/k.pub\" $KURL" 'echo "sha256sum $t/k.pub build/locks/archive-keys.sha256"
+cp "$t/k.pub" /tmp/used.pub')"
+runck key-echo-verify '{"times": {}}'
+CASE="printing the comparison is no comparison: refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-use-before-verify "$(keyscript key-use-before-verify "curl -fsSL -o \"\$t/k.pub\" $KURL" 'cp "$t/k.pub" /tmp/used.pub
+sha256sum "$t/k.pub" | grep -qFf build/locks/archive-keys.sha256')"
+runck key-use-before-verify '{"times": {}}'
+CASE="the file used before the comparison is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-assign-after "$(keyscript key-assign-after 'curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"
+WOLFI=https://packages.wolfi.dev/os')"
+runck key-assign-after '{"times": {}}'
+CASE="the base URL assigned only after the fetch (the inherited value is used) is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-read-overwrites "$(keyscript key-read-overwrites 'WOLFI=https://packages.wolfi.dev/os
+read -r WOLFI
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
+runck key-read-overwrites '{"times": {}}'
+CASE="the base URL variable overwritten by read is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-assign-in-function "$(keyscript key-assign-in-function 'f() {
+WOLFI=https://packages.wolfi.dev/os
+}
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
+runck key-assign-in-function '{"times": {}}'
+CASE="the base URL assigned inside a function that may never run is refused (exit 1)"
+check test "$rc" -eq 1
 
 # --- owner rule 48 (Oct 9: no 7-day hold on Wolfi; signature checks and archiving still apply), advisor message Oct 15: the refresh job's two python downloads,
 #     from the fixed host packages.wolfi.dev only, in a script that verifies them (verify / verify_index, hard-coded names) right after the fetch
