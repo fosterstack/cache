@@ -50,6 +50,8 @@ for f in ("archive-push.sh", "archive-pull.sh", "archive-verify.py"):
     out = []
     for row in open(src + "/" + f).read().split("\n"):
         m = re.match(r"^([A-Z0-9_]+)=.*#\s*TEST-SUBST", row)
+        if "TEST-SUBST" in row and "bin/archive-verify.py" in row:
+            row = row.replace("bin/archive-verify.py", dst + "/archive-verify.py")
         out.append("%s=%s/%s   # TEST-SUBST" % (m.group(1), tools, names[m.group(1)]) if m and m.group(1) in names else row)
     s = "\n".join(out)
     if f == mfile:
@@ -399,6 +401,14 @@ for f in ("archive-push.sh", "archive-pull.sh", "archive-verify.py"):
     assert len(a) == len(b), f
     for x, y in zip(a, b):
         assert x == y or ("TEST-SUBST" in x and "TEST-SUBST" in y), (f, x, y)
+P
+t AC9 "each shell script names its helper by the literal path bin/archive-verify.py on a TEST-SUBST line (run from the repository root): no variable, no substitution, no directory lookup" python3 - "$PUSH" "$PULL" <<'P'
+import re, sys
+for p in sys.argv[1:]:
+    s = open(p).read()
+    assert "VERIFY" not in s and "$(cd" not in s and "BASH_SOURCE" not in s, p
+    rows = [r for r in s.split("\n") if "archive-verify.py" in r and not r.lstrip().startswith("#")]
+    assert rows and all("bin/archive-verify.py" in r and "TEST-SUBST" in r and '"$PY3" -I -B bin/archive-verify.py' in r for r in rows), (p, rows)
 P
 t AC9 "the shell scripts set -euo pipefail" bash -c "grep -q '^set -euo pipefail' '$PUSH' && grep -q '^set -euo pipefail' '$PULL'"
 
