@@ -2799,8 +2799,9 @@ printf '%s' '{"base_inputs": "build/locks/archive-keys.sha256"}' >"$work/bi-str.
 printf '%s' '{"base_inputs": ["build/locks/archive-keys.sha256", 7]}' >"$work/bi-int.json"
 printf '%s' '{"base_inputs": [], "base_inputs": ["build/locks/archive-keys.sha256"]}' >"$work/bi-dup.json"
 printf '%s' 'not json' >"$work/bi-bad.json"
-bick ""
-CASE="AC21: with no list, two new checksum record files are items that cannot pass (exit 1)"
+printf '%s' '{"base_inputs": []}' >"$work/bi-empty.json"
+bick "$work/bi-empty.json"
+CASE="AC21: with an empty list, two new checksum record files are items that cannot pass (exit 1)"
 check test "$rc" -eq 1; check test "$(grep -c 'FAIL tool:file:' "$work/bi.out")" -eq 2
 bick "$work/bi-ok.json"
 CASE="AC21: a list naming both files exempts both: exit 0, each reported as a base input"
