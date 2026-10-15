@@ -34,6 +34,9 @@ GIT=/usr/bin/git                # TEST-SUBST
 GH=/usr/bin/gh                  # TEST-SUBST
 APKO=/usr/local/bin/apko        # TEST-SUBST (bin/install-build-tools.sh apko puts it there)
 OPENSSL=/usr/bin/openssl        # TEST-SUBST
+RM=/bin/rm                      # TEST-SUBST
+MKDIR=/bin/mkdir                # TEST-SUBST
+case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # this script's directory, without dirname
 CMP=/usr/bin/cmp                # TEST-SUBST
 MKTEMP=/usr/bin/mktemp          # TEST-SUBST
 
@@ -77,7 +80,7 @@ done
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
 tmp=$("$MKTEMP" -d)
-cleanup() { local rc=$?; set +e; rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
+cleanup() { local rc=$?; set +e; "$RM" -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
 trap cleanup EXIT
 
 case $cmd in
@@ -100,7 +103,7 @@ refresh)
   done
 
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
-  mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
+  "$MKDIR" -p "$tmp/production" "$tmp/fips" "$tmp/melange"
   "$PY3" -I -B - "$repo" "$tmp" <<'PY'
 import sys, yaml
 repo, tmp = sys.argv[1:3]
@@ -120,7 +123,7 @@ PY
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
 
-  "$PY3" -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$(dirname "$0")" && pwd)" "$GH" "$CURL" "$OPENSSL" <<'PY' || exit $?
+  "$PY3" -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" "$CURL" "$OPENSSL" <<'PY' || exit $?
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
 GH, CURL, OPENSSL = sys.argv[6:9]   # fixed locations, named by the shell part above
@@ -182,6 +185,8 @@ def inflate(rest, what, cap=None):
     data = d.decompress(rest, cap + 1)
     if len(data) > cap or d.unconsumed_tail:
         fail("%s decompresses to more than 128 MiB (too large; refusing before anything is checked)" % what)
+    if not d.eof:
+        fail("%s is not a complete gzip stream (its trailer is missing); a human must look" % what)
     used = len(rest) - len(d.unused_data) - len(d.unconsumed_tail)
     return rest[:used], data, d.unused_data
 
@@ -244,7 +249,10 @@ def verify(path, e):
 
 
 def ident(e):
-    return (e["name"], e["version"], e["architecture"], e["control"]["checksum"], e["data"]["checksum"])
+    # every field a lock records about the bytes: the package identity checksum, the signature, control and data checksums and their ranges
+    sig = e.get("signature") or {}
+    return (e["name"], e["version"], e["architecture"], e.get("checksum"), sig.get("checksum"), sig.get("range"),
+            e["control"]["checksum"], e["control"].get("range"), e["data"]["checksum"], e["data"].get("range"))
 
 
 NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+-]*")
@@ -489,6 +497,8 @@ if ahead or any(not os.path.exists("%s/%s/%s-%s.apk" % (archive, a_, n_, v_)) fo
 
 def check_dirs():
     """every directory on the way into the archive is a real directory, nothing sits where a temporary name goes"""
+    if os.path.islink(archive.rstrip("/") or archive):
+        fail("%s is a symlink; the archive directory itself must be a real directory (nothing was written)" % archive)
     for arch in ARCHS:
         for comp in ("%s/%s" % (archive, arch), "%s/%s/index" % (archive, arch)):
             if os.path.islink(comp):
@@ -583,21 +593,23 @@ if sorted(old_mel) != new_mel:
     for n, v in sorted(old_names.items()):
         if mel_names.get(n) != v:
             notes.append("%s %s is no longer in live Wolfi's resolution (melange build tools); the archived copy is kept" % (n, v))
-    # the recipes are GENERATED from the template and the two data files (the melange lock and the FIPS module file): the job edits only the lock, then asks the
-    # generator what the recipes become. The template and its pin are never touched by an automated change.
-    gen_dir = tmp + "/gen"
-    os.makedirs(gen_dir, exist_ok=True)
-    open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
-    r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
-                         "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
-    if r_.returncode != 0:
-        fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
-    for rf in ("melange.yaml", "melange-fips.yaml"):
-        path = "%s/build/%s" % (repo, rf)
-        out = open("%s/%s" % (gen_dir, rf)).read()
-        if out != open(path).read():
-            recipes[path] = out
-            changed.append(path)
+# the recipes are regenerated and compared on EVERY run, whether or not the lock changed: a run interrupted between the lock write and the recipe writes is
+# repaired by the next one (the lock is already current, the recipes are not)
+# the recipes are GENERATED from the template and the two data files (the melange lock and the FIPS module file): the job edits only the lock, then asks the
+# generator what the recipes become. The template and its pin are never touched by an automated change.
+gen_dir = tmp + "/gen"
+os.makedirs(gen_dir, exist_ok=True)
+open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
+r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
+                     "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
+if r_.returncode != 0:
+    fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
+for rf in ("melange.yaml", "melange-fips.yaml"):
+    path = "%s/build/%s" % (repo, rf)
+    out = open("%s/%s" % (gen_dir, rf)).read()
+    if out != open(path).read():
+        recipes[path] = out
+        changed.append(path)
 
 for n in notes:
     print("note: " + n)
@@ -722,9 +734,9 @@ open(tmp + "/sig", "w").write(sig)
 open(tmp + "/body", "w").write(body)
 PY
   [ -s "$tmp/changed" ] || exit 0
-  branch="refresh/$(cat "$tmp/sig")"
+  branch="refresh/$(<"$tmp/sig")"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/changed"
-  open_pr "$branch" "Refresh the image inputs against live Wolfi (daily job)" "$(cat "$tmp/body")" "${paths[@]}"
+  open_pr "$branch" "Refresh the image inputs against live Wolfi (daily job)" "$(<"$tmp/body")" "${paths[@]}"
   ;;
 
 fips-module)
@@ -732,7 +744,7 @@ fips-module)
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  "$PY3" -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$(dirname "$0")" && pwd)" "$GH" <<'PY' || exit $?
+  "$PY3" -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
 goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR = sys.argv[1:7]
 GH = sys.argv[7]
@@ -850,7 +862,7 @@ open(tmp + "/new", "w").write(newest + "\n" + cur + "\n")
 print("a newer certified module: %s (the FIPS build uses %s)" % (newest, cur))
 PY
   [ -s "$tmp/new" ] || exit 0
-  newest=$(sed -n 1p "$tmp/new"); cur=$(sed -n 2p "$tmp/new")
+  { IFS= read -r newest; IFS= read -r cur; } <"$tmp/new"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/paths"
   open_pr "refresh/fips-module-$newest" "Move the FIPS build to the newer certified Go Cryptographic Module $newest" \
     "The daily check found $newest in Go's own certified-module file; the FIPS build used $cur. This pull request was only opened, not merged. It goes through all the normal checks and the rebuild-from-archive test; there is no shortcut." \

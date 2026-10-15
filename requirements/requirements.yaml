@@ -3170,7 +3170,7 @@ requirements:
       - id: REQ-REFRESH-001-AC23
         given: "bin/refresh-inputs.sh"
         when: "it is read and run"
-        then: "it names curl, git, gh, apko, openssl, python3, cmp and mktemp by fixed absolute path (never through the caller's search path), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it only in the lines marked TEST-SUBST (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
+        then: "it names curl, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by fixed absolute path (never through the caller's search path; no other utility is called by bare name, cat, sed and dirname being builtins or parameter expansions instead), runs every python3 as python3 -I -B, has no test hook (no REFRESH_OPENSSL, no test-mode variable), and bin/refresh-inputs-test.sh runs a copy that differs from it only in the lines marked TEST-SUBST (rules 16, 32; same form as REQ-BUILDAPK-001-AC3; PROPOSED by the helper: this AC needs the owner's ratification)"
         verification: { method: unit, release_blocking: false }
         status: approved
   - id: REQ-IMAGE-001

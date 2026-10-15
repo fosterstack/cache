@@ -14,11 +14,11 @@ printf -v FETCH %s curl
 export FETCH
 rfd=$(mktemp -d "$work/rf.XXXXXX")   # this file's own scratch: the stub tool dispatchers and the two script copies
 mkdir -p "$rfd/tools" "$rfd/rfcopy/bin" "$rfd/rfcopy-nossl/bin"
-for t_ in python3 "$FETCH" git gh apko openssl cmp mktemp; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$rfd/tools/$t_"; chmod +x "$rfd/tools/$t_"; done
+for t_ in python3 "$FETCH" git gh apko openssl cmp mktemp rm mkdir; do printf '#!/bin/bash\nexec %s "$@"\n' "$t_" >"$rfd/tools/$t_"; chmod +x "$rfd/tools/$t_"; done
 python3 - "$RF_PROD" "$rfd" <<'P'
 import os, re, shutil, sys
 prod, work = sys.argv[1:3]
-names = {"PY3": "python3", "CURL": os.environ["FETCH"], "GIT": "git", "GH": "gh", "APKO": "apko", "OPENSSL": "openssl", "CMP": "cmp", "MKTEMP": "mktemp"}
+names = {"PY3": "python3", "CURL": os.environ["FETCH"], "GIT": "git", "GH": "gh", "APKO": "apko", "OPENSSL": "openssl", "CMP": "cmp", "MKTEMP": "mktemp", "RM": "rm", "MKDIR": "mkdir"}
 for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"OPENSSL": "/nonexistent/openssl"})):
     out = []; seen = set()
     for ln in open(prod).read().split("\n"):
@@ -583,23 +583,23 @@ t "rule 48" "refresh: ...two datahash lines: archive and repo unchanged" test "$
 # no test hook in the production script; the test copy differs from it on the TEST-SUBST lines only (REQ-REFRESH-001-AC23)
 sr2() { local ac=$1 d=$2 kw=$3; shift 3; "$@"; if [ "$(rc)" = 2 ] && grep -Eqi -- "$kw" "$work/log"; then ok; else bad "$ac" "$d (exit $(rc), wanted 2 naming '$kw')"; fi; }
 t "AC23" "refresh-inputs.sh has no test hook: no REFRESH_OPENSSL and no FSCACHE_TEST_MODE in the production file" bash -c "! grep -Eq 'REFRESH_OPENSSL|FSCACHE_TEST_MODE|FSCACHE_[A-Z_]+' '$RF_PROD'"
-t "AC23" "the test copy of refresh-inputs.sh differs from the production file in the TEST-SUBST lines only (and replaces all eight)" python3 - "$RF_PROD" "$RF" <<'P'
+t "AC23" "the test copy of refresh-inputs.sh differs from the production file in the TEST-SUBST lines only (and replaces all ten)" python3 - "$RF_PROD" "$RF" <<'P'
 import re, sys
 a = open(sys.argv[1]).read().split("\n"); b = open(sys.argv[2]).read().split("\n")
 sub = re.compile(r"#\s*TEST-SUBST")
 assert len(a) == len(b), "line count differs"
 d = [i for i, (x, y) in enumerate(zip(a, b)) if x != y]
-assert len(d) == 8 and all(sub.search(a[i]) and sub.search(b[i]) for i in d), "differs outside TEST-SUBST lines: %s" % d
+assert len(d) == 10 and all(sub.search(a[i]) and sub.search(b[i]) for i in d), "differs outside TEST-SUBST lines: %s" % d
 P
-t "AC23" "refresh-inputs.sh names its download tool, git, gh, apko, openssl, python3, cmp and mktemp by fixed absolute path, and runs every python3 with -I -B" python3 - "$RF_PROD" <<'P'
+t "AC23" "refresh-inputs.sh names its download tool, git, gh, apko, openssl, python3, cmp, mktemp, rm and mkdir by fixed absolute path, and runs every python3 with -I -B" python3 - "$RF_PROD" <<'P'
 import os, re, sys
 s = open(sys.argv[1]).read()
 for v, want in (("PY3", "/usr/bin/python3"), ("CURL", "/usr/bin/" + os.environ["FETCH"]), ("GIT", "/usr/bin/git"), ("GH", "/usr/bin/gh"), ("APKO", "/usr/local/bin/apko"),
-                ("OPENSSL", "/usr/bin/openssl"), ("CMP", "/usr/bin/cmp"), ("MKTEMP", "/usr/bin/mktemp")):
+                ("OPENSSL", "/usr/bin/openssl"), ("CMP", "/usr/bin/cmp"), ("MKTEMP", "/usr/bin/mktemp"), ("RM", "/bin/rm"), ("MKDIR", "/bin/mkdir")):
     pat = r"(?m)^printf -v %s %%s %s\s+# TEST-SUBST" if v == "CURL" else r"(?m)^%s=%s\s+# TEST-SUBST"   # the download tool's line is a printf -v (a fixed-path text line, ruled by the committed rows)
     assert re.search(pat % (v, re.escape(want)), s), v
 body = "\n".join(re.sub(r'"[^"\n]*"', '""', l) for l in s.split("\n") if not l.lstrip().startswith("#"))
-assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|" + os.environ["FETCH"] + r"|git|gh|apko|openssl|cmp|mktemp)\s", body), "a bare tool word is run"
+assert not re.search(r"(?m)(^|[;&|(]\s*|\$\()\s*(python3|" + os.environ["FETCH"] + r"|git|gh|apko|openssl|cmp|mktemp|rm|mkdir)\s", body), "a bare tool word is run"
 assert not re.search(r'subprocess\.run\(\[\s*"(gh|git|' + os.environ["FETCH"] + '|openssl|python3)"', body), "a bare tool in subprocess"
 raw = "\n".join(l for l in s.split("\n") if not l.lstrip().startswith("#"))
 uses = re.findall(r'"\$PY3"[^\n]*', raw)
