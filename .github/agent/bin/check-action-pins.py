@@ -1025,10 +1025,13 @@ SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between th
 #                                                     alone; chosen per run, so no repository text can carry it (a script that wrote the line itself would
 #                                                     otherwise split its own function or branch in two)
 SOURCED_MARK = "#@@" + secrets.token_hex(16) + "-sourced@@"   # first line of a script that was sourced: it runs in its caller's shell, so no literal-variable inference
-_NO_NAME = {"_", "REPLY", "MAPFILE", "OPTARG", "OPTIND", "OPTERR", "COMPREPLY", "BASH_REMATCH", "PIPESTATUS", "RANDOM", "SECONDS", "LINENO", "PWD", "OLDPWD",
-            "UID", "EUID", "PPID", "SHELLOPTS", "BASHOPTS", "PATH", "IFS", "HOME", "SHELL", "ENV", "BASH_ENV", "GROUPS", "DIRSTACK", "FUNCNAME",
-            "SHLVL", "HOSTNAME", "HOSTTYPE", "MACHTYPE", "OSTYPE", "SRANDOM", "TMOUT", "TIMEFORMAT", "CDPATH", "GLOBIGNORE", "POSIXLY_CORRECT", "MAILPATH",
-            "PS1", "PS2", "PS4", "PROMPT_COMMAND", "LANG", "TERM", "USER", "LOGNAME"}   # set by the shell or read by it: never a program name
+_NO_NAME = {n.upper() for n in """_ BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_ARGV0 BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_ENV
+    BASH_EXECUTION_STRING BASH_LINENO BASH_LOADABLES_PATH BASH_REMATCH BASH_SOURCE BASH_SUBSHELL BASH_VERSINFO BASH_VERSION BASH_XTRACEFD CHILD_MAX
+    COLUMNS COMPREPLY COPROC COPROC_PID DIRSTACK EMACS ENV EPOCHREALTIME EPOCHSECONDS EUID EXECIGNORE FCEDIT FIGNORE FUNCNAME FUNCNEST GLOBIGNORE
+    GROUPS histchars HISTCMD HISTCONTROL HISTFILE HISTFILESIZE HISTIGNORE HISTSIZE HISTTIMEFORMAT HOME HOSTFILE HOSTNAME HOSTTYPE IFS IGNOREEOF
+    INPUTRC INSIDE_EMACS LANG LINENO LINES MACHTYPE MAIL MAILCHECK MAILPATH MAPFILE OLDPWD OPTARG OPTERR OPTIND OSTYPE PATH PIPESTATUS POSIXLY_CORRECT
+    PPID PROMPT_COMMAND PROMPT_DIRTRIM PS0 PS1 PS2 PS3 PS4 PWD RANDOM REPLY SECONDS SHELL SHELLOPTS SHLVL SRANDOM TIMEFORMAT TMOUT TMPDIR UID
+    auto_resume TERM USER LOGNAME""".split()}   # every special variable of the shell's manual, compared in upper case; prefixes in _literal_path_vars   # set by the shell or read by it: never a program name
 _CONST_PATH = re.compile(r"/[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
 
 
@@ -1056,6 +1059,8 @@ def _literal_path_vars(script):
     program named by such a variable stays refused."""
     if SOURCED_MARK in script:
         return {}                                        # sourced: the caller's namerefs, functions and variables reach it
+    if re.search(r"(?<![\w.-])enable(?![\w.-])", script):
+        return {}                                        # enable -n can remove the builtin the assignment form relies on
     if "`" in script or re.search(r"(?<![\w.-])(printf|builtin|command|unset|trap)\s*\(\s*\)|(?<![\w.-])function\s+(printf|builtin|command|unset|trap)(?![\w.-])", script):
         return {}                                        # a backtick body is a subshell, and a function named like the builtin the assignment form relies on can replace it
     text = re.sub(r"\\\n", "", script)
@@ -1072,7 +1077,7 @@ def _literal_path_vars(script):
         if re.search(r"<<|[{}()]|(?<![\w.-])(if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|coproc)(?![\w.-])",
                      bl[:m.start()]):
             continue                                     # not at top level: after a block, a function, a heredoc or a subshell
-        if name in _NO_NAME or name.startswith(("BASH", "FUNC", "COMP", "EPOCH", "HIST", "READLINE", "XDG")):
+        if name.upper() in _NO_NAME or name.upper().startswith(("BASH", "FUNC", "COMP", "COPROC", "EPOCH", "HIST", "READLINE", "XDG", "LC_", "PS", "PROMPT")):
             continue                                     # a name the shell itself writes (read with no name sets REPLY, mapfile MAPFILE, getopts OPTARG)
         # every mention of the name, quotes and all (a quoted target `printf -v "G"` or the same name inside a child script's text counts): exactly one
         # that is the assignment itself, and every other one a `$NAME` / `${NAME}` that is a whole word of its own (a program or an argument),
@@ -2455,7 +2460,7 @@ def _made_executable(script, path):
     return None
 
 
-def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
+def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=(), inherited=False):
     """(the committed shell scripts this text runs, their bytes appended; findings). A script is what _commands names as
     run — bash/sh/dash/zsh <path>, source / . <path>, or a path executed directly that is a *.sh file or a committed file
     starting with a shell #! (#!/usr/bin/env bash too) or none — through every channel _commands reads (wrappers, $( ),
@@ -2466,8 +2471,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
     entries = getattr(tree, "entries", {}) or {}
     # a dot or source word anywhere in the calling text (`command . x`, `builtin source x`, `exec . x`, whatever wraps it): every script it runs is
     # treated as sourced, which closes the wrapper forms the command reader does not classify; so is a text that exports a function (the child imports it)
-    sourced_any = bool(re.search(r"(?<![\w./$-])source(?![\w./-])|(^|[;&|(\s])\.\s+\S"
-                           r"|(?<![\w.-])(export|declare|typeset)\s+-[A-Za-z]*f|BASH_FUNC_", _unquoted(text), re.M))   # or exports a function: it reaches every child
+    sourced_any = inherited or bool(re.search(r"(?<![\w./$-])source(?![\w./-])|(^|[;&|(\s])\.\s+\S"
+                           r"|(?<![\w.-])(export|declare|typeset)\b[^\n;&|]*\s-[A-Za-z]*f|BASH_FUNC_", _unquoted(text), re.M))   # or exports a function: it reaches every child
     dlnames = _downloaded_commands(job or text)
     if dlnames:
         for chunk in _split_commands(_cut_substitutions(text)[0]):
@@ -2530,8 +2535,8 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
         inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", _rewrite_consts(
             (SOURCED_MARK + "\n" if len(t) > 2 and t[2] == "sourced" or sourced_any else "") + content)))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
-        more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
-        sourced = len(t) > 2 and t[2] == "sourced" or sourced_any
+        sourced = len(t) > 2 and t[2] == "sourced" or sourced_any      # a sourced script, or one whose caller exports a function, passes it on to every level below
+        more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases, sourced)
         added.append(SCRIPT_MARK + "\n" + (SOURCED_MARK + "\n" if sourced else "") + content
                      + ("\n" + SCRIPT_MARK + "\n" + more if more else ""))
         found += also
