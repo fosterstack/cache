@@ -3087,5 +3087,25 @@ plain = {".github/actions/x/action.yml": "name: x\nruns:\n  using: composite\n  
 assert all(k.endswith("@(local)") for k in inv.inventory(plain) if k.startswith("action:local")), sorted(inv.inventory(plain))
 PY
 
+CASE="release downloads behind variables, round 7 findings (seat B): a quoted parenthesis, an indirection through an assignment and a multiline array cannot hide a changed asset because an unresolved asset is identified by its whole file (REQ-SUP-001-AC2)"
+check python3 - "$here/../supply-chain/pin-inventory.py" <<'PY'
+import importlib.util, sys, json
+s = importlib.util.spec_from_file_location("inv", sys.argv[1]); inv = importlib.util.module_from_spec(s); s.loader.exec_module(inv)
+url = "https://github.com/o/r/releases/download/v1.2.3/"
+mv = lambda a, b: bool(inv.moved(inv.inventory(a), inv.inventory(b)))
+def wf(v):
+    return {".github/workflows/x.yml": "on: push\nenv:\n  A: old\n  B: new\njobs:\n  j:\n    runs-on: ubuntu-latest\n    steps:\n      - run: |\n          body=$(curl \"" + url + "tool)\"${" + v + "}.tgz)\n"}
+assert mv(wf("A"), wf("B")), "quoted parenthesis"
+for path in ("bin/x.sh", "bin/install-scanner.sh"):
+    ind = lambda v: {path: "SEL=" + v + "\nP=SEL\nA=${!P}\ncurl " + url + "${A}.tgz\n"}
+    assert mv(ind("old"), ind("new")), ("indirect", path)
+    arr = lambda v: {path: "A=(\n  " + v + "\n)\ncurl " + url + "${A[0]}.tgz\n"}
+    assert mv(arr("old"), arr("new")), ("array", path)
+    # an edit anywhere in a file that holds an unresolved download is a moved item; a file with only concrete downloads is unchanged by an unrelated edit
+    conc = lambda c: {path: "# " + c + "\ncurl " + url + "x.tgz -o x\n"}
+    assert not mv(conc("a"), conc("b")), ("concrete", path)
+    assert set(inv.inventory(conc("a"))) == {"tool:o/r/x.tgz@v1.2.3"}
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0

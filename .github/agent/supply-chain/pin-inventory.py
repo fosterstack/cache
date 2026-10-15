@@ -331,7 +331,7 @@ def _asset_word(text, start):
         in_string = bool(stack) and (stack[-1][0] == "'" or depth == stack[-1][1])
         if i >= start and depth == d0 and c in "?#":
             break
-        if i >= start and c == ")" and depth == d0 and d0 > 0 and len(stack) <= s0:
+        if i >= start and c == ")" and depth == d0 and d0 > 0 and len(stack) <= s0 and not in_string:
             break                            # the substitution that holds the name closes: the name is over
         if i >= start and c == "`" and bt and bt[-1] == d0 and d0 > 0 and len(stack) == s0 and not (stack and stack[-1][0] == "'"):
             break                            # the backticks that hold the name close
@@ -682,6 +682,15 @@ def inventory(files):
             for it in found:
                 if it.src is None:
                     it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
+        nfile = 0
+        for it in found:
+            if ("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid:
+                # a release asset whose NAME is not literal (a variable, a substitution, a "latest" download) cannot be proven, so any change that could select a
+                # different asset must be a moved item: its identity is the WHOLE file it sits in and its ordinal there. Closed fail-closed (advisor 0080: an
+                # open-ended class of shell forms on a security control is refused, not enumerated): no assignment, array, indirection, GITHUB_ENV or quoting
+                # form needs to be recognised for an edit to be seen.
+                nfile += 1
+                it.step = "step:" + hashlib.sha256((path + "\0" + text + "\0" + str(nfile)).encode("utf-8", "replace")).hexdigest()
         for it in found:
             if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
