@@ -1416,20 +1416,32 @@ P
 # AC9/AC10 "before any tool": the working-directory, host and version refusals run with a search path that holds NOTHING (every external command
 # would be "not found"), so they are the shell's own
 nopath=$(mktemp -d "$work/nopath.XXXXXX"); bash_abs=$(command -v bash)
-early() { # <script> <cwd> <args...>: the copy, started by absolute path, PATH an empty directory; $work/early.rc and .log
-  local sc=$1 cwd=$2; shift 2
-  ( cd "$cwd" && env -i PATH="$nopath" HOME="$work" SOURCE_DATE_EPOCH=$SDE ImageOS=ubuntu24 ImageVersion=1 "$bash_abs" "$sc" "$@" ) >"$work/early.log" 2>&1 </dev/null; echo $? >"$work/early.rc"; }
+# tripwires: every fixed-path tool of the copies points at a script that only records that it was called (PATH does not matter for an absolute path)
+printf '#!/bin/sh\necho "$0 $*" >>"$TRIP_LOG"\nexit 0\n' >"$work/trip.sh"; chmod +x "$work/trip.sh"
+trip_env=(TEST_PY3="$work/trip.sh" TEST_SUDO="$work/trip.sh" TEST_UNSHARE="$work/trip.sh" TEST_APKO="$work/trip.sh" TEST_GIT="$work/trip.sh" TEST_MELANGE="$work/trip.sh" TEST_GO="$work/trip.sh" TEST_SHA256SUM="$work/trip.sh" TRIP_LOG="$work/trip.log")
+early() { # <script> <cwd> <args...>: the copy, started by absolute path, PATH an empty directory, every tool a tripwire; $work/early.rc, .log and trip.log
+  local sc=$1 cwd=$2; shift 2; : >"$work/trip.log"
+  ( cd "$cwd" && env -i PATH="$nopath" HOME="$work" SOURCE_DATE_EPOCH=$SDE ImageOS=ubuntu24 ImageVersion=1 "${trip_env[@]}" "$bash_abs" "$sc" "$@" ) >"$work/early.log" 2>&1 </dev/null; echo $? >"$work/early.rc"; }
 early "$air/bin/assemble-image.sh" "$air" --variant production --version v0.3.0 --archive /x --melange-repo /x --keyring-dir /x --out /x
-t "AC9" "assemble-image.sh: a bad --version is refused (exit 2, names the version) before any external command: PATH holds nothing" bash -c "test \"\$(cat '$work/early.rc')\" = 2 && grep -q 'v0.3.0' '$work/early.log' && ! grep -qi 'not found' '$work/early.log'"
+t "AC9" "assemble-image.sh: a bad --version is refused (exit 2, names the version) before ANY tool: no external command is found and no fixed-path tool is called (tripwires)" bash -c "test \"\$(cat '$work/early.rc')\" = 2 && grep -q 'v0.3.0' '$work/early.log' && ! grep -qi 'not found' '$work/early.log' && test ! -s '$work/trip.log'"
+# the tripwire is not vacuous: a mutant that runs the fixed-path python before the version guard is seen
+am="$work/air-trip"; rm -rf "$am"; cp -RP "$air" "$am"; rm -f "$am/bin/assemble-image.sh"; cp "$air/bin/assemble-image.sh" "$am/bin/assemble-image.sh"
+python3 - "$am/bin/assemble-image.sh" <<'PYM'
+import sys
+p = sys.argv[1]; s = open(p).read()
+k = s.index("# the version grammar first")
+open(p, "w").write(s[:k] + '"$PY3" -I -B -c 0   # mutant: a fixed-path tool before the shell-only version guard\n' + s[k:])
+PYM
+early "$am/bin/assemble-image.sh" "$am" --variant production --version v0.3.0 --archive /x --melange-repo /x --keyring-dir /x --out /x
+t "AC9" "...and the tripwire sees a fixed-path python call placed before the version guard (a mutant), though PATH is empty and the refusal text is unchanged" bash -c "test \"\$(cat '$work/early.rc')\" = 2 && test -s '$work/trip.log'"
 for sc in assemble-image lock-proof sealed-proof; do
   early "$air/bin/$sc.sh" "$work" --variant production
-  t "AC10" "$sc.sh run from another working directory is refused (exit 2, names the repository root) before any external command: PATH holds nothing" bash -c "test \"\$(cat '$work/early.rc')\" = 2 && grep -qi 'repository root' '$work/early.log' && ! grep -qi 'not found' '$work/early.log'"
-  early "$air/bin/$sc.sh" "$air" --variant production
-  : # (a refusal that follows the host guard needs the host guard first: see the next case)
+  t "AC10" "$sc.sh run from another working directory is refused (exit 2, names the repository root) before ANY tool (no external command found, no fixed-path tool called)" bash -c "test \"\$(cat '$work/early.rc')\" = 2 && grep -qi 'repository root' '$work/early.log' && ! grep -qi 'not found' '$work/early.log' && test ! -s '$work/trip.log'"
 done
 for sc in assemble-image lock-proof sealed-proof; do
-  ( cd "$air" && env -i PATH="$nopath" HOME="$work" TEST_HOST_OS=darwin24 "$bash_abs" "$air/bin/$sc.sh" --variant production ) >"$work/early.log" 2>&1 </dev/null; echo $? >"$work/early.rc"
-  t "AC12" "$sc.sh on a non-Linux host is refused (exit 2, names Linux) before any external command" bash -c "test \"\$(cat '$work/early.rc')\" = 2 && grep -qi 'linux' '$work/early.log' && ! grep -qi 'not found' '$work/early.log'"
+  : >"$work/trip.log"
+  ( cd "$air" && env -i PATH="$nopath" HOME="$work" TEST_HOST_OS=darwin24 "${trip_env[@]}" "$bash_abs" "$air/bin/$sc.sh" --variant production ) >"$work/early.log" 2>&1 </dev/null; echo $? >"$work/early.rc"
+  t "AC12" "$sc.sh on a non-Linux host is refused (exit 2, names Linux) before ANY tool (no external command found, no fixed-path tool called)" bash -c "test \"\$(cat '$work/early.rc')\" = 2 && grep -qi 'linux' '$work/early.log' && ! grep -qi 'not found' '$work/early.log' && test ! -s '$work/trip.log'"
 done
 # B5/B6: a blob nothing refers to must still hash to its name; a repeated lock entry is refused, not merged
 python3 - "$oc/good.tar" "$work/orphan.tar" <<'P'
@@ -1682,7 +1694,7 @@ t "AC5" "apko-lock.sh verify-archive with a NON-EMPTY lock against an absent arc
 # needing an earlier assignment), and the check is shown to see three mutations
 cat >"$work/closed.py" <<'P'
 import re, sys
-SPECIAL = {"SOURCE_DATE_EPOCH", "ImageOS", "ImageVersion", "BASH_SOURCE", "BASH_VERSINFO", "PWD", "OLDPWD", "LINENO", "OPTARG", "RANDOM", "PIPESTATUS", "BASH_REMATCH", "FUNCNAME"}
+SPECIAL = {"SOURCE_DATE_EPOCH", "ImageOS", "ImageVersion", "BASH_SOURCE", "BASH_VERSINFO", "PWD", "LINENO", "RANDOM", "PIPESTATUS", "BASH_REMATCH", "FUNCNAME"}   # the shell sets these itself; OPTARG, OLDPWD and the like are importable and not exempt
 ASSIGN = re.compile(r"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\+?=")
 def strip(code):
     out = []
@@ -1751,7 +1763,7 @@ def leaks(code):
         else: assigned |= now
         if hm: heredoc_end = hm.group(1)
     for ln in lines:
-        if re.search(r"\bdeclare\s+-[a-zA-Z]*[pxfF]|\btypeset\s+-|\bcompgen\s+-[ve]|\bexport\s+-p|\bprintenv\b|\$\{![A-Za-z_]|\[\[?\s+-v\s|\benv\s*\||\bset\s*\||\bread\s+-[a-z]*r?\s+[A-Za-z_]+\s*<\s*/proc", ln):
+        if re.search(r"\bdeclare\s+-[a-zA-Z]*[pxfF]|\btypeset\s+-|\bcompgen\s+-[ve]|\bexport\s+-p|\bprintenv\b|\$\{![A-Za-z_]|(?:\btest|\[\[?)\s+(?:!\s+)?-[a-zA-Z]*v\s|\benv\s*\||\bset\s*\||\bread\s+-[a-z]*r?\s+[A-Za-z_]+\s*<\s*/proc", ln):
             bad.append("an environment introspection form: %s" % ln.strip()[:80])
         for am in re.finditer(r"\$\(\(([^)]*)\)\)|(?<![$])\(\(([^)]*)\)\)", ln):
             for v in re.findall(r"(?<![A-Za-z0-9_$#])([A-Za-z_][A-Za-z0-9_]*)\b(?!\s*\()", am.group(1) or am.group(2) or ""):
@@ -1779,6 +1791,8 @@ if __name__ == "__main__":
                        ("a builtin inspection of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nif declare -p AUDIT_UNLISTED_SETTING >/dev/null 2>&1; then exit 0; fi\n", 1)),
                        ("a function-local self-default", base.replace("local errf=$tmp/apko.err rc", "local errf=${errf:-$tmp/apko.err} rc", 1)),
                        ("an arithmetic read of a caller variable", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzn=$((CALLER_COUNT + 1))\n", 1)),
+                       ("a test -v introspection", base.replace("set -euo pipefail\n", "set -euo pipefail\nif test -v AUDIT_SKIP_BUILD; then exit 0; fi\n", 1)),
+                       ("a read of OPTARG", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"${OPTARG:-}\"\n", 1)),
                        ("an embedded python environment read", base.replace("set -euo pipefail\n", "set -euo pipefail\n: \"$(os.environ.get('CALLER_X'))\"\n", 1))):
         if not leaks(mut):
             print("the check does not see %s" % label); rc = 1
@@ -1931,6 +1945,30 @@ poison_env=(); for n_ in $(cat "$work/poison.names"); do poison_env+=("$n_=/pois
 poison_out=$(mo)
 run_s "${aie[@]}" "${poison_env[@]}" "$AI" "${ai_args[@]}" --out "$poison_out"
 t "AC12" "every variable the assembler assigns, set to a hostile value in the environment ($(wc -w <"$work/poison.names") names), leaves the result unchanged: exit 0 and the same image digest as the control run" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(cat '$poison_out/production.digest')\" = '$ref_out'"
+# round 7 (seat B): the substituted production assignments have EXACTLY these values (a copy replaces them, so a wrong shipped value would otherwise vanish)
+t "AC12" "the TEST-SUBST lines of the five production scripts hold exactly the intended tool locations, /work, an empty render directory and the shell's own host fact (an exact table, so a changed constant is a changed test)" python3 - "$root" <<'P'
+import re, sys
+root = sys.argv[1]
+EXPECT = {
+    "assemble-image.sh": {"HOST_OS": "${BASH_VERSINFO[5]}", "PY3": "/usr/bin/python3", "SUDO": "/usr/bin/sudo", "UNSHARE": "/usr/bin/unshare", "BASHBIN": "/bin/bash",
+                          "APKO": "/usr/local/bin/apko", "ENVBIN": "/usr/bin/env", "WORKDIR": "/work", "RENDER_DIR": ""},
+    "lock-proof.sh": {"HOST_OS": "${BASH_VERSINFO[5]}", "PY3": "/usr/bin/python3", "SUDO": "/usr/bin/sudo", "BASHBIN": "/bin/bash"},
+    "sealed-proof.sh": {"HOST_OS": "${BASH_VERSINFO[5]}", "PY3": "/usr/bin/python3", "SUDO": "/usr/bin/sudo", "UNSHARE": "/usr/bin/unshare", "BASHBIN": "/bin/bash"},
+    "apko-lock.sh": {"PY3": "/usr/bin/python3"},
+    "build-apk.sh": {"PY3": "/usr/bin/python3", "GIT": "/usr/bin/git", "SUDO": "/usr/bin/sudo", "UNSHARE": "/usr/bin/unshare", "MELANGE": "/usr/local/bin/melange",
+                     "GO_TOOL": "/usr/local/bin/fscache-go/bin/go", "SHA256SUM": "/usr/bin/sha256sum", "ENVBIN": "/usr/bin/env", "SEALED_ENV": "build/sealed-env.json",
+                     "RECIPE_STANDARD": "$PWD/build/melange.yaml", "RECIPE_FIPS": "$PWD/build/melange-fips.yaml"},
+}
+bad = []
+for name, want in EXPECT.items():
+    got = {}
+    for ln in open("%s/bin/%s" % (root, name)).read().split("\n"):
+        m = re.match(r"^([A-Z][A-Z0-9_]*)=(\S*)\s+# TEST-SUBST", ln)
+        if m: got[m.group(1)] = m.group(2)
+    if got != want:
+        bad.append("%s: %r != %r" % (name, got, want))
+print("\n".join(bad)); sys.exit(1 if bad else 0)
+P
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
