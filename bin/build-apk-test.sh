@@ -1334,5 +1334,13 @@ PYM
 rs_refused rs-pyopenssl openssl "openssl by bare name in the key-derivation subprocess is not found"
 rs_refused rs-tool-openssl openssl "openssl by bare name in apk-tool.py's verify subprocess is not found"
 
+# ---- bin/release-sign-apks.sh names bin/apk-tool.py by its literal repo-root path and reads names with read -r (handoff 0434; AC7 clause, proposed) ----
+t "AC7" "release-sign-apks.sh: no command names a script through a variable path (no \"\$here/\" anywhere) and no IFS= read is used" bash -c "! grep -v '^ *#' '$RS_REAL' | grep -Eq 'here/|IFS= *read'"
+t "AC7" "release-sign-apks.sh: bin/apk-tool.py is named by its literal repo-root path at every call (six or more sites, none other)" bash -c "n=\$(grep -c -- '-I -B bin/apk-tool.py' '$RS_REAL'); [ \"\$n\" -ge 6 ] && ! grep -v '^ *#' '$RS_REAL' | grep -- 'apk-tool.py' | grep -qv -- '-I -B bin/apk-tool.py'"
+t "AC7" "release-sign-apks.sh: no comment names bin/install-build-tools.sh" bash -c "! grep -q 'install-build-tools' '$RS_REAL'"
+rp_sign_dirs fcA fcB
+( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" --rebuild-dir "$work/fcB" --key "$work/release.rsa" ) >"$work/fc.log" 2>&1; fc=$?
+t "AC7" "release-sign-apks.sh: a run from another directory is refused (exit 2) with a message naming the repository root, and signs nothing" bash -c "[ '$fc' = 2 ] && grep -qi 'repository root' '$work/fc.log' && ! grep -q 'signed' '$work/fc.log'"
+
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
