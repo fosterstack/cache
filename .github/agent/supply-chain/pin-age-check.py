@@ -512,7 +512,7 @@ _ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
 
-_LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g", "--fail", "--silent", "--show-error", "--location", "--tlsv1.2"}
+_LIVE_FLAG_PLAIN = {"-f", "-s", "-S", "-L", "-fsSL", "-fsS", "-fSL", "-sSL", "-g", "--globoff", "--fail", "--silent", "--show-error", "--location", "--tlsv1.2"}
 _LIVE_FLAG_VALUE = {"--max-filesize": r"[0-9]+", "--max-time": r"[0-9]+", "--proto": r"=https", "-o": r"[A-Za-z0-9_./${}-]+", "--output": r"[A-Za-z0-9_./${}-]+"}
 
 
@@ -540,10 +540,11 @@ def _live_fetch_line_ok(flat):
         # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into several words
         if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
             return False
-    i, operands = 2, []
+    i, operands, globoff = 2, [], False
     while i < len(w):
         t = w[i]
         if t in _LIVE_FLAG_PLAIN:
+            globoff = globoff or t in ("-g", "--globoff")
             i += 1
         elif t in _LIVE_FLAG_VALUE:
             if i + 1 >= len(w) or not re.fullmatch(_LIVE_FLAG_VALUE[t], w[i + 1]) or (t not in ("-o", "--output") and "$" in w[i + 1]):
@@ -554,7 +555,11 @@ def _live_fetch_line_ok(flat):
         else:
             operands.append(t)
             i += 1
-    return len(operands) == 1 and (_LIVE_URL.fullmatch(operands[0]) is not None or _LIVE_URL_VAR.fullmatch(operands[0]) is not None)
+    if len(operands) != 1:
+        return False
+    if _LIVE_URL_VAR.fullmatch(operands[0]) is not None:
+        return globoff                                  # curl itself expands {a,b} and [1-2] in a URL: a variable operand is one transfer only with -g
+    return _LIVE_URL.fullmatch(operands[0]) is not None
 
 
 MAX_RULED_COUNT = 100
