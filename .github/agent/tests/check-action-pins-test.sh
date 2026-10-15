@@ -2871,5 +2871,27 @@ case_ r4-enable-n-printf-bad bad "$(rb 'bash ci-lit.sh')" "printf 'enable -n pri
 case_ r4-coproc-shell-name-bad bad "$(rb 'bash ci-lit.sh')" "printf 'COPROC=/usr/bin/git\n\"\$COPROC\" run alpine:latest\n' > ci-lit.sh"
 case_ r4-coproc-pid-shell-name-bad bad "$(rb 'bash ci-lit.sh')" "printf 'COPROC_PID=/usr/bin/git\n\"\$COPROC_PID\" run alpine:latest\n' > ci-lit.sh"
 
+# --- review round 5 of PR 351 (both seats): a computed write target, a nameref, allexport, a startup file and a non-bash interpreter end the inference
+case_ r5-computed-read-target-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nread \"\$1\" <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-computed-printf-v-target-bad bad "$(rb 'bash ci-lit.sh G')" "printf 'G=/usr/bin/git\nprintf -v \"\$1\" %%s /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-declare-nameref-bad bad "$(rb 'bash ci-lit.sh H')" "printf 'G=/usr/bin/git\ndeclare -n r=\"\$1\"\nr=/usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-arithmetic-assign-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\n: \$((G=1))\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-bash-env-prefix-bad bad "$(rb 'BASH_ENV=./ci-env.sh bash ci-lit.sh')" "printf 'declare -n G=H\n' > ci-env.sh; printf 'G=/usr/bin/git\nH=/usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-set-a-exports-functions-bad bad "$(rb 'set -a
+          printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-set-o-allexport-bad bad "$(rb 'set -o allexport
+          printf() { builtin printf -v "$2" %s /usr/bin/docker; }
+          bash ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-sh-interpreter-printf-v-bad bad "$(rb 'sh ci-lit.sh')" "printf 'printf -v G %%s /usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r5-env-block-bash-env-bad bad "on: push
+jobs:
+  j:
+    runs-on: ubuntu-latest
+    env:
+      BASH_ENV: ./ci-env.sh
+    steps:
+      - run: bash ci-lit.sh" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
