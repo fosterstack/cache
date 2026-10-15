@@ -1,18 +1,14 @@
 name: Agent review gate
 
-# REQ-AUD-18 AC3 (owner decision, option C, Sep 27): every change under .github/agent/ clears the
-# independent second review's stop rule before merge — as a CHECK. A PR touching .github/agent/
-# must carry .github/agent/reviews/<tree>.json bound to its exact content (see the gate script).
-#
-# Register row 78: the same verdict also requires every action reference in the PR head to be a
-# full commit digest (.github/agent/bin/check-action-pins.py, main's copy, reading the head as git
-# objects). Here — not in a check of its own — because this check is the one a PR cannot skip,
-# edit or impersonate (below), and the checker's own changes need the review record above.
+# REQ-AUD-18 AC3: the verdict runs main's copies of three checks over the PR head, read as git objects, and
+# judges no review record. Register row 78: every action reference in the PR head must be a full commit digest
+# (.github/agent/bin/check-action-pins.py, main's copy). Here — not in a check of its own — because this check
+# is the one a PR cannot skip, edit or impersonate (below).
 #
 # The same verdict also runs main's copies of the allowlist guard (bin/check-file-allowlist.sh, over the head's
 # file list, with ALLOWLIST_HEAD_REV so the head is judged as a commit) and of the pin-wiring judge
 # (.github/agent/tests/pin-wiring-test.sh, PIN_WIRING_JUDGE_GIT, over the head's ci.yml), so a PR cannot
-# disable its own whole-tree guard by editing ci.yml. The guard's own files are review-gated like .github/agent/.
+# disable its own whole-tree guard by editing ci.yml.
 #
 # Protected by construction (review loop, both vendors):
 # - pull_request_target: GitHub always runs the DEFAULT branch's copy of this file, so a PR can
@@ -88,17 +84,18 @@ jobs:
           GITHUB_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           set -uo pipefail
-          # judged against the checked-out default branch (HEAD), never the event's base
-          base="$(git merge-base HEAD "$HEAD_SHA")" || { echo "verdict=failure" >> "$GITHUB_OUTPUT"; exit 1; }
+          # judged by the checked-out default branch's copies (HEAD), never the PR's
           verdict=success
-          python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$HEAD_SHA" || verdict=failure
           # row 78: every action reference in the head is a commit digest (git objects only)
-          python3 .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
+          python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$HEAD_SHA" || verdict=failure
           # the PR cannot run its own copy of its guard: main's allowlist script judges the head's file list
           # and main's pin-wiring judge reads the head's ci.yml, both as git objects (nothing of the PR runs)
           git ls-tree -r -z --name-only "$HEAD_SHA" | ALLOWLIST_NUL=1 ALLOWLIST_HEAD_REV="$HEAD_SHA" bash bin/check-file-allowlist.sh || verdict=failure
           mkdir -p "$RUNNER_TEMP/yaml-shim" && ln -sfn "$PWD/.github/agent/fixtures/testlib/pyyaml" "$RUNNER_TEMP/yaml-shim/yaml"
           PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$HEAD_SHA" bash .github/agent/tests/pin-wiring-test.sh || verdict=failure
+          # REQ-SCAN-015: main's scanner guard judges the head's workflows and composite actions as git objects, so a step
+          # of the PR's own CI that overwrites the guard on disk changes nothing
+          PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$HEAD_SHA" bash bin/scan-no-workflow-call-test.sh || verdict=failure
           echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
           [ "$verdict" = success ]
 
@@ -138,8 +135,8 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="The review-loop record clears the stop rule (or the PR changes nothing under .github/agent/), and every action reference is a commit digest."
-          else conclusion=failure; summary="No valid review-loop record for this .github/agent/ content, or an action reference that is not a commit digest (or the judge did not finish) — see the run log."; fi
+          if [ "$VERDICT" = "success" ]; then conclusion=success; summary="Every action reference is a commit digest, and the allowlist guard, the pin-wiring judge and the scanner guard passed."
+          else conclusion=failure; summary="An action reference is not a commit digest, or the allowlist guard, the pin-wiring judge or the scanner guard failed (or the judge did not finish) — see the run log."; fi
           gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$HEAD_SHA" \
             -f status=completed -f conclusion="$conclusion" -f details_url="$RUN_URL" \
             -f "output[title]=auditor review gate: ${conclusion}" -f "output[summary]=${summary}" >/dev/null
@@ -197,12 +194,12 @@ jobs:
             git fetch --no-tags -q origin "+refs/pull/${n}/head:refs/remotes/pr/${n}" || { fail=1; continue; }
             [ "$(git rev-parse "refs/remotes/pr/${n}")" = "$sha" ] || continue     # moved: next sweep
             conclusion=failure
-            if base="$(git merge-base HEAD "$sha")" && python3 .github/agent/bin/auditor-review-gate.py --base "$base" --head "$sha" \
-               && GH_TOKEN="$LIST_TOKEN" python3 .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
+            if GH_TOKEN="$LIST_TOKEN" python3 -I .github/agent/bin/check-action-pins.py --verify-tags --git "$sha" \
                && git ls-tree -r -z --name-only "$sha" | ALLOWLIST_NUL=1 GITHUB_HEAD_REF="$headref" GITHUB_BASE_REF="$DEFAULT" GITHUB_HEAD_REPO="$headrepo" \
                     ALLOWLIST_HEAD_REV="$sha" bash bin/check-file-allowlist.sh \
-               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh; then
-              conclusion=success   # the review record, every action reference a digest (row 78), main's allowlist guard and pin-wiring judge
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" PIN_WIRING_JUDGE_GIT="$sha" bash .github/agent/tests/pin-wiring-test.sh \
+               && PYTHONPATH="$RUNNER_TEMP/yaml-shim" SCAN_GUARD_JUDGE_GIT="$sha" bash bin/scan-no-workflow-call-test.sh; then
+              conclusion=success   # every action reference a digest (row 78), main's allowlist guard, pin-wiring judge and scanner guard
             fi
             if [ "$last" = "failure" ] && [ "$conclusion" = "failure" ]; then echo "PR #${n} ${sha:0:7}: still failure"; continue; fi
             GH_TOKEN="$APP_TOKEN" gh api "repos/${GITHUB_REPOSITORY}/check-runs" -f name=auditor-review-gate -f head_sha="$sha" \

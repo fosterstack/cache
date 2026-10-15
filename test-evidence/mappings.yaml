@@ -69,6 +69,7 @@ mappings:
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetrics" }
       - { type: go-test, ref: "internal/server:TestStatuszReportsCacheStateAsJSON" }
+      - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetricsAfterRestart" }
   - ac: REQ-OBS-003-AC2
     evidence:
       - { type: go-test, ref: "internal/server:TestStatuszServesHTMLToBrowsers" }
@@ -108,6 +109,86 @@ mappings:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
       - { type: go-test, ref: "cmd/fscache:TestZeroRemainsValid" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/34637822356/job/103389916236 (test check red on ed886e1 — silent-fallback behavior failing the new assertions before the implementation commit)" }
+  - ac: REQ-CFG-004-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestBadAddressRefusedAndDataDirNotCreated" }
+  - ac: REQ-CFG-004-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestBadAddressLeavesExistingDataDirIdentical" }
+  - ac: REQ-CFG-004-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestInvalidConfigDoesNotCreateDataDir" }
+  - ac: REQ-CFG-004-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTakenPortRefusedAndDataDirUnchanged" }
+      - { type: go-test, ref: "cmd/fscache:TestListenerReleasedWhenStoreOpenFails" }
+      - { type: go-test, ref: "cmd/fscache:TestServeFailureAfterBindIsReturned" }
+      - { type: go-test, ref: "cmd/fscache:TestServeWaitsForServingGoroutineOnShutdown" }
+      - { type: go-test, ref: "cmd/fscache:TestServeWaitsForServingGoroutineWhenShutdownFails" }
+  - ac: REQ-CFG-005-AC1
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvOneWarningPerName" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDoesNotStopStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDoesNotMaskInvalidConfig" }
+  - ac: REQ-CFG-005-AC2
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDuplicateNameWarnsOnce" }
+  - ac: REQ-CFG-005-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvNeverLogsTheValue" }
+  - ac: REQ-CFG-005-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesREADMETable" }
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvMatchesNamesReadInCode" }
+      - { type: go-test, ref: "cmd/fscache:TestScanEnvNamesRules" }
+  - ac: REQ-CFG-005-AC5
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestKnownEnvNamesNeverWarned" }
+  - ac: REQ-CFG-005-AC6
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMean" }
+      - { type: go-test, ref: "cmd/fscache:TestUnknownEnvDidYouMeanTieAndNearest" }
+  - ac: REQ-TLS-001-AC1
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSRoundTripAndPlainHTTPRefused" }
+  - ac: REQ-TLS-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSRefusesOldVersionsAndWeakSuites" }
+      - { type: go-test, ref: "internal/server:TestTLSFloorHoldsUnderTLS10ServerGODEBUG" }
+  - ac: REQ-TLS-001-AC3
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSBadPairRefusedAndDataDirNotCreated" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSBadPairLeavesExistingDataDirIdentical" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSKeyEncodingsAccepted" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSFileSizeCap" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSPathMustBeRegularFile" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSPathCheckedAgainOnTheOpenHandle" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSReadErrorRefused" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSFileSwappedForFIFOIsRefusedWithoutBlocking" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSRefusalTextIsFixed" }
+  - ac: REQ-TLS-001-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSKeyNeverAppearsInOutput" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSKeyParserPanicIsContained" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSRefusalTextIsFixed" }
+  - ac: REQ-TLS-001-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSFIPSModeNarrowsSuites" }
+  - ac: REQ-TLS-001-AC6
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSCertificateReadOnceAtStartup" }
+  - ac: REQ-TLS-001-AC7
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestTLSDocsDescribeBothOptions" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSDocsBannedWordingIsCaught" }
+  - ac: REQ-TLS-001-AC8
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestStartupLineCarriesTLSState" }
+  - ac: REQ-TLS-001-AC9
+    evidence:
+      - { type: go-test, ref: "internal/server:TestTLSOffersOnlyHTTP11" }
+      - { type: go-test, ref: "internal/server:TestTLSListenerHasPlainListenerBounds" }
+      - { type: go-test, ref: "cmd/fscache:TestTLSServeOffersOnlyHTTP11" }
   - ac: REQ-AUTH-005-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReadOnlyCredentialsReadButNeverWrite" }
@@ -143,6 +224,22 @@ mappings:
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestUncleanShutdownMarkerLifecycle" }
       - { type: inspection, ref: "cmd/fscache/main.go run(): reconcile-before-serve on marker present; marker cleared only after successful clean Close (2026-09-11)" }
+  - ac: REQ-STORE-005-AC4
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestServeReconcileError" }
+      - { type: go-test, ref: "cmd/fscache:TestServeReconcileResumesAfterAFailedStart" }
+      - { type: go-test, ref: "cmd/fscache:TestServeReconcilePanicKeepsMarker" }
+  - ac: REQ-STORE-005-AC5
+    evidence:
+      - { type: go-test, ref: "cmd/fscache:TestServeErrorKeepsMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServeShutdownErrorWithUploadInFlightKeepsMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServeShutdownErrorOrphanAdoptedOnNextStart" }
+      - { type: go-test, ref: "cmd/fscache:TestServeGracefulShutdown" }
+      - { type: go-test, ref: "cmd/fscache:TestServeErrorAfterShutdownSignalIsReturned" }
+      - { type: go-test, ref: "cmd/fscache:TestServePanicInReadyKeepsMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServePanicInServerNewKeepsMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServeTLSErrorsKeepMarker" }
+      - { type: go-test, ref: "cmd/fscache:TestServeRealServingErrorWithUploadInFlightThenRestart" }
   - ac: REQ-HTTP-001-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestHTTPServerTimeoutsAreSet" }
@@ -155,6 +252,8 @@ mappings:
   - ac: REQ-HTTP-002-AC2
     evidence:
       - { type: go-test, ref: "cmd/fscache:TestInvalidNumericConfigurationFailsStartup" }
+      - { type: go-test, ref: "cmd/fscache:TestInvalidUploadBoundFailsStartupNamingCount" }
+      - { type: go-test, ref: "cmd/fscache:TestNegativeMessageWording" }
   - ac: REQ-GRADLE-001-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/acceptance.yml (job acceptance-gradle) step 'assert the exact expected tasks were restored from cache' vs bench/gradle-sample/expected-from-cache.txt (list measured empirically 2026-09-11)" }
@@ -181,6 +280,32 @@ mappings:
       - { type: go-test, ref: "internal/server:TestMalformedPathsRejectedNoRedirect" }
       - { type: go-test, ref: "internal/server:TestRawPathIsMalformed" }
       - { type: manual, ref: "before-state independently reproduced by the external audit at head 20e65c9 (audits/2026-09-14/evidence/http-results.json): raw /x/../alias, /x//alias, /x/./alias answered 307 to the normalized path; the front controller now answers 400 with no redirect" }
+  - ac: REQ-PROTO-003-AC3
+    evidence:
+      - { type: go-test, ref: "internal/blobstore:TestDotLeafKeysInDifferentDirectoriesStayDistinct" }
+      - { type: go-test, ref: "internal/blobstore:TestDotLeafKeysRoundTrip" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkReturnsDotLeafKeys" }
+      - { type: go-test, ref: "internal/blobstore:TestRelPathUnchangedForOtherKeys" }
+      - { type: go-test, ref: "internal/blobstore:TestRelPathDotLeafHasNoDotDotSegment" }
+      - { type: go-test, ref: "internal/blobstore:TestRelPathRandomCorpusStaysInside" }
+      - { type: go-test, ref: "internal/server:TestDotLeafKeysOverHTTP" }
+      - { type: go-test, ref: "internal/cache:TestReconcileAdoptsDotLeafBlob" }
+  - ac: REQ-PROTO-003-AC4
+    evidence:
+      - { type: go-test, ref: "internal/blobstore:TestTempDirNameIsNoPartOfAnyKeyPath" }
+      - { type: go-test, ref: "internal/blobstore:TestPutStagesItsTemporaryFileInTheTempDir" }
+      - { type: go-test, ref: "internal/blobstore:TestTempDirHasTheStoreDirectoryMode" }
+      - { type: go-test, ref: "internal/blobstore:TestPutFailsWhenTempDirIsAFile" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkKeepsTmpLeafKeysAndReportsOnlyTempDirFiles" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkLeavesEarlierVersionShardFilesAlone" }
+      - { type: go-test, ref: "internal/blobstore:TestInterruptedWriteLeavesNoKeyVisible" }
+      - { type: go-test, ref: "internal/blobstore:TestRelPathUnchangedForOtherKeys" }
+      - { type: go-test, ref: "internal/cache:TestReconcileKeepsTmpLeafKeys" }
+      - { type: go-test, ref: "internal/server:TestTmpLeafKeysOverHTTP" }
+      - { type: go-test, ref: "cmd/fscache:TestServeUncleanStartKeepsTmpLeafKeys" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkVisitsKeysInCaseFoldedShardDirs" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkVisitsAFileItsKeysPathOpens" }
+      - { type: go-test, ref: "internal/blobstore:TestWalkSkipsACopyAwayFromItsKeysPath" }
   - ac: REQ-PROTO-007-AC1
     evidence:
       - { type: go-test, ref: "internal/server:TestReservedPathsRefuseWritesAndStoreNothing" }
@@ -253,12 +378,26 @@ mappings:
       - { type: shell-test, ref: "bin/go-bump-open-pr-test.sh" }
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
       - { type: workflow-job, ref: ".github/workflows/go-freshness.yml: scheduled daily; compares the go directive against the newest patch of a supported minor (go.dev mode=json) and opens the go.mod bump PR (both modules) when a newer patch exists" }
+  - ac: REQ-REL-004-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/rescan-current-only-test.sh" }
+  - ac: REQ-REL-004-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/rescan-statement-test.sh" }
+  - ac: REQ-REL-004-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/rescan-statement-test.sh" }
   - ac: REQ-REL-005-AC1
     evidence:
       - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — the action-pin checker's fixture cases (119), the checker itself with --verify-tags over the tree, and the pin-check wiring test (23 cases: triggers unfiltered; steps, including its own, unconditional, in the default shell, with no environment, PATH or checkout redirection)" }
       - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's action-pin checker over every PR head (required check auditor-review-gate)" }
       - { type: red-run, ref: "https://github.com/fosterstack/cache/actions/runs/36721513759" }
       - { type: shell-test, ref: ".github/agent/tests/k8s-harness-fence-test.sh" }
+  - ac: REQ-REL-005-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/check-action-pins-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:allowlist — runs the action-pin checker's fixture cases, including the pm-* cases for the literal-label runner matrix" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml:coverage — the auditor coverage gate runs the checker's unit tests (test_check_action_pins.py, class LiteralRunnerMatrix) and the fixture cases, and requires every line of the checker covered" }
   - ac: REQ-REL-006-AC1
     evidence:
       - { type: go-test, ref: "tools/requirements:TestFreezeRecordsItsFixedCommit" }
@@ -296,6 +435,14 @@ mappings:
       - { type: go-test, ref: "tools/requirements:TestOddTestFileNamesAreFound" }
       - { type: go-test, ref: "tools/requirements:TestGoIsParsedAndSymlinkedTestsAreRefused" }
       - { type: go-test, ref: "tools/requirements:TestNothingHidesFromTheScan" }
+  - ac: REQ-REL-007-AC3
+    evidence:
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsAsksTheToolchain" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsFailsClosedWithoutAModule" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsIgnoresPersistedGoFlags" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsAcceptsAPackagePathEndingInTest" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsEdgesOfTheAnswer" }
+      - { type: go-test, ref: "tools/requirements:TestGoTestExistsChecksTheSignatureTheToolchainDoesNot" }
   - ac: REQ-DEP-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/dependency-lanes-test.sh" }
@@ -460,6 +607,17 @@ mappings:
   - ac: REQ-SCAN-014-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
+  - ac: REQ-SCAN-015-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
+  - ac: REQ-SCAN-015-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-wiring-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the base branch's pin-wiring judge over every PR head's ci.yml requires the scanner guard step, unweakened, in the allowlist job (required check auditor-review-gate)" }
+  - ac: REQ-SCAN-015-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/scan-no-workflow-call-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/agent-review-gate.yml:judge and sweep — the default branch's scanner guard over every PR head read as git objects (SCAN_GUARD_JUDGE_GIT); the second review that a change to the guard script needs is enforced outside this repository by the private review tooling (REQ-AUD-018 note); the required check auditor-review-gate judges no review record" }
   - ac: REQ-SCAN-009-AC4
     evidence:
       - { type: shell-test, ref: ".github/agent/bin/tests/test_panel.py" }
@@ -578,6 +736,28 @@ mappings:
   - ac: REQ-SUP-001-AC13
     evidence:
       - { type: shell-test, ref: ".github/agent/tests/pip-pin-test.sh" }
+  - ac: REQ-SUP-001-AC14
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
+  - ac: REQ-SUP-001-AC15
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-audit-go-major-test.sh" }
+  - ac: REQ-SUP-001-AC16
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC18
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC19
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC20
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
+  - ac: REQ-SUP-001-AC21
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/pin-age-check-test.sh" }
   - ac: REQ-REPO-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
@@ -653,3 +833,233 @@ mappings:
   - ac: REQ-REPO-001-AC25
     evidence:
       - { type: shell-test, ref: "bin/branch-sweep-test.sh" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC1 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   All auditor code, prompts, fixtures and tests live under `.github/agent/` and nowhere else; the only auditor-related files outside it are the workflow files (`.github/workflows/`), the allowlist entries, the auditor's generated outputs, and (amendment, owner Oct 2) the two traceability files `test-evidence/mappings.yaml` and `test-evidence/unmapped.yaml`, which name test paths as metadata; and (amendment, owner Oct 3) the patch-release classifier `bin/patch-decide.py` and its test `bin/patch-decide-test.sh`, which name the auditor directory as data and hold no auditor code.
+  - ac: REQ-AUD-018-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job allowlist: step auditor layout runs the layout check over git ls-files on every push/PR. Layout-check exemptions beyond the AC text: .github/dependabot.yml and .githooks/pre-commit (read as allowlist entries; advisor to confirm). Amendments in the AC text: test-evidence/mappings.yaml and test-evidence/unmapped.yaml (owner, Oct 2 2026); bin/patch-decide.py and bin/patch-decide-test.sh (owner, Oct 3 2026, 'I ratify b.'). The layout check's docstring is stale on these (follow-up)" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC2 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   The Python under `.github/agent/` is held to the **100% coverage gate** in CI, the same as the Go.
+  - ac: REQ-AUD-018-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: inspection, ref: ".github/agent/tests/coverage-gate.sh (the gate script itself, run by the ci.yml coverage job; it carries the AC2 proves header but is not test-named, so the matrix cases req18-ac2-python-100pct-coverage-gate and req18-ac2-identity-claims-logging-stubbed are the shell-test evidence) (re-verified 2026-10-09)" }
+      - { type: workflow-job, ref: ".github/workflows/ci.yml job coverage: step auditor Python coverage, zero uncovered. KNOWN GAP (owner question pending): the gate honours the exclusion list in .github/agent/coverage-exclusions.txt, which the AC text does not mention, and it measures only the auditor bin directory (code to widen in a follow-up)" }
+  # VERBATIM RATIFIED TEXT of REQ-AUD-018-AC3 (the auditor matrix page, lines 91-93; owner-ratified in #113 / 731f2d1, Sep 25; AC3 as a check: option C, Sep 27).
+  # requirements.yaml carries a path-free PARAPHRASE (the layout check forbids the literal path there); this comment is the source sentence:
+  #   Every change under `.github/agent/` clears the **independent second review's stop rule** before merge.
+  - ac: REQ-AUD-018-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/tests/auditor-matrix-test.sh" }
+      - { type: inspection, ref: "the second review is enforced by the private review tooling before merge; the repository's verdict (agent-review-gate.yml) judges no review record, and the matrix test asserts it runs only the pin checker, the allowlist guard, the pin-wiring judge and the scanner guard" }
+  - ac: REQ-AUD-019-AC1
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-AUD-019-AC2
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-AUD-019-AC3
+    evidence:
+      - { type: shell-test, ref: ".github/agent/bin/tests/test_fs_guard.py" }
+  - ac: REQ-OBS-001-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHealthzStays200OnReadOnlyAndFullDisk" }
+  - ac: REQ-OBS-001-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestHealthzTouchesNoFilesystem" }
+  - ac: REQ-OBS-001-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestDocsSayHealthzIsLivenessOnly" }
+  - ac: REQ-OBS-002-AC2
+    evidence:
+      - { type: go-test, ref: "internal/server:TestWritableGaugeHealthyIsOneAndDocumented" }
+  - ac: REQ-OBS-002-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestWritableGaugeZeroOnFullDiskAndRecovers" }
+      - { type: go-test, ref: "internal/server:TestWritableGaugeZeroOnReadOnlyDir" }
+      - { type: go-test, ref: "internal/server:TestFailedPutMarksTheSampleStale" }
+      - { type: go-test, ref: "internal/storesample:TestRecoversAfterFix" }
+      - { type: go-test, ref: "internal/storesample:TestStateChangeIsLoggedOnce" }
+      - { type: go-test, ref: "internal/storesample:TestEachProbeStepFailureReadsNotWritable" }
+  - ac: REQ-OBS-002-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestProbeFileIsNotAKeyNotCountedAndSweptAtStartup" }
+      - { type: go-test, ref: "internal/storesample:TestProbeStepsOrderAndTempName" }
+      - { type: go-test, ref: "internal/storesample:TestRealProbeLeavesNoFileAndFailsOnReadOnlyDir" }
+  - ac: REQ-OBS-002-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestProbeNotRunWhileSampleFresh" }
+      - { type: go-test, ref: "internal/storesample:TestFreshnessAndMarkStale" }
+      - { type: go-test, ref: "internal/storesample:TestOnlyOneProbeInFlightAndScrapeDoesNotWait" }
+      - { type: go-test, ref: "internal/storesample:TestProbeOverLimitReadsZeroAndIsNotDuplicated" }
+  - ac: REQ-OBS-002-AC6
+    evidence:
+      - { type: go-test, ref: "internal/server:TestFreeBytesGaugeAndStatfsFailure" }
+      - { type: go-test, ref: "internal/storesample:TestStatfsFailureReadsZeroAndNotWritable" }
+      - { type: go-test, ref: "internal/storesample:TestAvailIsBavailTimesBsize" }
+  - ac: REQ-OBS-002-AC7
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutErrorTaxonomyAndResponsesUnchanged" }
+      - { type: go-test, ref: "internal/server:TestPutErrorsTooLargeByDeclaredChunkedAndBodyLimit" }
+      - { type: go-test, ref: "internal/server:TestClientAbortMidBodyCountsClientAborted" }
+  - ac: REQ-OBS-002-AC8
+    evidence:
+      - { type: go-test, ref: "internal/server:TestPutErrorSeriesExistAtZeroAndNoOthers" }
+      - { type: go-test, ref: "internal/server:TestClassifyPutErrorTable" }
+      - { type: go-test, ref: "internal/server:TestPutErrorTaxonomyAndResponsesUnchanged" }
+  - ac: REQ-OBS-002-AC9
+    evidence:
+      - { type: go-test, ref: "internal/server:TestNonStoreRefusalsAndSuccessDoNotCount" }
+  - ac: REQ-OBS-002-AC10
+    evidence:
+      - { type: go-test, ref: "internal/server:TestGaugesSeededAtStartupHealthyAndBroken" }
+      - { type: go-test, ref: "cmd/fscache:TestServeHealthyStartThenTheVolumeGoesBadKeepsServingGets" }
+      - { type: go-test, ref: "cmd/fscache:TestServeStartOnAReadOnlyDirectoryFailsFastAndServesNothing" }
+  - ac: REQ-OBS-002-AC11
+    evidence:
+      - { type: go-test, ref: "internal/server:TestRouteSurfaceIsCachePlusReadOnlyEndpoints" }
+  - ac: REQ-OBS-003-AC3
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszHasDiskFields" }
+  - ac: REQ-OBS-003-AC4
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszAgreesWithMetricsOnDiskSignalsInEveryState" }
+  - ac: REQ-OBS-003-AC5
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszAndMetricsShareOneSample" }
+  - ac: REQ-OBS-003-AC6
+    evidence:
+      - { type: go-test, ref: "internal/server:TestStatuszHTMLShowsDataDirRow" }
+  - ac: REQ-OBS-003-AC7
+    evidence:
+      - { type: go-test, ref: "internal/server:TestAuthSurfaceUnchangedWithDiskSignals" }
+  - ac: REQ-SBOM-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-SBOM-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/build-helpers-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-BUILDTOOLS-002-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-VEND-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-IMAGE-001-AC1
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC4
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC5
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC6
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC7
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC8
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC10
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-IMAGE-001-AC12
+    evidence:
+      - { type: shell-test, ref: "bin/assemble-image-test.sh" }

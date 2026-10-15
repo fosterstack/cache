@@ -60,7 +60,7 @@ Shipped:
   once, and the scans, the acceptance tests and an independent
   reproducibility rebuild all run on that exact digest; the published
   images are that same digest, promoted without a rebuild. The daily rescan
-  then re-checks what is published. [`RELEASING.md`](RELEASING.md)
+  then re-checks the current release. [`RELEASING.md`](RELEASING.md)
   describes the pipeline stage by stage.
 - Acceptance-tested against a real multi-module Gradle project on every
   push/PR — a from-scratch second build must produce real `FROM-CACHE`
@@ -85,8 +85,8 @@ Not yet shipped:
 - **A CVE patch commitment you can hold us to.** We aim to ship fixes for
   dependency CVEs within 48 hours of public disclosure. That is a stated
   intention, not a contractual promise, and it will not be one until the
-  paid tiers exist. What already runs today is the detection half: every
-  published image is rescanned daily, so a CVE disclosed against bytes we
+  paid tiers exist. What already runs today is the detection half: the
+  current release's images are rescanned daily, so a CVE disclosed against bytes we
   already shipped raises an issue without anyone remembering to look.
 
 Tracked in this repo's issues, which is also where the roadmap gets argued
@@ -167,6 +167,71 @@ runners; develop on Windows via WSL2, which is `linux/amd64`.
 Full install instructions, including which archive to download and a systemd
 unit: **[docs/install.md](docs/install.md)**.
 
+## Debugging a running container
+
+The production and `-fips` images contain only the `fscache` binary, with no
+shell, so you debug them from the outside by attaching a second container that
+carries the tools. Three ways below. The two Docker ones were run against this
+image on Oct 9 2026; `kubectl debug` was checked against the Kubernetes
+documentation only (details at the end of this section).
+
+**Kubernetes: `kubectl debug`.** An ephemeral debug container joins the running
+pod (stable since Kubernetes v1.25):
+
+```sh
+kubectl debug -it <pod> --image=busybox:1.37 --target=<container> -- sh
+# inside it:
+wget -qO- http://127.0.0.1:8080/healthz
+ps
+```
+
+`--target` points the debug container at the `fscache` container so it can see
+its processes (the container runtime has to support that). The pod's network is
+shared, so `127.0.0.1:8080` is the cache. Use any image that already has the
+tools you need. The debug container inherits the pod's security context: with
+the Deployment in [docs/kubernetes.md](docs/kubernetes.md) (`runAsNonRoot`, user
+65532) it runs as that non-root user, so it cannot install packages (an image
+such as `wolfi-base` with `apk add` needs a pod that allows root). An ephemeral container
+cannot be changed or removed once added; it goes away with the pod. To debug a
+modified copy instead, use `kubectl debug <pod> -it --copy-to=<new-name>
+--image=...`, and for the node itself `kubectl debug node/<node> -it
+--image=...`.
+
+**Docker: `docker debug`.**
+
+```sh
+docker debug <container>
+```
+
+This opens a shell in a toolbox attached to the container, even though the image
+has no shell. It ships with Docker Desktop and was a paid feature (Pro, Team or
+Business) until Docker Desktop 4.50 (announced 12 Nov 2025), when Docker made it
+free for all users; Docker's earlier announcement (Docker Desktop 4.33, July 2024)
+described it as available with a Pro, Team or Business license, so an older Docker
+Desktop may still need one. See
+[Docker's announcement](https://www.docker.com/blog/docker-desktop-4-50/) and the
+[command reference](https://docs.docker.com/reference/cli/docker/debug/).
+
+**Docker without `docker debug`** works on any Docker, with no plan or sign-in:
+start a tools container that shares the cache container's network and process
+namespaces. (This is the no-shell route; the `:debug` image variant and its
+`/busybox/sh` are described in the
+[troubleshooting section](docs/docker-deploy.md#troubleshooting-with-the-debug-image).)
+
+```sh
+docker run --rm -it --network=container:<name> --pid=container:<name> \
+  cgr.dev/chainguard/wolfi-base sh
+# inside it: apk add curl procps, then curl http://127.0.0.1:8080/healthz
+```
+
+What was tested: `docker debug` (Docker Desktop's debug plugin 0.0.47 <!-- pinned: upstream -->) gave a
+root shell on a running `fscache` container; the plain-Docker command above
+reached `/healthz` (HTTP 200) on `127.0.0.1:8080` and listed `fscache` as PID 1;
+`wolfi-base` runs as root and `apk add curl` works in it; `busybox:1.37` run as user 65532 (as the pod's security context would) read `/healthz` with `wget` and listed `fscache`. The tool images in the
+examples are not pinned; pin them by digest in anything you automate.
+`kubectl debug` was checked against the Kubernetes documentation but not run
+against a cluster here.
+
 ## Build and run from source
 
 ```sh
@@ -186,6 +251,10 @@ Configuration is via environment variables (flags are not yet wired):
 | `FSCACHE_USERNAME` / `FSCACHE_PASSWORD` | unset (auth disabled) | HTTP Basic Auth, required together |
 | `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD` | unset | Optional read-only pair: `GET`/`HEAD` only, writes get 403. Requires the read-write pair; usernames must differ |
 | `FSCACHE_MAX_BODY_BYTES` | `1073741824` (1 GiB) | Max accepted blob size per `PUT` |
+| `FSCACHE_MAX_CONCURRENT_UPLOADS` | `32` (`0` disables the bound) | Max `PUT`s in flight; the request past the limit gets `429` with `Retry-After` and stores nothing |
+| `FSCACHE_TLS_CERT` / `FSCACHE_TLS_KEY` | unset (plain HTTP) | PEM certificate file (it may hold the chain) and its private key file, required together. When both are set the server serves HTTPS only, on `FSCACHE_ADDR`, with TLS 1.2 as the minimum version; HTTP/2 is not offered. Each file may be at most 1 MiB. The files are read only at startup: replace them, then restart |
+
+A variable that starts with `FSCACHE_` and is not in this table is ignored with one `WARN` log line naming it (never its value), and, when it is a near miss for a real name, a `did_you_mean` hint. The server still starts.
 
 ## Gradle setup
 

@@ -96,11 +96,17 @@ It must be smaller than the volume. A value that looks like 20 GiB but is
 actually 20 MiB (`20971520`) produces constant eviction and a hit rate that
 never climbs — which reads like "the cache isn't helping" rather than a typo.
 `/statusz` shows the parsed cap next to current usage, which is the fastest way
-to catch it. The server evicts least-recently-used entries once it
-reaches the cap and never grows past it, so the headroom absorbs
-filesystem overhead and in-flight uploads rather than runaway growth.
-Leaving `FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small
-volume is the one configuration that will fill your disk.
+to catch it. The server stores an entry first and then evicts
+least-recently-used entries, so the cache is normally kept at or under the cap
+after each write, and the disk can briefly hold more while uploads are in
+flight. Those in-flight bytes sit outside the cap and outside `/statusz`: up to
+`FSCACHE_MAX_CONCURRENT_UPLOADS` uploads (32 by default; `0` removes the bound)
+at once, each at most the smaller of `FSCACHE_MAX_BODY_BYTES` (1 GiB by
+default) and the cap. The ~20% headroom above assumes typical entries of tens
+of megabytes; on a small volume, lower `FSCACHE_MAX_CONCURRENT_UPLOADS` or
+`FSCACHE_MAX_BODY_BYTES` so that product fits in the headroom. Leaving
+`FSCACHE_MAX_BYTES` at its `0` (unbounded) default on a small volume is the
+most common way to fill your disk.
 
 **At the larger end, the network matters more than the CPU.** Throughput
 and round-trip latency between the cache and your CI runners set your hit
@@ -151,6 +157,11 @@ consequence of the zero-CVE-surface design — see
 [Scanning FosterStack in your compliance pipeline](scanning.md) for why
 there's no shell in the image in the first place.
 
+`/healthz` is liveness only and never reports disk trouble. To be told about a
+full or read-only data directory, alert on the `fscache_store_writable`,
+`fscache_store_free_bytes` and `fscache_put_errors_total` metrics (see the
+alerting examples in [Kubernetes](kubernetes.md)).
+
 ## Configuration
 
 All configuration is environment variables (see the main
@@ -159,7 +170,7 @@ All configuration is environment variables (see the main
 `/home/nonroot/data` in the image), `FSCACHE_MAX_BYTES`,
 `FSCACHE_USERNAME` / `FSCACHE_PASSWORD`, `FSCACHE_MAX_BODY_BYTES`.
 
-Three more:
+Four more:
 
 - **Read-only credentials** — `FSCACHE_RO_USERNAME` / `FSCACHE_RO_PASSWORD`, an
   optional second username/password pair that can read cache entries but not
@@ -175,9 +186,37 @@ Three more:
   `X-FSCache-Reject: entry-exceeds-cache-cap`, and nothing is evicted to make
   room. Gradle and Maven builds carry on; the oversized output simply isn't
   cached.
+- **HTTPS from the server itself** — `FSCACHE_TLS_CERT` / `FSCACHE_TLS_KEY`,
+  a PEM certificate file (it may hold the chain) and its private key file,
+  required together and unset by default. With both set, the server serves
+  HTTPS only, on `FSCACHE_ADDR`, with TLS 1.2 as the minimum version, and
+  HTTP/2 is not offered. A plain-HTTP request to that port gets `400`, and
+  `/healthz` checks move to `https://`. Mount the files read-only, for example
+  `-v /etc/fscache/tls:/etc/fscache/tls:ro` with
+  `-e FSCACHE_TLS_CERT=/etc/fscache/tls/tls.crt -e FSCACHE_TLS_KEY=/etc/fscache/tls/tls.key`.
+  Each file may be at most 1 MiB. The files are read only at startup: replace
+  them, then restart the container. Terminating TLS in a reverse proxy in front
+  of the server remains the other option, and needs neither variable.
+  If clients cannot connect over TLS, check from the client side:
+  `openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
+  chain, the negotiated version and cipher, and the alert). The server does not
+  log handshake failures at the default log level.
 
 A bad numeric value in any of these stops the server at startup with a message
 naming the variable, rather than silently falling back to a default.
+
+The server checks everything before it touches the data directory. A bad or
+already-taken `FSCACHE_ADDR` stops the start with a message naming
+`FSCACHE_ADDR` and the address, and leaves `FSCACHE_DATA_DIR` exactly as it
+was (nothing created, no marker written). The listen socket is opened first
+and answers only once the stores are ready, so after a crash, when the server
+reconciles the stores before serving, connections that arrive meanwhile are
+accepted by the kernel and wait in the listen backlog until it finishes. A
+build client waits up to its read timeout instead of getting
+connection-refused. Docker has no probe of its own here (the image ships no
+`HEALTHCHECK`), so nothing restarts the container during that window. On
+Kubernetes it is the liveness probe that can restart the pod; see
+[Kubernetes](kubernetes.md#startup-and-reconcile).
 
 Configuration is flags and environment only, on purpose. There is no settings
 page and no runtime reconfiguration, which means the running server always

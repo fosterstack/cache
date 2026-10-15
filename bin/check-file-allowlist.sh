@@ -62,6 +62,9 @@ ALLOW_PATTERNS=(
   '^requirements/releases/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/[A-Za-z0-9._-]+\.yaml$'
   '^test-evidence/vex-scope/[A-Za-z0-9._-]+\.json$'
+  # The suite guard (REQ-TEST-001): the guard, the runner that measures the suites, its test, and the committed floors.
+  '^bin/suite-guard(-run|-test)?\.sh$'
+  '^test-evidence/suite-floors\.json$'
   '^test-evidence/dependabot-reviewer/[A-Za-z0-9._-]+\.json$'
   '^docs/quality/[A-Za-z0-9._-]+\.md$'
   '^docs/quality/releases/[A-Za-z0-9._-]+\.md$'
@@ -80,6 +83,7 @@ ALLOW_PATTERNS=(
   '^bin/branch-sweep\.py$'
   '^bin/branch_sweep_test\.py$'
   '^bin/branch-sweep-test\.sh$'
+  '^bin/scan-no-workflow-call-test\.sh$'
   '^bin/local-prune\.sh$'
   '^\.github/branch-keep\.json$'
   '^bin/check-version-literals\.sh$'
@@ -89,6 +93,7 @@ ALLOW_PATTERNS=(
   '^bin/authorize-acceptance-check-test\.sh$'
   '^bin/rescan-statement\.py$'
   '^bin/rescan-statement-test\.sh$'
+  '^bin/rescan-current-only-test\.sh$'
   '^bin/analyze-egress-trace\.py$'
   '^bin/analyze-egress-trace-test\.sh$'
   '^bin/install-scanner\.sh$'
@@ -147,9 +152,6 @@ ALLOW_PATTERNS=(
   '^\.github/agent/test-requirements\.txt$'
   '^\.github/agent/coverage-exclusions\.txt$'
   '^\.github/agent/docs/[A-Za-z0-9._-]+\.md$'
-  # REQ-AUD-18 AC3: review-loop records, one per reviewed .github/agent/ content hash, read by
-  # .github/agent/bin/auditor-review-gate.py (run from main by .github/workflows/agent-review-gate.yml).
-  '^\.github/agent/reviews/[0-9a-f]{64}\.json$'
   # The model's versioned standing instructions (REQ-AUD-16 AC2): public, names no vendor or
   # model, changed only through reviewed PRs. Loaded by auditor-adjudicator-client.py.
   '^\.github/agent/prompts/[A-Za-z0-9._-]+\.md$'
@@ -190,6 +192,67 @@ ALLOW_PATTERNS=(
   '^\.github/agent/fixtures/govulncheck/src/[A-Za-z0-9._-]+/(go\.(mod|sum)|[A-Za-z0-9._-]+\.go)\.fixture$'
   '^\.github/agent/fixtures/suppression/set-01/\.snyk$'
   '^\.github/agent/fixtures/suppression/set-01/osv-scanner\.toml$'
+
+  # The vendored dependency tree (REQ-VEND-001): names only. Every component starts with a letter, digit, _, +, ~ or @ (no dot
+  # component, no .github, no .git), so a name is judged here and the CONTENT is judged by bin/vendor-check.sh, which the required
+  # `vendor` job in ci.yml runs on every pull request: this pattern never lands without that check.
+  '^vendor/([A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*/)*[A-Za-z0-9_+~@-][A-Za-z0-9._+~@-]*$'
+
+  # v0.3.0 build chain: each line admits only the exact paths named; vendor/ has its own subtree pattern above (REQ-VEND-001).
+  # Vendoring: the dependency record (root), the regenerate-and-compare script, the provenance tool, their test.
+  '^dependency-provenance\.json$'
+  '^bin/vendor-check\.sh$'
+  '^bin/vendor-provenance\.py$'
+  '^bin/vendoring-test\.sh$'
+  # melange recipes (build/melange.yaml, build/melange-fips.yaml) and apko image configs
+  # (build/apko.yaml, build/apko-fips.yaml).
+  '^build/melange(-fips)?\.yaml$'
+  # The one template both melange recipes are generated from (bin/gen-recipes.py).
+  '^build/melange\.yaml\.tmpl$'
+  '^build/apko(-fips)?\.yaml$'
+  # Committed locks: build/locks/apko.base.lock.json, build/locks/apko-fips.base.lock.json, build/locks/melange.lock.
+  '^build/locks/apko(-fips)?\.base\.lock\.json$'
+  '^build/locks/melange\.lock$'
+  # The archive's pinned keyring digest and package-index record (build/locks/archive-keys.sha256, archive-index.sha256).
+  '^build/locks/archive-keys\.sha256$'
+  '^build/locks/archive-index\.sha256$'
+  # The certified Go Cryptographic Module the FIPS recipe is generated with (build/locks/fips-module.txt): one of the two data files the daily job edits.
+  '^build/locks/fips-module\.txt$'
+  # Signing keys: build/keys/assembly.rsa and build/keys/assembly.rsa.pub (the committed, non-secret assembly
+  # key pair, rule 22) and build/keys/release.rsa.pub (the release public key).
+  '^build/keys/assembly\.rsa(\.pub)?$'
+  '^build/keys/release\.rsa\.pub$'
+  # Build-chain scripts: build-apk, assemble-image, apko-lock, install-build-tools, release-sign-apks,
+  # sealed-proof, lock-proof, refresh-inputs (.sh); apk-tool, gen-recipes, go-module-sbom (.py).
+  '^bin/(build-apk|assemble-image|apko-lock|install-build-tools|release-sign-apks|sealed-proof|lock-proof|refresh-inputs)\.sh$'
+  '^bin/(apk-tool|gen-recipes|go-module-sbom)\.py$'
+  # The shared test library and the split build-chain tests.
+  '^bin/melange-apko-lib\.sh$'
+  '^bin/(build-helpers|refresh-inputs|build-apk|assemble-image|archive)-test\.sh$'
+  # OCI digest and network-probe tools.
+  '^bin/(oci-digest|net-probe)\.py$'
+  # The build-apk driver's helper and the sealed-environment list it reads (REQ-BUILDAPK-001): the former inline Python
+  # of bin/build-apk.sh, and the closed rule-23 variable list as data.
+  '^bin/build-apk-helper\.py$'
+  '^build/sealed-env\.json$'
+  # Archive scripts: push, pull (.sh) and verify (.py).
+  '^bin/archive-(push|pull)\.sh$'
+  '^bin/archive-verify\.py$'
+  # Secret-scanning configuration (paths-ignore for the committed non-secret assembly key).
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/secret_scanning.yml must pin
+  # its content (an exact-content test) and add it to the guarded list.
+  '^\.github/secret_scanning\.yml$'
+  # The supply-chain harness manifest (PR #210).
+  '^\.github/agent/supply-chain/harness-manifest\.json$'
+  # The release identity record.
+  # NOTE: only the PATH is gated here, not the file's content. The PR that adds .github/release-identity.json must
+  # pin its content (an exact-content test) and add it to the guarded list.
+  '^\.github/release-identity\.json$'
+  # The v0.3.0 customer verification guide (docs/verify-release.md), its list of commands that cannot run on a
+  # candidate (docs/verify-release.cannot-run.json) and its page checker (bin/verify-release-guide-test.sh), REQ-GUIDE-001.
+  '^docs/verify-release\.md$'
+  '^docs/verify-release\.cannot-run\.json$'
+  '^bin/verify-release-guide-test\.sh$'
 
   # The real Gradle project the benchmark builds against.
   '^bench/gradle-sample/gradlew(\.bat)?$'
