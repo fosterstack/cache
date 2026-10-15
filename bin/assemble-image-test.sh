@@ -1074,14 +1074,14 @@ PY
   fi
 fi
 # ===== REQ-IMAGE-001-AC12 and AC10 (owner-ratified build-script rules 1 and 2, Oct 14 2026): tests first, RED until the scripts are converted ======
-# The production files carry no test hook and bin/assemble-image.sh has none of the five test-only options. Run-time proof for the options: the real
+# The production files carry no test hook (a trailing TEST-SUBST marker is not a hook: the tests run a copy that differs only on those lines, as REQ-BUILDAPK-001-AC3 states) and bin/assemble-image.sh has none of the five test-only options. Run-time proof for the options: the real
 # script runs from the repository root with a search path of coreutils and a uname that says Linux, so a refused option is refused before any tool.
 imgs_scripts="bin/assemble-image.sh bin/lock-proof.sh bin/sealed-proof.sh bin/apko-lock.sh"
 # ---- AC12: no test hook in any of the four scripts -------------------------------------------------------------------------------
 for s in $imgs_scripts; do
   if [ ! -f "$root/$s" ]; then bad AC12 "$s exists"; continue; fi
-  if grep -Eq 'FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR|TEST-SUBST|TEST_MODE|test mode' "$root/$s"; then
-    bad AC12 "$s mentions a test hook or test mode ($(grep -Eo 'FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR|TEST-SUBST|TEST_MODE|test mode' "$root/$s" | sort -u | tr '\n' ' '))"
+  if grep -Eq 'FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR|[$][{]?TEST_' "$root/$s"; then
+    bad AC12 "$s mentions a test hook or test mode ($(grep -Eo 'FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR|[$][{]?TEST_[A-Z_]*' "$root/$s" | sort -u | tr '\n' ' '))"
   else ok; fi
 done
 
