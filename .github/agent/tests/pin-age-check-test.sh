@@ -3195,6 +3195,21 @@ PY
   newcase "vc-$1" "$(cat "$work/vc-$1.py")"; runck "vc-$1" '{"times": {}}'
 }
 for v in "run-script:bash vendor/example.test/dep/install.sh" \
+         "env-option:env -i python3 vendor/example.test/dep/run.py" \
+         "sudo-user:sudo -u root bash vendor/example.test/dep/run.sh" \
+         "command-dashdash:command -- bash vendor/example.test/dep/run.sh" \
+         "nice-value:nice -n 5 bash vendor/example.test/dep/run.sh" \
+         "cd-then-run:cd vendor/example.test/dep \&\& bash install.sh" \
+         "make-attached-C:make -Cvendor/example.test/dep" \
+         "go-C-run:go -C vendor/example.test/dep run ." \
+         "awk-program:awk -f vendor/example.test/dep/p.awk" \
+         "busybox-sh:busybox sh vendor/example.test/dep/run.sh" \
+         "subshell-group:( bash vendor/example.test/dep/run.sh )" \
+         "helper-in-comment:bash vendor/example.test/dep/run.sh # bin/vendor-check.sh" \
+         "helper-as-argument:bash vendor/example.test/dep/lint.sh bin/vendor-check.sh" \
+         "redirect-in:bash <vendor/example.test/dep/install.sh" \
+         "docker-bare-vendor:docker build vendor" \
+         "find-exec:find vendor/example.test/dep -name install.sh -exec bash {} \\;" \
          "make-C:make -C vendor/example.test/dep" \
          "python-version-suffix:python3.12 vendor/example.test/dep/run.py" \
          "python-module:python3 -m vendor.example.test.dep.run" \
