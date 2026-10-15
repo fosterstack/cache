@@ -91,7 +91,7 @@ case $cmd in
 key-check)
   # The first step of the daily job, before any tool is installed, any registry is touched or any token is minted: the live Wolfi signing key must be
   # the key pinned in build/locks/archive-keys.sha256. A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
-  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
 import hashlib, re, sys
 repo, live = sys.argv[1:3]
@@ -118,7 +118,7 @@ bootstrap)
   if [ -e "$archive" ] || [ -L "$archive" ]; then
     { [ -d "$archive" ] && [ ! -L "$archive" ] && dir_empty "$archive"; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
   fi
-  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
 import hashlib, os, re, sys
 repo, live, archive = sys.argv[1:4]
@@ -213,7 +213,7 @@ refresh)
   [ -s "$archived_key" ] || die "the archive has no Wolfi signing key at keys/wolfi-signing.rsa.pub"
 
   # rules 32 and 46: every run, before anything else, compare the live key to the archived one
-  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
   /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
 import hashlib, re, sys
@@ -675,7 +675,8 @@ for (name, ver, arch), e in sorted(fresh.items()):
         continue
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "536870912", "--max-time", "900", "--proto", "=https", "--tlsv1.2", "-o", part, e["url"]], stdout=sys.stderr, stderr=sys.stderr)
+    rel = e["url"][len(WOLFI_URL):]   # the lock-entry URL passed the host and path check above
+    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "536870912", "--max-time", "900", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/" + rel], stdout=sys.stderr, stderr=sys.stderr)
     if r.returncode != 0:
         fail("could not download %s" % e["url"])
     verify(part, e)
@@ -788,7 +789,8 @@ index_parts = {}
 for arch in ARCHS:
     part = "%s/index/%s/APKINDEX.tar.gz" % (stage, arch)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "268435456", "--max-time", "600", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz" % arch], stdout=sys.stderr, stderr=sys.stderr)
+    rel = arch + "/APKINDEX.tar.gz"
+    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "268435456", "--max-time", "600", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/" + rel], stdout=sys.stderr, stderr=sys.stderr)
     if r.returncode != 0:
         fail("could not download the live %s package index" % arch)
     verify_index(part, arch)
