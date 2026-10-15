@@ -5,28 +5,24 @@
    "id": "KR-SIGN-1",
    "suite": "bin/chain-sign-wiring-test.sh",
    "case": "the real tree: only stage-sign.yml is new and only it signs provenance (the eleven frozen legacy stage files left out by sha256)",
-   "reason": "the real-tree judge still finds the missing cache files (bin/build-apk.sh, bin/assemble-image.sh, bin/apk-tool.py, archive/): the build-stage scripts run them and `runs` entries must be listed rows; PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
+   "reason": "the real-tree judge's remaining findings: bin/vendor-provenance.py is not on main until the vendored tree (cache#347) lands, and bin/assemble-image.sh line 51 (a case pattern `*/*)` and `here_=.`) reads to the scan as a command named by a path and a '.' at command position; the rows for the P4/P5 scripts and the stage scripts' `runs` are listed",
    "green_by": "cache P4/P5",
    "findings": [
     "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
-    "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`"
+    "AC1: bin/assemble-image.sh: names the command '*/*' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/assemble-image.sh: '.' at command position launches another program (refused whatever `tools` says)"
    ]
   },
   {
    "id": "KR-SIGN-3",
    "suite": "bin/chain-sign-wiring-test.sh",
    "case": "an UNTRACKED file holding a signer is not in the tracked copy CI judges",
-   "reason": "the same real-tree findings (missing cache scripts); PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
+   "reason": "the real-tree judge's remaining findings: bin/vendor-provenance.py is not on main until the vendored tree (cache#347) lands, and bin/assemble-image.sh line 51 (a case pattern `*/*)` and `here_=.`) reads to the scan as a command named by a path and a '.' at command position; the rows for the P4/P5 scripts and the stage scripts' `runs` are listed",
    "green_by": "cache P4/P5",
    "findings": [
     "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
-    "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`"
+    "AC1: bin/assemble-image.sh: names the command '*/*' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
+    "AC1: bin/assemble-image.sh: '.' at command position launches another program (refused whatever `tools` says)"
    ]
   },
   {
