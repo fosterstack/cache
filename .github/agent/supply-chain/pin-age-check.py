@@ -73,7 +73,7 @@ def is_pin(version):
 
 def judge_item(item, proofs, now, min_days=MIN_DAYS):
     """(ok, reason, proof) from a list of (time-string, source). Only valid server-side proofs in the past count; the oldest decides."""
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version) \
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
         return False, f"not a pin: {item.version!r} is a range, a moving name, a wildcard or an expression, or an action not named by its commit, so it has no age", None
     if item.kind == "tool" and item.name in ("python", "java", "node") and len(item.version.lstrip("v").split(".")) < 3:
@@ -322,7 +322,7 @@ def _release_with_assets(repo, tags):
 
 def live_proofs(item, root, base=None, head="HEAD"):
     out = []
-    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or not is_pin(item.version) \
+    if re.search(r"\$\{|\(variable\)|\(expression\)|\(unmeasured", item.name or "") or "$" in (item.path or "") or "`" in (item.path or "") or not is_pin(item.version) \
             or (item.kind == "action" and not re.fullmatch(r"[0-9a-f]{40}", item.version or "")):
         return out    # a placeholder, a range, a variable or an action not named by its commit has no age: nothing is looked up (and nothing can pass)
     if item.kind == "action":

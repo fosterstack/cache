@@ -63,9 +63,6 @@
    "reason": "the decide job and bin/patch-decide.py read the committed apko base locks, the melange lock, the Wolfi archive records and the fips module record as the base-input-changed signal (rules 61, 62); those files are the cache lane's and are not on origin/main yet, so the signal has nothing to watch until they land; the entry shrinks by one finding as each lands",
    "green_by": "the cache lane (the refresh job and P5): the six files of .github/policy/base-inputs.json on main",
    "findings": [
-    "the base input build/locks/apko.base.lock.json is not on origin/main",
-    "the base input build/locks/apko-fips.base.lock.json is not on origin/main",
-    "the base input build/locks/archive-keys.sha256 is not on origin/main",
     "the base input build/locks/archive-index.sha256 is not on origin/main"
    ]
   }
