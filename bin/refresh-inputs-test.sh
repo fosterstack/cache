@@ -95,6 +95,8 @@ for root in sys.argv[1:]:
 print(h.hexdigest())
 P
 }
+# the pinned Wolfi key line of the fixture repository (the refresh checks the live key against it right after the fetch)
+mkdir -p "$fx/repo/build/locks"; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$fx/repo/build/locks/archive-keys.sha256"
 mkrepo() { rm -rf "$work/rp"; mkdir -p "$work/rp"; cp -R "$fx/repo/." "$work/rp/"; rm -rf "$work/ar"; cp -R "$fx/archive" "$work/ar"; for a in x86_64 aarch64; do cp -n "$fx/envrepo/$a/"*.apk "$work/ar/$a/"; done   # melange's build tools are archived too
   printf 'x86_64 sha256:%s\naarch64 sha256:%s\n' "$(shasum -a 256 "$fx/archive/x86_64/APKINDEX.tar.gz" | cut -d' ' -f1)" "$(shasum -a 256 "$fx/archive/aarch64/APKINDEX.tar.gz" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-index.sha256"; }   # the record names the index the archive holds now
 rfe=(env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" STUB_LOCK="$fx/live-same.lock.json" STUB_LOCK_FIPS="$fx/live-same.lock.json" STUB_LOCK_MEL="$fx/live-mel.lock.json" STUB_CURL_DIR="$fx/live")
@@ -1309,5 +1311,16 @@ t "AC30" "key-check: a repeated key line is exit 3" bash -c "test \"\$(cat '$wor
 mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
 run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" key-check --repo-dir "$work/rp" --archive "$work/ar"
 t "AC30" "key-check takes no archive: --archive is refused (exit 2), nothing is read from or written to an archive" bash -c "test \"\$(cat '$work/rc')\" = 2"
+# refresh: the live key's sha256 is checked against build/locks/archive-keys.sha256 right after the fetch and before any use (and the byte compare with the archived key stays)
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(printf 'c%.0s' $(seq 1 64))" >"$work/rp/build/locks/archive-keys.sha256"; before=$(treehash "$work/ar" "$work/rp")
+run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC30" "refresh: a live key that is the archived key but not the pinned one stops before anything is used (exit 3, a human must look, no apko call)" bash -c "test \"\$(cat '$work/rc')\" = 3 && grep -qi 'archive-keys.sha256' '$work/log' && test \"\$(grep -c '^apko lock ' '$CALLS')\" -eq 0"
+t "AC30" "refresh: ...pinned-key mismatch: archive and repo unchanged" test "$(treehash "$work/ar" "$work/rp")" = "$before"
+mkrepo; rm -f "$work/rp/build/locks/archive-keys.sha256"; before=$(treehash "$work/ar" "$work/rp")
+run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC30" "refresh: no pinned key line is exit 3 (never trust the archived key alone) before anything is used" bash -c "test \"\$(cat '$work/rc')\" = 3 && test \"\$(grep -c '^apko lock ' '$CALLS')\" -eq 0"
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC30" "refresh: the pinned key, the archived key and the live key all equal -> the run proceeds (exit 0)" bash -c "test \"\$(cat '$work/rc')\" = 0"
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

@@ -214,6 +214,22 @@ refresh)
 
   # rules 32 and 46: every run, before anything else, compare the live key to the archived one
   /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
+import hashlib, re, sys
+repo, live = sys.argv[1:3]
+def stop(msg):
+    print("refresh-inputs.sh: %s; stopping, a human must look" % msg, file=sys.stderr); sys.exit(3)
+try:
+    rows = [l for l in open(repo + "/build/locks/archive-keys.sha256", "rb").read().decode("utf-8", "strict").split("\n") if l.strip()]
+except (OSError, UnicodeError):
+    stop("build/locks/archive-keys.sha256 is missing or unreadable, so there is no pinned Wolfi key to check the live one against")
+mine = [l for l in rows if l.split(" ")[0] == "wolfi-signing.rsa.pub"]
+if len(mine) != 1 or not re.fullmatch(r"wolfi-signing\.rsa\.pub sha256:[0-9a-f]{64}", mine[0]):
+    stop("build/locks/archive-keys.sha256 must hold exactly one line 'wolfi-signing.rsa.pub sha256:<64 hex>'")
+if hashlib.sha256(open(live, "rb").read()).hexdigest() != mine[0].split("sha256:")[1]:
+    stop("the live Wolfi signing key is not the key pinned in build/locks/archive-keys.sha256")
+PY
   if ! /usr/bin/cmp -s "$tmp/live-key.pub" "$archived_key"; then
     echo "$SELF: the live Wolfi signing key differs from the archived one; stopping, no pull request, a human must decide whether to trust the new key" >&2
     exit 3
