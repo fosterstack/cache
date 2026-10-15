@@ -158,7 +158,7 @@ det_push_digest() { reset; run env STUB_PUSH_PRINT="$REPO@$ZERO" "$1/archive-pus
 t AC2 "crane reporting another digest than the one computed: exit 1, nothing on stdout, the message names the reported digest" det_push_digest "$CP"
 mkcopy "$work/cpf"; python3 - "$work/cpf/archive-push.sh" "$work/tools/crane-fail" <<'P'
 import re, sys
-s = open(sys.argv[1]).read(); s = re.sub(r"\S+/tools/crane(?!-)", sys.argv[2], s); open(sys.argv[1], "w").write(s)
+s = open(sys.argv[1]).read(); s = re.sub(r"[^\s\"'(=]+/tools/crane(?![\w-])", sys.argv[2], s); open(sys.argv[1], "w").write(s)
 P
 reset; run "$work/cpf/archive-push.sh" --dir "$fx"
 t AC2 "a crane push that fails: exit 1, nothing on stdout" bash -c "test '$(rc)' = 1 && ! test -s '$work/o'"
@@ -310,7 +310,7 @@ t AC7 "the digest push printed is the one the pointer names (the flow the refres
 
 # ===== AC8: the push is the only writer; the pull runs outside the sealed call; nothing secret ======================================
 t AC8 "archive-pull.sh and archive-verify.py never name a crane write (push, copy, cp, tag, delete, append, mutate)" bash -c "! grep -En '(crane|CRANE\"?) +\"?(push|copy|cp|tag|delete|append|mutate)' '$PULL' '$VER'"
-t AC8 "archive-push.sh calls crane only as push" bash -c "grep -q 'CRANE\" push ' '$PUSH' && test \"\$(grep -c 'CRANE' '$PUSH')\" -eq \"\$(grep -c 'CRANE=\\|CRANE\" push ' '$PUSH')\""
+t AC8 "archive-push.sh calls crane only as push" bash -c "grep -q '/usr/local/bin/crane push ' '$PUSH' && test \"\$(grep -v '^ *#' '$PUSH' | grep -c '/usr/local/bin/crane')\" -eq \"\$(grep -v '^ *#' '$PUSH' | grep -c '/usr/local/bin/crane push ')\""
 t AC8 "none of the three names sudo, unshare, melange, apko, docker or a network client (the pull runs before and outside the sealed call)" bash -c "! grep -Ewn 'sudo|unshare|melange|apko|docker|ssh|nc' '$PUSH' '$PULL' '$VER' | grep -Ev '^[^:]*:[0-9]+:[[:space:]]*#'"
 t AC8 "none of the three names a token, password, secret, login or credential variable (the push uses the workflow's own credential, which crane finds itself)" bash -c "! grep -Eiwn 'token|password|secret|login|GITHUB_TOKEN|GH_TOKEN|DOCKER_CONFIG|insecure' '$PUSH' '$PULL' '$VER' | grep -Ev '^[^:]*:[0-9]+:[[:space:]]*#'"
 cat >"$work/vars.py" <<'PY'

@@ -25,21 +25,12 @@ unset PYTHONOPTIMIZE   # python -O would drop every assert; the checks below are
 WOLFI=https://packages.wolfi.dev/os
 SELF=refresh-inputs.sh
 
-# ---- fixed locations (REQ-REFRESH-001-AC23): a production call never resolves its fetch tool, git, gh, apko, openssl, python3, cmp or mktemp through the
-# caller's search path, and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY in which exactly the lines ending in
-# TEST-SUBST are replaced, and checks that the copy differs from this file in no other line.
-PY3=/usr/bin/python3            # TEST-SUBST
-printf -v CURL %s /usr/bin/curl   # TEST-SUBST
-GIT=/usr/bin/git                # TEST-SUBST
-GH=/usr/bin/gh                  # TEST-SUBST
-APKO=/usr/local/bin/apko        # TEST-SUBST (bin/install-build-tools.sh apko puts it there)
-OPENSSL=/usr/bin/openssl        # TEST-SUBST
-RM=/bin/rm                      # TEST-SUBST
-MKDIR=/bin/mkdir                # TEST-SUBST
+# ---- fixed locations (REQ-REFRESH-001-AC23): every call names its tool by the literal fixed path (/usr/bin/curl, /usr/bin/git, /usr/bin/gh,
+# /usr/local/bin/apko, /usr/bin/openssl, /usr/bin/python3, /usr/bin/cmp, /usr/bin/mktemp, /bin/rm, /bin/mkdir), never through the caller's search path,
+# and there is no test hook in this file: bin/refresh-inputs-test.sh runs a COPY that differs from this file only in occurrences of those ten paths,
+# each replaced one for one by a dispatcher.
 case $0 in */*) HERE=${0%/*} ;; *) HERE=. ;; esac   # this script's directory, without dirname
 dir_empty() { local e; for e in "$1"/* "$1"/.[!.]* "$1"/..?*; do { [ -e "$e" ] || [ -L "$e" ]; } && return 1; done; return 0; }   # no ls
-CMP=/usr/bin/cmp                # TEST-SUBST
-MKTEMP=/usr/bin/mktemp          # TEST-SUBST
 
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
 
@@ -50,28 +41,28 @@ open_pr() {
   local branch=$1 title=$2 body=$3; shift 3
   if [ -n "$plan_dir" ] && [ "$cmd" != open-pr ]; then   # staged: the pull request is written down and opened later by `open-pr`, once the archive is stored (rules 6 and 7)
     local seq pd
-    "$MKDIR" -p "$plan_dir" || die "could not create $plan_dir" 1
+    /bin/mkdir -p "$plan_dir" || die "could not create $plan_dir" 1
     seq=1; for _e in "$plan_dir"/*; do [ -e "$_e" ] && seq=$((seq+1)); done; pd=$plan_dir/$seq-$cmd
-    "$MKDIR" -p "$pd" && printf '%s\n' "$branch" >"$pd/branch" && printf '%s\n' "$title" >"$pd/title" && printf '%s\n' "$body" >"$pd/body" \
+    /bin/mkdir -p "$pd" && printf '%s\n' "$branch" >"$pd/branch" && printf '%s\n' "$title" >"$pd/title" && printf '%s\n' "$body" >"$pd/body" \
       && printf '%s\n' "$@" >"$pd/paths" || die "could not write the plan to $plan_dir" 1
     echo "planned: $branch (opened later by open-pr)"
     return 0
   fi
   local base=$branch n=1
   # a branch name already taken on the remote (a closed or merged PR) gets a -2, -3, ... suffix instead of a failed push
-  while [ -n "$("$GIT" -C "$repo" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" ]; do
+  while [ -n "$(/usr/bin/git -C "$repo" ls-remote --heads origin "refs/heads/$branch" 2>/dev/null)" ]; do
     n=$((n+1)); [ $n -le 9 ] || die "the branch name $base and its numbered variants are all taken on the remote" 1
     branch=$base-$n
   done
   local startbr startsha rc=0
-  startbr=$("$GIT" -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
-  startsha=$("$GIT" -C "$repo" rev-parse HEAD 2>/dev/null || true)
-  "$GIT" -C "$repo" checkout -b "$branch" && "$GIT" -C "$repo" add -- "$@" && "$GIT" -C "$repo" commit -q -m "$title" -m "$body" \
-    && "$GIT" -C "$repo" push -q origin "$branch" && (cd "$repo" && "$GH" pr create --base main --head "$branch" --title "$title" --body "$body") || rc=$?
+  startbr=$(/usr/bin/git -C "$repo" rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  startsha=$(/usr/bin/git -C "$repo" rev-parse HEAD 2>/dev/null || true)
+  /usr/bin/git -C "$repo" checkout -b "$branch" && /usr/bin/git -C "$repo" add -- "$@" && /usr/bin/git -C "$repo" commit -q -m "$title" -m "$body" \
+    && /usr/bin/git -C "$repo" push -q origin "$branch" && (cd "$repo" && /usr/bin/gh pr create --base main --head "$branch" --title "$title" --body "$body") || rc=$?
   # back to where the job started, whether or not a step failed: a later step of the same job (the FIPS check) must not branch from this commit.
   # A detached start is restored by its commit.
-  if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then "$GIT" -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }
-  elif [ -n "$startsha" ]; then "$GIT" -C "$repo" checkout -q --detach "$startsha" || { echo "refresh-inputs.sh: could not go back to $startsha; a later step would branch from the refresh commit" >&2; rc=1; }; fi
+  if [ -n "$startbr" ] && [ "$startbr" != HEAD ]; then /usr/bin/git -C "$repo" checkout -q "$startbr" || { echo "refresh-inputs.sh: could not go back to $startbr; a later step would branch from the refresh commit" >&2; rc=1; }
+  elif [ -n "$startsha" ]; then /usr/bin/git -C "$repo" checkout -q --detach "$startsha" || { echo "refresh-inputs.sh: could not go back to $startsha; a later step would branch from the refresh commit" >&2; rc=1; }; fi
   return $rc
 }
 
@@ -91,8 +82,8 @@ done
 [ -n "$repo" ] && [ -d "$repo" ] || die "--repo-dir must be an existing directory"
 case $cmd in refresh|fips-module) [ -n "$pr_author" ] || die "--pr-author is required (the Auditor App's name; gh reports it as app/<name>, both spellings are accepted): without it a stranger's pull request on a refresh/ branch could be counted";; esac
 
-tmp=$("$MKTEMP" -d)
-cleanup() { local rc=$?; set +e; "$RM" -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
+tmp=$(/usr/bin/mktemp -d)
+cleanup() { local rc=$?; set +e; /bin/rm -rf "$tmp" 2>/dev/null || true; exit $rc; }   # cleanup never changes the exit status
 trap cleanup EXIT
 
 case $cmd in
@@ -104,8 +95,8 @@ bootstrap)
   if [ -e "$archive" ] || [ -L "$archive" ]; then
     { [ -d "$archive" ] && [ ! -L "$archive" ] && dir_empty "$archive"; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
   fi
-  "$CURL" -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
-  "$PY3" -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
+  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
 import hashlib, os, re, sys
 repo, live, archive = sys.argv[1:4]
 def stop(msg):
@@ -136,7 +127,7 @@ open-pr)
     [ -z "$(printf '%s' "${archive_digest#sha256:}" | tr -d '0-9a-f')" ] || die "--archive-digest must be sha256:<64 lower-case hex>"
     [ -n "$archive" ] && [ -d "$archive" ] || die "--archive is required with --archive-digest"
   fi
-  "$PY3" -I -B - "$repo" "$plan_dir" "$archive" "$archive_digest" "$(cd "$HERE" && pwd)" "$tmp" <<'PY' || exit $?
+  /usr/bin/python3 -I -B - "$repo" "$plan_dir" "$archive" "$archive_digest" "$(cd "$HERE" && pwd)" "$tmp" <<'PY' || exit $?
 import json, os, re, subprocess, sys
 repo, plan_dir, archive, digest, BINDIR, tmp = sys.argv[1:7]
 def fail(msg, code=2): print("refresh-inputs.sh: " + msg, file=sys.stderr); sys.exit(code)
@@ -173,7 +164,7 @@ PY
   nc=0; read -r nc <"$tmp/ncount" 2>/dev/null || nc=0
   [ "$nc" != 0 ] || exit 0
   # the validated plans, one open_pr each, in plan order
-  "$PY3" -I -B - "$tmp/plans" "$tmp" <<'PY' || exit $?
+  /usr/bin/python3 -I -B - "$tmp/plans" "$tmp" <<'PY' || exit $?
 import sys
 parts = open(sys.argv[1]).read().split("\n\1\n")
 for i, p in enumerate(parts, 1):
@@ -195,12 +186,12 @@ PY
 refresh)
   [ -n "$archive" ] && [ -d "$archive" ] || die "--archive must be an existing directory"
   archived_key=$archive/keys/wolfi-signing.rsa.pub
-  [ -x "$OPENSSL" ] || die "openssl is required to verify the package index signature and was not found ($OPENSSL)"
+  [ -x /usr/bin/openssl ] || die "openssl is required to verify the package index signature and was not found (/usr/bin/openssl)"
   [ -s "$archived_key" ] || die "the archive has no Wolfi signing key at keys/wolfi-signing.rsa.pub"
 
   # rules 32 and 46: every run, before anything else, compare the live key to the archived one
-  "$CURL" -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
-  if ! "$CMP" -s "$tmp/live-key.pub" "$archived_key"; then
+  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" "$WOLFI/wolfi-signing.rsa.pub" || die "could not fetch the live Wolfi signing key" 1
+  if ! /usr/bin/cmp -s "$tmp/live-key.pub" "$archived_key"; then
     echo "$SELF: the live Wolfi signing key differs from the archived one; stopping, no pull request, a human must decide whether to trust the new key" >&2
     exit 3
   fi
@@ -211,8 +202,8 @@ refresh)
   done
 
   # configs that resolve against live Wolfi: no local repositories or keys, and not our own apk (the base lock holds none)
-  "$MKDIR" -p "$tmp/production" "$tmp/fips" "$tmp/melange"
-  "$PY3" -I -B - "$repo" "$tmp" <<'PY'
+  /bin/mkdir -p "$tmp/production" "$tmp/fips" "$tmp/melange"
+  /usr/bin/python3 -I -B - "$repo" "$tmp" <<'PY'
 import sys, yaml
 repo, tmp = sys.argv[1:3]
 for src, out in (("apko.yaml", "production/apko.yaml"), ("apko-fips.yaml", "fips/apko-fips.yaml")):
@@ -226,12 +217,12 @@ names = [str(p).split("=")[0] for p in m["environment"]["contents"]["packages"]]
 yaml.safe_dump({"contents": {"repositories": [], "keyring": [], "packages": names}, "archs": ["x86_64", "aarch64"]},
                open(tmp + "/melange/melange-env.yaml", "w"))
 PY
-  lock() { "$APKO" lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
+  lock() { /usr/local/bin/apko lock --arch x86_64,aarch64 --repository-append "$WOLFI" --keyring-append "$archived_key" --output "$2" "$1"; }
   lock "$tmp/production/apko.yaml" "$tmp/production.lock.json"
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
 
-  "$PY3" -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" "$CURL" "$OPENSSL" <<'PY' || exit $?
+  /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" /usr/bin/gh /usr/bin/curl /usr/bin/openssl <<'PY' || exit $?
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
 GH, CURL, OPENSSL = sys.argv[6:9]   # fixed locations, named by the shell part above
@@ -852,7 +843,7 @@ fips-module)
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  "$PY3" -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" "$GH" <<'PY' || exit $?
+  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" /usr/bin/gh <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
 goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR = sys.argv[1:7]
 GH = sys.argv[7]

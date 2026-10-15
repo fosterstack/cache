@@ -10,11 +10,8 @@
 set -euo pipefail
 
 # ---- fixed locations (REQ-ARCHIVE-001-AC9): no tool is resolved through the caller's search path, and there is no test hook in this file:
-# bin/archive-test.sh runs a COPY in which exactly the lines ending in TEST-SUBST are replaced, and checks the copy differs in no other line.
-PY3=/usr/bin/python3            # TEST-SUBST
-CRANE=/usr/local/bin/crane      # TEST-SUBST (the version pinned in stage-promote.yml)
-MKTEMP=/usr/bin/mktemp          # TEST-SUBST
-RM=/bin/rm                      # TEST-SUBST
+# every call names its tool by the literal fixed path (/usr/bin/python3, /usr/bin/mktemp, /bin/rm, /usr/local/bin/crane); bin/archive-test.sh runs a COPY that differs
+# only in occurrences of those four paths, each replaced one for one by a dispatcher.
 
 SELF=archive-push.sh
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
@@ -30,13 +27,13 @@ done
 [ -n "$dir" ] || die "usage: $SELF --dir DIR"
 [ -d "$dir" ] || die "--dir must be an existing directory"
 
-tmp=$("$MKTEMP" -d)
-cleanup() { "$RM" -rf "$tmp"; }
+tmp=$(/usr/bin/mktemp -d)
+cleanup() { /bin/rm -rf "$tmp"; }
 trap cleanup EXIT
 
-ref=$("$PY3" -I -B bin/archive-verify.py pack --dir "$dir" --layout "$tmp/layout") || exit $?   # TEST-SUBST
+ref=$(/usr/bin/python3 -I -B bin/archive-verify.py pack --dir "$dir" --layout "$tmp/layout") || exit $?
 digest=${ref#*@}
 
-out=$("$CRANE" push "$tmp/layout" "$ref") || die "crane push failed" 1
+out=$(/usr/local/bin/crane push "$tmp/layout" "$ref") || die "crane push failed" 1
 [ "$out" = "$ref" ] || die "the registry reported $out, not the digest computed from the layout ($ref)" 1
 echo "$digest"

@@ -10,10 +10,6 @@
 set -euo pipefail
 
 # ---- fixed locations (REQ-ARCHIVE-001-AC9), see archive-push.sh
-PY3=/usr/bin/python3            # TEST-SUBST
-CRANE=/usr/local/bin/crane      # TEST-SUBST (the version pinned in stage-promote.yml)
-MKTEMP=/usr/bin/mktemp          # TEST-SUBST
-RM=/bin/rm                      # TEST-SUBST
 
 SELF=archive-pull.sh
 die() { echo "$SELF: $1" >&2; exit "${2:-2}"; }
@@ -36,15 +32,15 @@ if [ -n "$want" ]; then
   esac
 fi
 
-art=$("$PY3" -I -B bin/archive-verify.py artifact --pointer "$pointer") || exit $?   # TEST-SUBST
+art=$(/usr/bin/python3 -I -B bin/archive-verify.py artifact --pointer "$pointer") || exit $?
 have=${art#*@}
 if [ -n "$want" ] && [ "$want" != "$have" ]; then die "the digest $want is not the one committed in $pointer ($have): refusing" 2; fi
 
 [ ! -e "$out" ] && [ ! -L "$out" ] || die "$out exists; the archive is pulled into a new directory"
 
-tmp=$("$MKTEMP" -d "$out.partial.XXXXXX")
-cleanup() { "$RM" -rf "$tmp"; }
+tmp=$(/usr/bin/mktemp -d "$out.partial.XXXXXX")
+cleanup() { /bin/rm -rf "$tmp"; }
 trap cleanup EXIT
 
-"$CRANE" pull --format oci "$art" "$tmp/layout" || die "crane pull of $art failed" 1
-"$PY3" -I -B bin/archive-verify.py unpack --pointer "$pointer" --layout "$tmp/layout" --out "$out" || exit $?   # TEST-SUBST
+/usr/local/bin/crane pull --format oci "$art" "$tmp/layout" || die "crane pull of $art failed" 1
+/usr/bin/python3 -I -B bin/archive-verify.py unpack --pointer "$pointer" --layout "$tmp/layout" --out "$out" || exit $?
