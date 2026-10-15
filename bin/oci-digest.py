@@ -644,14 +644,45 @@ def lock_main(argv):
         die("malformed lock entry (missing or mistyped key %s)" % exc, 2)
 
 
+def check_config(path):
+    """the apko config's repositories are exactly /work/archive and /work/melange-repo, written plainly: no quoting, no escape sequence, no address
+    anywhere (a decoded YAML scalar could otherwise spell a live address the raw text does not show). Exit 2 on any refusal."""
+    try:
+        text = open(path, newline="").read()
+    except OSError as e:
+        print(ASSEMBLER + ": cannot read the config %s: %s" % (path, e), file=sys.stderr); sys.exit(2)
+    def refuse(msg):
+        print(ASSEMBLER + ": the config %s %s; packages come only from the archive and the local melange repository" % (path, msg), file=sys.stderr); sys.exit(2)
+    if "://" in text or re.search(r"\\[uUxX0-7]", text):
+        refuse("names a live repository or address (or spells one with an escape sequence)")
+    lines = text.split("\n")
+    repos, in_block, indent = [], False, None
+    for ln in lines:
+        if re.match(r"^\s*#", ln) or not ln.strip():
+            continue
+        m = re.match(r"^(\s*)repositories:\s*$", ln)
+        if m:
+            in_block, indent = True, len(m.group(1)); continue
+        if in_block:
+            if len(ln) - len(ln.lstrip()) <= indent and not ln.lstrip().startswith("-"):
+                in_block = False
+            else:
+                repos.append(ln)
+    for ln in repos:
+        if not re.fullmatch(r"\s*- /work/(archive|melange-repo)\s*", ln):
+            refuse("has a repositories entry other than /work/archive or /work/melange-repo, plainly written: %r" % ln.strip())
+    if sorted(l.strip() for l in repos) != ["- /work/archive", "- /work/melange-repo"]:
+        refuse("does not list exactly /work/archive and /work/melange-repo as its repositories")
+
+
 def main():
     a = sys.argv[1:]
     if len(a) == 5 and a[0] == "unpack":
         for side in (a[3], a[4]):   # the two result files: never through a link, never inside the layout directory, never the same file
             if os.path.islink(side) or (os.path.lexists(side) and not os.path.isfile(side)):
                 fail("%s is a link or not a regular file; refusing to write through it" % side)
-        if os.path.realpath(a[3]) == os.path.realpath(a[4]):
-            fail("the digest file and the manifests file are the same file")
+        if os.path.realpath(a[3]) == os.path.realpath(a[4]) or (os.path.exists(a[3]) and os.path.exists(a[4]) and os.path.samefile(a[3], a[4])):
+            fail("the digest file and the manifests file are the same file (or hard links of one)")
         for side in (a[3], a[4]):
             if os.path.realpath(side).startswith(os.path.realpath(a[2]) + os.sep):
                 fail("%s is inside the layout directory %s (it would be mixed into the image)" % (side, a[2]))
@@ -665,6 +696,8 @@ def main():
         make_view(a[1], a[2], a[3])
     elif len(a) == 4 and a[0] == "render-config":
         render_config(a[1], a[2], a[3])
+    elif len(a) == 2 and a[0] == "check-config":
+        check_config(a[1])
     elif len(a) == 2 and a[0] == "check-dots":
         check_dots(a[1])
     elif len(a) >= 1 and a[0] == "lock":

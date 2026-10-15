@@ -105,7 +105,7 @@ done
 [ -n "$out" ] || die "--out DIR is required"
 [ -f "$config" ] || die "apko config not found: $config"
 [ -f "$baselock" ] || die "base lock not found: $baselock"
-if grep -Eq 'https?://|file://' "$config"; then die "the config $config names a live repository or address; packages come only from the archive and the local melange repository"; fi
+"$PY3" -I -B bin/oci-digest.py check-config "$config" || exit 2
 for k in wolfi-signing.rsa.pub assembly.rsa.pub; do
   [ -f "$keydir/$k" ] || die "the keyring dir $keydir has no $k: every package is checked against its key (rule 19)"
 done

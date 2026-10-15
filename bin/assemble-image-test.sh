@@ -148,7 +148,7 @@ else:
     i = 0
     while i < len(args):
         a = args[i]
-        if a == "--build-script": put_negative_only(args[i + 1], "build-apk.sh", "/src-copy", "/repo-nopkg"); i += 2
+        if a == "--build-script": put_negative_only(args[i + 1], "build-apk.sh", "/src-copy", "/repo-nopkg", "/repo-restored"); i += 2
         elif a == "--assemble-script": put_negative_only(args[i + 1], "assemble-image.sh", "/arch-nopkg"); i += 2
         elif a == "--build-args":
             w = shlex.split(args[i + 1]); j = 0; keep = []
@@ -1022,8 +1022,8 @@ def rebuild(name, edit_cfg=None, edit_man=None):
         cn = "sha256:" + man["config"]["digest"].split(":")[1]; cfg = json.loads(members.pop(cn))
         if edit_cfg and k == 0: edit_cfg(cfg)
         if edit_man and k == 0: edit_man(man)
-        cb = json.dumps(cfg).encode(); chex = hashlib.sha256(cb).hexdigest(); man["config"]["digest"] = "sha256:" + chex; members["sha256:" + chex] = cb
-        mb = json.dumps(man).encode(); mhex = hashlib.sha256(mb).hexdigest(); m["digest"] = "sha256:" + mhex; members["sha256:" + mhex] = mb
+        cb = json.dumps(cfg).encode(); chex = hashlib.sha256(cb).hexdigest(); man["config"]["digest"] = "sha256:" + chex; man["config"]["size"] = len(cb); members["sha256:" + chex] = cb
+        mb = json.dumps(man).encode(); mhex = hashlib.sha256(mb).hexdigest(); m["digest"] = "sha256:" + mhex; m["size"] = len(mb); members["sha256:" + mhex] = mb
     members["index.json"] = json.dumps(top).encode()
     open("%s/%s.tar" % (w, name), "wb").write(lib.tarb(list(members.items())))
 rebuild("oci-cfgarchwrong", edit_cfg=lambda c: c.__setitem__("architecture", "s390x"))
@@ -1037,9 +1037,9 @@ def rebuild_post(name, post):
     for k, m in enumerate(top["manifests"]):
         mn = "sha256:" + m["digest"].split(":")[1]; man = json.loads(members.pop(mn))
         cn = "sha256:" + man["config"]["digest"].split(":")[1]; cfg = json.loads(members.pop(cn))
-        cb = json.dumps(cfg).encode(); chex = hashlib.sha256(cb).hexdigest(); man["config"]["digest"] = "sha256:" + chex; members["sha256:" + chex] = cb
+        cb = json.dumps(cfg).encode(); chex = hashlib.sha256(cb).hexdigest(); man["config"]["digest"] = "sha256:" + chex; man["config"]["size"] = len(cb); members["sha256:" + chex] = cb
         if k == 0: post(man)
-        mb = json.dumps(man).encode(); mhex = hashlib.sha256(mb).hexdigest(); m["digest"] = "sha256:" + mhex; members["sha256:" + mhex] = mb
+        mb = json.dumps(man).encode(); mhex = hashlib.sha256(mb).hexdigest(); m["digest"] = "sha256:" + mhex; m["size"] = len(mb); members["sha256:" + mhex] = mb
     members["index.json"] = json.dumps(top).encode()
     open("%s/%s.tar" % (w, name), "wb").write(lib.tarb(list(members.items())))
 rebuild_post("oci-cfgsha512", lambda m: prefix(m, "sha512"))
@@ -1050,7 +1050,8 @@ rebuild_post("oci-layersnone", lambda m: m.pop("layers", None))
 rebuild_post("oci-manmt", lambda m: m.__setitem__("mediaType", "application/vnd.docker.distribution.manifest.v2+json"))
 P
 for v in cfgarchwrong cfgarchnone cfgoswin layersint cfgsha512 cfgupper layersfalse layersdict layersnone manmt; do
-  fails "rule 31" "oci-digest: the variant '$v' (config architecture/os or layers wrong) is a named refusal" 'architecture|os|layers|sha256|media type' python3 "$OD" "$work/oci-$v.tar"
+  case $v in cfgarchwrong|cfgarchnone) want_re='architecture';; cfgoswin) want_re='says os';; layers*) want_re='layers';; cfgsha512|cfgupper) want_re='not sha256:';; manmt) want_re='media type';; esac
+  fails "rule 31" "oci-digest: the variant '$v' is refused for ITS OWN property (diagnostic matches /$want_re/, not a stale size or hash)" "$want_re" python3 "$OD" "$work/oci-$v.tar"
   t "rule 31" "...$v: no traceback" bash -c "! python3 '$OD' '$work/oci-$v.tar' 2>&1 | grep -q Traceback"
 done
 
@@ -1520,14 +1521,6 @@ assert d["build_repository_index"] == {"x86_64": want}, d["build_repository_inde
 assert d["build_repository_index"]["x86_64"] != d["archive_index"]["x86_64"], d
 P
 # F5 (seat B): a build that fails with the package's name only in an unrelated diagnostic does not prove rule 41
-cat >"$work/vendor-then-perm.sh" <<'S'
-#!/bin/bash
-d=; while [ $# -gt 0 ]; do [ "$1" = --source-dir ] && d=$2; shift; done
-case "$d" in */src-copy) echo "build-apk.sh: $d/vendor is missing" >&2; exit 2;; esac
-echo "build-apk.sh: cannot write the cache for busybox: permission denied" >&2; exit 1
-S
-chmod +x "$work/vendor-then-perm.sh"
-sf "rule 41" "sealed-proof: a build that fails for an unrelated reason that merely names the package (permission denied) is not the package refusal" 'package|unrelated|names' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/vendor-then-perm.sh" "${sp_common[@]}"
 # F8 (seat A, R5 of seat B): config and layer descriptor media types and sizes are checked (a layout whose hashes are all right but whose descriptors lie is refused)
 python3 - "$work" <<'P'
 import hashlib, io, json, sys, tarfile
@@ -1591,24 +1584,18 @@ for name in ("assemble-image.sh", "lock-proof.sh", "sealed-proof.sh", "apko-lock
             bad.append("%s reads %s, which it does not assign and which is not on the closed list" % (name, v))
 print("\n".join(bad)); sys.exit(1 if bad else 0)
 P
-# B3 (both seats): the package negative accepts the removed package's own selection diagnostic and nothing that merely mentions its name
-bn=$(LC_ALL=C sort "$fx/melange.lock" | head -1 | cut -d= -f1)
-mk_build_stand() { # <file> <diagnostic text for the repository negative>
+# B3 (round 3 and 4, both seats): the build-level package negative is DIFFERENTIAL, not a reading of diagnostics: the build succeeds with the package in
+# its repository, fails with only that package removed, and succeeds again with the repository restored. No failure text is interpreted.
+bn=$(LC_ALL=C sort "$fx/melange.lock" | head -1 | cut -d: -f1)
+mk_build_stand() { # <file> <what the stand-in does for the repository negative: fail|ok>
   { printf '#!/bin/bash\nd=; r=; while [ $# -gt 0 ]; do [ "$1" = --source-dir ] && d=$2; [ "$1" = --repo ] && r=$2; shift; done\n'
     printf 'case "$d" in */src-copy) echo "build-apk.sh: $d/vendor is missing" >&2; exit 2;; esac\n'
-    printf 'case "$r" in */repo-nopkg) cat <<'"'"'T'"'"' >&2\n%s\nT\nexit 1;; esac\nexit 0\n' "$2"; } >"$1"; chmod +x "$1"; }
-mk_build_stand "$work/stand-ok.sh" "ERROR: unable to select packages:
-  $bn-1.2-r3 (no such package):
-    required by: world[$bn=1.2-r3]"
-run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/stand-ok.sh" "${sp_common[@]}"
-t "rule 41" "sealed-proof: apk's own selection diagnostic for the removed package ('$bn-<version> (no such package)') is accepted as the reason" test "$(rc)" = 0
-n_=0
-for diag_ in "build-apk.sh: $bn build cache is missing" "ERROR: unable to select packages: $bn-extras (no such package)" "ERROR: unable to select packages:
-  git-1.0-r0 (no such package):
-cannot write cache for $bn: permission denied" "ERROR: unable to select packages: xx$bn (no such package)"; do
-  n_=$((n_+1)); mk_build_stand "$work/stand-bad$n_.sh" "$diag_"
-  sf "rule 41" "sealed-proof: a failure that is not the removed package's own selection diagnostic is not accepted (counterexample $n_)" 'package|names|unrelated' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/stand-bad$n_.sh" "${sp_common[@]}"
-done
+    printf 'case "$r" in */repo-nopkg) echo "build-apk.sh: cache for %s not found" >&2; exit 1;; */repo-restored) %s;; esac\nexit 0\n' "$bn" "$2"; } >"$1"; chmod +x "$1"; }
+mk_build_stand "$work/stand-diff-ok.sh" ":"
+run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/stand-diff-ok.sh" "${sp_common[@]}"
+t "rule 41" "sealed-proof: a build that fails only without the removed package and succeeds with it restored is accepted (the proof reads no diagnostic: 'cache for $bn not found' is enough)" test "$(rc)" = 0
+mk_build_stand "$work/stand-diff-flaky.sh" 'echo "build-apk.sh: transient failure" >&2; exit 1'
+sf "rule 41" "sealed-proof: a build that also fails with the package restored proves nothing about the package: inconclusive, the proof fails" 'inconclusive|restored' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/stand-diff-flaky.sh" "${sp_common[@]}"
 # B5 / R1 (both seats): the written layout is closed (index -> manifests -> config and layers present, hashed, sized), and every descriptor's size is checked
 cat >"$work/closure.py" <<'P'
 import hashlib, json, os, sys
@@ -1690,6 +1677,141 @@ rm -f "$work/dgo-target" "$work/dgo-link"; ln -s "$work/dgo-target" "$work/dgo-l
 sr2 "rule 42" "sealed-proof: a --digests-out that is a link is refused (exit 2) and nothing is written through it" 'link' run_s "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --digests-out "$work/dgo-link" "${sp_common[@]}"
 t "rule 42" "...and the link's target was not created" test ! -e "$work/dgo-target"
 t "AC5" "apko-lock.sh verify-archive with a NON-EMPTY lock against an absent archive directory is refused (exit 2, naming the directory)" bash -c "test \"\$(cat '$work/dup2.rc')\" != 0 && grep -qi 'not a directory\|not found\|no such' '$work/dup2.out'"
+# ===== review round 4 of PR 352 ==============================================================================================================
+# B4 (seat A): the closed caller list is checked by READ ORDER (a name read before the line that assigns it, lower case included, a default expansion
+# needing an earlier assignment), and the check is shown to see three mutations
+cat >"$work/closed.py" <<'P'
+import re, sys
+SPECIAL = {"SOURCE_DATE_EPOCH", "ImageOS", "ImageVersion", "BASH_SOURCE", "BASH_VERSINFO", "PWD", "OLDPWD", "LINENO", "OPTARG", "RANDOM", "PIPESTATUS", "BASH_REMATCH", "FUNCNAME"}
+ASSIGN = re.compile(r"(?<![A-Za-z0-9_$])([A-Za-z_][A-Za-z0-9_]*)\+?=")
+def strip(code):
+    out = []
+    for l in code.split("\n"):
+        if l.lstrip().startswith("#"): continue
+        out.append(re.sub(r"\s#\s.*$", "", l) if re.search(r"\s#\s", l) and "'" not in l and '"' not in l else l)
+    return out
+def assigned_in(ln):
+    out = set(ASSIGN.findall(ln))
+    out |= set(re.findall(r"\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b", ln))
+    out |= set(re.findall(r"\(\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*=", ln))
+    for v in re.findall(r"\blocal\s+([A-Za-z_][A-Za-z0-9_ ]*)", ln): out.update(x for x in v.split() if re.fullmatch(r"[A-Za-z_]\w*", x))
+    for m in re.finditer(r"\bread\s+([^;|&<)]*)", ln):
+        toks = m.group(1).split(); k = 0
+        while k < len(toks):
+            if toks[k] in ("-d", "-n", "-N", "-p", "-t", "-u", "-a", "-i"): k += 2; continue
+            if re.fullmatch(r"[A-Za-z_]\w*", toks[k]): out.add(toks[k])
+            k += 1
+    return out
+def leaks(code):
+    """a name read before the line that assigns it (a caller-supplied value would be read), at top level; a function body runs later and is skipped.
+    A default expansion ${x:-..}, ${x-..}, ${x:=..}, ${x:+..} needs an assignment on an EARLIER line (x=${x:-1} on one line reads the caller's x)."""
+    assigned, bad, depth, heredoc_end = set(), [], 0, None
+    for ln in strip(code):
+        if heredoc_end is not None:
+            if ln.strip() == heredoc_end: heredoc_end = None
+            continue
+        hm = re.search(r"<<-?\s*['\"]?([A-Za-z_]+)['\"]?\s*$", ln)
+        fn_open = re.match(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\(\)\s*\{", ln)
+        in_fn = depth > 0 or fn_open is not None
+        if in_fn: depth += ln.count("{") - ln.count("}")
+        now = assigned_in(ln)
+        if not in_fn:
+            for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)):
+                if v in assigned or v in SPECIAL: continue
+                dflt = re.search(r"\$\{" + v + r"(:-|:=|:\+|-|\+|=)", ln)
+                if v in now and not dflt: continue
+                bad.append("%s is read before it is assigned: %s" % (v, ln.strip()[:80]))
+        assigned |= now
+        if hm: heredoc_end = hm.group(1)
+    return bad
+if __name__ == "__main__":
+    root = sys.argv[1]
+    rc = 0
+    for name in ("assemble-image.sh", "lock-proof.sh", "sealed-proof.sh", "apko-lock.sh"):
+        src = open("%s/bin/%s" % (root, name)).read()
+        for b in leaks(src):
+            print("%s: %s" % (name, b)); rc = 1
+    # the check must see these (it is not vacuous)
+    base = open("%s/bin/assemble-image.sh" % root).read()
+    for label, mut in (("a lowercase caller default", base.replace("set -euo pipefail\n", "set -euo pipefail\nversion=${caller_version:-x}\n", 1)),
+                       ("an uppercase caller read", base.replace("set -euo pipefail\n", "set -euo pipefail\nfoo=$CALLER_SETTING\n", 1)),
+                       ("a self-referential default before any assignment", base.replace("set -euo pipefail\n", "set -euo pipefail\nzzz=${zzz:-1}\n", 1))):
+        if not leaks(mut):
+            print("the check does not see %s" % label); rc = 1
+    sys.exit(rc)
+P
+t "AC12" "the four image scripts read no caller variable beyond SOURCE_DATE_EPOCH, ImageOS and ImageVersion (read-order check, lower case included), and the check sees an added lowercase default, an uppercase read and a self-referential default" python3 "$work/closed.py" "$root"
+# B1 (seat B): a live address spelled with an escape sequence or quoting in the YAML is refused before any apko call
+for spell_ in '"\u0068ttps://packages.wolfi.dev/os"' '"/work/melange-repo"' '/work/archive # x' ; do :; done
+printf 'contents:\n  repositories:\n    - /work/archive\n    - "\\u0068ttps://packages.wolfi.dev/os"\n  keyring:\n    - /work/keyring/wolfi-signing.rsa.pub\n  packages:\n    - tzdata\n' >"$work/esc.yaml"
+sr "rule 26" "assemble refuses a config whose repository scalar spells a live address with an escape sequence (\\u0068ttps://...), before any apko call" 'live repository|escape' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/esc.yaml" --out "$(mo)"
+sed 's#- /work/melange-repo#- "/work/melange-repo"#' "$fx/apko.yaml" >"$work/quoted.yaml"
+sr "rule 26" "assemble refuses a config whose repositories are not written plainly (a quoted entry): the closed grammar refuses what it cannot read" 'repositories entry|plainly' "${aie[@]}" "$AI" "${ai_args[@]}" --apko-config "$work/quoted.yaml" --out "$(mo)"
+# B2 (seat A) / B6 (seat B): two distinct hard links to one file are the same file for unpack's result files
+rm -rf "$work/unp-hl"; mkdir -p "$work/unp-hl"; : >"$work/unp-hl/one"; ln "$work/unp-hl/one" "$work/unp-hl/two"
+python3 "$OD" unpack "$oc/good.tar" "$work/unp-hl/out" "$work/unp-hl/one" "$work/unp-hl/two" >"$work/unp-hl/o.txt" 2>&1; hl_=$?
+t "BT-002-AC3" "unpack refuses DIGEST and MANIFESTS that are two hard links of one file (the second write would truncate the first), and writes nothing" bash -c "test $hl_ != 0 && grep -qi 'same file' '$work/unp-hl/o.txt' && test ! -e '$work/unp-hl/out' && test ! -s '$work/unp-hl/one'"
+# B3 (seat B): --expect is read before --digests-out is written, and the two may not be one file
+printf 'apk-nothing 0000\n' >"$work/exp-old.txt"; cp "$work/exp-old.txt" "$work/exp-keep.txt"
+sf "rule 39" "sealed-proof: --digests-out naming the --expect file does not turn a changed build into a pass (refused, and the baseline file is unchanged)" 'same file|differ' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --expect "$work/exp-old.txt" --digests-out "$work/exp-old.txt" "${sp_common[@]}"
+t "rule 39" "...and the baseline was not overwritten" cmp -s "$work/exp-old.txt" "$work/exp-keep.txt"
+ln "$work/exp-old.txt" "$work/exp-hard.txt"
+sf "rule 39" "sealed-proof: a --digests-out that is a hard link of the --expect file is refused too" 'same file|differ' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --expect "$work/exp-old.txt" --digests-out "$work/exp-hard.txt" "${sp_common[@]}"
+# B7 (seat B): the lock the build consumes is the lock apko lock made, with our apk and both architectures
+run_s "${aie[@]}" STUB_CAPTURE_LOCK="$work/consumed.lock.json" "$AI" "${ai_args[@]}" --out "$(mo)"
+t "AC3" "the file apko build is given has exactly the bytes apko lock produced, holds our apk (fscache) for both architectures and every base package for both" python3 - "$work/consumed.lock.json" "$FL" <<'P'
+import json, sys
+got = json.load(open(sys.argv[1])); want = json.load(open(sys.argv[2]))
+assert got == want, "the consumed lock is not the generated one"
+pk = got["contents"]["packages"]
+assert {e["architecture"] for e in pk if e["name"] == "fscache"} == {"x86_64", "aarch64"}
+assert {e["architecture"] for e in pk if e["name"] == "tzdata"} == {"x86_64", "aarch64"}
+P
+# B5 (seat A): a FIPS assembly over an OUT that already holds production leaves every production file byte-for-byte unchanged (the other direction)
+shared2=$(mo); mkdir -p "$shared2/production/blobs/sha256" "$shared2/production-sbom"
+printf 'prod-digest-bytes\n' >"$shared2/production.digest"; printf 'amd64 sha256:aa\narm64 sha256:bb\n' >"$shared2/production.manifests"; printf '{"x":1}' >"$shared2/production.full.lock.json"
+printf 'layout' >"$shared2/production/oci-layout"; printf 'blob' >"$shared2/production/blobs/sha256/cc"; printf 'sbom' >"$shared2/production-sbom/sbom.json"
+prod_snap() { ( cd "$shared2" && find production production.digest production.manifests production.full.lock.json production-sbom -type f | LC_ALL=C sort | while read -r f; do cksum "$f"; done ); }
+prod_snap >"$work/prod-before.txt"
+run_s "${aie[@]}" "$AI" "${aif_args[@]}" --out "$shared2"
+fips_rc2=$(rc)
+prod_snap >"$work/prod-after.txt"
+t "AC2" "assembling fips into an OUT that already holds production leaves every production file byte-for-byte unchanged (and the assembly succeeds)" bash -c "test $fips_rc2 = 0 && test -s '$shared2/fips.digest' && test \$(wc -l <'$work/prod-before.txt') = 6 && cmp -s '$work/prod-before.txt' '$work/prod-after.txt'"
+# B3 (seat A), site by site: the exceptional call sites under the restricted path: the namespace probe after a network failure, and the cleanup fallback
+rp_site() { # <air> <line pattern> <var> <tool> <env...>: a mutant of ONLY the lines matching the pattern, started with the restricted path and the trigger
+  local a=$1 pat=$2 v=$3 tool=$4; shift 4
+  local am="$work/air-site-$v-$$-$RANDOM"; rm -rf "$am"; cp -RP "$air" "$am"; rm -f "$am/bin/assemble-image.sh"; cp "$air/bin/assemble-image.sh" "$am/bin/assemble-image.sh"
+  python3 - "$am/bin/assemble-image.sh" "$pat" "$v" "$tool" <<'PYM'
+import sys
+p, pat, v, tool = sys.argv[1:5]
+lines = open(p).read().split("\n"); n = 0
+for k, l in enumerate(lines):
+    if pat in l and '"$%s"' % v in l:
+        lines[k] = l.replace('"$%s"' % v, tool); n += 1
+assert n > 0, (pat, v)
+open(p, "w").write("\n".join(lines))
+PYM
+  rp_wrapper "$am" "$am/ai.sh"
+  : >"$CALLS"
+  env -i PATH="$rpd" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" \
+    TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_APKO="$rpw/apko" "$@" "$am/ai.sh" "${ai_args[@]}" --out "$(mo)" >"$work/site.log" 2>&1 </dev/null; echo $? >"$work/site.rc"; }
+rp_site "$air" 'net-probe.py' PY3 python3 STUB_NETATTEMPT=1
+t "AC5" "the namespace probe's own python call: with python3 bare the network failure is NOT classified as exit 4 under the restricted path (the probe never ran)" bash -c "test \"\$(cat '$work/site.rc')\" != 4"
+rp_site "$air" 'net-probe.py' SUDO true STUB_NETATTEMPT=1
+: >"$CALLS"
+env -i PATH="$rpd" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" \
+  TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_APKO="$rpw/apko" STUB_NETATTEMPT=1 "$work/ai.sh" "${ai_args[@]}" --out "$(mo)" >"$work/site.log" 2>&1 </dev/null; echo $? >"$work/site.rc"
+t "AC5" "the unmutated assembler under the restricted path classifies the same network failure as exit 4 (the probe ran through its fixed paths)" bash -c "test \"\$(cat '$work/site.rc')\" = 4"
+rp_site "$air" 'rm -rf "$tmp"' SUDO sudo STUB_LOCKED_CACHE=1
+site_cache=$(grep -Eo -- '--cache-dir [^ ]+' "$CALLS" | tail -1 | cut -d' ' -f2)
+t "AC12" "the cleanup fallback (a tree the user cannot remove): with sudo called bare there the privileged removal is not made (no 'sudo ... rm -rf' call) although the assembly's own status is unchanged (0): the site is reached and is what the mutant breaks" bash -c "test -n '$site_cache' && test -d '$site_cache' && test \"\$(cat '$work/site.rc')\" = 0 && ! grep -q '^sudo .*rm -rf' '$CALLS'"
+chmod -R u+w "$(dirname "$site_cache")" 2>/dev/null; rm -rf "$(dirname "$site_cache")"
+: >"$CALLS"
+env -i PATH="$rpd" HOME="$work" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" STUB_LOCK_FIPS="$fx/full-fips.lock.json" \
+  TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_APKO="$rpw/apko" STUB_LOCKED_CACHE=1 "$work/ai.sh" "${ai_args[@]}" --out "$(mo)" >"$work/site.log" 2>&1 </dev/null; echo $? >"$work/site.rc"
+site_cache2=$(grep -Eo -- '--cache-dir [^ ]+' "$CALLS" | tail -1 | cut -d' ' -f2)
+t "AC12" "...and with the fixed path the same cleanup fallback runs: a 'sudo ... rm -rf' call is logged and the assembly's own status is unchanged (0)" bash -c "test \"\$(cat '$work/site.rc')\" = 0 && grep -q '^sudo .*rm -rf' '$CALLS'"
+chmod -R u+w "$(dirname "$site_cache2")" 2>/dev/null; rm -rf "$(dirname "$site_cache2")"
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]

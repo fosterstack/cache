@@ -131,12 +131,13 @@ compgen -G "$imgdir/*.digest" >/dev/null || die "no digests were produced: the i
   done
 } >"$tmp/digests.txt"
 [ -s "$tmp/digests.txt" ] || die "no digests were produced"
+if [ -n "$expect" ]; then
+  cmp -s "$tmp/digests.txt" "$expect" || { diff "$expect" "$tmp/digests.txt" >&2 || true; die "the digests differ from the expected ones in $expect: the build is not reproducible"; }
+fi
+[ -z "$digests_out" ] || [ -z "$expect" ] || { [ ! "$digests_out" -ef "$expect" ] || die "--digests-out and --expect are the same file (or hard links of one): the comparison would be made against the digests just written" 2; }
 if [ -n "$digests_out" ]; then
   [ ! -L "$digests_out" ] && { [ ! -e "$digests_out" ] || [ -f "$digests_out" ]; } || die "--digests-out $digests_out is a link or not a regular file; refusing to write through it" 2
   cp "$tmp/digests.txt" "$digests_out"
-fi
-if [ -n "$expect" ]; then
-  cmp -s "$tmp/digests.txt" "$expect" || { diff "$expect" "$tmp/digests.txt" >&2 || true; die "the digests differ from the expected ones in $expect: the build is not reproducible"; }
 fi
 
 # ---- rule 41: the negatives, on copies ----
@@ -165,13 +166,13 @@ bwords_nopkg=("${bwords[@]}"); for ((i = 0; i + 1 < ${#bwords_nopkg[@]}; i++)); 
 if "$BASHBIN" bin/build-apk.sh "${bwords_nopkg[@]}" --source-dir "$src" --out "$tmp/neg-build2" >"$tmp/neg3.log" 2>&1; then
   die "the build still succeeded with the declared package $bvictim deleted from its repository: the build is not sealed to its declared inputs (package)"
 fi
-# the build's own "cannot select that package" diagnostic must name EXACTLY the removed package on one line that says it cannot be found: the
-# name as a whole token (busybox-extras and a cache for busybox are not busybox), optionally followed by its version (-1.2-r3 or =1.2-r3)
-bname=${bpin%%=*}
-bname_re=$(printf '%s' "$bname" | sed 's/[][\.*^$+?(){}|/]/\\&/g')
-tok_re="(^|[^A-Za-z0-9._+-])${bname_re}(-[0-9][A-Za-z0-9._+~-]*|=[A-Za-z0-9._+~-]+)?([^A-Za-z0-9._+-]|\$)"
-build_package_reason=$(grep -Ei -- 'no such package|nothing provides|unable to select|not found' "$tmp/neg3.log" | grep -E -- "$tok_re" | grep -Ei -- 'no such package|nothing provides|not found|unable to select' | tail -n 1 || true)
-[ -n "$build_package_reason" ] || { tail -3 "$tmp/neg3.log" >&2; die "the build failed with $bvictim deleted, but nothing it printed names ${bpin%%=*} (an unrelated failure proves nothing about rule 41)"; }
+# the evidence is the DIFFERENCE, not the wording: the same build with the package in its repository succeeded above (the positive run), fails with
+# only that package removed, and succeeds again with a restored copy of the repository (so the failure was neither a transient one nor an unrelated
+# one). No diagnostic text is interpreted; the last line the failing build printed is recorded for the reader.
+cp -RP "$brepo" "$tmp/repo-restored"; inside_tmp "$tmp/repo-restored"
+bwords_restored=("${bwords[@]}"); for ((i = 0; i + 1 < ${#bwords_restored[@]}; i++)); do [ "${bwords_restored[$i]}" = --repo ] && bwords_restored[$((i + 1))]=$tmp/repo-restored; done
+"$BASHBIN" bin/build-apk.sh "${bwords_restored[@]}" --source-dir "$src" --out "$tmp/neg-build3" >"$tmp/neg4.log" 2>&1 || { tail -3 "$tmp/neg4.log" >&2; die "the build failed again with the package restored: the failure without $bvictim proves nothing about the package (inconclusive)"; }
+build_package_reason="the build succeeds with $bvictim in its repository and fails without it; last output: $(tail -n 1 "$tmp/neg3.log" | cut -c1-200)"
 rm -f "$tmp/arch-nopkg/$victim"
 if "$BASHBIN" bin/assemble-image.sh "${awords[@]}" --archive "$tmp/arch-nopkg" --out "$tmp/neg-image" >"$tmp/neg2.log" 2>&1; then
   die "the image assembly still succeeded with an archived package deleted: not sealed to the archive (package)"
