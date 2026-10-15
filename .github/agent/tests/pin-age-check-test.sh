@@ -3231,11 +3231,14 @@ done
 vfile flow-style .github/workflows/w.yml '{run: "bash vendor/example.test/dep/install.sh"}'
 CASE="a flow-style step that names the vendored folder is refused (exit 1)"
 check test "$rc" -eq 1
-for v in "tool-flag:go build -mod=vendor ./cmd/fscache" "go-mod-vendor:go mod vendor" "vendor-check:bash bin/vendor-check.sh" "comment:# vendor/ is skipped" "trailing-comment:ls /tmp # vendor/x"; do
+for v in "tool-flag:go build -mod=vendor ./cmd/fscache" "go-mod-vendor:go mod vendor" "vendor-check:bash bin/vendor-check.sh" "comment:# vendor/ is skipped"; do
   vfile "ok-${v%%:*}" tools/new.sh "${v#*:}"
   CASE="a line that does not name the vendored folder (the tool's own words, a comment) is not refused: ${v%%:*} (exit 0)"
   check test "$rc" -eq 0
 done
+vfile trailing-comment tools/new.sh 'ls /tmp # vendor/x'
+CASE="text after a # is still read (a quoted # is not a comment): a trailing mention is refused, the conservative side (exit 1)"
+check test "$rc" -eq 1
 vfile listed-file bin/vendor-check.sh 'ls vendor/'
 CASE="a file on the exact list may name the vendored folder (exit 0)"
 check test "$rc" -eq 0
@@ -3244,10 +3247,10 @@ import importlib.util, sys
 sys.path.insert(0, ".")
 root = sys.argv[1]
 spec = importlib.util.spec_from_file_location("pi", root + "/.github/agent/supply-chain/pin-inventory.py"); m = importlib.util.module_from_spec(spec); sys.modules["pi"] = m; spec.loader.exec_module(m)
-files = {**m.tree_files(root, None), **m.tree_scripts(root, None)}
+files = {**m.tree_surfaces(root, None), **m.tree_files(root, None), **m.tree_scripts(root, None)}
 hits = [k for k, _, _ in m.unmeasured_occurrences(files) if k[1] == "a line that names the vendored folder"]
 assert not hits, hits[:3]
-naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/")) and (p.startswith(".github/") or p.endswith(".sh"))
+naming = {p for p, t in files.items() if not p.startswith((".github/agent/", "vendor/"))
           and any(m._names_vendor(l) for l in t.split("\n"))}
 extra = set(m._VENDOR_NAMING_FILES) - naming
 assert not extra, "listed but names nothing: %s" % sorted(extra)
