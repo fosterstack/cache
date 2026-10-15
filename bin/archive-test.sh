@@ -198,6 +198,12 @@ badptr "an absolute name" 'files=[{"name":"/etc/passwd","sha256":"'$A64'"}]'
 badptr "a duplicate name" 'files=[{"name":"a","sha256":"'$A64'"},{"name":"a","sha256":"'$A64'"}]'
 badptr "names out of order" 'files=[{"name":"b","sha256":"'$A64'"},{"name":"a","sha256":"'$A64'"}]'
 printf '{not json' >"$work/p.json"; reset; run python3 -I -B "$P_VER" verify --pointer "$work/p.json" --dir "$fx"
+D_MP="sha256:$(printf 'c%.0s' $(seq 1 64))"
+t AC3 "make-pointer writes a pointer for a directory and a digest that pointer-check and verify (with --pushed-digest) accept" bash -c "python3 -I -B '$P_VER' make-pointer --dir '$fx' --digest $D_MP --out '$work/mp.json' && python3 -I -B '$P_VER' pointer-check --pointer '$work/mp.json' && python3 -I -B '$P_VER' verify --pointer '$work/mp.json' --dir '$fx' --pushed-digest $D_MP && python3 -I -B '$P_VER' artifact --pointer '$work/mp.json' | grep -q '@$D_MP\$'"
+t AC3 "make-pointer is deterministic: the same directory and digest give the same bytes" bash -c "python3 -I -B '$P_VER' make-pointer --dir '$fx' --digest $D_MP --out '$work/mp2.json' && cmp '$work/mp.json' '$work/mp2.json'"
+t AC3 "make-pointer refuses a digest that is not sha256:<64 hex> (exit 2) and writes nothing" bash -c "rm -f '$work/mp3.json'; ! python3 -I -B '$P_VER' make-pointer --dir '$fx' --digest sha256:XYZ --out '$work/mp3.json' 2>/dev/null; test ! -e '$work/mp3.json'"
+rm -rf "$work/mpd"; cp -R "$fx" "$work/mpd"; ln -s keys "$work/mpd/linkdir"
+t AC3 "make-pointer refuses a directory holding a symlink (exit 1, names it) and writes nothing" bash -c "rm -f '$work/mp4.json'; python3 -I -B '$P_VER' make-pointer --dir '$work/mpd' --digest $D_MP --out '$work/mp4.json' >'$work/mp4.log' 2>&1; test \$? = 1 && grep -q linkdir '$work/mp4.log' && test ! -e '$work/mp4.json'"
 t AC3 "a pointer that is not JSON is refused (exit 2)" bash -c "test '$(rc)' = 2"
 reset; run python3 -I -B "$P_VER" verify --pointer "$work/none.json" --dir "$fx"
 t AC3 "a missing pointer file is refused (exit 2)" bash -c "test '$(rc)' = 2"
