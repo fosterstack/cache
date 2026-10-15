@@ -3232,5 +3232,44 @@ runck key-wget '{"times": {}}'
 CASE="wget of the same fixed URL to a named file is accepted (exit 0)"
 check test "$rc" -eq 0
 
+# --- owner rule 48 (Oct 9: no 7-day hold on Wolfi; signature checks and archiving still apply), advisor message Oct 15: the refresh job's two python downloads,
+#     from the fixed host packages.wolfi.dev only, in a script that verifies them (verify / verify_index, hard-coded names) right after the fetch
+pyscript() { # NAME 'ARGV-TAIL (after "-o", part,)' [VERIFYLINE] [HOSTCHECK yes|no] [EXTRA]: writes bin/pull.sh with a python heredoc
+  python3 - "$1" "$2" "${3-verify(part, e)}" "${4-yes}" "${5-}" <<'PY'
+import json, sys
+name, tail, ver, hostcheck, extra = sys.argv[1:6]
+py = ["import subprocess, sys", "WOLFI_URL = \"https://packages.wolfi.dev/os/\""]
+if hostcheck == "yes":
+    py += ["def check(u):", "    if pu.hostname != \"packages.wolfi.dev\" or not u.startswith(WOLFI_URL):", "        sys.exit(2)"]
+py += ["part = '/tmp/x.part'", "r = subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"-g\", \"--proto\", \"=https\", \"--tlsv1.2\"" + extra + ", \"-o\", part, " + tail + "], stdout=sys.stderr)",
+       "if r.returncode != 0:", "    sys.exit(1)", ver]
+body = "#!/usr/bin/env bash\nset -euo pipefail\n/usr/bin/python3 -I - <<'PY'\n" + "\n".join(py) + "\nPY\n"
+print("import pathlib\nroot = pathlib.Path('.')\n(root / 'bin').mkdir(exist_ok=True)\n(root / 'bin/pull.sh').write_text(" + json.dumps(body) + ")")
+PY
+}
+newcase py1 "$(pyscript py1 '"https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz" % arch' 'verify_index(part, arch)')"
+runck py1 '{"times": {}}'
+CASE="the index download from the literal Wolfi address, verified right after by verify_index, is accepted (exit 0)"
+check test "$rc" -eq 0
+newcase py2 "$(pyscript py2 'e["url"]' 'verify(part, e)' yes)"
+runck py2 '{"times": {}}'
+CASE="the package download from the lock entry's url, with the host check as literals and verify right after, is accepted (exit 0)"
+check test "$rc" -eq 0
+for v in "other-host:\"https://packages.example.com/os/%s/APKINDEX.tar.gz\" % arch|verify_index(part, arch)|yes|" \
+         "http:\"http://packages.wolfi.dev/os/%s/APKINDEX.tar.gz\" % arch|verify_index(part, arch)|yes|" \
+         "entry-url-without-host-check:e[\"url\"]|verify(part, e)|no|" \
+         "no-verify:e[\"url\"]|print('done')|yes|" \
+         "verify-other-variable:e[\"url\"]|verify(other, e)|yes|" \
+         "unknown-verifier:e[\"url\"]|check_it(part, e)|yes|" \
+         "proxy-option:e[\"url\"]|verify(part, e)|yes|, \"--proxy\", \"http://p.example:3128\"" \
+         "second-url:e[\"url\"], \"https://evil.example/x\"|verify(part, e)|yes|" \
+         "url-from-argv:sys.argv[1]|verify(part, e)|yes|"; do
+  nm=${v%%:*}; rest=${v#*:}; tail=${rest%%|*}; rest=${rest#*|}; ver=${rest%%|*}; rest=${rest#*|}; hc=${rest%%|*}; ex=${rest#*|}
+  newcase "py-$nm" "$(pyscript "py-$nm" "$tail" "$ver" "$hc" "$ex")"
+  runck "py-$nm" '{"times": {}}'
+  CASE="a python download that is not the one form is refused: $nm (exit 1)"
+  check test "$rc" -eq 1
+done
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
