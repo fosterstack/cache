@@ -1024,18 +1024,24 @@ def _command_words(toks):
 SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between the scripts of one inlined job text: each script's own assignments count for it
 #                                                     alone; chosen per run, so no repository text can carry it (a script that wrote the line itself would
 #                                                     otherwise split its own function or branch in two)
-_NO_NAME = {"REPLY", "MAPFILE", "OPTARG", "OPTIND", "OPTERR", "COMPREPLY", "BASH_REMATCH", "PIPESTATUS", "RANDOM", "SECONDS", "LINENO", "PWD", "OLDPWD",
+_NO_NAME = {"_", "REPLY", "MAPFILE", "OPTARG", "OPTIND", "OPTERR", "COMPREPLY", "BASH_REMATCH", "PIPESTATUS", "RANDOM", "SECONDS", "LINENO", "PWD", "OLDPWD",
             "UID", "EUID", "PPID", "SHELLOPTS", "BASHOPTS", "PATH", "IFS", "HOME", "SHELL", "ENV", "BASH_ENV"}   # set by the shell or read by it: never a program name
 _CONST_PATH = re.compile(r"/[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
 
 
-def _whole_word_read(text, start, end):
-    """The expansion at text[start:end] is a whole shell word: nothing glued to it but an optional pair of double quotes."""
-    if start and text[start - 1] == '"':
-        start -= 1
-    if end < len(text) and text[end] == '"':
-        end += 1
-    return (start == 0 or text[start - 1] in " \t\n;&|(") and (end >= len(text) or text[end] in " \t\n;&|)")
+def _whole_word_read(nc, bl, start, end):
+    """The expansion at [start:end) is a whole shell word of its own and is not data: either unquoted (nothing of it blanked by the quote mask) or
+    the whole content of one pair of double quotes whose two delimiters are real (a quote that is itself inside a quoted string is not a delimiter)."""
+    n = len(nc)
+    if start and nc[start - 1] == '"':
+        if not (end < n and nc[end] == '"' and bl[start - 1] == '"' and bl[end] == '"'):
+            return False
+        if bl[start:end].strip():
+            return False
+        start, end = start - 1, end + 1
+    elif bl[start:end] != nc[start:end]:
+        return False
+    return (start == 0 or nc[start - 1] in " \t\n;&|(") and (end >= n or nc[end] in " \t\n;&|)")
 
 
 def _literal_path_vars(script):
@@ -1052,6 +1058,8 @@ def _literal_path_vars(script):
     found = {}
     for m in re.finditer(r"^(?:([A-Za-z_]\w*)=|printf -v ([A-Za-z_]\w*) %s )(/[^\s;&|<>()$`\"'\\]*)[ \t]*$", nc, re.M):
         name, path = m.group(1) or m.group(2), m.group(3)
+        if bl[m.start():m.end()] != nc[m.start():m.end()]:
+            continue                                     # the line sits inside a quoted string: data, not an assignment
         if not _CONST_PATH.fullmatch(path) or any(c in ("..", ".") for c in path.split("/")):
             continue
         if re.search(r"<<|[{}()]|(?<![\w.-])(if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|coproc)(?![\w.-])",
@@ -1065,7 +1073,7 @@ def _literal_path_vars(script):
         if [x.start() for x in re.finditer(r"(?<![A-Za-z0-9_])" + name + r"(?![A-Za-z0-9_])", nc)
             if not nc[:x.start()].endswith(("$", "${"))] != [m.start(1) if m.group(1) else m.start(2)]:
             continue
-        if any(not _whole_word_read(nc, x.start(), x.end()) for x in re.finditer(r"\$(?:\{" + name + r"\}|" + name + r"(?![A-Za-z0-9_]))", nc)):
+        if any(not _whole_word_read(nc, bl, x.start(), x.end()) for x in re.finditer(r"\$(?:\{" + name + r"\}|" + name + r"(?![A-Za-z0-9_]))", nc)):
             continue                                     # a read that is a part of a longer word (a default word, a pattern, a path built around it)
         if re.search(r"\$\{" + name + r"(:?[=+?-]|\[|[#%/^,@!])|\$\{!", nc):
             continue                                     # a default-assigning or indirect expansion naming it
@@ -2508,7 +2516,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             found.append("scripts nest deeper than this check reads (%s); refused" % path)
             continue
         content = tree.read(rel)
-        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", content))))
+        inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", _rewrite_consts(content)))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
         more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
         added.append(SCRIPT_MARK + "\n" + content + ("\n" + SCRIPT_MARK + "\n" + more if more else ""))
@@ -2543,7 +2551,7 @@ def check_runs(where_job, scripts, bad, tree=None):
         # The word anywhere counts, quoted or nested in sh -c / eval: fail closed (Sonnet #164 r17, NEW-25)
         moved = bool(wdir) or bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(read(raw))))
         bases = item[6] if len(item) > 6 else ()
-        more, also = _run_scripts(read(raw), tree, moved, 0, where, job0, bases) if ok else ("", [])
+        more, also = _run_scripts(read(_rewrite_consts(raw)), tree, moved, 0, where, job0, bases) if ok else ("", [])
         # each script is read on its own, as written (before ${NAME:-word} is read away): its literal-path variables are replaced in it alone
         inlined.append((_rewrite_consts(more), also))
 
