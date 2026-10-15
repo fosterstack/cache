@@ -2823,5 +2823,13 @@ case_ r1-literal-dollar-file-name-ok ok "$(rb 'bash ci-lit.sh')" "printf 'G=/usr
 case_ r1-default-in-step-text-does-not-leak-ok ok "$(rb ': "${G:-ok}"
           bash ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
 
+# --- review round 2 of PR 351 (seat A): an assignment line that sits inside a quoted string is data; a read inside a quoted string that merely has spaces
+#     around it is data; `_` is written by the shell after every command; a variable holding the interpreter must be resolved before the script it runs is read
+case_ r2-assignment-in-quoted-string-bad bad "$(rb 'bash ci-lit.sh')" "printf 'echo \x27\nG=/usr/bin/git\n\x27\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r2-padded-read-in-child-script-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nbash -c \x27 \"\$G\" run alpine:latest \x27\n' > ci-lit.sh"
+case_ r2-underscore-implicit-target-bad bad "$(rb 'bash ci-lit.sh')" "printf '_=/usr/bin/git\n: /usr/bin/docker\n\"\$_\" run alpine:latest\n' > ci-lit.sh"
+case_ r2-variable-interpreter-reads-child-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/bash\n\"\$G\" ci-other.sh\n' > ci-lit.sh; printf 'docker run alpine:latest\n' > ci-other.sh"
+case_ r2-variable-interpreter-reads-child-ok ok "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/bash\n\"\$G\" ci-other.sh\n' > ci-lit.sh; printf 'git status\n' > ci-other.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
