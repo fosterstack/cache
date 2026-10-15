@@ -48,9 +48,10 @@
 #  I4 bin/assemble-image.sh --variant production|fips --version X.Y.Z --archive DIR --melange-repo DIR --keyring-dir DIR
 #        --out DIR [--apko-config FILE] [--base-lock FILE] [--render-dir DIR]. Env: SOURCE_DATE_EPOCH. Order: verify the base
 #     lock against the archive -> sudo unshare -n apko lock (full lock) -> compare base vs full -> verify full -> sudo unshare -n
-#     apko build --offline --lockfile FULL --sbom-path DIR. OUT gets <variant>.full.lock.json, <variant>.tar (apko's OCI layout),
-#     <variant>.digest (ONE line sha256:<hex>: the OCI INDEX digest, CHANGED, was the tar's sha256), <variant>.manifests (NEW, one
-#     line `<arch> sha256:<hex>` per per-arch manifest: amd64, arm64) and the SBOM directory.
+#     apko build --offline --lockfile FULL --sbom-path DIR. OUT gets <variant>.full.lock.json, <variant>/ (the image as an OCI layout
+#     DIRECTORY: oci-layout, index.json, blobs/sha256/<hex>; no tarball, advisor 0393), <variant>.digest (ONE line sha256:<hex>: the OCI
+#     INDEX digest), <variant>.manifests (one line `<arch> sha256:<hex>` per per-arch manifest: amd64, arm64) and <variant>-sbom/sbom.json.
+#     --version is X.Y.Z, X.Y.Z-rcN or 0.0.0-rc.1; it runs from the repository root only (exit 2 elsewhere).
 #  I4b CHANGED/NEW (advisor): bin/oci-digest.py TAR  reads the OCI layout tarball: oci-layout, index.json -> index blob, per-arch
 #     manifest blobs under blobs/sha256/; every blob must hash to its name. Prints `index sha256:<hex>` then `<arch> sha256:<hex>`
 #     lines; exit 1 naming the file/blob on a missing index.json or a blob whose hash differs.
@@ -272,7 +273,7 @@ def fixtures(fx):
         open("%s/archive/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"index-" + a.encode())
         for n, v in ENVPK:
             P[("env", n, v, a)] = mkapk("%s/envrepo/%s/%s-%s.apk" % (fx, a, n, v), n, v, {"usr/share/%s/data" % n: ("%s-%s" % (n, a)).encode()}, signer="wolfi-signing.rsa.pub")
-        open("%s/envrepo/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"index-" + a.encode())
+        open("%s/envrepo/%s/APKINDEX.tar.gz" % (fx, a), "wb").write(b"envrepo-index-" + a.encode())
         for n, mel in (("fscache", "melrepo"), ("fscache-fips", "melrepo-fips")):
             P[(n, "0.3.0-r0", a)] = mkapk("%s/%s/%s/%s-0.3.0-r0.apk" % (fx, mel, a, n), n, "0.3.0-r0", {"usr/bin/fscache": ("bin-%s-%s" % (n, a)).encode()})
             open("%s/%s/%s/APKINDEX.tar.gz" % (fx, mel, a), "wb").write(b"index-" + a.encode())
@@ -406,31 +407,36 @@ def stubbuild(recipe_path, out, arch, cache):
     open("%s/%s/APKINDEX.tar.gz" % (out, arch), "wb").write(b"index")
 def stuboci(out, lockfile, salt, sde, tamper=False, noindex=False):
     seed = hashlib.sha256(open(lockfile, "rb").read()).hexdigest() + salt + sde
+    if os.environ.get("STUB_OCI_REAL"): return stubapkotar(out, tamper, seed=seed)   # the tar real apko writes (the layout the script must unpack)
     H = lambda b: hashlib.sha256(b).hexdigest()
     blobs, mans = [], []
     for arch in ("amd64", "arm64"):
         cfg = json.dumps({"architecture": arch, "os": "linux", "seed": seed}, sort_keys=True).encode()
+        layer = ("layer-bytes-%s-%s" % (arch, seed)).encode()   # a non-empty layer: an assembler that drops layers would no longer pass
         man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)}, "layers": []}, sort_keys=True).encode()
-        blobs += [(H(cfg), cfg), (H(man), man)]
+                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)},
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:" + H(layer), "size": len(layer)}]}, sort_keys=True).encode()
+        blobs += [(H(cfg), cfg), (H(layer), layer), (H(man), man)]
         mans.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + H(man), "size": len(man), "platform": {"architecture": arch, "os": "linux"}})
     idx = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": mans}, sort_keys=True).encode()
     blobs.append((H(idx), idx))
     top = json.dumps({"schemaVersion": 2, "manifests": [{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": "sha256:" + H(idx), "size": len(idx)}]}, sort_keys=True).encode()
     members = [("oci-layout", b'{"imageLayoutVersion":"1.0.0"}')] + ([] if noindex else [("index.json", top)])
     for i, (h, b) in enumerate(blobs):
-        members.append(("blobs/sha256/" + h, b + b"X" if tamper and i == 1 else b))   # tamper: a manifest blob whose bytes no longer hash to its name
+        members.append(("blobs/sha256/" + h, b + b"X" if tamper and i == 2 else b))   # tamper: a manifest blob whose bytes no longer hash to its name
     open(out, "wb").write(tarb(members))
-def stubapkotar(out, tamper=False):
+def stubapkotar(out, tamper=False, seed=""):
     # the shape real apko v1.4.6 writes (real-run finding Oct 9): blobs are top-level members named sha256:<hex>, index.json is the
     # multi-arch index itself (it lists the per-arch manifests), manifest.json is the docker-style list, and there is no oci-layout
     H = lambda b: hashlib.sha256(b).hexdigest()
     members, mans = [], []
     for arch in ("amd64", "arm64"):
-        cfg = json.dumps({"architecture": arch, "os": "linux"}, sort_keys=True).encode()
+        cfg = json.dumps(dict({"architecture": arch, "os": "linux"}, **({"seed": seed} if seed else {})), sort_keys=True).encode()
+        layer = ("layer-bytes-%s-%s" % (arch, seed)).encode()
         man = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)}, "layers": []}, sort_keys=True).encode()
-        members += [("sha256:" + H(cfg), cfg), ("sha256:" + H(man), man + b"X" if tamper and arch == "arm64" else man)]
+                          "config": {"mediaType": "application/vnd.oci.image.config.v1+json", "digest": "sha256:" + H(cfg), "size": len(cfg)},
+                          "layers": [{"mediaType": "application/vnd.oci.image.layer.v1.tar+gzip", "digest": "sha256:" + H(layer), "size": len(layer)}]}, sort_keys=True).encode()
+        members += [("sha256:" + H(cfg), cfg), ("sha256:" + H(layer), layer), ("sha256:" + H(man), man + b"X" if tamper and arch == "arm64" else man)]
         mans.append({"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": "sha256:" + H(man), "size": len(man), "platform": {"architecture": arch, "os": "linux"}})
     idx = json.dumps({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": mans}).encode()
     members += [("manifest.json", b"[]"), ("index.json", idx)]
@@ -442,6 +448,12 @@ def lockshape(path, variant):
     assert {"wolfi-baselayout", "ca-certificates-bundle", "tzdata"} <= names, sorted(names)
     assert not any(n.startswith("fscache") for n in names), "base lock holds our apk"
     for a in ARCHS: assert any(e["architecture"] == a for e in pk), a
+    seen = {}
+    for e in pk: seen.setdefault(e["name"], {}).setdefault(e["architecture"], []).append(e["version"])
+    for n, by in sorted(seen.items()):   # every package is locked for BOTH architectures, once each, at one version
+        assert sorted(by) == sorted(ARCHS), (n, sorted(by))
+        assert all(len(v) == 1 for v in by.values()), (n, by)
+        assert len({v[0] for v in by.values()}) == 1, (n, by)
     for e in pk:
         assert e["control"]["checksum"].startswith("sha1-") and e["data"]["checksum"].startswith("sha256-") and e["checksum"].startswith("Q1"), e["name"]
         assert e["url"].startswith("/work/archive/"), e["url"]
@@ -657,11 +669,12 @@ print(os.environ.get("STUB_NETTEXT") or ("dial tcp 192.0.2.1:443: connect: " + o
 P
 exit $?; fi
 [ -n "${STUB_FAIL:-}" ] && { echo "stub: compile error: undefined: foo" >&2; exit 1; }
-arch= out=./packages cache= src= recipe=
+arch= out=./packages cache= src= recipe= repoapp=
 while [ $# -gt 0 ]; do case $1 in
   --arch) arch=$2; shift 2;; --out-dir) out=$2; shift 2;; --cache-dir) cache=$2; shift 2;; --source-dir) src=$2; shift 2;;
   --signing-key) STUB_SIGNKEY=$2; shift 2;;
-  --runner|--keyring-append|--repository-append|--build-date|--workspace-dir|--apk-cache-dir|-k|-r|--env-file|--vars-file|--namespace) shift 2;;
+  --repository-append) repoapp=$2; shift 2;;
+  --runner|--keyring-append|--build-date|--workspace-dir|--apk-cache-dir|-k|-r|--env-file|--vars-file|--namespace) shift 2;;
   -*) shift;; *) recipe=$1; shift;; esac; done
 echo "ENV SDE=${SOURCE_DATE_EPOCH-unset}" >>"$CALLS"
 [ -n "${STUB_LOCKED_CACHE:-}" ] && [ -n "$cache" ] && { mkdir -p "$cache/x/y" && : >"$cache/x/y/f" && chmod 500 "$cache/x/y" "$cache/x"; }   # a tree the invoking user cannot remove (the cleanup fallback)
@@ -669,6 +682,11 @@ echo "ENV CACHE=$( [ -n "$cache" ] && ls "$cache" 2>/dev/null | tr '\n' ' ')" >>
 echo "ENV SECRETS=$(env | grep -Ec '(TOKEN|SECRET|PRIVATE|SIGNING_KEY)')" >>"$CALLS"
 echo "ENVNAMES=$(env | cut -d= -f1 | grep -Ev '^(STUB_|FAKE_|CALLS$|ImageOS$|ImageVersion$|PWD$|SHLVL$|_$|OLDPWD$)' | sort | tr '\n' ' ')" >>"$CALLS"
 [ -d "$src/vendor" ] || { echo "stub melange: go build: no vendor directory" >&2; exit 1; }
+if [ -n "${STUB_REQUIRE_REPO:-}" ] && [ -n "$repoapp" ]; then   # like melange: every pinned environment package must be selectable from the repository it was given
+  while IFS= read -r pin; do
+    [ -f "$repoapp/$arch/${pin%%=*}-${pin#*=}.apk" ] || { echo "ERROR: unable to select packages:" >&2; echo "  ${pin%%=*}-${pin#*=} (no such package):" >&2; exit 1; }
+  done < <(sed -n 's/^ *- \([A-Za-z0-9._+-]*=[A-Za-z0-9._+~-]*\) *$/\1/p' "$recipe")
+fi
 STUB_SIGNKEY="${STUB_SIGNKEY:-}" STUB_SRC="$src" python3 "$STUB_LIB" stubbuild "$recipe" "$out" "$arch" "$cache"
 EOF
 cat >"$stubs/apko" <<'EOF'
@@ -695,6 +713,7 @@ case $sub in
   lock) case "$cfg $out" in *melange*) s=${STUB_LOCK_MEL:-};; *fips*) s=${STUB_LOCK_FIPS:-};; *) s=${STUB_LOCK:-};; esac
         [ -n "$out" ] && [ -f "$s" ] || { echo "stub apko lock: nothing to write" >&2; exit 1; }; cp "$s" "$out";;
   build) [ -f "$lockf" ] || { echo "stub apko build: no lock file" >&2; exit 1; }
+        [ -z "${STUB_CAPTURE_LOCK:-}" ] || cp "$lockf" "$STUB_CAPTURE_LOCK"   # what the build was actually given (opt-in: the tests compare it with the generated lock)
         python3 "$STUB_LIB" stuboci "${pos[2]:-/dev/null}" "$lockf" "${STUB_SALT:-}" "${SOURCE_DATE_EPOCH-unset}"
         [ -n "$sbom" ] && { [ -d "$sbom" ] || { echo "stub apko: --sbom-path $sbom is not an existing directory (real apko renames into it, build.go: moving sbom)" >&2; exit 1; }; echo '{"spdxVersion":"SPDX-2.3"}' >"$sbom/sbom-spdx.json"; };;   # real-run finding Oct 9: the directory must already exist
 esac
