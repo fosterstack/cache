@@ -137,6 +137,15 @@ mkcase gosumempty; : >"$work/fx-gosumempty/go.sum"
 rc AC2 "a go.sum that go mod vendor would have to repair is refused (1), with GOFLAGS=-mod=mod in the caller's environment" 1 vc "$work/fx-gosumempty"
 mkcase gomodedit; printf 'module example.test/app\n\ngo 1.20\n' >"$work/fx-gomodedit/go.mod"   # the require line is missing: go mod vendor (GOFLAGS=-mod=mod) would add it
 rc AC2 "a go.mod that go mod vendor has to rewrite is refused (1)" 1 vc "$work/fx-gomodedit"
+says AC2 "(go.mod missing its require) the failure names go mod vendor" "go mod vendor failed"
+# a toolchain whose go mod vendor rewrites go.mod (or go.sum) in the scratch tree: refused by name
+for mf in go.mod go.sum; do
+  mkdir -p "$work/rw-$mf"; printf '#!/bin/sh\n"%s" "$@"; rc=$?; if [ "$1 $2" = "mod vendor" ]; then echo "// rewritten" >>%s; fi; exit $rc\n' "$realgo" "$mf" >"$work/rw-$mf/go"; chmod 755 "$work/rw-$mf/go"
+  rc AC2 "go mod vendor rewriting $mf is refused (1)" 1 env PATH="$work/rw-$mf:$PATH" bash "$bin_vc" "$work/fx-clean"
+  says AC2 "(rewritten $mf) the failure names $mf" "changed $mf"
+done
+rc AC2 "(go.sum repair, again) refused (1)" 1 vc "$work/fx-gosumempty"
+says AC2 "(go.sum repair) the failure names go.sum" "go.sum"
 mkdir -p "$work/emptybin"
 rc AC2 "an unreachable proxy fails (1)" 1 env GOPROXY="file://$work/no-such-proxy" GOMODCACHE="$work/modcache-empty" bash "$bin_vc" "$work/fx-clean"
 rc AC2 "a missing go toolchain fails (1)" 1 env PATH="$work/emptybin" /bin/bash "$bin_vc" "$work/fx-clean"
@@ -337,6 +346,9 @@ def findings(text):
         toks = lex(raw.strip())
         pos, skip = True, False
         for kind, t in toks:
+            if kind == "word" and ("$(" in t or "`" in t):
+                for b in bodies(t):
+                    out.extend((n, m) for _, m in findings(b))     # an executable substitution is judged wherever its word stands: command, argument, assignment or redirection operand
             if skip:
                 skip = False; continue
             if kind == "op":
@@ -347,9 +359,6 @@ def findings(text):
                 continue
             if pos and t in ("case", "for", "select"):
                 pos = False; continue
-            if "$(" in t or "`" in t:
-                for b in bodies(t):
-                    out.extend((n, m) for _, m in findings(b))     # an executable substitution is judged like a line of its own, in assignments and arguments alike
             if pos and t in KW:
                 continue
             if pos and ASSIGN.match(t):
@@ -365,7 +374,7 @@ if __name__ == "__main__":
         print("%d: %s" % (n, m))
     sys.exit(1 if fs else 0)
 CMDWORD_PY
-for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off g"$(printf o)" mod verify' "AUDIT_LABEL='two words' GOAUTH=off \"g\$(printf o)\" mod verify" 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'p"$cmd" arg' 'case $x in a) $(echo y);; esac' 'found=$($(printf find) "$src" -name .git -prune -o -name vendor -print -quit)' 'effflags=$(g$(printf o) env GOFLAGS 2>/dev/null) || die x' 'echo "$($(printf true))"' 'x=`$(printf go) env`'; do
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off g"$(printf o)" mod verify' "AUDIT_LABEL='two words' GOAUTH=off \"g\$(printf o)\" mod verify" 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'p"$cmd" arg' 'case $x in a) $(echo y);; esac' 'found=$($(printf find) "$src" -name .git -prune -o -name vendor -print -quit)' 'effflags=$(g$(printf o) env GOFLAGS 2>/dev/null) || die x' 'echo "$($(printf true))"' 'x=`$(printf go) env`' ': >"$($(printf echo) /dev/null)"' 'effflags=$(go env GOFLAGS 2>"$($(printf printf) %s /dev/null)") || die x 1' 'cat <$($(printf echo) f)'; do
   tn AC11 "the command-word judge flags: $line" python3 "$work/cmdword.py" -c "$line"
 done
 for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"' '[ "$(cd "$self/.." && pwd -P)" = "$(pwd -P)" ] || die x' 'cat "$a" >&2; die "go mod verify failed" 1' 'case $x in -*) die y;; esac' 'self=${0%/*}; [ "$self" != "$0" ] || self=.'; do
