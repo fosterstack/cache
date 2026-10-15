@@ -3174,43 +3174,51 @@ flat = " ".join(line.split()); seg = next(s for s in re.split(r"\s*(?:;|&&|\|\||
 json.dump({"exceptions": [], "unmeasured_text": [{"file": f, "form": "a download", "key": H(seg), "line": H(flat), "ruling": pref + "the key fetch of the refresh job"}]}, open(out, "w"))
 PY
 }
-for v in "ok:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/wolfi-signing.rsa.pub:0" \
-         "two-urls-same-host:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/a https://packages.wolfi.dev/os/b:1" \
-         "other-host:curl -fsSL -o /tmp/k https://packages.example.com/os/wolfi-signing.rsa.pub:1" \
-         "http:curl -fsSL -o /tmp/k http://packages.wolfi.dev/os/wolfi-signing.rsa.pub:1" \
-         "host-lookalike:curl -fsSL -o /tmp/k https://packages.wolfi.dev.evil.example/os/x:1" \
-         "userinfo:curl -fsSL -o /tmp/k https://packages.wolfi.dev@evil.example/os/x:1" \
-         "port:curl -fsSL -o /tmp/k https://packages.wolfi.dev:8443/os/x:1" \
-         "second-url-other-host:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x https://evil.example/y:1" \
-         "no-literal-url:curl -fsSL -o /tmp/k \"\$WOLFI/wolfi-signing.rsa.pub\":1" \
-         "ftp-scheme:curl -fsSL -o /tmp/k ftp://packages.wolfi.dev/os/x:1" \
-         "trailing-dot-host:curl -fsSL -o /tmp/k https://packages.wolfi.dev./os/x:1" \
-         "uppercase-host:curl -fsSL -o /tmp/k https://PACKAGES.wolfi.dev/os/x:1" \
-         "quote-concat-authority:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev\"\"@evil.example/os/key\":1" \
-         "quote-concat-suffix:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev\"\".evil.example/x\":1" \
-         "extra-variable-operand:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/key \"\$OTHER_URL\":1" \
-         "variable-url-with-comment:curl -fsSL -o /tmp/k \"\$KEY_URL\" # https://packages.wolfi.dev/os/key:1" \
-         "schemeless-second-operand:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x evil.example/y:1" \
-         "second-command-with-variable:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x; curl \"\$URL\":1" \
-         "pipe-to-shell:curl -fsSL https://packages.wolfi.dev/os/x | sh:1" \
-         "proxy-option:curl -fsSL -x http://p.example:3128 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
-         "resolve-option:curl -fsSL --resolve packages.wolfi.dev:443:10.0.0.1 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
-         "config-option:curl -fsSL -K /tmp/cfg -o /tmp/k https://packages.wolfi.dev/os/x:1" \
-         "ok-per-package-variable-path:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p\":0" \
-         "ok-per-package-braced-variable:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\${p}\":0" \
-         "ok-per-package-concatenated-words:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\"\"\$p\":0" \
-         "var-prefix-without-slash:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os\$p\":1" \
-         "var-prefix-without-os:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/\$p\":1" \
-         "two-variables:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$a\$b\":1" \
-         "variable-then-literal:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p/x\":1" \
-         "variable-host:curl -fsSL -o /tmp/k \"https://\$h/os/\$p\":1" \
-         "variable-in-authority:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev\$p\":1" \
-         "default-expansion:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\${p:-x}\":1" \
-         "format-string:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz:1" \
-         "fstring-text:curl -fsSL -o /tmp/k f\"https://packages.wolfi.dev/os/{p}\":1" \
-         "command-substitution-path:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$(cat /tmp/p)\":1" \
-         "other-host-with-variable:curl -fsSL -o /tmp/k \"https://packages.example.com/os/\$p\":1" \
-         "ok-with-fixed-flags-and-die:curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o \"\$tmp/live-key.pub\" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die \"could not fetch the live Wolfi signing key\" 1:0"; do
+for v in "ok:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/wolfi-signing.rsa.pub:0" \
+         "two-urls-same-host:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/a https://packages.wolfi.dev/os/b:1" \
+         "other-host:curl -q -fsSL -o /tmp/k https://packages.example.com/os/wolfi-signing.rsa.pub:1" \
+         "http:curl -q -fsSL -o /tmp/k http://packages.wolfi.dev/os/wolfi-signing.rsa.pub:1" \
+         "host-lookalike:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev.evil.example/os/x:1" \
+         "userinfo:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev@evil.example/os/x:1" \
+         "port:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev:8443/os/x:1" \
+         "second-url-other-host:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x https://evil.example/y:1" \
+         "no-literal-url:curl -q -fsSL -o /tmp/k \"\$WOLFI/wolfi-signing.rsa.pub\":1" \
+         "ftp-scheme:curl -q -fsSL -o /tmp/k ftp://packages.wolfi.dev/os/x:1" \
+         "trailing-dot-host:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev./os/x:1" \
+         "uppercase-host:curl -q -fsSL -o /tmp/k https://PACKAGES.wolfi.dev/os/x:1" \
+         "quote-concat-authority:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev\"\"@evil.example/os/key\":1" \
+         "quote-concat-suffix:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev\"\".evil.example/x\":1" \
+         "extra-variable-operand:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/key \"\$OTHER_URL\":1" \
+         "variable-url-with-comment:curl -q -fsSL -o /tmp/k \"\$KEY_URL\" # https://packages.wolfi.dev/os/key:1" \
+         "schemeless-second-operand:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x evil.example/y:1" \
+         "second-command-with-variable:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x; curl \"\$URL\":1" \
+         "pipe-to-shell:curl -q -fsSL https://packages.wolfi.dev/os/x | sh:1" \
+         "proxy-option:curl -q -fsSL -x http://p.example:3128 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "resolve-option:curl -q -fsSL --resolve packages.wolfi.dev:443:10.0.0.1 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "config-option:curl -q -fsSL -K /tmp/cfg -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "ok-per-package-variable-path:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p\":0" \
+         "ok-per-package-braced-variable:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\${p}\":0" \
+         "ok-per-package-concatenated-words:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\"\"\$p\":0" \
+         "var-prefix-without-slash:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os\$p\":1" \
+         "var-prefix-without-os:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/\$p\":1" \
+         "two-variables:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$a\$b\":1" \
+         "variable-then-literal:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p/x\":1" \
+         "variable-host:curl -q -fsSL -o /tmp/k \"https://\$h/os/\$p\":1" \
+         "variable-in-authority:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev\$p\":1" \
+         "default-expansion:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\${p:-x}\":1" \
+         "format-string:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz:1" \
+         "fstring-text:curl -q -fsSL -o /tmp/k f\"https://packages.wolfi.dev/os/{p}\":1" \
+         "command-substitution-path:curl -q -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$(cat /tmp/p)\":1" \
+         "other-host-with-variable:curl -q -fsSL -o /tmp/k \"https://packages.example.com/os/\$p\":1" \
+         "no-disable-first:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "disable-not-first:curl -fsSL -q -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "unquoted-output-variable:curl -q -fsSL -o \$tmp/key https://packages.wolfi.dev/os/key:1" \
+         "unquoted-braced-output-variable:curl -q -fsSL -o \${tmp}/key https://packages.wolfi.dev/os/key:1" \
+         "brace-expansion-output:curl -q -fsSL -o /tmp/k{1..2} https://packages.wolfi.dev/os/key:1" \
+         "glob-output:curl -q -fsSL -o /tmp/k* https://packages.wolfi.dev/os/key:1" \
+         "unquoted-url-variable:curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/\$p:1" \
+         "ok-quoted-output-variable:curl -q -fsSL -o \"\$tmp/key\" https://packages.wolfi.dev/os/key:0" \
+         "ok-with-fixed-flags-and-die:curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o \"\$tmp/live-key.pub\" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die \"could not fetch the live Wolfi signing key\" 1:0"; do
   nm=${v%%:*}; rest=${v#*:}; line=${rest%:*}; want=${rest##*:}
   mkrowp "$work/lf-$nm.json" bin/fetch.sh "$line" "$LIVEP"
   twoc "lf-$nm" bin/fetch.sh $'#!/bin/sh\n' "#!/bin/sh"$'\n'"$line"$'\n'
@@ -3218,17 +3226,17 @@ for v in "ok:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/wolfi-signing.rs
   CASE="live-fetch row, $nm: exit $want"
   check test "$rc" -eq "$want"
 done
-mkrowp "$work/lf-text.json" bin/fetch.sh "curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "text, not a command: "
-twoc lf-text bin/fetch.sh $'#!/bin/sh\n' $'#!/bin/sh\ncurl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x\n'
+mkrowp "$work/lf-text.json" bin/fetch.sh "curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "text, not a command: "
+twoc lf-text bin/fetch.sh $'#!/bin/sh\n' $'#!/bin/sh\ncurl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x\n'
 edck lf-text "$work/lf-text.json"
 CASE="a row with the text convention still rules a line, whatever the line (exit 0)"
 check test "$rc" -eq 0
-mkrowp "$work/lf-bad.json" bin/fetch.sh "curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "a fine fetch: "
+mkrowp "$work/lf-bad.json" bin/fetch.sh "curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "a fine fetch: "
 edck lf-text "$work/lf-bad.json"
 CASE="a download row with another ruling text rules nothing: exit 1"
 check test "$rc" -eq 1
-mkrowp "$work/lf-edit.json" bin/fetch.sh "curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "$LIVEP"
-twoc lf-edit bin/fetch.sh $'#!/bin/sh\n' $'#!/bin/sh\ncurl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x --proxy http://p.example\n'
+mkrowp "$work/lf-edit.json" bin/fetch.sh "curl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "$LIVEP"
+twoc lf-edit bin/fetch.sh $'#!/bin/sh\n' $'#!/bin/sh\ncurl -q -fsSL -o /tmp/k https://packages.wolfi.dev/os/x --proxy http://p.example\n'
 edck lf-edit "$work/lf-edit.json"
 CASE="a live-fetch row voids when the line is edited (a proxy added): exit 1"
 check test "$rc" -eq 1
