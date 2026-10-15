@@ -1383,6 +1383,19 @@ exit 0
 S
 chmod +x "$work/vendor-only.sh"
 sf "rule 41" "sealed-proof: if the build still succeeds with a declared package deleted from its repository the proof fails naming the package" 'package' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/vendor-only.sh" "${sp_common[@]}"
+# review round 1 (seats A and B, "no effective assertion"): an ordinary apko failure is exit 1 and the namespace probe is NOT run; the other variant's
+# files in a shared --out are byte-for-byte unchanged by an assembly of this variant
+run_s "${aie[@]}" STUB_FAIL=1 "$AI" "${ai_args[@]}" --out "$(mo)"
+t "AC5" "an ordinary apko failure (no network text) exits 1 naming the failed call and never runs the namespace probe (no 'unshare -n python3 ... net-probe.py' call)" bash -c "test \"\$(cat '$work/rc')\" = 1 && grep -Eq 'apko (lock|build) failed \\(exit' '$work/log' && ! grep -q 'net-probe.py' '$CALLS'"
+shared=$(mo); mkdir -p "$shared/fips/blobs/sha256" "$shared/fips-sbom"
+printf 'fips-digest-bytes\n' >"$shared/fips.digest"; printf 'amd64 sha256:aa\narm64 sha256:bb\n' >"$shared/fips.manifests"; printf '{}' >"$shared/fips.full.lock.json"
+printf 'layout' >"$shared/fips/oci-layout"; printf 'blob' >"$shared/fips/blobs/sha256/cc"; printf 'sbom' >"$shared/fips-sbom/sbom.json"
+fips_snap() { ( cd "$shared" && find fips fips.digest fips.manifests fips.full.lock.json fips-sbom -type f | LC_ALL=C sort | while read -r f; do cksum "$f"; done ); }
+fips_snap >"$work/fips-before.txt"
+run_s "${aie[@]}" "$AI" "${ai_args[@]}" --out "$shared"
+prod_rc=$(rc)
+fips_snap >"$work/fips-after.txt"
+t "AC2" "assembling production into an OUT that already holds the fips variant leaves every fips file byte-for-byte unchanged (and the assembly succeeds)" bash -c "test $prod_rc = 0 && test -s '$shared/production.digest' && test \$(wc -l <'$work/fips-before.txt') = 6 && cmp -s '$work/fips-before.txt' '$work/fips-after.txt'"
 # ---- end verbatim sections ----
 echo "assemble-image-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
