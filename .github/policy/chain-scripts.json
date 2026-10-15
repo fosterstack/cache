@@ -185,7 +185,8 @@
       "runs": [
         "bin/build-admit.py",
         "bin/build-version-check.py",
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Build, job apk: admission, the two apk builds with cache's script, the version checks, this architecture's items fragment",
@@ -203,7 +204,8 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-archives.py"
+        "bin/build-archives.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Build, job assemble: verify and bind the apk records, assemble both images and the archives, write digests.json and items.json",
@@ -216,7 +218,8 @@
         "python3"
       ],
       "runs": [
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Rebuild, job rapk: verify Build's record, rebuild the apks, write the fragment",
@@ -230,7 +233,8 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-archives.py"
+        "bin/build-archives.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Rebuild, job rebuild: verify both records, rebuild the images and archives, compare every item with Build's",
@@ -287,7 +291,9 @@
         "at",
         "env"
       ],
-      "runs": [],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
       "signs": false,
       "reason": "the version, revision and clean-tree check of a built binary or apk",
       "sha256": "dadf64fc26c32813a4cca0028981006b8294226ab2fef7830f50f5e45a704dbc",
@@ -311,7 +317,9 @@
         "at",
         "tar"
       ],
-      "runs": [],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
       "signs": false,
       "reason": "the four Linux archives from the apks (PROPOSED layout)",
       "sha256": "0033149642f2c7ed3982ec3ffcc71a6d487d6f2513ae824ea4eac9e24e57d483"
@@ -324,7 +332,9 @@
         "python3",
         "command"
       ],
-      "runs": [],
+      "runs": [
+        "bin/apk-tool.py"
+      ],
       "signs": false,
       "reason": "bind, items-apk, items-merge, rebuild-compare and record-env: the items of Build and Rebuild (imported by bin/chain-verify.py)",
       "sha256": "629e13abc2d7b885e631ffaeae089a2609f3d65aeae940d29386cc7529ef2909"
@@ -338,7 +348,8 @@
         "python3"
       ],
       "runs": [
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Build, job apk: refuses outside GitHub Actions, deletes the other local v* tags at HEAD, makes v0.0.0-rc.1, builds the apks (no admission)",
@@ -351,7 +362,8 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-archives.py"
+        "bin/build-archives.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Build, job assemble: bind the apk records, assemble the images and archives, write digests.json and items.json (no verify)",
@@ -367,7 +379,8 @@
         "python3"
       ],
       "runs": [
-        "bin/chain-verify.py"
+        "bin/chain-verify.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rapk: the same tag discipline, rebuild the apks",
@@ -380,7 +393,8 @@
       ],
       "runs": [
         "bin/chain-verify.py",
-        "bin/build-archives.py"
+        "bin/build-archives.py",
+        "bin/build-apk.sh"
       ],
       "signs": false,
       "reason": "Snapshot Rebuild, job rebuild: bind, assemble, compare every item with Build's snapshot record (rebuild-compare --snapshot)",
@@ -1249,6 +1263,155 @@
       "reason": "Release, step release-publish: the OCI layout directory is the image Build attested (index.json holds the one attested descriptor, every blob hashes to its name, the index, manifests, configs and layers are present), checked before any login or push (REQ-CHAIN-007-AC7)",
       "sha256": "0d4ac3dab902f39eb07661617882b0b184dca61403ed91e29d4950c948908662",
       "reads_env": []
+    },
+    {
+      "path": "bin/apk-tool.py",
+      "tools": [
+        "tar",
+        "at",
+        "make",
+        "command",
+        "env",
+        "openssl"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's apk reader (the signer, verify, cat, same and inputs-manifest subcommands); reads apk files and a public key, runs no program but openssl for a signature check",
+      "sha256": "ea0d41e6f899c290a9ff819e5b4edb5a383fab8452bffb6f1d1997e7f5e933a5",
+      "exceptions": [
+        {
+          "rule": "deny",
+          "line": "    \"\"\"Walk every 512-byte header block of a section and refuse anything that Go's archive/tar and Python's tarfile could read differently:",
+          "line_sha256": "b063e9cffe2d6620eb5fc3b71cef14774fcb621ee81b0b04fae25f207d7b2601",
+          "count": 1,
+          "why": "a docstring naming Go's archive/tar package; prose, never run"
+        },
+        {
+          "rule": "deny",
+          "line": "    for p in (\"/usr/bin/openssl\", \"/opt/homebrew/bin/openssl\", \"/usr/local/bin/openssl\"):",
+          "line_sha256": "5fead91decc79ed084017554a36c313c5f4ad61e372c7fc9802f9602c66c8dc3",
+          "count": 1,
+          "why": "the three fixed locations the reader looks for openssl at, checked with isfile before any run; never searched on PATH"
+        },
+        {
+          "rule": "deny",
+          "line": "    refuse(\"openssl is not installed at a fixed location (/usr/bin/openssl)\")",
+          "line_sha256": "a04ec4cd4028105cb7577852900a340cd9b417283ed2c0b464dabe028adafe00",
+          "count": 1,
+          "why": "the refusal message naming the fixed location; prose, never run"
+        }
+      ]
+    },
+    {
+      "path": "bin/net-probe.py",
+      "tools": [
+        "sudo",
+        "python3"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's no-network probe: connects to 192.0.2.1:9 and exits 101 when the namespace has no route; sudo and python3 are prose in its docstring",
+      "sha256": "5c6e0693d4af7f0ac9dd54d707a9f896cd3293b3e9df20178752ea0fa21c8729"
+    },
+    {
+      "path": "bin/build-apk-helper.py",
+      "tools": [],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's build-date, recipe-facts and sealed-env helper of bin/build-apk.sh",
+      "sha256": "f589caa84302a03c3772cb2d315eba0bd53e525da99d67af60e17eaa057a8d0d"
+    },
+    {
+      "path": "bin/release-sign-apks.sh",
+      "tools": [
+        "trap",
+        "env",
+        "find",
+        "make",
+        "at"
+      ],
+      "runs": [
+        "bin/apk-tool.py",
+        "bin/install-build-tools.sh"
+      ],
+      "signs": "other",
+      "reason": "cache P4's release signing: refuses unless Build and Rebuild agree on every apk, then re-signs the apks of Build with the stored release key through melange sign (REQ-CHAIN-007-AC6); run by bin/release-apks.sh",
+      "sha256": "3be36c26922a63e63053586da2a5a7dc376a8c1c1e2d1a38638475156b9e1f2f",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/build-apk-test.sh",
+          "why": "a comment naming the test that runs a copy of this file with the TEST-SUBST lines replaced; prose, never run from here"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "IFS",
+          "text": "while IFS= read -r f; do apks+=(\"$f\"); done",
+          "why": "the one-command IFS= prefix of read that keeps a filename intact; it does not persist"
+        },
+        {
+          "name": "IFS",
+          "text": "while IFS= read -r rel; do",
+          "why": "the one-command IFS= prefix of read that keeps a filename intact; it does not persist"
+        }
+      ]
+    },
+    {
+      "path": "bin/build-apk.sh",
+      "tools": [
+        "sudo",
+        "env",
+        "at",
+        "go",
+        "python3",
+        "git",
+        "script",
+        "trap",
+        "sed",
+        "make",
+        "command",
+        "source",
+        "awk"
+      ],
+      "runs": [
+        "bin/apk-tool.py",
+        "bin/build-apk-helper.py",
+        "bin/net-probe.py",
+        "bin/go-module-sbom.py"
+      ],
+      "signs": false,
+      "reason": "cache P4's apk build: one reproducible apk per variant and architecture with melange, signed with the committed non-secret assembly key",
+      "sha256": "74c79c0513d7b630d9f6c1fb3835a3113aec47223f299ed79bf8c1653440eb3d",
+      "exceptions": [
+        {
+          "rule": "script-name",
+          "text": "bin/build-apk-test.sh",
+          "why": "a comment naming the test that runs a copy of this file with the TEST-SUBST lines replaced; prose, never run from here"
+        },
+        {
+          "rule": "script-name",
+          "text": "bin/install-scanner.sh",
+          "why": "a comment naming the installer that puts the pinned Go toolchain at the fixed path; never run from here"
+        }
+      ],
+      "env_mentions": [
+        {
+          "name": "PATH",
+          "text": "no Go toolchain on PATH in CI",
+          "why": "words in a refusal message: nothing is set"
+        }
+      ]
+    },
+    {
+      "path": "bin/go-module-sbom.py",
+      "tools": [
+        "go"
+      ],
+      "runs": [],
+      "signs": false,
+      "reason": "cache P4's Go module SBOM: reads vendor/modules.txt and dependency-provenance.json, writes the SBOM; run by bin/build-apk.sh",
+      "sha256": "e73acab6d1ecda6aa444861f29bfeebb273e774152dad0a10de861ac5aab6a26"
     }
   ],
   "ambient_env": [
