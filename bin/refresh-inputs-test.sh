@@ -782,7 +782,17 @@ P
 done
 mkrepo; run_s2 "${rfn[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
 t "rule 32" "refresh: every package and index download is globoff (-g), size-capped (--max-filesize) and time-capped (--max-time)" bash -c "grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -v -E -- '(-g|--globoff).*--max-filesize|--max-filesize.*(-g|--globoff)' | grep -q . && exit 1; grep '^$FETCH ' '$CALLS' | grep -E 'tzdata|APKINDEX' | grep -q -- '--max-time'"
-t "rule 32" "every live fetch names its Wolfi URL in the line itself: the key fetch has the literal https://packages.wolfi.dev/os/wolfi-signing.rsa.pub and no \$WOLFI variable; each package and index download is the literal \"https://packages.wolfi.dev/os/\" plus one path variable (no e[\"url\"], no %-format of the URL)" bash -c "test \"\$(grep -c '^  /usr/bin/curl .* https://packages.wolfi.dev/os/wolfi-signing.rsa.pub\\\"* *||' '$RF_PROD')\" = 3 && ! grep '/usr/bin/curl' '$RF_PROD' | grep -q '\\\$WOLFI' && test \"\$(grep -c 'subprocess.run(\\[\"/usr/bin/curl\".*\"https://packages.wolfi.dev/os/\" + [a-z_]*\\]' '$RF_PROD')\" = 2 && ! grep 'subprocess.run(\\[\"/usr/bin/curl\"' '$RF_PROD' | grep -Eq 'e\\[\"url\"\\]|%s'"
+t "rule 32" "every live fetch is a shell line in the ruled grammar: curl -q first, the fixed flags (-fsSL -g --max-filesize N --max-time N --proto =https --tlsv1.2 -o FILE), exactly one operand that is a literal https://packages.wolfi.dev URL or \"https://packages.wolfi.dev/os/\$p\", optional || die \"plain\" N; the embedded Python runs no curl" python3 -I - "$RF_PROD" <<'PYT'
+import re, sys
+s = open(sys.argv[1]).read()
+lines = [l for l in s.split("\n") if "/usr/bin/curl" in l and not l.lstrip().startswith("#")]
+shell = [l for l in lines if l.lstrip().startswith("/usr/bin/curl ")]
+assert len(shell) == len(lines) and len(lines) == 5, "every curl is a shell line (3 key fetches, packages, index): %d of %d" % (len(shell), len(lines))
+g = re.compile(r'^\s+/usr/bin/curl -q -fsSL -g --max-filesize [0-9]+ --max-time [0-9]+ --proto =https --tlsv1\.2 -o "[^"]*" ("https://packages\.wolfi\.dev/os/\$p"|https://packages\.wolfi\.dev/os/wolfi-signing\.rsa\.pub)( \|\| die "[^"$]*" [0-9]+)?$')
+bad = [l for l in lines if not g.match(l)]
+assert not bad, bad
+assert 'subprocess.run(["/usr/bin/curl"' not in s
+PYT
 t "rule 31" "refresh: the temp files are opened exclusively (O_EXCL) with an unpredictable name, so a planted symlink is never followed" bash -c "grep -q 'O_EXCL' '$RF' && grep -q 'secrets\\|token_hex\\|urandom' '$RF'"
 # the previous pointer's TARGET is hashed too
 mkrepo; mkdir -p "$work/ar/x86_64/index"; tgt="APKINDEX-$live_sha_x.tar.gz"; cp "$fx/live/x86_64/APKINDEX.tar.gz" "$work/ar/x86_64/index/$tgt"; rm -f "$work/ar/x86_64/APKINDEX.tar.gz"; ln -s "index/$tgt" "$work/ar/x86_64/APKINDEX.tar.gz"; before=$(treehash "$work/ar" "$work/rp")

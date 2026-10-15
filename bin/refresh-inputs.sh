@@ -91,7 +91,7 @@ case $cmd in
 key-check)
   # The first step of the daily job, before any tool is installed, any registry is touched or any token is minted: the live Wolfi signing key must be
   # the key pinned in build/locks/archive-keys.sha256. A difference, a missing or a repeated line stops for a human (exit 3, rule 6); nothing is written.
-  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
 import hashlib, re, sys
 repo, live = sys.argv[1:3]
@@ -118,7 +118,7 @@ bootstrap)
   if [ -e "$archive" ] || [ -L "$archive" ]; then
     { [ -d "$archive" ] && [ ! -L "$archive" ] && dir_empty "$archive"; } || die "$archive already exists and is not an empty directory: bootstrap never touches an existing archive" 2
   fi
-  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" "$archive" <<'PY' || exit $?
 import hashlib, os, re, sys
 repo, live, archive = sys.argv[1:4]
@@ -213,7 +213,7 @@ refresh)
   [ -s "$archived_key" ] || die "the archive has no Wolfi signing key at keys/wolfi-signing.rsa.pub"
 
   # rules 32 and 46: every run, before anything else, compare the live key to the archived one
-  /usr/bin/curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
+  /usr/bin/curl -q -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o "$tmp/live-key.pub" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die "could not fetch the live Wolfi signing key" 1
   # the live key's sha256 must be the one pinned in build/locks/archive-keys.sha256, checked right after the fetch and before the key is used for anything
   /usr/bin/python3 -I -B - "$repo" "$tmp/live-key.pub" <<'PY' || exit $?
 import hashlib, re, sys
@@ -261,7 +261,9 @@ PY
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
 
-  /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY' || exit $?
+  # The embedded program asks for downloads by exit status 75 and a list (`<url path> <stage file>` per line); the shell fetches them with the
+  # ruled curl lines below and runs the program again (it starts from the same state each time, up to three passes: packages, index, the rest).
+  refresh_py() { /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY'
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
 ARCHS = ["x86_64", "aarch64"]
@@ -666,6 +668,7 @@ def preflight(targets):
 # ---- download, verify, and only then keep ----
 stage = tmp + "/dl"
 keep = []
+want_pk = []
 for (name, ver, arch), e in sorted(fresh.items()):
     dest = "%s/%s/%s-%s.apk" % (archive, arch, name, ver)
     if os.path.exists(dest):
@@ -675,12 +678,14 @@ for (name, ver, arch), e in sorted(fresh.items()):
         continue
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    rel = e["url"][len(WOLFI_URL):]   # the lock-entry URL passed the host and path check above
-    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "536870912", "--max-time", "900", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/" + rel], stdout=sys.stderr, stderr=sys.stderr)
-    if r.returncode != 0:
-        fail("could not download %s" % e["url"])
+    if not os.path.exists(part):   # the shell fetches it (curl lines of the ruled grammar), then runs this program again
+        want_pk.append("%s %s/%s-%s.apk" % (e["url"][len(WOLFI_URL):], arch, name, ver))   # the url passed the host and path check above
+        continue
     verify(part, e)
     keep.append((part, dest, name, ver, arch))
+if want_pk:
+    open(tmp + "/want-packages", "w").write("".join(l + "\n" for l in want_pk))
+    sys.exit(75)
 
 
 def place(src, dest):
@@ -786,15 +791,18 @@ def verify_index(path, arch):
 
 
 index_parts = {}
+want_ix = []
 for arch in ARCHS:
     part = "%s/index/%s/APKINDEX.tar.gz" % (stage, arch)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    rel = arch + "/APKINDEX.tar.gz"
-    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "268435456", "--max-time", "600", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/" + rel], stdout=sys.stderr, stderr=sys.stderr)
-    if r.returncode != 0:
-        fail("could not download the live %s package index" % arch)
+    if not os.path.exists(part):
+        want_ix.append("%s/APKINDEX.tar.gz index/%s/APKINDEX.tar.gz" % (arch, arch))
+        continue
     verify_index(part, arch)
     index_parts[arch] = (part, hashlib.sha256(open(part, "rb").read()).hexdigest())
+if want_ix:
+    open(tmp + "/want-index", "w").write("".join(l + "\n" for l in want_ix))
+    sys.exit(75)
 # an existing file under a digest name is trusted only if it hashes to that name (a garbage or truncated file from an earlier run fails closed)
 for arch in ARCHS:
     vdir, cur = "%s/%s/index" % (archive, arch), "%s/%s/APKINDEX.tar.gz" % (archive, arch)
@@ -872,6 +880,25 @@ open(tmp + "/changed", "w").write(("\n".join(os.path.relpath(p, repo) for p in c
 open(tmp + "/sig", "w").write(sig)
 open(tmp + "/body", "w").write(body)
 PY
+  }
+  for _pass in 1 2 3; do
+    _rc=0; refresh_py || _rc=$?
+    [ "$_rc" = 75 ] || break
+    if [ -s "$tmp/want-packages" ]; then
+      while read -r p f; do
+        /usr/bin/curl -q -fsSL -g --max-filesize 536870912 --max-time 900 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download a package from live Wolfi" 1
+      done <"$tmp/want-packages"
+      /bin/rm -f "$tmp/want-packages"
+    elif [ -s "$tmp/want-index" ]; then
+      while read -r p f; do
+        /usr/bin/curl -q -fsSL -g --max-filesize 268435456 --max-time 600 --proto =https --tlsv1.2 -o "$tmp/dl/$f" "https://packages.wolfi.dev/os/$p" || die "could not download the live package index" 1
+      done <"$tmp/want-index"
+      /bin/rm -f "$tmp/want-index"
+    else
+      die "the refresh program asked for downloads and named none" 1
+    fi
+  done
+  [ "$_rc" = 0 ] || exit "$_rc"
   [ -s "$tmp/changed" ] || exit 0
   branch="refresh/$(<"$tmp/sig")"
   paths=(); while IFS= read -r l; do paths+=("$l"); done <"$tmp/changed"
