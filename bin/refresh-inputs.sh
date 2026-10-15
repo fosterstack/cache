@@ -175,7 +175,7 @@ if digest and not any(not p[4] for p in plans):
 out = []
 for branch, title, body, paths, fips in plans:
     if digest and not fips:
-        r = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/archive-verify.py", "make-pointer", "--dir", archive, "--digest", digest,
+        r = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/archive-verify.py", "make-pointer", "--dir", archive, "--digest", digest,
                             "--out", repo + "/build/archive.json"], capture_output=True, text=True)
         if r.returncode != 0: fail("the pointer for %s could not be made: %s" % (digest, (r.stderr or r.stdout).strip()), 1)
         paths = paths + ["build/archive.json"]
@@ -245,10 +245,9 @@ PY
   lock "$tmp/fips/apko-fips.yaml" "$tmp/fips.lock.json"
   lock "$tmp/melange/melange-env.yaml" "$tmp/melange.lock.json"
 
-  /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" /usr/bin/gh /usr/bin/curl /usr/bin/openssl <<'PY' || exit $?
+  /usr/bin/python3 -I -B - "$repo" "$archive" "$tmp" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY' || exit $?
 import base64, hashlib, io, json, os, re, secrets, shutil, subprocess, sys, tarfile, urllib.parse, zlib
 repo, archive, tmp, PR_AUTHOR, BINDIR = sys.argv[1:6]
-GH, CURL, OPENSSL = sys.argv[6:9]   # fixed locations, named by the shell part above
 ARCHS = ["x86_64", "aarch64"]
 
 
@@ -266,7 +265,7 @@ def open_prs_guard(kind):
     """Looked up before the FIRST archive or repository change. The open pull requests are listed once; if the list cannot be read the job fails
     (an unknown state is not "no PR"). If any pull request of this kind (input refresh, or FIPS module) is open, whether it is this very change
     or an earlier one, nothing more is done: no change, no push, no second PR. The stall is visible: the log and the job summary name it."""
-    r = subprocess.run([GH, "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
+    r = subprocess.run(["/usr/bin/gh", "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         fail("cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing")
@@ -465,7 +464,7 @@ def check_signature(path, arch, what):
     sp, ip = "%s/index-%s.sig" % (stage, arch), "%s/index-%s.stream" % (stage, arch)
     os.makedirs(stage, exist_ok=True)
     open(sp, "wb").write(sig); open(ip, "wb").write(parts[1][0])
-    r = subprocess.run([OPENSSL, "dgst", "-" + alg, "-verify", archived_key, "-signature", sp, ip], capture_output=True)
+    r = subprocess.run(["/usr/bin/openssl", "dgst", "-" + alg, "-verify", archived_key, "-signature", sp, ip], capture_output=True)
     if r.returncode != 0:
         fail("the %s %s package index signature does not verify against the archived Wolfi key; refused" % (what, arch))
     return parts
@@ -660,7 +659,7 @@ for (name, ver, arch), e in sorted(fresh.items()):
         continue
     part = "%s/%s/%s-%s.apk" % (stage, arch, name, ver)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    r = subprocess.run([CURL, "-fsSL", "-g", "--max-filesize", "536870912", "--max-time", "900", "--proto", "=https", "--tlsv1.2", "-o", part, e["url"]], stdout=sys.stderr, stderr=sys.stderr)
+    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "536870912", "--max-time", "900", "--proto", "=https", "--tlsv1.2", "-o", part, e["url"]], stdout=sys.stderr, stderr=sys.stderr)
     if r.returncode != 0:
         fail("could not download %s" % e["url"])
     verify(part, e)
@@ -722,7 +721,7 @@ if sorted(old_mel) != new_mel:
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/melange.lock.new", "w").write("".join(l + "\n" for l in new_mel))
-r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", tmp + "/melange.lock.new",
                      "--fips-module", repo + "/build/locks/fips-module.txt", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)
@@ -773,7 +772,7 @@ index_parts = {}
 for arch in ARCHS:
     part = "%s/index/%s/APKINDEX.tar.gz" % (stage, arch)
     os.makedirs(os.path.dirname(part), exist_ok=True)
-    r = subprocess.run([CURL, "-fsSL", "-g", "--max-filesize", "268435456", "--max-time", "600", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz" % arch], stdout=sys.stderr, stderr=sys.stderr)
+    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--max-filesize", "268435456", "--max-time", "600", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz" % arch], stdout=sys.stderr, stderr=sys.stderr)
     if r.returncode != 0:
         fail("could not download the live %s package index" % arch)
     verify_index(part, arch)
@@ -831,7 +830,7 @@ lines = ["- archived %s-%s.apk (%s)" % (n, v, a) for _, _, n, v, a in keep] + ["
 supersedes = []
 if ahead:   # the reconcile PR says why the index record jumps: it supersedes a refresh PR that was closed unmerged
     prev = None
-    r_ = subprocess.run([GH, "pr", "list", "--state", "closed", "--limit", "100", "--json", "number,headRefName,mergedAt,isCrossRepository,author"], cwd=repo, capture_output=True, text=True)
+    r_ = subprocess.run(["/usr/bin/gh", "pr", "list", "--state", "closed", "--limit", "100", "--json", "number,headRefName,mergedAt,isCrossRepository,author"], cwd=repo, capture_output=True, text=True)
     if r_.returncode == 0:
         try:
             cands = [p_ for p_ in json.loads(r_.stdout) if not p_.get("isCrossRepository") and not p_.get("mergedAt")
@@ -866,16 +865,25 @@ fips-module)
   # The refresh and this check edit the same recipe files in one working tree and their pull requests are opened only after the archive is stored: a
   # second plan would be built on the first one's uncommitted edits. With a plan already staged this check stages nothing and runs again tomorrow.
   if [ -n "$plan_dir" ] && [ -d "$plan_dir" ] && ! dir_empty "$plan_dir"; then
-    echo "fips-module: a pull request is already staged in $plan_dir; the certified-module check stages nothing now and runs again tomorrow (each pull request is built from the committed files alone)"
+    echo "fips-module: a pull request is already staged in $plan_dir; this check stages nothing now and runs again tomorrow (each pull request is built from the committed files alone)"
+    _mf=$repo/build/locks/fips-module.txt _cf=$goroot/lib/fips140/certified.txt _cur= _cert= _l=
+    if [ -r "$_cf" ] && [ -r "$_mf" ]; then
+      read -r _cur <"$_mf" || true
+      while IFS= read -r _l || [ -n "$_l" ]; do case $_l in ''|'#'*) continue;; esac; _cert=$_l; break; done <"$_cf"
+      if [ -n "$_cert" ] && [ -n "$_cur" ] && [ "$_cert" != "$_cur" ]; then
+        echo "fips-module: pending: Go's certified module file names $_cert, the FIPS build uses $_cur; its pull request is staged on the next run without a staged refresh"
+      else
+        echo "fips-module: nothing pending: the certified module is the one the FIPS build uses ($_cur)"
+      fi
+    fi
     exit 0
   fi
   modfile=$repo/build/locks/fips-module.txt
   [ -f "$modfile" ] || die "missing build/locks/fips-module.txt in $repo"
   [ -f "$repo/build/melange.yaml.tmpl" ] || die "missing build/melange.yaml.tmpl in $repo"
-  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" /usr/bin/gh <<'PY' || exit $?
+  /usr/bin/python3 -I -B - "$goroot" "$modfile" "$tmp" "$repo" "$pr_author" "$(cd "$HERE" && pwd)" <<'PY' || exit $?
 import io, json, os, re, secrets, shutil, subprocess, sys
 goroot, modfile, tmp, repo, PR_AUTHOR, BINDIR = sys.argv[1:7]
-GH = sys.argv[7]
 cert = os.path.join(goroot, "lib", "fips140", "certified.txt")
 
 
@@ -936,7 +944,7 @@ def open_prs_guard(kind):
     """Looked up before the FIRST archive or repository change. The open pull requests are listed once; if the list cannot be read the job fails
     (an unknown state is not "no PR"). If any pull request of this kind (input refresh, or FIPS module) is open, whether it is this very change
     or an earlier one, nothing more is done: no change, no push, no second PR. The stall is visible: the log and the job summary name it."""
-    r = subprocess.run([GH, "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
+    r = subprocess.run(["/usr/bin/gh", "pr", "list", "--state", "open", "--limit", "1000", "--json", "number,headRefName,isCrossRepository,author"],
                        cwd=repo, capture_output=True, text=True)
     if r.returncode != 0:
         fail_gh("cannot list the open pull requests (gh pr list failed); changing nothing, pushing nothing, opening nothing")
@@ -963,7 +971,7 @@ open_prs_guard("fips-module")   # before any file is changed
 gen_dir = tmp + "/gen"
 os.makedirs(gen_dir, exist_ok=True)
 open(tmp + "/fips-module.new", "w").write(newest + "\n")
-r_ = subprocess.run([sys.executable, "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
+r_ = subprocess.run(["/usr/bin/python3", "-I", "-B", BINDIR + "/gen-recipes.py", "--template", repo + "/build/melange.yaml.tmpl", "--melange-lock", repo + "/build/locks/melange.lock",
                      "--fips-module", tmp + "/fips-module.new", "--emit", gen_dir], capture_output=True, text=True)
 if r_.returncode != 0:
     fail("the recipe generator refused (%s): %s" % (r_.returncode, r_.stderr.strip()[:300]), 1)

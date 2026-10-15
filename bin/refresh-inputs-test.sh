@@ -611,8 +611,17 @@ for n, l in enumerate(code, 1):
     if re.search(r"(?:^|[;&|(]|\$\(|\bthen |\bdo |\belse |\|\| |&& |! )\s*\"?\$\{?(PY3|CURL|GIT|GH|APKO|OPENSSL|CMP|MKTEMP|RM|MKDIR)\}?\"?\s", l): bad.append("%d: %s" % (n, l.strip()[:90]))
     if re.match(r"^(?:printf -v )?(PY3|CURL|GIT|GH|APKO|OPENSSL|CMP|MKTEMP|RM|MKDIR)(?:=| %s )", l): bad.append("assignment: " + l[:60])
 assert not bad, bad
-uses = re.findall(r"/usr/bin/python3[^\n]*", "\n".join(code))
+uses = re.findall(r"/usr/bin/python3(?!\")[^\n]*", "\n".join(code))   # the shell calls; the calls inside the heredocs are judged by the subprocess test
 assert len(uses) >= 3 and all(u.startswith("/usr/bin/python3 -I -B") for u in uses), uses
+P
+t "AC23" "every program the embedded Python runs is a literal fixed absolute path in the call itself (subprocess.run([\"/usr/bin/...\", ...]): no GH, CURL, OPENSSL or sys.executable variable names a program)" python3 - "$RF_PROD" <<'P'
+import re, sys
+s = open(sys.argv[1]).read()
+calls = re.findall(r"subprocess\.(?:run|Popen|check_output|check_call|call)\(\s*\[\s*([^,\]\n]+)", s)
+assert calls, "no subprocess call found"
+bad = [c for c in calls if not re.fullmatch(r'"/(?:usr/(?:local/)?bin|bin)/[a-z0-9]+"', c.strip())]
+assert not bad, bad
+assert not re.search(r"(?m)^(GH|CURL|OPENSSL)(?:\s*,\s*(GH|CURL|OPENSSL))*\s*=\s*sys\.argv", s), "a program is read from argv"
 P
 # url checks are parsed, not prefix-matched
 n=0; for u in 'https://packages.wolfi.dev:444/os/%s/tzdata-2026b-r0.apk' 'https://user@packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/../x/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev/os/%s\tzdata-2026b-r0.apk' 'http://packages.wolfi.dev/os/%s/tzdata-2026b-r0.apk' 'https://packages.wolfi.dev.evil.example/os/%s/tzdata-2026b-r0.apk'; do
@@ -1279,6 +1288,7 @@ echo "v1.1.0-deadbeef" >"$gr/lib/fips140/certified.txt"
 fr; rm -rf "$work/plan-x"; mkdir -p "$work/plan-x/1-refresh"; printf 'refresh/00000001\n' >"$work/plan-x/1-refresh/branch"
 h_before=$(shasum -a 256 "$work/rp3/build/melange-fips.yaml" | cut -d' ' -f1)
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-x"
+t "AC26" "fips-module --plan-dir with a refresh plan already staged still READS the certified module and reports the newer one as pending (the check is postponed, never silent)" bash -c "grep -q 'v1.1.0-deadbeef' '$work/log' && grep -qi 'pending' '$work/log'"
 t "AC29" "fips-module --plan-dir with a refresh plan already staged: exit 0 saying so, no second plan, the recipe not edited" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'already staged' '$work/log' && test \"\$(ls '$work/plan-x' | wc -l)\" -eq 1 && test \"\$(shasum -a 256 '$work/rp3/build/melange-fips.yaml' | cut -d' ' -f1)\" = '$h_before'"
 fr; rm -rf "$work/plan-f"
 run_s2 "$RF" fips-module --pr-author app/bot --go-root "$gr" --repo-dir "$work/rp3" --plan-dir "$work/plan-f"
