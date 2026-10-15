@@ -1,5 +1,13 @@
 #!/usr/bin/env bash
 # proves: REQ-REL-004-AC4
+# proves: REQ-REFRESH-001-AC24
+# proves: REQ-REFRESH-001-AC25
+# proves: REQ-REFRESH-001-AC26
+# proves: REQ-REFRESH-001-AC27
+# proves: REQ-REFRESH-001-AC28
+# proves: REQ-REFRESH-001-AC29
+# proves: REQ-REFRESH-001-AC30
+# proves: REQ-REFRESH-001-AC31
 # go-freshness.yml opens its bump PR with the auditor App's token (owner, Oct 2; advisor 0055): the check job's own token
 # is read-only; it runs in the main-only agent environment; the App token is minted with exactly the auditor's scope
 # (repositories: cache; contents and pull-requests write; nothing else) and only the bump step uses it; the checkout
@@ -21,7 +29,7 @@ if got_script != REVIEWED_BUMP_SCRIPT:
 # (SEC-157-02 B): repository-wide, the jobs that may reach the agent environment, the App's secrets, the token action,
 # every secret (toJSON) or inherited secrets are exactly these; a new consumer must come through review and be listed.
 ALLOWED = {("agent-review-gate.yml", "publish"), ("agent-review-gate.yml", "sweep"), ("auditor.yml", "audit"),
-           ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"),
+           ("auditor.yml", "panel-probe"), ("dependabot-reviewer.yml", "review"), ("go-freshness.yml", "check"), ("go-freshness.yml", "refresh"),
            ("ci.yml", "drift-fixer-dispatch"), ("main-candidate-rescan.yml", "panel-scout"),
            ("main-candidate-rescan.yml", "panel-google"), ("release.yml", "scans"), ("release.yml", "promotion"),
            # the Scout root-cause round (#176): the agent environment for its own Docker Hub token, same reason as
@@ -71,12 +79,12 @@ jobs = d.get("jobs") or {}
 got = hashlib.sha256(json.dumps(mask(jobs.get("check") or {}), sort_keys=True).encode()).hexdigest()
 if got != REVIEWED_CHECK_JOB:
     bad.append("the privileged check job differs from its reviewed form (%s)" % got[:12])
-if sorted(jobs) != ["check", "mutation"]:
-    bad.append("jobs other than check and mutation: %s" % sorted(jobs))
+if sorted(jobs) != ["check", "mutation", "refresh"]:
+    bad.append("jobs other than check, mutation and refresh: %s" % sorted(jobs))
 if d.get("env") or d.get("defaults"):
     bad.append("a workflow-level env/defaults reaches the privileged job")
 for j, v in jobs.items():
-    if j == "check":
+    if j in ("check", "refresh"):
         continue
     t = json.dumps(v)
     if "secrets" in t or "app-token" in t or "create-github-app-token" in t or v.get("environment") or "check" in str(v.get("needs", "")):
@@ -101,6 +109,65 @@ if not co or (co[0].get("with") or {}).get("persist-credentials") != "false":
     bad.append("the checkout keeps a credential")
 if m.get("environment") or "app-token" in str(m) or (m.get("permissions") or {}) != {"contents": "read"}:
     bad.append("the mutation job gets the environment, the App token or more than read")
+# ---- the refresh job (REQ-REFRESH-001-AC24 to AC30; owner's rules 4 to 9 of Oct 14)
+r = jobs.get("refresh") or {}
+rsteps = r.get("steps") or []
+rnames = [s.get("name") for s in rsteps]
+if r.get("environment") != "agent":
+    bad.append("AC28: the refresh job is not in the main-only agent environment")
+if r.get("permissions") != {"contents": "read", "packages": "write"}:
+    bad.append("AC28: the refresh job's own token is not contents: read plus packages: write: %s" % r.get("permissions"))
+if d.get("permissions") != {"contents": "read"}:
+    bad.append("AC28: the top-level permissions are not contents: read")
+cond = str(r.get("if", ""))
+if "refs/heads/main" not in cond or "pull_request" in cond or "workflow_dispatch" not in cond or "github.event.schedule" not in cond:
+    bad.append("AC25: the refresh job's condition is not main plus schedule or dispatch: %s" % cond)
+trig = d.get("on") or d.get(True) or {}
+if sorted(trig) != ["schedule", "workflow_dispatch"]:
+    bad.append("AC25: go-freshness.yml triggers are not schedule and workflow_dispatch only: %s" % sorted(trig))
+wf = sorted(os.path.basename(f) for f in glob.glob(os.path.join(tree, ".github/workflows/*.y*ml")))
+if "go-freshness.yml" not in wf or any(n.startswith("refresh") for n in wf):
+    bad.append("AC24: a refresh workflow file exists beside go-freshness.yml: %s" % wf)
+rmint = [s for s in rsteps if str(s.get("uses", "")).startswith("actions/create-github-app-token@")]
+if len(rmint) != 1 or rmint[0].get("with") != want or rmint[0].get("id") != "app-token":
+    bad.append("AC28: the refresh job does not mint the App token exactly as the check job does: %s" % [s.get("with") for s in rmint])
+rusers = [s.get("name") for s in rsteps if "steps.app-token.outputs.token" in str(s)]
+if rusers != ["refresh the inputs and open the refresh pull request", "check for a newer certified crypto module"]:
+    bad.append("AC28: the App token reaches steps other than the two refresh steps: %s" % rusers)
+ORDER = ["pull the archive by its recorded digest", "refresh the inputs and open the refresh pull request",
+         "check for a newer certified crypto module", "store the archive when something changed"]
+pos = [rnames.index(n) if n in rnames else -1 for n in ORDER]
+if -1 in pos or pos != sorted(pos):
+    bad.append("AC26: the refresh steps are missing or out of the ratified order: %s" % [n for n in rnames])
+def run_of(n):
+    return "".join(str(s.get("run", "")) for s in rsteps if s.get("name") == n)
+if not re.search(r"(^|\s)\./bin/archive-pull\.sh --pointer build/archive\.json --out ", run_of(ORDER[0])):
+    bad.append("AC27: the archive is not pulled by the committed pointer with bin/archive-pull.sh")
+if "./bin/refresh-inputs.sh refresh " not in run_of(ORDER[1]) or "./bin/refresh-inputs.sh fips-module " not in run_of(ORDER[2]):
+    bad.append("AC26: the refresh steps do not call refresh-inputs.sh refresh and fips-module")
+if "./bin/archive-push.sh --dir " not in run_of(ORDER[3]) or "changed" not in run_of(ORDER[3]):
+    bad.append("AC27: the archive is not stored by bin/archive-push.sh only when something changed")
+for f in sorted(glob.glob(os.path.join(tree, ".github/workflows/*.y*ml"))):
+    txt = open(f).read()
+    if "archive-push.sh" in txt and os.path.basename(f) != "go-freshness.yml":
+        bad.append("AC27: %s calls archive-push.sh" % os.path.basename(f))
+    if os.path.basename(f) == "go-freshness.yml":
+        for jn, jv in jobs.items():
+            if jn != "refresh" and "archive-push.sh" in json.dumps(jv):
+                bad.append("AC27: job %s calls archive-push.sh" % jn)
+rtext = json.dumps(r)
+if re.search(r"gh\s+pr\s+(merge|review|approve)|--auto\b|git\s+push[^\"]*\bmain\b|--admin", rtext):
+    bad.append("AC29: the refresh job merges, approves or pushes to main")
+if rsteps and (rsteps[0].get("with") or {}).get("persist-credentials") != "false":
+    bad.append("AC28: the refresh checkout keeps a credential")
+# AC31: every action reference in the refresh job is a commit digest with a tag comment (read from the file text: the loader drops comments)
+raw = open(sys.argv[1]).read().splitlines()
+inref = False
+for line in raw:
+    if re.match(r"^  refresh:", line): inref = True; continue
+    if inref and re.match(r"^  [A-Za-z0-9_-]+:", line): inref = False
+    if inref and re.search(r"^\s*-?\s*uses:", line) and not re.search(r"uses:\s*\S+@[0-9a-f]{40}\s+#\s*\S+", line):
+        bad.append("AC31: an action reference in the refresh job is not a commit digest with a tag comment: %s" % line.strip())
 print("; ".join(bad) or "ok")
 sys.exit(1 if bad else 0)
 PY
@@ -141,6 +208,38 @@ case_ key-through-outputs    bad "$C['outputs'] = {'k': '\${{ secrets.AUDITOR_AP
 case_ bump-gutted            bad "[s.__setitem__('run', ':') for s in $C['steps'] if 'go-bump-open-pr.sh' in (s.get('run') or '')]"
 case_ github-env-write       bad "[s.__setitem__('run', s['run'] + 'echo INPUT_PERMISSION-checks=write >> \"\$GITHUB_ENV\"\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
 case_ workflow-env           bad "d['env'] = {'INPUT_PERMISSION-checks': 'write'}"
+# the refresh job (AC24 to AC31)
+R='d["jobs"]["refresh"]'
+RSTEP="[s for s in %s['steps'] if s.get('name') == '%s'][0]"
+case_ refresh-wrong-env       bad "$R['environment'] = 'other'"
+case_ refresh-writes-contents bad "$R['permissions']['contents'] = 'write'"
+case_ refresh-more-perms      bad "$R['permissions']['id-token'] = 'write'"
+case_ refresh-on-pr-ref       bad "$R['if'] = \"\${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event.schedule == 'x' }}\""
+case_ refresh-pull-request-trigger bad "d['on']['pull_request'] = {}"
+case_ refresh-token-too-wide  bad "[s['with'].__setitem__('permission-packages', 'write') for s in $R['steps'] if str(s.get('uses','')).startswith('actions/create-github-app-token@')]"
+case_ refresh-token-extra-step bad "$R['steps'].append({'name': 'x', 'env': {'GH_TOKEN': '\${{ steps.app-token.outputs.token }}'}, 'run': 'true'})"
+case_ refresh-order-swapped   bad "a = $R['steps']; i = [k for k, s in enumerate(a) if s.get('name') == 'pull the archive by its recorded digest'][0]; a[i], a[i+1] = a[i+1], a[i]"
+case_ refresh-pull-by-tag     bad "[s.__setitem__('run', 'crane pull ghcr.io/x/archive:latest out') for s in $R['steps'] if s.get('name') == 'pull the archive by its recorded digest']"
+case_ refresh-push-always     bad "[s.__setitem__('run', './bin/archive-push.sh --dir \"\$RUNNER_TEMP/archive\"') for s in $R['steps'] if s.get('name') == 'store the archive when something changed']"
+case_ refresh-merges          bad "[s.__setitem__('run', s['run'] + 'gh pr merge --auto --squash\\n') for s in $R['steps'] if s.get('name') == 'refresh the inputs and open the refresh pull request']"
+case_ refresh-job-removed     bad "$R.clear(); d['jobs'].pop('refresh')"
+case_ refresh-push-in-check   bad "[s.__setitem__('run', s['run'] + './bin/archive-push.sh --dir x\\n') for s in $C['steps'] if s.get('id') == 'cmp']"
+case_ refresh-checkout-cred   bad "$R['steps'][0].setdefault('with', {})['persist-credentials'] = 'true'"
+t=$(mk_tree refresh-file); printf 'on: workflow_dispatch\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo hi\n' > "$t/.github/workflows/refresh.yml"
+case_ refresh-workflow-added  bad "" "$t"
+t=$(mk_tree refresh-push-elsewhere); printf 'on: push\njobs:\n  x:\n    runs-on: ubuntu-latest\n    steps:\n      - run: ./bin/archive-push.sh --dir x\n' > "$t/.github/workflows/other.yml"
+case_ archive-push-other-workflow bad "" "$t"
+# an action reference that is a tag, not a digest, in the refresh job (the file text is judged, so write it into the copy)
+cp "$root/.github/workflows/go-freshness.yml" "$work/tagpin.yml"; python3 - "$work/tagpin.yml" <<'PY'
+import re, sys
+p = sys.argv[1]; s = open(p).read()
+i = s.index("\n  refresh:")
+head, tail = s[:i], s[i:]
+tail = re.sub(r"(uses: actions/checkout@)[0-9a-f]{40}(\s+# v[0-9.]+)", r"\1v7", tail, count=1)
+open(p, "w").write(head + tail)
+PY
+if out=$(judge "$work/tagpin.yml" "$root"); then got=ok; else got=bad; fi
+if [ "$got" = bad ]; then pass=$((pass+1)); echo "PASS refresh-action-by-tag → bad ($out)"; else failn=$((failn+1)); echo "FAIL refresh-action-by-tag → ok"; fi
 # Codex #157 r2 (SEC-157-02): a token print inside the executed script; a sidecar workflow minting the App token
 mk_tree() { local t="$work/tree-$1"; mkdir -p "$t/bin" "$t/.github/workflows"; cp "$root"/.github/workflows/*.yml "$t/.github/workflows/"; cp "$root/bin/go-bump-open-pr.sh" "$t/bin/"; echo "$t"; }
 t=$(mk_tree script-leak); printf '\nprintf %%s "$GH_TOKEN" | od -An -tx1\n' >> "$t/bin/go-bump-open-pr.sh"
