@@ -6,10 +6,14 @@ what was just published, in BOTH registries (ghcr.io/fosterstack/cache, then doc
 filled; any other command runs once. A command that names a repository literally is refused, <TAG> = $GITHUB_REF_NAME, <IDENTITY> = Sign's workflow identity at the tag. Every command is judged before
 any runs (a refusal runs nothing): a pipe of the verify forms (cosign verify, verify-attestation, verify-blob, verify-blob-attestation,
 gh attestation verify) and jq, with at least one verify form, no other shell syntax ($ only inside single quotes), and no placeholder left
-unfilled. A command that fails fails the run (exit 1) after all have run. The step holds a read token and no registry credential."""
+unfilled. A command that fails fails the run (exit 1) after all have run. The step holds a read token and no registry credential.
+Every command runs with release-published/ (the assets just downloaded from the published release) as its working directory, so the guide's bare
+file names resolve as a customer's do (REQ-CHAIN-007-AC20). A command made only of jq is accepted only when every file it reads is named by an
+EARLIER command of the same list that is a verify form, and at run time only after that verify exited 0."""
 import json, os, re, shlex, subprocess, sys
 
 LIST = "docs/verify-release.cannot-run.json"
+ASSETS = "release-published"   # gh release download -D release-published (bin/release-assets.sh): the files a customer downloads
 DIGESTS = "witness-build/digests.json"
 REPOSITORIES = ("ghcr.io/fosterstack/cache", "docker.io/fosterstack/cache")   # constants: releases publish identical digests to both; no input names a repository
 TAG = re.compile(r"^v[0-9]+\.[0-9]+\.[0-9]+$")   # a release candidate publishes nothing, so there is nothing to verify (REQ-CHAIN-007-AC14)
@@ -80,6 +84,58 @@ def form_error(c):
             return "`%s` is not a verify form or jq" % " ".join(s[:3])
     return None if verify else "no verify form in it"
 
+JQ_VALUE_FLAGS = ("--arg", "--argjson")      # name and value (neither is a file)
+JQ_REFUSED = ("--slurpfile", "--rawfile", "--args", "--jsonargs", "-f", "--from-file", "-L", "--library-path", "--seq", "--stream-errors")
+
+
+def jq_files(c):
+    """The files a command made ONLY of jq reads, or (None, why). Every segment's first non-flag word is the filter; the rest of the FIRST
+    segment are files (the later segments read the pipe: a file operand there is refused). A jq that reads another file, loads a program or has
+    no file operand is refused: it would read stdin or something nothing verified."""
+    lx = shlex.shlex(PH.sub(lambda m: "PH_" + m.group(1), c), posix=True, punctuation_chars=True)
+    lx.whitespace_split = True
+    segs = [[]]
+    for w in lx:
+        if w == "|":
+            segs.append([])
+        else:
+            segs[-1].append(w)
+    files = []
+    for n, seg in enumerate(segs):
+        if not seg or seg[0] != "jq":
+            return None, "not a jq-only command"
+        words, i, filt = seg[1:], 0, False
+        while i < len(words):
+            w = words[i]
+            if w in JQ_REFUSED:
+                return None, "the jq option %s reads other files or loads a program" % w
+            if w in JQ_VALUE_FLAGS:
+                i += 3
+                continue
+            if w.startswith("-") and len(w) > 1:
+                i += 1
+                continue
+            if not filt:
+                filt = True
+            elif n == 0:
+                files.append(w)
+            else:
+                return None, "a later jq of a pipe names a file (%s)" % w
+            i += 1
+        if not filt:
+            return None, "a jq with no filter"
+    if not files:
+        return None, "it reads no file (stdin is not a verified input)"
+    return files, None
+
+
+def verify_words(c):
+    """The words of a command that is a verify form (placeholders as written): the names it can have verified."""
+    try:
+        return set(shlex.split(c))
+    except ValueError:
+        return set()
+
 
 def main():
     tag = os.environ.get("GITHUB_REF_NAME", "")
@@ -116,10 +172,23 @@ def main():
     plan = []   # (registry, command, filled command): one pass per registry, in order
     for reg in REPOSITORIES:
         values = dict(base, IMAGE_REF="%s@%s" % (reg, digests["image-production"]), IMAGE_REF_FIPS="%s@%s" % (reg, digests["image-fips"]))
-        for c in cmds:
+        verified = []   # (index, words) of the verify forms before the current command
+        for ci, c in enumerate(cmds):
             why = form_error(c)
+            jq_need = None
+            if why == "no verify form in it":
+                files, jwhy = jq_files(c)
+                if files is None:
+                    refuse("`%s` is not an allowed verify form (%s; a jq-only command needs an earlier verify of its file: %s)" % (c, why, jwhy))
+                for f in files:
+                    if not any(f in words for _, words in verified):
+                        refuse("`%s` is not an allowed verify form (%s): no earlier command of the list is a verify form that names %s" % (c, why, f))
+                jq_need = files
+                why = None
             if why:
                 refuse("`%s` is not an allowed verify form (%s)" % (c, why))
+            if jq_need is None:
+                verified.append((ci, verify_words(c)))
             used = set(PH.findall(c))
             if reg != REPOSITORIES[0] and not used & {"IMAGE_REF", "IMAGE_REF_FIPS"}:
                 continue   # no image placeholder: the same command, run once
@@ -130,14 +199,23 @@ def main():
                 if not SAFE.match(values[u]):
                     refuse("the value for <%s> is not a plain reference: %r" % (u, values[u]))
                 run = run.replace("<%s>" % u, values[u])
-            plan.append((reg, c, run))
+            plan.append((reg, c, run, jq_need))
+    if plan and not os.path.isdir(ASSETS):
+        refuse("%s/ is not a directory: the assets of the published release are not here, so no listed command can resolve its files; nothing is run" % ASSETS)
     failed = []
-    for reg, c, run in plan:
+    passed_words = set()   # the words of every verify form that has exited 0 so far (a jq-only command may read only these files)
+    for reg, c, run, jq_need in plan:
+        if jq_need is not None and not all(f in passed_words for f in jq_need):
+            failed.append((reg, c, 1))
+            print("::error::post-publish verification failed against %s: `%s` was not run: the earlier verify of %s did not pass" % (reg, c, ", ".join(jq_need)), file=sys.stderr, flush=True)
+            continue
         print("release-postverify: [%s] $ %s" % (reg, run), flush=True)
-        rc = subprocess.run(["bash", "-o", "pipefail", "-c", run], stdin=subprocess.DEVNULL).returncode
+        rc = subprocess.run(["bash", "-o", "pipefail", "-c", run], stdin=subprocess.DEVNULL, cwd=ASSETS).returncode
         if rc != 0:
             failed.append((reg, c, rc))
             print("::error::post-publish verification failed against %s: `%s` exited %d" % (reg, c, rc), file=sys.stderr, flush=True)
+        elif jq_need is None:
+            passed_words |= verify_words(c)
     if failed:
         refuse("post-publish verification failed: %d of %d runs failed: %s" % (len(failed), len(plan), "; ".join("[%s] `%s` exited %d" % f for f in failed)))
     print("release-postverify: all %d post-publish verification runs passed (%d commands, %d registries)" % (len(plan), len(cmds), len(REPOSITORIES)))
