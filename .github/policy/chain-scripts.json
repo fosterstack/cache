@@ -8,17 +8,17 @@
     {
       "path": "bin/archive-pull.sh",
       "tools": [
-        "crane",
-        "mktemp",
         "python3",
-        "rm"
+        "mktemp",
+        "rm",
+        "crane"
       ],
       "runs": [
         "bin/archive-verify.py"
       ],
       "signs": false,
       "reason": "the stage's archive pull: fetches the archive by the digest committed in build/archive.json with the pinned crane into a new directory and checks every file against the pointer (REQ-CHAIN-004-AC16); nothing is pulled by tag and there is no fallback source",
-      "sha256": "2812f3731cb9ea8cab75c90bfbba9570929a9a836c329926758d9d92f96e5b7e"
+      "sha256": "adaf57bde6fc73bb2a782743f092f38fa2699bc9464191291dec9693a2cd1a94"
     },
     {
       "path": "bin/archive-verify.py",
@@ -26,7 +26,7 @@
       "runs": [],
       "signs": false,
       "reason": "reads the archive pointer and verifies the archive artifact and each file's sha256 and size against it (run by bin/archive-pull.sh)",
-      "sha256": "592921c1268feca3b30881bffab34500393ed523c823371631132fed7162f357"
+      "sha256": "55c2c5716053b8b82b0009d6186aba33e1f478e75ebc728b9f7c3714155699ed"
     },
     {
       "path": "bin/chain-verify.py",

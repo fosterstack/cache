@@ -18,10 +18,10 @@ import re
 import sys
 
 REPO = "ghcr.io/fosterstack/cache-archive"
-HEX = re.compile(r"^[0-9a-f]{64}$")
-ARTIFACT = re.compile(r"^" + re.escape(REPO) + r"@sha256:([0-9a-f]{64})$")
-COMPONENT = re.compile(r"^[A-Za-z0-9_+~-][A-Za-z0-9._+~-]*$")
-APK = re.compile(r"^(.+)-([0-9][A-Za-z0-9._+~]*-r[0-9]+)\.apk$")
+HEX = re.compile(r"[0-9a-f]{64}")
+ARTIFACT = re.compile(re.escape(REPO) + r"@sha256:([0-9a-f]{64})")
+COMPONENT = re.compile(r"[A-Za-z0-9_+~-][A-Za-z0-9._+~-]*")
+APK = re.compile(r"(.+)-([0-9][A-Za-z0-9._+~]*-r[0-9]+)\.apk")
 T_TITLE = "org.opencontainers.image.title"
 T_VERSION = "org.fosterstack.cache-archive.version"
 T_SHA = "org.fosterstack.cache-archive.sha256"
@@ -44,7 +44,7 @@ def sha(data):
 
 
 def safe_name(name):
-    return isinstance(name, str) and bool(name) and all(COMPONENT.match(c) for c in name.split("/"))
+    return isinstance(name, str) and bool(name) and all(COMPONENT.fullmatch(c) for c in name.split("/"))
 
 
 def load_pointer(path):
@@ -58,7 +58,7 @@ def load_pointer(path):
         die("pointer %s must hold exactly schema, artifact and files" % path)
     if type(d["schema"]) is not int or d["schema"] != 1:
         die("pointer %s: schema must be the number 1" % path)
-    m = ARTIFACT.match(d["artifact"]) if isinstance(d["artifact"], str) else None
+    m = ARTIFACT.fullmatch(d["artifact"]) if isinstance(d["artifact"], str) else None
     if not m:
         die("pointer %s: artifact must be %s@sha256:<64 lower-case hex> (by digest only)" % (path, REPO))
     files = d["files"]
@@ -71,7 +71,7 @@ def load_pointer(path):
         n, h = e["name"], e["sha256"]
         if not safe_name(n):
             die("pointer %s: unsafe file name %r" % (path, n))
-        if not isinstance(h, str) or not HEX.match(h):
+        if not isinstance(h, str) or not HEX.fullmatch(h):
             die("pointer %s: %s: sha256 must be 64 lower-case hex" % (path, n))
         if last is not None and n <= last:
             die("pointer %s: files must be sorted and unique (at %s)" % (path, n))
@@ -118,7 +118,7 @@ def verify_dir(d, want):
 def cmd_verify(a):
     digest, want = load_pointer(a["--pointer"])
     pushed = a.get("--pushed-digest")
-    if pushed is not None and not re.match(r"^sha256:[0-9a-f]{64}$", pushed):
+    if pushed is not None and not re.fullmatch(r"sha256:[0-9a-f]{64}", pushed):
         die("--pushed-digest must be sha256:<64 lower-case hex>")
     if pushed is not None and pushed != digest:
         die("the pointer names %s but the job pushed %s" % (digest, pushed), 1)
@@ -138,7 +138,7 @@ def cmd_artifact(a):
 
 def cmd_make_pointer(a):
     digest = a["--digest"]
-    if not re.match(r"^sha256:[0-9a-f]{64}$", digest):
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         die("--digest must be sha256:<64 lower-case hex>")
     have, odd = scan(a["--dir"])
     if odd:
@@ -190,7 +190,7 @@ def cmd_pack(a):
     for rel in names:
         with open(os.path.join(d, rel), "rb") as f:
             data = f.read()
-        m = APK.match(rel.split("/")[-1])
+        m = APK.fullmatch(rel.split("/")[-1])
         digest = put(layout, data)
         layers.append({"mediaType": M_FILE, "digest": digest, "size": len(data),
                        "annotations": {T_TITLE: rel, T_VERSION: m.group(2) if m else "", T_SHA: digest[7:]}})
@@ -208,7 +208,7 @@ def cmd_pack(a):
 
 
 def blob(layout, digest):
-    if not isinstance(digest, str) or not re.match(r"^sha256:[0-9a-f]{64}$", digest):
+    if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
         die("bad digest %r in the artifact" % digest, 1)
     p = os.path.join(layout, "blobs", "sha256", digest[7:])
     try:
@@ -263,16 +263,36 @@ def cmd_unpack(a):
     stage = out + ".stage"
     if os.path.lexists(stage):
         die("%s exists" % stage)
-    for L in layers:
-        p = os.path.join(stage, L["annotations"][T_TITLE])
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "xb") as f:
-            f.write(blob(layout, L["digest"]))
-        os.chmod(p, 0o644)
-    problems = verify_dir(stage, want)
-    if problems:
-        die("the unpacked files do not match the pointer:\n  %s" % "\n  ".join(problems), 1)
-    os.rename(stage, out)
+    try:
+        for L in layers:
+            p = os.path.join(stage, L["annotations"][T_TITLE])
+            os.makedirs(os.path.dirname(p), exist_ok=True)
+            with open(p, "xb") as f:
+                f.write(blob(layout, L["digest"]))
+            os.chmod(p, 0o644)
+        problems = verify_dir(stage, want)
+        if problems:
+            die("the unpacked files do not match the pointer:\n  %s" % "\n  ".join(problems), 1)
+        os.rename(stage, out)
+    except BaseException:
+        remove_tree(stage)          # a failed or interrupted extraction leaves neither the stage nor the output behind
+        raise
+
+
+def remove_tree(path):
+    """remove a directory tree this process made (os only: this file runs no subprocess)"""
+    if not os.path.lexists(path):
+        return
+    if os.path.islink(path) or not os.path.isdir(path):
+        os.unlink(path)
+        return
+    for root, dirs, files in os.walk(path, topdown=False):
+        for n in files:
+            os.unlink(os.path.join(root, n))
+        for n in dirs:
+            p = os.path.join(root, n)
+            os.unlink(p) if os.path.islink(p) else os.rmdir(p)
+    os.rmdir(path)
 
 
 def main(argv):
