@@ -1026,7 +1026,7 @@ def _command_words(toks):
     return words
 
 
-_CONSTS = {}     # name -> literal absolute path, for the script _commands() is reading (set at depth 0; handoff 0440 (1))
+SCRIPT_MARK = "#@@fscache-script-boundary@@"   # a comment line between the scripts of one inlined job text: each script's own assignments count for it alone
 _CONST_PATH = re.compile(r"/[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
 
 
@@ -1063,19 +1063,24 @@ def _literal_path_vars(script):
     return found
 
 
-def _subst_consts(chunk):
-    for name, path in _CONSTS.items():
-        chunk = re.sub(r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])", lambda _m, p=path: p, chunk)
-    return chunk
+def _rewrite_consts(script):
+    """Each script of an inlined job text is read on its own (the marker lines _run_scripts puts between them): a name that one script holds in
+    the closed form is replaced by its literal path in THAT script's text only, so another script that merely reads $NAME still names a program
+    by a variable (advisor 0440 (1); a script is a process of its own, it never inherits another script's shell variables)."""
+    out = []
+    for seg in script.split(SCRIPT_MARK):
+        for name, path in _literal_path_vars(seg).items():
+            seg = re.sub(r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])", lambda _m, p=path: p, seg)
+        out.append(seg)
+    return SCRIPT_MARK.join(out)
 
 
 def _commands(script, depth=0):
     """The simple commands of a shell script, each a token list (quotes removed, comments dropped), starting at the
     first tool word; a `bash -c "…"` / `sh -c` / `eval "…"` argument is read as a script of its own."""
     import shlex
-    global _CONSTS
     if depth == 0:
-        _CONSTS = _literal_path_vars(script)
+        script = _rewrite_consts(script)
     text, inner = _cut_substitutions(re.sub(r"\\\n", "", script))
     out = []
     if any(re.search(r"(?<![\w.-])case(?![\w.-])", sub) for sub in inner):
@@ -1090,7 +1095,6 @@ def _commands(script, depth=0):
         out.append(["__too_deep__", "command substitutions"])   # never silently dropped (C02)
     for chunk in _split_commands(text):
         chunk = _skip_array_literal(chunk)
-        chunk = _subst_consts(chunk)
         toks = _tokens(chunk)
         if not toks or toks[0] in PRINTERS:
             continue
@@ -2495,7 +2499,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
         inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", content))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
         more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
-        added.append(content + ("\n" + more if more else ""))
+        added.append(SCRIPT_MARK + "\n" + content + ("\n" + SCRIPT_MARK + "\n" + more if more else ""))
         found += also
     return "\n".join(added), found
 
