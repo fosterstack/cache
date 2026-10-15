@@ -990,3 +990,6 @@ mappings:
   - ac: REQ-BUILDAPK-001-AC8
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }
+  - ac: REQ-BUILDAPK-001-AC9
+    evidence:
+      - { type: shell-test, ref: "bin/build-apk-test.sh" }

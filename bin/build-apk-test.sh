@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8
+# proves: REQ-BUILDAPK-001-AC1, REQ-BUILDAPK-001-AC2, REQ-BUILDAPK-001-AC3, REQ-BUILDAPK-001-AC4, REQ-BUILDAPK-001-AC5, REQ-BUILDAPK-001-AC6, REQ-BUILDAPK-001-AC7, REQ-BUILDAPK-001-AC8, REQ-BUILDAPK-001-AC9
 # Tests of the PR: melange recipes, the apk build driver, release signing and the key files.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -55,7 +55,7 @@ chmod +x "$work/ba.sh"; BA_PROD=$BA; BA="$work/ba.sh"
 export FSCACHE_ROOT="$root"   # lib.mkapk signs a fixture apk with the committed (non-secret) assembly key found here
 mkdir -p "$work/keysfx"
 python3 "$work/mkcopy.py" "$root/bin/release-sign-apks.sh" "$work/rs-copy.sh" \
-  'here='"$root"'/bin' 'root='"$root" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'KEYS_DIR='"$work"'/keysfx' \
+  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'OPENSSL='"$(command -v openssl)" 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'KEYS_DIR='"$work"'/keysfx' \
   || { echo "FIXTURE SETUP FAILED: release-sign copy"; exit 1; }
 chmod +x "$work/rs-copy.sh" "$work/ba-copy.sh"
 # ---- begin verbatim sections ----
@@ -1022,6 +1022,9 @@ for n, ln in enumerate(lines, 1):
     bad += ["%s:%d %s" % (sys.argv[1], n, w) for w in sys.argv[2:] + ["<unresolved>"] if w in ws]
 sys.exit("refused: %r" % bad if bad else 0)
 PY
+# TRIPWIRE, NOT THE CONTROL (advisor decision 0430): the scan below and its mutants are static and can only list the spellings someone thought of; a
+# finding of it is information. The behavioural proof at the end of this file (REQ-BUILDAPK-001-AC9: the scripts run with a search path that
+# holds only their coreutils) is the control, and it does not depend on how a name is spelled.
 t "rule 23" "no bare tool in the security steps: build-apk.sh names sha256sum, go, env, sudo, unshare, melange, git, python3, openssl and shasum by variable (also as the operand of env, sudo or unshare)" python3 "$work/toolscan.py" "$BA_PROD" sha256sum go env sudo unshare melange git python3 openssl shasum
 t "rule 23" "release-sign-apks.sh names openssl, melange and python3 by variable" python3 "$work/toolscan.py" "$RS_REAL" openssl melange python3
 python3 - "$BA_PROD" "$work" <<'PY'
@@ -1058,6 +1061,284 @@ for m in mut-go mut-env mut-sum mut-melange mut-timeout mut-quote mut-nest mut-n
   t "rule 23" "the mutant $m differs from the production script" bash -c "! cmp -s '$BA_PROD' '$work/$m.sh'"
   t "rule 23" "the tool-path assertion bites: the mutant $m (a bare tool where the fixed one is) is refused" bash -c "! python3 '$work/toolscan.py' '$work/$m.sh' sha256sum go env sudo unshare melange git python3 openssl shasum >/dev/null 2>&1"
 done
+
+# ===== REQ-BUILDAPK-001-AC9: the behavioural proof that no named tool is called by bare name ===================================
+# The static scan above (toolscan.py and its mutants) is a TRIPWIRE: its findings are information (advisor decision 0430), because no
+# scanner can close "every way a shell can spell a program name". The CONTROL is this section: the two scripts run with a search path that
+# holds ONLY the coreutils they use (plus the stub uname that plays Linux). A tool they name that is not in that directory cannot be
+# reached by a bare name, whatever the text spells (brace, quote, expansion, assembled word): it is "not found". The fixed-path tools are the
+# TEST-SUBST stubs, as copies that call their own dependencies (env, python3, ls) by absolute path and resolve every command the script hands them
+# under the script's own restricted path (so a bare env or sudo operand is not found there either).
+# Stated residual, as REQ-BUILDAPK-001-AC3: the coreutils search path and the starting environment (BASH_ENV) are the invoking stage's;
+# a program a script hands to a python subprocess (openssl in release-sign-apks.sh and bin/apk-tool.py) runs with an env whose PATH names no directory.
+RP_COREUTILS="awk basename cat cp cut dirname find grep head mkdir mktemp mv rm sed sort tail tr"   # what the two scripts call (read from the scripts, and every one is in a control run's trace)
+RP_STUBTOOLS="env python3 openssl ls"   # what the harness stubs call, by absolute path or through python3 (which needs openssl): never on the scripts' path (sysctl is the stub the scripts name through sudo)
+BASH_BIN=$(command -v bash)
+rp="$work/rp" rps="$work/rp-stub" rpw="$work/rp-wrap" rpm="$work/rp-mut"; mkdir -p "$rpw" "$rpm" "$work/rp-tmp"
+restricted_path_dir "$rp" $RP_COREUTILS && ln -s "$stubs/uname" "$rp/uname" && ln -s "$stubs/sysctl" "$rp/sysctl" || { echo "FIXTURE SETUP FAILED: restricted path"; exit 1; }
+restricted_path_dir "$rps" $RP_COREUTILS $RP_STUBTOOLS || { echo "FIXTURE SETUP FAILED: stub path"; exit 1; }
+for w in sudo unshare melange go; do restricted_stub_copy "$stubs/$w" "$rpw/$w" "$rps" || { echo "FIXTURE SETUP FAILED: stub copy $w"; exit 1; }; done
+if real=$(command -v sha256sum 2>/dev/null); then printf '#!/bin/sh\nexec %s "$@"\n' "$real" >"$rpw/sha256sum"; else printf '#!/bin/sh\nexec %s -a 256 "$@"\n' "$(command -v shasum)" >"$rpw/sha256sum"; fi
+chmod +x "$rpw/sha256sum"
+t "AC9" "the restricted directory holds the coreutils and uname and none of melange, go, sudo, unshare, env, openssl, sha256sum, git, python3, apko" bash -c "
+  for n in melange go sudo unshare env openssl sha256sum shasum git python3 apko; do [ ! -e '$rp'/\$n ] || exit 1; done
+  for n in $RP_COREUTILS uname sysctl; do [ -x '$rp'/\$n ] || exit 1; done; [ \$(ls '$rp' | wc -l) -eq \$(( \$(echo $RP_COREUTILS | wc -w) + 2 )) ]"
+rp_args=(--variant standard --arch x86_64 --version 0.3.0 --source-dir "$src" --repo "$fx/envrepo" --keyring "$kr"
+  --go-archive "$fx/archive/go" --melange-lock "$fx/melange.lock")
+RP_GO=(STUB_BUILDINFO="$fx/sbom/ok.txt" STUB_GOVM_FILE="$work/govm-ok.txt")   # the go stub answers go version -m with the file that matches the build
+rp_extra=()   # KEY=VALUE entries the next restricted run adds to its (otherwise empty) environment
+rp_sealed() { python3 - "$work/rp-sealed.json" "$rps" "$CALLS" "$work/lib.py" "$rp" "${rp_extra[@]}" <<'PYW'
+import json, sys
+c = {"PATH": sys.argv[5], "HOME": "/root", "LC_ALL": "C", "CALLS": sys.argv[3], "STUB_LIB": sys.argv[4], "FAKE_UNAME": "x86_64"}
+c.update(a.split("=", 1) for a in sys.argv[6:] if a.startswith(("STUB_", "FAKE_")))   # what the harness wrapper does for the unrestricted runs
+json.dump({"closed": c, "from_environment": ["SOURCE_DATE_EPOCH"]}, open(sys.argv[1], "w"))
+PYW
+}
+# rp_build SCRIPT OUT: the build-apk copy SCRIPT with PATH=$rp and nothing else of the caller's environment; log in $work/rp.log, status in $work/rp.rc
+rp_ba() { local script=$1; shift; : >"$CALLS"; rp_sealed
+  env -i PATH="${RP_PATH:-$rp}" HOME=/nonexistent LC_ALL=C TMPDIR="$work/rp-tmp" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 \
+    TEST_SEALED_ENV="$work/rp-sealed.json" TEST_RECIPE="$fx/melange.yaml" TEST_SUDO="$rpw/sudo" TEST_UNSHARE="$rpw/unshare" TEST_MELANGE="$rpw/melange" \
+    TEST_GO="$rpw/go" TEST_SHA256SUM="$rpw/sha256sum" "${rp_extra[@]}" "$BASH_BIN" "$script" "$@" >"$work/rp.log" 2>&1 </dev/null
+  echo $? >"$work/rp.rc"; }
+rp_build() { rp_ba "$1" "${rp_args[@]}" --out "$2"; }
+# rp_sign SCRIPT BUILD REBUILD: the release-sign copy likewise
+rp_sign() { : >"$CALLS"
+  env -i PATH="$rp" HOME=/nonexistent LC_ALL=C CALLS="$CALLS" STUB_LIB="$work/lib.py" TEST_MELANGE="$rpw/melange" "${rp_extra[@]}" \
+    "$BASH_BIN" "$1" --build-dir "$2" --rebuild-dir "$3" --key "$work/release.rsa" >"$work/rp.log" 2>&1 </dev/null
+  echo $? >"$work/rp.rc"; }
+tools_called() { sed -n 's/^\([a-z0-9]*\) .*/\1/p' "$CALLS" | grep -E '^(sudo|unshare|sysctl|melange|go|apko)$' | tr '\n' ' '; }
+# --- build-apk.sh: the control ---------------------------------------------------------------------------------------
+rpo=$(mo); rp_extra=("${RP_GO[@]}"); rp_build "$work/ba-copy.sh" "$rpo"; rp_calls=$(tools_called); rp_rc=$(cat "$work/rp.rc")
+cuo=$(mo); run_s env SOURCE_DATE_EPOCH=$SDE FAKE_UNAME=x86_64 "${RP_GO[@]}" "$BA" "${rp_args[@]}" --recipe "$fx/melange.yaml" --out "$cuo"; cu_calls=$(tools_called)
+t "AC9" "build-apk.sh: the control run with PATH holding only the coreutils completes (exit 0, 'built')" bash -c "[ '$rp_rc' = 0 ] && grep -q '^built ' '$work/rp.log'"
+t "AC9" "build-apk.sh: it completes exactly as the unrestricted control: the same tools in the same order, the same apk, the same module SBOM and manifest" bash -c "
+  [ '$rp_calls' = '$cu_calls' ] && [ -n '$rp_calls' ] && cmp '$rpo/x86_64/fscache-0.3.0-r0.apk' '$cuo/x86_64/fscache-0.3.0-r0.apk' \
+  && cmp '$rpo/fscache-modules.spdx.json' '$cuo/fscache-modules.spdx.json' && cmp '$rpo/inputs-manifest.json' '$cuo/inputs-manifest.json'"
+t "AC9" "build-apk.sh: the control ran the go toolchain check (go version -m) and not the 'not verified' skip" bash -c "grep -q '^go version -m' '$CALLS' && ! grep -q 'not verified' '$work/rp.log'"
+# --- build-apk.sh: mutants (copies of the TEST-SUBST copy; one call site names its tool by bare name, or spells the name in another way) ---
+python3 - "$work/ba-copy.sh" "$rpm" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+UN = '"$UNSHARE" -n "$melange_bin"'
+M = {   # name -> [(old, new), ...]; each old must occur exactly once in the copy
+ "ba-melange":    [(UN, '"$UNSHARE" -n melange')],
+ "ba-sudo":       [('( cd "$rdir" && "$SUDO" "$ENVBIN" -i', '( cd "$rdir" && sudo "$ENVBIN" -i')],
+ "ba-env-sudo":   [('"$SUDO" "$ENVBIN" -i', '"$SUDO" env -i')],
+ "ba-unshare":    [('"$ENVBIN" -i "${sealed[@]}" "$UNSHARE" -n', '"$ENVBIN" -i "${sealed[@]}" unshare -n')],
+ "ba-sha256sum":  [('got=$("$SHA256SUM" ', 'got=$(sha256sum ')],
+ "ba-python3":    [('"$PY3" -I -B bin/build-apk-helper.py sealed-env', 'python3 -I -B bin/build-apk-helper.py sealed-env')],
+ "ba-git":        [('headrev=$("$GIT" -C "$src" rev-parse HEAD 2>/dev/null)', 'headrev=$(git -C "$src" rev-parse HEAD)')],
+ "ba-go":         [('"$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off "$GO_TOOL" version -m', '"$ENVBIN" GOTOOLCHAIN=local GOFLAGS= GOENV=off go version -m')],
+ "ba-env-go":     [('gov=$("$ENVBIN" GOTOOLCHAIN=local', 'gov=$(env GOTOOLCHAIN=local')],
+ "ba-openssl":    [('tmp=$(mktemp -d)\n', 'openssl version >/dev/null\ntmp=$(mktemp -d)\n')],      # inserted call: the script has no openssl site of its own
+ "ba-apko":       [('tmp=$(mktemp -d)\n', 'apko version >/dev/null\ntmp=$(mktemp -d)\n')],         # inserted call: likewise
+ "ba-brace":      [(UN, '"$UNSHARE" -n mela{n..n}ge')],
+ "ba-brace-set":  [(UN, '"$UNSHARE" -n m{elange,elange}')],
+ "ba-quote":      [(UN, '"$UNSHARE" -n m\'elang\'e')],
+ "ba-ansic":      [(UN, '"$UNSHARE" -n $\'m\\x65lange\'')],
+ "ba-printf":     [(UN, '"$UNSHARE" -n "$(printf mela)nge"')],
+ "ba-default":    [(UN, '"$UNSHARE" -n "${AUDIT_UNSET:-mela}nge"')],
+ "ba-append":     [('melange_bin=$MELANGE;', 'melange_bin=$MELANGE; m=mela; m+=nge;'), (UN, '"$UNSHARE" -n "$m"')],
+ "ba-concat":     [('melange_bin=$MELANGE;', 'melange_bin=$MELANGE; A=mela; B=nge;'), (UN, '"$UNSHARE" -n "$A$B"')],
+}
+for name, pairs in M.items():
+    t = src
+    for old, new in pairs:
+        assert t.count(old) == 1, (name, old, t.count(old))
+        t = t.replace(old, new)
+    assert t != src
+    open("%s/%s.sh" % (sys.argv[2], name), "w").write(t)
+PY
+# rp_refused NAME TOOL: the mutant fails (non-zero) and the output names TOOL as not found; extra CALLS patterns that must be absent follow
+rp_refused() { local m=$1 tool=$2 desc=$3; shift 3; local o; o=$(mo)
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  rp_build "$rpm/$m.sh" "$o"
+  if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)" "$work/rp.log"; then ok; else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found)"; fi; }
+rp_extra=("${RP_GO[@]}")
+rp_refused ba-melange melange "melange called by bare name in the privileged call is not found"
+rp_refused ba-sudo sudo "sudo called by bare name is not found"
+rp_refused ba-env-sudo env "env called by bare name after sudo is not found"
+rp_refused ba-unshare unshare "unshare called by bare name after env -i is not found"
+rp_refused ba-sha256sum sha256sum "sha256sum called by bare name is not found"
+rp_refused ba-python3 python3 "python3 called by bare name is not found"
+rp_refused ba-openssl openssl "openssl called by bare name (inserted call) is not found"
+rp_refused ba-apko apko "apko called by bare name (inserted call) is not found"
+for m in ba-brace ba-brace-set ba-quote ba-ansic ba-printf ba-default ba-append ba-concat; do
+  rp_refused $m melange "melange assembled by $m is not found"; done
+# git: its own diagnostic is hidden by 2>/dev/null in the production line, so the mutant removes the redirect: the name is then reported
+rp_refused ba-git git "git called by bare name is not found"
+# go and env at the go call site: the production line captures the diagnostic into a file and treats exit 127 as "no toolchain on PATH". In CI that
+# is fatal, outside CI the run says 'not verified': either way the stub go is never reached and the run is not the control's.
+for m in ba-go ba-env-go; do
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  rp_extra=(GITHUB_ACTIONS=true "${RP_GO[@]}"); o=$(mo); rp_build "$rpm/$m.sh" "$o"
+  t "AC9" "$m: in CI the run fails saying there is no Go toolchain on PATH, and the go stub was never called" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -q 'no Go toolchain on PATH in CI' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
+  rp_extra=("${RP_GO[@]}"); o=$(mo); rp_build "$rpm/$m.sh" "$o"
+  t "AC9" "$m: outside CI the check degrades as AC4 states: exit 0, 'not verified' printed, the go stub never called" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q 'not verified' '$work/rp.log' && ! grep -q '^go ' '$CALLS'"
+done
+# the restriction is what bites: the same four direct-call mutants COMPLETE when the search path also holds sudo, sha256sum, python3 and git
+restricted_path_dir "$work/rp-open" $RP_COREUTILS python3 git && ln -s "$stubs/uname" "$work/rp-open/uname" && ln -s "$rpw/sudo" "$work/rp-open/sudo" && ln -s "$rpw/sha256sum" "$work/rp-open/sha256sum" \
+  || { echo "FIXTURE SETUP FAILED: open path"; exit 1; }
+for m in ba-sudo ba-sha256sum ba-python3 ba-git; do
+  o=$(mo); RP_PATH="$work/rp-open" rp_build "$rpm/$m.sh" "$o"
+  t "AC9" "$m: with the tool on the search path the same mutant completes (so the restricted path is what makes it fail)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q '^built ' '$work/rp.log'"
+done
+# --- the named-tool sites the successful control does not reach (review round 1 of PR 349) -----------------------------------------
+# each has its own restricted scenario (expected outcomes, failures included) and site-specific mutants: bare, assembled, and through basename
+python3 - "$work/ba-copy.sh" "$rpm" <<'PYM'
+import sys
+src = open(sys.argv[1]).read(); out = sys.argv[2]
+SDE = '"$GIT" -C "$src" log -1 --format=%ct 2>/dev/null |'
+RM = '|| "$SUDO" rm -rf "$tmp" >/dev/null 2>&1;'
+PR = '"$SUDO" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py >/dev/null 2>&1;'
+SYS = '"$SUDO" sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 >/dev/null 2>&1 ||'
+ENVI = '"$SUDO" "$ENVBIN" -i "${sealed[@]}" "$UNSHARE"'
+M = {
+ "ba-sde-git":      [(SDE, 'git -C "$src" log -1 --format=%ct |')],
+ "ba-sde-assembled": [(SDE, 'g=gi; g+=t; "$g" -C "$src" log -1 --format=%ct |')],
+ "ba-sde-basename": [(SDE, '"$(basename "$GIT")" -C "$src" log -1 --format=%ct |')],
+ "ba-rm-sudo":      [(RM, '|| sudo rm -rf "$tmp";')],
+ "ba-rm-assembled": [(RM, '|| s=su; s+=do; "$s" rm -rf "$tmp";')],
+ "ba-rm-basename":  [(RM, '|| "$(basename "$SUDO")" rm -rf "$tmp";')],
+ "ba-probe-sudo":   [(PR, 'sudo "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-probe-unshare": [(PR, '"$SUDO" unshare -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-probe-python3": [(PR, '"$SUDO" "$UNSHARE" -n python3 -I -B bin/net-probe.py;')],
+ "ba-probe-assembled": [(PR, 'g=sud; g+=o; "$g" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-probe-sudo-py": [(PR, 'p=py; p+=thon3; "$SUDO" "$p" -I -B bin/net-probe.py;')],
+ "ba-probe-basename": [(PR, '"$(basename "$SUDO")" "$UNSHARE" -n "$PY3" -I -B bin/net-probe.py;')],
+ "ba-sysctl-sudo":  [(SYS, 'sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ||')],
+ "ba-env-opt":      [('"$SUDO" "$ENVBIN" -i', '"$SUDO" -n env -i')],
+ "ba-env-dashes":   [('"$SUDO" "$ENVBIN" -i', '"$SUDO" -- env -i')],
+ "ba-env-after-i":  [(ENVI, '"$SUDO" "$ENVBIN" -i "${sealed[@]}" env "$UNSHARE"')],
+}
+for name, pairs in M.items():
+    t = src
+    for old, new in pairs:
+        assert t.count(old) == 1, (name, old, t.count(old))
+        t = t.replace(old, new)
+    assert t != src
+    open("%s/%s.sh" % (out, name), "w").write(t)
+PYM
+# 1. env named by bare name after sudo's options, after --, and after env -i: not found (the stub resolves a command operand under the script's path)
+for m in ba-env-opt ba-env-dashes ba-env-after-i; do rp_extra=("${RP_GO[@]}"); rp_refused $m env "env by bare name ($m) is not found"; done
+# 2a. --print-source-date-epoch reaches git
+rp_extra=(); rp_ba "$work/ba-copy.sh" --print-source-date-epoch --source-dir "$src"
+t "AC9" "build-apk.sh: --print-source-date-epoch with PATH holding only the coreutils prints the commit time (reaches the git site)" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -qx '$SDE' '$work/rp.log'"
+for m in ba-sde-git ba-sde-assembled ba-sde-basename; do
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  rp_ba "$rpm/$m.sh" --print-source-date-epoch --source-dir "$src"
+  t "AC9" "$m: git by bare name in the commit-time call is not found, and no commit time is printed" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && grep -Eqi 'git.*(not found|No such file)' '$work/rp.log' && ! grep -qx '$SDE' '$work/rp.log'"
+done
+# 2b. the cleanup fallback: the ordinary rm FAILS because the script's own search path holds an rm that exits 1 (deterministic, whoever runs the
+# suite, root included): the fixed-path sudo rm must run; the original status of the build is kept. A scenario that did not run FAILS the suite.
+mkdir -p "$work/rp-rmfail"; for f in "$rp"/*; do ln -s "$(readlink "$f")" "$work/rp-rmfail/$(basename "$f")"; done
+rm -f "$work/rp-rmfail/rm"; printf '#!/bin/sh\nexit 1\n' >"$work/rp-rmfail/rm"; chmod +x "$work/rp-rmfail/rm"
+rp_extra=("${RP_GO[@]}"); RP_PATH="$work/rp-rmfail" rp_build "$work/ba-copy.sh" "$(mo)"
+t "AC9" "build-apk.sh: when the ordinary cleanup fails the fixed-path sudo rm runs and the build keeps its own status (exit 0, 'built')" bash -c "[ '$(cat "$work/rp.rc")' = 0 ] && grep -q '^built ' '$work/rp.log' && grep -q '^sudo rm -rf ' '$CALLS'"
+for m in ba-rm-sudo ba-rm-assembled ba-rm-basename; do
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  RP_PATH="$work/rp-rmfail" rp_build "$rpm/$m.sh" "$(mo)"
+  t "AC9" "$m: sudo by bare name in the cleanup fallback is refused: 'sudo: command not found' is printed, no sudo rm is made, the build keeps its status 0" bash -c "grep -q 'sudo: command not found' '$work/rp.log' && ! grep -q '^sudo rm' '$CALLS' && [ '$(cat "$work/rp.rc")' = 0 ]"
+done
+# the sudo and probe stubs resolve their operand the way exec would: a bare name by the search path only, a name with a slash as a path
+# (a name that is not found: exit 127 and '<name>: command not found'; never a silent success, never the working directory)
+mkdir -p "$work/rp-cwd"; printf '#!/bin/sh\nexit 0\n' >"$work/rp-cwd/python3"; chmod +x "$work/rp-cwd/python3"
+for n in python3 openssl git go sha256sum melange; do
+  : >"$CALLS"; ( cd "$work/rp-cwd" && env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" "$rpw/sudo" $n -V ) >"$work/rp.log" 2>&1; r=$?
+  t "AC9" "the sudo stub: a bare $n operand (also with an executable of that name in the working directory) is 'command not found', exit 127" bash -c "[ '$r' = 127 ] && grep -q '$n: command not found' '$work/rp.log'"
+done
+: >"$CALLS"; ( cd "$work/rp-cwd" && env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" -c 'p=py; p+=thon3; "$0" "$p" -V' "$rpw/sudo" ) >"$work/rp.log" 2>&1; r=$?
+t "AC9" "the sudo stub: an assembled python3 operand (p=py; p+=thon3) is 'command not found', exit 127" bash -c "[ '$r' = 127 ] && grep -q 'python3: command not found' '$work/rp.log'"
+for stub in "$stubs/unshare" "$rpw/unshare"; do
+  : >"$CALLS"; ( cd "$work/rp-cwd" && env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" "$stub" -n python3 -I -B bin/net-probe.py ) >"$work/rp.log" 2>&1; r=$?
+  t "AC9" "the probe stub ($(basename "$(dirname "$stub")")): python3 in the working directory is not a program on the search path: exit 127, not 101" bash -c "[ '$r' = 127 ]"
+  : >"$CALLS"; ( env -i PATH=/nonexistent CALLS="$CALLS" "$BASH_BIN" "$stub" -n /definitely/missing/python3 -I -B bin/net-probe.py ) >"$work/rp.log" 2>&1; r=$?
+  t "AC9" "the probe stub ($(basename "$(dirname "$stub")")): a missing absolute program is exit 127" bash -c "[ '$r' = 127 ]"
+done
+# 2c. a network-classified melange failure reaches the probe: sudo unshare -n python3 net-probe.py, exit 4
+rp_extra=("${RP_GO[@]}" STUB_NETATTEMPT=1); rp_build "$work/ba-copy.sh" "$(mo)"
+t "AC9" "build-apk.sh: a network failure with PATH holding only the coreutils runs the probe by fixed paths and exits 4 naming the attempt" bash -c "[ '$(cat "$work/rp.rc")' = 4 ] && grep -q 'network attempt was made' '$work/rp.log' && grep -Eq '^unshare -n .*net-probe.py' '$CALLS'"
+for m in ba-probe-sudo ba-probe-unshare ba-probe-python3 ba-probe-assembled ba-probe-basename ba-probe-sudo-py; do
+  case $m in ba-probe-sudo|ba-probe-assembled|ba-probe-basename) tool=sudo;; ba-probe-unshare) tool=unshare;; *) tool=python3;; esac
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/$m.sh'"
+  rp_build "$rpm/$m.sh" "$(mo)"
+  t "AC9" "$m: $tool by bare name in the network probe is not found: the run does not exit 4 and does not claim a network attempt" bash -c "[ '$(cat "$work/rp.rc")' != 0 ] && [ '$(cat "$work/rp.rc")' != 4 ] && ! grep -q 'network attempt was made' '$work/rp.log' && grep -Eqi '$tool.*(not found|No such file)' '$work/rp.log'"
+done
+# 3. the nonfatal sysctl call: its failure is proved by its diagnostic and effect (production: '|| echo warning')
+t "AC9" "ba-sysctl-sudo differs from the copy it was made from" bash -c "! cmp -s '$work/ba-copy.sh' '$rpm/ba-sysctl-sudo.sh'"
+rp_extra=("${RP_GO[@]}"); rp_build "$rpm/ba-sysctl-sudo.sh" "$(mo)"
+t "AC9" "ba-sysctl-sudo: sudo by bare name in the sysctl call is 'not found' (named), the warning 'could not relax' is printed and no sysctl call was made; the call is nonfatal by design" bash -c "grep -q 'sudo: command not found' '$work/rp.log' && grep -q 'could not relax' '$work/rp.log' && ! grep -q '^sysctl' '$CALLS'"
+rp_build "$work/ba-copy.sh" "$(mo)"
+t "AC9" "build-apk.sh: the control prints no sysctl warning and does call sysctl" bash -c "! grep -q 'could not relax' '$work/rp.log' && grep -q '^sysctl' '$CALLS'"
+# --- release-sign-apks.sh -------------------------------------------------------------------------------------------
+rp_sign_dirs() { rm -rf "$work/$1" "$work/$2"; mkdir -p "$work/$1/x86_64" "$work/$2/x86_64"; cp "$fx/pair/a.apk" "$work/$1/x86_64/fscache-0.3.0-r0.apk"; cp "$fx/pair/a.apk" "$work/$2/x86_64/fscache-0.3.0-r0.apk"; }
+rp_sign_dirs rpA rpB; rp_extra=(); rp_sign "$work/rs-copy.sh" "$work/rpA" "$work/rpB"; rps_rc=$(cat "$work/rp.rc"); rps_calls=$(tools_called)
+rp_sign_dirs ruA ruB; run_s "$work/rs-copy.sh" --build-dir "$work/ruA" --rebuild-dir "$work/ruB" --key "$work/release.rsa"; rus_calls=$(tools_called)
+t "AC9" "release-sign-apks.sh: the control run with PATH holding only the coreutils completes and says it signed" bash -c "[ '$rps_rc' = 0 ] && grep -q '^signed 1 apk' '$work/rp.log'"
+t "AC9" "release-sign-apks.sh: it completes exactly as the unrestricted control: the same tool calls, the same signed apk" bash -c "[ '$rps_calls' = '$rus_calls' ] && [ -n '$rps_calls' ] && cmp '$work/rpA/x86_64/fscache-0.3.0-r0.apk' '$work/ruA/x86_64/fscache-0.3.0-r0.apk'"
+python3 - "$work/rs-copy.sh" "$rpm" <<'PY'
+import sys
+src = open(sys.argv[1]).read()
+MS = '"$melange_bin" sign'
+M = {
+ "rs-melange":  [(MS, 'melange sign')],
+ "rs-python3":  [('sg=$("$PY3" -I -B bin/apk-tool.py signer', 'sg=$(python3 -I -B bin/apk-tool.py signer')],
+ "rs-python3-derive": [('"$PY3" -I -B - "$1" "$OPENSSL" <<', 'python3 -I -B - "$1" "$OPENSSL" <<')],
+ "rs-openssl":  [('relpub=$("$OPENSSL" rsa -pubin -in "$keysdir/release.rsa.pub" -pubout 2>/dev/null)', 'relpub=$(openssl rsa -pubin -in "$keysdir/release.rsa.pub" -pubout)')],
+ "rs-openssl2": [('asmpub2=$("$OPENSSL" rsa -pubin -in "$keysdir/assembly.rsa.pub" -pubout 2>/dev/null)', 'asmpub2=$(openssl rsa -pubin -in "$keysdir/assembly.rsa.pub" -pubout)')],
+ "rs-brace":    [(MS, 'mela{n..n}ge sign')],
+ "rs-quote":    [(MS, 'm\'elang\'e sign')],
+ "rs-printf":   [(MS, '"$(printf mela)nge" sign')],
+ "rs-append":   [('melange_bin=$MELANGE;', 'melange_bin=$MELANGE; m=mela; m+=nge;'), (MS, '"$m" sign')],
+ "rs-git":      [('tmp=$(mktemp -d)\n', 'git --version >/dev/null\ntmp=$(mktemp -d)\n')],   # inserted calls: the script has no git, sha256sum, sudo or env site of its own
+ "rs-sha256sum": [('tmp=$(mktemp -d)\n', 'sha256sum /dev/null >/dev/null\ntmp=$(mktemp -d)\n')],
+}
+for name, pairs in M.items():
+    t = src
+    for old, new in pairs:
+        assert t.count(old) == 1, (name, old, t.count(old))
+        t = t.replace(old, new)
+    assert t != src
+    open("%s/%s.sh" % (sys.argv[2], name), "w").write(t)
+PY
+rs_refused() { local m=$1 tool=$2 desc=$3
+  t "AC9" "$m differs from the copy it was made from" bash -c "! cmp -s '$work/rs-copy.sh' '$rpm/$m.sh'"
+  rp_sign_dirs rpC rpD; rp_extra=(); rp_sign "$rpm/$m.sh" "$work/rpC" "$work/rpD"
+  if [ "$(cat "$work/rp.rc")" != 0 ] && grep -Eqi -- "$tool.*(not found|No such file or directory)|(not found|No such file or directory).*$tool" "$work/rp.log" && ! grep -q '^melange sign' "$CALLS"; then ok
+  else bad "AC9" "$m: $desc (exit $(cat "$work/rp.rc"), wanted failure naming '$tool' not found, nothing signed)"; fi; }
+rs_refused rs-melange melange "melange called by bare name in the signing call is not found"
+rs_refused rs-python3 python3 "python3 called by bare name (signer read) is not found"
+rs_refused rs-python3-derive python3 "python3 called by bare name (key derivation) is not found"
+rs_refused rs-openssl openssl "openssl called by bare name (release public key) is not found"
+rs_refused rs-openssl2 openssl "openssl called by bare name (assembly public key) is not found"
+rs_refused rs-git git "git called by bare name (inserted call) is not found"
+rs_refused rs-sha256sum sha256sum "sha256sum called by bare name (inserted call) is not found"
+for m in rs-brace rs-quote rs-printf rs-append; do rs_refused $m melange "melange assembled by $m is not found"; done
+# the python subprocess sites: a bare "openssl" there must not resolve (an env without PATH would make python search its default path)
+mkdir -p "$rpm/here"
+python3 - "$work/rs-copy.sh" "$rpm" "$root/bin/apk-tool.py" <<'PYM'
+import sys
+src = open(sys.argv[1]).read(); out = sys.argv[2]
+a = '[sys.argv[2], "rsa", "-pubout"'
+assert src.count(a) == 1
+open(out + "/rs-pyopenssl.sh", "w").write(src.replace(a, '["openssl", "rsa", "-pubout"'))
+tool = open(sys.argv[3]).read()
+b = 'r = subprocess.run([_openssl(), "dgst"'
+assert tool.count(b) == 1
+open(out + "/here/apk-tool.py", "w").write(tool.replace(b, 'r = subprocess.run(["openssl", "dgst"'))
+assert src.count("-I -B bin/apk-tool.py") >= 6
+open(out + "/rs-tool-openssl.sh", "w").write(src.replace("-I -B bin/apk-tool.py", "-I -B " + out + "/here/apk-tool.py"))   # the mutated copy of the tool, named by its absolute path
+PYM
+rs_refused rs-pyopenssl openssl "openssl by bare name in the key-derivation subprocess is not found"
+rs_refused rs-tool-openssl openssl "openssl by bare name in apk-tool.py's verify subprocess is not found"
+
+# ---- bin/release-sign-apks.sh names bin/apk-tool.py by its literal repo-root path and reads names with read -r (handoff 0434; AC7 clause, proposed) ----
+t "AC7" "release-sign-apks.sh: no command names a script through a variable path (no \"\$here/\" anywhere) and no IFS= read is used" bash -c "! grep -v '^ *#' '$RS_REAL' | grep -Eq 'here/|IFS= *read'"
+t "AC7" "release-sign-apks.sh: bin/apk-tool.py is named by its literal repo-root path at every call (six or more sites, none other)" bash -c "n=\$(grep -c -- '-I -B bin/apk-tool.py' '$RS_REAL'); [ \"\$n\" -ge 6 ] && ! grep 'PY3.*apk-tool.py' '$RS_REAL' | grep -qv -- '\"\$PY3\" -I -B bin/apk-tool.py'"
+t "AC7" "release-sign-apks.sh: no comment names bin/install-build-tools.sh" bash -c "! grep -q '#.*install-build-tools' '$RS_REAL'"
+rp_sign_dirs fcA fcB
+( cd "$work" && env -i PATH="$PATH" HOME=/nonexistent LC_ALL=C "$BASH_BIN" "$work/rs-copy.sh" --build-dir "$work/fcA" --rebuild-dir "$work/fcB" --key "$work/release.rsa" ) >"$work/fc.log" 2>&1; fc=$?
+t "AC7" "release-sign-apks.sh: a run from another directory is refused (exit 2) with a message naming the repository root, and signs nothing" bash -c "[ '$fc' = 2 ] && grep -qi 'repository root' '$work/fc.log' && ! grep -q 'signed' '$work/fc.log'"
 
 echo "build-apk-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
