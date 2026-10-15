@@ -1056,6 +1056,7 @@ mappings:
   - ac: REQ-REFRESH-001-AC26
     evidence:
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-REFRESH-001-AC27
     evidence:
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
@@ -1065,9 +1066,11 @@ mappings:
   - ac: REQ-REFRESH-001-AC29
     evidence:
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-REFRESH-001-AC30
     evidence:
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }
+      - { type: shell-test, ref: "bin/refresh-inputs-test.sh" }
   - ac: REQ-REFRESH-001-AC31
     evidence:
       - { type: shell-test, ref: "bin/go-freshness-wiring-test.sh" }

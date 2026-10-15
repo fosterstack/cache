@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23
+# proves: REQ-REFRESH-001-AC1, REQ-REFRESH-001-AC2, REQ-REFRESH-001-AC3, REQ-REFRESH-001-AC4, REQ-REFRESH-001-AC5, REQ-REFRESH-001-AC6, REQ-REFRESH-001-AC7, REQ-REFRESH-001-AC8, REQ-REFRESH-001-AC10, REQ-REFRESH-001-AC11, REQ-REFRESH-001-AC12, REQ-REFRESH-001-AC13, REQ-REFRESH-001-AC14, REQ-REFRESH-001-AC15, REQ-REFRESH-001-AC16, REQ-REFRESH-001-AC17, REQ-REFRESH-001-AC18, REQ-REFRESH-001-AC19, REQ-REFRESH-001-AC20, REQ-REFRESH-001-AC21, REQ-REFRESH-001-AC22, REQ-REFRESH-001-AC23, REQ-REFRESH-001-AC26, REQ-REFRESH-001-AC29, REQ-REFRESH-001-AC30
 # Tests of the PR: the daily input refresh script and the daily FIPS-module check.
 # Split mechanically from the original suite: the sections between the markers are copied byte for byte, the harness is
 # bin/melange-apko-lib.sh. Every assertion runs offline against PATH stubs; nothing here calls a real sudo, sysctl,
@@ -30,7 +30,7 @@ for d, over in (("rfcopy", {}), ("rfcopy-nossl", {"OPENSSL": "/nonexistent/opens
     assert seen == set(names), sorted(set(names) - seen)
     dst = "%s/%s/bin" % (work, d)
     open(dst + "/refresh-inputs.sh", "w").write("\n".join(out)); os.chmod(dst + "/refresh-inputs.sh", 0o755)
-    for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh"):
+    for h in ("gen-recipes.py", "apk-tool.py", "apko-lock.sh", "archive-verify.py"):
         shutil.copy(os.path.dirname(prod) + "/" + h, dst + "/" + h)
 P
 RF="$rfd/rfcopy/bin/refresh-inputs.sh"; RFN="$rfd/rfcopy-nossl/bin/refresh-inputs.sh"
@@ -1170,5 +1170,50 @@ run_s4 "${rfe[@]}" "$RF" refresh --pr-author app/bot --repo-dir "$work/rp" --arc
 t "rule 31" "AC22 probe B (B0): a SIGNED legacy plain pointer equal to the record is accepted (exit 0, nothing changed)" bash -c "test \"\$(cat '$work/rc')\" = 0 && grep -qi 'nothing changed' '$work/log'"
 
 # ---- end verbatim sections ----
+# ===== the refresh job's order (owner's rules 6 and 7 of Oct 14; advisor 0440): the archive is stored first and the pull request carries the new pointer ======
+# `refresh --plan-dir DIR` stages everything (archive, locks) and writes the pull request it would open into DIR without touching git or gh;
+# `open-pr --plan-dir DIR [--archive DIR --archive-digest sha256:HEX]` then opens each planned pull request, adding build/archive.json (the pointer
+# naming the stored digest and the archive's files) to the refresh one. `bootstrap` seeds an empty archive with the live Wolfi key, only when its
+# sha256 is the line pinned in build/locks/archive-keys.sha256.
+DIGEST_X=sha256:$(printf 'a%.0s' $(seq 1 64))
+mkrepo; rm -rf "$work/plan"
+run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+t "AC26" "refresh --plan-dir: the update is staged (exit 0, the new apk archived, the locks updated) and a plan is written" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -f '$work/ar/x86_64/tzdata-2026b-r0.apk' && test -d '$work/plan' && test -n \"\$(ls '$work/plan')\" && grep -q 'tzdata' '$work/rp/build/locks/apko.base.lock.json'"
+t "AC26" "refresh --plan-dir: no pull request, branch, commit or push yet (gh and git were not asked to change anything)" bash -c "! grep -Eq '^gh pr create|^git( -C [^ ]+)? (commit|push|checkout)' '$CALLS'"
+t "AC29" "refresh --plan-dir: the plan names a refresh/ branch and the changed lock files, and not build/archive.json" bash -c "grep -rq '^refresh/' '$work/plan' && grep -rq 'build/locks/apko.base.lock.json' '$work/plan' && ! grep -rq 'build/archive.json' '$work/plan'"
+cp -R "$work/ar" "$work/ar-keep"
+run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp" --archive "$work/ar" --archive-digest "$DIGEST_X"
+t "AC29" "open-pr: exactly one pull request is opened, from a refresh/ branch, never merged, and nothing is pushed to main" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -q refresh && ! grep -E '^git( -C [^ ]+)? push' '$CALLS' | grep -Eq '( |:|/)main( |\$)' && ! grep -Eq '^gh pr (merge|review)|--admin|--auto' '$CALLS'"
+t "AC29" "open-pr: the pull request carries build/archive.json, a valid pointer naming the stored digest and the archive's files" bash -c "python3 '$rfd/rfcopy/bin/archive-verify.py' verify --pointer '$work/rp/build/archive.json' --dir '$work/ar' --pushed-digest '$DIGEST_X' && grep -Eq '^git( -C [^ ]+)? add .*build/archive.json' '$CALLS'"
+mkrepo; rm -rf "$work/plan"
+run_s2 "${rfn[@]}" "$RF" refresh --plan-dir "$work/plan" --pr-author app/bot --repo-dir "$work/rp" --archive "$work/ar"
+run_s2 env "${rfn[@]:1}" "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp"
+t "AC29" "open-pr without an archive digest opens the pull request without a pointer (nothing was stored)" bash -c "test \"\$(cat '$work/rc')\" = 0 && test \"\$(grep -c '^gh pr create' '$CALLS')\" = 1 && ! test -e '$work/rp/build/archive.json'"
+rm -rf "$work/plan-empty"; mkdir -p "$work/plan-empty"
+mkrepo; run_s2 "$RF" open-pr --plan-dir "$work/plan-empty" --repo-dir "$work/rp"
+t "AC29" "open-pr with an empty plan opens nothing and exits 0 saying so" bash -c "test \"\$(cat '$work/rc')\" = 0 && ! grep -q '^gh pr create' '$CALLS' && grep -qi 'nothing' '$work/log'"
+rm -rf "$work/plan-bad"; mkdir -p "$work/plan-bad/1-refresh"; printf 'main\n' >"$work/plan-bad/1-refresh/branch"
+mkrepo; run_s2 "$RF" open-pr --plan-dir "$work/plan-bad" --repo-dir "$work/rp"
+t "AC29" "open-pr refuses a plan that names a branch not under refresh/ or lacks a file (exit 2, no pull request, nothing pushed)" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -Eq '^gh pr create|^git( -C [^ ]+)? push' '$CALLS'"
+mkrepo; run_s2 "$RF" open-pr --plan-dir "$work/plan" --repo-dir "$work/rp" --archive-digest not-a-digest --archive "$work/ar-keep"
+t "AC29" "open-pr refuses a digest that is not sha256:<64 hex> (exit 2, no pull request)" bash -c "test \"\$(cat '$work/rc')\" = 2 && ! grep -q '^gh pr create' '$CALLS'"
+# bootstrap
+KEYSHA=$(shasum -a 256 "$fx/archive/keys/wolfi-signing.rsa.pub" | cut -d' ' -f1)
+mkrepo; rm -rf "$work/ar-boot"; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env STUB_LIVE_KEY="$fx/archive/keys/wolfi-signing.rsa.pub" "${rfe[@]:1}" "$RF" bootstrap --repo-dir "$work/rp" --archive "$work/ar-boot"
+t "AC26" "bootstrap: a live key whose sha256 is the pinned line seeds the new archive with keys/wolfi-signing.rsa.pub (exit 0)" bash -c "test \"\$(cat '$work/rc')\" = 0 && cmp '$work/ar-boot/keys/wolfi-signing.rsa.pub' '$fx/archive/keys/wolfi-signing.rsa.pub'"
+mkrepo; rm -rf "$work/ar-boot"; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$(printf 'b%.0s' $(seq 1 64))" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env "${rfe[@]:1}" "$RF" bootstrap --repo-dir "$work/rp" --archive "$work/ar-boot"
+t "AC30" "bootstrap: a live key that is not the pinned one stops the job (exit 3, a human must look) and writes nothing" bash -c "test \"\$(cat '$work/rc')\" = 3 && ! test -e '$work/ar-boot'"
+mkrepo; rm -rf "$work/ar-boot"; rm -f "$work/rp/build/locks/archive-keys.sha256"
+run_s2 env "${rfe[@]:1}" "$RF" bootstrap --repo-dir "$work/rp" --archive "$work/ar-boot"
+t "AC30" "bootstrap: no pinned key line is exit 3 (never trust on first use) and writes nothing" bash -c "test \"\$(cat '$work/rc')\" = 3 && ! test -e '$work/ar-boot'"
+mkrepo; printf 'wolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env "${rfe[@]:1}" "$RF" bootstrap --repo-dir "$work/rp" --archive "$work/ar"
+t "AC26" "bootstrap: an archive directory that already holds files is refused (exit 2), so a pointer-less run never overwrites an archive" bash -c "test \"\$(cat '$work/rc')\" = 2"
+mkrepo; rm -rf "$work/ar-boot"; printf 'wolfi-signing.rsa.pub sha256:%s\nwolfi-signing.rsa.pub sha256:%s\n' "$KEYSHA" "$KEYSHA" >"$work/rp/build/locks/archive-keys.sha256"
+run_s2 env "${rfe[@]:1}" "$RF" bootstrap --repo-dir "$work/rp" --archive "$work/ar-boot"
+t "AC30" "bootstrap: a repeated or malformed key line is exit 3 and writes nothing" bash -c "test \"\$(cat '$work/rc')\" = 3 && ! test -e '$work/ar-boot'"
+
 echo "refresh-inputs-test: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
