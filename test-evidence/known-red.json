@@ -8,28 +8,13 @@
    "reason": "the real-tree judge still finds the missing cache files (bin/build-apk.sh, bin/assemble-image.sh, bin/apk-tool.py, archive/): the build-stage scripts run them and `runs` entries must be listed rows; PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
    "green_by": "cache P4/P5",
    "findings": [
-    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
-    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
     "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
-    "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-snapshot-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-version-check.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/chain_items.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list"
+    "AC1: bin/release-sign-apks.sh: names the script '$here/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/release-sign-apks.sh: sets IFS (it can make a shell, interpreter or tool load other code)"
    ]
   },
   {
@@ -39,28 +24,13 @@
    "reason": "the same real-tree findings (missing cache scripts); PR 4 adds the three cache scripts its release steps run, listed in the rows' runs but not yet listed rows themselves (bin/apk-tool.py, bin/release-sign-apks.sh, bin/vendor-provenance.py)",
    "green_by": "cache P4/P5",
    "findings": [
-    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
-    "AC1: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
     "AC1: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed",
-    "AC1: bin/build-archives.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/build-stage-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-snapshot-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-snapshot-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: names the command 'archive/go' by a path (name it bare, so its `tools` row governs it; only an operand of a data-only command, of an interpreter run on a listed script or of a listed script is allowed)",
-    "AC1: bin/build-stage-snapshot-rebuild-apk.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/build-apk.sh' at command position is not an exact listed path of this script's `runs`",
     "AC1: bin/build-stage-snapshot-rebuild-assemble.sh: './bin/assemble-image.sh' at command position is not an exact listed path of this script's `runs`",
-    "AC1: bin/build-version-check.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list",
-    "AC1: bin/chain_items.py: names the script 'bin/apk-tool.py', which is not exactly a path in this script's `runs` list"
+    "AC1: bin/release-sign-apks.sh: names the script '$here/apk-tool.py', which is not exactly a path in this script's `runs` list",
+    "AC1: bin/release-sign-apks.sh: sets IFS (it can make a shell, interpreter or tool load other code)"
    ]
   },
   {
@@ -87,8 +57,6 @@
    "reason": "the same three cache scripts: Release's rows list bin/apk-tool.py, bin/release-sign-apks.sh and bin/vendor-provenance.py in `runs`, and they are not listed rows of chain-scripts.json until cache lands them; the entry shrinks by one finding as each lands",
    "green_by": "cache P4/P5 (bin/apk-tool.py, bin/release-sign-apks.sh) and the vendoring PR (bin/vendor-provenance.py)",
    "findings": [
-    "chain-scripts.json: chain-scripts.json: bin/release-apks.sh runs 'bin/apk-tool.py', which is not listed",
-    "chain-scripts.json: chain-scripts.json: bin/release-apks.sh runs 'bin/release-sign-apks.sh', which is not listed",
     "chain-scripts.json: chain-scripts.json: bin/release-sign.sh runs 'bin/vendor-provenance.py', which is not listed"
    ]
   },
