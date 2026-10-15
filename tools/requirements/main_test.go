@@ -243,6 +243,7 @@ func fixtureWithMappings(t *testing.T, mappingsYAML string) {
 	if err := os.WriteFile("test-evidence/mappings.yaml", []byte(mappingsYAML), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeFixtureModule(t) // a go-test mapping is answered by `go list`, which needs a module
 }
 
 func TestMappingToMissingGoTestFails(t *testing.T) {

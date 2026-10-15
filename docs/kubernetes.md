@@ -58,7 +58,8 @@ scheduled. The smallest practical node on managed Kubernetes is 2 GB. If you
 size a node pool from the 1 GB machine minimum, the pod will not schedule.
 
 Disk is the variable that matters: size the PVC from `FSCACHE_MAX_BYTES` plus
-about 20% headroom, not the other way round.
+about 20% headroom, not the other way round (see [Sizing](docker-deploy.md#sizing)
+for the in-flight upload caveat).
 
 ## Secret (credentials)
 
@@ -204,14 +205,101 @@ the guard that matters.
 shell, no `curl` — so an `exec` probe has nothing to run. Same reason the
 [Docker deploy doc](docker-deploy.md) ships no container `HEALTHCHECK`.
 
+Point liveness and readiness probes at `/healthz`. Every path other than the
+reserved endpoints (`/`, `/healthz`, `/metrics`, `/statusz`) is a cache key: a
+GET of an absent key returns 404 and counts as a miss, so a probe pointed at
+one fails and skews the hit ratio.
+
+**/healthz is liveness only.** It answers 200 "ok" whenever the process is
+serving and never reports a full or read-only data directory, so a bad disk can
+never restart or unroute the pod through these probes (a restart would not free a
+full volume anyway). To be told about disk trouble, alert on
+`fscache_store_writable == 0`, on `fscache_store_free_bytes` falling below your
+threshold, and on `rate(fscache_put_errors_total[5m]) > 0`. Builds are unaffected
+while the disk is bad: reads still work and a failed store is a 500 (or 413 for an
+oversized entry) on that one PUT, exactly as before.
+
+### Alerting on disk trouble
+
+Example Prometheus expressions, not shipped configuration. The series exist at 0
+from the first scrape, so `increase()` and `rate()` work immediately.
+
+- **Page:** `fscache_store_writable == 0` for 5 minutes (read-only mount, wrong
+  permissions, full disk). The check creates, syncs and deletes one small file
+  in the data directory at most once every 5 seconds while something scrapes; on
+  a network volume with a slow sync it can read 0 for a slow-but-working volume,
+  so use `for: 5m`, not an instant alert.
+- **Warn:** `fscache_store_free_bytes < 10 * 1024^3` for 10 minutes, or less than
+  10 percent of the volume. This is the free space of the filesystem that holds
+  the data directory (what `df` shows as Avail), not of the cache cap; pick the
+  threshold per volume. The gauge is a float64, exact up to 2^53 bytes; `/statusz`
+  gives the exact count.
+  If the volume hangs completely (a sync that never returns), `fscache_store_free_bytes` stays at its last value because the measurement never finishes again:
+  the free-bytes alert is not a substitute for the `fscache_store_writable == 0` alert in that case.
+- **Warn:** `increase(fscache_put_errors_total{reason=~"no_space|read_only|other"}[10m]) > 0`.
+- **Information only:** `fscache_put_errors_total{reason="too_large"}` (oversized
+  outputs are normal) and `reason="client_aborted"` (a build that hung up
+  mid-upload is the client's doing, not the server's).
+
+The probe writes only inside the data volume, so `readOnlyRootFilesystem: true`
+does not matter. Not delivered, by decision: taking a pod with a bad disk out of
+the Service. That needs a readiness path, which is a protocol change.
+
+### Startup and reconcile
+
+After an unclean shutdown the server reconciles its stores before it serves.
+The listen socket is already open, so TCP connects succeed during that time,
+but `/healthz` does not answer until the reconcile finishes. On a large store
+that can outlast the liveness probe in the manifest above. The manifest sets
+`initialDelaySeconds: 3` and `periodSeconds: 10`; `timeoutSeconds: 1` and
+`failureThreshold: 3` are Kubernetes defaults, not manifest settings. The probe
+first fires about 3 seconds after the container starts, then every 10, so three
+failures land at roughly 3, 13 and 23 seconds; the kubelet staggers probe
+starts within a period, so the kubelet decides to restart the container at
+roughly 25 to 35 seconds. The server does not act on SIGTERM until a reconcile
+ends, so the container is killed when `terminationGracePeriodSeconds` (default
+30) expires, at about 55 to 65 seconds. A reconcile that runs past that starts
+again from the beginning, because the unclean marker is still there:
+`CrashLoopBackOff`. A reconcile that finishes inside the grace period exits
+cleanly with the marker cleared.
+
+Add a startup probe, which holds the liveness and readiness probes off until it
+first succeeds:
+
+    startupProbe:
+      httpGet:
+        path: /healthz
+        port: http
+      periodSeconds: 10
+      failureThreshold: 60
+
+`failureThreshold` 60 times `periodSeconds` 10 is ten minutes. That is a
+starting point, not a measurement. To size it for your store, time a reconcile
+on a copy of the volume: the `duration` on the `fscache: reconciled` log line
+is the number. It covers the reconcile only, not opening the stores, so treat
+twice that time as a floor: make `failureThreshold` x `periodSeconds` at least
+that. An undersized startup probe restarts the container just as the liveness
+probe did, and the marker makes the next start reconcile from zero.
+
+Do not use a `tcpSocket` probe or an L4 load-balancer health check for this:
+both report healthy during the reconcile because the socket accepts
+connections. Clients that connect meanwhile wait up to their configured read
+timeout instead of getting connection-refused; what happens after that is
+client-specific (Gradle disables the remote cache for the rest of the build,
+see [the Gradle guide](gradle.md)).
+
 ## The data directory
 
 `FSCACHE_DATA_DIR` is **required** in this manifest. The image sets no
 default for it, so the server falls back to `./data` relative to its
-working directory `/home/nonroot` — which on Kubernetes is the pod's
-ephemeral writable layer, not your PVC. Omit the env var and you get a
-cache that appears to work and silently loses everything on every restart.
-Set it to the same path as `volumeMounts[].mountPath`.
+working directory `/home/nonroot`. With this guide's read-only root
+filesystem, omitting the env var stops the pod from starting: it never
+becomes Ready, and the log shows
+`{"msg":"fscache: fatal","error":"write shutdown marker: mkdir data: read-only file system"}`.
+Only if you also make the root filesystem writable do you get a cache that
+appears to work but keeps its data in the pod's ephemeral layer, not your
+PVC, and loses it on every restart. Set it to the same path as
+`volumeMounts[].mountPath`.
 
 ## securityContext
 
@@ -285,8 +373,8 @@ service-to-service hop inside the same cluster buys little for the operational
 cost.
 
 **Wire the credentials into the runner too.** Configuring the server alone is
-half the plumbing — the build needs the same Secret in its environment, or every
-request 401s silently (see [gradle.md](gradle.md#5-credentials-that-stop-working-on-monday)):
+half the plumbing — the build needs the same Secret in its environment, or the
+remote answers 401 and Gradle switches the remote cache off for that build (see [gradle.md](gradle.md#5-credentials-that-stop-working-on-monday)):
 
 ```yaml
 # In your runner pod spec / ARC RunnerScaleSet template
@@ -309,7 +397,7 @@ spec:
 The explicit `secretKeyRef` mapping matters: the Secret's keys are
 `username` and `password`, so an `envFrom` shortcut would inject variables
 with *those* names — not the `FSCACHE_USERNAME` and `FSCACHE_PASSWORD` the
-`settings.gradle.kts` above reads — and every request would 401 silently.
+`settings.gradle.kts` above reads — and the remote would answer 401.
 (An earlier revision of this page made exactly that mistake.)
 
 ## Reaching it from outside the cluster
@@ -444,8 +532,161 @@ ingress-nginx-family-specific; the universal requirement is that every proxy in
 the path allows bodies at least as large as the server's own
 `FSCACHE_MAX_BODY_BYTES` (1 GiB by default).
 
-**Terminate TLS in front.** The server speaks plain HTTP and has no certificate
-handling of its own, by design.
+## TLS: in front, or in the server
+
+There are two ways to serve HTTPS. Neither is preferred; use the one that fits
+how your cluster already handles certificates.
+
+**TLS in front.** A load balancer, Gateway or ingress terminates TLS and
+forwards plain HTTP to the Service, as in the examples above. The server needs
+no certificate, and the manifests on this page apply as written.
+
+**TLS in the server.** Set `FSCACHE_TLS_CERT` and `FSCACHE_TLS_KEY` to a PEM
+certificate file (it may hold the chain) and its private key file. The server
+then serves HTTPS only, on the same port, with TLS 1.2 as the minimum version;
+a plain-HTTP request to that port gets `400`. HTTP/2 is not offered. Setting only one of the two, or a
+file that is missing, unreadable, not PEM, or a key that does not match the
+certificate, stops the start with a message naming the variable and the path,
+before anything under the data directory is touched. Each file may be at most
+1 MiB, and each must be a regular file (a symlink to one, as in a Secret
+volume, is fine).
+
+Put the certificate in a Secret of type `kubernetes.io/tls` and mount it
+read-only. Both files must be readable by the container's non-root user
+(UID 65532 in the manifest above); the server makes no permission check of its
+own, and a Secret volume's default file mode (0644) is readable:
+
+```sh
+kubectl -n fscache-ns create secret tls fscache-server-tls --cert=tls.crt --key=tls.key
+```
+
+This is the Deployment above with the TLS entries merged into its existing
+lists: the two variables join `env`, both probes gain `scheme: HTTPS` (the
+kubelet does not verify the certificate of a probe; a `startupProbe`, if you
+added one, needs the same), and the Secret joins `volumeMounts` and `volumes`
+beside the data volume. Apply it in place of the Deployment above:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fscache
+  labels:
+    app.kubernetes.io/name: fscache
+spec:
+  replicas: 1                     # single-writer bbolt — see above
+  strategy:
+    type: Recreate                # never two pods on one volume
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: fscache
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: fscache
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532            # makes the PVC writable by the image user
+        seccompProfile:
+          # Applies the container runtime's default syscall filter. It is
+          # required by the restricted Pod Security Standard, and free
+          # hardening for a static Go binary that makes no exotic syscalls.
+          type: RuntimeDefault
+      containers:
+        - name: fscache
+          image: ghcr.io/fosterstack/cache:X.Y.Z
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: FSCACHE_DATA_DIR
+              value: /data        # required — see "The data directory"
+            - name: FSCACHE_TLS_CERT
+              value: /etc/fscache/tls/tls.crt
+            - name: FSCACHE_TLS_KEY
+              value: /etc/fscache/tls/tls.key
+            - name: FSCACHE_MAX_BYTES
+              value: "42949672960"   # 40 GiB, under the 50Gi PVC above
+            # Credentials come from the fscache-auth Secret below. Both keys
+            # must be set or neither; the server refuses to start with one.
+            - name: FSCACHE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: fscache-auth
+                  key: username
+            - name: FSCACHE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fscache-auth
+                  key: password
+            # Optional (see docs/docker-deploy.md#configuration).
+            # These are commented out so this manifest applies verbatim as tested;
+            # uncomment to enable.
+            # - name: FSCACHE_MAX_CONCURRENT_UPLOADS   # bound PUTs in flight; default 32, 0 disables; the request past the limit gets 429 + Retry-After
+            #   value: "32"
+            # - name: FSCACHE_RO_USERNAME              # optional read-only pair: reads cache entries but not writes them (a write gets 403)
+            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-username } }
+            # - name: FSCACHE_RO_PASSWORD
+            #   valueFrom: { secretKeyRef: { name: fscache-auth, key: ro-password } }
+            # An entry larger than FSCACHE_MAX_BYTES is refused with 413 and
+            # X-FSCache-Reject: entry-exceeds-cache-cap; nothing is evicted to make room.
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+              scheme: HTTPS
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tls
+              mountPath: /etc/fscache/tls
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: fscache-data
+        - name: tls
+          secret:
+            secretName: fscache-server-tls
+```
+
+The certificate must name the host your clients connect to (for in-cluster
+runners, the Service's DNS name, such as `fscache.fscache-ns.svc.cluster.local`),
+and a certificate from a private CA must be trusted by the build's JVM. Clients
+then use an `https://` URL and no longer need `isAllowInsecureProtocol`.
+
+The files are read only at startup. Kubernetes updates a mounted Secret's files
+in place, but the running server keeps presenting the certificate it started
+with: to rotate, update the Secret, then restart the pod
+(`kubectl -n fscache-ns rollout restart deploy/fscache`). The startup log line
+reports `tls` as `enabled` or `disabled`.
+
+If clients cannot connect over TLS, check from the client side:
+`openssl s_client -connect HOST:PORT -alpn http/1.1` (shows the certificate
+chain, the negotiated version and cipher, and the alert). The server does not
+log handshake failures at the default log level.
 
 ## Applying these manifests
 
