@@ -1026,7 +1026,9 @@ SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between th
 #                                                     otherwise split its own function or branch in two)
 SOURCED_MARK = "#@@" + secrets.token_hex(16) + "-sourced@@"   # first line of a script that was sourced: it runs in its caller's shell, so no literal-variable inference
 _NO_NAME = {"_", "REPLY", "MAPFILE", "OPTARG", "OPTIND", "OPTERR", "COMPREPLY", "BASH_REMATCH", "PIPESTATUS", "RANDOM", "SECONDS", "LINENO", "PWD", "OLDPWD",
-            "UID", "EUID", "PPID", "SHELLOPTS", "BASHOPTS", "PATH", "IFS", "HOME", "SHELL", "ENV", "BASH_ENV"}   # set by the shell or read by it: never a program name
+            "UID", "EUID", "PPID", "SHELLOPTS", "BASHOPTS", "PATH", "IFS", "HOME", "SHELL", "ENV", "BASH_ENV", "GROUPS", "DIRSTACK", "FUNCNAME",
+            "SHLVL", "HOSTNAME", "HOSTTYPE", "MACHTYPE", "OSTYPE", "SRANDOM", "TMOUT", "TIMEFORMAT", "CDPATH", "GLOBIGNORE", "POSIXLY_CORRECT", "MAILPATH",
+            "PS1", "PS2", "PS4", "PROMPT_COMMAND", "LANG", "TERM", "USER", "LOGNAME"}   # set by the shell or read by it: never a program name
 _CONST_PATH = re.compile(r"/[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*")
 
 
@@ -1054,6 +1056,8 @@ def _literal_path_vars(script):
     program named by such a variable stays refused."""
     if SOURCED_MARK in script:
         return {}                                        # sourced: the caller's namerefs, functions and variables reach it
+    if "`" in script or re.search(r"(?<![\w.-])(printf|builtin|command|unset|trap)\s*\(\s*\)|(?<![\w.-])function\s+(printf|builtin|command|unset|trap)(?![\w.-])", script):
+        return {}                                        # a backtick body is a subshell, and a function named like the builtin the assignment form relies on can replace it
     text = re.sub(r"\\\n", "", script)
     nc, bl, open_quote = _mask_shell(text)
     if open_quote or re.search(r"(?<![\w.-])(eval|source)(?![\w.-])|(^|[;&|(\s])\.\s+\S", bl, re.M):
@@ -1068,7 +1072,7 @@ def _literal_path_vars(script):
         if re.search(r"<<|[{}()]|(?<![\w.-])(if|then|else|elif|fi|for|while|until|do|done|case|esac|select|function|coproc)(?![\w.-])",
                      bl[:m.start()]):
             continue                                     # not at top level: after a block, a function, a heredoc or a subshell
-        if name in _NO_NAME or name.startswith(("BASH", "FUNC", "COMP")):
+        if name in _NO_NAME or name.startswith(("BASH", "FUNC", "COMP", "EPOCH", "HIST", "READLINE", "XDG")):
             continue                                     # a name the shell itself writes (read with no name sets REPLY, mapfile MAPFILE, getopts OPTARG)
         # every mention of the name, quotes and all (a quoted target `printf -v "G"` or the same name inside a child script's text counts): exactly one
         # that is the assignment itself, and every other one a `$NAME` / `${NAME}` that is a whole word of its own (a program or an argument),
@@ -2460,6 +2464,10 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
     refused (Codex #164 adversarial r1 C02, r2 C02; advisor 0094)."""
     added, found = [], []
     entries = getattr(tree, "entries", {}) or {}
+    # a dot or source word anywhere in the calling text (`command . x`, `builtin source x`, `exec . x`, whatever wraps it): every script it runs is
+    # treated as sourced, which closes the wrapper forms the command reader does not classify; so is a text that exports a function (the child imports it)
+    sourced_any = bool(re.search(r"(?<![\w./$-])source(?![\w./-])|(^|[;&|(\s])\.\s+\S"
+                           r"|(?<![\w.-])(export|declare|typeset)\s+-[A-Za-z]*f|BASH_FUNC_", _unquoted(text), re.M))   # or exports a function: it reaches every child
     dlnames = _downloaded_commands(job or text)
     if dlnames:
         for chunk in _split_commands(_cut_substitutions(text)[0]):
@@ -2520,10 +2528,11 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=()):
             continue
         content = tree.read(rel)
         inner = _drop_foreign_heredocs(_decode_dollar_quotes(_expand_defaults(re.sub(r"\\\n", "", _rewrite_consts(
-            (SOURCED_MARK + "\n" if len(t) > 2 and t[2] == "sourced" else "") + content)))))
+            (SOURCED_MARK + "\n" if len(t) > 2 and t[2] == "sourced" or sourced_any else "") + content)))))
         cd = bool(re.search(r"(?<![\w./$-])(cd|pushd)(?![\w./-])", _unquoted(inner)))
         more, also = _run_scripts(inner, tree, cd, depth + 1, where, job, bases)
-        added.append(SCRIPT_MARK + "\n" + (SOURCED_MARK + "\n" if len(t) > 2 and t[2] == "sourced" else "") + content
+        sourced = len(t) > 2 and t[2] == "sourced" or sourced_any
+        added.append(SCRIPT_MARK + "\n" + (SOURCED_MARK + "\n" if sourced else "") + content
                      + ("\n" + SCRIPT_MARK + "\n" + more if more else ""))
         found += also
     return "\n".join(added), found
