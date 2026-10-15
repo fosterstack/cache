@@ -2803,5 +2803,25 @@ case_ lit-other-script-reads-bad bad "$(rb 'bash ci-a.sh
 case_ lit-step-text-reads-bad bad "$(rb '"$GIT" status
           bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-lit.sh"
 
+# --- review round 1 of PR 351 (both seats): the variable counts only when EVERY mention of its name in the script is the one assignment or a whole-word
+#     read; a quoted target, an implicit target (REPLY, MAPFILE, OPTARG), a conditional or piped assignment, a forged boundary line, a child script that
+#     names it and a default word that carries it all leave the name unresolved (the program stays refused, as on the base)
+case_ r1-reply-implicit-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'REPLY=/usr/bin/git\nread <<< /usr/bin/docker\n\"\$REPLY\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-mapfile-implicit-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'MAPFILE=/usr/bin/git\nmapfile -t <<< /usr/bin/docker\n\"\$MAPFILE\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-optarg-implicit-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'OPTARG=/usr/bin/git\ngetopts x: opt -x /usr/bin/docker\n\"\$OPTARG\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-quoted-printf-v-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nprintf -v \"G\" %%s /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-quoted-read-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nread \"G\" <<< /usr/bin/docker\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-quoted-declare-target-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\ndeclare \"G=/usr/bin/docker\"\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-and-list-assignment-bad bad "$(rb 'bash ci-lit.sh')" "printf 'false &&\nG=/usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-or-list-assignment-bad bad "$(rb 'bash ci-lit.sh')" "printf 'true ||\nG=/usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-piped-assignment-bad bad "$(rb 'bash ci-lit.sh')" "printf 'true |\nG=/usr/bin/git\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-forged-boundary-in-function-bad bad "$(rb 'bash ci-lit.sh')" "printf 'f() {\n#@@fscache-script-boundary@@\nG=/usr/bin/git\n}\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-forged-boundary-in-branch-bad bad "$(rb 'bash ci-lit.sh')" "printf 'if false; then\n#@@fscache-script-boundary@@\nG=/usr/bin/git\nfi\n\"\$G\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-child-shell-names-it-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nbash -c \x27G=/usr/bin/docker; \"\$G\" run alpine:latest\x27\n' > ci-lit.sh"
+case_ r1-default-word-carries-it-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\${OTHER:-\$G}\" run alpine:latest\n' > ci-lit.sh"
+case_ r1-literal-dollar-file-name-ok ok "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nbash \x27./\$G\x27\n' > ci-lit.sh; printf 'git status\n' > '\$G'; chmod 755 '\$G'"
+case_ r1-default-in-step-text-does-not-leak-ok ok "$(rb ': "${G:-ok}"
+          bash ci-lit.sh')" "printf 'G=/usr/bin/git\n\"\$G\" status\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
