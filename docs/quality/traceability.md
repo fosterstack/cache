@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 84 |
-| Acceptance criteria | 294 |
+| Active requirements | 85 |
+| Acceptance criteria | 297 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 278 |
+| ACs with mapped evidence | 281 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 38 |
+| Confidence: implementation-only | 39 |
 
 ## Cache protocol
 
@@ -1119,6 +1119,22 @@ The image digest shall be the digest of the OCI index of the image tar (bin/oci-
 | REQ-BUILDTOOLS-002-AC1 | Given an OCI image layout tarball; when oci-digest.py TAR runs; then it prints the digest of the OCI index (not the tar's hash) and one line per architecture manifest, requires exactly one amd64 and one arm64 manifest each with a platform architecture (and, in the standard layout, exactly one index blob and the OCI media types), reads members named with a leading ./, and exits 1 naming the file or blob when index.json is missing or a blob does not hash to its name (rules 30, 31) | unit |  | approved | 1 item(s) |
 | REQ-BUILDTOOLS-002-AC2 | Given a network namespace; when net-probe.py runs; then it connects to 192.0.2.1:9 and exits with the connect errno, so 101 (ENETUNREACH) means the namespace has no route (rule 40) | unit |  | approved | 1 item(s) |
 | REQ-BUILDTOOLS-002-AC3 | Given an OCI image tar (the standard layout, or the tar real apko writes) and an empty or absent directory; when oci-digest.py unpack TAR DIR DIGEST MANIFESTS runs; then it validates the tar as AC1 does, writes the image into DIR as an OCI layout directory (oci-layout, a one-descriptor index.json naming the index blob, blobs/sha256/<hex>) with every blob hashing to its name, regular files with mode 0644 in directories 0755, writes the index digest as one line to DIGEST and one '<arch> sha256:<hex>' line per architecture to MANIFESTS, and refuses a DIR that exists and is not an empty directory | unit |  | approved | 1 item(s) |
+
+## VEND
+
+### REQ-VEND-001 — Vendored dependencies with checked provenance
+
+The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code; dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin, commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vendor-check.sh; bin/vendoring-test.sh; .github/workflows/ci.yml; bin/check-file-allowlist.sh*
+
+> This requirement is landed in parts. This part holds the regenerate-and-compare check, the required `vendor` job and the vendor/ allowlist pattern (AC2, AC3, AC11); the provenance file and its check (AC4, AC5), the vendored tree (AC1, AC6), the evidence file (AC7-AC10, AC12), the public wording (AC13) and the two-module origins record (AC14) follow in the vendored-tree PR with their own tests and mappings.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-VEND-001-AC2 | Given bin/vendor-check.sh run on a copy of a tree that holds vendor/, go.mod and go.sum; when it regenerates vendor/ with go mod verify then go mod vendor in a scratch directory; then it exits 0 only when the regenerated vendor/ equals the committed vendor/ (the same files, the same bytes, mode 100644 for every file, vendor/modules.txt included, no link, no special file); a changed byte, an added file, a removed file, an edited modules.txt or go.sum drift, a dot component (also one that go mod vendor itself regenerates, such as an embedded dot file), an empty directory, a link or a file that is not mode 100644 exits 1 naming the first offending path; a go.mod or go.sum that go mod vendor changes in the scratch copy exits 1 naming the file; a missing go toolchain, a proxy that cannot serve the modules or a failed go mod verify exits 1 and never passes; an unreadable tree, an unknown argument or a tree with vendor/ but no go.mod and go.sum exits 2. A tree with no vendor/ passes (with the printed line) only when no path of it has a vendor component AND origin/main holds no path with a vendor component; a vendor path that is not a vendor/ directory at the top exits 2; an unreadable origin/main, a tree or a base listing that does not complete, or a tree that is not a git tree exits 1; the base's paths are read NUL-delimited, so a name with a quote, a tab or a non-ASCII byte is found | unit |  | approved | 1 item(s) |
+| REQ-VEND-001-AC3 | Given the required CI job named vendor and a pull request opened or updated by anyone, Dependabot included; when it runs; then it runs on a GitHub-hosted runner with the whole history fetched, runs go mod verify and bin/vendor-check.sh, sets no sumdb opt-out (GOSUMDB=off, GONOSUMDB, GOFLAGS=-insecure, GOPRIVATE, -mod=mod), has no actor, author or branch condition that skips it, and fails a Dependabot bump that leaves vendor/ stale. (The provenance check joins this job in the vendored-tree PR.) | ci-workflow |  | approved | 1 item(s) |
+| REQ-VEND-001-AC11 | Given bin/vendor-check.sh; when the release chain's script judge scans it; then it is named by a literal repository-relative path, has a shebang and mode 100755, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no here-document interpreter, builds no command word by substitution, and exits 2 when not run from the repository root | unit |  | approved | 1 item(s) |
 
 ## BUILDAPK
 

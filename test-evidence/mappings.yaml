@@ -966,6 +966,15 @@ mappings:
   - ac: REQ-BUILDTOOLS-002-AC3
     evidence:
       - { type: shell-test, ref: "bin/assemble-image-test.sh" }
+  - ac: REQ-VEND-001-AC2
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC3
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
+  - ac: REQ-VEND-001-AC11
+    evidence:
+      - { type: shell-test, ref: "bin/vendoring-test.sh" }
   - ac: REQ-BUILDAPK-001-AC1
     evidence:
       - { type: shell-test, ref: "bin/build-apk-test.sh" }

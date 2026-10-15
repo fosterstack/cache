@@ -2922,6 +2922,40 @@ requirements:
         then: "it validates the tar as AC1 does, writes the image into DIR as an OCI layout directory (oci-layout, a one-descriptor index.json naming the index blob, blobs/sha256/<hex>) with every blob hashing to its name, regular files with mode 0644 in directories 0755, writes the index digest as one line to DIGEST and one '<arch> sha256:<hex>' line per architecture to MANIFESTS, and refuses a DIR that exists and is not an empty directory"
         verification: { method: unit, release_blocking: false }
         status: approved
+  - id: REQ-VEND-001
+    title: Vendored dependencies with checked provenance
+    statement: >
+      The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code;
+      dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin,
+      commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
+    source: [bin/vendor-check.sh, bin/vendoring-test.sh, .github/workflows/ci.yml, bin/check-file-allowlist.sh]
+    tier: community
+    introduced: v0.3.0
+    origin: owner-ratified dependency rules 1-10 (ops/docs/ratify/2026-10-09-v030-rules.md, VEND-1..8, 41, 45); the check coded on the owner's "code it" Oct 14 (ops/docs/ratify/2026-10-14-vendored-dependencies-check.md); ACs accepted by the advisor, step 5, Oct 12 2026; AC2 amended by advisor ruling Oct 14 (mode 100644; the narrow no-vendor/ pass) under the owner's byte-for-byte words
+    confidence: implementation-only
+    notes: >
+      This requirement is landed in parts. This part holds the regenerate-and-compare check, the required `vendor` job and the vendor/ allowlist
+      pattern (AC2, AC3, AC11); the provenance file and its check (AC4, AC5), the vendored tree (AC1, AC6), the evidence file (AC7-AC10, AC12),
+      the public wording (AC13) and the two-module origins record (AC14) follow in the vendored-tree PR with their own tests and mappings.
+    acceptance_criteria:
+      - id: REQ-VEND-001-AC2
+        given: "bin/vendor-check.sh run on a copy of a tree that holds vendor/, go.mod and go.sum"
+        when: "it regenerates vendor/ with go mod verify then go mod vendor in a scratch directory"
+        then: "it exits 0 only when the regenerated vendor/ equals the committed vendor/ (the same files, the same bytes, mode 100644 for every file, vendor/modules.txt included, no link, no special file); a changed byte, an added file, a removed file, an edited modules.txt or go.sum drift, a dot component (also one that go mod vendor itself regenerates, such as an embedded dot file), an empty directory, a link or a file that is not mode 100644 exits 1 naming the first offending path; a go.mod or go.sum that go mod vendor changes in the scratch copy exits 1 naming the file; a missing go toolchain, a proxy that cannot serve the modules or a failed go mod verify exits 1 and never passes; an unreadable tree, an unknown argument or a tree with vendor/ but no go.mod and go.sum exits 2. A tree with no vendor/ passes (with the printed line) only when no path of it has a vendor component AND origin/main holds no path with a vendor component; a vendor path that is not a vendor/ directory at the top exits 2; an unreadable origin/main, a tree or a base listing that does not complete, or a tree that is not a git tree exits 1; the base's paths are read NUL-delimited, so a name with a quote, a tab or a non-ASCII byte is found"
+        verification: { method: unit, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC3
+        given: "the required CI job named vendor and a pull request opened or updated by anyone, Dependabot included"
+        when: "it runs"
+        then: "it runs on a GitHub-hosted runner with the whole history fetched, runs go mod verify and bin/vendor-check.sh, sets no sumdb opt-out (GOSUMDB=off, GONOSUMDB, GOFLAGS=-insecure, GOPRIVATE, -mod=mod), has no actor, author or branch condition that skips it, and fails a Dependabot bump that leaves vendor/ stale. (The provenance check joins this job in the vendored-tree PR.)"
+        verification: { method: ci-workflow, release_blocking: false }
+        status: approved
+      - id: REQ-VEND-001-AC11
+        given: "bin/vendor-check.sh"
+        when: "the release chain's script judge scans it"
+        then: "it is named by a literal repository-relative path, has a shebang and mode 100755, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no here-document interpreter, builds no command word by substitution, and exits 2 when not run from the repository root"
+        verification: { method: unit, release_blocking: false }
+        status: approved
   - id: REQ-BUILDAPK-001
     title: The apk is built by melange from vendored source, sealed from the network, assembly-signed
     statement: >
