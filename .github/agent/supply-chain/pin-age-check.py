@@ -531,9 +531,16 @@ def _live_fetch_line_ok(flat):
         w = shlex.split(left, posix=True)
     except ValueError:
         return False
-    if len(w) < 2 or w[0] not in ("curl", "/usr/bin/curl"):
+    if len(w) < 3 or w[0] not in ("curl", "/usr/bin/curl") or w[1] not in ("-q", "--disable"):
+        return False                                   # -q first: no default .curlrc (CURL_HOME) can add a URL or an option
+    raw = re.findall(r"""(?:"[^"]*"|'[^']*'|[^\s"']+)+""", left)
+    if len(raw) != len(w):
         return False
-    i, operands = 1, []
+    for rt in raw:
+        # an expansion, brace, glob or tilde may appear only inside double quotes: unquoted, the shell splits it into several words
+        if re.search(r"[$`{}*?\[\]~]", re.sub(r'"[^"]*"|\'[^\']*\'', "", rt)):
+            return False
+    i, operands = 2, []
     while i < len(w):
         t = w[i]
         if t in _LIVE_FLAG_PLAIN:
@@ -696,7 +703,7 @@ def _run(a, moved, fx, now):
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
         if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING)) for r in rs):
             rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
-        if any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
+        if k[1] == DOWNLOAD_FORM and any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
             rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
