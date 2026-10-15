@@ -198,7 +198,7 @@ mkgit nested;   mkdir -p "$work/g-nested/pkg/vendor" && echo x >"$work/g-nested/
 rc AC2 "a vendor path below the top, none at the top: full check, refused (2)" 2 vc "$work/g-nested"
 mkgit vfile;    echo x >"$work/g-vfile/vendor"
 rc AC2 "a regular file named vendor: refused (2)" 2 vc "$work/g-vfile"
-mkgit vlink;    ln -s /tmp "$work/g-vlink/vendor"
+mkgit vlink;    mkdir "$work/vlink-target" && ln -s "$work/vlink-target" "$work/g-vlink/vendor"
 rc AC2 "a symlink named vendor: refused (2)" 2 vc "$work/g-vlink"
 mkgit full;     cp -R "$fx/vendor" "$work/g-full/vendor"
 rc AC2 "vendor/ present and equal to the regenerated tree: full check passes" 0 vc "$work/g-full"
