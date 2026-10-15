@@ -425,6 +425,8 @@ def _nested_program(text, pos):
         if text[j] == q:
             break
         j += 1
+    if re.fullmatch(r"https?://[^\s\"'`$]*", text[start + 1:pos]):
+        return False                       # the quoted word IS the URL (curl "https://.../x.tgz?a=$B"): an ordinary quoted word, read by _asset_word, not a program string
     return bool(re.search(r"[$`;|]|&&", text[start + 1:j]))
 
 
