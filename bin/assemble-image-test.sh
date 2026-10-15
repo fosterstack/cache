@@ -161,7 +161,7 @@ done
 sd "rule 33" "the -fips image is assembled from the -fips config" 'apko-fips\.yaml|fscache-fips' "${aie[@]}" "$AI" "${aif_args[@]}" --out "$(mo)"
 t "rule 25" "assemble-image.sh picks build/apko.yaml for production and build/apko-fips.yaml for fips by default" bash -c "grep -q 'apko-fips.yaml' '$AI_PROD' && grep -q 'apko.yaml' '$AI_PROD'"
 rd2="$work/render2"; mkdir -p "$rd2"
-t "rule 25" "--render-dir writes the config with the version, no @FSCACHE_VERSION@ left" bash -c "env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' '$AI_PROD' ${ai_args[*]} --render-dir '$rd2' --out $(mo) >/dev/null 2>&1; f=\$(ls '$rd2'/*.yaml | head -1); test -n \"\$f\" && ! grep -q @FSCACHE_VERSION@ \$f && grep -Eq 'fscache=0\\.3\\.0-r0' \$f"
+t "rule 25" "--render-dir writes the config with the version, no @FSCACHE_VERSION@ left" bash -c "env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' PATH='$stubs':\$PATH CALLS='$CALLS' STUB_LIB='$work/lib.py' '$AI' ${ai_args[*]} --render-dir '$rd2' --out $(mo) >/dev/null 2>&1; f=\$(ls '$rd2'/*.yaml | head -1); test -n \"\$f\" && ! grep -q @FSCACHE_VERSION@ \$f && grep -Eq 'fscache=0\\.3\\.0-r0' \$f"
 # refusals: nothing may run
 sr "rule 31" "assemble refuses without SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
 sr "rule 31" "assemble refuses a non-numeric SOURCE_DATE_EPOCH" SOURCE_DATE_EPOCH env SOURCE_DATE_EPOCH=never STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$(mo)"
@@ -417,13 +417,11 @@ sr "rule 19" "an assembly key file whose bytes differ from the recorded digest i
 cp -R "$fx/keyring" "$work/kr-extra"; cp "$fx/keyring/assembly.rsa.pub" "$work/kr-extra/other.rsa.pub"
 sr "rule 19" "an extra key file in the keyring directory is refused (exactly the two recorded keys)" 'other\.rsa\.pub|extra|unexpected' "${aie[@]}" "$AI" "${ai_args[@]}" --keyring-dir "$work/kr-extra" --out "$(mo)"
 sr "rule 19" "a missing key record is refused" 'key record' "${aie[@]}" "$AI" "${ai_args[@]}" --key-record "$work/no-such-key-record" --out "$(mo)"
-# overrides of the config, the locks and the records are test-only
-for ov in "--apko-config $fx/apko.yaml" "--base-lock $BL" "--index-record $idxrec" "--key-record $keyrec"; do
-  sr "rule 25" "outside test mode the override '${ov%% *}' is refused" 'test mode|FSCACHE_TEST_MODE' env -u FSCACHE_TEST_MODE "${aie[@]}" "$AI" --variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" $ov --out "$(mo)"; done
+# the overrides of the config, the locks and the records do not exist at all: see the REQ-IMAGE-001-AC10 section at the end
 
 # relative paths on the command line are fine (the script runs from the repository root): they are made absolute before the sealed calls change directory
 rel=$(mo); relname=$(basename "$rel"); rm -rf "$rel"
-( cd "$root" && relp() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1]))' "$1"; } && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" --variant production --version 0.3.0 --archive "$(relp "$fx/archive")" --melange-repo "$(relp "$fx/melrepo")" --keyring-dir "$(relp "$fx/keyring")" --apko-config "$(relp "$fx/apko.yaml")" --base-lock "$(relp "$BL")" --index-record "$(relp "$idxrec")" --key-record "$(relp "$keyrec")" --out "$(relp "$work/rel-out-$relname")" >"$work/log" 2>&1; echo $? >"$work/rc" )
+( cd "$air" && relp() { python3 -c 'import os,sys;print(os.path.relpath(sys.argv[1]))' "$1"; } && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" --variant production --version 0.3.0 --archive "$(relp "$fx/archive")" --melange-repo "$(relp "$fx/melrepo")" --keyring-dir "$(relp "$fx/keyring")" --apko-config "$(relp "$fx/apko.yaml")" --base-lock "$(relp "$BL")" --index-record "$(relp "$idxrec")" --key-record "$(relp "$keyrec")" --out "$(relp "$work/rel-out-$relname")" >"$work/log" 2>&1; echo $? >"$work/rc" )
 t "rule 31" "assemble with RELATIVE paths (archive, repo, keys, config, locks, records, out) works and writes the digest where --out says" bash -c "test \"\$(cat '$work/rc')\" = 0 && test -s '$work/rel-out-$relname/production.digest'"
 # ---- P5 round 1 (Opus B1, Sonnet R1/R3, R4, R6, R10), group B: lock-proof, sealed-proof, oci-digest (tests first) ---------------------------------------
 # B1: lock-proof must run a POSITIVE control first (the untouched archive must assemble, exit 0), then every bad case must exit exactly 2 with its own reason
@@ -594,7 +592,6 @@ fails "rule 31" "oci-digest: a manifest whose config blob is missing or does not
 t "rule 31" "...and it is a named refusal, not a traceback" bash -c "! python3 '$OD' '$work/oci-badcfg.tar' 2>&1 | grep -q Traceback"
 
 # ---- P5 round 3 (Opus + Sonnet): test hooks gated, render dir, containment, cleanup, claim race, oci duplicates, lock-proof inputs ----------------------------
-sr "rule 26" "ASSEMBLE_WORK_DIR (a test hook that moves the /work checks and links but not the paths in the config) is refused outside test mode" 'test mode|FSCACHE_TEST_MODE|ASSEMBLE_WORK_DIR' env -u FSCACHE_TEST_MODE "${aie[@]}" ASSEMBLE_WORK_DIR="$work/wd-gate" "$AI" --variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --out "$(mo)"
 # the render directory must be empty and not a symlink, so nothing planted in it is used or written through
 mkdir -p "$work/rd-planted"; : >"$work/rd-planted/apko.yaml"
 sr "rule 25" "a --render-dir that is not empty is refused (a planted file would be written through or kept)" 'render' "${ia[@]}" --archive "$fx/archive" --index-record "$idxrec" --render-dir "$work/rd-planted" --out "$(mo)"
@@ -956,10 +953,10 @@ c1root="$work/arch"$'\xc2\x9b'"x"; cp -R "$fx/archive" "$c1root"
 sr "rule 31" "assemble refuses a byte >= 0x80 in a path argument (named)" 'control|byte|plain' "${ia[@]}" --archive "$c1root" --index-record "$idxrec" --out "$(mo)"
 # a value such as -P or - must not be read as an option of cd
 # (the script runs from the repository root only, so the directory named -P is made in the root for the run and removed at once)
-mkdir -p "$root/-P"; cp -R "$fx/keyring/." "$root/-P/"
-run_s bash -c "cd '$root' && exec env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' '$AI_PROD' --variant production --version 0.3.0 --keyring-dir -P --apko-config '$fx/apko.yaml' --base-lock '$BL' --melange-repo '$fx/melrepo' --key-record '$keyrec' --archive '$fx/archive' --index-record '$idxrec' --out '$(mo)'"
+mkdir -p "$air/-P"; cp -R "$fx/keyring/." "$air/-P/"
+run_s bash -c "cd '$air' && exec env SOURCE_DATE_EPOCH=$SDE STUB_LOCK='$FL' '$AI' --variant production --version 0.3.0 --keyring-dir -P --apko-config '$fx/apko.yaml' --base-lock '$BL' --melange-repo '$fx/melrepo' --key-record '$keyrec' --archive '$fx/archive' --index-record '$idxrec' --out '$(mo)'"
 t "rule 31" "assemble-image: --keyring-dir '-P' is the directory named -P (cd -P -- is used, not read as an option): success" test "$(cat "$work/rc")" = 0
-rm -rf "$root/-P"
+rm -rf "$air/-P"
 # a CRLF index record is refused by the assembler too
 python3 - "$idxrec" "$work/idx-crlf.record" <<'P'
 import sys; s = open(sys.argv[1]).read(); assert "\n" in s; open(sys.argv[2], "w", newline="").write(s.replace("\n", "\r\n"))
@@ -1029,16 +1026,16 @@ t "chain" "the fips call into the same --out leaves the production result untouc
 t "chain" "assemble-image.sh has a shebang and mode 100755 in git" bash -c "head -n 1 '$AI_PROD' | grep -Fxq '#!/usr/bin/env bash' && git -C '$root' ls-files -s bin/assemble-image.sh | grep -q '^100755'"
 nogrep "chain" "assemble-image.sh never assigns PATH, IFS, BASH_ENV or ENV (the judge never waives an assignment)" '(^|[^A-Za-z_$])(export +)?(PATH|IFS|BASH_ENV|ENV|LD_[A-Z_]+|PYTHON[A-Z_]*)=' "$AI"
 nogrep "chain" "assemble-image.sh has no python3 -c and no python3 - heredoc (helper code lives in a committed, listed file)" 'python3? +-c |python3? +-( |$)|<<.?PY' "$AI"
-nogrep "chain" "assemble-image.sh calls no interpreter, script or tool through a variable path: no \$here/ or \$root/ command words, no \"\$lk\", no \$(...) command word" '\$here/|\$\{here\}|\$root/|"\$lk"|^ *\$\(|command -v' "$AI"
-t "chain" "assemble-image.sh names its helpers by literal repo-root-relative paths (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py)" bash -c "grep -Fq 'bash bin/apko-lock.sh' '$AI_PROD' && grep -Fq 'python3 bin/oci-digest.py' '$AI_PROD' && grep -Fq 'python3 bin/net-probe.py' '$AI_PROD'"
+nogrep "chain" "assemble-image.sh calls no interpreter, script or tool through a variable path: no \$here/ or \$root/ command words, no \"\$lk\", no \$(...) command word" '\$here/|\$\{here\}|\$root/|"\$lk"|^ *\$\(|command -v' "$AI_PROD"
+t "chain" "assemble-image.sh names its helpers by literal repo-root-relative paths (bin/apko-lock.sh, bin/oci-digest.py, bin/net-probe.py)" bash -c "grep -Fq 'bash bin/apko-lock.sh' '$AI_PROD' && grep -Fq -- ' -I -B bin/oci-digest.py' '$AI_PROD' && grep -Fq -- ' -I -B bin/net-probe.py' '$AI_PROD'"
 # run from anywhere but the repository root: exit 2 naming the root, before any tool
 mkdir -p "$work/elsewhere"; : >"$CALLS"
-( cd "$work/elsewhere" && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" "${ai_args[@]}" --out "$work/elsewhere/o" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
+( cd "$work/elsewhere" && PATH="$stubs:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" bash "$air/bin/assemble-image.sh" "${ai_args[@]}" --out "$work/elsewhere/o" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
 if [ "$(rc)" = 2 ] && grep -Eqi 'repository root' "$work/log" && ! toolrun; then ok; else bad "chain" "assemble-image.sh run from another working directory exits 2 naming the repository root, before any tool (exit $(rc))"; fi
 # the chain never passes the test hooks: they are refused outside test mode, exit 2, before any tool
 for hook in "--apko-config $fx/apko.yaml" "--base-lock $BL" "--render-dir $work/rd-x" "--index-record $idxrec" "--key-record $keyrec" "--lockfile $FL" "--build-date 2026-01-01T00:00:00Z" "--arch x86_64"; do
   # shellcheck disable=SC2086
-  FSCACHE_TEST_MODE= sr "chain" "assemble-image.sh refuses '${hook%% *}' outside test mode" 'test mode|unknown argument' env -u FSCACHE_TEST_MODE SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$AI" --variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --out "$(mo)" $hook
+  FSCACHE_TEST_MODE= sr "chain" "assemble-image.sh refuses '${hook%% *}' in every mode (no such option)" 'unknown argument' bash -c 'cd "$0" && exec "$@"' "$air" env SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" "$air/bin/assemble-image.sh" --variant production --version 0.3.0 --archive "$fx/archive" --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --out "$(mo)" $hook
 done
 
 # ===== REQ-BUILDTOOLS-002-AC3 (advisor step 5, Oct 12): oci-digest.py unpack TAR DIR DIGEST MANIFESTS, called directly ==================
@@ -1088,7 +1085,7 @@ t "rule 31" "BT-002-AC3: the real apko tar with a manifest blob that does not ha
 # ===== advisor/pipeline (Oct 12): the refusals name no other script (the chain row's `runs` lists only what the script runs) ===========
 rm -rf "$work/stubs-noapko"; cp -R "$stubs" "$work/stubs-noapko"; rm -f "$work/stubs-noapko/apko"
 : >"$CALLS"
-( PATH="$work/stubs-noapko:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" FSCACHE_TEST_MODE=1 STUB_LOCK_FIPS="$fx/full-fips.lock.json" "$AI" "${ai_args[@]}" --out "$(mo)" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
+( PATH="$work/stubs-noapko:$PATH" CALLS="$CALLS" STUB_LIB="$work/lib.py" SOURCE_DATE_EPOCH=$SDE STUB_LOCK="$FL" TEST_APKO=apko-is-not-installed STUB_LOCK_FIPS="$fx/full-fips.lock.json" "$AI" "${ai_args[@]}" --out "$(mo)" >"$work/log" 2>&1 </dev/null; echo $? >"$work/rc" )
 if [ "$(rc)" = 1 ] && grep -Eq 'apko is not installed \(the chain installs it before this step\)' "$work/log"; then ok; else bad "chain" "no apko on PATH: exit 1 saying 'apko is not installed (the chain installs it before this step)' (exit $(rc): $(tail -n 2 "$work/log" | tr '\n' ' '))"; fi
 t "chain" "no refusal, comment or message of assemble-image.sh, oci-digest.py, apko-lock.sh or net-probe.py names bin/install-build-tools.sh" bash -c "! grep -n 'install-build-tools' '$AI_PROD' '$OD' '$LK' '$NP'"
 
