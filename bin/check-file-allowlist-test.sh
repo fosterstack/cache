@@ -112,7 +112,7 @@ ALLOWED_MENTIONS = {
 }
 # Pattern-line counts. A PR that adds a pattern updates these numbers in the same commit, so a pattern can never
 # be added without touching the test.
-EXPECT_ALLOW, EXPECT_SUPPRESSION = 143, 6   # 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
+EXPECT_ALLOW, EXPECT_SUPPRESSION = 144, 6   # 144: + ^vendor/ subtree (REQ-VEND-001); 143: main's 139 (+ ^bin/scan-no-workflow-call-test\.sh$, REQ-SCAN-015) + build-apk-helper.py, build/sealed-env.json (v0.3.0 region), bin/suite-guard*.sh, test-evidence/suite-floors.json
 pats = []   # (lineno, pattern) for both arrays
 region = [] # patterns of the v0.3.0 region
 rstart = rend = 0
@@ -159,7 +159,7 @@ elif int(loaded) != len(pats): errs.append("counted %d pattern lines but bash lo
 # Any other change to this script (older patterns, logic, suppression list) must update this digest in the same
 # commit, so it is always visible in review; main's copy of the script judges a PR to the script anyway, this is
 # defence in depth. The region itself is checked by expansion above, not by hash.
-PINNED_SHA256 = "73cb3a176cc02e824637fc15a6c9b6b34be5d03b0a5fd764629ba2b117d61c7a"   # + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region
+PINNED_SHA256 = "e4899d070446fd94652c063b2d55ee562a9fdc2bc3270b6af6cae3070c288139"   # + the REQ-SCAN-015 scanner guard, the REQ-TEST-001 suite guard patterns outside the v0.3.0 region, the REQ-VEND-001 ^vendor/ subtree pattern
 if rstart and rend:
     import hashlib
     _b = _rawlines
@@ -297,7 +297,7 @@ bytemut "a vertical tab in a comment"            'b.replace(b"# OCI digest and n
 bytemut "a form feed in a comment"               'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\x0c and network-probe tools.")'
 bytemut "U+2028 in a comment"                    'b.replace(b"# OCI digest and network-probe tools.", "# OCI digest  and network-probe tools.".encode())'
 bytemut "a lone CR in the NOTE comments"         'b.replace(b"# NOTE: only the PATH is gated here, not the file", b"# NOTE: only the PATH\r is gated here, not the file")'
-bytemut "the region marker line with a trailing CR" 'b.replace(b"vendor/ is admitted by the PR that adds it.\n", b"vendor/ is admitted by the PR that adds it.\r\n", 1)'
+bytemut "the region marker line with a trailing CR" 'b.replace(b"vendor/ has its own subtree pattern above (REQ-VEND-001).\n", b"vendor/ has its own subtree pattern above (REQ-VEND-001).\r\n", 1)'
 bytemut "invalid UTF-8 byte in a comment"        'b.replace(b"# OCI digest and network-probe tools.", b"# OCI digest\xff and network-probe tools.")'
 rm -rf "$_mut_dir"
 # same, but drive GITHUB_REF_NAME (the push path) instead of a PR head ref
@@ -669,7 +669,7 @@ hkexpect fail "hook: squash merge adding an unlisted file is rejected (no MERGE_
 
 # --- v0.3.0 build-chain paths: one exact pattern per path family (PR 1 of the v0.3.0 plan) ----------------
 # Each family: the intended path(s) pass; near-misses (extra segment, other extension, uppercase, traversal,
-# one directory up, a sibling name) are refused. vendor/ is NOT admitted yet.
+# one directory up, a sibling name) are refused. vendor/ has its own subtree pattern, tested below (REQ-VEND-001).
 passfam "feature/x" "v030: dependency-provenance.json at the repo root" "dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json nested is refused"        "tools/dependency-provenance.json"
 runeach fail "feature/x" "v030: dependency-provenance.json uppercase is refused"     "Dependency-Provenance.json"
@@ -677,6 +677,12 @@ runeach fail "feature/x" "v030: dependency-provenance.yaml (other extension) ref
 runeach fail "feature/x" "v030: dependency-provenance.json.bak refused"              "dependency-provenance.json.bak"
 runeach fail "feature/x" "v030: other root json refused"                             "provenance.json" "dependency-provenanceXjson" "dependency-provenance-json" "dependency-provenance.json "
 
+# The vendor/ subtree pattern (REQ-VEND-001): names only; each admitted path alone, and each near-miss refused alone
+runeach pass "feature/x" "vendor: a vendored path is admitted" "vendor/modules.txt" "vendor/github.com/prometheus/client_golang/prometheus/counter.go" "vendor/golang.org/x/sys/unix/zerrors_linux_amd64.go" "vendor/github.com/Azure/x/y_test.go" "vendor/gopkg.in/yaml.v3/LICENSE" "vendor/go.etcd.io/bbolt/internal/common/a.s" "vendor/a/b+c~d@e/f"
+runeach fail "feature/x" "vendor: the directory alone, a trailing slash, an empty component" "vendor" "vendor/" "vendor//a" "vendor/a//b" "vendor/a/"
+runeach fail "feature/x" "vendor: a dot component anywhere is refused" "vendor/.hidden" "vendor/.github/workflows/w.yml" "vendor/a/.git/config" "vendor/a/.b" "vendor/." "vendor/.." "vendor/a/.." "vendor/a/../b" "vendor/./a" "vendor/a/./b" "vendor/..a/b" "vendor/a/..b"
+runeach fail "feature/x" "vendor: not at the top, or another case, is refused" "x/vendor/a" "Vendor/a" "VENDOR/a" "vendors/a" "vendor-x/a" "pkg/vendor/a/b.go" "../vendor/a"
+runeach fail "feature/x" "vendor: a space, a backslash, a colon or a glob character is refused" "vendor/a b" "vendor/a\\b" "vendor/a:b" "vendor/a*b" "vendor/a?b" "vendor/a[b]" "vendor/a;b" "vendor/a\$b"
 passfam "feature/x" "v030: the vendoring scripts and their test" "bin/vendor-check.sh" "bin/vendor-provenance.py" "bin/vendoring-test.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.sh nested refused"        "bin/x/vendor-check.sh"
 runeach fail "feature/x" "v030: bin/vendor-check.py (other extension) refused" "bin/vendor-check.py"
@@ -770,7 +776,6 @@ passfam "feature/x" "REQ-GUIDE-001: the guide page checker" "bin/verify-release-
 runeach fail "feature/x" "REQ-GUIDE-001: verify-release-guide-test near-miss refused" "bin/verify-release-guide-test.sh.bak" "bin/verify-release-guide-test.shx" "bin/Verify-Release-Guide-Test.sh" "bin/VERIFY-RELEASE-GUIDE-TEST.SH" "bin/sub/verify-release-guide-test.sh" "./bin/verify-release-guide-test.sh" "bin/verify-release-guide-test.py" "bin/verify-release-guide.sh" "verify-release-guide-test.sh" "bin/../verify-release-guide-test.sh" "bin/verify-release-guide-test.sh "
 
 # Deferred (not admitted until the PR that adds them): the vendored tree.
-runeach fail "feature/x" "v030: vendor/ files are NOT admitted yet" "vendor/modules.txt" "vendor/golang.org/x/text/a.go"
 
 echo "----"
 echo "check-file-allowlist: $pass passed, $fail failed"

@@ -16,14 +16,14 @@ Sep 8, 2026, acceptance criteria are written before implementation.
 
 | Metric | Value |
 |---|---|
-| Active requirements | 82 |
-| Acceptance criteria | 279 |
+| Active requirements | 83 |
+| Acceptance criteria | 282 |
 | Release-blocking ACs | 53 |
-| ACs with mapped evidence | 263 |
+| ACs with mapped evidence | 266 |
 | Release-blocking ACs with mapped evidence | 53 |
 | Confidence: claimed-unverified | 1 |
 | Confidence: documented | 45 |
-| Confidence: implementation-only | 36 |
+| Confidence: implementation-only | 37 |
 
 ## Cache protocol
 
@@ -1105,6 +1105,22 @@ The helper tools the v0.3.0 build calls shall inspect and verify its inputs and 
 | REQ-BUILDTOOLS-001-AC8 | Given a lock file; when apko-lock.sh arch-check LOCK runs; then it exits 0 when every package has the same version on every architecture and 1 naming the package when one differs (rule 33) | unit |  | approved | 1 item(s) |
 | REQ-BUILDTOOLS-001-AC9 | Given a lock file, the archive and optionally the melange repository; when apko-lock.sh verify-archive runs; then it exits 0 when every package is present with matching signature, control and data checksums and each repository used has its APKINDEX.tar.gz, and 1 naming the file when a package is missing, tampered with, or an index is missing (rules 27, 28, 44) | unit |  | approved | 1 item(s) |
 | REQ-BUILDTOOLS-001-AC10 | Given a lock file and an archive that holds every package of the lock; when apko-lock.sh evidence runs; then it copies the lock and writes archive-checksums.txt, a sorted sha256sum-format list of every archive file (packages, indexes, the Wolfi key, the Go tarballs), the same bytes on every run, and fails naming a package of the lock that the archive lacks (rule 29) | unit |  | approved | 1 item(s) |
+
+## VEND
+
+### REQ-VEND-001 — Vendored dependencies with checked provenance
+
+The release source shall include vendor/ generated in CI from checksum-verified downloads; every Go build shall use only vendored code; dependency-provenance.json at the repository root shall list per module its path, version, hash, checksum-log entry, upstream origin, commit (pseudo-versions) or tag (tagged versions), and license; any module whose origin or checksum-log entry cannot be found shall fail the build.
+
+*Introduced v0.3.0 · tier community · confidence implementation-only · source: bin/vendor-check.sh; bin/vendoring-test.sh; .github/workflows/ci.yml; bin/check-file-allowlist.sh*
+
+> This requirement is landed in parts. This part holds the regenerate-and-compare check, the required `vendor` job and the vendor/ allowlist pattern (AC2, AC3, AC11); the provenance file and its check (AC4, AC5), the vendored tree (AC1, AC6), the evidence file (AC7-AC10, AC12), the public wording (AC13) and the two-module origins record (AC14) follow in the vendored-tree PR with their own tests and mappings.
+
+| AC | Given / When / Then | Verification | Blocking | Status | Evidence |
+|---|---|---|---|---|---|
+| REQ-VEND-001-AC2 | Given bin/vendor-check.sh run on a copy of a tree that holds vendor/, go.mod and go.sum; when it regenerates vendor/ with go mod verify then go mod vendor in a scratch directory; then it exits 0 only when the regenerated vendor/ equals the committed vendor/ (the same files, the same bytes, mode 100644 for every file, vendor/modules.txt included, no link, no special file); a changed byte, an added file, a removed file, an edited modules.txt or go.sum drift, a dot component (also one that go mod vendor itself regenerates, such as an embedded dot file), an empty directory, a link or a file that is not mode 100644 exits 1 naming the first offending path; a go.mod or go.sum that go mod vendor changes in the scratch copy exits 1 naming the file; a missing go toolchain, a proxy that cannot serve the modules or a failed go mod verify exits 1 and never passes; an unreadable tree, an unknown argument or a tree with vendor/ but no go.mod and go.sum exits 2. A tree with no vendor/ passes (with the printed line) only when no path of it has a vendor component AND origin/main holds no path with a vendor component; a vendor path that is not a vendor/ directory at the top exits 2; an unreadable origin/main, a tree or a base listing that does not complete, or a tree that is not a git tree exits 1; the base's paths are read NUL-delimited, so a name with a quote, a tab or a non-ASCII byte is found | unit |  | approved | 1 item(s) |
+| REQ-VEND-001-AC3 | Given the required CI job named vendor and a pull request opened or updated by anyone, Dependabot included; when it runs; then it runs on a GitHub-hosted runner with the whole history fetched, runs go mod verify and bin/vendor-check.sh, sets no sumdb opt-out (GOSUMDB=off, GONOSUMDB, GOFLAGS=-insecure, GOPRIVATE, -mod=mod), has no actor, author or branch condition that skips it, and fails a Dependabot bump that leaves vendor/ stale. (The provenance check joins this job in the vendored-tree PR.) | ci-workflow |  | approved | 1 item(s) |
+| REQ-VEND-001-AC11 | Given bin/vendor-check.sh; when the release chain's script judge scans it; then it is named by a literal repository-relative path, has a shebang and mode 100755, assigns none of PATH, IFS, BASH_ENV, ENV, LD_*, PYTHON*, runs no python3 -c and no here-document interpreter, builds no command word by substitution, and exits 2 when not run from the repository root | unit |  | approved | 1 item(s) |
 
 ## BUILDAPK
 
