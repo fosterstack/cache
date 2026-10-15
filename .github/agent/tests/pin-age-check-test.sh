@@ -3196,6 +3196,20 @@ for v in "ok:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/wolfi-signing.rs
          "proxy-option:curl -fsSL -x http://p.example:3128 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
          "resolve-option:curl -fsSL --resolve packages.wolfi.dev:443:10.0.0.1 -o /tmp/k https://packages.wolfi.dev/os/x:1" \
          "config-option:curl -fsSL -K /tmp/cfg -o /tmp/k https://packages.wolfi.dev/os/x:1" \
+         "ok-per-package-variable-path:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p\":0" \
+         "ok-per-package-braced-variable:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\${p}\":0" \
+         "ok-per-package-concatenated-words:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\"\"\$p\":0" \
+         "var-prefix-without-slash:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os\$p\":1" \
+         "var-prefix-without-os:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/\$p\":1" \
+         "two-variables:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$a\$b\":1" \
+         "variable-then-literal:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$p/x\":1" \
+         "variable-host:curl -fsSL -o /tmp/k \"https://\$h/os/\$p\":1" \
+         "variable-in-authority:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev\$p\":1" \
+         "default-expansion:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\${p:-x}\":1" \
+         "format-string:curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz:1" \
+         "fstring-text:curl -fsSL -o /tmp/k f\"https://packages.wolfi.dev/os/{p}\":1" \
+         "command-substitution-path:curl -fsSL -o /tmp/k \"https://packages.wolfi.dev/os/\$(cat /tmp/p)\":1" \
+         "other-host-with-variable:curl -fsSL -o /tmp/k \"https://packages.example.com/os/\$p\":1" \
          "ok-with-fixed-flags-and-die:curl -fsSL -g --max-filesize 65536 --max-time 60 --proto =https --tlsv1.2 -o \"\$tmp/live-key.pub\" https://packages.wolfi.dev/os/wolfi-signing.rsa.pub || die \"could not fetch the live Wolfi signing key\" 1:0"; do
   nm=${v%%:*}; rest=${v#*:}; line=${rest%:*}; want=${rest##*:}
   mkrowp "$work/lf-$nm.json" bin/fetch.sh "$line" "$LIVEP"
