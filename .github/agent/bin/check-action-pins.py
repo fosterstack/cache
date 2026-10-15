@@ -1025,9 +1025,10 @@ SCRIPT_MARK = "#@@" + secrets.token_hex(16) + "@@"   # a comment line between th
 #                                                     alone; chosen per run, so no repository text can carry it (a script that wrote the line itself would
 #                                                     otherwise split its own function or branch in two)
 _LIT_TAINT = re.compile(
-    r"(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])set\s+-[A-Za-z]*a|allexport"
+    r"(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])(set|bash|sh)\s+([^\n;&|]*\s)?-[A-Za-z]*[ai]\b|allexport"
     r"|(?<![\w.-])(read|mapfile|readarray|getopts|unset|printf\s+-v|let|select|eval)(?![\w.-])[^\n;&|]*\$"         # a variable names or feeds the target
-    r"|(?<![\w.-])(declare|typeset|local|export|readonly)\s+(-[A-Za-z]*n|[^\n;&|=]*\$)"                    # a nameref, or a name built from an expansion
+    r"|(?<![\w.-])(declare|typeset|local|export|readonly)\s+([^\n;&|=]*\s)?(-[A-Za-z]*n|[^\n;&|=\s]*\$)"       # a nameref in any option word, or a name built from an expansion
+    r"|(?<![\w.-])trap\b[^\n;&|]*\b(DEBUG|RETURN|ERR)\b|(?<![\w.-])shopt\b[^\n;&|]*(extdebug|-s\s+\w*[dD]ebug)"   # a trap that runs between commands
     r"|\(\(|\$\[")                                                                                          # arithmetic can assign
 SOURCED_MARK = "#@@" + secrets.token_hex(16) + "-sourced@@"   # first line of a script that was sourced: it runs in its caller's shell, so no literal-variable inference
 _NO_NAME = {n.upper() for n in """_ BASH BASHOPTS BASHPID BASH_ALIASES BASH_ARGC BASH_ARGV BASH_ARGV0 BASH_CMDS BASH_COMMAND BASH_COMPAT BASH_ENV
@@ -1064,7 +1065,10 @@ def _literal_path_vars(script):
     program named by such a variable stays refused."""
     if SOURCED_MARK in script:
         return {}                                        # sourced: the caller's namerefs, functions and variables reach it
-    if _LIT_TAINT.search(script):
+    joined = re.sub(r"\\\n", " ", script)
+    _nc, _bl, _oq = _mask_shell(joined)
+    scan = "".join(c if (b != " " or c in " \t\n") else ("_" if c in ";&|" else c) for c, b in zip(_nc, _bl))   # punctuation inside quotes is not a boundary
+    if _LIT_TAINT.search(scan):
         return {}                                        # a computed write target, a nameref, allexport or a startup file: the name may be written where no mention shows
     if re.search(r"(?<![\w.-])enable(?![\w.-])", script):
         return {}                                        # enable -n can remove the builtin the assignment form relies on
@@ -1106,7 +1110,7 @@ def _literal_path_vars(script):
 
 def _rewrite_step(script, shell):
     """_rewrite_consts for a step's own text: only a step that bash runs (no shell key, or bash): `sh` is dash, which has no printf -v."""
-    return _rewrite_consts(script) if not shell or re.match(r"^bash(\s|$)", shell) else script
+    return _rewrite_consts(script) if not shell or re.fullmatch(r"bash( -[euxo]+( pipefail)?)?( \{0\})?", shell.strip()) else script
 
 
 def _rewrite_consts(script):
@@ -1184,7 +1188,9 @@ def _commands(script, depth=0):
             ops = [a for k, a in enumerate(rest) if not a.startswith(("-", "<", ">")) and not re.match(r"^[0-9]+[<>]", a)
                    and not (k > 0 and re.fullmatch(r"[-+][a-zA-Z]*[oO]", rest[k - 1]))]
             if _base(w) in SHELLS and ops and not any(re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", a) for a in rest):
-                out.append(["__script__", ops[0]] + ([] if _base(w) == "bash" else ["shell"]))   # only bash runs the printf -v form; sh is dash
+                opts = [a for a in rest[:rest.index(ops[0])] if a.startswith("-") or a == "pipefail"] if ops[0] in rest else []
+                plain = all(re.fullmatch(r"-[euxvo]+|-o|pipefail|--", a) for a in opts)     # -a (allexport), -i, --rcfile ... change the shell's state
+                out.append(["__script__", ops[0]] + ([] if _base(w) == "bash" and plain else ["shell"]))   # only plain bash runs the printf -v form; sh is dash
             elif (w == "source" or (w == "." and w == words[0])) and ops:     # command source x.sh too (r3)
                 out.append(["__script__", ops[0], "sourced"])
             elif ("/" in w or w.endswith(".sh")) and _base(w) not in TOOLS | SHELLS and not PKG_TOOL.match(_base(w)) \
@@ -2485,7 +2491,7 @@ def _run_scripts(text, tree, moved, depth=0, where="", job="", bases=(), inherit
     # treated as sourced, which closes the wrapper forms the command reader does not classify; so is a text that exports a function (the child imports it)
     sourced_any = inherited or bool(re.search(r"(?<![\w./$-])source(?![\w./-])|(^|[;&|(\s])\.\s+\S"
                            r"|(?<![\w.-])(export|declare|typeset)\b[^\n;&|]*\s-[A-Za-z]*f|BASH_FUNC_"
-                           r"|(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])set\s+-[A-Za-z]*a|allexport", _unquoted(text), re.M))   # or exports a function: it reaches every child
+                           r"|(?<![\w.-])(BASH_ENV|ENV)\s*=|(?<![\w.-])(set|bash|sh)\s+([^\n;&|]*\s)?-[A-Za-z]*[ai]\b|allexport", _unquoted(text), re.M))   # or exports a function: it reaches every child
     dlnames = _downloaded_commands(job or text)
     if dlnames:
         for chunk in _split_commands(_cut_substitutions(text)[0]):
