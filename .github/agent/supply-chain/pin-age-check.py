@@ -504,7 +504,10 @@ _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
 TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
 LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
 DOWNLOAD_FORM = "a download"
-_LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._%+~/-]*)?")
+_LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._+~/-]*)?")
+# the per-package fetch (advisor, Oct 15, owner rule 48): the literal https://packages.wolfi.dev/os/ (trailing slash included, so the host cannot change) followed by
+# exactly ONE variable and nothing else
+_LIVE_URL_VAR = re.compile(r"https://packages\.wolfi\.dev/os/\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)")
 _ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
 _LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
 
@@ -544,7 +547,7 @@ def _live_fetch_line_ok(flat):
         else:
             operands.append(t)
             i += 1
-    return len(operands) == 1 and _LIVE_URL.fullmatch(operands[0]) is not None
+    return len(operands) == 1 and (_LIVE_URL.fullmatch(operands[0]) is not None or _LIVE_URL_VAR.fullmatch(operands[0]) is not None)
 
 
 MAX_RULED_COUNT = 100
