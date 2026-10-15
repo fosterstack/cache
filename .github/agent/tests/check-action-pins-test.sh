@@ -2793,5 +2793,17 @@ case_ lit-var-array-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=(/usr/bin/git)\n
 case_ lit-var-indirect-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\nH=G\n\"\${!H}\" a\n' > ci-lit.sh"
 case_ lit-var-eval-bad bad "$(rb 'bash ci-lit.sh')" "printf 'G=/usr/bin/git\neval \"G=/tmp/x\"\n\"\$G\" a\n' > ci-lit.sh"
 
+case_ lit-two-calls-ok ok "$(rb 'bash ci-lit.sh
+          bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-lit.sh"
+case_ lit-two-scripts-ok ok "$(rb 'bash ci-a.sh
+          bash ci-b.sh')" "printf 'GIT=/usr/bin/git\ndie() { exit 2; }\n\"\$GIT\" status\n' > ci-a.sh; printf 'GIT=/usr/bin/git\ndie() { exit 2; }\n\"\$GIT\" log\n' > ci-b.sh"
+case_ lit-script-nested-ok ok "$(rb 'bash ci-a.sh')" "printf 'GIT=/usr/bin/git\nbash ci-b.sh\n\"\$GIT\" status\n' > ci-a.sh; printf 'GIT=/usr/bin/git\n\"\$GIT\" log\n' > ci-b.sh"
+case_ lit-other-script-reads-bad bad "$(rb 'bash ci-a.sh
+          bash ci-b.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-a.sh; printf '\"\$GIT\" log\n' > ci-b.sh"
+case_ lit-two-scripts-differ-bad bad "$(rb 'bash ci-a.sh
+          bash ci-b.sh')" "printf 'T=/usr/bin/git\n\"\$T\" status\n' > ci-a.sh; printf 'T=/tmp/x\n\"\$T\" log\n' > ci-b.sh"
+case_ lit-step-text-reads-bad bad "$(rb '"$GIT" status
+          bash ci-lit.sh')" "printf 'GIT=/usr/bin/git\n\"\$GIT\" status\n' > ci-lit.sh"
+
 echo "check-action-pins: $pass passed, $failn failed"
 [ "$failn" -eq 0 ]
