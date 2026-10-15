@@ -11,6 +11,7 @@ NOT in the inventory (rule 1, amendments 1 and 2): the product's base image, Go 
 
 Used as a module by pin-age-check.py and pin-audit.py; run alone it prints the inventory of a tree.
 """
+import ast
 import fnmatch
 import hashlib
 import shlex
@@ -868,49 +869,147 @@ def _key_fetch_ok(files, path, before, flat, after):
         for ln in before:
             if re.search(r"^\s*(?:export\s+)?" + name + r"=https://packages\.wolfi\.dev/os\s*$", ln):
                 break
-            if re.search(r"\(\)|<<|\{|^\s*(if|case|for|while|until|function|select)\b", ln):
+            if re.search(r"\(\)|<<|\{|(?:^|[;&|\s])\(|^\s*(if|case|for|while|until|function|select)\b", ln):
                 return False                           # a function, block or here-document comes before the assignment
             top.append(ln)
         else:
             return False                               # no assignment before the fetch
         if any(re.search(r"(?:^|[;&|(\s])(?:source|\.)\s+\S", ln) for ln in before):
             return False                               # a sourced file could rewrite the variable
-        mentions = [ln for ln in before + after if re.search(r"(?<![\w$])" + name + r"(?![\w])", ln)]
-        assigns = [ln for ln in mentions if re.search(r"^\s*(?:export\s+)?" + name + r"=", ln)]
-        if len(assigns) != 1:
-            return False                               # a second assignment, anywhere
-        if any(re.search(r"(?<![\w$])" + name + r"(?![\w])", ln) and not re.search(r"\$\{?" + name + r"\}?", ln) and ln is not assigns[0]
-               for ln in before + after):
-            return False                               # read -r NAME, local NAME, declare NAME ... : another way to write it
-    nxt = next((ln for ln in after if ln.strip() and not ln.lstrip().startswith("#")), "")
+        assigns = 0
+        for ln in before + after:
+            bare = re.sub(r"\$\{" + name + r"\}|\$" + name + r"(?![A-Za-z0-9_])", "", ln)      # reads are removed first: they excuse nothing else on the line
+            if re.search(r"(?<![\w$])" + name + r"(?![\w])", bare):
+                if re.fullmatch(r"\s*(?:export\s+)?" + name + r"=https://packages\.wolfi\.dev/os\s*", ln):
+                    assigns += 1
+                else:
+                    return False                       # read -r NAME, local NAME, a second or other assignment, a mention that is not a plain read
+        if assigns != 1:
+            return False
+    nxt = " ".join(next((ln for ln in after if ln.strip() and not ln.lstrip().startswith("#")), "").split())
     out = re.escape(m.group("out"))
-    return (not _KEY_NOT_CMD.match(nxt) and _KEY_FP in nxt and re.search(out, nxt) is not None
-            and re.search(r"(?<![\w-])(sha256sum|shasum -a 256|openssl dgst -sha256)(?![\w-])", nxt) is not None)
+    fail = r"(?:die\b[^;&|]*|exit [1-9][0-9]*)"
+    shape_a = r'sha256sum "' + out + r'" \| cut -d" " -f1 \| grep -qx?Ff build/locks/archive-keys\.sha256 \|\| ' + fail
+    shape_b = r'grep -qxF "\$\(sha256sum "' + out + r'" \| cut -d" " -f1\)" build/locks/archive-keys\.sha256 \|\| ' + fail
+    return re.fullmatch(shape_a, nxt) is not None or re.fullmatch(shape_b, nxt) is not None
 
 
 # Owner rule 48 (Oct 9: "New Wolfi packages get no 7-day wait; signature checks and archiving still apply"), advisor message Oct 15 (handoff 0452 addition):
-# the refresh job's two python downloads. Host and verifier names are hard-coded here, never read from the script.
-_PY_FETCH = re.compile(r'subprocess\.run\(\[\s*"/usr/bin/curl"\s*,(?P<argv>.*?)"-o"\s*,\s*(?P<var>[A-Za-z_]\w*)\s*,\s*(?P<url>e\["url"\]|"https://packages\.wolfi\.dev/os/[A-Za-z0-9_./%+~-]*"(?:\s*%\s*[A-Za-z_]\w*)?)\s*\]')
-_PY_BAD_OPT = re.compile(r'"(--url|--connect-to|--resolve|-x|--proxy|-K|--config|--next|-T|--upload-file)"')
+# the refresh job's two python downloads. Host and verifier names are hard-coded here, never read from the script. The python is read AS PYTHON (ast): a comment,
+# a string, an uncalled function or a second statement on the line confers nothing.
 _PY_VERIFIERS = ("verify", "verify_index")
+_PY_FLAGS_OK = re.compile(r"-fsSL|-g|--tlsv1\.2|--proto|=https|--max-filesize|--max-time|[0-9]+")
+_PY_LIT_URL = re.compile(r"https://packages\.wolfi\.dev/os/[A-Za-z0-9_./+~-]*(?:%s[A-Za-z0-9_./+~-]*)?")
 
 
-def _py_wolfi_download_ok(path, flat, later, upto_text):
-    """One python download of the refresh job, accepted only as: argv holding --proto =https, a named -o variable, no destination-changing option, a URL that is
-    a literal on https://packages.wolfi.dev/os/ or the lock entry's e["url"] (then the script holds the host check as literals BEFORE the fetch), and a call of
-    verify or verify_index on that same variable within the next three statements."""
+def _py_heredocs(text):
+    """[(first_line_number_of_the_body, body_text)] for every quoted here-document of a shell script (<<'TAG' ... TAG)."""
+    out, lines, i = [], text.split("\n"), 0
+    while i < len(lines):
+        m = re.search(r"<<-?\s*'([A-Za-z_][A-Za-z0-9_]*)'", lines[i])
+        if m:
+            tag, j = m.group(1), i + 1
+            while j < len(lines) and lines[j].strip() != tag:
+                j += 1
+            out.append((i + 2, "\n".join(lines[i + 1:j])))
+            i = j
+        i += 1
+    return out
+
+
+def _py_name_uses(node, var):
+    return any(isinstance(n, ast.Name) and n.id == var for n in ast.walk(node))
+
+
+def _py_fetch_ok(stmt, body, idx):
+    """stmt is body[idx]. Accept `r = subprocess.run(["/usr/bin/curl", <known flags>, "-o", VAR, URL], stdout=.., stderr=..)` where URL is a literal
+    on https://packages.wolfi.dev/os/ (one optional `% NAME`) or `e["url"]` preceded in the same block by an executed `if not e["url"].startswith(
+    "https://packages.wolfi.dev/os/"): <fail>`; and, within the next three statements of the SAME block, a call of verify or verify_index on VAR with
+    no use or reassignment of VAR in between."""
+    if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name)):
+        return None
+    call = stmt.value
+    if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "run"
+            and isinstance(call.func.value, ast.Name) and call.func.value.id == "subprocess" and len(call.args) == 1 and isinstance(call.args[0], ast.List)):
+        return None
+    for k in call.keywords:
+        if k.arg not in ("stdout", "stderr") or not (isinstance(k.value, ast.Attribute) and isinstance(k.value.value, ast.Name)
+                                                       and k.value.value.id == "sys" and k.value.attr in ("stdout", "stderr")):
+            return None
+    el = call.args[0].elts
+    if len(el) < 5 or not (isinstance(el[0], ast.Constant) and el[0].value == "/usr/bin/curl"):
+        return None
+    if not (isinstance(el[-3], ast.Constant) and el[-3].value == "-o" and isinstance(el[-2], ast.Name)):
+        return None
+    var, url = el[-2].id, el[-1]
+    flags = el[1:-3]
+    if not all(isinstance(f, ast.Constant) and isinstance(f.value, str) and _PY_FLAGS_OK.fullmatch(f.value) for f in flags):
+        return None
+    vals = [f.value for f in flags]
+    if "--proto" not in vals or vals[vals.index("--proto") + 1:vals.index("--proto") + 2] != ["=https"]:
+        return None
+    if isinstance(url, ast.BinOp) and isinstance(url.op, ast.Mod) and isinstance(url.left, ast.Constant) and isinstance(url.left.value, str) \
+            and _PY_LIT_URL.fullmatch(url.left.value) and url.left.value.count("%s") == 1 and isinstance(url.right, ast.Name):
+        pass
+    elif isinstance(url, ast.Constant) and isinstance(url.value, str) and _PY_LIT_URL.fullmatch(url.value) and "%" not in url.value:
+        pass
+    elif isinstance(url, ast.Subscript) and isinstance(url.value, ast.Name) and url.value.id == "e" and isinstance(url.slice, ast.Constant) \
+            and url.slice.value == "url":
+        def guard(s):
+            t = s.test if isinstance(s, ast.If) else None
+            if not (isinstance(t, ast.UnaryOp) and isinstance(t.op, ast.Not) and isinstance(t.operand, ast.Call)
+                    and isinstance(t.operand.func, ast.Attribute) and t.operand.func.attr == "startswith"
+                    and isinstance(t.operand.func.value, ast.Subscript) and isinstance(t.operand.func.value.value, ast.Name)
+                    and t.operand.func.value.value.id == "e" and isinstance(t.operand.func.value.slice, ast.Constant)
+                    and t.operand.func.value.slice.value == "url" and len(t.operand.args) == 1 and isinstance(t.operand.args[0], ast.Constant)
+                    and t.operand.args[0].value == "https://packages.wolfi.dev/os/"):
+                return False
+            return bool(s.body) and all(isinstance(x, (ast.Raise, ast.Expr)) for x in s.body) and not s.orelse and any(
+                isinstance(x, ast.Raise) or (isinstance(x, ast.Expr) and isinstance(x.value, ast.Call)
+                                             and isinstance(x.value.func, (ast.Name, ast.Attribute))) for x in s.body)
+        if not any(guard(x) for x in body[:idx]):
+            return None
+    else:
+        return None
+    for nxt in body[idx + 1:idx + 4]:
+        if isinstance(nxt, ast.Expr) and isinstance(nxt.value, ast.Call) and isinstance(nxt.value.func, ast.Name) \
+                and nxt.value.func.id in _PY_VERIFIERS and nxt.value.args and isinstance(nxt.value.args[0], ast.Name) and nxt.value.args[0].id == var:
+            return stmt
+        if _py_name_uses(nxt, var):
+            return None                                # a use or reassignment of the file before the verify call
+    return None
+
+
+def _py_wolfi_download_lines(path, text):
+    """The set of whitespace-normalised source lines of accepted download statements, each only when EVERY occurrence of that exact line in the file is accepted
+    and the line holds that one statement alone."""
     if not path.endswith(".sh"):
-        return False
-    m = _PY_FETCH.search(flat)
-    if not m or '"--proto"' not in m.group("argv") or '"=https"' not in m.group("argv") or _PY_BAD_OPT.search(flat):
-        return False
-    if m.group("url") == 'e["url"]':
-        if not ('WOLFI_URL = "https://packages.wolfi.dev/os/"' in upto_text and 'hostname != "packages.wolfi.dev"' in upto_text
-                and re.search(r"startswith\(WOLFI_URL\)", upto_text)):
-            return False
-    var = re.escape(m.group("var"))
-    nxt = [l for l in later if l and not l.lstrip().startswith("#")][:3]
-    return any(re.search(r"(?<![\w.])(?:" + "|".join(_PY_VERIFIERS) + r")\(\s*" + var + r"\b", l) for l in nxt)
+        return set()
+    accepted, total = {}, {}
+    for first, body in _py_heredocs(text):
+        try:
+            tree = ast.parse(body)
+        except SyntaxError:
+            continue
+        src = body.split("\n")
+        def walk(stmts):
+            for i, st in enumerate(stmts):
+                ok = _py_fetch_ok(st, stmts, i)
+                if ok is not None and st.lineno == st.end_lineno:
+                    same = [x for x in stmts if x is not st and getattr(x, "lineno", None) == st.lineno]
+                    if not same:
+                        key = " ".join(src[st.lineno - 1].split())
+                        accepted[key] = accepted.get(key, 0) + 1
+                for fld in ("body", "orelse", "finalbody"):
+                    sub = getattr(st, fld, None)
+                    if isinstance(sub, list) and sub and isinstance(sub[0], ast.stmt):
+                        walk(sub)
+        walk(tree.body)
+    for ln in text.split("\n"):
+        key = " ".join(ln.split())
+        if key in accepted:
+            total[key] = total.get(key, 0) + 1
+    return {k for k, n in accepted.items() if total.get(k) == n}
 
 
 def unmeasured_occurrences(files):
@@ -922,6 +1021,7 @@ def unmeasured_occurrences(files):
             continue  # .github/agent/ is covered by the independent second review (and its tests quote such commands as fixtures)
         mark = "\ue000"                                    # marks where a continuation was joined; a file that already holds it is never bash-like
         tainted = mark in text
+        _py_ok = _py_wolfi_download_lines(path, text)
         _lines = re.sub(r"\\\n\s*", " " if tainted else " " + mark, text).split("\n")
         for _li, line in enumerate(_lines):
             bashlike = not tainted and mark not in line and all(c in " \t" or not c.isspace() for c in line)
@@ -935,7 +1035,7 @@ def unmeasured_occurrences(files):
                 plain = urls and all(re.match(r"^https?://github\.com/[\w.-]+/[\w.-]+/releases/(?:latest/)?download/", u) and (_GH_DOWNLOAD.search(u) or _GH_LATEST.search(u)) for u in urls)
                 if re.search(r"\b(?:curl|wget)\b", seg) and not plain and not _key_fetch_ok(files, path, [" ".join(x.split()) for x in _lines[:_li]], flat,
                                               [" ".join(x.split()) for x in _lines[_li + 1:_li + 12]]) \
-                        and not _py_wolfi_download_ok(path, flat, [" ".join(x.split()) for x in _lines[_li + 1:_li + 12]], "\n".join(_lines[:_li])):
+                        and not (flat.strip() in _py_ok):
                     yield (path, "a download", hashlib.sha256(seg.encode("utf-8", "replace")).hexdigest() + ":" + _hide(seg)[:100]), flat, bashlike
             if path.endswith(".sh"):    # REQ-SUP-001-AC20: a script line that names an unpinned package; ruled like a text line, by the hash of the whole line
                 probe = []

@@ -3187,7 +3187,7 @@ keyscript() { # NAME FETCHLINE [AFTERLINE] [HEADER]: a python snippet that write
   python3 - "$1" "$2" "${3-}" "${4-}" <<'PY'
 import json, sys
 name, fetch, after, header = sys.argv[1:5]
-body = "#!/usr/bin/env bash\nset -euo pipefail\n" + (header + "\n" if header else "") + 't=$(mktemp -d)\n' + fetch + "\n" + (after if after else 'sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qxFf build/locks/archive-keys.sha256\n')
+body = "#!/usr/bin/env bash\nset -euo pipefail\n" + (header + "\n" if header else "") + 't=$(mktemp -d)\n' + fetch + "\n" + (after if after else 'sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qxFf build/locks/archive-keys.sha256 || exit 1\n')
 print("import pathlib\nroot = pathlib.Path('.')\n(root / 'bin').mkdir(exist_ok=True)\n(root / 'build/locks').mkdir(parents=True, exist_ok=True)\n"
       "(root / 'bin/fetch-key.sh').write_text(" + json.dumps(body) + ")\n"
       "(root / 'build/locks/archive-keys.sha256').write_text('" + "a" * 64 + "\\n')")
@@ -3277,6 +3277,27 @@ newcase key-source-after-assign "$(keyscript key-source-after-assign 'WOLFI=http
 curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
 runck key-source-after-assign '{"times": {}}'
 CASE="a file sourced between the base URL assignment and the fetch is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-hash-prints-only "$(keyscript key-hash-prints-only 'curl -fsSL -o "$t/k.pub" '"$KURL" 'sha256sum "$t/k.pub" build/locks/archive-keys.sha256')"
+runck key-hash-prints-only '{"times": {}}'
+CASE="hashing two files is not a comparison: refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-compare-ors-true "$(keyscript key-compare-ors-true 'curl -fsSL -o "$t/k.pub" '"$KURL" 'sha256sum "$t/k.pub" | cut -d" " -f1 | grep -qxFf build/locks/archive-keys.sha256 || true')"
+runck key-compare-ors-true '{"times": {}}'
+CASE="a comparison whose failure is ignored (|| true) is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-subshell-assign "$(keyscript key-subshell-assign '(
+WOLFI=https://packages.wolfi.dev/os
+)
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
+runck key-subshell-assign '{"times": {}}'
+CASE="the base URL assigned inside a subshell is refused (exit 1)"
+check test "$rc" -eq 1
+newcase key-read-with-read-on-line "$(keyscript key-read-with-read-on-line 'WOLFI=https://packages.wolfi.dev/os
+read -r WOLFI <<< "${OVERRIDE:-$WOLFI}"
+curl -fsSL -o "$t/k.pub" "$WOLFI/wolfi-signing.rsa.pub"')"
+runck key-read-with-read-on-line '{"times": {}}'
+CASE="a read of the variable on the line that overwrites it does not excuse the write (exit 1)"
 check test "$rc" -eq 1
 newcase key-assign-in-function "$(keyscript key-assign-in-function 'f() {
 WOLFI=https://packages.wolfi.dev/os
@@ -3397,7 +3418,7 @@ pybad single-quoted-proxy "$PYHEAD
 ${PYCALL//\"-o\", part,/'--proxy', \"-o\", part,}
 $PYTAIL"
 pybad list-plus-extra "$PYHEAD
-${PYCALL//\"], stdout/\"] + extra, stdout}
+${PYCALL//% arch], stdout/% arch] + extra, stdout}
 $PYTAIL"
 pybad second-download-on-line "$PYHEAD
 $PYCALL; subprocess.run([\"/usr/bin/curl\", \"https://example.org/extra\"])
