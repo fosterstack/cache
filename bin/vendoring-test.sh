@@ -123,7 +123,7 @@ rc AC2 "an unreadable tree exits 2" 2 vc "$work/does-not-exist"
 mkcase noperm; chmod 000 "$work/fx-noperm/vendor"
 rc AC2 "a tree whose vendor/ cannot be read is a failure, never a pass (1)" 1 vc "$work/fx-noperm"
 chmod 755 "$work/fx-noperm/vendor"
-for pair in "symfile:link.go" "symdir:depl" "fifo:pipe" "emptydir:sub" "add:extra.go" "dot:.hidden" "dotdir:.github"; do
+for pair in "byte:dep.go" "del:example.test/dep" "mtxt:modules.txt" "exec:dep.go" "m600:dep.go" "m666:dep.go" "m444:dep.go" "symrepl:dep.go" "symfile:link.go" "symdir:depl" "fifo:pipe" "emptydir:sub" "add:extra.go" "dot:.hidden" "dotdir:.github"; do
   c=${pair%%:*}; nm=${pair#*:}
   rc AC2 "($c case) refused (1)" 1 vc "$work/fx-$c"
   says AC2 "($c case) the failure names the offending path $nm" "$nm"
@@ -147,6 +147,15 @@ mkcase gosumempty; : >"$work/fx-gosumempty/go.sum"
 rc AC2 "a go.sum that go mod vendor would have to repair is refused (1), with GOFLAGS=-mod=mod in the caller's environment" 1 vc "$work/fx-gosumempty"
 mkcase gomodedit; printf 'module example.test/app\n\ngo 1.20\n' >"$work/fx-gomodedit/go.mod"   # the require line is missing: go mod vendor (GOFLAGS=-mod=mod) would add it
 rc AC2 "a go.mod that go mod vendor has to rewrite is refused (1)" 1 vc "$work/fx-gomodedit"
+says AC2 "(go.mod missing its require) the failure names go mod vendor" "go mod vendor failed"
+# a toolchain whose go mod vendor rewrites go.mod (or go.sum) in the scratch tree: refused by name
+for mf in go.mod go.sum; do
+  mkdir -p "$work/rw-$mf"; printf '#!/bin/sh\n"%s" "$@"; rc=$?; if [ "$1 $2" = "mod vendor" ]; then echo "// rewritten" >>%s; fi; exit $rc\n' "$realgo" "$mf" >"$work/rw-$mf/go"; chmod 755 "$work/rw-$mf/go"
+  rc AC2 "go mod vendor rewriting $mf is refused (1)" 1 env PATH="$work/rw-$mf:$PATH" bash "$bin_vc" "$work/fx-clean"
+  says AC2 "(rewritten $mf) the failure names $mf" "changed $mf"
+done
+rc AC2 "(go.sum repair, again) refused (1)" 1 vc "$work/fx-gosumempty"
+says AC2 "(go.sum repair) the failure names go.sum" "go.sum"
 mkdir -p "$work/emptybin"
 rc AC2 "an unreachable proxy fails (1)" 1 env GOPROXY="file://$work/no-such-proxy" GOMODCACHE="$work/modcache-empty" bash "$bin_vc" "$work/fx-clean"
 rc AC2 "a missing go toolchain fails (1)" 1 env PATH="$work/emptybin" /bin/bash "$bin_vc" "$work/fx-clean"
@@ -199,7 +208,7 @@ mkgit nested;   mkdir -p "$work/g-nested/pkg/vendor" && echo x >"$work/g-nested/
 rc AC2 "a vendor path below the top, none at the top: full check, refused (2)" 2 vc "$work/g-nested"
 mkgit vfile;    echo x >"$work/g-vfile/vendor"
 rc AC2 "a regular file named vendor: refused (2)" 2 vc "$work/g-vfile"
-mkgit vlink;    ln -s /tmp "$work/g-vlink/vendor"
+mkgit vlink;    mkdir "$work/vlink-target" && ln -s "$work/vlink-target" "$work/g-vlink/vendor"
 rc AC2 "a symlink named vendor: refused (2)" 2 vc "$work/g-vlink"
 mkgit full;     cp -R "$fx/vendor" "$work/g-full/vendor"
 git -C "$work/g-full" add -A vendor >/dev/null 2>&1
@@ -342,6 +351,9 @@ allowed = {"name", "uses", "with", "run"}
 for s in steps:
     if set(s) - allowed: fail("a step key beyond name, uses, with, run: " + str(sorted(set(s) - allowed)))
     if "shell" in s: fail("a step sets a shell")
+if [s["uses"].split("@")[0] for s in steps if "uses" in s] != ["actions/checkout", "actions/setup-go"]:
+    fail("the job's actions are not exactly actions/checkout then actions/setup-go (an added action can change what the check runs): " + str([s.get("uses") for s in steps]))
+if [i for i, s in enumerate(steps) if "uses" in s] != [0, 1]: fail("the two actions are not the first two steps")
 uses = [s["uses"] for s in steps if "uses" in s]
 if not uses or not all(re.fullmatch(r"[A-Za-z0-9._/-]+@[0-9a-f]{40}", u.split(" ")[0]) for u in uses): fail("an action is not a commit digest: " + str(uses))
 co = [s for s in steps if s.get("uses", "").startswith("actions/checkout@")]
@@ -385,6 +397,7 @@ mutate checkout-repository 's = s.replace("          fetch-depth: 0\n", "       
 mutate env-shellopts 's = s.replace("jobs:\n", "env:\n  SHELLOPTS: noexec\njobs:\n", 1)'
 mutate env-bash-env 's = s.replace("jobs:\n", "env:\n  BASH_ENV: /dev/null\njobs:\n", 1)'
 mutate runner-private 's = s.replace("  vendor:\n    name: vendor\n    runs-on: ubuntu-latest\n", "  vendor:\n    name: vendor\n    runs-on: ubuntu-private\n", 1)'
+mutate extra-action 's = s.replace("      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", "      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0\n        with:\n          script: |\n            require(\x27fs\x27).writeFileSync(\x27bin/vendor-check.sh\x27, \x27exit 0\x27)\n      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: go.mod\n", 1)'
 mutate shallow-checkout 's = s.replace("        with:\n          fetch-depth: 0\n", "", 1)'
 
 # ===== AC11: listable shape =======================================================================
@@ -434,12 +447,30 @@ def lex(line):
             j += 1
         toks.append(("word", line[i:j])); i = j
     return toks
+def bodies(word):
+    """the command text of each $( ) and `` substitution inside a word, nested ones included by recursion in findings()"""
+    res, i, n = [], 0, len(word)
+    while i < n:
+        if word.startswith("$(", i) and not word.startswith("$((", i):
+            d, j = 1, i + 2
+            while j < n and d:
+                d += word[j] == "("; d -= word[j] == ")"; j += 1
+            res.append(word[i + 2:j - 1]); i = j; continue
+        if word[i] == "`":
+            j = word.find("`", i + 1)
+            if j < 0: j = n
+            res.append(word[i + 1:j]); i = j + 1; continue
+        i += 1
+    return res
 def findings(text):
     out = []
     for n, raw in enumerate(text.split("\n"), 1):
         toks = lex(raw.strip())
         pos, skip = True, False
         for kind, t in toks:
+            if kind == "word" and ("$(" in t or "`" in t):
+                for b in bodies(t):
+                    out.extend((n, m) for _, m in findings(b))     # an executable substitution is judged wherever its word stands: command, argument, assignment or redirection operand
             if skip:
                 skip = False; continue
             if kind == "op":
@@ -465,7 +496,7 @@ if __name__ == "__main__":
         print("%d: %s" % (n, m))
     sys.exit(1 if fs else 0)
 CMDWORD_PY
-for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off g"$(printf o)" mod verify' "AUDIT_LABEL='two words' GOAUTH=off \"g\$(printf o)\" mod verify" 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'p"$cmd" arg' 'case $x in a) $(echo y);; esac'; do
+for line in ':; $(printf true)' '$(printf true)' 'x && `date`' 'if a; then $cmd' 'cmd=a; $prog arg' '( $(echo x) )' 'e$(printf cho) >/dev/null' 'x && ec$(printf ho) a' 'p$cmd arg' 'cmd=a; pre${prog} arg' 'if $(printf true); then :; fi' 'while $(echo x); do :; done' 'if a; then :; elif $(printf x); then :; fi' 'until $x; do :; done' '! $(printf false)' 'GOAUTH=off g"$(printf o)" mod verify' "AUDIT_LABEL='two words' GOAUTH=off \"g\$(printf o)\" mod verify" 'AUDIT_LABEL="two words" GOAUTH=off "g$(printf o)" mod verify' 'A=b "$(printf go)" x' 'cmd=a; "$prog" arg' 'p"$cmd" arg' 'case $x in a) $(echo y);; esac' 'found=$($(printf find) "$src" -name .git -prune -o -name vendor -print -quit)' 'effflags=$(g$(printf o) env GOFLAGS 2>/dev/null) || die x' 'echo "$($(printf true))"' 'x=`$(printf go) env`' ': >"$($(printf echo) /dev/null)"' 'effflags=$(go env GOFLAGS 2>"$($(printf printf) %s /dev/null)") || die x 1' 'cat <$($(printf echo) f)'; do
   tn AC11 "the command-word judge flags: $line" python3 "$work/cmdword.py" -c "$line"
 done
 for line in 'found=$(find "$src" -print)' 'echo "$x"' 'cmp -s "$a" "$b" || die "x"' 'tree="$scratch/tree"' '[ "$(cd "$self/.." && pwd -P)" = "$(pwd -P)" ] || die x' 'cat "$a" >&2; die "go mod verify failed" 1' 'case $x in -*) die y;; esac' 'self=${0%/*}; [ "$self" != "$0" ] || self=.'; do

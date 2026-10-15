@@ -311,6 +311,11 @@ jobs:
 
       - name: vendor check regressions (REQ-VEND-001-AC2, AC3, AC11)
         run: bash bin/vendoring-test.sh </dev/null
+      - name: apk build driver and release signing regressions
+        run: bash bin/build-apk-test.sh
+
+      - name: the committed melange recipes are exactly the generator's output from build/melange.yaml.tmpl (REQ-BUILDTOOLS-001-AC5)
+        run: python3 bin/gen-recipes.py --check
 
       - name: vendored tree and provenance regressions (REQ-VEND-001-AC1, AC4-AC14)
         run: bash bin/vendor-provenance-test.sh </dev/null

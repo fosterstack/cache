@@ -116,6 +116,7 @@ def _hide(text):
 class Item:
     def __init__(self, kind, name, version, label="", path=""):
         self.kind, self.name, self.version, self.label, self.path = kind, _hide(name), _hide(version), _hide(label), _hide(path)  # path: an action's subdirectory
+        self.rawid = False   # the item's name is a release asset's: it is identified by the RAW text of its step (a "latest" download included)
         self.step = ""   # a placeholder's identity: the hash of the step it sits in
         self.raw = None  # a file item's repository path, exactly as git names it (name goes through _hide(); REQ-SUP-001-AC21 compares this)
         self.src = None  # (script path, line id) of the script line that made this item (not part of its identity): REQ-SUP-001-AC20 binds a ruled row to that line
@@ -230,7 +231,15 @@ def _uses(u, node, out, labels):
     if u.startswith("docker://"):
         out.append(_image_item(u[len("docker://"):]))
     elif u.startswith("./"):
-        out.append(Item("action", _local_name(raw), "(local)"))   # the RAW spelling is the identity: a padded reference is never the exact one (REQ-SUP-001-AC19). A local action outside the globs: its content is not read, so a new one cannot pass
+        it = Item("action", _local_name(raw), "(local)")
+        keys = ("with",) if _LOCAL_CALL.match(u) else ("with", "env")        # a local action also gets the calling step's env; a local workflow call keeps its with: only (its job-level identity is set where its jobs are read)
+        callctx = {k: node[k] for k in keys if isinstance(node.get(k), dict) and node[k]}
+        if keys != ("with",) and _ENV_PRESENT[0]:      # no env and no matrix: no context, no change of key
+            callctx["inherited"] = _ENV_CTX[0]      # the workflow's and job's env and the job's matrix: a composite reads them too
+        if callctx:
+            payload = callctx["with"] if list(callctx) == ["with"] else callctx      # with: alone hashes as it always has (a local workflow call's row identity)
+            it.step = "with:" + hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()   # what a step hands a local action is part of the call: a changed value is a moved item
+        out.append(it)   # the RAW spelling is the identity: a padded reference is never the exact one (REQ-SUP-001-AC19). A local action outside the globs: its content is not read, so a new one cannot pass
     elif u and "${{" not in u:
         ref_path, _, ref = u.partition("@")
         repo = "/".join(ref_path.split("/")[:2])
@@ -307,13 +316,193 @@ def _docker_operand(cmd_args):
     return [], (None if guessed else pull)
 
 
+def _asset_word(text, start):
+    """The release asset's name as the shell reads it, from `start` to the end of the word. Quotes, $( ) and backticks nest as a stack (a quote opened inside a
+    substitution closes there, whatever the depth); an unquoted space or shell operator, and a ? or # (a query or a fragment: URL syntax, quoted or not) end the
+    name; the quote that held the whole URL closing does not end it ("url/tool-"${A}.tgz is one word). A name with a substitution in it is returned whole; the
+    caller keeps the plain match for a concrete name."""
+    i, n, depth, stack = text.rfind("\n", 0, start) + 1, len(text), 0, []    # stack of (quote char, substitution depth it was opened at); quote state is read from the line start
+    bt = []                                                                    # depths at which a backtick substitution is open
+    d0 = s0 = -1                                                              # the depth and quote depth the name itself starts at: its word ends there
+    while i < n:
+        c = text[i]
+        if i == start:
+            d0, s0 = depth, len(stack)
+        in_string = bool(stack) and (stack[-1][0] == "'" or depth == stack[-1][1])
+        if i >= start and depth == d0 and c in "?#":
+            break
+        if i >= start and c == ")" and depth == d0 and d0 > 0 and len(stack) <= s0 and not in_string:
+            break                            # the substitution that holds the name closes: the name is over
+        if i >= start and c == "`" and bt and bt[-1] == d0 and d0 > 0 and len(stack) == s0 and not (stack and stack[-1][0] == "'"):
+            break                            # the backticks that hold the name close
+        if stack and stack[-1][0] == "'":
+            if c == "'":
+                stack.pop()
+            elif i >= start and depth == d0 and len(stack) == s0 and stack[-1][2] < start and (c.isspace() or c in ";|&<>" or (c == ")" and d0 > 0)):
+                break                          # a single-quoted program string (bash -c 'curl url/x.tgz -o x'): the name ends at its own word boundary
+        elif in_string:                      # inside double quotes, not inside a substitution
+            if i >= start and depth == d0 and len(stack) == s0 and stack and stack[-1][1] == d0 and stack[-1][2] < start and c.isspace():
+                break                        # a double-quoted program string: the name ends at whitespace
+            if c == "\\" and i + 1 < n:
+                i += 1
+            elif c == '"':
+                stack.pop()
+            elif c == "$" and text[i + 1:i + 2] == "(":
+                depth += 1
+                i += 1
+            elif c == "`":
+                bt.append(depth + 1); depth += 1
+        else:                                # code: unquoted, or inside $( ) within quotes
+            if c == "\\" and i + 1 < n:
+                i += 1
+            elif c == "`":
+                if bt and depth == bt[-1]:
+                    bt.pop(); depth -= 1
+                else:
+                    bt.append(depth + 1); depth += 1
+            elif c == "$" and text[i + 1:i + 2] == "(":
+                depth += 1
+                i += 1
+            elif c == ")" and depth > 0:
+                depth -= 1
+            elif c in "'\"":
+                stack.append((c, depth, i))
+            elif i >= start and depth == d0 and len(stack) <= s0 and (c.isspace() or c in ";|&<>)"):
+                break
+        i += 1
+    return text[start:i]
+
+
+def _nested_program(text, pos):
+    """True when `pos` sits inside a quoted PROGRAM string (bash -c '...', sh -c "...", eval "...") whose outermost quote also holds a $, a backtick or a
+    command separator (; && || |): the inner program's own word boundaries are not read here, so a release URL in it is refused as unresolved (closed
+    fail-closed, advisor 0080: parse the inner program or refuse it; this refuses it). A position inside a $( ) or backtick substitution is NOT this case:
+    the name reader parses code there. A quoted string with nothing dynamic in it is an ordinary quoted word."""
+    i = text.rfind("\n", 0, pos) + 1
+    stack, bt = [], False                  # open contexts, innermost last: "'", '"', "$("; and whether backticks are open
+    while i < pos:
+        c = text[i]
+        top = stack[-1] if stack else None
+        if top == "'":
+            if c == "'":
+                stack.pop()
+        elif c == "\\":
+            i += 2; continue
+        elif c == "`":
+            bt = not bt
+        elif c == "$" and text[i + 1:i + 2] == "(":
+            stack.append("$("); i += 1
+        elif c == ")" and top == "$(":
+            stack.pop()
+        elif c == '"' and top == '"':
+            stack.pop()
+        elif c in "'\"" and top != "'":
+            stack.append(c)
+        i += 1
+    if bt or "$(" in stack or not stack or stack[0] not in "'\"":
+        return False
+    q = stack[0]
+    start = pos
+    # the outermost quote's span: from its opening (rescan) to its closing after pos
+    k, st = text.rfind("\n", 0, pos) + 1, []
+    while k < pos:
+        c = text[k]
+        top = st[-1] if st else None
+        if top == "'":
+            if c == "'": st.pop()
+        elif c == "\\": k += 2; continue
+        elif c == "$" and text[k + 1:k + 2] == "(": st.append("$("); k += 1
+        elif c == ")" and top == "$(": st.pop()
+        elif c == '"' and top == '"': st.pop()
+        elif c in "'\"" and top != "'":
+            st.append(c)
+            if len(st) == 1: start = k
+        k += 1
+    j, n = pos, len(text)
+    while j < n:
+        if text[j] == "\\" and q == '"':
+            j += 2; continue
+        if text[j] == q:
+            break
+        j += 1
+    return bool(re.search(r"[$`;|]|&&", text[start + 1:j]))
+
+
 _ENV_CTX = [""]
+_ENV_PRESENT = [False]    # the workflow or the job sets an env or a matrix: only then does a local action call inherit context
+_JOB_RUNS = [[]]          # the run texts of the steps of the job being read (a step can hand a name to a later one through GITHUB_ENV)
+_INPUT_CTX = [""]   # a composite action's input definitions: part of a release asset's identity only (never of another item's key)
 _TREE = [frozenset()]   # the paths of the tree being inventoried that are read as workflows: a local reusable-workflow call is judged against it (REQ-SUP-001-AC19)
 _FILES = [{}]           # and their text
 _JOB_SUMS = [[]]
 
 
 _NONPIN = re.compile(r"^$|^\(|\$\{|^latest$|^(main|master|nightly|stable)$|[*<>=~!]")
+
+
+_CONT = re.compile(r"(\\\n\s*)")
+_ASSIGN_LINE = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$")
+
+
+def _script_lines(text):
+    """(joined, raw) per logical line of a script: joined is the line with each backslash continuation folded to one space (what the readers match on),
+    raw keeps the continuation exactly as written, so a change of spacing inside a continued value is a change."""
+    parts = _CONT.split(text)
+    joined, raw, cj, cr = [], [], "", ""
+    for i, part in enumerate(parts):
+        if i % 2:
+            cj += " "; cr += part
+            continue
+        segs = part.split("\n")
+        for j, seg in enumerate(segs):
+            cj += seg; cr += seg
+            if j < len(segs) - 1:
+                joined.append(cj); raw.append(cr); cj = cr = ""
+    joined.append(cj); raw.append(cr)
+    return joined, raw
+
+
+_ASSIGN_ANY = re.compile(r"(?:^|[\s;&|(])[\"']?([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=")   # export "A=$B" and declare -x 'A=x' name A too
+
+
+def _assign_context(joined, raw):
+    """For each logical line (a generator: only a line that names a release download is worked out): every assignment, in file order and as written, to the
+    variables the line reads, and (transitively) to the variables those assignments read. An assignment is any NAME= at the start of a word (A=x B=old,
+    export A=x, declare -r A=), so a later one, an indirect one (A=$B) and spacing inside a continued value are all part of a download's identity."""
+    byname, order = {}, 0
+    for jl, rl in zip(joined, raw):
+        names = set(m.group(1) for m in _ASSIGN_ANY.finditer(jl))
+        if "=" in jl or re.search(r"\b(?:printf\s+-v|read|mapfile|readarray|declare|typeset|local|export|readonly|eval|let|unset|getopts|set)\b", jl):
+            names |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", jl))     # printf -v A, read A, eval "A=...": any word of such a line may be a name it writes
+        for name in names:
+            byname.setdefault(name, []).append((order, jl, rl))
+        order += 1
+    def refs(t):
+        names = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", t))
+        for body in re.findall(r"\$\{([^}]*)\}", t):
+            names |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", body))     # ${!SEL}, ${A[IDX]}, ${A:-$B}: every name inside the braces is read
+        if "((" in t:
+            names |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", t))     # a bare name inside $(( )) or (( )) is read: take every identifier of the line
+        return names
+    for jl in joined:
+        if "releases/" not in jl:
+            yield []
+            continue
+        indirect = "${!" in jl
+        seen, todo, rows = set(), sorted(refs(jl)), []
+        while todo:
+            v = todo.pop()
+            if v in seen or v not in byname:
+                seen.add(v)
+                continue
+            seen.add(v)
+            for ix, j2, r2 in byname[v]:
+                rows.append((ix, r2))
+                more = refs(j2)
+                if indirect:
+                    more |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", j2.split("=", 1)[-1]))    # ${!P}: the VALUE of P names the variable that is read
+                todo.extend(sorted(more - seen))
+        yield [r for _, r in sorted(set(rows))]      # file order: B=x, A=$B, B=y is not B=y, A=$B, B=x
 
 
 MAX_ITEMS_PER_STEP = 500
@@ -328,11 +517,25 @@ def _step(node, out, labels):
         raise RuntimeError(f"a single step or script line yields more than {MAX_ITEMS_PER_STEP} items: refusing to read it (a hostile line could exhaust the readers)")
     run = node.get("run")
     if isinstance(run, str):
-        ctx = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
-        tag = "step:" + hashlib.sha256(ctx.encode("utf-8", "replace")).hexdigest()
+        legacy = " ".join(run.split()) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0]
+        legacy_tag = "step:" + hashlib.sha256(legacy.encode("utf-8", "replace")).hexdigest()       # the identity every other placeholder item has always had: its key must not move
+        sib = []
+        if _JOB_RUNS[0] and any(("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid for it in out[n0:]):
+            read = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", run)) | set(w for b in re.findall(r"\$\{([^}]*)\}", run) for w in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", b))
+            for other in _JOB_RUNS[0]:
+                if other == run:
+                    continue
+                for ln in other.split("\n"):
+                    if read & set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", ln)):
+                        sib.append(ln)      # an earlier step's line that mentions a name this step reads (echo ASSET=$B >> "$GITHUB_ENV")
+        ctx = node.get("_raw", run) + "\0" + json.dumps(node.get("env"), sort_keys=True, default=str) + "\0" + _ENV_CTX[0] + "\0" + json.dumps(node.get("_assign")) + "\0" + _INPUT_CTX[0] + "\0" + json.dumps(sorted(set(sib)))   # a release asset's NAME behind a variable: the RAW step text and every assignment it can read
+        k = 0
         for it in out[n0:]:
-            if _NONPIN.search(it.version or "") and not it.step:
-                it.step = tag     # a placeholder (variable, @latest, @main, unpinned) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused
+            if (("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid) and not it.step:
+                k += 1
+                it.step = "step:" + hashlib.sha256((ctx + "\0" + str(k)).encode("utf-8", "replace")).hexdigest()   # the ordinal keeps two placeholders of one step apart
+            elif _NONPIN.search(it.version or "") and not it.step:
+                it.step = legacy_tag # a placeholder (variable, @latest, @main, unpinned; a release asset's NAME that holds a variable or expression) is identified by the step it sits in, so a NEW or EDITED one is a new key and is refused: _hide() folds two spellings of the name into one
 
 
 _SOURCE_ASSIGN = re.compile(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?((?:url|URL)|[A-Z][A-Z0-9_]*_(?:BASE_URL|BASE|URL))=(.*)$")
@@ -355,7 +558,9 @@ def _step_items(node, out, labels):
                 elif not tok.startswith("-") and "$" in tok:
                     out.append(Item("gotool", "(variable)", "(unversioned)"))   # go install "$TOOL": the target is a variable, so it cannot be proven
         for m in _GH_LATEST.finditer(run):  # "latest" is not a pin: an item that cannot be proven, so adding one fails closed
-            out.append(Item("tool", m.group(1), "latest"))
+            it = Item("tool", m.group(1), "latest")
+            it.rawid = True      # a "latest" download is an item that cannot be proven: its step's raw text, an expression's literals included, is its identity
+            out.append(it)
         for sub, tail in _docker_tails(run):
             images, pull = _docker_operand(tail)
             local_only = sub in ("run", "create") and pull == "never"
@@ -370,7 +575,11 @@ def _step_items(node, out, labels):
                 out.append(Item("tool", "source:" + m.group(1).lower() + "=" + hashlib.sha256(" ".join(ln.split()).encode("utf-8", "replace")).hexdigest(), "(source)"))
         for m in _GH_DOWNLOAD.finditer(run):  # curl/wget of a release asset: the tool is its repo at that version; the EXACT tag is kept as its label
             sums = sorted(set(re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", run)) | set(_JOB_SUMS[0]))   # checksums, not image digests
-            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), m.group(4) + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest() if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
+            word = _asset_word(run, m.start(4))
+            asset = word if ("$" in word or "`" in word) else m.group(4)
+            if "$" not in asset and "`" not in asset and _nested_program(run, m.start(4)):
+                asset += "$(nested program)"      # a URL in a quoted program string that is dynamic: unresolved, refused (the inner shell's boundaries are not parsed)   # the name goes on past a quote or a space inside $( ): it is a name behind a variable too
+            out.append(Item("tool", m.group(1), m.group(2) + m.group(3), m.group(2) + m.group(3), asset + ("#" + hashlib.sha256(" ".join(sums).encode()).hexdigest() if sums else "")))   # the asset's name is part of the identity: a different file under the same tag is a moved item
         for tail in _pip_tails(run):
             for p in _PIP_PIN.finditer(tail):  # a range (>=, ~=...) is not a pin: kept with its operator, it cannot be proven and fails closed
                 ver = p.group(3) if p.group(2) == "==" else p.group(2) + p.group(3)
@@ -424,6 +633,8 @@ def _walk(node, out, labels, path="", in_step=False):
                 top_env = json.dumps(node.get("env"), sort_keys=True, default=str) + json.dumps(node.get("on"), sort_keys=True, default=str)   # a called workflow's input defaults count
                 for job in v.values():
                     _ENV_CTX[0] = top_env + json.dumps(job.get("env") if isinstance(job, dict) else None, sort_keys=True, default=str) + json.dumps(job.get("strategy") if isinstance(job, dict) else None, sort_keys=True, default=str)
+                    _ENV_PRESENT[0] = bool(node.get("env")) or (isinstance(job, dict) and bool(job.get("env") or job.get("strategy")))
+                    _JOB_RUNS[0] = [st.get("run") for st in (job.get("steps") if isinstance(job, dict) and isinstance(job.get("steps"), list) else []) if isinstance(st, dict) and isinstance(st.get("run"), str)]
                     _JOB_SUMS[0] = re.findall(r"(?<!sha256:)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", json.dumps(job, default=str)) if isinstance(job, dict) else []   # a checksum in ANY step of the job (a separate verify step) belongs to the job's downloads
                     n0 = len(out)
                     _walk(job, out, labels, "job:" + k)
@@ -436,6 +647,8 @@ def _walk(node, out, labels, path="", in_step=False):
                             for it in mine:          # a local reusable-workflow call: what it passes in is part of that call's identity
                                 it.step = "with:" + hashlib.sha256(json.dumps(job.get("with"), sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()
                 _ENV_CTX[0] = ""
+                _ENV_PRESENT[0] = False
+                _JOB_RUNS[0] = []
                 _JOB_SUMS[0] = []
                 continue
             _walk(v, out, labels, k, in_step=(k == "steps"))
@@ -456,9 +669,11 @@ def inventory(files):
             found += [Item("tool", m.group(1).lower().replace("_", "-"), m.group(2)) for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9]*)_VERSION=['\"]?([^\s'\"#]+)", text, re.M)]
             found += [Item("tool", "source:" + m.group(1).lower() + "=" + _hide(m.group(2)), "(source)") for m in re.finditer(r"^[ \t]*(?:export\s+)?([A-Z][A-Z0-9_]*_BASE(?:_URL)?)=['\"]?(?:\$\{[A-Z0-9_]+:?-)?(https?://[^\s'\"}]+)", text, re.M)]  # where it downloads from: changing it is refused (not a pin)
             found += [Item("tool", "scout", m.group(1)) for m in re.finditer(r"\bdocker-scout-(\d+(?:\.\d+)+)\b", text)]  # older versions the script can still install
-            for ln, lid in zip(re.sub(r"\\\n\s*", " ", text).split("\n"), _line_ids(text)):   # and the rest of the script like any other: an appended download is seen
+            sjoined, sraw = _script_lines(text)
+            sctx = _assign_context(sjoined, sraw)
+            for ln, lid, actx, rawln in zip(sjoined, _line_ids(text), sctx, sraw):   # and the rest of the script like any other: an appended download is seen, and a placeholder's identity holds the assignments it can read
                 before = len(found)
-                _step({"run": ln}, found, {})
+                _step({"run": ln, "_assign": actx, "_raw": rawln} if actx else {"run": ln, "_raw": rawln}, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
         elif path.rsplit("/", 1)[-1] in VERSION_FILES or (re.search(r"(?i)(sha256|checksums?)", path.rsplit("/", 1)[-1]) and not path.startswith(".github/workflows/") and not path.endswith((".sh", ".yml", ".yaml", ".py"))):
@@ -475,10 +690,17 @@ def inventory(files):
                 am = re.match(r"^[ \t]*(?:export\s+|readonly\s+|local\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$", ln)
                 if am:
                     assigns[am.group(1)] = am.group(2)
-            for ln, lid in zip(joined, _line_ids(text)):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
+            _j2, _raw2 = _script_lines(text)
+            gctx = _assign_context(_j2, _raw2) if len(_j2) == len(joined) else [[ln for ln in joined]] * len(joined)   # a line count that differs is read whole: fail closed
+            graw = _raw2 if len(_raw2) == len(joined) else joined
+            for ln, lid, actx, rawln in zip(joined, _line_ids(text), gctx, graw):   # a script is read LINE by line (continuations joined): a placeholder's identity is its own line PLUS the assignments of the variables that line references
                 refs = {v: assigns[v] for v in set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", ln)) if v in assigns}
                 before = len(found)
-                _step({"run": ln, "env": refs} if refs else {"run": ln}, found, {})
+                node = {"run": ln, "env": refs} if refs else {"run": ln}
+                node["_raw"] = rawln
+                if actx:
+                    node["_assign"] = actx
+                _step(node, found, {})
                 for it in found[before:]:
                     it.src = (path, lid)
                 if len(found) > MAX_ITEMS_PER_FILE:
@@ -508,12 +730,26 @@ def inventory(files):
             except yaml.YAMLError as e:
                 mark = getattr(e, "problem_mark", None)  # the line number only: the message would quote source text (names that must stay private)
                 raise RuntimeError(f"{path} does not parse (line {mark.line + 1 if mark else '?'})")
-            _walk(doc, found, labels, "")
+            if isinstance(doc, dict) and isinstance(doc.get("runs"), dict):
+                _INPUT_CTX[0] = json.dumps(doc.get("inputs"), sort_keys=True, default=str)   # a composite action's input defaults select what its steps download
+            try:
+                _walk(doc, found, labels, "")
+            finally:
+                _INPUT_CTX[0] = ""
             for it in found:
                 if it.src is None:
                     it.src = (path, "")      # a workflow item's origin is its file (REQ-SUP-001-AC19: a local call is ruled by its identity)
+        nfile = 0
         for it in found:
-            if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
+            if ("$" in (it.path or "") or "`" in (it.path or "")) or it.rawid:
+                # a release asset whose NAME is not literal (a variable, a substitution, a "latest" download) cannot be proven, so any change that could select a
+                # different asset must be a moved item: its identity is the WHOLE file it sits in and its ordinal there. Closed fail-closed (advisor 0080: an
+                # open-ended class of shell forms on a security control is refused, not enumerated): no assignment, array, indirection, GITHUB_ENV or quoting
+                # form needs to be recognised for an edit to be seen.
+                nfile += 1
+                it.step = "step:" + hashlib.sha256((path + "\0" + text + "\0" + str(nfile)).encode("utf-8", "replace")).hexdigest()
+        for it in found:
+            if it.key in items and (it.version.startswith("(") or "${{" in it.version or it.version in ("latest", "(unversioned)") or "$" in (it.path or "") or "`" in (it.path or "")):     # two identical unresolved occurrences are two items: removing a version from the second must not hide behind the first
                 n = 2
                 while True:
                     it.step = re.sub(r"~\d+$", "", it.step or "") + f"~{n}"
