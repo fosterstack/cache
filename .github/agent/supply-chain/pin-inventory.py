@@ -234,6 +234,8 @@ def _uses(u, node, out, labels):
         it = Item("action", _local_name(raw), "(local)")
         keys = ("with",) if _LOCAL_CALL.match(u) else ("with", "env")        # a local action also gets the calling step's env; a local workflow call keeps its with: only (its job-level identity is set where its jobs are read)
         callctx = {k: node[k] for k in keys if isinstance(node.get(k), dict) and node[k]}
+        if keys != ("with",) and _ENV_CTX[0].replace("null", ""):      # an absent env/matrix is json "null": no context, no change of key
+            callctx["inherited"] = _ENV_CTX[0]      # the workflow's and job's env and the job's matrix: a composite reads them too
         if callctx:
             payload = callctx["with"] if list(callctx) == ["with"] else callctx      # with: alone hashes as it always has (a local workflow call's row identity)
             it.step = "with:" + hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8", "replace")).hexdigest()   # what a step hands a local action is part of the call: a changed value is a moved item
@@ -329,7 +331,7 @@ def _asset_word(text, start):
         in_string = bool(stack) and (stack[-1][0] == "'" or depth == stack[-1][1])
         if i >= start and depth == d0 and c in "?#":
             break
-        if i >= start and c == ")" and depth == d0 and d0 > 0 and len(stack) == s0:
+        if i >= start and c == ")" and depth == d0 and d0 > 0 and len(stack) <= s0:
             break                            # the substitution that holds the name closes: the name is over
         if i >= start and c == "`" and bt and bt[-1] == d0 and d0 > 0 and len(stack) == s0 and not (stack and stack[-1][0] == "'"):
             break                            # the backticks that hold the name close
@@ -344,6 +346,8 @@ def _asset_word(text, start):
             elif c == "$" and text[i + 1:i + 2] == "(":
                 depth += 1
                 i += 1
+            elif c == "`":
+                bt.append(depth + 1); depth += 1
         else:                                # code: unquoted, or inside $( ) within quotes
             if c == "\\" and i + 1 < n:
                 i += 1
@@ -359,7 +363,7 @@ def _asset_word(text, start):
                 depth -= 1
             elif c in "'\"":
                 stack.append((c, depth))
-            elif i >= start and depth == d0 and len(stack) == s0 and (c.isspace() or c in ";|&<>)"):
+            elif i >= start and depth == d0 and len(stack) <= s0 and (c.isspace() or c in ";|&<>)"):
                 break
         i += 1
     return text[start:i]
@@ -397,7 +401,7 @@ def _script_lines(text):
     return joined, raw
 
 
-_ASSIGN_ANY = re.compile(r"(?:^|[\s;&|(])[\"']?([A-Za-z_][A-Za-z0-9_]*)\+?=")   # export "A=$B" and declare -x 'A=x' name A too
+_ASSIGN_ANY = re.compile(r"(?:^|[\s;&|(])[\"']?([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=")   # export "A=$B" and declare -x 'A=x' name A too
 
 
 def _assign_context(joined, raw):
@@ -411,6 +415,8 @@ def _assign_context(joined, raw):
         order += 1
     def refs(t):
         names = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", t))
+        for body in re.findall(r"\$\{([^}]*)\}", t):
+            names |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", body))     # ${!SEL}, ${A[IDX]}, ${A:-$B}: every name inside the braces is read
         if "((" in t:
             names |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", t))     # a bare name inside $(( )) or (( )) is read: take every identifier of the line
         return names
@@ -418,6 +424,7 @@ def _assign_context(joined, raw):
         if "releases/" not in jl:
             yield []
             continue
+        indirect = "${!" in jl
         seen, todo, rows = set(), sorted(refs(jl)), []
         while todo:
             v = todo.pop()
@@ -427,7 +434,10 @@ def _assign_context(joined, raw):
             seen.add(v)
             for ix, j2, r2 in byname[v]:
                 rows.append((ix, r2))
-                todo.extend(sorted(refs(j2) - seen))
+                more = refs(j2)
+                if indirect:
+                    more |= set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", j2.split("=", 1)[-1]))    # ${!P}: the VALUE of P names the variable that is read
+                todo.extend(sorted(more - seen))
         yield [r for _, r in sorted(set(rows))]      # file order: B=x, A=$B, B=y is not B=y, A=$B, B=x
 
 
