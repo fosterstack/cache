@@ -71,10 +71,8 @@
    "findings": [
     "the base input build/locks/apko.base.lock.json is not on origin/main",
     "the base input build/locks/apko-fips.base.lock.json is not on origin/main",
-    "the base input build/locks/melange.lock is not on origin/main",
     "the base input build/locks/archive-keys.sha256 is not on origin/main",
-    "the base input build/locks/archive-index.sha256 is not on origin/main",
-    "the base input build/locks/fips-module.txt is not on origin/main"
+    "the base input build/locks/archive-index.sha256 is not on origin/main"
    ]
   }
  ]
