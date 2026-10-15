@@ -1772,18 +1772,18 @@ for sfile in bin/chain-build-wiring-test.sh bin/chain-sign-wiring-test.sh bin/ch
   if grep -q 'chain-known-red.py" judge --suite '"$sfile" "$root/$sfile" 2> /dev/null && grep -q -- '--inner-rc' "$root/$sfile" && grep -q 'CHAIN_FINDINGS=1' "$root/$sfile"; then ok "known-red: $sfile judges its own output against the list, with the inner exit status and the structured findings on"; else bad "known-red: $sfile does not judge its output with --inner-rc and CHAIN_FINDINGS=1"; fi
 done
 # the committed entries of the two real suites carry the structured identity of their findings, with multiplicity (KR-SIGN-1 is the 19 findings of the real tree)
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1 and KR-SIGN-3 carry their structured findings (22 each: 19 plus PR 4's three cache scripts; KR-SIGN-2 left with the legacy-list probes, KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red: KR-SIGN-1 and KR-SIGN-3 carry their structured findings (8 each since cache#341 (P4) is on main: the vendor-provenance row, four assemble-image edges, three release-sign-apks.sh script findings; was 22 each: 19 plus PR 4's three cache scripts; KR-SIGN-2 left with the legacy-list probes, KR-BUILD-1 went green with PR 4's release job)" || bad "known-red: the real-suite entries lack their structured findings"
 import json, sys
 e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}
 for k in ("KR-SIGN-1", "KR-SIGN-3"):
     f = e[k].get("findings")
     assert isinstance(f, list) and f and all(isinstance(x, str) and x for x in f), k
-for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 22, (k, len(e[k]["findings"]))
+for k in ("KR-SIGN-1", "KR-SIGN-3"): assert len(e[k]["findings"]) == 8, (k, len(e[k]["findings"]))   # the vendor-provenance row, the four assemble-image edges and three bin/release-sign-apks.sh script findings (advisor 0433/0434)
 PY
 # PR 4 (advisor ruling): the records suite's expected failures are ONE entry (KR-RECORDS-1) that names the three cache scripts Release's steps run and that are not
 # listed rows yet. The judge accepts exactly those findings, refuses any other (the entry cannot grow silently) and any missing one (it shrinks only by an edit that
 # a pull request body names), and the cutover check covers it. The suite's own wrapper prints the findings as structured ids right before its FAIL line.
-KRE="bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py"
+KRE="bin/vendor-provenance.py"   # since cache#341 (P4) is on main and its rows are listed, the entry is the one finding left: release-sign.sh runs bin/vendor-provenance.py (the vendored-tree PR)
 RECCASE="the real repository: every produced record type has a row with a claim and a stage consumer"
 recids() { python3 - "$@" <<'PY'
 import json, sys
@@ -1794,16 +1794,16 @@ rec_run() { # rec_run LABEL WANT-EXIT PATHS...  : the records suite's output wit
   local label=$1 want=$2 rc=0 out; shift 2
   out=$( { recids "$@"; echo "FAIL $RECCASE -> chain-scripts.json: x"; echo "pass=96 fail=1"; } | python3 "$KR" judge --suite bin/chain-records-test.sh --list "$root/test-evidence/known-red.json" --inner-rc 1 2>&1) || rc=$?
   if [ "$rc" = "$want" ]; then ok "known-red records: $label"; else bad "known-red records: $label (exit $rc, wanted $want: ${out:0:200})"; fi; }
-rec_run "exactly the entry's three cache scripts are accepted" 0 bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py
-rec_run "a fourth finding (a script the entry does not name) is refused: the entry cannot grow" 1 bin/apk-tool.py bin/release-sign-apks.sh bin/vendor-provenance.py bin/other.py
-rec_run "a missing finding (one script landed, the entry not shrunk) is refused" 1 bin/apk-tool.py bin/release-sign-apks.sh
-rec_run "a different set of the same size is refused" 1 bin/apk-tool.py bin/release-sign-apks.sh bin/other.py
-python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red records: KR-RECORDS-1 names the three cache scripts, in the records suite, with structured findings" || bad "known-red records: no KR-RECORDS-1 entry with the three findings"
+rec_run "exactly the entry's one finding is accepted" 0 bin/vendor-provenance.py
+rec_run "a second finding (a script the entry does not name) is refused: the entry cannot grow" 1 bin/vendor-provenance.py bin/other.py
+rec_run "a missing finding (the script landed, the entry not shrunk) is refused" 1
+rec_run "a different finding of the same size is refused" 1 bin/other.py
+python3 - "$root/test-evidence/known-red.json" <<'PY' && ok "known-red records: KR-RECORDS-1 names the vendor-provenance script, in the records suite, with a structured finding" || bad "known-red records: no KR-RECORDS-1 entry with its one finding"
 import json, sys
 e = {x["id"]: x for x in json.load(open(sys.argv[1]))["entries"]}["KR-RECORDS-1"]
 assert e["suite"] == "bin/chain-records-test.sh" and e["case"].startswith("the real repository: every produced record type")
 f = e["findings"]
-assert len(f) == 3 and all(p in "".join(f) for p in ("bin/apk-tool.py", "bin/release-sign-apks.sh", "bin/vendor-provenance.py")), f
+assert len(f) == 1 and "bin/vendor-provenance.py" in f[0], f
 PY
 # ---- advisor ruling (finding 5): no suite reads or writes a fixed host path under /tmp --------------------------------------------------------------------
 # A stray /tmp/x once changed a verdict. Every file a chain suite makes or reads lives in its own mktemp -d ($work). This guard reads the suites' own shell and Python
