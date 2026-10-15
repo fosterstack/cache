@@ -3130,5 +3130,26 @@ for run in ("curl \"" + url + "x.tgz\" -o \"$OUT\"", "bash -c 'curl " + url + "x
     assert set(inv.inventory({"bin/x.sh": run + "\n"})) == {"tool:o/r/x.tgz@v1.2.3"}, run
 PY
 
+CASE="release downloads behind variables, round 9 finding (both seats, same class): a quote segment that merely BEGINS with the release URL inside a quoted program string (eval 'curl \"''https://.../tool;\${A}.tgz''\"') is not an ordinary URL operand: the name is unresolved (whole-file identity, refused by the age judge) and a variable edit is a moved item; a word that is the URL itself keeps its concrete key (REQ-SUP-001-AC2)"
+check python3 - "$here/../supply-chain/pin-inventory.py" "$here/../supply-chain/pin-age-check.py" <<'PY'
+import importlib.util, sys, json, datetime as dt
+def load(n, p):
+    s = importlib.util.spec_from_file_location(n, p); m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+inv, age = load("inv", sys.argv[1]), load("age", sys.argv[2])
+url = "https://github.com/o/r/releases/download/v1.2.3/"
+def tree(var, run):
+    w = {"on": "push", "jobs": {"j": {"runs-on": "ubuntu-latest", "env": {"A": "old", "B": "new"}, "steps": [{"run": run.replace("VAR", var)}]}}}
+    return {".github/workflows/p.yml": json.dumps(w)}
+for run in ("eval 'curl \"''" + url + "tool;${VAR}.tgz''\"'",
+            "sh -c 'curl \"'\"'" + url + "tool-${VAR}.tgz'\"'\"'",
+            "bash -c \"curl '\"'\"'" + url + "tool;${VAR}.tgz'\"'\"'\""):
+    a, b = inv.inventory(tree("A", run)), inv.inventory(tree("B", run))
+    assert inv.moved(a, b), run
+    it = next(iter(b.values()))
+    assert not age.judge_item(it, [("2026-09-01T00:00:00Z", "github-release")], dt.datetime(2026, 10, 14, tzinfo=dt.timezone.utc))[0], run
+ok = tree("A", 'curl "' + url + 'x.tgz?download=${A}"')
+assert set(inv.inventory(ok)) == {"tool:o/r/x.tgz@v1.2.3"}, sorted(inv.inventory(ok))
+PY
+
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
