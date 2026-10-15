@@ -3162,7 +3162,7 @@ ok = tree("A", 'curl "' + url + 'x.tgz?download=${A}"')
 assert all(it.step for it in inv.inventory(ok).values()), sorted(inv.inventory(ok))   # fail-closed: no refinement for a quoted word that is the URL (advisor 0442)
 PY
 
-# --- DRAFT, awaits the owner's ratification (outbox 2026-10-15-cache2-vendored-tree-pin-age-vendor-scripts.md): the vendored tree is not inventoried ---
+# --- handoff 0452, exception 1 (owner ratified Oct 15): the vendored tree is not inventoried ---
 vscript='#!/bin/sh\n$cmd docker run --rm --volume /x:/build generate:$GOOS\ngo run mksyscall.go\ncargo install ripgrep\n'
 newcase vnd1 "$(printf 'import pathlib\nd = pathlib.Path(\"vendor/golang.org/x/sys/unix\")\nd.mkdir(parents=True, exist_ok=True)\n(d / \"mkall.sh\").write_text(\"%s\")' "$vscript")"
 runck vnd1 '{"times": {}}'
@@ -3286,44 +3286,124 @@ runck key-assign-in-function '{"times": {}}'
 CASE="the base URL assigned inside a function that may never run is refused (exit 1)"
 check test "$rc" -eq 1
 
-# --- owner rule 48 (Oct 9: no 7-day hold on Wolfi; signature checks and archiving still apply), advisor message Oct 15: the refresh job's two python downloads,
-#     from the fixed host packages.wolfi.dev only, in a script that verifies them (verify / verify_index, hard-coded names) right after the fetch
-pyscript() { # NAME 'ARGV-TAIL (after "-o", part,)' [VERIFYLINE] [HOSTCHECK yes|no] [EXTRA]: writes bin/pull.sh with a python heredoc
-  python3 - "$1" "$2" "${3-verify(part, e)}" "${4-yes}" "${5-}" <<'PY'
+# --- owner rule 48 (Oct 9: no 7-day hold on Wolfi; signature checks and archiving still apply), advisor message Oct 15: the refresh job's two python downloads, from the
+#     fixed host packages.wolfi.dev only, in a script that verifies them (verify / verify_index, hard-coded names) right after the fetch. The python is READ AS PYTHON
+#     (ast), so a comment, a string, an uncalled function or a second statement on the line confers nothing.
+pyscript() { # NAME 'BLOCK' : writes bin/pull.sh around a python heredoc holding BLOCK
+  python3 - "$1" "$2" <<'PYW'
 import json, sys
-name, tail, ver, hostcheck, extra = sys.argv[1:6]
-py = ["import subprocess, sys", "WOLFI_URL = \"https://packages.wolfi.dev/os/\""]
-if hostcheck == "yes":
-    py += ["def check(u):", "    if pu.hostname != \"packages.wolfi.dev\" or not u.startswith(WOLFI_URL):", "        sys.exit(2)"]
-py += ["part = '/tmp/x.part'", "r = subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"-g\", \"--proto\", \"=https\", \"--tlsv1.2\"" + extra + ", \"-o\", part, " + tail + "], stdout=sys.stderr)",
-       "if r.returncode != 0:", "    sys.exit(1)", ver]
-body = "#!/usr/bin/env bash\nset -euo pipefail\n/usr/bin/python3 -I - <<'PY'\n" + "\n".join(py) + "\nPY\n"
+name, block = sys.argv[1:3]
+body = "#!/usr/bin/env bash\nset -euo pipefail\n/usr/bin/python3 -I - <<'PYX'\n" + block + "\nPYX\n"
 print("import pathlib\nroot = pathlib.Path('.')\n(root / 'bin').mkdir(exist_ok=True)\n(root / 'bin/pull.sh').write_text(" + json.dumps(body) + ")")
-PY
+PYW
 }
-newcase py1 "$(pyscript py1 '"https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz" % arch' 'verify_index(part, arch)')"
+PYHEAD='import subprocess, sys
+for arch in ("x86_64", "aarch64"):
+    part = "/tmp/idx-" + arch'
+PYCALL='    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--proto", "=https", "--tlsv1.2", "-o", part, "https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz" % arch], stdout=sys.stderr)'
+PYTAIL='    if r.returncode != 0:
+        sys.exit(1)
+    verify_index(part, arch)'
+newcase py1 "$(pyscript py1 "$PYHEAD
+$PYCALL
+$PYTAIL")"
 runck py1 '{"times": {}}'
 CASE="the index download from the literal Wolfi address, verified right after by verify_index, is accepted (exit 0)"
 check test "$rc" -eq 0
-newcase py2 "$(pyscript py2 'e["url"]' 'verify(part, e)' yes)"
+PYGUARD='    if not e["url"].startswith("https://packages.wolfi.dev/os/"):
+        sys.exit(2)'
+PYENT='    r = subprocess.run(["/usr/bin/curl", "-fsSL", "-g", "--proto", "=https", "-o", part, e["url"]], stdout=sys.stderr)'
+newcase py2 "$(pyscript py2 "import subprocess, sys
+for e in entries:
+    part = '/tmp/x.part'
+$PYGUARD
+$PYENT
+    if r.returncode != 0:
+        sys.exit(1)
+    verify(part, e)")"
 runck py2 '{"times": {}}'
-CASE="the package download from the lock entry's url, with the host check as literals and verify right after, is accepted (exit 0)"
+CASE="the package download from the lock entry's url, after an executed prefix check and with verify right after, is accepted (exit 0)"
 check test "$rc" -eq 0
-for v in "other-host:\"https://packages.example.com/os/%s/APKINDEX.tar.gz\" % arch|verify_index(part, arch)|yes|" \
-         "http:\"http://packages.wolfi.dev/os/%s/APKINDEX.tar.gz\" % arch|verify_index(part, arch)|yes|" \
-         "entry-url-without-host-check:e[\"url\"]|verify(part, e)|no|" \
-         "no-verify:e[\"url\"]|print('done')|yes|" \
-         "verify-other-variable:e[\"url\"]|verify(other, e)|yes|" \
-         "unknown-verifier:e[\"url\"]|check_it(part, e)|yes|" \
-         "proxy-option:e[\"url\"]|verify(part, e)|yes|, \"--proxy\", \"http://p.example:3128\"" \
-         "second-url:e[\"url\"], \"https://evil.example/x\"|verify(part, e)|yes|" \
-         "url-from-argv:sys.argv[1]|verify(part, e)|yes|"; do
-  nm=${v%%:*}; rest=${v#*:}; tail=${rest%%|*}; rest=${rest#*|}; ver=${rest%%|*}; rest=${rest#*|}; hc=${rest%%|*}; ex=${rest#*|}
-  newcase "py-$nm" "$(pyscript "py-$nm" "$tail" "$ver" "$hc" "$ex")"
-  runck "py-$nm" '{"times": {}}'
-  CASE="a python download that is not the one form is refused: $nm (exit 1)"
-  check test "$rc" -eq 1
-done
+pybad() { # NAME BLOCK: a near miss that must stay refused
+  newcase "py-$1" "$(pyscript "py-$1" "$2")"; runck "py-$1" '{"times": {}}'
+  CASE="a python download that is not the one form is refused: $1 (exit 1)"; check test "$rc" -eq 1
+}
+pybad other-host "$PYHEAD
+${PYCALL//packages.wolfi.dev/packages.example.com}
+$PYTAIL"
+pybad http "$PYHEAD
+${PYCALL//https:/http:}
+$PYTAIL"
+pybad entry-url-no-guard "import subprocess, sys
+for e in entries:
+    part = '/tmp/x.part'
+$PYENT
+    verify(part, e)"
+pybad guard-only-in-comment "import subprocess, sys
+for e in entries:
+    part = '/tmp/x.part'
+    # if not e['url'].startswith('https://packages.wolfi.dev/os/'): sys.exit(2)
+$PYENT
+    verify(part, e)"
+pybad guard-in-string "import subprocess, sys
+for e in entries:
+    part = '/tmp/x.part'
+    note = \"if not e['url'].startswith('https://packages.wolfi.dev/os/'): sys.exit(2)\"
+$PYENT
+    verify(part, e)"
+pybad no-verify "$PYHEAD
+$PYCALL
+    print('done')"
+pybad verify-in-print "$PYHEAD
+$PYCALL
+    print('verify_index(part, arch)')"
+pybad verify-in-comment "$PYHEAD
+$PYCALL
+    print('done')  # verify_index(part, arch)"
+pybad verify-other-variable "$PYHEAD
+$PYCALL
+    verify_index(part + '.old', arch)"
+pybad use-before-verify "$PYHEAD
+$PYCALL
+    consume(part)
+    verify_index(part, arch)"
+pybad reassign-before-verify "$PYHEAD
+$PYCALL
+    part = '/tmp/other'
+    verify_index(part, arch)"
+pybad verify-under-if-false "$PYHEAD
+$PYCALL
+    if False:
+        verify_index(part, arch)"
+pybad verify-fourth-statement "$PYHEAD
+$PYCALL
+    a = 1
+    b = 2
+    c = 3
+    verify_index(part, arch)"
+pybad unknown-verifier "$PYHEAD
+$PYCALL
+    check_it(part, arch)"
+pybad second-url-before-output "$PYHEAD
+${PYCALL//\"-o\", part,/\"https://evil.example/x\", \"-o\", part,}
+$PYTAIL"
+pybad star-args "$PYHEAD
+${PYCALL//\"-o\", part,/*extra, \"-o\", part,}
+$PYTAIL"
+pybad attached-proxy "$PYHEAD
+${PYCALL//\"-o\", part,/\"--proxy=http://p.example:3128\", \"-o\", part,}
+$PYTAIL"
+pybad single-quoted-proxy "$PYHEAD
+${PYCALL//\"-o\", part,/'--proxy', \"-o\", part,}
+$PYTAIL"
+pybad list-plus-extra "$PYHEAD
+${PYCALL//\"], stdout/\"] + extra, stdout}
+$PYTAIL"
+pybad second-download-on-line "$PYHEAD
+$PYCALL; subprocess.run([\"/usr/bin/curl\", \"https://example.org/extra\"])
+$PYTAIL"
+pybad comment-shaped-after-real-download "import subprocess
+subprocess.run([\"/usr/bin/curl\", \"-fsSL\", \"https://example.org/x\"])  # r = subprocess.run([\"/usr/bin/curl\", \"-o\", part, \"https://packages.wolfi.dev/os/%s/APKINDEX.tar.gz\" % arch]); verify_index(part, arch)"
 
 echo "pin-age-check: $pass passed, $failn failed"
 test "$failn" -eq 0
