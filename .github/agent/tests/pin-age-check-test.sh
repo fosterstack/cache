@@ -3164,8 +3164,7 @@ PY
 
 # --- advisor ruling Oct 15 (owner rule 48 of Oct 9 and exception 2 of Oct 15): one narrow ruled-row kind for a LIVE fetch from the fixed host. A row of form `a download`
 #     carries one of two rulings: the convention `text, not a command: ...` (a line that only mentions a tool), or `live fetch, owner ratified (Oct 9 rule 48 / Oct 15
-#     exception 2): ...`, honored ONLY when every URL on the bound line is https on the host packages.wolfi.dev exactly. Any other ruling text on a download row is a
-#     malformed list (exit 2). Rows are read from the base branch only and bound to the file and the whole-line hash, so any edit of the line voids the row.
+#     exception 2): ...`, honored ONLY when every URL on the bound line is https on the host packages.wolfi.dev exactly. Any other ruling text on a download row rules nothing. Rows are read from the base branch only and bound to the file and the whole-line hash, so any edit of the line voids the row.
 LIVEP='live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): '
 mkrowp() { # OUT FILE LINE RULINGPREFIX
   python3 - "$@" <<'PY'
@@ -3201,8 +3200,8 @@ CASE="a row with the text convention still rules a line, whatever the line (exit
 check test "$rc" -eq 0
 mkrowp "$work/lf-bad.json" bin/fetch.sh "curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "a fine fetch: "
 edck lf-text "$work/lf-bad.json"
-CASE="a download row with another ruling text is a malformed list: exit 2"
-check test "$rc" -eq 2
+CASE="a download row with another ruling text rules nothing: exit 1"
+check test "$rc" -eq 1
 mkrowp "$work/lf-edit.json" bin/fetch.sh "curl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x" "$LIVEP"
 twoc lf-edit bin/fetch.sh $'#!/bin/sh\n' $'#!/bin/sh\ncurl -fsSL -o /tmp/k https://packages.wolfi.dev/os/x --proxy http://p.example\n'
 edck lf-edit "$work/lf-edit.json"

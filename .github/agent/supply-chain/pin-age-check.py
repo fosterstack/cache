@@ -474,6 +474,7 @@ def _occurrences(root, rev):
     out = {}
     for k, flat, bashlike in inv.unmeasured_occurrences({**inv.tree_files(root, rev), **inv.tree_scripts(root, rev)}):   # a read error propagates (exit 2)
         lh = _line_hash(flat) if bashlike else "unruled:" + _line_hash(flat)
+        _LINE_TEXT[lh] = flat
         per = out.setdefault(k, {})
         per[lh] = per.get(lh, 0) + 1
     return out
@@ -500,6 +501,19 @@ def _added_unmeasured(root, base, head):  # keys are (file, form, the normalised
 # the exceptions file beside the checkout this script runs from: in CI that is trusted/ (the base branch), never the pull request's tree (--root).
 DEFAULT_EXCEPTIONS = os.path.normpath(os.path.join(HERE, "..", "..", "supply-chain-exceptions.json"))
 _RULED_FIELDS = ("file", "form", "key", "line", "ruling")
+TEXT_RULING = "text, not a command: "      # the convention: a line that only MENTIONS a download tool
+LIVE_RULING = "live fetch, owner ratified (Oct 9 rule 48 / Oct 15 exception 2): "   # a real fetch, honored only for https on packages.wolfi.dev (see _live_fetch_line_ok)
+DOWNLOAD_FORM = "a download"
+_LIVE_URL = re.compile(r"https://packages\.wolfi\.dev(?:/[A-Za-z0-9._%+~/-]*)?")
+_ANY_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s'\"]+")
+_LINE_TEXT = {}                              # whole-line hash -> the flattened line, filled by _occurrences
+
+
+def _live_fetch_line_ok(flat):
+    """Every URL on the bound line is https on the host packages.wolfi.dev exactly (no port, no userinfo, no trailing dot, no other scheme), and there is at least
+    one. A line with a URL built from a variable has no literal URL and is not this kind."""
+    urls = _ANY_URL.findall(flat)
+    return bool(urls) and all(_LIVE_URL.fullmatch(u) for u in urls)
 MAX_RULED_COUNT = 100
 
 
@@ -644,6 +658,10 @@ def _run(a, moved, fx, now):
         # ruled only when EVERY added (key, whole line) is named by a row and its head occurrences are within that row's count (1 unless it says more):
         # the same segment inside any other line, an edited line, or one copy too many leaves the item refused
         rs = [rulings.get((k[0], k[1], k[2].split(":", 1)[0], lh)) for lh in lines[k]]
+        if k[1] == DOWNLOAD_FORM and any(r and not r[0].startswith((TEXT_RULING, LIVE_RULING)) for r in rs):
+            rs = [None]                                  # a download row rules a line only with one of the two rulings the owner's rules name
+        if any(r and r[0].startswith(LIVE_RULING) and not _live_fetch_line_ok(_LINE_TEXT.get(lh, "")) for r, lh in zip(rs, lines[k])):
+            rs = [None]                                  # a live-fetch ruling on a line that is not wholly https on packages.wolfi.dev rules nothing
         if all(r and n <= r[1] for r, n in zip(rs, lines[k].values())):
             ruled.append((k, "; ".join(dict.fromkeys(r[0] for r in rs))))
         else:
