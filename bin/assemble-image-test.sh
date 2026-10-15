@@ -65,6 +65,103 @@ case "\$variant" in fips) cf=apko-fips.yaml; lk=apko-fips.base.lock.json;; *) cf
 cd "\$air" && exec bash bin/assemble-image.sh "\${args[@]}"
 WRAP
 chmod +x "$work/ai.sh"; AI="$work/ai.sh"
+# ---- the proofs: copies of lock-proof.sh and sealed-proof.sh (TEST-SUBST lines only) and of build-apk.sh (as bin/build-apk-test.sh does), run by a
+# wrapper that builds a per-call fixture repository root: the options the proofs no longer have (--apko-config, --assemble-script, --build-script, the
+# forwarded --base-lock/--index-record/--key-record, --recipe) become files and substituted variables of that root. $LP and $SP are the wrappers;
+# $LP_PROD and $SP_PROD are the production files (static checks read those).
+LP_PROD="$LP"; SP_PROD="$SP"
+rm -f "$air/bin/lock-proof.sh" "$air/bin/sealed-proof.sh"   # they are links to the production files: never write through them
+python3 "$work/mkcopy.py" "$LP_PROD" "$air/bin/lock-proof.sh" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
+  || { echo "FIXTURE SETUP FAILED: lock-proof copy"; exit 1; }
+python3 "$work/mkcopy.py" "$SP_PROD" "$air/bin/sealed-proof.sh" 'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
+  'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'BASHBIN='"$(command -v bash)" || { echo "FIXTURE SETUP FAILED: sealed-proof copy"; exit 1; }
+printf '#!/bin/sh\nif command -v sha256sum >/dev/null 2>&1; then exec sha256sum "$@"; else exec shasum -a 256 "$@"; fi\n' >"$work/sha256sum"; chmod +x "$work/sha256sum"
+rm -f "$air/bin/build-apk.sh"
+python3 "$work/mkcopy.py" "$root/bin/build-apk.sh" "$air/bin/build-apk.sh" \
+  'PY3=${TEST_PY3:-'"$(command -v python3)"'}' 'GIT=${TEST_GIT:-'"$(command -v git)"'}' 'SUDO=${TEST_SUDO:-'"$stubs"'/sudo}' \
+  'UNSHARE=${TEST_UNSHARE:-'"$stubs"'/unshare}' 'MELANGE=${TEST_MELANGE:-'"$stubs"'/melange}' 'SEALED_ENV=$TEST_SEALED_ENV' \
+  'GO_TOOL=${TEST_GO:-'"$stubs"'/go}' 'SHA256SUM=${TEST_SHA256SUM:-'"$work"'/sha256sum}' 'ENVBIN='"$(command -v env)" \
+  'RECIPE_STANDARD=${TEST_RECIPE:-$PWD/build/melange.yaml}' 'RECIPE_FIPS=${TEST_RECIPE:-$PWD/build/melange-fips.yaml}' \
+  || { echo "FIXTURE SETUP FAILED: build-apk copy"; exit 1; }
+chmod +x "$air/bin/lock-proof.sh" "$air/bin/sealed-proof.sh" "$air/bin/build-apk.sh" "$air/bin/assemble-image.sh"
+cat >"$work/proofwrap.py" <<'PYW'
+import json, os, shlex, shutil, subprocess, sys, tempfile
+AIR, ROOT, WORK = os.environ["PW_AIR"], os.environ["PW_ROOT"], os.environ["PW_WORK"]
+kind, args = sys.argv[1], sys.argv[2:]
+cwd = os.getcwd()
+hd_cfg = None
+ab = lambda p: p if os.path.isabs(p) else os.path.join(cwd, p)
+proot = tempfile.mkdtemp(dir=WORK, prefix="proot-")
+os.mkdir(proot + "/bin")
+for n in os.listdir(AIR + "/bin"):
+    os.symlink(os.path.join(AIR, "bin", n), os.path.join(proot, "bin", n))
+shutil.copytree(ROOT + "/build", proot + "/build", symlinks=True)
+def put(src, dst):
+    if os.path.lexists(dst): os.remove(dst)
+    if os.path.lexists(src): shutil.copy2(src, dst, follow_symlinks=False)
+def put_exe(src, name):
+    p = proot + "/bin/" + name
+    os.remove(p); shutil.copy2(src, p)
+def fixture_opts(words, variant):
+    """pull the options the assembler no longer has out of WORDS and put them where the fixture root keeps them"""
+    cfg, lk = ("apko-fips.yaml", "apko-fips.base.lock.json") if variant == "fips" else ("apko.yaml", "apko.base.lock.json")
+    out, i = [], 0
+    while i < len(words):
+        w = words[i]
+        dst = {"--apko-config": "build/" + cfg, "--base-lock": "build/locks/" + lk, "--index-record": "build/locks/archive-index.sha256",
+               "--key-record": "build/locks/archive-keys.sha256"}.get(w)
+        if dst and i + 1 < len(words):
+            put(ab(words[i + 1]), proot + "/" + dst); i += 2
+        else:
+            out.append(w); i += 1
+    return out
+def variant_of(words):
+    for i, w in enumerate(words):
+        if w == "--variant" and i + 1 < len(words): return words[i + 1]
+    return "production"
+script = {"lp": "lock-proof.sh", "sp": "sealed-proof.sh"}[kind]
+out = []
+if kind == "lp":
+    head, tail = (args[:args.index("--")], args[args.index("--") + 1:]) if "--" in args else (args, [])
+    i = 0; hd = []
+    while i < len(head):
+        if head[i] == "--assemble-script": put_exe(ab(head[i + 1]), "assemble-image.sh"); i += 2
+        elif head[i] == "--apko-config": hd_cfg = ab(head[i + 1]); i += 2
+        else: hd.append(head[i]); i += 1
+    var = variant_of(tail)
+    if hd_cfg: put(hd_cfg, proot + "/build/" + ("apko-fips.yaml" if var == "fips" else "apko.yaml"))
+    tail = fixture_opts(tail, var)
+    out = hd + ["--"] + tail
+else:
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--build-script": put_exe(ab(args[i + 1]), "build-apk.sh"); i += 2
+        elif a == "--assemble-script": put_exe(ab(args[i + 1]), "assemble-image.sh"); i += 2
+        elif a == "--build-args":
+            w = shlex.split(args[i + 1]); j = 0; keep = []
+            while j < len(w):
+                if w[j] == "--recipe" and j + 1 < len(w): os.environ["TEST_RECIPE"] = ab(w[j + 1]); j += 2
+                else: keep.append(w[j]); j += 1
+            out += ["--build-args", shlex.join(keep)]; i += 2
+        elif a == "--assemble-args":
+            w = shlex.split(args[i + 1])
+            out += ["--assemble-args", shlex.join(fixture_opts(w, variant_of(w)))]; i += 2
+        else:
+            out.append(a); i += 1
+# the sealed data file of the build-apk copy: the harness's STUB_/FAKE_ variables, as bin/build-apk-test.sh's wrapper writes it
+closed = {"PATH": os.environ["PATH"], "HOME": "/root", "LC_ALL": "C"}
+for k, v in os.environ.items():
+    if k.startswith(("STUB_", "FAKE_")) or k in ("CALLS", "ImageOS", "ImageVersion"): closed[k] = v
+json.dump({"closed": closed, "from_environment": ["SOURCE_DATE_EPOCH"]}, open(proot + "/sealed-test.json", "w"))
+os.environ["TEST_SEALED_ENV"] = proot + "/sealed-test.json"
+r = subprocess.run(["bash", proot + "/bin/" + script] + out, cwd=proot)
+sys.exit(r.returncode)
+PYW
+for k in lp sp; do
+  printf '#!/bin/bash\nexport PW_AIR="%s" PW_ROOT="%s" PW_WORK="%s"\nexec python3 "%s/proofwrap.py" %s "$@"\n' "$air" "$root" "$work" "$work" "$k" >"$work/$k.sh"; chmod +x "$work/$k.sh"
+done
+LP="$work/lp.sh"; SP="$work/sp.sh"
 # ---- begin verbatim sections ----
 export FSCACHE_TEST_MODE=1   # the overrides below (--apko-config, --base-lock, --index-record, --key-record, --*-script) work only in test mode
 # ---- P5 round 1: the archive's index must be the one recorded in build/locks/archive-index.sha256 (fixture record) ------------------------------------
@@ -657,7 +754,7 @@ done
 # a build that fails with a message that merely prints the source directory does not count as the vendor refusal
 printf '#!/bin/sh\nfor a in "$@"; do last=$a; done\necho "build-apk.sh: melange failed: network unreachable while building $*" >&2\nexit 2\n' >"$work/pathfail.sh"; chmod +x "$work/pathfail.sh"
 sf "rule 41" "sealed-proof: a failure that only prints the source path is not the vendor refusal (the builder's own 'vendor is missing' line is required)" 'vendor|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --build-script "$work/pathfail.sh" "${sp_common[@]}"
-t "rule 41" "sealed-proof: the copy used for the vendor negative has no keyword in its name" bash -c "! grep -q 'src-novendor' '$SP'"
+t "rule 41" "sealed-proof: the copy used for the vendor negative has no keyword in its name" bash -c "! grep -q 'src-novendor' '$SP_PROD'"
 printf '#!/bin/sh\necho "assemble-image.sh: failed while reading $*" >&2\nexit 2\n' >"$work/pathfail2.sh"; chmod +x "$work/pathfail2.sh"
 sf "rule 41" "sealed-proof: an image failure whose lines do not name the deleted package is not the package refusal" 'package|reason' "${spe[@]}" "$SP" --out "$(mo)" --probe 'test -z "${FAKE_SEALED:-}"' --assemble-script "$work/pathfail2.sh" "${sp_common[@]}"
 # an unlistable directory is not an empty directory
@@ -733,7 +830,7 @@ VP=$(python3 -c 'import json,sys;e=sorted(json.load(open(sys.argv[1]))["contents
 printf '#!/bin/sh\nARCHDIR=; p=; for a in "$@"; do [ "$p" = --archive ] && ARCHDIR=$a; p=$a; done\ncase " $* " in *a-missing-package*) echo "apko-lock.sh: %s is not in the archive" >&2; echo "assemble-image.sh: the archive does not satisfy the base lock" >&2; exit 2;; *a-missing-index*) echo "assemble-image.sh: $ARCHDIR/x86_64/APKINDEX.tar.gz is missing" >&2; exit 2;; *a-tampered*) echo "apko-lock.sh: %s: data section does not match the lock" >&2; exit 2;; *live.yaml*) echo "assemble-image.sh: the config names a live repository" >&2; exit 2;; esac\nexit 0\n' "$VP" "$VP" >"$work/plus-asm.sh"; chmod +x "$work/plus-asm.sh"
 run_s "${aie[@]}" "$LP" --out "$(mo)" --archive "$work/plus/archive" --assemble-script "$work/plus-asm.sh" --apko-config "$fx/apko.yaml" -- --variant production --version 0.3.0 --melange-repo "$fx/melrepo" --keyring-dir "$fx/keyring" --base-lock "$work/plus/plus.lock.json" --index-record "$idxrec" --key-record "$keyrec"
 t "rule 36" "lock-proof: a victim named a++c is matched literally (regex characters in a package name are not a reason to fail)" test "$(cat "$work/rc")" = 0
-t "rule 36" "lock-proof keeps the whole reason line in its record (cut after the match, 400 characters)" bash -c "grep -q 'cut -c1-400' '$LP'"
+t "rule 36" "lock-proof keeps the whole reason line in its record (cut after the match, 400 characters)" bash -c "grep -q 'cut -c1-400' '$LP_PROD'"
 # oci-digest: null or mistyped fields are named refusals, not tracebacks
 python3 - "$work" "$fx/oci" <<'P'
 import json, sys, tarfile

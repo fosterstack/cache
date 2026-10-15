@@ -2,14 +2,13 @@
 # The lock method proof (v0.3.0 rule 36): assembly must FAIL, for the right reason, when the archive or the config is wrong; and it must SUCCEED
 # on the untouched inputs, otherwise a script that always fails would "prove" everything.
 #
-#   lock-proof.sh --out DIR --archive DIR [--apko-config FILE] [--assemble-script FILE] -- <assemble-image.sh arguments>
+#   lock-proof.sh --out DIR --archive DIR -- <assemble-image.sh arguments>
 #
-# The arguments after `--` are passed to the assembly script as they are (--variant, --version, --melange-repo, --keyring-dir, --base-lock,
-# --index-record, --key-record, ...); this script supplies --archive and --out. Without --apko-config the assembly uses the committed config
-# and locks of the variant (the real thing; no test mode needed). --apko-config and --assemble-script are accepted only in test mode
-# (FSCACHE_TEST_MODE=1) and are recorded. The live-packages case needs a modified config, so ONLY that case runs the assembler with a temp
-# --apko-config and FSCACHE_TEST_MODE=1; lock-proof.json lists it under override_cases. The record holds the sha256 of the config, the base
-# lock, the index record and the key record that were proved against.
+# The arguments after `--` are passed to the assembly script as they are (--variant, --version, --melange-repo, --keyring-dir); this script
+# supplies --archive and --out. The assembly uses the committed config, base lock and records of the variant: neither this script nor the
+# assembler has an option for them or a test hook (REQ-IMAGE-001-AC10, AC12). Every assembly runs from a throwaway copy of the repository root
+# (bin/ linked, build/ copied), so the live-packages case changes the config in its own copy and the real files are never modified. The
+# record holds the sha256 of the config, the base lock, the index record and the key record that were proved against.
 #   0. positive control: the untouched archive and config must assemble (exit 0). If not, the proof fails (exit 1, "positive control").
 #   Then, on throwaway copies, the assembly must exit exactly 2 (the named refusal) AND say why:
 #   missing-package   one package of the BASE LOCK deleted (the first by name)          -> the message names that apk
@@ -19,9 +18,12 @@
 # OUT/lock-proof.json records the positive control, the assembly script (path and sha256), and for each case the exit code and the reason line.
 # The real archive and config are never modified.
 # Exit codes: 0 the control passed and all four cases failed as required | 1 the control failed, or a case did not fail, failed with another exit
-#   code, or failed for another reason | 2 refused (bad arguments, an override outside test mode).
+#   code, or failed for another reason | 2 refused (bad arguments).
 set -euo pipefail
 
+# every tool is called by a fixed absolute path held in a variable (REQ-IMAGE-001-AC12); the tests substitute exactly these lines
+PY3=/usr/bin/python3                 # TEST-SUBST
+SUDO=/usr/bin/sudo                   # TEST-SUBST
 here=$(cd "$(dirname "$0")" && pwd)
 die() { echo "lock-proof.sh: $1" >&2; exit "${2:-2}"; }
 
@@ -29,19 +31,15 @@ die() { echo "lock-proof.sh: $1" >&2; exit "${2:-2}"; }
 # the chain runs everything from the repository root, and the drivers it calls refuse anywhere else (exit 2): run it as  bash bin/lock-proof.sh ...  from there
 [ "$(pwd -P)" = "$(cd "$here/.." && pwd -P)" ] || die "usage: run bin/lock-proof.sh from the repository root ($(cd "$here/.." && pwd -P)), not from $(pwd -P)" 2
 
-out= archive= config= script=$here/assemble-image.sh script_set=0
+out= archive=
 while [ $# -gt 0 ]; do
   case $1 in
     --out) [ $# -ge 2 ] || die "missing value for $1"; out=$2; shift 2;;
     --archive) [ $# -ge 2 ] || die "missing value for $1"; archive=$2; shift 2;;
-    --apko-config) [ $# -ge 2 ] || die "missing value for $1"; config=$2; shift 2;;
-    --assemble-script) [ $# -ge 2 ] || die "missing value for $1"; script=$2; script_set=1; shift 2;;
     --) shift; break;;
     *) die "unknown argument: $1";;
   esac
 done
-if [ "$script_set" = 1 ] && [ "${FSCACHE_TEST_MODE:-}" != 1 ]; then die "--assemble-script is allowed only in test mode (FSCACHE_TEST_MODE=1); the proof must run the real assembly script"; fi
-if [ -n "$config" ] && [ "${FSCACHE_TEST_MODE:-}" != 1 ]; then die "--apko-config is allowed only in test mode (FSCACHE_TEST_MODE=1); outside it the proof uses the committed config of the variant"; fi
 [ -n "$out" ] && [ -d "$archive" ] || die "--out and --archive (a directory) are required"
 for v_ in "$out" "$archive"; do [ "$(printf '%s' "$v_" | LC_ALL=C tr -d '\040-\176'; printf x)" = x ] || die "$v_ holds a control character or a byte outside printable ASCII; refusing, the path arguments are plain ASCII text" 2; done
 a_=$archive; while [ "${a_%/}" != "$a_" ] && [ "$a_" != / ]; do a_=${a_%/}; done
@@ -49,16 +47,12 @@ o_=$out; while [ "${o_%/}" != "$o_" ] && [ "$o_" != / ]; do o_=${o_%/}; done
 for x_ in "$a_" "$o_"; do q_=$x_; while [[ $q_ == ./* ]]; do q_=${q_#./}; done; while [[ $q_ == ../* ]]; do q_=${q_#../}; done; case "/$q_/" in */./*|*/../*) die "$x_ has a . or .. component after another component (it could hide a symlinked root); give the real path" 2;; esac; done
 [ ! -L "$o_" ] || die "--out $out is a symlink; refusing (the results would be written through it)" 2
 [ ! -L "$a_" ] || die "--archive $archive is a symlink; refusing (the copies of the proof would be made through it)"
-[ -z "$config" ] || [ -f "$config" ] || die "--apko-config $config is not a file"
-[ -x "$script" ] || die "assembly script not executable: $script"
+[ -x "$here/assemble-image.sh" ] || die "assembly script not executable: $here/assemble-image.sh"
 pass=("$@")
-for a in "${pass[@]}"; do case $a in --archive|--out|--render-dir|--apko-config) die "$a after --: this option is supplied by the proof; a forwarded value could be printed back by the assembler and mistaken for a reason" 2;; esac; done
-baselock= variant= idxrec= keyrec= fwd=
+for a in "${pass[@]}"; do case $a in --archive|--out|--render-dir|--apko-config|--base-lock|--index-record|--key-record) die "$a after --: this option is supplied by the proof; a forwarded value could be printed back by the assembler and mistaken for a reason" 2;; esac; done
+variant=
 for ((i = 0; i < ${#pass[@]}; i++)); do
-  case ${pass[$i]} in
-    --base-lock) baselock=${pass[$((i + 1))]:-}; fwd=$fwd" --base-lock";; --variant) variant=${pass[$((i + 1))]:-};;
-    --index-record) idxrec=${pass[$((i + 1))]:-}; fwd=$fwd" --index-record";; --key-record) keyrec=${pass[$((i + 1))]:-}; fwd=$fwd" --key-record";;
-  esac
+  case ${pass[$i]} in --variant) variant=${pass[$((i + 1))]:-};; esac
 done
 root=$(cd "$here/.." && pwd)
 case $variant in
@@ -66,28 +60,35 @@ case $variant in
   fips) dcfg=$root/build/apko-fips.yaml; dlock=$root/build/locks/apko-fips.base.lock.json;;
   *) die "the arguments after -- must include --variant production|fips";;
 esac
-[ -n "$baselock" ] || baselock=$dlock
-[ -n "$idxrec" ] || idxrec=$root/build/locks/archive-index.sha256
-[ -n "$keyrec" ] || keyrec=$root/build/locks/archive-keys.sha256
-srccfg=${config:-$dcfg}
+baselock=$dlock
+idxrec=$root/build/locks/archive-index.sha256
+keyrec=$root/build/locks/archive-keys.sha256
+srccfg=$dcfg
 [ -f "$baselock" ] || die "the base lock $baselock is not a file (the victim is a package of the base lock)"
 [ -f "$srccfg" ] || die "the config $srccfg is not a file"
 
 tmp=$(mktemp -d)
-cleanup() { local rc=$?; set +e; rm -rf "$tmp" 2>/dev/null || sudo rm -rf "$tmp" >/dev/null 2>&1; exit $rc; }
+cleanup() { local rc=$?; set +e; rm -rf "$tmp" 2>/dev/null || "$SUDO" rm -rf "$tmp" >/dev/null 2>&1; exit $rc; }
 trap cleanup EXIT
 [ ! -e "$out/lock-proof.json" ] && [ ! -L "$out/lock-proof.json" ] || die "$out/lock-proof.json already exists (or is a link): refusing to write through or over it; give an empty --out" 2
 mkdir -p "$out"
 inside_tmp() { case "$(cd -P -- "$1" && pwd -P)" in "$(cd -P -- "$tmp" && pwd -P)"/*) ;; *) die "internal: $1 is not inside the proof's own temp directory; refusing to modify it" 2;; esac; }   # before any rm or write
 
-run() { # <name> <archive> [temp config]: the assembler gets no --apko-config unless the caller gave one (or this is the live-packages case)
-  local extra=() envs=()
-  if [ -n "${3:-}" ]; then extra=(--apko-config "$3"); envs=(env FSCACHE_TEST_MODE=1); elif [ -n "$config" ]; then extra=(--apko-config "$config"); fi
-  "${envs[@]}" "$script" --archive "$2" "${extra[@]}" --out "$tmp/out-$1" "${pass[@]}" >"$tmp/$1.log" 2>&1 && rc=0 || rc=$?
+# mkrepo <name> [config]: a throwaway repository root: bin/ linked to the real one, build/ copied (the live-packages case changes the config of ITS copy)
+mkrepo() {
+  local r=$tmp/repo-$1 f
+  mkdir -p "$r/bin"; inside_tmp "$r"
+  for f in "$root"/bin/*; do ln -s "$f" "$r/bin/$(basename "$f")"; done
+  cp -R "$root/build" "$r/build"
+  [ -z "${2:-}" ] || cp "$2" "$r/build/$(basename "$dcfg")"
+}
+run() { # <name> <archive> [temp config]: the assembler runs from its own repository root copy with the committed inputs
+  mkrepo "$1" "${3:-}"
+  ( cd "$tmp/repo-$1" && ./bin/assemble-image.sh --archive "$2" --out "$tmp/out-$1" "${pass[@]}" ) >"$tmp/$1.log" 2>&1 && rc=0 || rc=$?
 }
 
 # the victim: the first package of the BASE LOCK by (name, architecture)
-victim=$(python3 - "$baselock" "lock-proof.sh" <<'PY'
+victim=$("$PY3" -I -B - "$baselock" "lock-proof.sh" <<'PY'
 import json, re, sys
 e = sorted(json.load(open(sys.argv[1]))["contents"]["packages"], key=lambda e: (e["name"], e["architecture"]))[0]
 def bad(what, v): print("%s: the base lock's first package has an unacceptable %s %r (closed rule: architecture exactly x86_64 or aarch64; name and version only [A-Za-z0-9._+-], never . or .. and never starting with -); refusing before any copy" % (sys.argv[2], what, v), file=sys.stderr); sys.exit(2)
@@ -98,7 +99,6 @@ for k in ("name", "version"):
 print("%s/%s-%s.apk" % (e["architecture"], e["name"], e["version"]))
 PY
 ) || die "cannot read the base lock $baselock"
-[ -z "$fwd" ] || [ "${FSCACHE_TEST_MODE:-}" = 1 ] || die "the forwarded$fwd are allowed only in test mode (FSCACHE_TEST_MODE=1); outside it the proof uses the committed locks and records (refused before any copy)" 2
 [ ! -L "$archive/$victim" ] || die "the victim $victim in the archive is a symlink; refusing (the proof must never write through a link)"
 [ -f "$archive/$victim" ] || die "the base lock's first package $victim is not in the archive (the positive control passed, so this is a bad lock-proof setup)"
 vname=$(basename "$victim"); arch_dir=$(dirname "$victim")
@@ -110,7 +110,7 @@ cp -RP "$archive" "$tmp/a-missing-index"; inside_tmp "$tmp/a-missing-index"; ins
 
 cp -RP "$archive" "$tmp/a-tampered"; inside_tmp "$tmp/a-tampered"; inside_tmp "$(dirname "$tmp/a-tampered/$victim")"
 [ ! -L "$tmp/a-tampered/$victim" ] && [ -f "$tmp/a-tampered/$victim" ] || die "internal: the copied victim $tmp/a-tampered/$victim is not a regular file (a link was put in its place); refusing to write through it"
-python3 - "$tmp/a-tampered/$victim" <<'PY'
+"$PY3" -I -B - "$tmp/a-tampered/$victim" <<'PY'
 import sys
 p = sys.argv[1]; b = bytearray(open(p, "rb").read())
 if not b:
@@ -140,17 +140,16 @@ expect tampered-package "$tmp/a-tampered" - "$vre: .*(does not match|differs)"
 sed 's#/work/archive#https://packages.wolfi.dev/os#' "$srccfg" >"$tmp/live.yaml"
 expect live-packages "$archive" "$tmp/live.yaml" "live repository"
 
-python3 - "$out/lock-proof.json" "$script" "${FSCACHE_TEST_MODE:-}" "$srccfg" "$baselock" "$idxrec" "$keyrec" "${config:+given}" "${results[@]}" <<'PY'
+"$PY3" -I -B - "$out/lock-proof.json" "$root/bin/assemble-image.sh" "$srccfg" "$baselock" "$idxrec" "$keyrec" "${results[@]}" <<'PY'
 import hashlib, json, os, sys
-out, script, tm = sys.argv[1:4]
+out, script = sys.argv[1:3]
 sha = lambda p: {"path": p, "sha256": hashlib.sha256(open(p, "rb").read()).hexdigest() if os.path.isfile(p) else "absent"}
-inputs = dict(zip(("config", "base_lock", "index_record", "key_record"), map(sha, sys.argv[4:8])))
-given = sys.argv[8]
+inputs = dict(zip(("config", "base_lock", "index_record", "key_record"), map(sha, sys.argv[3:7])))
 cases = {}
-for r in sys.argv[9:]:
+for r in sys.argv[7:]:
     name, reason = r.split("|", 1); cases[name] = {"result": "failed-as-required", "exit": 2, "reason": reason}
 json.dump({"positive_control": "ok", "assemble_script": script, "assemble_script_sha256": hashlib.sha256(open(script, "rb").read()).hexdigest(),
-           "test_mode": tm == "1", "inputs": inputs, "override_cases": ["live-packages"] + (["all (--apko-config given)"] if given else []), "cases": cases}, open(out, "w"), indent=1, sort_keys=True)
+           "inputs": inputs, "override_cases": ["live-packages"], "cases": cases}, open(out, "w"), indent=1, sort_keys=True)
 open(out, "a").write("\n")
 PY
 echo "lock proof: the control assembled, and all four bad inputs were refused with their own reason (exit 2)"
